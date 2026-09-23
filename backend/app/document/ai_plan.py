@@ -58,6 +58,7 @@ from fastapi import HTTPException
 
 from app.document.ai_plan_edges import resolve_edge_selector
 from app.document.ai_plan_schemas import (
+    AddComponentStep,
     BooleanStep,
     ChamferStep,
     CreatePlaneStep,
@@ -284,6 +285,14 @@ class _PlanValidator:
         # own effect (e.g. `move_component` then `hide_component` on the same
         # Occurrence) without ever touching the real Part.
         self._existing_occurrence_by_id: dict[str, Occurrence] = {o.id: o for o in self.part.occurrences}
+        # Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`):
+        # every scratch Occurrence a plan-local `add_component` step in
+        # *this* run has already placed, by its own `local_id` - checked
+        # first by `_lookup_occurrence`, before the `existing:` prefix
+        # requirement, so a later `mate`/`move_component`/`hide_component`/
+        # `isolate_component`/`pattern_component` step in the same plan can
+        # reference it directly.
+        self._local_occurrence_by_id: dict[str, Occurrence] = {}
         # A pristine snapshot of every existing SketchFeature's real Sketch,
         # captured *before* any dry-run step can touch it - restored in
         # `run`'s own `finally` below. Needed because a new sketch_point/
@@ -425,20 +434,46 @@ class _PlanValidator:
 
     def _lookup_occurrence(self, local_id: str, field: str) -> Occurrence:
         """Assembly support Phase 8 (`docs/assembly-scope.md` §2k):
-        `mate`/`move_component`/`hide_component`/`isolate_component`'s own
-        occurrence-reference resolution - deliberately narrower than
-        `_lookup`/`_lookup_existing`: `local_id` must start with
-        `_EXISTING_ID_PREFIX` (no `PlanStep` kind produces a brand-new
-        Occurrence yet, see `MateEntityRefStep`'s own docstring), and it
-        resolves against `self._existing_occurrence_by_id` (this run's own
-        scratch Occurrences), never `self.resolved` - an Occurrence local_id
-        is never a plan-local step result the way a Feature's is."""
-        if not local_id.startswith(_EXISTING_ID_PREFIX):
-            raise _StepError({"type": "occurrence_requires_existing_prefix", "field": field, "local_id": local_id})
-        occurrence = self._existing_occurrence_by_id.get(local_id[len(_EXISTING_ID_PREFIX) :])
-        if occurrence is None:
-            raise _StepError({"type": "unknown_existing_id", "field": field, "local_id": local_id})
-        return occurrence
+        `mate`/`move_component`/`hide_component`/`isolate_component`/
+        `pattern_component`'s own occurrence-reference resolution.
+
+        Widened by Phase 18 (`docs/assembly-scope.md` §6 `[2]`):
+        `local_id` may now also name an `AddComponentStep` earlier in this
+        same plan - checked first, against `self._local_occurrence_by_id`
+        (this run's own plan-local registry, populated by
+        `_handle_add_component`) - before falling through to the original
+        rule: `local_id` must start with `_EXISTING_ID_PREFIX`, resolved
+        against `self._existing_occurrence_by_id` (this run's own scratch,
+        pre-existing Occurrences). A `local_id` that resolved to something
+        in `self.resolved` (a Feature-producing or other non-`add_component`
+        step) is a `wrong_kind_reference`, not a bare unrecognized one - a
+        clearer error than blaming it on a missing `existing:` prefix.
+        Anything else (including a real Occurrence's own bare id, minus its
+        `existing:` prefix - a common mistake) keeps this function's
+        original `occurrence_requires_existing_prefix` error, unchanged for
+        backward compatibility."""
+        occurrence = self._local_occurrence_by_id.get(local_id)
+        if occurrence is not None:
+            return occurrence
+        if local_id.startswith(_EXISTING_ID_PREFIX):
+            occurrence = self._existing_occurrence_by_id.get(local_id[len(_EXISTING_ID_PREFIX) :])
+            if occurrence is None:
+                raise _StepError({"type": "unknown_existing_id", "field": field, "local_id": local_id})
+            return occurrence
+        if local_id in self.failed:
+            raise _StepError({"type": "depends_on_failed_step", "field": field, "local_id": local_id})
+        resolved = self.resolved.get(local_id)
+        if resolved is not None:
+            raise _StepError(
+                {
+                    "type": "wrong_kind_reference",
+                    "field": field,
+                    "local_id": local_id,
+                    "expected_kinds": ["add_component"],
+                    "actual_kind": resolved.kind,
+                }
+            )
+        raise _StepError({"type": "occurrence_requires_existing_prefix", "field": field, "local_id": local_id})
 
     def _entity_ref(self, resolved: _Resolved, entity_type: SketchEntityType) -> SketchEntityRef:
         return SketchEntityRef(sketch_id=resolved.owning_sketch_id, entity_type=entity_type, entity_id=resolved.entity_id)
@@ -1065,6 +1100,32 @@ def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
     )
 
 
+def _handle_add_component(v: _PlanValidator, step: AddComponentStep) -> None:
+    """Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`): the
+    first handler that places a brand-new Occurrence rather than only
+    mutating an existing one. Builds a scratch stub only - `resolved_part_id`
+    stays `None` (this backend never opens `relative_path`, decision #6 -
+    see `AddComponentStep`'s own docstring) and no real geometry is ever
+    involved, which `_mate_entity_ref_from_step` already proves is
+    sufficient for a later Mate reference (that function trusts a literal
+    `subshape_ref`/`plane_ref`/`point_ref` verbatim, never resolving real
+    geometry against the *target* Occurrence's own Part). Mirrors
+    `mergeComponentIntoDocument`'s own "the very first Occurrence a Part
+    ever gets is auto-grounded" convention for `fixed`."""
+    if not step.relative_path.strip():
+        raise _StepError({"type": "invalid_step_payload", "message": "add_component requires a non-empty relative_path"})
+    occurrence = Occurrence(
+        id=str(uuid.uuid4()),
+        part_id=None,
+        external_ref=step.relative_path,
+        name_override=step.name_override,
+        fixed=len(v.part.occurrences) == 0,
+    )
+    v.part.occurrences.append(occurrence)
+    v._local_occurrence_by_id[step.local_id] = occurrence
+    v.resolved[step.local_id] = _Resolved(kind="add_component", feature_id=occurrence.id)
+
+
 def _handle_move_component(v: _PlanValidator, step: MoveComponentStep) -> None:
     from app.document.router import _validate_occurrence_transform_payload
 
@@ -1365,6 +1426,7 @@ _HANDLERS = {
     "delete_body": _handle_delete_body,
     "scale_body": _handle_scale_body,
     "move_body": _handle_move_body,
+    "add_component": _handle_add_component,
     "mate": _handle_mate,
     "move_component": _handle_move_component,
     "hide_component": _handle_hide_component,

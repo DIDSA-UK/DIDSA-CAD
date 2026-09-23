@@ -74,4 +74,19 @@ abstract class StorageService {
   /// deleted one; callers that care about the distinction should catch
   /// `StorageException` from `readFile`/`lastModified` instead.
   Future<bool> exists(FileHandle handle);
+
+  /// Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`):
+  /// recursively lists every file (never a directory) under `root`, as
+  /// POSIX-style relative paths (the same identity `Occurrence.external_ref`/
+  /// `FileHandle.relativePath` use) - optionally filtered to paths whose
+  /// name ends in `extensionFilter` (e.g. `kNativeFileExtension`, see
+  /// `relative_path.dart`). Ordering is implementation-defined - sort the
+  /// result yourself if you need one. Throws `StorageException` only if
+  /// `root` itself is unreachable; a mid-walk I/O error on one subtree
+  /// (a permission hiccup, a revoked child grant) is swallowed and the walk
+  /// continues, returning a partial-but-useful list rather than failing
+  /// outright - the sole real consumer today (`ai_component_file_summary.dart`'s
+  /// prompt-context fetch) is already a best-effort operation elsewhere in
+  /// this codebase.
+  Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter});
 }

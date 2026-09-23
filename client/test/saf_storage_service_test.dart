@@ -74,6 +74,15 @@ class _FakeSafUtil extends SafUtil {
 
   @override
   Future<bool> exists(String uri, bool isDir) async => _nodesByUri.containsKey(uri);
+
+  @override
+  Future<List<SafDocumentFile>> list(String uri) async {
+    final node = _nodesByUri[uri];
+    if (node == null) {
+      throw StateError('list against an unknown tree: $uri');
+    }
+    return node.children.values.map((c) => c.toDocumentFile()).toList();
+  }
 }
 
 class _FakeNode {
@@ -240,6 +249,37 @@ void main() {
 
       expect(resolved, isNotNull);
       expect(resolved!.persistedKey, root.treeUri);
+    });
+  });
+
+  group('listFiles', () {
+    test('recursively finds every file across nested directories', () async {
+      await service.writeFile(root, 'top.didsa', Uint8List(0));
+      await service.writeFile(root, 'parts/bracket.didsa', Uint8List(0));
+      await service.writeFile(root, 'parts/nested/bolt.didsa', Uint8List(0));
+
+      final files = await service.listFiles(root);
+
+      expect(files, unorderedEquals(['top.didsa', 'parts/bracket.didsa', 'parts/nested/bolt.didsa']));
+    });
+
+    test('filters by extension when given', () async {
+      await service.writeFile(root, 'top.DIDSAprt', Uint8List(0));
+      await service.writeFile(root, 'readme.txt', Uint8List(0));
+
+      final files = await service.listFiles(root, extensionFilter: '.DIDSAprt');
+
+      expect(files, ['top.DIDSAprt']);
+    });
+
+    test('returns an empty list for an empty tree', () async {
+      expect(await service.listFiles(root), isEmpty);
+    });
+
+    test('throws StorageException when the root grant no longer resolves', () async {
+      final revokedRoot = SafProjectRoot(treeUri: 'content://fake-tree/does-not-exist', displayName: 'gone');
+
+      expect(() => service.listFiles(revokedRoot), throwsA(isA<StorageException>()));
     });
   });
 

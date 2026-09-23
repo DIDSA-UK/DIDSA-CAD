@@ -37,10 +37,17 @@
 /// note in `04-translator-and-execution.md`.
 library;
 
+import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:uuid/uuid.dart';
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
+import '../assembly/add_component.dart';
+import '../storage/project_root.dart';
+import '../storage/storage_service.dart';
 import 'ai_plan.dart';
 
 /// Where a step landed in [PlanTranslator.execute]'s walk - drives the
@@ -191,15 +198,21 @@ const Set<String> _featureProducingKinds = {
   'move_body',
 };
 
-/// Assembly support Phase 8 (`docs/assembly-scope.md` §2k): every
-/// `AiMateEntityRefStep.occurrenceId`/`AiMoveComponentStep.occurrenceId`/etc.
-/// is either `""` (this Part's own root content - never a real Occurrence to
-/// resolve) or `existing:<occurrence_id>` (no `PlanStep` kind places a new
-/// Occurrence yet - see `MateEntityRefStep`'s own backend docstring), so
-/// resolution is a plain prefix-strip, never a `localIdToRealId` lookup the
-/// way a Feature/sketch-entity reference needs.
-String _resolveOccurrenceId(String occurrenceId) =>
-    occurrenceId.isEmpty ? '' : occurrenceId.substring('existing:'.length);
+/// Assembly support Phase 8 (`docs/assembly-scope.md` §2k), widened by
+/// Phase 18 (§6 `[2]`): every `AiMateEntityRefStep.occurrenceId`/
+/// `AiMoveComponentStep.occurrenceId`/etc. is `""` (this Part's own root
+/// content - never a real Occurrence to resolve), `existing:<occurrence_id>`
+/// (a real, already-placed Occurrence), or - since Phase 18 - a bare
+/// plan-local `local_id` naming an `AiAddComponentStep` earlier in this same
+/// plan, resolved through [ids] exactly like [_resolveId] already does for
+/// Features/sketch entities. `_run_step`'s own `reserved_local_id_prefix`
+/// check (backend) guarantees a step's own `local_id` never itself starts
+/// with `existing:`, so the two branches below can never be ambiguous.
+String _resolveOccurrenceId(String occurrenceId, Map<String, String> ids) {
+  if (occurrenceId.isEmpty) return '';
+  if (occurrenceId.startsWith('existing:')) return occurrenceId.substring('existing:'.length);
+  return ids[occurrenceId]!;
+}
 
 const Map<Type, String> _entityTypeForStepType = {
   AiSketchLineStep: 'line',
@@ -235,8 +248,20 @@ class PlanTranslator {
   final DocumentApiClient documentApi;
   final SketchApiClient sketchApi;
 
-  PlanTranslator({DocumentApiClient? documentApi, SketchApiClient? sketchApi})
-      : documentApi = documentApi ?? DocumentApiClient(),
+  /// Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`): both
+  /// nullable - only an `add_component` step needs either, and a plan with
+  /// none of those can be executed with neither set (see the
+  /// `AiAddComponentStep` case in [_executeStep] for the clear failure this
+  /// produces if that step is encountered anyway).
+  final StorageService? storageService;
+  final ProjectRoot? projectRoot;
+
+  PlanTranslator({
+    DocumentApiClient? documentApi,
+    SketchApiClient? sketchApi,
+    this.storageService,
+    this.projectRoot,
+  })  : documentApi = documentApi ?? DocumentApiClient(),
         sketchApi = sketchApi ?? SketchApiClient();
 
   /// `04`'s own "Pre-flight" + "Real execution" sections, back to back:
@@ -754,7 +779,7 @@ class PlanTranslator {
           type: step.type.wireValue,
           references: [
             for (var i = 0; i < step.references.length; i++)
-              _mateEntityRefDto(step.references[i], resolvedReferences == null ? null : resolvedReferences[i]),
+              _mateEntityRefDto(step.references[i], resolvedReferences == null ? null : resolvedReferences[i], ids),
           ],
           value: step.value,
           flipped: step.flipped,
@@ -773,14 +798,54 @@ class PlanTranslator {
             ? step.references[1].occurrenceId
             : step.references[0].occurrenceId;
         if (solveTarget.isNotEmpty) {
-          await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget));
+          await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget, ids));
         }
         return mate.id;
+
+      case AiAddComponentStep():
+        final storage = storageService;
+        final root = projectRoot;
+        if (storage == null || root == null) {
+          throw ApiException('add_component requires an open project folder - this session has none available');
+        }
+        final handle = await storage.resolve(root, step.relativePath);
+        if (handle == null) {
+          throw ApiException('Component file not found in project: ${step.relativePath}');
+        }
+        final Uint8List bytes;
+        try {
+          bytes = await storage.readFile(handle);
+        } on StorageException catch (e) {
+          throw ApiException('Failed to read component file ${step.relativePath}: ${e.message}');
+        }
+        final Map<String, dynamic> componentPayload;
+        try {
+          componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+        } catch (_) {
+          throw ApiException('Not a valid native project file: ${step.relativePath}');
+        }
+        final currentPayload = await documentApi.exportNative();
+        final newOccurrenceId = const Uuid().v4();
+        final Map<String, dynamic> merged;
+        try {
+          merged = mergeComponentIntoDocument(
+            currentPayload: currentPayload,
+            componentPayload: componentPayload,
+            rootPartId: partId,
+            occurrenceId: newOccurrenceId,
+            externalRef: step.relativePath,
+            nameOverride: step.nameOverride,
+          );
+        } on AddComponentException catch (e) {
+          throw ApiException(e.message);
+        }
+        await documentApi.importNative(merged);
+        return newOccurrenceId;
 
       case AiMoveComponentStep():
         final occurrence = await documentApi.updateOccurrenceTransform(
           partId,
-          _resolveOccurrenceId(step.occurrenceId),
+          _resolveOccurrenceId(step.occurrenceId, ids),
           RigidTransformDto(
             translation: step.translation,
             rotationAxis: step.rotationAxis,
@@ -792,13 +857,13 @@ class PlanTranslator {
       case AiHideComponentStep():
         final occurrence = await documentApi.updateOccurrenceHidden(
           partId,
-          _resolveOccurrenceId(step.occurrenceId),
+          _resolveOccurrenceId(step.occurrenceId, ids),
           true,
         );
         return occurrence.id;
 
       case AiIsolateComponentStep():
-        final targetId = _resolveOccurrenceId(step.occurrenceId);
+        final targetId = _resolveOccurrenceId(step.occurrenceId, ids);
         final siblings = await documentApi.listOccurrences(partId);
         for (final occurrence in siblings) {
           if (occurrence.hidden == (occurrence.id != targetId)) continue;
@@ -809,7 +874,7 @@ class PlanTranslator {
       case AiPatternComponentStep():
         final pattern = await documentApi.createComponentPattern(
           partId,
-          sourceOccurrenceIds: [for (final s in step.sourceOccurrenceIds) _resolveOccurrenceId(s)],
+          sourceOccurrenceIds: [for (final s in step.sourceOccurrenceIds) _resolveOccurrenceId(s, ids)],
           patternType: step.patternType,
           direction: step.direction,
           count: step.count,
@@ -844,8 +909,13 @@ class PlanTranslator {
   /// placeholder `index` the LLM's own request happened to include, not a
   /// real one - `subshape_ref.body_id`/`shape_type` are still trusted
   /// as-is either way, since only `index` ever needed resolving).
-  MateEntityRefDto _mateEntityRefDto(AiMateEntityRefStep step, SubShapeRefDto? resolvedSubshapeRef) => MateEntityRefDto(
-        occurrenceId: _resolveOccurrenceId(step.occurrenceId),
+  MateEntityRefDto _mateEntityRefDto(
+    AiMateEntityRefStep step,
+    SubShapeRefDto? resolvedSubshapeRef,
+    Map<String, String> ids,
+  ) =>
+      MateEntityRefDto(
+        occurrenceId: _resolveOccurrenceId(step.occurrenceId, ids),
         subshapeRef: resolvedSubshapeRef ??
             (step.subshapeRef == null
                 ? null

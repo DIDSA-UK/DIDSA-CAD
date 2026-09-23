@@ -135,7 +135,11 @@ void main() {
   test('the permanent-limitations text no longer flatly claims there is no multi-Part assembly support', () {
     final prompt = buildAiScopingSystemPrompt();
     expect(prompt, isNot(contains('no multi-Part assembly')));
-    expect(prompt, contains('cannot place a brand-new component'));
+    // Assembly support Phase 18 (`docs/assembly-scope.md` §6 [2]): the
+    // "cannot place a brand-new component" claim is no longer true -
+    // add_component now can, via the `'assembly'` tool group's own
+    // vocabulary text (only present when that group is enabled).
+    expect(prompt, contains('You CAN place a brand-new component'));
   });
 
   test('an existingPartSummary still appends the block even under a custom assistant-instructions override', () {

@@ -472,15 +472,45 @@ class MoveBodyStep(BaseModel):
     make_copy: bool = False
 
 
+class AddComponentStep(BaseModel):
+    """Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`): the
+    first `PlanStep` kind that places a brand-new Occurrence rather than
+    only ever referencing one a human already placed by hand. Mirrors
+    `add_component.dart`'s own `mergeComponentIntoDocument` shape - the real
+    insertion this validator's dry run never performs itself, since this
+    backend is stateless (`docs/assembly-scope.md` decision #6: no
+    filesystem/SAF access at all) and can never open `relative_path` to
+    discover the real target Part's geometry. `relative_path` is stored
+    verbatim into the resulting scratch Occurrence's own `external_ref`
+    (never parsed/validated against a real file beyond a bare non-empty
+    check) - the client's own real execution (`PlanTranslator`) resolves it
+    for real against `StorageService`/`ProjectRoot` and fails with a clear
+    error if it doesn't exist, exactly like a human-picked "Insert Existing
+    Component" file. `name_override`, if given, becomes the new Occurrence's
+    own `name_override` verbatim.
+
+    A later `mate`/`move_component`/`hide_component`/`isolate_component`/
+    `pattern_component` step may reference this step's own `local_id`
+    directly (bare, no `existing:` prefix) as an occurrence reference - see
+    `_PlanValidator._lookup_occurrence`'s own widened docstring for the
+    exact resolution rule."""
+
+    local_id: str
+    kind: Literal["add_component"] = "add_component"
+    relative_path: str
+    name_override: str | None = None
+
+
 class MateEntityRefStep(BaseModel):
     """Mirrors `MateEntityRefResponse` (`app.document.schemas`) - one side of
     a `MateStep`. `occurrence_id` is either `""` (this Part's own root
     content, the same convention `_validate_mate_entity_ref` already allows
-    for a real Mate) or `existing:<occurrence_id>`, naming a real Occurrence
-    already on the Part being edited - never a plan-local id, since no
-    `PlanStep` kind creates an Occurrence yet (`docs/assembly-scope.md` §3
-    item 8's own note on `add_component` staying out of this phase; see
-    `MateStep`'s own docstring). `subshape_ref`/`plane_ref`/`point_ref` are
+    for a real Mate), `existing:<occurrence_id>` (a real Occurrence already
+    on the Part being edited), or a bare plan-local `local_id` naming an
+    `AddComponentStep` earlier in this same plan (Phase 18, `docs/assembly-
+    scope.md` §6 `[2]`) - never any other step kind's `local_id`, see
+    `_PlanValidator._lookup_occurrence`'s own docstring for the exact
+    resolution rule. `subshape_ref`/`plane_ref`/`point_ref` are
     reused verbatim from the real schema and are always literal, already-real
     refs into that Occurrence's own resolved target Part's geometry - never a
     plan-local id either, since that Part's Bodies aren't built by this plan
@@ -517,13 +547,11 @@ class MateEntityRefStep(BaseModel):
 class MateStep(BaseModel):
     """Assembly support Phase 8 (`docs/assembly-scope.md` §2k): mirrors
     `MateCreate` (`app.document.schemas`) - creates a Mate between two
-    already-placed Occurrences on the Part being edited. Scoped to
-    *existing* Occurrences only (`MateEntityRefStep.occurrence_id`'s own
-    docstring) - this phase adds no way for a plan to place a brand-new
-    Occurrence of its own (`add_component`'s own client-side file-discovery
-    gap, `docs/assembly-scope.md` §3 item 8), so every Mate a plan authors
-    necessarily references components a human already placed by hand before
-    asking the AI to mate/move/hide/isolate them."""
+    Occurrences on the Part being edited. Each reference may name an
+    already-placed Occurrence (`existing:<id>`) or a bare `local_id` naming
+    an `AddComponentStep` earlier in this same plan (Phase 18, `docs/
+    assembly-scope.md` §6 `[2]`) - see `MateEntityRefStep.occurrence_id`'s
+    own docstring."""
 
     local_id: str
     kind: Literal["mate"] = "mate"
@@ -544,8 +572,9 @@ class MoveComponentStep(BaseModel):
     derived axis the way a Body's own rotation is, and there is no "make a
     copy" concept for a component (patterning is `pattern_component`'s own,
     separately-scoped concern - see that item's note in §3). `occurrence_id`
-    is `existing:<occurrence_id>` only - see `MateEntityRefStep`'s own
-    docstring for why no plan-local Occurrence id can exist yet."""
+    is `existing:<occurrence_id>` or a bare `AddComponentStep` `local_id`
+    from earlier in this same plan (Phase 18) - see `MateEntityRefStep`'s
+    own docstring."""
 
     local_id: str
     kind: Literal["move_component"] = "move_component"
@@ -589,17 +618,19 @@ class PatternComponentStep(BaseModel):
     `ComponentPatternCreate` (`app.document.schemas`) directly - creates a
     `ComponentPattern` repeating one or more already-placed Occurrences.
 
-    `source_occurrence_ids` entries are `existing:<occurrence_id>` only -
-    the same convention `MateEntityRefStep.occurrence_id`/
-    `MoveComponentStep.occurrence_id` already use, for the identical reason
-    (`MateEntityRefStep`'s own docstring): no `PlanStep` kind produces a
-    brand-new Occurrence yet (`add_component`'s own still-open gap,
-    `docs/assembly-scope.md` §6 `[2]`, unchanged by this phase). This closes
-    only the *achievable* half of the original deferred note below - a plan
-    can now pattern an Occurrence a human already placed by hand, just not
-    one this same plan placed itself; the full version (`[1]`'s remaining
-    half, accepting a plan-local `local_id` too) waits on `add_component`
-    landing first, per Phase 19's own roadmap entry.
+    `source_occurrence_ids` entries are `existing:<occurrence_id>` or a bare
+    `local_id` naming an `AddComponentStep` earlier in this same plan
+    (Phase 18, `docs/assembly-scope.md` §6 `[2]`, landed) - the same
+    convention `MateEntityRefStep.occurrence_id` uses.
+    `_PlanValidator._lookup_occurrence`'s own widening (Phase 18) covers
+    this handler transparently - `_handle_pattern_component` itself needed
+    no change at all, since it already resolves every entry through that
+    same generic lookup. This closes only the *achievable* half of the
+    original deferred note below - a plan can pattern an Occurrence a human
+    already placed by hand, or one an earlier `add_component` step in the
+    same plan just placed; Phase 19's own remaining scope is the client-side
+    prompt/vocabulary wording and end-to-end testing of this exact
+    combination, not new validator logic here.
 
     Former deferred-scope note, restated for why this was ever left out in
     the first place: every Occurrence a plan *can* reference (via
@@ -661,6 +692,7 @@ PlanStep = Annotated[
         DeleteBodyStep,
         ScaleBodyStep,
         MoveBodyStep,
+        AddComponentStep,
         MateStep,
         MoveComponentStep,
         HideComponentStep,

@@ -248,4 +248,16 @@ void main() {
     expect(summary[1], contains('existing:occ-b'));
     expect(summary[1], contains('existing:occ-c'));
   });
+
+  test('add_component summary shows its relative_path', () {
+    final plan = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {'local_id': 'ac1', 'kind': 'add_component', 'relative_path': 'parts/bracket.DIDSAprt'},
+      ],
+    });
+    final summary = summarizeAiPlan(plan);
+    expect(summary.single, contains('Add Component'));
+    expect(summary.single, contains('parts/bracket.DIDSAprt'));
+  });
 }

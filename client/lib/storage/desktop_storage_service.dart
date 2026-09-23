@@ -90,6 +90,28 @@ class DesktopStorageService implements StorageService {
     return File(desktopHandle.path).exists();
   }
 
+  @override
+  Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) async {
+    final desktopRoot = _requireDesktopRoot(root);
+    final rootDir = Directory(desktopRoot.path);
+    if (!await rootDir.exists()) {
+      throw StorageException('Project root does not exist: ${desktopRoot.path}');
+    }
+    final result = <String>[];
+    try {
+      await for (final entity in rootDir.list(recursive: true, followLinks: false)) {
+        if (entity is! File) continue;
+        final relative = p.relative(entity.path, from: desktopRoot.path).replaceAll(p.separator, '/');
+        if (extensionFilter != null && !relative.toLowerCase().endsWith(extensionFilter.toLowerCase())) continue;
+        result.add(relative);
+      }
+    } on IOException {
+      // Root was confirmed reachable above; a mid-walk error is a subtree
+      // permission hiccup - return whatever was already collected.
+    }
+    return result;
+  }
+
   String _fullPath(DesktopProjectRoot root, String relativePath) => p.join(root.path, relativePath);
 
   DesktopProjectRoot _requireDesktopRoot(ProjectRoot root) {

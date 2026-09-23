@@ -13,7 +13,10 @@ import 'package:speech_to_text/speech_to_text.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../gear/gear_preset_store.dart';
+import '../storage/project_root.dart';
+import '../storage/storage_service.dart';
 import '../viewport3d/part_screen.dart';
+import 'ai_component_file_summary.dart';
 import 'ai_existing_part_summary.dart';
 import 'ai_plan.dart';
 import 'ai_plan_detection.dart';
@@ -113,7 +116,27 @@ class AiModellingScreen extends StatefulWidget {
   /// sets this.
   final String? existingPartId;
 
-  const AiModellingScreen({super.key, this.provider, this.documentApi, this.sketchApi, this.existingPartId});
+  /// Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`): both
+  /// nullable - only needed for an `add_component` step to have anything to
+  /// insert. `PartScreen`'s "Continue with AI" call site passes whatever it
+  /// currently holds (possibly null); `ToolChooserScreen`'s fresh-Part entry
+  /// point never sets either, since there is no `PartScreen` session yet to
+  /// source a project root from - a deliberate, disclosed scope limit, not
+  /// an oversight (see `PlanTranslator.storageService`/`.projectRoot`'s own
+  /// doc comment for what happens if an `add_component` step is executed
+  /// with neither available).
+  final StorageService? storageService;
+  final ProjectRoot? projectRoot;
+
+  const AiModellingScreen({
+    super.key,
+    this.provider,
+    this.documentApi,
+    this.sketchApi,
+    this.existingPartId,
+    this.storageService,
+    this.projectRoot,
+  });
 
   @override
   State<AiModellingScreen> createState() => _AiModellingScreenState();
@@ -230,6 +253,33 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // rather than blocking the rest of the existing-Part context.
   String _existingOccurrencesSummary = '';
 
+  // Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`): the
+  // "Available Component Files" prompt section's own content - fetched once
+  // in `initState` (independent of `widget.existingPartId`/`_activePartId`,
+  // unlike `_existingFeatures`/`_existingOccurrencesSummary` above: files on
+  // disk don't change the way this Part's own Features/Occurrences do over
+  // the course of a conversation, so there's no need to refresh it on every
+  // stop/Generate the way that context is). `''` (the default) when neither
+  // `widget.storageService` nor `widget.projectRoot` is set, or the fetch
+  // fails - no "Available Component Files" section is appended, and
+  // `assemblyVocabularyText` tells the LLM to say so rather than invent a
+  // path.
+  String _availableComponentFilesSummary = '';
+
+  Future<void> _refreshAvailableComponentFiles() async {
+    final storage = widget.storageService;
+    final root = widget.projectRoot;
+    if (storage == null || root == null) return;
+    try {
+      final summary = await summarizeAvailableComponentFilesForPrompt(storage, root);
+      if (!mounted) return;
+      setState(() => _availableComponentFilesSummary = summary);
+    } catch (_) {
+      // Best-effort, same degrade as `_refreshExistingPartContext`'s own
+      // occurrences fetch.
+    }
+  }
+
   // Bug fix: a stopped run's own chat message (`_appendStoppedRunToTranscript`)
   // has always told the LLM "every step before this one was created
   // successfully and is still in the Part... propose a revised plan for the
@@ -335,6 +385,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _checkProviderConfigured());
     if (widget.existingPartId != null) _refreshExistingPartContext(widget.existingPartId!);
+    _refreshAvailableComponentFiles();
   }
 
   Future<void> _checkProviderConfigured() async {
@@ -443,6 +494,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
         existingPartSummary: _existingPartSummary,
         existingOccurrencesSummary: _existingOccurrencesSummary,
+        availableComponentFilesSummary: _availableComponentFilesSummary,
       );
       final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
       final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
@@ -711,7 +763,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         final part = await _documentApi.createPart('AI Modelling Part');
         partId = part.id;
       }
-      final translator = PlanTranslator(documentApi: _documentApi, sketchApi: _sketchApi);
+      final translator = PlanTranslator(
+        documentApi: _documentApi,
+        sketchApi: _sketchApi,
+        storageService: widget.storageService,
+        projectRoot: widget.projectRoot,
+      );
       final result = await translator.execute(
         plan: plan,
         partId: partId,
@@ -974,6 +1031,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
       existingPartSummary: _existingPartSummary,
       existingOccurrencesSummary: _existingOccurrencesSummary,
+      availableComponentFilesSummary: _availableComponentFilesSummary,
     );
     final package = buildExternalHandoffPackage(systemPrompt: systemPrompt, transcript: _transcript);
     if (!mounted) return;
