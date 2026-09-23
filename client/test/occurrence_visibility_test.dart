@@ -215,6 +215,31 @@ void main() {
     });
   });
 
+  // Assembly support Phase 20 Stage 2 (`docs/assembly-scope.md` §6 `[24]`):
+  // made public (was `_pathEquals`, a private helper of this file alone)
+  // so `PartViewportState._syncAssemblyInstanceNodes`/
+  // `_selectableOccurrencePaths` can reuse the same exact-match logic
+  // rather than re-deriving it - direct coverage now that it's real public
+  // API, on top of the indirect coverage it already gets via
+  // [isDirectChildOfFocus]/[findInstanceAtPath] above.
+  group('pathEquals', () {
+    test('two empty paths are equal', () {
+      expect(pathEquals(const [], const []), isTrue);
+    });
+
+    test('identical non-empty paths are equal', () {
+      expect(pathEquals(const ['a', 'b'], const ['a', 'b']), isTrue);
+    });
+
+    test('different lengths are never equal', () {
+      expect(pathEquals(const ['a'], const ['a', 'b']), isFalse);
+    });
+
+    test('same length but a differing segment is not equal', () {
+      expect(pathEquals(const ['a', 'x'], const ['a', 'b']), isFalse);
+    });
+  });
+
   // Assembly support Phase 12: the exact-path lookup PartScreen's own
   // nested live-drag overlay needs to find the focused sub-assembly's own
   // current placed instance.

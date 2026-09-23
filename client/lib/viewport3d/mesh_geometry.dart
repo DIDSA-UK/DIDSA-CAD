@@ -892,6 +892,36 @@ RigidTransformDto localRigidTransformRelativeTo(RigidTransformDto parent, RigidT
   return _rigidTransformFromMatrix4(inverseParent * matrix4FromRigidTransform(world));
 }
 
+/// Assembly support Phase 20 Stage 2 (`docs/assembly-scope.md` §6 `[24]`):
+/// [worldRay] re-expressed in the local frame [worldTransform] places its
+/// own content at - `PartViewportState._toLocalRay`'s own pure math,
+/// extracted here (mirroring [composeRigidTransforms]/
+/// [localRigidTransformRelativeTo]'s own precedent of keeping transform
+/// math testable in this file rather than buried in the widget) so it has
+/// direct unit-test coverage independent of any GPU/widget context.
+///
+/// [worldRay.origin] is a point - transformed by the *full* inverse
+/// (rotation and translation). [worldRay.direction] is a direction -
+/// transformed by the inverse's rotation component only
+/// ([vm.Matrix4.rotated3]); translating a direction vector is meaningless.
+///
+/// Correctness property this function relies on, and that its own tests
+/// verify directly: [worldTransform] (built by [matrix4FromRigidTransform]
+/// from a `RigidTransform`, `docs/assembly-scope.md` §1) is always a pure
+/// rotation+translation, never a scale - its inverse is therefore also a
+/// rigid isometry, so `localRayFromWorldRay(t, worldRay).at(s)` and
+/// `worldRay.at(s)` name the same physical point (in their own respective
+/// frames) for any shared parameter `s`. This is what lets a hit-test
+/// `rayT` computed against the *local* ray this returns stay directly
+/// comparable to one computed against the original *world* ray - no
+/// renormalization needed between a local-space candidate (a Body face)
+/// and a world-space one (a fixed reference plane) competing in the same
+/// `reduce`-by-`rayT` loop.
+vm.Ray localRayFromWorldRay(vm.Matrix4 worldTransform, vm.Ray worldRay) {
+  final inverse = worldTransform.clone()..invert();
+  return vm.Ray.originDirection(inverse.transformed3(worldRay.origin), inverse.rotated3(worldRay.direction));
+}
+
 RigidTransformDto _rigidTransformFromMatrix4(vm.Matrix4 matrix) {
   final translation = vm.Vector3.zero();
   final rotation = vm.Quaternion.identity();

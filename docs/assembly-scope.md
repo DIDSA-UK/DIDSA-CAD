@@ -360,11 +360,14 @@ applied to third-party plugin classes. `FileCache` and
 passing; the full client suite was rerun afterward to confirm no
 regressions.
 
-**Known gap, not built**: iOS has no SAF equivalent implemented yet - it
-needs its own security-scoped-bookmark mechanism
-(`UIDocumentPickerViewController` + persisted bookmarks), currently just
-silently falls back to the desktop implementation via
-`createStorageService()`, which will not work on a real iOS sandbox.
+**~~Known gap, not built~~: ~~iOS has no SAF equivalent implemented yet~~**
+- **fixed, Phase 17 (§2u)**: `IosStorageService` (a hand-written native
+Swift channel, `UIDocumentPickerViewController` + persisted
+security-scoped bookmarks) closes this, with one disclosed caveat -
+nothing native could be built or run in the sandbox that implemented it,
+so a human with a real Mac + Xcode still needs to verify the actual
+on-device bookmark-persistence behavior. See §2u's own "Verified" section
+for the exact remaining steps.
 
 ---
 
@@ -2943,6 +2946,394 @@ other Known v1 limitation/appendix item is unchanged.
 
 ---
 
+## 2u. Phase 17 — iOS Storage Access Framework equivalent (implemented)
+
+§6 roadmap's own Phase 17 entry: closes gap `[20]` - iOS previously fell
+back silently to `DesktopStorageService` (plain `dart:io` file I/O), which
+cannot work in a real iOS sandbox (no scoped-storage handling, no persisted
+access across relaunches). Investigated directly against the actual code
+before writing anything: the `StorageService` interface (`client/lib/
+storage/storage_service.dart`) already has 8 methods including `listFiles`
+(Phase 18, §2t) - confirmed by reading the file, not assumed from this
+document's own §2b prose, which still only lists the original 6 and was
+stale relative to the code even before this phase (a discrepancy this
+phase's own work surfaced and is noted here rather than silently
+corrected out of the historical record).
+
+### The package survey Phase 1 itself modeled
+
+Read `docs/assembly-scope.md` §2b's own account of Phase 1's `saf_util`/
+`saf_stream`-vs-`shared_storage` comparison before choosing anything here,
+per that section's own precedent. A live pub.dev search found no actively-
+maintained package for this today: `file_picker_writable` (the closest
+match - iOS secure bookmarks *and* Android SAF in one package) last
+published roughly three years ago with 14 likes and no confirmed Dart-3
+compatibility; `directory_bookmarks` doesn't support iOS yet (macOS-only
+at the time of the search); `macos_secure_bookmarks` is macOS-only by
+name and design. Rather than depend on a stale, low-adoption third party,
+this phase hand-writes the native Swift channel directly in this repo -
+mirroring `SafStorageService`'s own shape (a thin platform wrapper this
+codebase already depends on), not a new kind of risk for this app.
+
+### Dart side
+
+`IosProjectRoot`/`IosFileHandle` (`client/lib/storage/project_root.dart`/
+`file_handle.dart`) - new sealed-class variants alongside the existing
+`DesktopProjectRoot`/`SafProjectRoot` pair. Only the **root folder**
+carries a persisted bookmark (`bookmarkBase64`) - a resolved file's own
+path is a live-session convenience only, mirroring `SafFileHandle`'s
+identical "URI is session-only, `relativePath` is the portable identity"
+contract exactly; iOS's own folder-grant model doesn't produce per-file
+bookmarks anyway, so bookmarking only the root and resolving every file
+underneath it via `relativePath` is both simpler and matches the platform.
+
+`IosBookmarkChannel` (new, `ios_bookmark_channel.dart`) - an injectable
+wrapper around `MethodChannel('uk.snail_shell.didsa_cad_client/ios_storage')`
+(matching this app's existing channel-naming convention, e.g. the Termux
+channel), every method non-`final` so a test can subclass and override it
+- the same "inject the real dependency, fake it for tests" convention
+`SafUtil`/`SafStream` already establish for `SafStorageService`.
+
+`IosStorageService implements StorageService` (new,
+`ios_storage_service.dart`) - mirrors `SafStorageService`'s own structure:
+`_requireIosRoot`/`_requireIosHandle` type guards, every file-touching
+method resolving the root's bookmark to a path first
+(`_withRootAccess`), bracketing the actual native call so the security
+scope is never held open longer than one action, wrapping failures as
+`StorageException`. `lastUsedProjectRoot()` re-validates the persisted
+bookmark (both a failed *and* a stale resolve read as `null`, prompting a
+fresh pick), the same "don't trust a cached success" contract
+`SafStorageService` already has. `listFiles` throws only when the root
+itself can't be resolved; a mid-walk subtree failure is handled
+native-side (best-effort), matching `StorageService.listFiles`'s own
+documented contract. `storage_service_factory.dart` gains one line:
+`if (Platform.isIOS) return IosStorageService();`.
+
+### Native side
+
+`IosStoragePlugin.swift` (new, `client/ios/Runner/`) - the
+`FlutterMethodChannel` handler: `UIDocumentPickerViewController
+(forOpeningContentTypes: [.folder])` for folder picking (the modern,
+`UTType`-based initializer - `IPHONEOS_DEPLOYMENT_TARGET` bumped
+`12.0` → `14.0` in `Runner.xcodeproj/project.pbxproj`, since that
+initializer needs iOS 14+ and the deprecated pre-14 one wasn't worth
+carrying for a brand-new feature). Bookmark creation/resolution uses the
+plain, option-less form - `url.bookmarkData(options: [], ...)` /
+`URL(resolvingBookmarkData:options: [], ...)` - a real correction to the
+initial assumption that `.withSecurityScope` would be needed: that option
+is **macOS-only** and doesn't exist on iOS at all, confirmed by checking
+the actual platform API rather than porting the macOS idiom blind.
+`start`/`stopAccessingSecurityScopedResource()` are still required and
+bracket every access, ref-counted per resolved root path so concurrent
+calls sharing one root don't prematurely close the scope. Recursive
+listing via `FileManager.enumerator(at:includingPropertiesForKeys:
+errorHandler:)`, files only, POSIX-relative paths, best-effort on a
+subtree error. `AppDelegate.swift` registers the plugin against the root
+`FlutterViewController` inside `application(_:didFinishLaunchingWithOptions:)`,
+alongside the existing `GeneratedPluginRegistrant.register` call - a net
+addition to what was a 13-line stub, no conflict. **No entitlements or
+`Info.plist` changes were needed** - iOS has no App Sandbox concept at
+all (that's macOS-specific), and a plain folder picker needs no UTI/
+document-type declaration.
+
+### Verified
+
+`flutter analyze` clean. `client/test/ios_storage_service_test.dart`
+(new) - a `_FakeIosBookmarkChannel extends IosBookmarkChannel` backed by
+an in-memory file tree + bookmark→path map (the same fake-subclass
+convention `saf_storage_service_test.dart` already uses for `SafUtil`/
+`SafStream`), covering write/read (including overwrite-preserves-identity),
+resolve, exists/lastModified, `lastUsedProjectRoot` (valid and stale-
+bookmark cases), `listFiles` (recursive/extension-filter/unreachable-root/
+empty-tree), and the cross-implementation type-safety guard - 18 new
+tests, all passing. Full client suite - **2142/2142 passed** (14
+GPU-skips, unchanged baseline).
+
+**Real, disclosed limitation, not glossed over**: this sandbox has no
+iOS toolchain at all (Linux host, no Xcode, no CocoaPods) - stricter than
+every prior phase's own "no GPU/device but at least `flutter analyze`
+fully typechecks it" situation, since nothing native can be compiled,
+linked, or run here either. Only the Dart-side logic against the fake
+channel is genuinely verified in this session. Before this phase can be
+called truly done, a human with a real Mac + Xcode needs to: `cd
+client/ios && pod install` (no `Podfile` existed before this work - may
+turn out unnecessary for a hand-written channel using only `UIKit`/
+`Foundation`, worth confirming early); build and run on a real device or
+simulator, grant a real folder through the picker; kill and relaunch the
+app, confirm `lastUsedProjectRoot()` resolves the persisted bookmark
+without re-prompting (the entire point of this phase); and exercise
+write/read/list for real, including a folder moved/renamed on-device
+between launches, to confirm the stale-bookmark fallback path actually
+re-prompts rather than misbehaving silently.
+
+---
+
+## 2v. Phase 20 — In-context Feature editing (implemented)
+
+§6 roadmap's own Phase 20 entry: closes gap `[24]` (§5 item 10) - "Make
+Focus" previously only ever scoped the Assembly-lens tree/gizmo/mate/
+pattern; every Part-lens Feature-authoring call, the Feature tree fetch,
+and every mesh re-fetch stayed hardcoded to the root Part regardless of
+focus, so a user could browse into a sub-component but never actually
+create or edit a Feature on it. Investigated directly against the code
+before scoping anything, per this document's own convention - the doc's
+own "~30 call sites" estimate undercounted the real mechanical surface
+(108 create/update/delete Feature calls, not ~30; doesn't change the
+nature of the fix, but affects effort sizing for a future reader).
+
+User-confirmed scope, ahead of any code: **true in-context editing** -
+the focused Part's own Bodies render and are pickable at their real
+assembly-composed world transform, not a simplified "swap the data
+source and hide the rest of the assembly" version (§6's own Phase 20
+entry had left this as an open design question; both options were put to
+the user, who chose the larger, closer-to-the-original-brief one).
+Sequenced in four stages, each independently verified.
+
+### Stage 1 — state scoping, `focusPartId` routing, transform-aware rendering
+
+`_hiddenFeatureIds`/`_rollbackExcludedFeatureIds` (`part_screen.dart`)
+become `Map<String, Set<String>>`-backed getters keyed by a new
+`_focusPartId`/`_focusPartIdOrNull` pair (mirroring the `focusPartId =
+_focusStack?.current ?? _part?.id` idiom Phase 5/8/12 already
+established for Assembly-lens work) - zero call-site churn at any of
+their many existing `.add`/`.contains`/`.toList()` sites, since a
+getter/setter can stand in for a plain field of the same name in Dart.
+`_sectionPlanes` becomes a matching `Map`-backed getter/setter pair (it's
+always wholesale-reassigned, never mutated in place, so it needs both
+halves). The nullable `_focusPartIdOrNull` variant exists because `build()`
+itself reads `_sectionPlanes` on the very first frame, before
+`_loadPart()`'s async work has set `_part` - a real crash
+(`Null check operator used on a null value`) the full regression suite
+caught, not merely anticipated; fixed with a safe empty fallback for the
+handful of read sites that can genuinely run before a Part exists, while
+every *mutating* call site (which can only ever fire from a Feature-
+editing callback, impossible before a Part - and hence Features - exist)
+keeps using the non-nullable `_focusPartId`. Persistence (the native
+export/import round trip) stays scoped to the **root Part only**, by
+deliberate design - a focused sub-Part's transient hidden/rollback/
+section state accumulated only this session is not carried across a
+save; a new multi-Part export schema is a separate, smaller follow-up,
+not core to this phase's own goal.
+
+116 `part.id` → `_focusPartId` call sites (Feature create/update/delete,
+`listFeatures`, `getPartMesh`, the coarse-overlay refresh helper) -
+confirmed genuinely mechanical, the identical shape the already-correct
+~15 Assembly-lens call sites already used.
+
+A real gap found while testing this stage, not merely assumed fixed:
+Make Focus/Exit Focus (`_onOccurrenceLongPress`'s `makeFocus`/`exitFocus`
+cases, `_exitAssemblyFocus`) previously only ever called
+`_refreshAssemblyTree` - correct before this phase (nothing else depended
+on focus), but meant `_features`/`_bodies` would keep showing whichever
+Part was focused *before* the push/pop until some unrelated refresh
+happened to fire. New `_refreshFocusTargetContent` (tree, then mesh, then
+features, then sketches - mirroring `_loadPart`'s own sequencing) is
+called from both, closing this.
+
+`PartViewport` gains `focusWorldTransformMatrix` (identity when
+unfocused or focused exactly at the root - zero behavior change for
+every existing non-assembly scenario). `_syncMeshNode`/
+`_syncTransientPreviewNodes`/`_syncCreatePlaneNodes` place their own
+Nodes at it instead of always identity, since `widget.bodies` now
+correctly holds the focused Part's own geometry (Stage 1's own id-swap
+above). The old Phase 4 opacity-dimming rule for this content
+(`effectiveBodyOpacity`) is removed - it dimmed "the root's own content,
+now merely context," a meaning that no longer holds once this content is
+always the live edit target; `focusWorldTransformMatrix` is what now
+shows *where* it sits, opacity was never the right signal for that.
+`_syncAssemblyInstanceNodes` skips the exact focused Occurrence's own
+placed instance (now covered by the transform-aware path instead),
+mirroring the pre-existing root-content skip.
+
+**Verified**: `flutter analyze` clean; full client suite **2143/2143
+passed** (up from 2142; 14 GPU-skips unchanged), including a new
+end-to-end test (`part_screen_test.dart`, a new `_FakeDocumentBackend`
+route pair - `meshRequestsByPartId`/`featuresGetRequestsByPartId`,
+additive, never touching the existing `part-1`-only routes) proving Make
+Focus/Exit Focus correctly re-route mesh/feature fetches to the focused
+Part and back, not merely that the code compiles.
+
+### Stage 2 — ray-transform hit-testing
+
+Stage 1 alone left picking wrong: geometry rendered in the right place,
+but tapping in the viewport still hit untransformed (identity-space)
+geometry. Traced every ray-construction site in `part_viewport.dart` (13
+total) before touching any of them: 4 are gizmo/section-drag sites
+already correct (already routed through world-space transforms since
+Phase 5/12); the remaining ~10 (`_handleTap`, `_recomputeHover`,
+`_hasEntityNearScreenPoint`, `_endMarquee`, `_fireSelectOther`,
+`_handleDrawCursorMove` ×2, `_recomputeDrawCursor`, `_commitDrawCursor`)
+all feed the camera ray into Body/sketch-plane/created-Plane hit-tests -
+Part-local geometry, unaffected by focus in its own frame.
+
+New `localRayFromWorldRay(worldTransform, worldRay)`
+(`mesh_geometry.dart`, mirroring `composeRigidTransforms`/
+`localRigidTransformRelativeTo`'s own precedent of keeping transform
+math testable in that file rather than buried in the widget) - the
+inverse of a world transform applied to a ray (full inverse for the
+origin point, rotation-only component for the direction vector).
+`PartViewportState._toLocalRay` wraps it using
+`focusWorldTransformMatrix`. Wired into every Body/sketch-plane/created-
+Plane hit-test call site; `hitTestReferencePlanes` (the three fixed
+planes, never Part-owned) and every placed-Occurrence-instance hit-test
+(`hitTestComponentInstances`/`hitTestComponentInstanceEntities`, already
+world-space per-instance) stay on the plain world ray - confirmed by
+reading each call site's own consumer, not assumed. `_hoverHitTestPlanes`
+widened to take both rays (reference-plane vs. created-plane hit-testing
+needs different ones).
+
+Correctness property this whole stage leans on, verified directly rather
+than only argued in a comment: `RigidTransform` (§1) is rotation+
+translation only, never a scale, so its inverse is a rigid isometry - a
+local-ray `rayT` stays numerically comparable to the same physical
+point's world-ray `rayT`, which is what lets `_recomputeHover`'s "compete
+candidates by `rayT`" logic (and `_handleTap`'s own `ray.at(faceHit.rayT)`
+world-position conversion after a local-ray hit) mix local- and
+world-space candidates with no renormalization. `localRayFromWorldRay`
+gets 4 direct unit tests in `mesh_geometry_test.dart` proving exactly
+this (identity, pure translation, a 90° rotation, and the `rayT`-
+invariance property against a known non-axis-aligned transform).
+
+A second real gap found while wiring this, not the ray routing itself:
+`_selectableOccurrencePaths()` still counted the exact focused
+Occurrence's own placed instance as a selectable whole-component target
+- stale the instant Stage 1 suppressed its rendering (its geometry is
+what the new local-ray Body hit-test now picks up instead, so leaving it
+"selectable" too would have offered a second, invisible, stale hit
+target competing with the real one). Excluded via `pathEquals`
+(`occurrence_visibility.dart`'s own `_pathEquals` made public for this
+reuse), mirroring the identical exact-match exclusion the render-skip
+already applies. A nested child instance one level deeper is unaffected
+- still a real, separately-rendered sub-component.
+
+**Known gap found but deliberately not fixed in this stage** (flagged
+for the per-tool pass, not silently left undiscovered):
+`sketch_constraint_overlay.dart`'s screen-projection helpers
+(`constraintOverlayItemLabelCenter`/`constraintOverlayItemAt`) project a
+Sketch's local-frame geometry straight to screen space via
+`worldToScreen` with no focus-transform composition at all - closed in
+Stage 4 for the sketch geometry/highlight rendering itself, but the
+constraint-overlay's own dimension/label painters and hit-testing, the
+orientation indicator, and Draw-mode's own dimension-drag screen-space
+precision calculations remain open (see Stage 4's own "known gap" below
+for the final, narrower scope of what's left).
+
+**Verified**: `flutter analyze` clean; full client suite **2147/2147
+passed** (up from 2143; 4 new `mesh_geometry_test.dart` tests).
+
+### Stage 3 — per-tool verification (Fillet/Chamfer/Mirror/Pattern)
+
+Confirmed, not assumed, that Stage 2 already covers every Feature tool:
+`part_screen.dart` never constructs a ray or calls a `hitTest*` function
+itself anywhere in its ~21,000 lines (confirmed by grep) - every tool
+consumes picking results purely via shared callbacks
+(`onSelectionToggle`, `onSketchEntityTap`, `onFaceTap`, etc.) and shared
+selection state, never its own raycast. A second sweep specifically for
+Fillet/Chamfer/Mirror/Pattern's own additional screen-projection logic
+(the same class of gap Stage 2 flagged for the constraint overlay) found
+none - the `worldToScreen` call sites across every `viewport3d/*.dart`
+file were enumerated directly, and none belong to these four tools
+specifically. All 139 tests across `chamfer_panel_test.dart`/
+`component_pattern_panel_test.dart`/`fillet_panel_test.dart`/
+`mirror_panel_test.dart`/`pattern_panel_test.dart`/
+`sketch_screen_pattern_bar_test.dart`/
+`sketch_screen_pattern_mirror_3d_selection_test.dart` pass unchanged.
+
+### Stage 4 — appendix item 2/`[17]` + rendering-alignment gaps this sweep exposed
+
+**Appendix item 2/`[17]` ("root Part's own Bodies stay selectable
+regardless of focus") is closed as a structural consequence of Stage 1's
+own data-source change, verified directly**: `_refreshMesh` now fetches
+whichever Part `_focusPartId` names, so `widget.bodies` no longer
+contains the root's own geometry at all once something else is focused -
+there is no remaining code path where the root's own Bodies could be
+hit-tested or selected while focused elsewhere, since that geometry
+isn't loaded into the viewport in that state to begin with. No new gating
+code was needed; the gap closed itself once its own precondition (the
+root's geometry always being present regardless of focus) stopped being
+true.
+
+That same tracing surfaced a real regression Stage 1 itself introduced,
+fixed here: the root's own local content used to stay visible (dimmed,
+as context) regardless of focus (Phase 4's original rule); Stage 1's
+`_syncMeshNode` change made it vanish **completely** instead once focused
+elsewhere, since the root's own `occurrence_path: []` placed-instance
+entry (always present in the `assembly-mesh` response, per
+`get_assembly_mesh`'s own backend docstring - confirmed by reading
+`backend/app/document/router.py` directly, not assumed) was still
+unconditionally skipped in every instanced-render path
+(`_syncAssemblyInstanceNodes`/`_syncAssemblyInstanceEdgesNode`/
+`_assemblyInstanceBounds`). Now skipped only while nothing is focused
+(when `_syncMeshNode` itself still covers it); once focused, it renders
+through the ordinary instanced path instead and correctly fades to
+`kNonPrimaryAssemblyOpacity` via the existing, unmodified
+`assemblyInstanceOpacity` rule (its own `isOccurrencePathWithinFocus([],
+focusedPath)` check is false for a non-empty focus, exactly the "not the
+focused subtree" case that function already dims).
+
+The spot-check this stage's own roadmap entry called for surfaced four
+further real, silent rendering-misalignment bugs - found by
+systematically tracing every remaining place Part-local geometry gets
+placed or projected without Stage 1's new `focusWorldTransformMatrix`,
+not assumed already covered:
+
+- `_syncEdgesNode`'s wireframe/shaded-with-edges overlay iterated
+  `widget.bodies` but never composed the transform its filled-face
+  sibling (`_syncMeshNode`) already got in Stage 1 - edges would have
+  rendered at identity while faces moved to the real focused position.
+- `_bodyFaceNormal` (used for section-plane placement on a focused
+  Part's own face) returns a purely local-frame direction - needed the
+  transform's rotation component before being paired with the already-
+  world-space tap point, or a new section would anchor facing the wrong
+  way the moment the focused Part was actually rotated.
+- `_bodyAndTransformFor` hardcoded an identity transform for every
+  non-occurrence-tagged entity (every face/edge/vertex/body hover *and*
+  selected-entity highlight) - correct back when that branch always
+  meant "the root's own untransformed geometry," a silent highlight-
+  misalignment bug the instant Stage 1 made it mean "the focused Part's
+  geometry" instead.
+- `_syncSketchNodes` rendered a Sketch's own drawn Line/Circle/Arc
+  geometry at identity - the Sketch itself, not just its highlight,
+  would have floated away from the Bodies it's anchored to.
+
+**Verified**: `flutter analyze` clean; full client suite **2151/2151
+passed** (up from 2147; 4 new `pathEquals` unit tests, made public in
+Stage 2 and now directly tested on top of its existing indirect
+coverage).
+
+### Known gap, deliberately not fixed this phase
+
+`sketch_constraint_overlay.dart`'s dimension/constraint-label painters
+and hit-testing (`constraintOverlayItemLabelCenter`/
+`constraintOverlayItemAt`), `sketch_orientation_indicator.dart`, and
+`part_viewport.dart`'s own Draw-mode dimension-drag screen-space
+precision calculations (`_localPixelsPerSketchUnit` and its own two
+call sites in `_handleDrawCursorMove`) all still project a Sketch's
+local-frame geometry straight to screen space via `worldToScreen` with
+no focus-transform composition. This is a real, disclosed, secondary
+visual-precision issue - a dimension label or the orientation indicator
+would render at the wrong on-screen position while actively sketching on
+a focused sub-Part - **not** a blocker: core Feature-authoring picking
+and geometry/highlight rendering alignment (this phase's own Stages 1-4)
+are unaffected, since none of these are on the hit-test path any Feature
+tool actually commits through. Fixing it needs the same `focusTransform`
+composed onto each of these functions' own local-frame point before
+`worldToScreen`, but several of them (`constraintOverlayItemLabelCenter`
+in particular) are called from both a hit-test and a *painter*, so the
+transform needs plumbing through more signatures than a single-stage
+pass could responsibly absorb - left for its own focused follow-up
+rather than folded in here speculatively.
+
+**No GPU/device in this sandbox** to verify the actual on-screen
+render/highlight/picking feel for any of Phases 20's four stages -
+disclosed, matching this project's own established convention for this
+class of limitation (e.g. Phase 12's own nested-gizmo rendering). Every
+pure-function transform/state-scoping claim above is directly unit-
+tested; the interactive, on-screen result is real, undone follow-up
+verification once a real device is available.
+
+---
+
 ## 3. Phase history (every originally-scoped phase implemented)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
@@ -3005,13 +3396,18 @@ at the same phase it always did.
   same plan produced (§3 item 8).
 - Composed multi-file graph `part_id`s are session-scoped, not persisted
   across app restarts.
-- "Make Focus" never retargets Part-lens Feature editing - toggling to Part
-  lens while focused into a sub-assembly still shows and edits the
+- ~~"Make Focus" never retargets Part-lens Feature editing - toggling to
+  Part lens while focused into a sub-assembly still shows and edits the
   top-level open Part's own Feature tree/geometry, not the focused
-  component's own. The original brief's "make focus to edit a part in the
-  visual context of the assembly" (this document's own opening sentence)
-  was never actually wired up this way - see §5 item 10 for the full
-  finding and §6's own new Phase 20 entry for the fix.
+  component's own.~~ - **fixed, Phase 20 (§2v)**. The original brief's
+  "make focus to edit a part in the visual context of the assembly" (this
+  document's own opening sentence) is now real: Feature-authoring, mesh,
+  rendering, and hit-testing all correctly target whichever Part is
+  focused, at its real assembly-composed world position. One real,
+  disclosed gap remains from that phase - see §2v's own "Known gap,
+  deliberately not fixed this phase" (Sketch constraint-overlay/
+  orientation-indicator screen-projection, a secondary visual-precision
+  issue, not a Feature-authoring blocker).
 
 ## 5. Appendix — scope limits and follow-ups (evaluate after rollout)
 
@@ -3048,15 +3444,20 @@ opening sentence and was simply never wired up by any phase, Phase 3's own
    and re-fetch, so Show genuinely clears a backend-`hidden: true`
    Occurrence (e.g. loaded from a file saved with it hidden), not just this
    session's own override.
-2. **The root Part's own Bodies stay selectable regardless of focus
-   state.** Once a component is focused elsewhere, its opacity correctly
-   fades (`_syncMeshNode`'s `effectiveBodyOpacity`), but the ordinary
-   `hitTestBodies`/feature-editing hit-test path was deliberately left
-   ungated - blocking it would mean touching the one hit-test every
-   Part-lens feature tool in this app already depends on, unconditionally,
-   for a selectability guarantee no bug report has asked for yet. Revisit
-   if real usage shows someone accidentally editing/selecting root-Part
-   geometry while intending to work inside a focused component.
+2. **~~The root Part's own Bodies stay selectable regardless of focus
+   state.~~ - fixed, Phase 20 (§2v, Stage 4), as a structural consequence
+   of that phase's own data-source change, not new gating code.**
+   `_refreshMesh` now fetches whichever Part `_focusPartId` names (Phase
+   20 Stage 1), so `widget.bodies` no longer contains the root's own
+   geometry at all once something else is focused - there's no remaining
+   code path where the root's own Bodies could be hit-tested or selected
+   while focused elsewhere, since that geometry isn't loaded into the
+   viewport in that state to begin with. Tracing this also surfaced (and
+   Stage 4 fixed) a real regression Phase 20's own Stage 1 introduced: the
+   root's own content used to stay visible (dimmed, as context) regardless
+   of focus - Stage 1 made it vanish completely instead, until Stage 4's
+   own fix restored the dimmed-context rendering via the ordinary
+   instanced-render path.
 3. **~~`AssemblyFocusStack` tracks *which Part* is focused, not *which
    Occurrence*~~ - resolved as a side effect of fixing item 4 below.**
    `AssemblyFocusStack.current` (bare Part id, used by `_refreshAssemblyTree`/
@@ -3210,8 +3611,20 @@ opening sentence and was simply never wired up by any phase, Phase 3's own
    shaped fields already all have precedent for in this same phase, and a
    toggle in `ComponentPatternPanel` (Linear has no equivalent ambiguity -
    a translation-only pattern has no orientation question to begin with).
-10. **"Make Focus" never retargets Part-lens Feature editing - only the
-    Assembly-lens tree/gizmo/mate/pattern scope.** Surfaced post-Phase-15
+10. **~~"Make Focus" never retargets Part-lens Feature editing - only the
+    Assembly-lens tree/gizmo/mate/pattern scope.~~ - fixed, Phase 20
+    (§2v).** True in-context Feature editing (the user-confirmed, larger of
+    the two options this item's own "real design questions" left open) -
+    Feature-authoring, mesh-fetch, rendering, and picking all correctly
+    target whichever Part is focused, at its real assembly-composed world
+    position, across four verified stages. The per-Part-scoped-state design
+    question below was resolved with `Map<String, ...>`-backed getters
+    keyed by `_focusPartId`; the "what should the viewport show" question
+    was resolved as true world-transform-composed rendering + ray-transform
+    hit-testing, not a simplified swap. One real, disclosed gap remains -
+    see §2v's own "Known gap, deliberately not fixed this phase" (Sketch
+    constraint-overlay/orientation-indicator screen-projection). Original
+    finding preserved below for the historical record. Surfaced post-Phase-15
     by a direct question about whether a sub-Part's own geometry can be
     created/edited from inside an assembly at all. Confirmed by reading
     the code, not assumed: `AssemblyFocusStack`/`_focusStack.current` is
@@ -3374,12 +3787,17 @@ surviving across sessions. Two small, unrelated bugs found along the way
 wired in) were bundled into this same phase per the user's own choice,
 rather than split into a separate follow-up.
 
-**Phase 17 — iOS Storage Access Framework equivalent (medium, platform
-risk).** Closes `[20]`. New `IosStorageService` sibling to
-`SafStorageService`: `UIDocumentPickerViewController` + iOS
-security-scoped bookmarks, mirroring that class's own reachability-
-revalidation contract. Survey a maintained Dart bookmark plugin the way
-Phase 1 evaluated `saf_util`/`saf_stream` vs. `shared_storage`.
+**~~Phase 17 — iOS Storage Access Framework equivalent (medium, platform
+risk).~~ — moved to §2u, implemented.** Closes `[20]`. `IosStorageService`
+sibling to `SafStorageService`: hand-written `UIDocumentPickerViewController`
++ iOS security-scoped bookmarks (no `.withSecurityScope` - that option is
+macOS-only), mirroring that class's own reachability-revalidation contract.
+The maintained-plugin survey this entry called for found none actively
+maintained (`file_picker_writable` ~3 years stale; `directory_bookmarks`
+iOS-unsupported; `macos_secure_bookmarks` macOS-only) - user-confirmed
+choice to hand-write the native channel rather than depend on a stale
+third party, the same "survey first" posture Phase 1 itself modeled for
+`saf_util`/`saf_stream` vs. `shared_storage`.
 
 **~~Phase 18 — AI plan pipeline: `add_component` + client file discovery
 (large).~~ — moved to §2t, implemented.** Closes `[2]`. `StorageService`
@@ -3402,8 +3820,20 @@ depends on 18).** Closes the remainder of `[1]`. Extends
 `PlanTranslator.localIdToRealId` - the same mechanism every other step
 already uses. Pure payoff once Phase 18 lands.
 
-**Phase 20 — In-context Feature editing: retarget Part-lens tools through
-focus (medium-large, new design questions).** Closes `[24]` (§5 item 10).
+**~~Phase 20 — In-context Feature editing: retarget Part-lens tools through
+focus (medium-large, new design questions).~~ — moved to §2v, implemented.**
+Closes `[24]` (§5 item 10), and `[17]` as a structural side effect (see
+§2v's own Stage 4 write-up and §5 item 2's updated entry). All three
+design questions below were resolved: (1) per-Part state became
+`Map<String, ...>`-backed getters keyed by `_focusPartId`; (2) the
+viewport shows the focused Part's own content at its real assembly-
+composed world transform (user-confirmed "true in-context editing," the
+larger of the two options this entry itself left open) via
+`focusWorldTransformMatrix` plus ray-transform-aware hit-testing
+(`localRayFromWorldRay`); (3) item 3 below is exactly what Stage 4
+closed. One real, disclosed gap remains outside this phase's own scope -
+see §2v's own "Known gap, deliberately not fixed this phase" (Sketch
+constraint-overlay/orientation-indicator screen-projection).
 "Make Focus" today only scopes the Assembly-lens tree/gizmo/mate/pattern -
 `AssemblyFocusStack`/`focusPartId = _focusStack?.current ?? _part?.id` is
 wired into `_refreshAssemblyTree`/`_refreshAssemblyMesh`, the gizmo's own
@@ -3452,12 +3882,16 @@ like Phase 10, and should get real design time budgeted up front, the same
    while focused elsewhere stops being "no bug report yet" and becomes a
    concrete way to silently edit the wrong Part.
 
-**Dependency summary**: Phases 10, 11, 12, 13, 14, 17, and 20 are mutually
-independent - resequence or parallelize freely. The one hard chain is
-**15 → 18 → 19**; 15 is now implemented (§2r), and 18 is now implemented
-too (§2t), so 19 is unblocked. Phase 16 (implemented, §2s) softly depended
-on 15 - confirmed by the spike itself, which needed Phase 15's real Save
-All/Open Project flow to test the round trip against.
+**Dependency summary**: Phases 10, 11, 12, 13, 14, 17, and 20 were mutually
+independent, per this roadmap's own original sequencing - all now
+implemented, along with everything else in this list except Phase 19. The
+one hard chain was **15 → 18 → 19**; 15 (§2r), 18 (§2t), and now 20 (§2v)
+are all implemented, but 19 stays genuinely blocked on the AI-modelling
+pipeline's own separate overhaul track (deliberately out of scope for the
+session that implemented Phase 17/20) - see Phase 19's own entry above,
+unchanged. Phase 16 (implemented, §2s) softly depended on 15 - confirmed by
+the spike itself, which needed Phase 15's real Save All/Open Project flow
+to test the round trip against.
 
 **Explicitly deferred again** (recommend re-stating, not silently
 dropping, if this roadmap is revisited): `[12]` multi-body/linkage
@@ -3468,14 +3902,13 @@ for; `[14]` algebraic (non-warm-start) COINCIDENT flip resolution - Phase 6
 already rejected three approaches before landing on today's
 correct-for-practical-cases seed; `[16b]` feature-level breadcrumb tier -
 needs per-face OCCT history attribution that doesn't exist anywhere in the
-backend, recommend a time-boxed spike first; `[17]` root Part's own Bodies
-staying selectable regardless of focus - was an explicit "real
-usage-judgment call, no bug report has asked for it," now recommended to
-be revisited as part of Phase 20's own scoping instead (§6's own Phase 20
-entry, item 3) rather than independently, since Phase 20 makes it a
-concrete "silently edits the wrong Part" risk rather than a hypothetical
-one; `[23]` general document-level undo - an app-wide pre-existing
-limitation, not assembly-specific.
+backend, recommend a time-boxed spike first; `[23]` general document-level
+undo - an app-wide pre-existing limitation, not assembly-specific.
+(`[17]` - root Part's own Bodies staying selectable regardless of focus -
+was recommended here for revisiting as part of Phase 20's own scoping
+rather than independently; Phase 20 did exactly that and closed it, §2v's
+own Stage 4 - removed from this list rather than restated as still
+deferred.)
 
 ### The 26-item gap inventory this roadmap schedules against
 
@@ -3510,13 +3943,20 @@ straight-edge axis reference/axis-to-axis DISTANCE~~ - **fixed, Phase 13
 breadcrumb tier (`[16b]`) and ~~no live hover-preview highlight
 (`[16a]`)~~ - **`[16a]` fixed, Phase 10 §2m** (`[16b]` remains open).
 
-**Selection, rendering & focus**: `[17]` root Part's own Bodies stay
-selectable regardless of focus; `[18]` ~~gizmo/Mate/ComponentPattern all
+**Selection, rendering & focus**: `[17]` ~~root Part's own Bodies stay
+selectable regardless of focus~~ - **fixed, Phase 20 §2v (Stage 4)**, as a
+structural consequence of that phase's own `widget.bodies` data-source
+change (§5 item 2's own updated entry has the full write-up), not new
+gating code; `[18]` ~~gizmo/Mate/ComponentPattern all
 still top-level-Occurrence-only~~ - **fixed (direct child of focus only,
 not deeper nesting), Phase 12 §2o**; `[19]` ~~latent Focus/Exit-Focus label
 quirk~~ - **fixed, Phase 10 §2m**.
 
-**Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` ~~no
+**Storage & multi-file**: `[20]` ~~no iOS SAF equivalent~~ - **fixed,
+Phase 17 §2u** (hand-written native Swift channel - no actively-maintained
+third-party package exists; nothing native could be built/run in the
+sandbox that implemented it, so on-device verification is still real,
+disclosed follow-up work for a human with a Mac); `[21]` ~~no
 multi-file save flow~~ - **fixed, Phase 15 §2r**; `[22]` ~~composed
 multi-file `part_id`s are session-scoped only~~ - **not a real gap,
 confirmed by spike, Phase 16 §2s**: `AssemblyGraphComposer.compose`
@@ -3531,11 +3971,14 @@ not a code fix.
 **Other**: `[23]` undo scoped to component-transform drags only (app-wide
 pre-existing limitation, not assembly-specific).
 
-**In-context Feature editing (§5 item 10)**: `[24]` "Make Focus" never
-retargets Part-lens Feature editing - every Feature-authoring call/mesh
-refetch/`FeatureTreePanel` source stays hardcoded to the root open Part
-regardless of focus, unlike the Assembly-lens tree/gizmo/mate/pattern
-(already `focusPartId`-aware since Phase 5/8/12). Scheduled as Phase 20.
+**In-context Feature editing (§5 item 10)**: `[24]` ~~"Make Focus" never
+retargets Part-lens Feature editing~~ - **fixed, Phase 20 §2v** - every
+Feature-authoring call/mesh refetch/`FeatureTreePanel` source, plus
+picking/hit-testing and rendering, now correctly targets whichever Part
+is focused, at its real assembly-composed world position, matching the
+Assembly-lens tree/gizmo/mate/pattern's own `focusPartId`-aware pattern
+(Phase 5/8/12). One real, disclosed gap remains outside that phase's own
+scope - see §2v's own "Known gap, deliberately not fixed this phase."
 
 **Open Project hardening (found during Phase 16's own spike, §2s)**:
 `[25]` ~~"Open Project…" never guarded against discarding unsaved

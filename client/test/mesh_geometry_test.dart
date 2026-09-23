@@ -628,6 +628,75 @@ void main() {
     });
   });
 
+  // Assembly support Phase 20 Stage 2 (`docs/assembly-scope.md` §6 `[24]`):
+  // the rayT-invariance property every ray-transform-aware hit-test call
+  // site in `part_viewport.dart` relies on - a local-ray hit's `rayT`
+  // must stay numerically comparable to a world-ray hit's, since
+  // `_recomputeHover`/`_handleTap`'s own "compete candidates by rayT"
+  // logic (and `_handleTap`'s own `ray.at(faceHit.rayT)` world-position
+  // conversion) mix local- and world-space candidates freely.
+  group('localRayFromWorldRay', () {
+    test('identity transform leaves the ray completely unchanged', () {
+      final worldRay = vm.Ray.originDirection(vm.Vector3(1, 2, 3), vm.Vector3(0, 0, -1));
+      final localRay = localRayFromWorldRay(vm.Matrix4.identity(), worldRay);
+      expect(localRay.origin.x, closeTo(worldRay.origin.x, 1e-9));
+      expect(localRay.origin.y, closeTo(worldRay.origin.y, 1e-9));
+      expect(localRay.origin.z, closeTo(worldRay.origin.z, 1e-9));
+      expect(localRay.direction.x, closeTo(worldRay.direction.x, 1e-9));
+      expect(localRay.direction.y, closeTo(worldRay.direction.y, 1e-9));
+      expect(localRay.direction.z, closeTo(worldRay.direction.z, 1e-9));
+    });
+
+    test('a pure translation shifts the origin but never the direction', () {
+      final worldTransform = matrix4FromRigidTransform(
+        RigidTransformDto(translation: [5, 0, 0], rotationAxis: [0, 0, 0], rotationAngleDegrees: 0),
+      );
+      final worldRay = vm.Ray.originDirection(vm.Vector3(5, 0, 0), vm.Vector3(1, 0, 0));
+      final localRay = localRayFromWorldRay(worldTransform, worldRay);
+      // The world ray starts exactly at the transform's own translated
+      // origin - in local space that's back at the origin.
+      expect(localRay.origin.x, closeTo(0, 1e-9));
+      expect(localRay.origin.y, closeTo(0, 1e-9));
+      expect(localRay.origin.z, closeTo(0, 1e-9));
+      expect(localRay.direction.x, closeTo(1, 1e-9));
+      expect(localRay.direction.y, closeTo(0, 1e-9));
+      expect(localRay.direction.z, closeTo(0, 1e-9));
+    });
+
+    test('a 90-degree rotation rotates the direction but a same-origin ray keeps its origin', () {
+      final worldTransform = matrix4FromRigidTransform(
+        RigidTransformDto(translation: [0, 0, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: 90),
+      );
+      // A world-space ray pointing along +Y, from the (unmoved) origin -
+      // undoing a +90-degree-about-Z rotation should point it along +X.
+      final worldRay = vm.Ray.originDirection(vm.Vector3.zero(), vm.Vector3(0, 1, 0));
+      final localRay = localRayFromWorldRay(worldTransform, worldRay);
+      expect(localRay.origin.x, closeTo(0, 1e-9));
+      expect(localRay.origin.y, closeTo(0, 1e-9));
+      expect(localRay.direction.x, closeTo(1, 1e-6));
+      expect(localRay.direction.y, closeTo(0, 1e-6));
+    });
+
+    test('rayT stays comparable: the same physical point maps to the same t in both frames', () {
+      final worldTransform = matrix4FromRigidTransform(
+        RigidTransformDto(translation: [3, -2, 5], rotationAxis: [0, 1, 0], rotationAngleDegrees: 37),
+      );
+      final worldRay = vm.Ray.originDirection(vm.Vector3(-4, 1, 2), vm.Vector3(0.2, -0.6, 0.77).normalized());
+      final localRay = localRayFromWorldRay(worldTransform, worldRay);
+      const t = 4.2;
+      // The world-space point at parameter t, transformed into local
+      // space, must equal the local ray's own point at that exact same t -
+      // the property every rayT-comparing hit-test competition relies on.
+      final worldPointAtT = worldRay.at(t);
+      final inverseWorldTransform = worldTransform.clone()..invert();
+      final expectedLocalPoint = inverseWorldTransform.transformed3(worldPointAtT);
+      final actualLocalPoint = localRay.at(t);
+      expect(actualLocalPoint.x, closeTo(expectedLocalPoint.x, 1e-6));
+      expect(actualLocalPoint.y, closeTo(expectedLocalPoint.y, 1e-6));
+      expect(actualLocalPoint.z, closeTo(expectedLocalPoint.z, 1e-6));
+    });
+  });
+
   // Assembly support Phase 4: the opacity half of "opacity/selectability
   // split for non-primary Parts" - pure and directly testable, independent
   // of [buildAssemblyInstanceNode]'s own GPU-bound Node construction.

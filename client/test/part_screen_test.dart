@@ -51,6 +51,13 @@ class _FakeDocumentBackend {
   /// response.
   final List<Map<String, String>> meshRequests = [];
 
+  /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`):
+  /// [meshRequests]'/[featuresGetCount]'s own sibling for a non-`part-1`
+  /// Part id - proves Feature-authoring/mesh-refresh really targets the
+  /// *focused* Part once one is focused, not always the root.
+  final Map<String, List<Map<String, String>>> meshRequestsByPartId = {};
+  final Map<String, int> featuresGetRequestsByPartId = {};
+
   // Starts past every seeded Feature's id (seeds are always "feature-N" in
   // creation order) so a newly-created Feature's id never collides with a
   // seeded one.
@@ -248,6 +255,30 @@ class _FakeDocumentBackend {
         }
       }
       return _json({'document_id': 'doc-1', 'part_ids': ['part-1', ...extraParts.keys]}, 200);
+    }
+
+    // Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): the
+    // mesh/feature-tree GET routes above were hardcoded to `part-1` only -
+    // no test could previously distinguish "which Part's own mesh/features
+    // got fetched," the exact thing Phase 20's `focusPartId` routing needs
+    // proven. Additive-only (an extra branch ahead of the existing
+    // `part-1`-only handlers below, never touching their own logic) -
+    // returns a body/feature-id containing the requested Part's own id so a
+    // test can tell them apart, and records every such request by Part id.
+    final extraPartMeshMatch = RegExp(r'^/document/parts/([^/]+)/mesh$').firstMatch(path);
+    if (extraPartMeshMatch != null && method == 'GET' && extraPartMeshMatch.group(1) != 'part-1') {
+      final requestedId = extraPartMeshMatch.group(1)!;
+      meshRequestsByPartId.putIfAbsent(requestedId, () => []).add(request.url.queryParameters);
+      return _json([
+        {'body_id': 'placeholder-$requestedId', 'source': 'placeholder', 'mesh': _placeholderMesh},
+      ], 200);
+    }
+    final extraPartFeaturesMatch = RegExp(r'^/document/parts/([^/]+)/features$').firstMatch(path);
+    if (extraPartFeaturesMatch != null && method == 'GET' && extraPartFeaturesMatch.group(1) != 'part-1') {
+      featuresGetRequestsByPartId.putIfAbsent(extraPartFeaturesMatch.group(1)!, () => 0);
+      featuresGetRequestsByPartId[extraPartFeaturesMatch.group(1)!] =
+          featuresGetRequestsByPartId[extraPartFeaturesMatch.group(1)]! + 1;
+      return _json(<Map<String, dynamic>>[], 200);
     }
 
     if (path == '/document/parts/part-1/mesh' && method == 'GET') {
@@ -4213,6 +4244,93 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
       expect(find.text('Exit Focus'), findsOneWidget);
       expect(find.text('Make Focus'), findsNothing);
+    });
+  });
+
+  // Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): Part-lens
+  // Feature-authoring/mesh-refresh now targets whichever Part is focused,
+  // not always the root - `meshRequestsByPartId`/`featuresGetRequestsByPartId`
+  // (this file's own additive fake-backend routes) are what make this
+  // observable through this harness for the first time.
+  group('Assembly support Phase 20: in-context Feature editing targets the focused Part', () {
+    testWidgets('Make Focus immediately re-fetches the focused Part\'s own mesh/features, not the root\'s', (
+      tester,
+    ) async {
+      final occurrenceJson = {
+        'id': 'occ-1',
+        'external_ref': 'parts/bracket.didsa',
+        'resolved_part_id': 'part-2',
+        'name_override': null,
+        'transform': {
+          'translation': [5.0, 0.0, 0.0],
+          'rotation_axis': [0.0, 0.0, 1.0],
+          'rotation_angle_degrees': 0.0,
+        },
+        'suppressed': false,
+        'hidden': false,
+      };
+      final backend = _FakeDocumentBackend(seedOccurrences: [occurrenceJson]);
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => backend.handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // Baseline: only the root's own routes have been hit so far (the
+      // initial `_loadPart` sequence) - nothing for `part-2` yet.
+      expect(backend.meshRequestsByPartId['part-2'], isNull);
+      expect(backend.featuresGetRequestsByPartId['part-2'], isNull);
+      final rootMeshRequestsBeforeFocus = backend.meshRequests.length;
+      final rootFeaturesGetCountBeforeFocus = backend.featuresGetCount;
+
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Make Focus'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // The real Phase 20 behavior: focusing a component re-fetches Part-lens
+      // content for *that* Part right away, not only the Assembly tree - see
+      // `_refreshFocusTargetContent`'s own doc comment for why this needed
+      // fixing alongside the mechanical `focusPartId` swap itself (Make
+      // Focus previously only ever called `_refreshAssemblyTree`).
+      expect(backend.meshRequestsByPartId['part-2'], isNotNull);
+      expect(backend.meshRequestsByPartId['part-2'], isNotEmpty);
+      expect(backend.featuresGetRequestsByPartId['part-2'], greaterThanOrEqualTo(1));
+      // And the root's own routes stop being re-hit meanwhile - every
+      // further mesh/features fetch while focused targets `part-2` only.
+      expect(backend.meshRequests.length, rootMeshRequestsBeforeFocus);
+      expect(backend.featuresGetCount, rootFeaturesGetCountBeforeFocus);
+
+      // Exit Focus: back to the root - its own routes are hit again.
+      final refocusedPanel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final sameOccurrence = refocusedPanel.occurrences.firstWhere(
+        (o) => o.id == 'occ-1',
+        orElse: () => panel.occurrences.single,
+      );
+      refocusedPanel.onOccurrenceLongPress(sameOccurrence);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Exit Focus'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.meshRequests.length, greaterThan(rootMeshRequestsBeforeFocus));
+      expect(backend.featuresGetCount, greaterThan(rootFeaturesGetCountBeforeFocus));
     });
   });
 

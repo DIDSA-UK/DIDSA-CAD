@@ -8,7 +8,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus;
+import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus, pathEquals;
 import '../sketch/sketch_controller.dart'
     show
         ConstraintOverlayItem,
@@ -94,6 +94,19 @@ class PartViewport extends StatefulWidget {
   /// [AssemblyFocusStack.currentOccurrencePath] guarantees this on its own
   /// end, so [didUpdateWidget]'s `!=` check here stays meaningful.
   final List<String> focusedOccurrencePath;
+
+  /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): the
+  /// currently-focused Part's own real world transform, composed by
+  /// [PartScreenState] from the already-composed `assembly-mesh` response
+  /// (`findInstanceAtPath`) - identity (the default, `null`) while nothing
+  /// is focused, or while focused exactly at the document root. [bodies]
+  /// itself already reflects the focused Part's own geometry once something
+  /// is focused (`PartScreenState._refreshMesh` now fetches whichever Part
+  /// [PartScreenState._focusPartId] names, not always the root) - this is
+  /// only about *where* [_syncMeshNode]/[_syncTransientPreviewNodes]/
+  /// [_syncCreatePlaneNodes] place that geometry, mirroring
+  /// [buildAssemblyInstanceNode]'s own `localTransform:` shape one level up.
+  final vm.Matrix4? focusWorldTransformMatrix;
 
   /// Test report item 3 (New Mate ghost preview): the target Part id whose
   /// geometry [PartViewportState._syncMatePreviewNode] should render as a
@@ -989,6 +1002,7 @@ class PartViewport extends StatefulWidget {
     this.assemblyGeometry = const [],
     this.assemblyInstances = const [],
     this.focusedOccurrencePath = const [],
+    this.focusWorldTransformMatrix,
     this.matePreviewPartId,
     this.matePreviewTransform,
     this.selectedOccurrenceTransform,
@@ -1813,10 +1827,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.sectionPlanes != oldWidget.sectionPlanes ||
         widget.sectionPreviewMeshes != oldWidget.sectionPreviewMeshes ||
         widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds ||
-        // Assembly support Phase 4: [_syncMeshNode]'s own `effectiveBodyOpacity`
-        // folds this in to dim the root Part's own content while some other
-        // Part is focused - see that local variable's own doc comment.
-        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath) {
+        // Assembly support Phase 20: [_syncMeshNode] now places [bodies] at
+        // [focusWorldTransformMatrix] instead of always identity - a value
+        // change here (e.g. a parent assembly's own gizmo drag composing a
+        // new world position for the still-focused child) must rebuild the
+        // Node the same way a `focusedOccurrencePath` change already does.
+        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath ||
+        widget.focusWorldTransformMatrix != oldWidget.focusWorldTransformMatrix) {
       setState(_syncMeshNode);
     }
     // Assembly support Phase 4: [_syncAssemblyInstanceNodes]'s own three
@@ -2122,20 +2139,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // real Bodies, same "no camera-bounds participation" contract
     // [PartViewport.transientCoarsePreviewBodies]'s own doc comment states.
     _syncTransientPreviewNodes(scene);
-    // Assembly support Phase 4 (`docs/assembly-scope.md` §3): once a focus
-    // has been pushed onto some *other* Occurrence
-    // (`widget.focusedOccurrencePath.isNotEmpty`), this root Part's own
-    // local content becomes context rather than what's actively being
-    // worked on - see [assemblyInstanceOpacity]'s own doc comment for the
-    // identical rule applied to a placed instance. Folded into a single
-    // local multiplier (rather than touching every `widget.bodyOpacity`
-    // read directly) so the user's own Transparency slider and this new
-    // focus-driven dimming compose instead of one silently overriding the
-    // other; `1.0` (no focus active, or none of this Part's own Occurrences
-    // have ever been used) leaves every existing non-assembly Part's
-    // rendering byte-for-byte unchanged.
-    final effectiveBodyOpacity =
-        widget.bodyOpacity * (widget.focusedOccurrencePath.isEmpty ? 1.0 : kNonPrimaryAssemblyOpacity);
+    // Assembly support Phase 4 (`docs/assembly-scope.md` §3) originally
+    // dimmed [bodies] to [kNonPrimaryAssemblyOpacity] whenever some other
+    // Occurrence was focused, back when [bodies] always meant "the root
+    // Part's own content" regardless of focus - genuinely stale context in
+    // that world, so it read as de-emphasized. Phase 20 changes what
+    // [bodies] means: [PartScreenState._refreshMesh] now fetches whichever
+    // Part [PartScreenState._focusPartId] names, so [bodies] is always the
+    // *live edit target* (root when unfocused, the focused sub-Part
+    // otherwise) - never merely context - and belongs at full opacity
+    // (still composed with the user's own Transparency slider, just no
+    // longer with the old focus-driven dimming multiplier folded in).
+    // [focusWorldTransformMatrix] (below) is what now shows *where* this
+    // content actually sits once something is focused - opacity was never
+    // the right signal for that, only ever a stand-in for it.
+    final effectiveBodyOpacity = widget.bodyOpacity;
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
@@ -2303,7 +2322,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 1,
               )
               ..doubleSided = true);
-        final node = Node(mesh: Mesh(geometry, material));
+        final node = Node(mesh: Mesh(geometry, material))..localTransform = focusTransform;
         scene.add(node);
         _meshNodes[body.bodyId] = node;
 
@@ -2316,7 +2335,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           final capMaterial = UnlitMaterial()
             ..alphaMode = AlphaMode.opaque
             ..baseColorFactor = vm.Vector4(0.85, 0.55, 0.15, 1.0);
-          final capNode = Node(mesh: Mesh(capGeometry, capMaterial));
+          final capNode = Node(mesh: Mesh(capGeometry, capMaterial))..localTransform = focusTransform;
           scene.add(capNode);
           _sectionCutCapNodes[body.bodyId] = capNode;
         }
@@ -2414,7 +2433,33 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.assemblyInstances.isEmpty) return;
     final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
-      if (instance.occurrencePath.isEmpty) continue;
+      // Assembly support Phase 20 Stage 4 (`docs/assembly-scope.md` §6
+      // `[24]`/appendix item 2/`[17]`): the root's own `occurrence_path: []`
+      // instance (always present - `get_assembly_mesh`'s own docstring)
+      // used to be skipped here *unconditionally*, since [_syncMeshNode]
+      // always covered the root's own content regardless of focus. Now that
+      // [_syncMeshNode] shows the *focused* Part's content instead once
+      // something is focused, skipping it unconditionally would make the
+      // root's own geometry vanish entirely (not just become
+      // non-interactive - a real, worse-than-before regression this stage
+      // closes) rather than fading to context like every other peer/parent
+      // already does via [assemblyInstanceOpacity] below. Skip it only
+      // while nothing is focused, when [_syncMeshNode] genuinely does cover
+      // it - the exact same condition [_syncMeshNode]'s own `focusTransform`
+      // is identity for.
+      if (instance.occurrencePath.isEmpty && focusedPath.isEmpty) continue;
+      // Assembly support Phase 20: the currently-focused Occurrence's own
+      // placed instance is now covered by [_syncMeshNode]'s own
+      // focus-transform-aware render path instead (its content is what
+      // [widget.bodies] fetches once focused - see that method's own
+      // `effectiveBodyOpacity`/`focusTransform` doc comment) - skipping it
+      // here mirrors the root's own `occurrencePath.isEmpty` skip
+      // immediately above, exactly the same "already covered elsewhere"
+      // reasoning, just for whichever Occurrence is focused instead of
+      // always the root. An exact match only - a *nested* child instance
+      // one level deeper is still a distinct, still-live placed instance
+      // this loop must keep rendering normally.
+      if (focusedPath.isNotEmpty && pathEquals(instance.occurrencePath, focusedPath)) continue;
       // Assembly support Phase 3b/4: an instance somewhere along its own
       // chain has been Hidden - the same "genuinely absent, not merely
       // deprioritized" contract [PartViewport.bodiesHidden] already applies
@@ -2552,8 +2597,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (!widget.renderMode.showsEdges) return;
     if (widget.bodiesHidden) return;
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
+    // Assembly support Phase 20 Stage 4: mirrors [_syncAssemblyInstanceNodes]'s
+    // own identical fix - the root's own `occurrence_path: []` instance
+    // stays skipped only while nothing is focused (covered by
+    // [_syncEdgesNode] in that case), so its edges keep rendering as
+    // context rather than vanishing once something else is focused.
+    final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
-      if (instance.occurrencePath.isEmpty || instance.hidden) continue;
+      if ((instance.occurrencePath.isEmpty && focusedPath.isEmpty) || instance.hidden) continue;
       final transform = matrix4FromRigidTransform(instance.worldTransform);
       final occurrenceKey = instance.occurrencePath.join('/');
       for (final partGeometry in widget.assemblyGeometry) {
@@ -2595,6 +2646,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _transientMeshNodes = {};
     if (!widget.renderMode.showsFilledFaces || widget.bodiesHidden) return;
+    // Assembly support Phase 20: a not-yet-committed Feature preview is
+    // still the focused Part's own local content (same reasoning as
+    // [_syncMeshNode]'s own identical `focusTransform` - see that method's
+    // doc comment) - placed at the same world position its eventual real
+    // Body will land at once confirmed.
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     for (final body in widget.transientCoarsePreviewBodies) {
       final mesh = body.mesh;
       if (mesh.vertices.isEmpty) continue;
@@ -2602,7 +2659,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final material = UnlitMaterial()
         ..alphaMode = AlphaMode.blend
         ..baseColorFactor = vm.Vector4(0.25, 0.55, 1.0, 0.45);
-      final node = Node(mesh: Mesh(geometry, material));
+      final node = Node(mesh: Mesh(geometry, material))..localTransform = focusTransform;
       scene.add(node);
       _transientMeshNodes[body.bodyId] = node;
     }
@@ -2761,6 +2818,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // On-device feedback: see _syncMeshNode's identical bodiesHidden gate.
     if (widget.bodiesHidden) return;
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
+    // Assembly support Phase 20 Stage 4: found while closing appendix item
+    // [17] - [widget.bodies] renders its filled faces at [focusTransform]
+    // ([_syncMeshNode]) but this wireframe overlay never got the same
+    // treatment, which would have misaligned it against the focused Part's
+    // own real position the instant [_syncMeshNode]'s own fix (Stage 1)
+    // landed. Same reasoning as that method's own `focusTransform` local.
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     var totalSegments = 0;
     for (final body in widget.bodies) {
       // See _syncMeshNode's identical substitution for why - keeps the
@@ -2776,7 +2840,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (biased) {
         segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
       }
-      final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
+      final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor)..localTransform = focusTransform;
       scene.add(node);
       _edgesNodes[body.bodyId] = node;
       totalSegments += segments.length;
@@ -2841,6 +2905,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final node in _sketchNodes.values) {
       scene.remove(node);
     }
+    // Assembly support Phase 20 Stage 4: [widget.sketchGeometries] is the
+    // focused Part's own local data (same reasoning as [_syncMeshNode]'s
+    // own `focusTransform`) - without this, a Sketch's drawn geometry
+    // would keep rendering at identity while the Bodies it's anchored to
+    // moved to their real focused-Part position.
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     _sketchNodes = {
       for (final entry in widget.sketchGeometries.entries)
         if (!entry.value.isEmpty)
@@ -2848,7 +2918,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             entry.key,
             entry.value,
             entityColors: widget.sketchEntityColors,
-          ),
+          )..localTransform = focusTransform,
     };
     for (final node in _sketchNodes.values) {
       scene.add(node);
@@ -2870,21 +2940,37 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final node in _createPlaneNodes.values) {
       scene.remove(node);
     }
+    // Assembly support Phase 20: [buildCreatePlaneNode]'s own
+    // `localTransform` is purely local (derived only from the plane's own
+    // origin/axes/normal, same as every other Create-Plane math in this
+    // file) - composing [focusTransform] on top places it at the focused
+    // Part's real world position, mirroring [_syncMeshNode]'s identical
+    // reasoning for its own Bodies.
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     _createPlaneNodes = {
       for (final entry in widget.createPlanes.entries)
-        entry.key: buildCreatePlaneNode(
+        entry.key: (buildCreatePlaneNode(
           entry.key,
           entry.value.origin,
           entry.value.xAxis,
           entry.value.yAxis,
           entry.value.normal,
           selected: _isCreatePlaneSelected(entry.key),
-        ),
+        )..localTransform = focusTransform * _createPlaneNodeLocalTransform(entry.value)),
     };
     for (final node in _createPlaneNodes.values) {
       scene.add(node);
     }
   }
+
+  /// [_syncCreatePlaneNodes]'s own helper: [buildCreatePlaneNode]'s
+  /// `localTransform` is a pure function of a plane's origin/axes/normal
+  /// (`createPlaneTransform`) - recomputed directly here rather than
+  /// re-reading it off a freshly-built [Node], since the composition above
+  /// needs the *pre*-[focusTransform] local value as an input, not an
+  /// already-built Node to mutate twice.
+  vm.Matrix4 _createPlaneNodeLocalTransform(ResolvedPlaneGeometry plane) =>
+      createPlaneTransform(plane.origin, plane.xAxis, plane.yAxis, plane.normal);
 
   /// Sectioning Tool: mirrors [_syncCreatePlaneNodes]'s own "remove
   /// everything, rebuild wholesale" shape for [PartViewport.sectionPlanes]'
@@ -3727,6 +3813,43 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     return null;
   }
 
+  /// Assembly support Phase 20 Stage 2 (`docs/assembly-scope.md` §6 `[24]`):
+  /// [ray] expressed in the focused Part's own local frame instead of the
+  /// camera's world one - the inverse of [PartViewport.focusWorldTransformMatrix]
+  /// applied to [Ray.origin] (a point - needs the full inverse, rotation
+  /// *and* translation) and [Ray.direction] (a direction - needs only the
+  /// inverse's rotation component, via [vm.Matrix4.rotated3]; translating a
+  /// direction makes no sense). Every Body/sketch-plane/created-Plane
+  /// hit-test this file calls (`hitTestBodies`/`hitTestSketchPlane`/
+  /// `hitTestCreatePlanes`) operates on the focused Part's own **local**
+  /// geometry - unaffected by focus, this is what those calls need instead
+  /// of the raw camera ray; the three fixed reference planes
+  /// (`hitTestReferencePlanes`) are a viewport convention, never Part-owned,
+  /// and stay on the plain world [ray]. Identity
+  /// [PartViewport.focusWorldTransformMatrix] (nothing focused, or focused
+  /// exactly at the document root) makes this the exact same ray as [ray]
+  /// itself - zero behavior change for every existing non-assembly or
+  /// root-focused scenario.
+  ///
+  /// Correctness note, load-bearing for every caller below: `RigidTransform`
+  /// (`docs/assembly-scope.md` §1) is a pure rotation+translation, never a
+  /// scale - its inverse is therefore also a rigid isometry, so a
+  /// `HoverHit.rayT`/similar computed against the *local* ray this returns
+  /// stays numerically equal to the same physical point's distance along
+  /// the original *world* [ray] (both parametrizations trace the same line
+  /// at the same "speed"). `ray.at(t)` and `_toLocalRay(ray).at(t)` name the
+  /// same physical point in their own respective frames for any shared `t`
+  /// - what lets [_recomputeHover]'s "compete candidates by `rayT`" logic,
+  /// and a caller like [_handleTap]'s own section-placement branch (which
+  /// hit-tests against the local ray but then reads the resulting `rayT`
+  /// back against the *world* [ray] to get a real on-screen 3D point),
+  /// mix local- and world-space candidates with no renormalization.
+  vm.Ray _toLocalRay(vm.Ray ray) {
+    final focusTransform = widget.focusWorldTransformMatrix;
+    if (focusTransform == null) return ray;
+    return localRayFromWorldRay(focusTransform, ray);
+  }
+
   /// Converts a confirmed tap into a [ReferencePlaneKind] hit-test, via the
   /// same [PerspectiveCamera.screenPointToRay] `flutter_scene` already
   /// builds for its own picking/`raycast.dart` - reused here rather than
@@ -3734,6 +3857,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _handleTap(Offset localPosition) {
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(localPosition, _viewportSize);
+    final localRay = _toLocalRay(ray);
     // Sectioning Tool: while [SectionPanel] is open and awaiting a fresh
     // placement, a tap re-anchors the active section instead of doing
     // whatever it would ordinarily do (selecting a reference plane, opening
@@ -3751,7 +3875,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.onSectionPlacementTap!(vm.Vector3.zero(), _referencePlaneNormal(referenceHit.plane));
         return;
       }
-      final createHit = hitTestCreatePlanes(ray, widget.createPlanes);
+      final createHit = hitTestCreatePlanes(localRay, widget.createPlanes);
       if (createHit != null) {
         final geometry = widget.createPlanes[createHit.featureId];
         if (geometry != null) {
@@ -3760,7 +3884,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         }
       }
       final faceHit = hitTestBodies(
-        ray: ray,
+        ray: localRay,
         viewportSize: _viewportSize,
         bodies: widget.bodies,
         filter: const SelectionFilterState(vertex: false, edge: false, face: true, body: false),
@@ -3771,7 +3895,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (faceHit != null && faceHit.entity.kind == SelectionEntityKind.face) {
         final normal = _bodyFaceNormal(faceHit.entity.bodyId, faceHit.entity.id);
         if (normal != null) {
-          widget.onSectionPlacementTap!(ray.at(faceHit.rayT), normal);
+          // Assembly support Phase 20 Stage 4: [_bodyFaceNormal] reads the
+          // focused Part's own *local* mesh data - a direction, not a
+          // point, so it needs the focus transform's rotation component
+          // only ([vm.Matrix4.rotated3]) to become a real world-space
+          // normal consistent with `ray.at(faceHit.rayT)` (already
+          // world-space, per [_toLocalRay]'s own rayT-invariance doc
+          // comment) - passing the raw local normal alongside a world
+          // point would otherwise anchor a new section plane facing the
+          // wrong way the instant the focused Part is actually rotated.
+          final worldNormal =
+              (widget.focusWorldTransformMatrix ?? vm.Matrix4.identity()).rotated3(normal).normalized();
+          widget.onSectionPlacementTap!(ray.at(faceHit.rayT), worldNormal);
           return;
         }
       }
@@ -3787,7 +3922,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // C3: checked after the three fixed reference planes so those keep
     // first claim on a tap (see [PartViewport.onCreatePlaneTap]'s own doc
     // comment).
-    final createPlaneHit = hitTestCreatePlanes(ray, widget.createPlanes);
+    final createPlaneHit = hitTestCreatePlanes(localRay, widget.createPlanes);
     if (createPlaneHit != null) {
       widget.onCreatePlaneTap?.call(createPlaneHit.featureId);
       return;
@@ -3798,7 +3933,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // above.
     final sketchPlaneBasis = widget.sketchPlaneBasis;
     if (sketchPlaneBasis != null) {
-      final sketchHit = hitTestSketchPlane(ray, sketchPlaneBasis);
+      final sketchHit = hitTestSketchPlane(localRay, sketchPlaneBasis);
       if (sketchHit != null) {
         if (widget.preferEntityPick) {
           final (localX, localY) = worldPointToSketch(sketchPlaneBasis, sketchHit.$1);
@@ -3813,7 +3948,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // plane-tap miss behavior below. On-device feedback: Convert
             // Entities widens this via [preferEntityPickIncludesFace].
             final bodyHit = hitTestBodies(
-              ray: ray,
+              ray: localRay,
               viewportSize: _viewportSize,
               bodies: widget.bodies,
               filter: SelectionFilterState(
@@ -4304,6 +4439,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(cursor, _viewportSize);
+    final localRay = _toLocalRay(ray);
     // Prompt C1: previously gated on `widget.bodies.isEmpty` alone, which
     // skipped hit-testing entirely for a Part with no Bodies yet (e.g. a
     // bare Sketch with no Extrude) - now also runs whenever there's Sketch
@@ -4311,7 +4447,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final meshHit = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
         ? null
         : hitTestBodies(
-            ray: ray,
+            ray: localRay,
             viewportSize: _viewportSize,
             bodies: widget.bodies,
             sketchGeometries: widget.sketchGeometries,
@@ -4323,7 +4459,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             fovRadiansY: _perspectiveFovOf(camera),
           );
-    final planeHit = _hoverHitTestPlanes(ray);
+    final planeHit = _hoverHitTestPlanes(ray, localRay);
     // Assembly support Phase 4: a third candidate, competed by [HoverHit.
     // rayT] the exact same way [meshHit]/[planeHit] already compete against
     // each other just below - see [_hoverHitTestComponents]'s own doc
@@ -4409,7 +4545,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final instance in widget.assemblyInstances)
         if (instance.occurrencePath.isNotEmpty &&
             !instance.hidden &&
-            (focusedPath.isEmpty || isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath)))
+            (focusedPath.isEmpty || isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath)) &&
+            // Assembly support Phase 20 Stage 2: the exact focused instance
+            // itself is excluded - its own rendering is already suppressed
+            // in [_syncAssemblyInstanceNodes] (Stage 1, covered instead by
+            // [_syncMeshNode]'s focus-transform-aware path), and its
+            // geometry is now separately hit-testable as ordinary
+            // vertex/edge/face/body content via [_toLocalRay] - leaving it
+            // "selectable" here too would offer a stale, invisible
+            // whole-component hit target competing with that real one. A
+            // *nested* child instance one level deeper is unaffected - it's
+            // still a genuine, still-rendered sub-component of whatever's
+            // focused.
+            !pathEquals(instance.occurrencePath, focusedPath))
           instance.occurrencePath.join('/'),
     };
   }
@@ -4487,9 +4635,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// turns every other kind off (e.g. Fillet's edge/face-only filter) still
   /// left planes selectable regardless, since there was nothing here to
   /// turn off in the first place.
-  HoverHit? _hoverHitTestPlanes(vm.Ray ray) {
+  /// Assembly support Phase 20 Stage 2: takes both rays now, not one -
+  /// [hitTestReferencePlanes] needs [worldRay] (the three fixed planes are
+  /// never Part-owned, unaffected by focus), [hitTestCreatePlanes] needs
+  /// [localRay] (Create-Plane geometry is the focused Part's own local
+  /// data - see [_toLocalRay]'s own doc comment for the full reasoning).
+  /// Both parameters are the exact same ray for every non-assembly/
+  /// root-focused caller, so this is a no-op widening there.
+  HoverHit? _hoverHitTestPlanes(vm.Ray worldRay, vm.Ray localRay) {
     if (!widget.selectionFilter.plane) return null;
-    final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
+    final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(worldRay);
     if (referenceHit != null) {
       return HoverHit(
         entity: SelectionEntityRef(
@@ -4499,7 +4654,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         rayT: referenceHit.rayT,
       );
     }
-    final createHit = hitTestCreatePlanes(ray, widget.createPlanes);
+    final createHit = hitTestCreatePlanes(localRay, widget.createPlanes);
     if (createHit == null) return null;
     return HoverHit(
       entity: SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: createHit.featureId),
@@ -4562,10 +4717,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   bool _hasEntityNearScreenPoint(Offset screenPosition) {
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(screenPosition, _viewportSize);
+    final localRay = _toLocalRay(ray);
     final meshHit = (widget.bodies.isEmpty && widget.sketchGeometries.isEmpty)
         ? null
         : hitTestBodies(
-            ray: ray,
+            ray: localRay,
             viewportSize: _viewportSize,
             bodies: widget.bodies,
             sketchGeometries: widget.sketchGeometries,
@@ -4577,7 +4733,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             fovRadiansY: _perspectiveFovOf(camera),
           );
-    return meshHit != null || _hoverHitTestPlanes(ray) != null;
+    return meshHit != null || _hoverHitTestPlanes(ray, localRay) != null;
   }
 
   /// Starts the long-press timer when [downScreen] lands on genuinely empty
@@ -4635,8 +4791,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final basis = widget.sketchPlaneBasis;
     if (anchor == null || current == null || basis == null) return;
     final camera = _camera.cameraFor(_viewportSize);
-    final anchorHit = hitTestSketchPlane(camera.screenPointToRay(anchor, _viewportSize), basis);
-    final currentHit = hitTestSketchPlane(camera.screenPointToRay(current, _viewportSize), basis);
+    final anchorHit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(anchor, _viewportSize)), basis);
+    final currentHit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(current, _viewportSize)), basis);
     if (anchorHit == null || currentHit == null) return;
     final (anchorX, anchorY) = worldPointToSketch(basis, anchorHit.$1);
     final (currentX, currentY) = worldPointToSketch(basis, currentHit.$1);
@@ -4724,10 +4880,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (cursor == null) return;
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(cursor, _viewportSize);
+    final localRay = _toLocalRay(ray);
     final candidates = <HoverHit>[
       if (widget.bodies.isNotEmpty || widget.sketchGeometries.isNotEmpty)
         ...hitTestAllCandidates(
-          ray: ray,
+          ray: localRay,
           viewportSize: _viewportSize,
           bodies: widget.bodies,
           sketchGeometries: widget.sketchGeometries,
@@ -4877,7 +5034,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // just the sketch-local cursor hit's own coordinate along the
         // locked axis.
         if (linearItem.orientation == 'vertical' || linearItem.orientation == 'horizontal') {
-          final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+          final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
           final hit = hitTestSketchPlane(ray, basis);
           if (hit != null) {
             final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
@@ -5060,7 +5217,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final vertexAndRays = angleDimensionVertexAndRays(angleItem);
         if (vertexAndRays != null) {
           final (vertex, ray1, ray2) = vertexAndRays;
-          final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+          final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
           final hit = hitTestSketchPlane(ray, basis);
           if (hit != null) {
             final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
@@ -5140,7 +5297,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _drawCursorWorldHit = null;
       return;
     }
-    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+    final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
     final hit = hitTestSketchPlane(ray, basis);
     _drawCursorWorldHit = hit?.$1;
   }
@@ -5183,7 +5340,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // own comment for why a face is excluded by default and how
           // [preferEntityPickIncludesFace] widens it.
           final camera = _camera.cameraFor(_viewportSize);
-          final ray = camera.screenPointToRay(cursor, _viewportSize);
+          final ray = _toLocalRay(camera.screenPointToRay(cursor, _viewportSize));
           final bodyHit = hitTestBodies(
             ray: ray,
             viewportSize: _viewportSize,
@@ -5466,15 +5623,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   /// [_buildEntityHighlightNode]/[_syncSelectedEntityNodes]'s shared face/
-  /// edge/vertex/body Body resolution - [_bodyFor] (root Part geometry,
-  /// untransformed) when [entity.occurrenceId] is empty, [_bodyForOccurrence]
-  /// (placed-instance geometry, transformed into world space) otherwise. The
-  /// returned [vm.Matrix4] is the identity for the root-Part case - callers
-  /// always apply it uniformly rather than branching a second time.
+  /// edge/vertex/body Body resolution - [_bodyFor] ([widget.bodies] -
+  /// whichever Part is currently the live edit target, per
+  /// [PartScreenState._focusPartId]) when [entity.occurrenceId] is empty,
+  /// [_bodyForOccurrence] (placed-instance geometry, transformed into world
+  /// space) otherwise. Callers always apply the returned [vm.Matrix4]
+  /// uniformly rather than branching a second time.
+  ///
+  /// Assembly support Phase 20 Stage 4: the [entity.occurrenceId.isEmpty]
+  /// branch used to return a hardcoded identity transform here - correct
+  /// back when [widget.bodies] only ever meant "the root Part's own
+  /// untransformed geometry," but a real, silent highlight-misalignment bug
+  /// the instant [_syncMeshNode]'s own Stage 1 fix let [widget.bodies] mean
+  /// "the focused Part's geometry" instead - a selected face/edge/vertex
+  /// highlight would have kept rendering at identity while the geometry it
+  /// was supposedly outlining had moved to [focusWorldTransformMatrix].
   (BodyMeshDto, vm.Matrix4)? _bodyAndTransformFor(SelectionEntityRef entity) {
     if (entity.occurrenceId.isEmpty) {
       final body = _bodyFor(entity.bodyId);
-      return body == null ? null : (body, vm.Matrix4.identity());
+      return body == null ? null : (body, widget.focusWorldTransformMatrix ?? vm.Matrix4.identity());
     }
     return _bodyForOccurrence(entity.occurrenceId, entity.bodyId);
   }

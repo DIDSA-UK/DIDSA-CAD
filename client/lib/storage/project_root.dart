@@ -10,11 +10,8 @@ import 'dart:io';
 /// `Occurrence.external_ref`, `backend/app/document/models.py`, is exactly
 /// such a relative path, never a platform-specific absolute one).
 ///
-/// Two variants only - desktop (a plain OS directory) and Android SAF (a
-/// tree URI). There is deliberately no iOS variant yet: iOS has no
-/// Storage Access Framework, needs its own security-scoped-bookmark
-/// mechanism, and is tracked as a known gap in `docs/assembly-scope.md`
-/// rather than guessed at here.
+/// Three variants: desktop (a plain OS directory), Android SAF (a tree
+/// URI), and iOS (a persisted security-scoped bookmark).
 sealed class ProjectRoot {
   const ProjectRoot();
 
@@ -71,4 +68,32 @@ final class SafProjectRoot extends ProjectRoot {
 
   @override
   int get hashCode => treeUri.hashCode;
+}
+
+/// A security-scoped bookmark to a folder the user granted access to via
+/// `UIDocumentPickerViewController` (iOS only) - iOS has no Storage Access
+/// Framework, so persisted access to a user-chosen folder across app
+/// launches instead relies on `URL.bookmarkData(options: [])` /
+/// `URL(resolvingBookmarkData:...)`, bracketed by
+/// `start/stopAccessingSecurityScopedResource()` around each use
+/// (`IosStoragePlugin.swift`). `bookmarkBase64` is that bookmark's raw
+/// `Data`, base64-encoded so it round-trips through the platform channel
+/// and `RecentProjectStore`'s plain-string persistence unchanged.
+final class IosProjectRoot extends ProjectRoot {
+  const IosProjectRoot({required this.bookmarkBase64, required String displayName}) : _displayName = displayName;
+
+  final String bookmarkBase64;
+  final String _displayName;
+
+  @override
+  String get displayName => _displayName;
+
+  @override
+  String get persistedKey => bookmarkBase64;
+
+  @override
+  bool operator ==(Object other) => other is IosProjectRoot && other.bookmarkBase64 == bookmarkBase64;
+
+  @override
+  int get hashCode => bookmarkBase64.hashCode;
 }

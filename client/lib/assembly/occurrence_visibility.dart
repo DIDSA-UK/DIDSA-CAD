@@ -153,7 +153,7 @@ bool isOccurrencePathWithinFocus(List<String> occurrencePath, List<String> focus
 /// below whatever frame is current," still holds at the root).
 bool isDirectChildOfFocus(List<String> occurrencePath, List<String> focusedOccurrencePath) {
   return occurrencePath.length == focusedOccurrencePath.length + 1 &&
-      _pathEquals(occurrencePath.sublist(0, focusedOccurrencePath.length), focusedOccurrencePath);
+      pathEquals(occurrencePath.sublist(0, focusedOccurrencePath.length), focusedOccurrencePath);
 }
 
 /// Assembly support Phase 12: the exact-path lookup
@@ -166,7 +166,7 @@ bool isDirectChildOfFocus(List<String> occurrencePath, List<String> focusedOccur
 /// currently-focused Part).
 AssemblyOccurrenceInstanceDto? findInstanceAtPath(List<AssemblyOccurrenceInstanceDto> instances, List<String> path) {
   for (final instance in instances) {
-    if (_pathEquals(instance.occurrencePath, path)) return instance;
+    if (pathEquals(instance.occurrencePath, path)) return instance;
   }
   return null;
 }
@@ -196,7 +196,7 @@ List<AssemblyOccurrenceInstanceDto> overrideInstanceTransform(
 }) {
   return [
     for (final instance in instances)
-      if (_pathEquals(instance.occurrencePath, targetOccurrencePath))
+      if (pathEquals(instance.occurrencePath, targetOccurrencePath))
         AssemblyOccurrenceInstanceDto(
           occurrencePath: instance.occurrencePath,
           partId: instance.partId,
@@ -214,7 +214,13 @@ List<AssemblyOccurrenceInstanceDto> overrideInstanceTransform(
   ];
 }
 
-bool _pathEquals(List<String> a, List<String> b) {
+/// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): made
+/// public (was a private helper of this file alone) so
+/// `PartViewportState._syncAssemblyInstanceNodes` can use the same
+/// exact-match logic to skip the placed instance now covered by
+/// `_syncMeshNode`'s own focus-transform-aware render path, rather than
+/// re-deriving an equivalent comparison.
+bool pathEquals(List<String> a, List<String> b) {
   if (a.length != b.length) return false;
   for (var i = 0; i < a.length; i++) {
     if (a[i] != b[i]) return false;

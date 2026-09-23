@@ -465,6 +465,30 @@ class _PartScreenState extends State<PartScreen> {
   /// selectability split - see that field's own doc comment.
   AssemblyFocusStack? _focusStack;
 
+  /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): which
+  /// Part id every Part-lens Feature-authoring call/refresh should target
+  /// right now - the focused sub-Part if one is focused, else this screen's
+  /// own root Part. Identical expression to the one [_refreshAssemblyTree]
+  /// already established for Assembly-lens work (`_focusStack?.current ??
+  /// _part?.id`); the `!` here is safe in every call site that actually
+  /// reads this getter, since each one only ever runs once [_part] itself
+  /// is already known non-null (the same invariant that let those call
+  /// sites read a local `part.id` before this phase). **Not** safe during
+  /// `build()` itself before [_loadPart] resolves - see [_focusPartIdOrNull]
+  /// for that case.
+  String get _focusPartId => _focusStack?.current ?? _part!.id;
+
+  /// [_focusPartId]'s null-safe sibling, for the handful of read sites that
+  /// really can run before [_part] has loaded - `build()` itself renders at
+  /// least one frame before [_loadPart]'s async work resolves, and
+  /// [_hiddenFeatureIds]/[_rollbackExcludedFeatureIds]/[_sectionPlanes]
+  /// (below) are read from inside `build()` (via [_buildScaffold]). Every
+  /// *mutating* call site for those three getters/setter only ever runs
+  /// from a Feature-editing callback, which can't fire before a Part - and
+  /// hence Features to edit - exist, so `null` here only ever needs a safe
+  /// empty fallback, never a real write target.
+  String? get _focusPartIdOrNull => _focusStack?.current ?? _part?.id;
+
   /// [_lens]'s own data - this Part's live Occurrences/Mates, fetched via
   /// [_refreshAssemblyTree] and shown by [AssemblyTreePanel]. Kept separate
   /// from [_features] (never merged into one list) since they're genuinely
@@ -607,6 +631,24 @@ class _PartScreenState extends State<PartScreen> {
     if (focusedPath.isEmpty) return null;
     final instances = _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[];
     return findInstanceAtPath(instances, focusedPath);
+  }
+
+  /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`):
+  /// [PartViewport.focusWorldTransformMatrix] - where the focused Part's own
+  /// content ([_bodies], now fetched for [_focusPartId] rather than always
+  /// the root - see [_refreshMesh]) actually belongs in the 3D viewport.
+  /// Directly reuses [_gizmoParentInstance] (Phase 12) rather than
+  /// re-deriving an equivalent lookup - it already is exactly "the
+  /// currently-focused Occurrence's own placed instance," `null` the same
+  /// way (nothing focused, or the mesh hasn't caught up to the current
+  /// focus yet), and shares that getter's own known scope limit: an
+  /// in-progress drag on an *ancestor's* own gizmo isn't reflected here
+  /// until it settles and [_assemblyMesh] re-fetches, same as
+  /// [_gizmoTargetWorldTransform]'s own composition already accepts.
+  vm.Matrix4? get _focusWorldTransformMatrix {
+    final parentInstance = _gizmoParentInstance;
+    if (parentInstance == null) return null;
+    return matrix4FromRigidTransform(parentInstance.worldTransform);
   }
 
   /// Assembly support Phase 12: [_gizmoTargetOccurrence]'s own *world*-space
@@ -887,9 +929,11 @@ class _PartScreenState extends State<PartScreen> {
   /// a `Feature` (see `section_plane.dart`'s own doc comment for the full
   /// "why"). Persisted only as a client-only stash in the native save file
   /// (mirrors [_hiddenFeatureIds] - see [_buildNativeExportBytes]/
-  /// [_openNativeFile]), never through the backend's own Feature tree.
-  List<SectionPlane> _sectionPlanes = [];
-
+  /// [_openNativeFile]), never through the backend's own Feature tree. See
+  /// the `_sectionPlanes`/`_hiddenFeatureIds`/`_rollbackExcludedFeatureIds`
+  /// getters/setter (near [_hiddenFeatureIdsByPart]) for the actual backing
+  /// storage - declared there, not here, now that all three are per-Part.
+  ///
   /// Which of [_sectionPlanes] [SectionPanel] is currently editing - drives
   /// the gizmo (`PartViewport.activeSectionId`) and which plane a face/plane
   /// tap re-anchors. Null selects nothing (no gizmo shown), even while the
@@ -1425,7 +1469,55 @@ class _PartScreenState extends State<PartScreen> {
   /// [_openNativeFile] now carry it through the file's own JSON as a
   /// `hidden_feature_ids` array the backend's own `export_native`/
   /// `import_native` know nothing about and simply pass through unexamined.
-  final Set<String> _hiddenFeatureIds = {};
+  /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`):
+  /// [_hiddenFeatureIds]/[_rollbackExcludedFeatureIds]/[_sectionPlanes] are
+  /// all per-*focused-Part* state now that Feature editing can target a
+  /// focused sub-component, not just the root Part - keyed by whichever
+  /// Part id [_focusPartIdOrNull] names at the time a call site reads/writes
+  /// it (nullable, not [_focusPartId] itself - `build()` reads
+  /// [_sectionPlanes] before [_part] has loaded on the very first frame, so
+  /// these three getters/setter need a safe "nothing loaded yet" fallback
+  /// rather than [_focusPartId]'s own force-unwrap). Backing storage only,
+  /// never read/written directly outside the three getters/setter
+  /// immediately below - every one of this file's many
+  /// `_hiddenFeatureIds.add(...)`/`.contains(...)`/`.toList()` etc. call
+  /// sites (and `_sectionPlanes = [...]` reassignments) keeps compiling and
+  /// behaving correctly unchanged, since a getter/setter can stand in for a
+  /// plain field of the same name in Dart.
+  final Map<String, Set<String>> _hiddenFeatureIdsByPart = {};
+  final Map<String, Set<String>> _rollbackExcludedFeatureIdsByPart = {};
+  final Map<String, List<SectionPlane>> _sectionPlanesByPart = {};
+
+  Set<String> get _hiddenFeatureIds {
+    final key = _focusPartIdOrNull;
+    // No Part loaded yet - nothing could have mutated this, a transient
+    // empty Set is a safe read (never the same instance twice, but no call
+    // site here ever needs it to be - see this field group's own doc
+    // comment on why a mutation can't actually reach this branch).
+    if (key == null) return <String>{};
+    return _hiddenFeatureIdsByPart.putIfAbsent(key, () => {});
+  }
+
+  Set<String> get _rollbackExcludedFeatureIds {
+    final key = _focusPartIdOrNull;
+    if (key == null) return <String>{};
+    return _rollbackExcludedFeatureIdsByPart.putIfAbsent(key, () => {});
+  }
+
+  List<SectionPlane> get _sectionPlanes {
+    final key = _focusPartIdOrNull;
+    if (key == null) return const [];
+    return _sectionPlanesByPart[key] ?? const [];
+  }
+
+  set _sectionPlanes(List<SectionPlane> value) {
+    final key = _focusPartIdOrNull;
+    // Nowhere to store this yet - never actually hit (the one call site
+    // that assigns before a Part exists, `initState`, was moved into
+    // [_loadPart] itself, after [_part] is set, specifically to avoid this).
+    if (key == null) return;
+    _sectionPlanesByPart[key] = value;
+  }
 
   /// Native Save/Load: the filename most recently Opened-from or Saved-to
   /// this session (see [PartScreen.initialFileName]'s own doc comment for
@@ -1483,9 +1575,10 @@ class _PartScreenState extends State<PartScreen> {
   /// above). Kept as a wholly separate set/query-param rather than merged
   /// into [_hiddenFeatureIds] the way it was before this bug fix - see
   /// [_hiddenFeatureIds]'s own doc comment for why that broke Create Plane.
-  /// Always empty outside an active rollback edit.
-  final Set<String> _rollbackExcludedFeatureIds = {};
-
+  /// Always empty outside an active rollback edit. Backing storage is
+  /// [_rollbackExcludedFeatureIdsByPart] (near [_hiddenFeatureIdsByPart]),
+  /// not a field here - see that getter's own doc comment.
+  ///
   /// Every Feature id that should be invisible/unpickable in the 3D
   /// viewport right now, for either reason - [_hiddenFeatureIds] (Hide/Show,
   /// cosmetic) or [_rollbackExcludedFeatureIds] (true-rollback, the
@@ -1609,7 +1702,7 @@ class _PartScreenState extends State<PartScreen> {
     List<BodyMeshDto> coarse;
     try {
       coarse = await _api.getPartMesh(
-        part.id,
+        _focusPartId,
         hiddenFeatureIds: _hiddenFeatureIds.toList(),
         rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
         meshQuality: _meshQuality,
@@ -5885,7 +5978,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewSweepFeatureId;
     if (existingId == null) {
       final created = await _api.createSweepFeature(
-        part.id,
+        _focusPartId,
         sketchFeatureId: sketchFeature.id,
         pathRefs: pathRefs,
         mode: mode.apiValue,
@@ -5895,7 +5988,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewSweepFeatureId = created.id;
     } else {
       await _api.updateSweepFeature(
-        part.id,
+        _focusPartId,
         existingId,
         pathRefs: pathRefs,
         mode: mode.apiValue,
@@ -6002,7 +6095,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateSweepFeature(
-            part.id,
+            _focusPartId,
             previewId,
             pathRefs: editSnapshot.pathRefs,
             mode: editSnapshot.mode.apiValue,
@@ -6013,7 +6106,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -6404,7 +6497,7 @@ class _PartScreenState extends State<PartScreen> {
       if (_loftFeatureCreateInFlight != null) {
         final created = await _loftFeatureCreateInFlight!;
         await _api.updateLoftFeature(
-          part.id,
+          _focusPartId,
           created.id,
           sections: sections,
           mode: mode.apiValue,
@@ -6426,7 +6519,7 @@ class _PartScreenState extends State<PartScreen> {
           guideCurveRefs: guideCurveRefs,
         ));
         final createFuture = _api.createLoftFeature(
-          part.id,
+          _focusPartId,
           sections: sections,
           mode: mode.apiValue,
           ruled: ruled,
@@ -6446,7 +6539,7 @@ class _PartScreenState extends State<PartScreen> {
       }
     } else {
       await _api.updateLoftFeature(
-        part.id,
+        _focusPartId,
         existingId,
         sections: sections,
         mode: mode.apiValue,
@@ -6591,7 +6684,7 @@ class _PartScreenState extends State<PartScreen> {
           final revertGuideCurveRefs =
               editSnapshot.guideCurveRef == null ? <SketchEntityRefDto>[] : [editSnapshot.guideCurveRef!];
           await _api.updateLoftFeature(
-            part.id,
+            _focusPartId,
             previewId,
             sections: revertSections,
             mode: editSnapshot.mode.apiValue,
@@ -6605,7 +6698,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -6993,7 +7086,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewLoftSurfaceFeatureId;
     if (existingId == null) {
       final created = await _api.createLoftSurfaceFeature(
-        part.id,
+        _focusPartId,
         sections: sections,
         ruled: ruled,
         guideCurveRefs: guideCurveRefs,
@@ -7001,7 +7094,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewLoftSurfaceFeatureId = created.id;
     } else {
       await _api.updateLoftSurfaceFeature(
-        part.id,
+        _focusPartId,
         existingId,
         sections: sections,
         ruled: ruled,
@@ -7114,7 +7207,7 @@ class _PartScreenState extends State<PartScreen> {
           final revertGuideCurveRefs =
               editSnapshot.guideCurveRef == null ? <SketchEntityRefDto>[] : [editSnapshot.guideCurveRef!];
           await _api.updateLoftSurfaceFeature(
-            part.id,
+            _focusPartId,
             previewId,
             sections: revertSections,
             ruled: editSnapshot.ruled,
@@ -7124,7 +7217,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -7370,7 +7463,7 @@ class _PartScreenState extends State<PartScreen> {
     final sections = [
       for (final section in _ruledSurfaceSections) LoftSectionDto(sketchFeatureId: section.id),
     ];
-    final created = await _api.createRuledSurfaceFeature(part.id, sections: sections);
+    final created = await _api.createRuledSurfaceFeature(_focusPartId, sections: sections);
     _previewRuledSurfaceFeatureId = created.id;
     if (!mounted) return;
     setState(() {});
@@ -7428,7 +7521,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (part != null && previewId != null && !wasEditing) {
       await _runGuarded(() async {
-        await _api.deleteFeature(part.id, previewId);
+        await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
         } else {
@@ -7626,10 +7719,10 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewThickenFeatureId;
     if (existingId == null) {
       final created =
-          await _api.createThickenFeature(part.id, surfaceFeatureId: surfaceFeatureId, thickness: thickness);
+          await _api.createThickenFeature(_focusPartId, surfaceFeatureId: surfaceFeatureId, thickness: thickness);
       _previewThickenFeatureId = created.id;
     } else {
-      await _api.updateThickenFeature(part.id, existingId,
+      await _api.updateThickenFeature(_focusPartId, existingId,
           surfaceFeatureId: surfaceFeatureId, thickness: thickness);
     }
     await _refreshMesh();
@@ -7675,14 +7768,14 @@ class _PartScreenState extends State<PartScreen> {
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
-          await _api.updateThickenFeature(part.id, previewId,
+          await _api.updateThickenFeature(_focusPartId, previewId,
               surfaceFeatureId: editSnapshot.surfaceFeatureId, thickness: editSnapshot.thickness);
           await _refreshMesh();
           await _refreshFeatures();
         });
       } else if (!wasEditing) {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -7793,7 +7886,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _ensureKnitSurfaceFeatureExists() async {
     final part = _part;
     if (part == null || _knitSurfaceSurfaces.length < 2 || _previewKnitSurfaceFeatureId != null) return;
-    final created = await _api.createKnitSurfaceFeature(part.id,
+    final created = await _api.createKnitSurfaceFeature(_focusPartId,
         surfaceFeatureIds: [for (final f in _knitSurfaceSurfaces) f.id]);
     _previewKnitSurfaceFeatureId = created.id;
     if (!mounted) return;
@@ -7835,7 +7928,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (part != null && previewId != null && !wasEditing) {
       await _runGuarded(() async {
-        await _api.deleteFeature(part.id, previewId);
+        await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
         } else {
@@ -7950,7 +8043,7 @@ class _PartScreenState extends State<PartScreen> {
         _previewSolidFromSurfacesFeatureId != null) {
       return;
     }
-    final created = await _api.createSolidFromSurfacesFeature(part.id,
+    final created = await _api.createSolidFromSurfacesFeature(_focusPartId,
         surfaceFeatureIds: [for (final f in _solidFromSurfacesSurfaces) f.id]);
     _previewSolidFromSurfacesFeatureId = created.id;
     if (!mounted) return;
@@ -7988,7 +8081,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (part != null && previewId != null && !wasEditing) {
       await _runGuarded(() async {
-        await _api.deleteFeature(part.id, previewId);
+        await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
         } else {
@@ -8172,10 +8265,10 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null) return;
     final existingId = _previewOffsetSurfaceFeatureId;
     if (existingId == null) {
-      final created = await _api.createOffsetSurfaceFeature(part.id, source: source, distance: distance);
+      final created = await _api.createOffsetSurfaceFeature(_focusPartId, source: source, distance: distance);
       _previewOffsetSurfaceFeatureId = created.id;
     } else {
-      await _api.updateOffsetSurfaceFeature(part.id, existingId, source: source, distance: distance);
+      await _api.updateOffsetSurfaceFeature(_focusPartId, existingId, source: source, distance: distance);
     }
     await _refreshMesh();
   }
@@ -8258,14 +8351,14 @@ class _PartScreenState extends State<PartScreen> {
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
-          await _api.updateOffsetSurfaceFeature(part.id, previewId,
+          await _api.updateOffsetSurfaceFeature(_focusPartId, previewId,
               source: editSnapshot.source, distance: editSnapshot.distance);
           await _refreshMesh();
           await _refreshFeatures();
         });
       } else if (!wasEditing) {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -8438,8 +8531,13 @@ class _PartScreenState extends State<PartScreen> {
     // Native Load: restores whichever Features a just-opened file's own
     // `hidden_feature_ids` named - see [PartScreen.initialHiddenFeatureIds]'s
     // own doc comment. A no-op (empty) for every non-native-Load launch.
-    _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
-    _sectionPlanes = widget.initialSectionPlanes;
+    //
+    // Assembly support Phase 20: can't seed [_hiddenFeatureIds]/
+    // [_sectionPlanes] (now per-Part getters keyed by [_focusPartId]) here -
+    // neither [_part] nor [_focusStack] exists yet this early (a brand-new
+    // Part's own id isn't minted until [_loadPart] calls `createPart`), so
+    // [_focusPartId] isn't safely readable yet. Seeded once [_loadPart]
+    // itself learns the real root Part id instead - see the seeding there.
     _lastSavedFileName = widget.initialFileName;
     _lastSavedFilePath = widget.initialFilePath;
     _loadPart();
@@ -8666,13 +8764,20 @@ class _PartScreenState extends State<PartScreen> {
     // comment) - stash it directly into the same JSON object under a key
     // the backend's `import_native` simply ignores, so opening this file
     // elsewhere restores it too instead of silently losing it.
-    data['hidden_feature_ids'] = _hiddenFeatureIds.toList();
+    //
+    // Assembly support Phase 20: always the *root* Part's own state here,
+    // never whatever [_focusPartId] happens to be at export time - a
+    // focused sub-Part's own hidden-features/section-planes accumulated
+    // only this session are a deliberate v1 scope limit, not persisted
+    // across a save (see `docs/assembly-scope.md`'s own Phase 20 write-up).
+    data['hidden_feature_ids'] = (_hiddenFeatureIdsByPart[_part!.id] ?? const {}).toList();
     // Sectioning Tool: same client-only stash technique, one key over -
     // the backend's own `import_native` has no concept of a section at all
     // (see `section_plane.dart`'s own doc comment for why: it's transient
     // VIEW state, never a Feature/Body-tree entry), so this is the only
-    // place a section's placement survives a Save/Load round trip.
-    data['section_planes'] = [for (final s in _sectionPlanes) s.toJson()];
+    // place a section's placement survives a Save/Load round trip. Root
+    // Part only, same reasoning as `hidden_feature_ids` immediately above.
+    data['section_planes'] = [for (final s in _sectionPlanesByPart[_part!.id] ?? const []) s.toJson()];
     return Uint8List.fromList(utf8.encode(jsonEncode(data)));
   }
 
@@ -8921,7 +9026,7 @@ class _PartScreenState extends State<PartScreen> {
     }
 
     await _runGuarded(() async {
-      await _api.createImportFeature(part.id, sourceFormat: sourceFormat, bytes: bytes);
+      await _api.createImportFeature(_focusPartId, sourceFormat: sourceFormat, bytes: bytes);
       await _refreshFeatures();
       await _refreshMesh();
     });
@@ -9001,6 +9106,15 @@ class _PartScreenState extends State<PartScreen> {
       }
       _part = part;
       _focusStack = AssemblyFocusStack(part.id);
+      // Assembly support Phase 20: seed the root Part's own per-Part state
+      // now that its real id is finally known - [_focusPartId] reads as
+      // `part.id` at this exact point (nothing has been focused yet), so
+      // this is equivalent to the old flat-field seeding that used to run
+      // in [initState], just deferred to the first point it's actually
+      // safe. A no-op (empty) for every non-native-Load launch, same as
+      // before.
+      _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
+      _sectionPlanes = widget.initialSectionPlanes;
       // LOD Phase 2 chunk 4: fire-and-forget, same convention
       // `_refreshMesh`'s own background coarse-tier fetch below uses - a
       // brand-new job-mode create (this screen's own `initialPartId` is the
@@ -9033,7 +9147,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshFeatures() async {
     final part = _part;
     if (part == null) return;
-    final features = await _api.listFeatures(part.id);
+    final features = await _api.listFeatures(_focusPartId);
     if (!mounted) return;
     setState(() {
       _features = features;
@@ -9359,11 +9473,11 @@ class _PartScreenState extends State<PartScreen> {
       // whichever order that happens to be. Fire-and-forget: this method's
       // own return value is about full detail, same contract every existing
       // caller already relies on.
-      unawaited(_refreshCoarseOverlay(part.id, generation));
+      unawaited(_refreshCoarseOverlay(_focusPartId, generation));
     }
 
     final response = await _api.getPartMesh(
-      part.id,
+      _focusPartId,
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
       meshQuality: _meshQuality,
@@ -9898,7 +10012,7 @@ class _PartScreenState extends State<PartScreen> {
     FeatureDto? created;
     await _runGuarded(() async {
       created = await _api.createSketchFeature(
-        part.id,
+        _focusPartId,
         plane: fixedPlane?.apiValue,
         planeFeatureId: planeFeatureId,
       );
@@ -10165,7 +10279,7 @@ class _PartScreenState extends State<PartScreen> {
     if (mode == _PendingOrientationMode.newSketch) {
       if (part == null) return;
       await _runGuarded(() async {
-        await _api.deleteFeature(part.id, feature.id);
+        await _api.deleteFeature(_focusPartId, feature.id);
         await _refreshFeatures();
         await _refreshSketchGeometries();
       });
@@ -10917,7 +11031,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewSurfaceFeatureId;
     if (existingId == null) {
       final created = await _api.createSurfaceFeature(
-        part.id,
+        _focusPartId,
         sketchFeatureId: sketchFeature.id,
         startDistance: start,
         endDistance: end,
@@ -10926,7 +11040,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewSurfaceFeatureId = created.id;
     } else {
       await _api.updateSurfaceFeature(
-        part.id,
+        _focusPartId,
         existingId,
         startDistance: start,
         endDistance: end,
@@ -11024,7 +11138,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateSurfaceFeature(
-            part.id,
+            _focusPartId,
             previewId,
             startDistance: editSnapshot.startDistance,
             endDistance: editSnapshot.endDistance,
@@ -11036,7 +11150,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -11845,7 +11959,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewExtrudeFeatureId;
     if (existingId == null) {
       final created = await _api.createExtrudeFeature(
-        part.id,
+        _focusPartId,
         sketchFeatureId: sketchFeature.id,
         extrudeType: type.apiValue,
         startDistance: start,
@@ -11858,7 +11972,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewExtrudeFeatureId = created.id;
     } else {
       await _api.updateExtrudeFeature(
-        part.id,
+        _focusPartId,
         existingId,
         extrudeType: type.apiValue,
         startDistance: start,
@@ -12061,7 +12175,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateExtrudeFeature(
-            part.id,
+            _focusPartId,
             previewId,
             extrudeType: editSnapshot.type.apiValue,
             startDistance: editSnapshot.start,
@@ -12075,7 +12189,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -12231,7 +12345,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewRevolveFeatureId;
     if (existingId == null) {
       final created = await _api.createRevolveFeature(
-        part.id,
+        _focusPartId,
         sketchFeatureId: sketchFeature.id,
         axisRef: axisRef,
         angle: angle,
@@ -12242,7 +12356,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewRevolveFeatureId = created.id;
     } else {
       await _api.updateRevolveFeature(
-        part.id,
+        _focusPartId,
         existingId,
         axisRef: axisRef,
         angle: angle,
@@ -12359,7 +12473,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateRevolveFeature(
-            part.id,
+            _focusPartId,
             previewId,
             axisRef: editSnapshot.axisRef,
             angle: editSnapshot.angle,
@@ -12371,7 +12485,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -12548,7 +12662,7 @@ class _PartScreenState extends State<PartScreen> {
     final sketchFeature = _planarSurfaceSketchFeature;
     if (part == null || sketchFeature == null || _previewPlanarSurfaceFeatureId != null) return;
     final created = await _api.createPlanarSurfaceFeature(
-      part.id,
+      _focusPartId,
       sketchFeatureId: sketchFeature.id,
       profileRefs: _planarSurfaceProfileRefs,
     );
@@ -12612,7 +12726,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (part != null && previewId != null && !wasEditing) {
       await _runGuarded(() async {
-        await _api.deleteFeature(part.id, previewId);
+        await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
         } else {
@@ -12827,7 +12941,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewRevolveSurfaceFeatureId;
     if (existingId == null) {
       final created = await _api.createRevolveSurfaceFeature(
-        part.id,
+        _focusPartId,
         sketchFeatureId: sketchFeature.id,
         axisRef: axisRef,
         angle: angle,
@@ -12836,7 +12950,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewRevolveSurfaceFeatureId = created.id;
     } else {
       await _api.updateRevolveSurfaceFeature(
-        part.id,
+        _focusPartId,
         existingId,
         axisRef: axisRef,
         angle: angle,
@@ -12932,7 +13046,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateRevolveSurfaceFeature(
-            part.id,
+            _focusPartId,
             previewId,
             axisRef: editSnapshot.axisRef,
             angle: editSnapshot.angle,
@@ -12942,7 +13056,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -13100,7 +13214,7 @@ class _PartScreenState extends State<PartScreen> {
     final sketchFeature = _sweptSurfaceSketchFeature;
     if (part == null || sketchFeature == null || _previewSweptSurfaceFeatureId != null) return;
     final created = await _api.createSweptSurfaceFeature(
-      part.id,
+      _focusPartId,
       sketchFeatureId: sketchFeature.id,
       pathRefs: _sweptSurfacePathRefs,
       profileRefs: _sweptSurfaceProfileRefs,
@@ -13162,7 +13276,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (part != null && previewId != null && !wasEditing) {
       await _runGuarded(() async {
-        await _api.deleteFeature(part.id, previewId);
+        await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
         } else {
@@ -13278,7 +13392,7 @@ class _PartScreenState extends State<PartScreen> {
     FeatureDto? planeFeature;
     await _runGuarded(() async {
       planeFeature = await _api.createCreatePlaneFeature(
-        part.id,
+        _focusPartId,
         planeType: 'offset_face',
         faceRefs: [_planeRefDtoFor(faceEntity)],
         offset: 0.0,
@@ -13396,14 +13510,14 @@ class _PartScreenState extends State<PartScreen> {
       if (mode == CreatePlaneMode.offsetFace || mode == CreatePlaneMode.midplane) {
         final faceRefs = faceEntities.map(_planeRefDtoFor).toList();
         feature = await _api.createCreatePlaneFeature(
-          part.id,
+          _focusPartId,
           planeType: mode == CreatePlaneMode.offsetFace ? 'offset_face' : 'midplane',
           faceRefs: faceRefs,
           offset: mode == CreatePlaneMode.offsetFace ? _createPlaneOffset : null,
         );
       } else if (mode == CreatePlaneMode.normalToEdgeThroughVertex) {
         feature = await _api.createCreatePlaneFeature(
-          part.id,
+          _focusPartId,
           planeType: 'normal_to_edge_through_vertex',
           edgeRef: SubShapeRefDto(bodyId: edgeEntity!.bodyId, shapeType: 'edge', index: edgeEntity.id),
           vertexRef: SubShapeRefDto(bodyId: vertexEntity!.bodyId, shapeType: 'vertex', index: vertexEntity.id),
@@ -13411,7 +13525,7 @@ class _PartScreenState extends State<PartScreen> {
       } else if (mode == CreatePlaneMode.parallelToFaceThroughVertex) {
         final faceRefs = faceEntities.map(_planeRefDtoFor).toList();
         feature = await _api.createCreatePlaneFeature(
-          part.id,
+          _focusPartId,
           planeType: 'parallel_to_face_through_vertex',
           faceRefs: faceRefs,
           vertexRef: SubShapeRefDto(bodyId: vertexEntity!.bodyId, shapeType: 'vertex', index: vertexEntity.id),
@@ -13420,7 +13534,7 @@ class _PartScreenState extends State<PartScreen> {
         final pointRefs = pointEntities.map(_pointRefDtoFor).toList();
         if (pointRefs.any((ref) => ref == null)) return; // Defensive - see _pointRefDtoFor's own doc comment.
         feature = await _api.createCreatePlaneFeature(
-          part.id,
+          _focusPartId,
           planeType: 'three_points',
           pointRefs: pointRefs.cast<PointRefDto>(),
         );
@@ -13446,7 +13560,7 @@ class _PartScreenState extends State<PartScreen> {
           entityId: pointEntity!.sketchEntityId,
         );
         feature = await _api.createCreatePlaneFeature(
-          part.id,
+          _focusPartId,
           planeType: isArc ? 'normal_to_curve_at_point' : 'normal_to_line_at_point',
           lineRef: lineRef,
           pointRef: pointRef,
@@ -13517,7 +13631,7 @@ class _PartScreenState extends State<PartScreen> {
     final part = _part;
     final featureId = _previewCreatePlaneFeatureId;
     if (part == null || featureId == null) return;
-    await _api.updateCreatePlaneFeature(part.id, featureId, offset: _createPlaneOffset);
+    await _api.updateCreatePlaneFeature(_focusPartId, featureId, offset: _createPlaneOffset);
     await _refreshFeatures();
   }
 
@@ -13563,7 +13677,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateCreatePlaneFeature(
-            part.id,
+            _focusPartId,
             previewId,
             faceRefs: editSnapshot.faceRefs,
             offset: editSnapshot.offset,
@@ -13577,7 +13691,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           await _refreshFeatures();
         });
       }
@@ -13779,7 +13893,7 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || edgeRefs.isEmpty) return;
     final existingId = _previewFilletFeatureId;
     if (existingId == null) {
-      final feature = await _api.createFilletFeature(part.id, edgeRefs: edgeRefs, radius: radius);
+      final feature = await _api.createFilletFeature(_focusPartId, edgeRefs: edgeRefs, radius: radius);
       _previewFilletFeatureId = feature.id;
       // Bug fix (on-device feedback): a newly-created Fillet must exclude
       // its *own* effect from every mesh refresh for the rest of this
@@ -13802,7 +13916,7 @@ class _PartScreenState extends State<PartScreen> {
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshFilletPreviewMesh()]);
     } else {
-      await _api.updateFilletFeature(part.id, existingId, edgeRefs: edgeRefs, radius: radius);
+      await _api.updateFilletFeature(_focusPartId, existingId, edgeRefs: edgeRefs, radius: radius);
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshFilletPreviewMesh()]);
     }
@@ -13838,7 +13952,7 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
     final response = await _api.getPartMesh(
-      part.id,
+      _focusPartId,
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds:
           _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
@@ -13920,7 +14034,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateFilletFeature(
-            part.id,
+            _focusPartId,
             previewId,
             edgeRefs: editSnapshot.edgeRefs,
             radius: editSnapshot.radius,
@@ -13930,7 +14044,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           await _refreshFeatures();
           await _refreshMesh();
         });
@@ -14322,7 +14436,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewMirrorFeatureId;
     if (existingId == null) {
       final created = await _api.createMirrorFeature(
-        part.id,
+        _focusPartId,
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
         sourceFeatureIds: _mirrorSourceFeatureIds,
@@ -14332,7 +14446,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewMirrorFeatureId = created.id;
     } else {
       await _api.updateMirrorFeature(
-        part.id,
+        _focusPartId,
         existingId,
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
@@ -14427,7 +14541,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateMirrorFeature(
-            part.id,
+            _focusPartId,
             previewId,
             sourceBodyIds: editSnapshot.sourceBodyIds,
             mirrorPlane: editSnapshot.mirrorPlane,
@@ -14439,7 +14553,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           // Mirrors [_cancelExtrude]'s own optimization: restore the
           // pre-Mirror mesh directly (no network round-trip) when a snapshot
           // was captured on open - only ever null defensively (Mirror always
@@ -14507,7 +14621,7 @@ class _PartScreenState extends State<PartScreen> {
       _mergeStep = _MergeStep.confirming;
     });
     _runGuarded(() async {
-      final created = await _api.createMergeFeature(part.id, bodyIds: bodyIds);
+      final created = await _api.createMergeFeature(_focusPartId, bodyIds: bodyIds);
       _previewMergeFeatureId = created.id;
       await _refreshMesh();
     });
@@ -14614,12 +14728,12 @@ class _PartScreenState extends State<PartScreen> {
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
-          await _api.updateMergeFeature(part.id, previewId, bodyIds: editSnapshot.bodyIds);
+          await _api.updateMergeFeature(_focusPartId, previewId, bodyIds: editSnapshot.bodyIds);
           await _refreshFeatures();
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           // Mirrors [_cancelMirror]'s own optimization: restore the pre-Merge
           // mesh directly (no network round-trip) when a snapshot was
           // captured on open.
@@ -14716,7 +14830,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectionFilterOverrides.push(_deleteBodySelectionFilter);
     });
     await _runGuarded(() async {
-      final created = await _api.createDeleteBodyFeature(part.id, bodyIds: bodyIds);
+      final created = await _api.createDeleteBodyFeature(_focusPartId, bodyIds: bodyIds);
       _previewDeleteBodyFeatureId = created.id;
       await _refreshMesh();
     });
@@ -14803,12 +14917,12 @@ class _PartScreenState extends State<PartScreen> {
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
-          await _api.updateDeleteBodyFeature(part.id, previewId, bodyIds: editSnapshot.bodyIds);
+          await _api.updateDeleteBodyFeature(_focusPartId, previewId, bodyIds: editSnapshot.bodyIds);
           await _refreshFeatures();
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           // Mirrors [_cancelMerge]'s own optimization: restore the pre-
           // delete mesh directly (no network round-trip) when a snapshot
           // was captured on open.
@@ -14948,10 +15062,10 @@ class _PartScreenState extends State<PartScreen> {
 
     final existingId = _previewScaleBodyFeatureId;
     if (existingId == null) {
-      final created = await _api.createScaleBodyFeature(part.id, bodyId: bodyId, factor: factor);
+      final created = await _api.createScaleBodyFeature(_focusPartId, bodyId: bodyId, factor: factor);
       _previewScaleBodyFeatureId = created.id;
     } else {
-      await _api.updateScaleBodyFeature(part.id, existingId, bodyId: bodyId, factor: factor);
+      await _api.updateScaleBodyFeature(_focusPartId, existingId, bodyId: bodyId, factor: factor);
     }
     await _refreshMesh();
   }
@@ -15014,7 +15128,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateScaleBodyFeature(
-            part.id,
+            _focusPartId,
             previewId,
             bodyId: editSnapshot.bodyId,
             factor: editSnapshot.factor,
@@ -15023,7 +15137,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           // Mirrors [_cancelMerge]'s own optimization: restore the pre-
           // scale mesh directly (no network round-trip) when a snapshot
           // was captured on open.
@@ -15234,7 +15348,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewMoveBodyFeatureId;
     if (existingId == null) {
       final created = await _api.createMoveBodyFeature(
-        part.id,
+        _focusPartId,
         bodyId: bodyId,
         delta: [dx, dy, dz],
         rotationAxis: rotationAxis,
@@ -15244,7 +15358,7 @@ class _PartScreenState extends State<PartScreen> {
       _previewMoveBodyFeatureId = created.id;
     } else {
       await _api.updateMoveBodyFeature(
-        part.id,
+        _focusPartId,
         existingId,
         bodyId: bodyId,
         delta: [dx, dy, dz],
@@ -15329,7 +15443,7 @@ class _PartScreenState extends State<PartScreen> {
         await _runGuarded(() async {
           final (dx, dy, dz) = editSnapshot.delta;
           await _api.updateMoveBodyFeature(
-            part.id,
+            _focusPartId,
             previewId,
             bodyId: editSnapshot.bodyId,
             delta: [dx, dy, dz],
@@ -15341,7 +15455,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           // Mirrors [_cancelScaleBody]'s own optimization: restore the
           // pre-move mesh directly (no network round-trip) when a snapshot
           // was captured on open.
@@ -15489,7 +15603,7 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || faceRefs.isEmpty) return;
     final existingId = _previewDeleteFaceFeatureId;
     if (existingId == null) {
-      final feature = await _api.createDeleteFaceFeature(part.id, faceRefs: faceRefs);
+      final feature = await _api.createDeleteFaceFeature(_focusPartId, faceRefs: faceRefs);
       _previewDeleteFaceFeatureId = feature.id;
       // See [_ensureFilletFeatureExists]'s own doc comment for why this is
       // required, not optional, the moment a Feature that live-edits picks
@@ -15498,7 +15612,7 @@ class _PartScreenState extends State<PartScreen> {
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshDeleteFacePreviewMesh()]);
     } else {
-      await _api.updateDeleteFaceFeature(part.id, existingId, faceRefs: faceRefs);
+      await _api.updateDeleteFaceFeature(_focusPartId, existingId, faceRefs: faceRefs);
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshDeleteFacePreviewMesh()]);
     }
@@ -15519,7 +15633,7 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
     final response = await _api.getPartMesh(
-      part.id,
+      _focusPartId,
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
       meshQuality: _meshQuality,
@@ -15585,13 +15699,13 @@ class _PartScreenState extends State<PartScreen> {
     if (part != null && previewId != null) {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
-          await _api.updateDeleteFaceFeature(part.id, previewId, faceRefs: editSnapshot.faceRefs);
+          await _api.updateDeleteFaceFeature(_focusPartId, previewId, faceRefs: editSnapshot.faceRefs);
           await _refreshFeatures();
           await _refreshMesh();
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -15861,7 +15975,7 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewMoveFaceFeatureId;
     if (existingId == null) {
       final created = await _api.createMoveFaceFeature(
-        part.id,
+        _focusPartId,
         faceRefs: faceRefs,
         offsetDistance: mode == MoveFaceMode.offset ? offsetDistance : null,
         delta: null,
@@ -15877,7 +15991,7 @@ class _PartScreenState extends State<PartScreen> {
       await Future.wait([_refreshMesh(), _refreshMoveFacePreviewMesh()]);
     } else {
       await _api.updateMoveFaceFeature(
-        part.id,
+        _focusPartId,
         existingId,
         faceRefs: faceRefs,
         offsetDistance: mode == MoveFaceMode.offset ? offsetDistance : null,
@@ -15906,7 +16020,7 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
     final response = await _api.getPartMesh(
-      part.id,
+      _focusPartId,
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
       meshQuality: _meshQuality,
@@ -15990,7 +16104,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateMoveFaceFeature(
-            part.id,
+            _focusPartId,
             previewId,
             faceRefs: editSnapshot.faceRefs,
             offsetDistance: editSnapshot.mode == MoveFaceMode.offset ? editSnapshot.offsetDistance : null,
@@ -16004,7 +16118,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           // Mirrors [_cancelScaleBody]'s own optimization: restore the
           // pre-move mesh directly (no network round-trip) when a snapshot
           // was captured on open.
@@ -16101,7 +16215,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     _runGuarded(() async {
       final created = await _api.createBooleanFeature(
-        part.id,
+        _focusPartId,
         operation: _booleanOperation,
         targetBodyIds: targetBodyIds,
         toolBodyIds: bodyIds,
@@ -16186,7 +16300,7 @@ class _PartScreenState extends State<PartScreen> {
     final previewId = _previewBooleanFeatureId;
     if (part == null || previewId == null) return;
     _runGuarded(() async {
-      await _api.updateBooleanFeature(part.id, previewId, consumeToolBodies: consume);
+      await _api.updateBooleanFeature(_focusPartId, previewId, consumeToolBodies: consume);
       await _refreshMesh();
     });
   }
@@ -16241,7 +16355,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateBooleanFeature(
-            part.id,
+            _focusPartId,
             previewId,
             operation: editSnapshot.operation,
             targetBodyIds: editSnapshot.targetBodyIds,
@@ -16252,7 +16366,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           // Mirrors [_cancelMerge]'s own optimization: restore the pre-
           // Boolean mesh directly (no network round-trip) when a snapshot
           // was captured on open.
@@ -16374,7 +16488,7 @@ class _PartScreenState extends State<PartScreen> {
     final targetBodyId = _splitTargetBodyId;
     if (part == null || targetBodyId == null) return;
     final created = await _api.createSplitFeature(
-      part.id,
+      _focusPartId,
       targetBodyId: targetBodyId,
       toolPlaneRef: toolPlaneRef,
       toolSurfaceFeatureId: toolSurfaceFeatureId,
@@ -16553,7 +16667,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateSplitFeature(
-            part.id,
+            _focusPartId,
             previewId,
             targetBodyId: editSnapshot.targetBodyId,
             toolPlaneRef: editSnapshot.toolPlaneRef,
@@ -16564,7 +16678,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
           } else {
@@ -17512,7 +17626,7 @@ class _PartScreenState extends State<PartScreen> {
         if (_patternFeatureCreateInFlight != null) {
           final created = await _patternFeatureCreateInFlight!;
           await _api.updatePatternFeature(
-            part.id,
+            _focusPartId,
             created.id,
             sourceBodyIds: sourceBodyIds,
             sourceFeatureIds: _patternSourceFeatureIds,
@@ -17540,7 +17654,7 @@ class _PartScreenState extends State<PartScreen> {
             toolFeatureId: _patternToolFeatureId,
           ));
           final createFuture = _api.createPatternFeature(
-            part.id,
+            _focusPartId,
             sourceBodyIds: sourceBodyIds,
             sourceFeatureIds: _patternSourceFeatureIds,
             patternType: 'circular',
@@ -17563,7 +17677,7 @@ class _PartScreenState extends State<PartScreen> {
         }
       } else {
         await _api.updatePatternFeature(
-          part.id,
+          _focusPartId,
           existingId,
           sourceBodyIds: sourceBodyIds,
           sourceFeatureIds: _patternSourceFeatureIds,
@@ -17591,7 +17705,7 @@ class _PartScreenState extends State<PartScreen> {
       if (_patternFeatureCreateInFlight != null) {
         final created = await _patternFeatureCreateInFlight!;
         await _api.updatePatternFeature(
-          part.id,
+          _focusPartId,
           created.id,
           sourceBodyIds: sourceBodyIds,
           sourceFeatureIds: _patternSourceFeatureIds,
@@ -17626,7 +17740,7 @@ class _PartScreenState extends State<PartScreen> {
           toolFeatureId: _patternToolFeatureId,
         ));
         final createFuture = _api.createPatternFeature(
-          part.id,
+          _focusPartId,
           sourceBodyIds: sourceBodyIds,
           sourceFeatureIds: _patternSourceFeatureIds,
           direction1: direction1,
@@ -17652,7 +17766,7 @@ class _PartScreenState extends State<PartScreen> {
       }
     } else {
       await _api.updatePatternFeature(
-        part.id,
+        _focusPartId,
         existingId,
         sourceBodyIds: sourceBodyIds,
         sourceFeatureIds: _patternSourceFeatureIds,
@@ -17818,7 +17932,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updatePatternFeature(
-            part.id,
+            _focusPartId,
             previewId,
             sourceBodyIds: editSnapshot.sourceBodyIds,
             sourceFeatureIds: editSnapshot.sourceFeatureIds,
@@ -17842,7 +17956,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           // Mirrors [_cancelMirror]'s own optimization: restore the
           // pre-Pattern mesh directly (no network round-trip) when a
           // snapshot was captured on open.
@@ -17968,13 +18082,13 @@ class _PartScreenState extends State<PartScreen> {
     final existingId = _previewChamferFeatureId;
     if (existingId == null) {
       final feature =
-          await _api.createChamferFeature(part.id, edgeRefs: edgeRefs, distance: distance);
+          await _api.createChamferFeature(_focusPartId, edgeRefs: edgeRefs, distance: distance);
       _previewChamferFeatureId = feature.id;
       setState(() => _rollbackExcludedFeatureIds.add(feature.id));
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
     } else {
-      await _api.updateChamferFeature(part.id, existingId, edgeRefs: edgeRefs, distance: distance);
+      await _api.updateChamferFeature(_focusPartId, existingId, edgeRefs: edgeRefs, distance: distance);
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
     }
@@ -17998,7 +18112,7 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
     final response = await _api.getPartMesh(
-      part.id,
+      _focusPartId,
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds:
           _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
@@ -18064,7 +18178,7 @@ class _PartScreenState extends State<PartScreen> {
       if (wasEditing && editSnapshot != null) {
         await _runGuarded(() async {
           await _api.updateChamferFeature(
-            part.id,
+            _focusPartId,
             previewId,
             edgeRefs: editSnapshot.edgeRefs,
             distance: editSnapshot.distance,
@@ -18074,7 +18188,7 @@ class _PartScreenState extends State<PartScreen> {
         });
       } else {
         await _runGuarded(() async {
-          await _api.deleteFeature(part.id, previewId);
+          await _api.deleteFeature(_focusPartId, previewId);
           await _refreshFeatures();
           await _refreshMesh();
         });
@@ -18324,7 +18438,7 @@ class _PartScreenState extends State<PartScreen> {
             ? occurrenceDisplayName(_occurrences, occurrenceIndex)
             : occurrenceDisplayName([occurrence], 0);
         setState(() => focusStack?.push(resolvedPartId, occurrence.id, label));
-        await _refreshAssemblyTree();
+        await _refreshFocusTargetContent();
       case ComponentContextMenuAction.exitFocus:
         await _exitAssemblyFocus();
       case ComponentContextMenuAction.hide:
@@ -18551,7 +18665,22 @@ class _PartScreenState extends State<PartScreen> {
   /// shallower focus depth at all once drilled into a leaf component.
   Future<void> _exitAssemblyFocus() async {
     setState(() => _focusStack?.pop());
+    await _refreshFocusTargetContent();
+  }
+
+  /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): every
+  /// push/pop of [_focusStack] must re-fetch not just the Assembly tree
+  /// ([_refreshAssemblyTree], the only thing focus ever drove before this
+  /// phase) but also the Part-lens content that now depends on
+  /// [_focusPartId] too - [_features]/[_bodies] would otherwise keep
+  /// showing whichever Part was focused *before* this push/pop until some
+  /// unrelated refresh happened to fire. Mirrors [_loadPart]'s own
+  /// mesh-then-features-then-sketches sequencing.
+  Future<void> _refreshFocusTargetContent() async {
     await _refreshAssemblyTree();
+    await _refreshMesh();
+    await _refreshFeatures();
+    await _refreshSketchGeometries();
   }
 
   /// §6 roadmap Phase 10 (`[5]`): Hide/Show's real persistence call -
@@ -18900,6 +19029,7 @@ class _PartScreenState extends State<PartScreen> {
                   // chain lets PartViewport tell a nested instance apart
                   // from a genuine peer/parent (isOccurrencePathWithinFocus).
                   focusedOccurrencePath: _focusStack?.currentOccurrencePath ?? const [],
+                  focusWorldTransformMatrix: _focusWorldTransformMatrix,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
                   createPlanes: _createPlaneGeometries,

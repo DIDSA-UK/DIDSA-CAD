@@ -42,3 +42,32 @@ final class SafFileHandle extends FileHandle {
   /// portable identity instead.
   final String uri;
 }
+
+/// An iOS file handle. Only the *root folder* carries a persisted
+/// security-scoped bookmark (`IosProjectRoot.bookmarkBase64`) - resolving
+/// a bookmark for every individual file inside a project would mean
+/// minting and storing one bookmark per file, which iOS's bookmark API was
+/// never designed for. Instead, an individual file is reached by resolving
+/// the *root's* bookmark to a filesystem path once
+/// (`IosBookmarkChannel.resolveBookmark`) and then addressing the file as
+/// `resolvedPath` + `relativePath` for the remainder of that session -
+/// exactly the same "URI/path is a live-session convenience,
+/// `relativePath` is the portable identity" contract `SafFileHandle.uri`
+/// documents, just with the persisted half living one level up at the
+/// root instead of per file.
+final class IosFileHandle extends FileHandle {
+  const IosFileHandle({required this.root, required this.relativePath, required this.resolvedPath});
+
+  @override
+  final IosProjectRoot root;
+  @override
+  final String relativePath;
+
+  /// The root's bookmark resolved to a real filesystem path for *this*
+  /// session, joined with `relativePath`. Never persisted - a later
+  /// session must re-resolve `root.bookmarkBase64` from scratch, since the
+  /// underlying path can change between launches even when the bookmark
+  /// itself is still valid (e.g. the OS relocated the app's sandbox
+  /// container).
+  final String resolvedPath;
+}
