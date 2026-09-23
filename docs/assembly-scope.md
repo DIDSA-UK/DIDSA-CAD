@@ -2634,6 +2634,106 @@ unblocked rather than blocked - Phase 18/19 are next per the roadmap's own
 
 ---
 
+## 2s. Phase 16 — Multi-file part-id/path persistence: spike + Open Project hardening (closed as doc correction)
+
+§6 roadmap's own Phase 16 entry: "investigate first (small, uncertain)...
+may close by correcting this doc rather than shipping code," targeting
+gap `[22]` ("composed multi-file `part_id`s are session-scoped only"). The
+spike this entry itself called for confirmed exactly that suspicion:
+**gap `[22]` is not a real defect.**
+
+### The spike
+
+Traced directly against the actual code, not assumed: `AssemblyGraphComposer
+.compose`'s own `resolvedByPath`/`partIdByPath`/`sketchesById` maps
+(`client/lib/assembly/assembly_graph_composer.dart:94-97`) are local
+variables created fresh inside `compose()` itself - no instance-level
+cache carries anything between calls, so calling `openAssembly` more than
+once on the same `AssemblyDocumentClient` never leaks state from an
+earlier call into a later one. Each file's own Part `id` is persisted at
+creation and never regenerated on import (`native_format.py`'s
+`_part_from_dict`), so re-reading the same file always yields the same id.
+The backend's own `_resolve_occurrence_part_ids`
+(`native_format.py:2024-2041`) fails closed: it trusts a `resolved_part_id`
+only when that Part is present in the *same* import payload, never a stale
+one from a prior session. Traced by hand: open → edit → Save All → reopen
+in the same session round-trips losslessly - confirmed for real by two new
+tests in `assembly_document_client_test.dart`'s own new "Phase 16" group
+("open, save, and reopen the same project... round-trips ids and paths";
+"opening project B after project A cleanly supersedes it - no leaked
+state"), the exact scenario nothing previously tested. What "session-scoped"
+in gap `[22]`'s own original wording actually refers to - `Occurrence
+.part_id` only surviving within one same-payload import - is the safety
+property this whole design relies on, not something that decays or needs
+to "survive" a session.
+
+A small, separate, comment-only correction fell out of the same spike:
+`Occurrence.part_id`'s own docstring (`backend/app/document/models.py:3148`)
+said a resolved Part's session-local id is "assigned by the client" -
+backwards. `AssemblyGraphComposer.compose` (`assembly_graph_composer.dart
+:143`) forwards each file's own *persisted* id unchanged; it never assigns
+a new one. Reworded, no behavior change.
+
+### Two adjacent bugs, found along the way and bundled in
+
+Not what gap `[22]` describes, but small, real, and in the same
+neighborhood of code (Phase 15's own Open Project flow) - the user chose
+to bundle both into this phase rather than a separate follow-up:
+
+- **`[25]`: "Open Project…" never guarded against discarding unsaved
+  changes.** Every other "abandon the current session" path on this screen
+  (`_exitToConnectionScreen`, the system back gesture, `_startNewPart`)
+  confirms via `_confirmExitPart` first; `_onOpenProjectPressed`
+  (Phase 15) didn't. Fixed: `_onOpenProjectPressed`
+  (`client/lib/viewport3d/part_screen.dart`) now calls `_confirmExitPart`
+  before `_ensureProjectRoot`, the identical shape `_exitToConnectionScreen`
+  already uses - `_confirmExitPart`'s own doc comment updated to name this
+  third caller.
+- **`[26]`: `StorageService.lastUsedProjectRoot` never actually wired into
+  `_ensureProjectRoot`.** `RecentProjectStore` and both `StorageService`
+  implementations (`DesktopStorageService`/`SafStorageService`) were fully
+  implemented and correct since Phase 1, but `_ensureProjectRoot`
+  (Phase 15) always forced the native folder picker via
+  `pickOrCreateProjectRoot()`, even when a valid, still-reachable
+  last-used root was already known. Fixed: `_ensureProjectRoot` now tries
+  `lastUsedProjectRoot()` first - both implementations already
+  re-validate reachability/grant before returning non-null (a real,
+  unreachable root falls straight through to the existing
+  `pickOrCreateProjectRoot()` path unchanged), so no extra validation was
+  needed at this call site.
+
+### A test scope cut, disclosed rather than hidden
+
+A third widget-level test was attempted - "Open Project… reopens a saved
+multi-file project through the real screen," combining a real
+`AssemblyGraphComposer` (temp-dir-backed `FileCache`, not a fake) with a
+full `PartScreen` widget pump. It reliably hit the 10-minute per-test
+timeout in this sandbox, even after removing every other moving part
+(Save All, multi-occurrence graphs) down to the simplest possible single-
+Occurrence reopen - real `dart:io` file I/O combined with `testWidgets`'
+own pump loop proved too slow/fragile here, not a logic bug (the identical
+composer + real temp-dir `FileCache` combination is fast and reliable in
+`assembly_document_client_test.dart`'s own plain, non-widget tests). Cut
+rather than kept flaky - the round-trip property it would have added on
+top of the composer-level tests is already covered there.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2365/2365 passed**, unchanged from Phase 15 (the `models.py` edit is
+comment-only, no backend test changed). Full client suite - **2108/2108
+passed** (up from 2104; 14 GPU-skips, unchanged), `flutter analyze` clean
+on every touched/new file. New tests: 2 in `assembly_document_client_test
+.dart` (the round-trip/no-leaked-state pair above); 2 in `part_screen_test
+.dart` ("Open Project… asks to confirm before navigating away, per [25]";
+"Save All skips the folder picker when a valid last-used root is known,
+per [26]").
+
+### Remaining limitations after this phase
+
+None introduced by this phase. Every other Known v1 limitation/appendix
+item is unchanged.
+
+---
+
 ## 3. Phase history (every originally-scoped phase implemented)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
@@ -2962,10 +3062,10 @@ that item's own writeup) - the roadmap's own header/range widened from
 under.
 
 Bracketed `[N]` ids below are stable references into this roadmap's own
-24-item gap inventory (grouped: AI plan pipeline 1-5, ComponentPattern
+26-item gap inventory (grouped: AI plan pipeline 1-5, ComponentPattern
 6-11, Mate solver 12-16, Selection/rendering/focus 17-19, Storage/
-multi-file 20-22, Other 23, In-context Feature editing 24) - listed in
-full at the end of this section.
+multi-file 20-22, Other 23, In-context Feature editing 24, Open Project
+hardening 25-26) - listed in full at the end of this section.
 
 **~~Phase 10 — Mechanical gap-closure sweep (small, low risk).~~ — moved to
 §2m, implemented.** Bundled five independent, bounded fixes into one
@@ -3053,13 +3153,17 @@ reopen. Also added "Open Project…" (`AssemblyDocumentClient.openAssembly`),
 not in the original framing either but required to close the loop - without
 it `relativePathByPartId` could never survive past one running session.
 
-**Phase 16 — Multi-file part-id/path persistence: investigate first
-(small, uncertain).** Closes `[22]` - but starts with a spike, not an
-assumed fix. `AssemblyGraphComposer` already trusts each file's own
-persisted `id` and re-derives a stable graph from `external_ref` on every
-reopen; confirm precisely what's still session-scoped in practice before
-designing anything. May close by correcting this doc rather than shipping
-code.
+**~~Phase 16 — Multi-file part-id/path persistence: investigate first
+(small, uncertain).~~ — moved to §2s, closed as a doc correction (spike
+confirmed no bug) + two small fixes (`[25]`/`[26]`) bundled in.** Closes
+`[22]`. The spike confirmed the suspicion this entry itself already
+stated: `AssemblyGraphComposer.compose` re-derives everything from disk on
+every call (no cross-call cache), and each file's own Part id is
+persisted/stable - so nothing about correct behavior depends on any state
+surviving across sessions. Two small, unrelated bugs found along the way
+(Open Project's missing unsaved-changes guard; `lastUsedProjectRoot` never
+wired in) were bundled into this same phase per the user's own choice,
+rather than split into a separate follow-up.
 
 **Phase 17 — iOS Storage Access Framework equivalent (medium, platform
 risk).** Closes `[20]`. New `IosStorageService` sibling to
@@ -3141,7 +3245,9 @@ like Phase 10, and should get real design time budgeted up front, the same
 **Dependency summary**: Phases 10, 11, 12, 13, 14, 17, and 20 are mutually
 independent - resequence or parallelize freely. The one hard chain is
 **15 → 18 → 19**; 15 is now implemented (§2r), so 18 is unblocked. Phase
-16 softly depends on 15.
+16 (implemented, §2s) softly depended on 15 - confirmed by the spike
+itself, which needed Phase 15's real Save All/Open Project flow to test
+the round trip against.
 
 **Explicitly deferred again** (recommend re-stating, not silently
 dropping, if this roadmap is revisited): `[12]` multi-body/linkage
@@ -3161,7 +3267,7 @@ concrete "silently edits the wrong Part" risk rather than a hypothetical
 one; `[23]` general document-level undo - an app-wide pre-existing
 limitation, not assembly-specific.
 
-### The 24-item gap inventory this roadmap schedules against
+### The 26-item gap inventory this roadmap schedules against
 
 **AI plan pipeline (§2k)**: `[1]` ~~`pattern_component` PlanStep missing~~ -
 **fixed (existing-Occurrence-only half), Phase 14 §2q** - the full version
@@ -3200,8 +3306,16 @@ not deeper nesting), Phase 12 §2o**; `[19]` ~~latent Focus/Exit-Focus label
 quirk~~ - **fixed, Phase 10 §2m**.
 
 **Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` ~~no
-multi-file save flow~~ - **fixed, Phase 15 §2r**; `[22]` composed
-multi-file `part_id`s are session-scoped only.
+multi-file save flow~~ - **fixed, Phase 15 §2r**; `[22]` ~~composed
+multi-file `part_id`s are session-scoped only~~ - **not a real gap,
+confirmed by spike, Phase 16 §2s**: `AssemblyGraphComposer.compose`
+re-reads every file live and rebuilds `relativePathByPartId` from scratch
+on every `openAssembly` call (no cross-call cache), and each file's own
+Part `id` is stable/persisted, never regenerated on import -
+`_resolve_occurrence_part_ids` (`native_format.py:2024-2041`) fails closed
+for anything not in the same import payload, exactly the safety property
+the session-scoping exists for. Pinned by two new regression tests (§2s),
+not a code fix.
 
 **Other**: `[23]` undo scoped to component-transform drags only (app-wide
 pre-existing limitation, not assembly-specific).
@@ -3211,3 +3325,13 @@ retargets Part-lens Feature editing - every Feature-authoring call/mesh
 refetch/`FeatureTreePanel` source stays hardcoded to the root open Part
 regardless of focus, unlike the Assembly-lens tree/gizmo/mate/pattern
 (already `focusPartId`-aware since Phase 5/8/12). Scheduled as Phase 20.
+
+**Open Project hardening (found during Phase 16's own spike, §2s)**:
+`[25]` ~~"Open Project…" never guarded against discarding unsaved
+changes~~ - **fixed, Phase 16 §2s** - every other "abandon the current
+session" path on this screen already confirmed first;
+`_onOpenProjectPressed` didn't. `[26]` ~~`StorageService
+.lastUsedProjectRoot` never wired into `_ensureProjectRoot`~~ - **fixed,
+Phase 16 §2s** - fully implemented and correct since Phase 1, just never
+called from this one site, so the native folder picker showed on every
+launch even with a valid last-used root already known.

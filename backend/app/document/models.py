@@ -3145,9 +3145,13 @@ class Occurrence:
     against that set), never a bare stored path. This is exactly what lets
     the client's compose step (`docs/assembly-scope.md`) build one combined
     `/import/native` payload out of N resolved `.didsa` files - each file's
-    own parsed Part gets a session-local id the client assigns, and each
-    Occurrence's `resolved_part_id` names which of those *other Parts in
-    the same payload* it resolves to. A single-file save
+    own parsed Part keeps its own persisted `id` unchanged (the client's
+    compose step, `AssemblyGraphComposer.compose`, trusts each file's
+    stored id as-is and never assigns a new one - Phase 16, §2s, confirmed
+    this directly rather than trusting this docstring's own prior, backwards
+    "the client assigns" wording), and each Occurrence's `resolved_part_id`
+    names which of those *other Parts in the same payload* it resolves to.
+    A single-file save
     (`export_native(..., part_id=X)`) naturally can't have its Occurrences'
     targets satisfy this - the referenced Part lives in a different file,
     not in that solo payload - so re-opening such a file alone always
