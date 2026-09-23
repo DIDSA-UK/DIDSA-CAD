@@ -2464,6 +2464,176 @@ picks the LLM's intended edge versus a coincidentally-equivalent one.
 
 ---
 
+## 2r. Phase 15 — Multi-file save flow (implemented)
+
+§6 roadmap's own Phase 15 entry: closes `[21]` (no multi-file save flow) -
+sequenced ahead of Phase 18 (`add_component`'s own AI step) since a
+multi-part session merged via "Add Component"/"Create Component…" was
+otherwise never savable back out to real separate files at all.
+
+Confirmed directly against the actual code before writing anything (this
+document's own "verify against the code, not assumed" convention): every
+API-surface piece this phase needed already existed and was already tested
+- `GET /document/export/native?part_id=<id>` (single-Part export),
+`POST /document/import/native` (full replace, ids never regenerated on
+import - `native_format.py`'s `_part_from_dict`), `POST /document/parts`
+(`DocumentApiClient.createPart`, already used by `_loadPart`), and
+`client/lib/storage/*`/`AssemblyDocumentClient` (`openAssembly`/`savePart`)
+were all already implemented and unit-tested, just never called from the
+one live screen, `PartScreen` - which still did a single-file,
+`file_picker`-driven, whole-session-dump save/open with no
+`StorageService`/`ProjectRoot` concept at all. **This phase needed zero
+backend changes** - it is pure client wiring plus one new pure-Dart
+correctness step (`stampExternalRefs`, below).
+
+### `PartScreen` acquires `StorageService`/`ProjectRoot` (additive, lazy)
+
+New `PartScreen` constructor params - `storageService`/`assemblyDocumentClient`
+(test-injectable, same convention `documentApi` already establishes) and
+`initialProjectRoot`/`initialRelativePathByPartId` (carried through a
+`pushReplacement` the same way `initialFileName` already is). New state:
+`_projectRoot`/`_relativePathByPartId`, acquired/extended lazily - never
+touching the existing `_lastSavedFileName`/`_lastSavedFilePath`/
+`_openNativeFile`/`_saveNativeFile` path at all, which keeps its hard-won,
+on-device-verified `file_picker` Android-path fix (`part_screen.dart:8565`
+comment) completely undisturbed. `_ensureProjectRoot` calls
+`StorageService.pickOrCreateProjectRoot()` the first time "Save All"/
+"Create Component…" needs one, treating its cancel-throws-`StorageException`
+convention as a silent no-op (unlike `file_picker`'s null-on-cancel
+elsewhere in this screen).
+
+### The correctness step the roadmap's own one-paragraph brief didn't name: `stampExternalRefs`
+
+New pure function, `client/lib/assembly/save_all.dart` (`stampExternalRefs`)
+- found necessary, not assumed, while designing "Save All": `AssemblyDocumentClient
+.savePart` (already implemented) just re-exports whatever `Occurrence
+.external_ref` is *currently stored server-side*, which for a Part merged
+in via "Add Component"/"Create Component…" is still a bare picked-file
+display name or `null` (`add_component.dart`'s own documented reason it
+can't know a real project-relative path at merge time). Writing every
+Part's file with that stale/missing `external_ref` would produce files
+whose cross-references silently fail to resolve on a later
+`AssemblyGraphComposer.compose` - i.e. "Save All" would look like it worked
+but produce an assembly that can't actually be reopened. `stampExternalRefs`
+rewrites every Occurrence's own `external_ref` to the now-fully-known
+root-relative path of whichever Part its `resolved_part_id` names, per the
+caller's own `relativePathByPartId`; an Occurrence whose target Part has no
+known path yet is left untouched, never cleared or guessed.
+
+New `AssemblyDocumentClient.saveAll(root, fullSessionExport,
+relativePathByPartId)` orchestrates the full correct sequence: stamp, then
+re-import the stamped payload (`importNative` - ids are preserved, so a
+caller's own id-keyed screen state stays valid across it), *then* loop
+`savePart` per Part - never the other order. Returns a typed `SaveAllResult`
+(`savedRelativePaths`/`failures`); a `StorageException` from one Part's own
+write (a revoked SAF grant, disk full) is caught *inside* the loop rather
+than left to bubble past `_runGuarded` (which only ever catches
+`ApiException`), so one failed write never aborts every other Part's own.
+
+### The relative-path prompt
+
+New `client/lib/assembly/relative_path.dart` (`validateProjectRelativePath`,
+pure/tested) rejects the concrete path-traversal risk both `StorageService`
+implementations are exposed to (`DesktopStorageService._fullPath`'s bare
+`p.join`, `SafStorageService`'s own per-segment `mkdirp`) - empty input, a
+leading slash, any `..` segment, a Windows drive-letter prefix - while
+staying lenient on everything else (no folder browser exists yet,
+`StorageService.listFiles` is Phase 18's own scope). `withDefaultExtension`
+auto-appends `.DIDSAprt` (confirmed the actual round-tripped extension,
+`part_screen.dart`'s own Save As suggestion/display-name strip regex - not
+the doc-prose `.didsa` shorthand this document itself often uses) only when
+none is given, matching `_openNativeFile`'s own lenient `FileType.any`
+posture. New `client/lib/viewport3d/relative_path_dialog.dart` reuses
+`_openMateEdit`'s own `AlertDialog`+`StatefulBuilder`+`TextFormField`+
+disabled-until-valid-`FilledButton` shape (the closest real precedent in
+this codebase for this exact kind of prompt) rather than inventing a new
+one, plus a non-blocking "already exists, will overwrite" collision warning
+via `StorageService.resolve`.
+
+### "Save All" / "Open Project…" (File menu, not the Assembly Add-menu FAB)
+
+Both live in `part_toolbar.dart`'s existing File `ExpansionTile`, not the
+Assembly-lens Add-menu FAB - `_buildAssemblyMenu` was deliberately removed
+from this toolbar back in Phase 3b as pure duplication of that FAB
+(`part_toolbar.dart`'s own `lens` field doc comment), and Save All is
+meaningful even for a plain single-Part session, not just Assembly lens.
+"Save All" (`_onSaveAllPressed`) discovers every Part currently loaded via
+one full-session `exportNative()`, prompts once per Part missing a known
+path (sequentially), then calls `saveAll` and surfaces a single summary
+(`_errorMessage` naming every failure, or a success `SnackBar`). "Open
+Project…" (`_onOpenProjectPressed`) is the read side this phase's own
+brief didn't originally name but which the gap this phase closes actually
+needs - without it, `relativePathByPartId` could only ever exist within one
+running session, and a saved multi-file project could never be faithfully
+reopened. Uses `AssemblyDocumentClient.openAssembly` (already implemented
+since Phase 2) and pushes a fresh `PartScreen` pointed at the resolved root
+Part, the same "fresh screen, not a reload in place" shape `_openNativeFile`
+already uses (`PartScreen.initialPartId`'s own doc comment explains why).
+
+### "Create Component…" (`AssemblyAddMenuAction.createNewComponent`, now real)
+
+No new backend endpoint needed - `POST /document/parts` (already wired as
+`DocumentApiClient.createPart`, already used by `_loadPart`) mints a
+brand-new empty Part in the current session; its own `exportNative(partId:
+...)` is already a well-formed `componentPayload`, so `_onCreateNewComponentPressed`
+reuses `mergeComponentIntoDocument` (Phase 3b) **completely unchanged** -
+the exact same shape "Add Component" already uses, just sourced from a
+freshly-created Part instead of a picked file. A small new name-entry
+dialog (same `AlertDialog` shape as the relative-path prompt) collects the
+new component's name first; an optional, skippable immediate relative-path
+prompt follows (Save All's own prompt loop catches anything left skipped).
+`add_button_menu.dart`'s `createNewComponent` entry drops its `enabled:
+false`/`disabledReason` (a roadmap-text typo corrected in passing: the real
+enum member is `createNewComponent`, not `createComponent` as §6's own
+prose said); `part_screen.dart`'s switch replaces the old no-op
+`case createNewComponent: break;` with a real call.
+
+**Verified**: no backend changes this phase (confirmed above) - backend
+suite re-confirmed at its current baseline against real
+`pythonocc-core`/`py-slvs` - **2365/2365 passed**, unchanged. Full client
+suite - **2104/2104 passed** (14 GPU-skips, unchanged), `flutter analyze`
+clean on every touched/new file. New client tests: `relative_path_test.dart`
+(new - `validateProjectRelativePath`/`withDefaultExtension` cases); three
+new `stampExternalRefs`/`saveAll` tests in `assembly_document_client_test.dart`
+(pure stamping, happy-path re-import-then-write, partial-`StorageException`
+failure collected without aborting the rest); two new end-to-end
+`part_screen_test.dart` widget tests (Create Component adds a new Part as a
+fixed top-level Occurrence; Save All prompts for each un-pathed Part,
+stamps `external_ref`, and writes every file), which needed real
+prerequisite fixes to `_FakeDocumentBackend` first - the same one-time-cost
+precedent Phase 10 already set for `occurrences`/`mates`/
+`component-patterns`/`assembly-mesh`: `POST /document/parts` now mints a
+genuinely unique id per call (was hardcoded to always return `'part-1'`,
+which would have made a second-created Part collide with the first and
+trip `mergeComponentIntoDocument`'s own self-reference guard), plus new
+`GET /document/parts/{id}`/`export/native`/`import/native` route handlers
+(previously entirely unhandled/404 - the reason Add Component/Save/Open had
+zero coverage through this harness before this phase). A real bug this
+harness work caught before being counted as passing: the fake's own
+`import/native` handler had to default a missing/null `transform` (and
+`suppressed`/`hidden`/`fixed`) the same way the real `native_format.py`'s
+`_occurrence_from_dict` already does - `mergeComponentIntoDocument`'s own
+newly-added Occurrence always sends `'transform': null`, relying on exactly
+that backend default, which this fake was skipping entirely until the first
+real "Create Component…" test caught `OccurrenceDto.fromJson` throwing on
+it. Also updated two pre-existing `assembly_add_menu_test.dart` tests that
+still asserted `createNewComponent` rendered disabled (caught by the full
+suite re-run, not written speculatively).
+
+### Remaining limitations after this phase
+
+No file-browsing capability exists yet (`StorageService.listFiles` is
+Phase 18's own scope) - "Open Project…"'s relative-path entry is a typed
+prompt, not a folder browser, a disclosed v1 limitation rather than a
+silently-glossed-over one. `orient_with_rotation` (Phase 11) still has no
+dedicated panel toggle, unrelated to and unchanged by this phase.
+`[2]` (`add_component`'s own AI-plan step) and the full (plan-local-id)
+version of `[1]` (`pattern_component`) are both still open, now genuinely
+unblocked rather than blocked - Phase 18/19 are next per the roadmap's own
+15 → 18 → 19 dependency chain.
+
+---
+
 ## 3. Phase history (every originally-scoped phase implemented)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
@@ -2810,14 +2980,20 @@ mirroring `ComponentPatternCreate`, `source_occurrence_ids` as
 `_validate_component_pattern_source_occurrence_ids`/`_validate_component_
 pattern_payload` directly.
 
-**Phase 15 — Multi-file save flow (medium-large).** Closes `[21]`.
-Deliberately sequenced before Phase 18: `add_component` as an AI step is
-only genuinely useful once a multi-part session can be saved back out.
-`AssemblyDocumentClient.savePart` already handles one Part; the gap is
-`PartScreen` never adopting `StorageService`/`ProjectRoot` at all. Adds
-`relativePathByPartId` session state, a relative-path prompt for a
-brand-new in-session Part, a "Save All" action, and finally enables
-`AssemblyAddMenuAction.createComponent`.
+**~~Phase 15 — Multi-file save flow (medium-large).~~ — moved to §2r,
+implemented.** Closes `[21]`. Needed zero backend changes - verified
+smaller in scope than its own original framing once cross-checked against
+the actual code: every API-surface piece (`export/native?part_id=`,
+`import/native`, `POST /document/parts`, `AssemblyDocumentClient.savePart`/
+`openAssembly`) already existed and was already tested, the gap was
+entirely `PartScreen` never calling any of it. One real correctness step
+the original framing didn't name: `stampExternalRefs` (a new pure
+function) must rewrite every Occurrence's own `external_ref` to its now-
+known path and re-import *before* any file gets written, or a saved
+multi-file project's cross-references would silently fail to resolve on
+reopen. Also added "Open Project…" (`AssemblyDocumentClient.openAssembly`),
+not in the original framing either but required to close the loop - without
+it `relativePathByPartId` could never survive past one running session.
 
 **Phase 16 — Multi-file part-id/path persistence: investigate first
 (small, uncertain).** Closes `[22]` - but starts with a spike, not an
@@ -2856,7 +3032,8 @@ already uses. Pure payoff once Phase 18 lands.
 
 **Dependency summary**: Phases 10, 11, 12, 13, 14, and 17 are mutually
 independent - resequence or parallelize freely. The one hard chain is
-**15 → 18 → 19**. Phase 16 softly depends on 15.
+**15 → 18 → 19**; 15 is now implemented (§2r), so 18 is unblocked. Phase
+16 softly depends on 15.
 
 **Explicitly deferred again** (recommend re-stating, not silently
 dropping, if this roadmap is revisited): `[12]` multi-body/linkage
@@ -2911,9 +3088,9 @@ still top-level-Occurrence-only~~ - **fixed (direct child of focus only,
 not deeper nesting), Phase 12 §2o**; `[19]` ~~latent Focus/Exit-Focus label
 quirk~~ - **fixed, Phase 10 §2m**.
 
-**Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` no
-multi-file save flow; `[22]` composed multi-file `part_id`s are
-session-scoped only.
+**Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` ~~no
+multi-file save flow~~ - **fixed, Phase 15 §2r**; `[22]` composed
+multi-file `part_id`s are session-scoped only.
 
 **Other**: `[23]` undo scoped to component-transform drags only (app-wide
 pre-existing limitation, not assembly-specific).
