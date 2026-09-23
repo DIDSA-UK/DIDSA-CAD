@@ -11,3 +11,7 @@ docker-compose.yml
 docker-compose.override.yml
 .env
 .env.*
+
+# Claude Code agent worktree scaffolding (isolation: "worktree" runs) -
+# transient, never repo content.
+.claude/worktrees/
