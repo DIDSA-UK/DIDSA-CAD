@@ -142,5 +142,23 @@ void main() {
       await tester.pumpAndSettle();
       expect(await pendingResult, ComponentContextMenuAction.pattern);
     });
+
+    // Assembly-audit gap `[27]` (`docs/assembly-scope.md`): "Delete" is the
+    // first way to remove a placed component from an assembly at all.
+    testWidgets('shows Delete, tapping resolves delete', (tester) async {
+      await openMenu(tester, isFocused: false, hidden: false);
+      expect(find.text('Delete'), findsOneWidget);
+      await tester.tap(find.text('Delete'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, ComponentContextMenuAction.delete);
+    });
+
+    testWidgets('Delete renders enabled', (tester) async {
+      await openMenu(tester, isFocused: false, hidden: false);
+      final tile = tester.widget<ListTile>(
+        find.ancestor(of: find.text('Delete'), matching: find.byType(ListTile)),
+      );
+      expect(tile.enabled, isTrue);
+    });
   });
 }

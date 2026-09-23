@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -2224,6 +2225,75 @@ void main() {
       expect(capturedUri?.path, '/document/parts/part-1/mates/mate-1');
     });
 
+    // Assembly-audit gap [27] (`docs/assembly-scope.md`): the first delete
+    // an Occurrence has ever had, plus its own client-supplied-id restore
+    // (Undo).
+    test('deleteOccurrence calls DELETE and completes with no error on a 204', () async {
+      Uri? capturedUri;
+      String? capturedMethod;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedMethod = request.method;
+          return http.Response('', 204);
+        }),
+      );
+
+      await client.deleteOccurrence('part-1', 'occ-1');
+
+      expect(capturedMethod, 'DELETE');
+      expect(capturedUri?.path, '/document/parts/part-1/occurrences/occ-1');
+    });
+
+    test('createOccurrence POSTs the full restore body, preserving the id', () async {
+      Uri? capturedUri;
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'id': 'occ-1',
+            'external_ref': 'parts/bracket.didsa',
+            'resolved_part_id': null,
+            'name_override': null,
+            'transform': {
+              'translation': [1.0, 2.0, 3.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 0.0,
+            },
+            'suppressed': false,
+            'hidden': true,
+            'fixed': false,
+            'color': '#AABBCC',
+          }, status: 201);
+        }),
+      );
+
+      final restored = await client.createOccurrence(
+        'part-1',
+        OccurrenceDto(
+          id: 'occ-1',
+          externalRef: 'parts/bracket.didsa',
+          transform: RigidTransformDto(
+            translation: [1.0, 2.0, 3.0],
+            rotationAxis: [0.0, 0.0, 1.0],
+            rotationAngleDegrees: 0.0,
+          ),
+          hidden: true,
+          color: '#AABBCC',
+        ),
+      );
+
+      expect(capturedUri?.path, '/document/parts/part-1/occurrences');
+      expect(capturedBody['id'], 'occ-1');
+      expect(capturedBody['hidden'], isTrue);
+      expect(capturedBody['color'], '#AABBCC');
+      expect(restored.id, 'occ-1');
+      expect(restored.hidden, isTrue);
+      expect(restored.color, '#AABBCC');
+    });
+
     test('solveForOccurrence posts to the solve endpoint and parses the returned Occurrence', () async {
       Uri? capturedUri;
       final client = DocumentApiClient(
@@ -2469,6 +2539,38 @@ void main() {
 
       expect(capturedMethod, 'DELETE');
       expect(capturedUri?.path, '/document/parts/part-1/component-patterns/pat-1');
+    });
+  });
+
+  // Assembly-audit gap [29] (`docs/assembly-scope.md`): exportAssemblyPart's
+  // own path segment ('/export/assembly-<format>') is genuinely distinct
+  // from exportPart's ('/export/<format>').
+  group('DocumentApiClient.exportAssemblyPart', () {
+    test('GETs the assembly-scoped path for the given format and returns the raw bytes', () async {
+      Uri? capturedUri;
+      final bytes = Uint8List.fromList([1, 2, 3, 4]);
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          return http.Response.bytes(bytes, 200);
+        }),
+      );
+
+      final result = await client.exportAssemblyPart('part-1', 'step');
+
+      expect(capturedUri?.path, '/document/parts/part-1/export/assembly-step');
+      expect(result, bytes);
+    });
+
+    test('a non-2xx response surfaces as an ApiException', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async => http.Response('no geometry to export', 400)),
+      );
+
+      await expectLater(
+        () => client.exportAssemblyPart('part-1', 'stl'),
+        throwsA(isA<ApiException>()),
+      );
     });
   });
 }

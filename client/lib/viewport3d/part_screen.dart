@@ -434,6 +434,42 @@ class _SketchOrientation {
 /// since the Feature has real content).
 enum _PendingOrientationMode { newSketch, redefine }
 
+/// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): one entry on
+/// [_PartScreenState._componentTransformUndoStack] - either kind of
+/// assembly edit this app's only undo mechanism now covers. A sealed class
+/// rather than widening the old `(occurrenceId, previousTransform)` record
+/// in place, since the two kinds need genuinely different reversal actions,
+/// not just different data.
+sealed class _AssemblyUndoEntry {
+  const _AssemblyUndoEntry();
+}
+
+/// Phase 5's own original (and, until gap `[27]` closed, only) kind - a
+/// gizmo drag or [MoveRotateComponentPanel] Apply, reversed by PATCHing
+/// [previousTransform] straight back onto [occurrenceId].
+class _TransformUndoEntry extends _AssemblyUndoEntry {
+  const _TransformUndoEntry(this.occurrenceId, this.previousTransform);
+
+  final String occurrenceId;
+  final RigidTransformDto previousTransform;
+}
+
+/// An Occurrence delete's own cascade, captured in full right before the
+/// delete call (the exact same [mates]/[patterns] lists the pre-delete
+/// warning dialog already computed and showed the user - no second lookup)
+/// - reversed by restoring [occurrence] via `DocumentApiClient
+/// .createOccurrence` (preserving its own id, so [mates]/[patterns] can
+/// correctly re-point at it) then re-creating each of [mates]/[patterns] in
+/// turn (fresh ids - nothing else ever references a Mate/ComponentPattern
+/// by id, so that's harmless).
+class _DeleteUndoEntry extends _AssemblyUndoEntry {
+  const _DeleteUndoEntry({required this.occurrence, required this.mates, required this.patterns});
+
+  final OccurrenceDto occurrence;
+  final List<MateDto> mates;
+  final List<ComponentPatternDto> patterns;
+}
+
 class _PartScreenState extends State<PartScreen> {
   late final DocumentApiClient _api;
 
@@ -545,14 +581,16 @@ class _PartScreenState extends State<PartScreen> {
   /// Assembly support Phase 5: local, session-only undo for component-
   /// transform edits ("local component-transform undo built in this phase,
   /// not deferred" - `docs/assembly-scope.md` §3 - no document-level undo
-  /// exists anywhere else in this app today). Each entry is
-  /// `(occurrenceId, the transform it had *before* the edit that pushed
-  /// it)` - [_undoLastComponentTransform] pops the most recent entry and
-  /// PATCHes that previous value straight back, the same "drag commits,
-  /// nothing more granular" undo grain a gizmo drag itself has (mid-drag
-  /// pointer moves never push their own entries - only
-  /// [_onComponentGizmoDragEnd]'s own single PATCH per gesture does).
-  final List<(String occurrenceId, RigidTransformDto previousTransform)> _componentTransformUndoStack = [];
+  /// exists anywhere else in this app today), widened by assembly-audit gap
+  /// `[27]` to also cover an Occurrence delete's own cascade (restoring the
+  /// Occurrence plus any Mate/ComponentPattern the delete took with it).
+  /// [_undoLastAssemblyAction] pops the most recent entry and reverses
+  /// exactly what it recorded - the same "drag/delete commits, nothing more
+  /// granular" undo grain either kind has (mid-drag pointer moves never
+  /// push their own entries - only [_onComponentGizmoDragEnd]'s own single
+  /// PATCH per gesture does; a cascade-delete pushes exactly one entry for
+  /// the whole cascade, not one per cascaded Mate/Pattern).
+  final List<_AssemblyUndoEntry> _componentTransformUndoStack = [];
 
   /// Bug fix ("the gizmo shows up on plain selection, not just while the
   /// Move/Rotate tool is active"): the actual tool-active flag that was
@@ -650,6 +688,15 @@ class _PartScreenState extends State<PartScreen> {
     if (parentInstance == null) return null;
     return matrix4FromRigidTransform(parentInstance.worldTransform);
   }
+
+  /// Colour-during-focus fix (`docs/assembly-scope.md`): [PartViewport.
+  /// focusOccurrenceColorHex] - [_gizmoParentInstance]'s own `.color`, the
+  /// exact same lookup [_focusWorldTransformMatrix] above already reuses,
+  /// so this is always in sync with whichever Occurrence is currently
+  /// focused rather than a second, separately-maintained source of truth.
+  /// `null` (no override) both while unfocused and while the focused
+  /// Occurrence itself has no colour override set.
+  String? get _focusOccurrenceColorHex => _gizmoParentInstance?.color;
 
   /// Assembly support Phase 12: [_gizmoTargetOccurrence]'s own *world*-space
   /// transform - `PartViewport.selectedOccurrenceTransform`'s own doc
@@ -3411,7 +3458,7 @@ class _PartScreenState extends State<PartScreen> {
   /// sub-assembly (the Mate, and the Occurrence `solveForOccurrence` drives,
   /// both genuinely belong to whichever Part is currently focused, not the
   /// document root) - unlike the gizmo's own PATCH call-sites
-  /// (`_onComponentGizmoDragEnd`/`_undoLastComponentTransform`), which
+  /// (`_onComponentGizmoDragEnd`/`_undoLastAssemblyAction`), which
   /// already routed via `focusPartId = _focusStack?.current ?? _part?.id`
   /// since Phase 5/8. Now matches that same convention.
   Future<void> _confirmMate() async {
@@ -9051,6 +9098,20 @@ class _PartScreenState extends State<PartScreen> {
   /// `dart:io` there (see [_canPersistFilePathForReuse]'s own doc comment
   /// for why mobile is excluded - its own native save flow already does a
   /// real write).
+  ///
+  /// Assembly-audit gap `[29]` (`docs/assembly-scope.md`): picks
+  /// [DocumentApiClient.exportAssemblyPart] over the plain [DocumentApiClient
+  /// .exportPart] once [part] actually has at least one top-level Occurrence
+  /// - re-fetched fresh via `listOccurrences` right before exporting rather
+  /// than trusting [_occurrences] (which is scoped to whichever Part
+  /// [_focusPartId] currently names, not necessarily the root [part] this
+  /// export always targets, and may be stale/never-fetched if Assembly lens
+  /// was never opened this session). A plain, non-assembly session (the
+  /// overwhelmingly common case) keeps using [DocumentApiClient.exportPart]
+  /// unchanged, preserving its own real MBD/material metadata -
+  /// [exportAssemblyPart] is geometry-only, so switching to it
+  /// unconditionally would have silently dropped that metadata for every
+  /// export, not just assembly ones.
   Future<void> _exportPart() async {
     setState(() => _toolbarOpen = false);
     final part = _part;
@@ -9058,7 +9119,10 @@ class _PartScreenState extends State<PartScreen> {
     final format = await showExportFormatDialog(context);
     if (format == null || !mounted) return;
     await _runGuarded(() async {
-      final bytes = await _api.exportPart(part.id, format);
+      final rootOccurrences = await _api.listOccurrences(part.id);
+      final bytes = rootOccurrences.isEmpty
+          ? await _api.exportPart(part.id, format)
+          : await _api.exportAssemblyPart(part.id, format);
       final savedPath = await FilePicker.platform.saveFile(
         dialogTitle: 'Export Part',
         fileName: '${part.name}.$format',
@@ -9283,7 +9347,7 @@ class _PartScreenState extends State<PartScreen> {
         : localRigidTransformRelativeTo(parentInstance.worldTransform, liveWorldTransform);
     await _runGuarded(() async {
       await _api.updateOccurrenceTransform(focusPartId, occurrence.id, finalTransform);
-      _componentTransformUndoStack.add((occurrence.id, previousTransform));
+      _componentTransformUndoStack.add(_TransformUndoEntry(occurrence.id, previousTransform));
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
@@ -9294,23 +9358,62 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// Assembly support Phase 5: pops [_componentTransformUndoStack]'s most
-  /// recent entry and PATCHes that previous transform straight back -
-  /// "local component-transform undo" (`docs/assembly-scope.md` §3), the
-  /// only kind of undo this app has anywhere. A no-op while the stack is
-  /// empty (the Undo affordance is only ever shown/enabled when it isn't -
-  /// see the FAB wiring below) or while [_focusStack]/[_part] can't resolve
-  /// a Part id to PATCH against.
-  Future<void> _undoLastComponentTransform() async {
+  /// Assembly support Phase 5, widened by assembly-audit gap `[27]`: pops
+  /// [_componentTransformUndoStack]'s most recent entry and reverses it -
+  /// the only kind of undo this app has anywhere. A no-op while the stack
+  /// is empty (the Undo affordance is only ever shown/enabled when it isn't
+  /// - see the FAB wiring below) or while [_focusStack]/[_part] can't
+  /// resolve a Part id to call against.
+  Future<void> _undoLastAssemblyAction() async {
     if (_componentTransformUndoStack.isEmpty) return;
-    final (occurrenceId, previousTransform) = _componentTransformUndoStack.removeLast();
+    final entry = _componentTransformUndoStack.removeLast();
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
-    await _runGuarded(() async {
-      await _api.updateOccurrenceTransform(focusPartId, occurrenceId, previousTransform);
-      await _refreshAssemblyTree();
-      await _refreshAssemblyMesh();
-    });
+    switch (entry) {
+      case _TransformUndoEntry(:final occurrenceId, :final previousTransform):
+        await _runGuarded(() async {
+          await _api.updateOccurrenceTransform(focusPartId, occurrenceId, previousTransform);
+          await _refreshAssemblyTree();
+          await _refreshAssemblyMesh();
+        });
+      case _DeleteUndoEntry(:final occurrence, :final mates, :final patterns):
+        await _runGuarded(() async {
+          await _api.createOccurrence(focusPartId, occurrence);
+          for (final mate in mates) {
+            await _api.createMate(
+              focusPartId,
+              type: mate.type,
+              references: mate.references,
+              value: mate.value,
+              flipped: mate.flipped,
+              allowRotation: mate.allowRotation,
+            );
+          }
+          for (final pattern in patterns) {
+            await _api.createComponentPattern(
+              focusPartId,
+              sourceOccurrenceIds: pattern.sourceOccurrenceIds,
+              patternType: pattern.patternType,
+              direction: pattern.direction,
+              count: pattern.count,
+              spacing: pattern.spacing,
+              reverse: pattern.reverse,
+              direction2: pattern.direction2,
+              count2: pattern.count2,
+              spacing2: pattern.spacing2,
+              reverse2: pattern.reverse2,
+              axis: pattern.axis,
+              countAngular: pattern.countAngular,
+              angleTotal: pattern.angleTotal,
+              reverseAngular: pattern.reverseAngular,
+              skipIndices: pattern.skipIndices,
+              orientWithRotation: pattern.orientWithRotation,
+            );
+          }
+          await _refreshAssemblyTree();
+          await _refreshAssemblyMesh();
+        });
+    }
   }
 
   /// The Move/Rotate toolbar's own persistence call - [MoveRotateComponentPanel]'s
@@ -9331,7 +9434,7 @@ class _PartScreenState extends State<PartScreen> {
         : localRigidTransformRelativeTo(parentInstance.worldTransform, newWorldTransform);
     await _runGuarded(() async {
       await _api.updateOccurrenceTransform(focusPartId, occurrence.id, finalTransform);
-      _componentTransformUndoStack.add((occurrence.id, previousTransform));
+      _componentTransformUndoStack.add(_TransformUndoEntry(occurrence.id, previousTransform));
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
@@ -18325,12 +18428,32 @@ class _PartScreenState extends State<PartScreen> {
       _lens = _lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part;
     });
     if (_lens == AssemblyLens.assembly) {
-      unawaited(_refreshAssemblyTree());
-      // Assembly support Phase 4: same lazy-fetch timing as
-      // [_refreshAssemblyTree] just above - most sessions never open the
-      // Assembly lens at all, so this stays uncalled (and [_assemblyMesh]
-      // stays `null`) for them, matching that call's own doc comment.
-      unawaited(_refreshAssemblyMesh());
+      // Bug fix (found auditing [_focusOccurrenceColorHex]'s own new test):
+      // these two used to fire via separate `unawaited(...)` calls, racing
+      // each other - [_refreshAssemblyMesh]'s own doc comment documents an
+      // invariant ("[_occurrences] already fetched by the time this is ever
+      // called") that only holds when it's genuinely sequenced *after*
+      // [_refreshAssemblyTree] completes, the same "await the tree fetch,
+      // then the mesh fetch" order every *other* call site in this file
+      // already uses. Firing both unawaited let [_refreshAssemblyMesh] read
+      // [_occurrences] while it was still `[]` (nothing awaited yet), so it
+      // silently no-opped - meaning the very first Make Focus in a session
+      // (right after opening Assembly lens, before any other action ever
+      // refreshes [_assemblyMesh]) would render/hit-test at an unintended
+      // identity transform instead of its real composed world position, a
+      // real, previously-undiscovered gap in Phase 20's own "true
+      // in-context editing" claim. Sequenced here, still fire-and-forget
+      // from this synchronous caller's own point of view (`unawaited` on
+      // the outer async block), unlike a *sequential-await* elsewhere in
+      // this file, which is why the plain `async` closure is used rather
+      // than duplicating the sequential pattern's own `await` pairs inline.
+      unawaited(() async {
+        await _refreshAssemblyTree();
+        // Most sessions never open the Assembly lens at all, so this stays
+        // uncalled (and [_assemblyMesh] stays `null`) for them, matching
+        // [_refreshAssemblyTree]'s own lazy-fetch cost-avoidance.
+        await _refreshAssemblyMesh();
+      }());
     }
   }
 
@@ -18486,6 +18609,8 @@ class _PartScreenState extends State<PartScreen> {
         _openMate();
       case ComponentContextMenuAction.pattern:
         _openComponentPattern();
+      case ComponentContextMenuAction.delete:
+        await _confirmDeleteOccurrence(occurrence);
     }
   }
 
@@ -18650,6 +18775,82 @@ class _PartScreenState extends State<PartScreen> {
       await _refreshAssemblyTree();
     } on ApiException catch (e) {
       if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+    }
+  }
+
+  /// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): `Component
+  /// ContextMenuAction.delete`'s own handler - the first way to remove a
+  /// placed component from an assembly at all. Mirrors [_confirmDeleteMate]'s
+  /// "ask first, then delete and refresh" shape, widened with a dynamic
+  /// warning body naming every Mate/ComponentPattern that would cascade-
+  /// delete along with it (computed from [_mates]/[_componentPatterns] -
+  /// already loaded, no second round trip needed) and an Undo entry pushed
+  /// right before the delete call, capturing exactly what the warning named.
+  Future<void> _confirmDeleteOccurrence(OccurrenceDto occurrence) async {
+    final part = _part;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null) return;
+    final affectedMates = <MateDto>[];
+    for (var i = 0; i < _mates.length; i++) {
+      if (_mates[i].references.any((r) => r.occurrenceId == occurrence.id)) {
+        affectedMates.add(_mates[i]);
+      }
+    }
+    final affectedMateNames = [
+      for (var i = 0; i < _mates.length; i++)
+        if (affectedMates.contains(_mates[i])) mateDisplayName(_mates, i),
+    ];
+    final affectedPatterns = <ComponentPatternDto>[];
+    for (var i = 0; i < _componentPatterns.length; i++) {
+      if (_componentPatterns[i].sourceOccurrenceIds.contains(occurrence.id)) {
+        affectedPatterns.add(_componentPatterns[i]);
+      }
+    }
+    final affectedPatternNames = [
+      for (var i = 0; i < _componentPatterns.length; i++)
+        if (affectedPatterns.contains(_componentPatterns[i])) componentPatternDisplayName(_componentPatterns, i),
+    ];
+    final warningLines = [
+      if (affectedMateNames.isNotEmpty) '${affectedMateNames.length} mate(s): ${affectedMateNames.join(', ')}',
+      if (affectedPatternNames.isNotEmpty)
+        '${affectedPatternNames.length} pattern(s): ${affectedPatternNames.join(', ')}',
+    ];
+    final content = warningLines.isEmpty
+        ? 'This cannot be undone.'
+        : 'Deleting this component will also delete ${warningLines.join(' and ')}. This cannot be undone.';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete component?'),
+        content: Text(content),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      _componentTransformUndoStack.add(
+        _DeleteUndoEntry(occurrence: occurrence, mates: affectedMates, patterns: affectedPatterns),
+      );
+      await _api.deleteOccurrence(focusPartId, occurrence.id);
+      if (!mounted) return;
+      setState(() {
+        if (_selectedOccurrenceId == occurrence.id) _selectedOccurrenceId = null;
+        if (affectedMates.any((m) => m.id == _selectedMateId)) _selectedMateId = null;
+        _selectedEntities = {};
+      });
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      // The delete never happened - the just-pushed undo entry would
+      // restore something that was never actually removed, so it's popped
+      // back off rather than left to silently no-op (a restore against a
+      // still-live Occurrence id) the next time Undo is pressed.
+      _componentTransformUndoStack.removeLast();
       setState(() => _errorMessage = e.message);
     }
   }
@@ -19030,6 +19231,7 @@ class _PartScreenState extends State<PartScreen> {
                   // from a genuine peer/parent (isOccurrencePathWithinFocus).
                   focusedOccurrencePath: _focusStack?.currentOccurrencePath ?? const [],
                   focusWorldTransformMatrix: _focusWorldTransformMatrix,
+                  focusOccurrenceColorHex: _focusOccurrenceColorHex,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
                   createPlanes: _createPlaneGeometries,
@@ -20558,16 +20760,17 @@ class _PartScreenState extends State<PartScreen> {
                                 _lens == AssemblyLens.part ? Icons.view_in_ar_outlined : Icons.category_outlined,
                               ),
                             ),
-                          // Assembly support Phase 5: "local component-
-                          // transform undo built in this phase, not
-                          // deferred" (`docs/assembly-scope.md` §3) - the
-                          // only Undo affordance anywhere in this app, since
-                          // no document-level undo exists elsewhere to hang
-                          // this off of. Shown only in Assembly lens (the
-                          // only place a component-transform edit can even
-                          // happen) and only once there's actually something
-                          // to undo - same "hidden while the toolbar is
-                          // open" rule the other small FABs in this Column
+                          // Assembly support Phase 5, widened by assembly-audit
+                          // gap `[27]` (`docs/assembly-scope.md`): "local
+                          // component-transform undo built in this phase, not
+                          // deferred" (§3), now also covering an Occurrence
+                          // delete's own cascade - the only Undo affordance
+                          // anywhere in this app, since no document-level undo
+                          // exists elsewhere to hang this off of. Shown only in
+                          // Assembly lens (the only place either kind of edit
+                          // can even happen) and only once there's actually
+                          // something to undo - same "hidden while the toolbar
+                          // is open" rule the other small FABs in this Column
                           // already follow.
                           if (!_toolbarOpen &&
                               _lens == AssemblyLens.assembly &&
@@ -20578,8 +20781,11 @@ class _PartScreenState extends State<PartScreen> {
                               _componentTransformUndoStack.isNotEmpty)
                             FloatingActionButton.small(
                               heroTag: 'undo-component-transform-fab',
-                              tooltip: 'Undo move',
-                              onPressed: () => unawaited(_undoLastComponentTransform()),
+                              tooltip: switch (_componentTransformUndoStack.last) {
+                                _TransformUndoEntry() => 'Undo move',
+                                _DeleteUndoEntry() => 'Undo delete',
+                              },
+                              onPressed: () => unawaited(_undoLastAssemblyAction()),
                               child: const Icon(Icons.undo),
                             ),
                         ],

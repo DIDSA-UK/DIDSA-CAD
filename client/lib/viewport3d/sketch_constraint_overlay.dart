@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_scene/scene.dart' show Camera;
+import 'package:vector_math/vector_math.dart' as vm;
 
 import '../sketch/sketch_controller.dart'
     show
@@ -43,12 +44,20 @@ class ConstraintOverlay extends StatelessWidget {
   final SketchPlaneBasis basis;
   final List<ConstraintOverlayItem> items;
 
+  /// Assembly-audit gap `[28]` (`docs/assembly-scope.md`): the focused
+  /// sub-Part's own real world transform - see [worldToScreenFocused]'s own
+  /// doc comment. `null` (the default) while unfocused or focused exactly
+  /// at the document root, mirroring every other `focusWorldTransformMatrix`
+  /// consumer's own "identity/no-op" convention.
+  final vm.Matrix4? focusTransform;
+
   const ConstraintOverlay({
     super.key,
     required this.camera,
     required this.viewportSize,
     required this.basis,
     required this.items,
+    this.focusTransform,
   });
 
   @override
@@ -57,7 +66,13 @@ class ConstraintOverlay extends StatelessWidget {
     return IgnorePointer(
       child: CustomPaint(
         size: Size.infinite,
-        painter: _ConstraintOverlayPainter(camera: camera, viewportSize: viewportSize, basis: basis, items: items),
+        painter: _ConstraintOverlayPainter(
+          camera: camera,
+          viewportSize: viewportSize,
+          basis: basis,
+          items: items,
+          focusTransform: focusTransform,
+        ),
       ),
     );
   }
@@ -252,10 +267,11 @@ double? radialDimensionAngleDegrees({
   Camera camera,
   Size viewportSize,
   SketchPlaneBasis basis,
-  ConstraintRadialDimensionItem item,
-) {
+  ConstraintRadialDimensionItem item, {
+  vm.Matrix4? focusTransform,
+}) {
   Offset? project((double, double) sketchXY) =>
-      worldToScreen(camera, viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
+      worldToScreenFocused(camera, viewportSize, focusTransform, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
   final centerScreen = project(item.center);
   final rimScreen = project(item.rim);
   if (centerScreen == null || rimScreen == null) return null;
@@ -341,11 +357,18 @@ class _ConstraintOverlayPainter extends CustomPainter {
   final Size viewportSize;
   final SketchPlaneBasis basis;
   final List<ConstraintOverlayItem> items;
+  final vm.Matrix4? focusTransform;
 
-  _ConstraintOverlayPainter({required this.camera, required this.viewportSize, required this.basis, required this.items});
+  _ConstraintOverlayPainter({
+    required this.camera,
+    required this.viewportSize,
+    required this.basis,
+    required this.items,
+    this.focusTransform,
+  });
 
   Offset? _project((double, double) sketchXY) =>
-      worldToScreen(camera, viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
+      worldToScreenFocused(camera, viewportSize, focusTransform, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -406,7 +429,8 @@ class _ConstraintOverlayPainter extends CustomPainter {
     switch (item.orientation) {
       case 'vertical':
       case 'horizontal':
-        final endpoints = _axisLockedDimensionEndpoints(camera, viewportSize, basis, item);
+        final endpoints =
+            _axisLockedDimensionEndpoints(camera, viewportSize, basis, item, focusTransform: focusTransform);
         if (endpoints == null) return;
         (p1, p2) = endpoints;
       default:
@@ -796,7 +820,10 @@ class _ConstraintOverlayPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ConstraintOverlayPainter oldDelegate) {
-    return oldDelegate.camera != camera || oldDelegate.viewportSize != viewportSize || oldDelegate.items != items;
+    return oldDelegate.camera != camera ||
+        oldDelegate.viewportSize != viewportSize ||
+        oldDelegate.items != items ||
+        oldDelegate.focusTransform != focusTransform;
   }
 }
 
@@ -832,10 +859,11 @@ double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
   Camera camera,
   Size viewportSize,
   SketchPlaneBasis basis,
-  ConstraintLinearDimensionItem item,
-) {
+  ConstraintLinearDimensionItem item, {
+  vm.Matrix4? focusTransform,
+}) {
   Offset? project((double, double) sketchXY) =>
-      worldToScreen(camera, viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
+      worldToScreenFocused(camera, viewportSize, focusTransform, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
 
   final bool vertical = item.orientation == 'vertical';
   double axisOf((double, double) p) => vertical ? p.$1 : p.$2;
@@ -1029,10 +1057,11 @@ Offset? constraintOverlayItemLabelCenter(
   Camera camera,
   Size viewportSize,
   SketchPlaneBasis basis,
-  ConstraintOverlayItem item,
-) {
+  ConstraintOverlayItem item, {
+  vm.Matrix4? focusTransform,
+}) {
   Offset? project((double, double) sketchXY) =>
-      worldToScreen(camera, viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
+      worldToScreenFocused(camera, viewportSize, focusTransform, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
 
   switch (item) {
     case ConstraintLabelItem it:
@@ -1065,7 +1094,8 @@ Offset? constraintOverlayItemLabelCenter(
       switch (it.orientation) {
         case 'vertical':
         case 'horizontal':
-          final endpoints = _axisLockedDimensionEndpoints(camera, viewportSize, basis, it);
+          final endpoints =
+              _axisLockedDimensionEndpoints(camera, viewportSize, basis, it, focusTransform: focusTransform);
           if (endpoints == null) return null;
           (p1, p2) = endpoints;
         default:
@@ -1188,9 +1218,11 @@ String? constraintOverlayItemAt(
   List<ConstraintOverlayItem> items,
   Offset screenPos, {
   double radius = 20.0, // matches sketch_canvas.dart's own _ghostHitRadiusPixels
+  vm.Matrix4? focusTransform,
 }) {
   for (final item in items.reversed) {
-    final center = constraintOverlayItemLabelCenter(camera, viewportSize, basis, item);
+    final center =
+        constraintOverlayItemLabelCenter(camera, viewportSize, basis, item, focusTransform: focusTransform);
     if (center != null && (screenPos - center).distance <= radius) {
       return item.constraintId;
     }

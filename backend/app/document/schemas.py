@@ -2938,6 +2938,39 @@ class OccurrenceTransformUpdate(BaseModel):
     color: str | None = None
 
 
+class OccurrenceCreate(BaseModel):
+    """`POST /parts/{part_id}/occurrences`'s request body - restores a
+    fully-known `Occurrence` onto `part_id`. Unlike `MateCreate`/
+    `ComponentPatternCreate` (both server-generate their own `id` via
+    `uuid.uuid4()` - nothing else in this app ever references a Mate/
+    ComponentPattern by id), `id` here is **client-supplied and required**:
+    this endpoint's own first and only caller is Assembly-lens "Undo" after
+    an Occurrence delete (`docs/assembly-scope.md`) - the Mates/
+    ComponentPatterns being restored alongside it were captured (client-
+    side, before the delete) referencing this exact `occurrence_id`, so the
+    restored Occurrence must keep the same id for those to correctly
+    re-point at it once they're independently re-created via the ordinary
+    `POST .../mates`/`POST .../component-patterns` endpoints (which mint
+    their own fresh ids - harmless, since nothing references a Mate/Pattern
+    by id). `create_occurrence` (`router.py`) 409s if `id` already names an
+    Occurrence on this Part - restoring is expected to target a fresh id
+    (whatever was just deleted), never to silently overwrite an existing
+    one. Every other field mirrors `OccurrenceResponse`'s own shape
+    verbatim (this is genuinely a full round-trip restore, not a narrower
+    "insert a new component" shape - compare `add_component.dart`'s own
+    `mergeComponentIntoDocument`, which goes through a full `import_native`
+    instead and is untouched by this endpoint)."""
+
+    id: str
+    external_ref: str | None = None
+    name_override: str | None = None
+    transform: RigidTransformResponse | None = None
+    suppressed: bool = False
+    hidden: bool = False
+    fixed: bool = False
+    color: str | None = None
+
+
 class MateEntityRefResponse(BaseModel):
     """One side of a `MateResponse` - see `app.document.models.
     MateEntityRef`'s own docstring. Exactly one of `subshape_ref`/

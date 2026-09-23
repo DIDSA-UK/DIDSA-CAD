@@ -97,5 +97,31 @@ void main() {
       expect(projected.dx, closeTo(direct.dx, 1e-3));
       expect(projected.dy, closeTo(direct.dy, 1e-3));
     });
+
+    // Assembly-audit gap `[28]` (`docs/assembly-scope.md`): a Sketch on a
+    // focused sub-Part is in that Part's own *local* frame - [basis] alone
+    // is not enough to place it on screen correctly; [focusTransform] must
+    // be composed on first, the same "compose the forward focus transform
+    // onto local-frame geometry before it's used" fix every other gap-`[28]`
+    // call site gets.
+    test('local (0, 0) composes a given focusTransform before projecting', () {
+      final focusTransform = vm.Matrix4.identity()..setTranslation(vm.Vector3(3, 0, 0));
+      final transform = planeTransform(camera, viewSize, basis, focusTransform: focusTransform);
+      // The Sketch's own local origin, once composed through focusTransform,
+      // lands at world (3, 0, 0) - not at basis.origin (world zero).
+      final direct = worldToScreen(camera, viewSize, vm.Vector3(3, 0, 0))!;
+
+      final projected = _applyPlaneTransform(transform, 0, 0);
+
+      expect(projected.dx, closeTo(direct.dx, 1e-3));
+      expect(projected.dy, closeTo(direct.dy, 1e-3));
+    });
+
+    test('a null focusTransform matches the no-focus-transform overload exactly', () {
+      final withNull = planeTransform(camera, viewSize, basis, focusTransform: null);
+      final withoutParam = planeTransform(camera, viewSize, basis);
+
+      expect(withNull.storage, orderedEquals(withoutParam.storage));
+    });
   });
 }

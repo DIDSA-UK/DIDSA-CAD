@@ -1490,6 +1490,24 @@ class OccurrenceDto {
         fixed: json['fixed'] as bool? ?? false,
         color: json['color'] as String?,
       );
+
+  /// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): [DocumentApiClient
+  /// .createOccurrence]'s own request body - a full round-trip restore
+  /// (deliberately not [resolvedPartId]: that field is never client-settable,
+  /// only ever populated server-side by `import_native`'s own cross-reference
+  /// resolution - a restored Occurrence is unresolved until a later
+  /// full-graph reimport resolves it again, the same single-file-round-trip
+  /// behavior every other Occurrence already has).
+  Map<String, dynamic> toRestoreJson() => {
+        'id': id,
+        'external_ref': externalRef,
+        'name_override': nameOverride,
+        'transform': transform.toJson(),
+        'suppressed': suppressed,
+        'hidden': hidden,
+        'fixed': fixed,
+        'color': color,
+      };
 }
 
 /// One side of a [MateDto] - see the backend `MateEntityRef`'s own
@@ -4405,6 +4423,40 @@ class DocumentApiClient {
         (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): `DELETE
+  /// /document/parts/{part_id}/occurrences/{occurrence_id}` - the first
+  /// delete an Occurrence has ever had. Cascades server-side: any Mate/
+  /// ComponentPattern referencing [occurrenceId] is removed too (see the
+  /// endpoint's own docstring) - the caller is expected to have already
+  /// warned the user which ones, via [partId]'s already-loaded Mates/
+  /// ComponentPatterns lists, before calling this.
+  Future<void> deleteOccurrence(String partId, String occurrenceId) => _send(
+        () => _httpClient.delete(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  /// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): `POST
+  /// /document/parts/{part_id}/occurrences` - restores a fully-known
+  /// [OccurrenceDto] (its own [OccurrenceDto.toRestoreJson]) onto [partId],
+  /// preserving its exact `id` (unlike [createMate]/[createComponentPattern],
+  /// both server-generated-id creates) - this endpoint's own first and only
+  /// caller is Assembly-lens "Undo" right after [deleteOccurrence], so any
+  /// cascade-deleted Mate/ComponentPattern captured before the delete can
+  /// correctly re-point at the exact same Occurrence id once restored.
+  /// Throws [ApiException] (409) if [occurrence]'s own `id` already names a
+  /// live Occurrence on [partId].
+  Future<OccurrenceDto> createOccurrence(String partId, OccurrenceDto occurrence) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/occurrences'),
+              headers: _headers,
+              body: jsonEncode(occurrence.toRestoreJson()),
+            ),
+        (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Assembly support: `GET /document/parts/{part_id}/mates` - the
   /// Assembly tree's own Mates list for [partId], full detail (unlike
   /// [PartDto.mateIds], ids only).
@@ -4746,6 +4798,22 @@ class DocumentApiClient {
   /// an [ApiException] here, same as any other error response).
   Future<Uint8List> exportPart(String partId, String format) => _sendBytes(
         () => _httpClient.get(_uri('/document/parts/$partId/export/$format'), headers: _headers),
+      );
+
+  /// Assembly-audit gap `[29]` (`docs/assembly-scope.md`): [exportPart]'s
+  /// own assembly-aware sibling - every placed Occurrence's real geometry
+  /// (including `ComponentPattern`-derived instances), at its real composed
+  /// world transform, not just `partId`'s own local Bodies. `PartScreen
+  /// ._exportPart` picks this over [exportPart] only once `partId` actually
+  /// has at least one Occurrence - a plain, non-assembly session keeps using
+  /// [exportPart] unchanged (this endpoint is geometry-only, no MBD/
+  /// material metadata, since a per-instance material mapping has no shape
+  /// `export_step` supports yet - see that endpoint's own backend docstring).
+  Future<Uint8List> exportAssemblyPart(String partId, String format) => _sendBytes(
+        () => _httpClient.get(
+              _uri('/document/parts/$partId/export/assembly-$format'),
+              headers: _headers,
+            ),
       );
 
   /// Import: brings [bytes] in as a fixed, non-parametric Body (locked-in

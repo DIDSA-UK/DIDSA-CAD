@@ -108,6 +108,22 @@ class PartViewport extends StatefulWidget {
   /// [buildAssemblyInstanceNode]'s own `localTransform:` shape one level up.
   final vm.Matrix4? focusWorldTransformMatrix;
 
+  /// Fixes a real gap found auditing this app's own assembly-testing
+  /// workstream (`docs/assembly-scope.md`): [Occurrence.color]'s own
+  /// per-instance colour override (`buildAssemblyInstanceNode`'s `tint`
+  /// param) was only ever applied by [_syncAssemblyInstanceNodes] - once
+  /// Phase 20 made [_syncMeshNode] responsible for rendering the exact
+  /// focused Occurrence's own content instead (see that function's own doc
+  /// comment), its colour tint silently reverted to [bodyColourHex] (the
+  /// global default) for the whole focus session, reappearing only on Exit
+  /// Focus. `null` (the default, matching [focusWorldTransformMatrix]'s own
+  /// "identity/no-op while unfocused" shape) means no override - fed by
+  /// [PartScreenState]'s own `_gizmoParentInstance?.color` (the exact same
+  /// lookup [focusWorldTransformMatrix] itself is derived from), so this is
+  /// genuinely always in sync with whichever Occurrence is currently
+  /// focused, never a second, separately-maintained source of truth.
+  final String? focusOccurrenceColorHex;
+
   /// Test report item 3 (New Mate ghost preview): the target Part id whose
   /// geometry [PartViewportState._syncMatePreviewNode] should render as a
   /// translucent, distinctly-tinted ("not placed yet, only a proposal")
@@ -1003,6 +1019,7 @@ class PartViewport extends StatefulWidget {
     this.assemblyInstances = const [],
     this.focusedOccurrencePath = const [],
     this.focusWorldTransformMatrix,
+    this.focusOccurrenceColorHex,
     this.matePreviewPartId,
     this.matePreviewTransform,
     this.selectedOccurrenceTransform,
@@ -1833,7 +1850,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // new world position for the still-focused child) must rebuild the
         // Node the same way a `focusedOccurrencePath` change already does.
         widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath ||
-        widget.focusWorldTransformMatrix != oldWidget.focusWorldTransformMatrix) {
+        widget.focusWorldTransformMatrix != oldWidget.focusWorldTransformMatrix ||
+        // Colour-during-focus fix (`docs/assembly-scope.md`): the same
+        // rebuild trigger [focusWorldTransformMatrix] just above already
+        // gets, for the exact same reason - a change while still focused
+        // (e.g. tapping the colour disc mid-focus-session) must re-tint.
+        widget.focusOccurrenceColorHex != oldWidget.focusOccurrenceColorHex) {
       setState(_syncMeshNode);
     }
     // Assembly support Phase 4: [_syncAssemblyInstanceNodes]'s own three
@@ -2312,7 +2334,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // apparently it isn't always, so the same fix applies here too.
             : (PhysicallyBasedMaterial()
               ..alphaMode = effectiveBodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
-              ..baseColorFactor = vector4FromHex(widget.bodyColourHex, opacity: effectiveBodyOpacity)
+              // Colour-during-focus fix (`docs/assembly-scope.md`): the
+              // focused Occurrence's own colour override (if any) wins over
+              // the global default - mirrors [buildAssemblyInstanceNode]'s
+              // own `tint ?? <neutral default>` precedent one level up.
+              ..baseColorFactor = vector4FromHex(
+                widget.focusOccurrenceColorHex ?? widget.bodyColourHex,
+                opacity: effectiveBodyOpacity,
+              )
               ..roughnessFactor = widget.roughness
               ..metallicFactor = ScenePreferences.fixedMetallic
               ..emissiveFactor = vm.Vector4(
@@ -4692,7 +4721,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final basis = widget.sketchPlaneBasis;
       final cursor = _cursorPosition;
       final hitId = (basis != null && cursor != null)
-          ? constraintOverlayItemAt(_camera.cameraFor(_viewportSize), _viewportSize, basis, widget.constraintOverlayItems, cursor)
+          ? constraintOverlayItemAt(
+              _camera.cameraFor(_viewportSize),
+              _viewportSize,
+              basis,
+              widget.constraintOverlayItems,
+              cursor,
+              focusTransform: widget.focusWorldTransformMatrix,
+            )
           : null;
       if (hitId != null && widget.onConstraintOverlayItemTap!(hitId)) return null;
     }
@@ -4980,8 +5016,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final basis = widget.sketchPlaneBasis;
       final cursor = _cursorPosition;
       if (radialItem != null && basis != null && cursor != null) {
-        final projected =
-            projectRadialDimensionBasis(_camera.cameraFor(_viewportSize), _viewportSize, basis, radialItem);
+        final projected = projectRadialDimensionBasis(
+          _camera.cameraFor(_viewportSize),
+          _viewportSize,
+          basis,
+          radialItem,
+          focusTransform: widget.focusWorldTransformMatrix,
+        );
         if (projected != null) {
           final (centerScreen, rimScreen, perpScreen) = projected;
           final desiredDelta = cursor - centerScreen;
@@ -5310,7 +5351,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final basis = widget.sketchPlaneBasis;
       final cursor = _cursorPosition;
       final hitId = (basis != null && cursor != null)
-          ? constraintOverlayItemAt(_camera.cameraFor(_viewportSize), _viewportSize, basis, widget.constraintOverlayItems, cursor)
+          ? constraintOverlayItemAt(
+              _camera.cameraFor(_viewportSize),
+              _viewportSize,
+              basis,
+              widget.constraintOverlayItems,
+              cursor,
+              focusTransform: widget.focusWorldTransformMatrix,
+            )
           : null;
       final consumed = widget.onConstraintOverlayItemTap!(hitId);
       if (consumed) return;
@@ -5377,13 +5425,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// `sketch_constraint_overlay.dart`'s dimension painters already use
   /// (e.g. `_paintRadialDimension`). Returns null if either point fails to
   /// project (behind the camera, degenerate).
-  double? _localPixelsPerSketchUnit(vm.Vector3 worldPoint, SketchPlaneBasis basis) {
+  /// Assembly-audit gap `[28]` (`docs/assembly-scope.md`): despite its
+  /// original `worldPoint` parameter name, both call sites actually pass a
+  /// *local*-frame hit point (the result of a [_toLocalRay]-corrected
+  /// `hitTestSketchPlane` call, Phase 20 Stage 2's own convention) - this
+  /// was the one place that Stage's own `_toLocalRay` wiring pass missed,
+  /// left out of the ~10 other ray-construction sites it fixed. Composes
+  /// [widget.focusWorldTransformMatrix] onto both projected points via
+  /// [worldToScreenFocused], the same fix every other gap-`[28]` call site
+  /// gets.
+  double? _localPixelsPerSketchUnit(vm.Vector3 localPoint, SketchPlaneBasis basis) {
     final camera = _camera.cameraFor(_viewportSize);
-    final origin = worldToScreen(camera, _viewportSize, worldPoint);
+    final focusTransform = widget.focusWorldTransformMatrix;
+    final origin = worldToScreenFocused(camera, _viewportSize, focusTransform, localPoint);
     if (origin == null) return null;
-    final (sketchX, sketchY) = worldPointToSketch(basis, worldPoint);
-    final stepWorld = sketchPointToWorld(basis, sketchX + 1.0, sketchY);
-    final step = worldToScreen(camera, _viewportSize, stepWorld);
+    final (sketchX, sketchY) = worldPointToSketch(basis, localPoint);
+    final stepLocal = sketchPointToWorld(basis, sketchX + 1.0, sketchY);
+    final step = worldToScreenFocused(camera, _viewportSize, focusTransform, stepLocal);
     if (step == null) return null;
     return (step - origin).distance;
   }
@@ -6316,6 +6374,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 viewportSize: size,
                 basis: widget.sketchPlaneBasis!,
                 items: widget.constraintOverlayItems,
+                focusTransform: widget.focusWorldTransformMatrix,
               ),
             // P44b (on-device feedback: "when I click a ghost dimension to
             // set its value, nothing happens"): the embedded view never had
@@ -6342,6 +6401,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   size,
                   widget.sketchPlaneBasis!,
                   item,
+                  focusTransform: widget.focusWorldTransformMatrix,
                 );
                 if (anchor == null) return const SizedBox.shrink();
                 return widget.activeConstraintOverlayItemBuilder!(anchor);
@@ -6401,6 +6461,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   camera: _camera.cameraFor(size),
                   viewportSize: size,
                   basis: widget.sketchOrientationBasis!,
+                  focusTransform: widget.focusWorldTransformMatrix,
                 ),
               ),
             if (ViewPreferences.debugShowCameraOrientation)

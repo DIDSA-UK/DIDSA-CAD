@@ -1294,10 +1294,16 @@ its own CRUD endpoints living directly on `Part`" for the second.
 one new field:
 
 - `ComponentPatternType` (`LINEAR`/`CIRCULAR`) - named this way, not
-  `RECTANGULAR`/`CIRCULAR` like the body-level `PatternType`, since a
-  `ComponentPattern` only ever repeats along one direction (no
-  `direction_2`/2D-grid equivalent - the original brief's own wording was
-  "linear + circular", never "rectangular").
+  `RECTANGULAR`/`CIRCULAR` like the body-level `PatternType`, since at
+  this phase's own time of writing a `ComponentPattern` only ever
+  repeated along one direction (no `direction_2`/2D-grid equivalent -
+  the original brief's own wording was "linear + circular", never
+  "rectangular"). ~~Still true as of this phase.~~ **Stale as of the
+  undocumented "assembly testing" workstream, §2w**: `ComponentPattern`
+  gained `direction_2`/`count_2`/`spacing_2`/`reverse_2` (optional,
+  inert while `count_2 <= 1`, so `LINEAR` stays the right name rather
+  than becoming "RECTANGULAR") - found and corrected by this document's
+  own later completeness audit, not by this phase itself.
 - `ComponentPatternAxis` (`origin` + `direction`, both free world-space
   vectors) - a `ComponentPattern`'s circular axis is never resolved from
   Body/Sketch geometry the way body-level `PatternAxisRef` is (an
@@ -3301,9 +3307,9 @@ passed** (up from 2147; 4 new `pathEquals` unit tests, made public in
 Stage 2 and now directly tested on top of its existing indirect
 coverage).
 
-### Known gap, deliberately not fixed this phase
+### ~~Known gap, deliberately not fixed this phase~~ - fixed, gap `[28]` (§2x)
 
-`sketch_constraint_overlay.dart`'s dimension/constraint-label painters
+~~`sketch_constraint_overlay.dart`'s dimension/constraint-label painters
 and hit-testing (`constraintOverlayItemLabelCenter`/
 `constraintOverlayItemAt`), `sketch_orientation_indicator.dart`, and
 `part_viewport.dart`'s own Draw-mode dimension-drag screen-space
@@ -3322,7 +3328,9 @@ composed onto each of these functions' own local-frame point before
 in particular) are called from both a hit-test and a *painter*, so the
 transform needs plumbing through more signatures than a single-stage
 pass could responsibly absorb - left for its own focused follow-up
-rather than folded in here speculatively.
+rather than folded in here speculatively.~~ See §2x below for the fix -
+a shared `worldToScreenFocused` helper threaded through every one of
+these call sites.
 
 **No GPU/device in this sandbox** to verify the actual on-screen
 render/highlight/picking feel for any of Phases 20's four stages -
@@ -3331,6 +3339,318 @@ class of limitation (e.g. Phase 12's own nested-gizmo rendering). Every
 pure-function transform/state-scoping claim above is directly unit-
 tested; the interactive, on-screen result is real, undone follow-up
 verification once a real device is available.
+
+---
+
+## 2w. Undocumented interim work — the "assembly testing" bug-fix pass (retroactively documented)
+
+A completeness audit of this document against the actual current code
+(this document's own established convention, applied to itself) found
+that a real, substantial workstream shipped between Phase 14 (§2q) and
+Phase 15 (§2r) - ~12 substantive commits, tagged "assembly testing" in
+their own commit messages, spanning Sept 16-22 - and was never written
+up anywhere in this document, despite adding real, shipped, user-facing
+features and fixing real bugs. This section retroactively documents what
+that pass actually shipped, sourced from the commits' own (already
+thorough) messages and the code itself, not reconstructed from memory.
+One concrete staleness bug this caused, also fixed in this same pass:
+§2j (Phase 7) asserted "a `ComponentPattern` only ever repeats along one
+direction (no `direction_2`/2D-grid equivalent...)" as a deliberate
+design choice - false since this workstream added exactly that.
+
+**New model capabilities**:
+
+- **`Occurrence.fixed`** ("Fix"/"Float") - a real CAD-style grounded-
+  component constraint: `True` locks the Occurrence's own `transform`
+  against the gizmo and any Mate solve targeting it (`update_occurrence_
+  transform`/`solve_for_occurrence` both 422 with `occurrence_is_fixed`).
+  The client auto-applies this to the very first Occurrence added to an
+  assembly (`add_component.dart`), the same "first component is
+  grounded by convention" real CAD tools apply. Reachable via the
+  Component context menu's Fix/Float entry.
+- **`Occurrence.color`** - a per-instance `"#RRGGBB"` colour override,
+  tinting the placed instance in the 3D viewport (`buildAssemblyInstanceNode`'s
+  `tint` param) independent of the viewport's own global default body
+  colour. Reachable via a tappable colour disc on each Assembly-tree row
+  (`occurrence_colour_sheet.dart`), PATCH-persisted with the same
+  `None`-omitted/`""`-clears/anything-else-verbatim tri-state
+  `hidden`/`fixed` already established.
+- **`Mate.allow_rotation`** - a CONCENTRIC-only spin-lock: unchecked, an
+  extra constraint locks rotation about the shared axis (translation
+  along it stays free either way). Defaults `True` (free spin, every
+  pre-existing Mate's actual solved behaviour), so no existing Mate's
+  meaning changed. Reachable via a checkbox in `MatePanel`'s own edit
+  flow.
+- **`ComponentPattern`'s 2D grid** (`direction_2`/`count_2`/`spacing_2`/
+  `reverse_2`) - an optional second direction crossing the existing
+  `direction`, mirroring body-level `PatternFeature.direction_2`'s own
+  "second direction inert while `count_2 <= 1`" convention exactly. This
+  is the fix for §2j's own stale claim above. A new "Direction 2"
+  section in `ComponentPatternPanel` exposes it (its own "Pick
+  Direction" button per section, replacing an earlier Direction 1/2
+  segmented toggle that had no visible effect once both sections were
+  always shown).
+
+**Mate authoring UX**: tap-to-select+highlight a Mate row in the
+Assembly tree (resolving its own referenced faces/edges/vertices);
+long-press opens a Delete/Edit action sheet (`mate_context_menu.dart`),
+Edit revising value/flipped/allow_rotation in place and re-solving; a
+new `POST .../occurrences/{id}/preview-mate-solve` endpoint drives a
+live, translucent ghost preview of where the driven part will land as
+type/value/flip/allow-rotation change while authoring, never persisting
+anything (a genuine dry-run solve, mirroring `assembly_solver`'s own
+real solve path exactly); a real solve DOF calculation replaced
+`py_slvs`'s own unreliable native params-minus-equations count with a
+from-scratch rank-based calculation over a numerical Jacobian of every
+applicable mate's residuals.
+
+**Assembly tree restructuring**: the tree now shows the containing Part
+as a root row with Components/Mates/Patterns indented beneath it
+(previously started flush at the sections); each Occurrence row gained
+an inline visibility toggle and the colour disc above; a breadcrumb row
+(independent of whether the focused Part's own tree is empty) fixes
+getting permanently stuck after "Make Focus" on a component with no
+Occurrences of its own - `AssemblyFocusStack` now tracks a display-name
+breadcrumb alongside its occurrence path specifically for this.
+
+**Move/Rotate**: a numeric-entry toolbar, `MoveRotateComponentPanel`
+(Move/Rotate tabs, Delta X/Y/Z fields, an Apply button that PATCHes the
+same way the gizmo's own drag-end does), reachable once Move/Rotate is
+explicitly chosen from the long-press menu (a new `_moveRotateComponentActive`
+gate - the gizmo used to show for any selected Occurrence with no
+concept of the tool being "active" at all). Real bugs fixed alongside
+it: the gizmo's own Node was never added to `polylineCarryingNodes`
+(rendered invisible, the same class of bug the section gizmo once had);
+it now scales to ~2/3 of its target's own world-space bounding-sphere
+radius instead of a constant pixel size; a stuck-touch-state bug let a
+second finger's pinch/pan misfire as a single-finger orbit while the
+first finger dragged a gizmo handle (mirroring `section_gizmo`'s own
+earlier fix for the identical bug class); Reset View now unions
+root-Part-Bodies-and-assembly-instance bounds into a real world-space
+AABB from actual transformed mesh vertices (previously loose axis-
+aligned-cube padding per instance, badly over-estimating elongated
+parts) and correctly re-centers on the combined bounds; the orthographic
+camera's own `halfHeight` (the value that actually governs visible
+extent in this app's default projection mode) is now set by Reset View,
+previously untouched so Reset View had no real effect in that mode;
+`composeRotation`'s own quaternion composition order was corrected
+(`qDelta * qCurrent`, not `qCurrent * qDelta` - the two only commute
+when sharing an axis, which is why every pre-existing single-rotation
+test passed despite this) so a second rotation about a different axis
+no longer turns the wrong way; choosing Move/Rotate now forces Selection
+mode off once so single-finger orbit/two-finger pinch-pan can actually
+reach a handle (Selection mode has no orbit gesture of its own).
+
+**Cross-tool assembly-awareness fixes** - all three built on a new
+shared primitive, `apply_rigid_transform_to_shape(shape, transform)`
+(`extrude.py`), which places a Part-local `TopoDS_Shape` into world
+space (this session's own new assembly-export work, gap `[29]` in §2x
+below, reuses this same function):
+
+- **Section tool**: `section-preview` now accepts per-occurrence targets
+  (`occurrence_id` + `body_id`), resolving and world-placing each
+  target's own body before trimming - sectioning an assembly now clips
+  placed parts too, not just the root Part's own local Bodies.
+- **Measure tool**: measure refs gained their own `occurrence_id`
+  (mirroring `MateEntityRef`), resolving a face/edge on a placed
+  Occurrence against its own target Part's body cache (previously always
+  the root Part's, 422ing with `missing_reference`) and placing resolved
+  geometry into world space before measuring, so cross-occurrence
+  measurements are physically meaningful.
+- **"Select Other"**: a new assembly-aware "every candidate along the
+  ray" hit-test (`hitTestAllComponentInstanceCandidates`) covers placed
+  occurrence geometry - previously only ever looked at the root Part's
+  own Bodies.
+
+**Mate solver robustness**: a CONCENTRIC false-negative fix (the
+`allow_rotation=False` spin-lock's own `addAngle(0, ...)` constraint has
+a vanishing Jacobian at its own target - replaced with `addParallel`
+plus a warm-start seed, mirroring the CONCENTRIC-orientation approach
+Phase 6 (§2i) already established for the identical class of problem); a
+COINCIDENT-after-CONCENTRIC residual-verification fallback (a bolt's
+head-underside plane normal is parallel to its own shaft axis, so
+COINCIDENT's direction-lock duplicates CONCENTRIC's own parallel
+constraint - `py_slvs` reports this redundancy as a spurious non-zero
+result code even though the solve is exact; mirrors the same fallback
+already proven in `app.sketch.solver`); mating a non-fixed part to a
+fixed part no longer 422s (the client now picks whichever referenced
+Occurrence is actually drivable, not always the second-picked entity).
+
+**Misc UI fixes**: the duplicate "Assembly" hamburger-menu section (a
+stale copy of the Add FAB's own flyout, still showing "Coming soon" for
+entries that had long since become real elsewhere) removed; "Add
+Component" dropping every sketch belonging to the inserted file (the
+merge only carried `document.parts`, never the top-level `sketches`
+list `export_native`/`import_native` carry alongside it) fixed; the "Add"/
+"New" FAB no longer overlaps the assembly Pattern Component/Move-Rotate
+tool panels; the floating selection context bar (Chamfer/Fillet/Move
+Face/etc.) is now Part-lens-only, no longer appearing over Assembly-lens
+selections; the breadcrumb bar moved into `SelectionContextPanel` itself
+(previously floated separately over the viewport, obscuring part of the
+Select Other sheet no matter where positioned) and reversed its own
+display order (parent/coarser tiers now render on the left, conventional
+reading order); face selection no longer always loses a hover-priority
+tie-break to the whole-component candidate (Component is now its own
+strictly-lowest-priority tier); placed-instance (child part) edges now
+actually render (nothing built edge-polyline geometry for them before,
+only filled faces); dynamic/persistent highlight now resolves against
+placed-instance geometry too (previously only ever searched the root
+Part's own Bodies, silently dropping any highlight with a non-empty
+`occurrenceId`); orbit-only clipping fixed for a pure-assembly document
+with no root-Part Bodies (the camera never framed itself onto real
+geometry, so orbiting around the stuck world-origin pivot brought
+real geometry closer than the near clip plane at certain angles).
+
+**Test evidence**: not independently re-verified against a historical
+checkpoint (re-running past test counts commit-by-commit would be pure
+overhead) - the full backend/client suites both pass as of this same
+session's own final verification pass (§2x below), which is the
+meaningful signal that this retroactively-documented work is still
+correct today, not a re-derivation of exactly how many tests existed at
+each historical point.
+
+---
+
+## 2x. This session's own work — occurrence delete/undo, colour-during-focus fix, sketch-overlay focus-transform fix, assembly-aware export
+
+A follow-up completeness audit (prompted by a real on-device test script
+covering the full assembly workflow end to end: model a plate with
+holes, start and focus-edit a new part in-context inside an assembly,
+mate it, edit a Concentric mate's "lock rotation" checkbox, pattern it
+in two directions, Save All, delete a component and confirm the cascade
+warning, undo that delete, then export the assembly as STEP) found four
+gaps, three of them genuinely new (not previously tracked anywhere in
+this document) and closed in the same session:
+
+### `[27]` No way to delete a placed Occurrence (or undo that delete)
+
+A real, previously-untracked gap: `Occurrence` had full `PATCH` support
+(`transform`/`hidden`/`fixed`/`color`) and Mates/ComponentPatterns both
+had real `DELETE` endpoints, but no way to remove a placed component
+from an assembly existed anywhere - not a backend endpoint, not a UI
+action. New `DELETE /parts/{part_id}/occurrences/{occurrence_id}`
+cascades: any Mate referencing the Occurrence in either of its two
+references, and any ComponentPattern naming it in `source_occurrence_ids`
+(even as one of several - removed in full, not shrunk down, keeping the
+client's own pre-delete warning dialog simple and exhaustively
+enumerable) are removed too. Reachable via a new "Delete" entry in the
+Component context menu (`ComponentContextMenuAction.delete`); the client
+warns first, naming every Mate/Pattern that would cascade (computed from
+already-loaded state, no extra round trip), before calling the DELETE.
+
+Undo: a new `POST /parts/{part_id}/occurrences` (`OccurrenceCreate`)
+restores a fully-known Occurrence, **client-supplied id required**
+(unlike `create_mate`/`create_component_pattern`'s own server-generated
+ids) so a cascade-deleted Mate/Pattern, captured in full right before
+the delete, can be re-created afterward (via the ordinary `POST
+.../mates`/`.../component-patterns` endpoints - fresh ids, harmless,
+since nothing else references a Mate/Pattern by id) still correctly
+pointing at the restored Occurrence. The app's only existing undo
+mechanism (`_componentTransformUndoStack`, Phase 5, gizmo-drag-only
+until now) widened to a small sealed-class union (`_TransformUndoEntry`/
+`_DeleteUndoEntry`) covering both kinds, shown via the same Undo FAB
+(tooltip now "Undo move" or "Undo delete" depending on the top entry).
+
+**A real, adjacent bug fixed while building this**: `_toggleAssemblyLens`
+fired `_refreshAssemblyTree()`/`_refreshAssemblyMesh()` via two separate
+`unawaited(...)` calls, racing each other - `_refreshAssemblyMesh`'s own
+documented invariant ("`_occurrences` already fetched by the time this
+is ever called") only holds when genuinely sequenced *after*
+`_refreshAssemblyTree` completes, the same order every *other* call site
+in this file already uses. Firing both unawaited let `_refreshAssemblyMesh`
+read `_occurrences` while still `[]` (nothing awaited yet), silently
+no-opping - meaning the very first "Make Focus" in a session (right
+after opening Assembly lens, before any other action ever refreshed
+`_assemblyMesh`) would render/hit-test at an unintended identity
+transform instead of its real composed world position, a real,
+previously-undiscovered gap in Phase 20's own "true in-context editing"
+claim. Fixed by properly sequencing the two calls.
+
+### `[28]` Sketch-overlay/orientation-indicator/dimension-drag skip focus-transform composition
+
+Phase 20's own disclosed-but-unnumbered "known gap, deliberately not
+fixed this phase" (§2v) - promoted into this numbered inventory since it
+was always implicitly part of it. A new shared helper,
+`worldToScreenFocused(camera, viewportSize, focusTransform, localPoint)`
+(`screen_projection.dart`, alongside `worldToScreen` itself), composes a
+focus transform onto a local-frame point before projecting - threaded
+through `sketch_constraint_overlay.dart`'s four projection call sites
+(`constraintOverlayItemLabelCenter`/`constraintOverlayItemAt`/
+`projectRadialDimensionBasis`/`_axisLockedDimensionEndpoints`, plus the
+`_ConstraintOverlayPainter`/`ConstraintOverlay` widget itself),
+`sketch_orientation_indicator.dart` (`SketchOrientationIndicator`/
+`_SketchOrientationPainter`, plus `planeTransform`'s own `Canvas.transform`
+matrix and the arm-length-scaling `distance` calculation, both fixed as
+the same class of bug found while touching this file), and
+`part_viewport.dart`'s `_localPixelsPerSketchUnit` (the one Draw-mode
+dimension-drag helper Phase 20 Stage 2's own `_toLocalRay` wiring pass
+missed) plus every one of these functions' own call sites in that file.
+
+### `[29]` STEP/STL/OBJ/glb export has no assembly awareness
+
+Found during this same pass, not by the original audit (the STEP export
+step of the on-device test script would otherwise ship an essentially
+empty file for an assembly whose real content lives in placed
+Occurrences). `GET /parts/{part_id}/export/step` (and its STL/OBJ/glb
+siblings) only ever exported `part_id`'s own *local* Bodies - zero
+awareness of placed Occurrences, at any transform, including
+`ComponentPattern`-derived instances. New `GET /parts/{part_id}/export/
+assembly-{step,stl,obj,glb}` endpoints walk the full occurrence tree
+(`_walk_assembly_export_bodies`, mirroring `get_assembly_mesh`'s own
+`_walk` traversal shape - forked rather than shared code, to avoid
+risking that existing, already-tested path) and export every placed
+instance's own real geometry, transformed into world space via
+`apply_rigid_transform_to_shape` (§2w's own new shared primitive) -
+each instance gets its own real, correctly-positioned copy (no geometry
+dedup by Part id the way the interactive-viewport mesh endpoint does,
+since a file export has no equivalent of "one shared mesh, many instance
+transforms"). **Scope decision, stated explicitly**: this bakes each
+instance's world transform into its own copied shape and emits every
+instance as its own flat STEP product - not true hierarchical STEP
+assembly structure (STEP's own NAUO/context-dependent-shape mechanism),
+which produces fully correct, real-world-positioned geometry when opened
+in other software at a fraction of the engineering cost. Also
+geometry-only for STEP specifically (`part=None`, no MBD/material
+metadata) - a per-instance material mapping has no shape `export_step`
+supports today, and guessing at the root Part's own default material for
+every instance would be actively misleading rather than merely
+incomplete. `PartScreen._exportPart` picks the assembly-scoped endpoint
+only once the root Part actually has at least one top-level Occurrence
+(checked fresh via `listOccurrences` right before exporting, not trusted
+from possibly-stale local state) - a plain, non-assembly session (the
+overwhelmingly common case) keeps using the original endpoint unchanged,
+preserving its own real MBD/material metadata.
+
+### Steps 10/12 of the on-device test script needed no changes
+
+Confirmed, not assumed: "edit a Concentric mate's own Allow Rotation
+checkbox" and "pattern a component in two directions" are both already
+fully implemented (§2w's own `Mate.allow_rotation`/`ComponentPattern`'s
+2D grid) - reading `mate_panel.dart`/`component_pattern_panel.dart`
+directly confirmed both are wired end to end.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`,
+including two new test files (`test_occurrence_delete.py`, 13 tests;
+`test_assembly_export.py`, 8 tests) plus the existing suite re-run clean.
+Full client suite - all tests pass (up from the doc's own last-recorded
+2151, now past 2169; 14 GPU-skips, unchanged), `flutter analyze` clean
+across every touched/new file. New client tests across
+`component_context_menu_test.dart` (the Delete entry), `part_screen_test.dart`
+(cascade-warning dialog content, cascade delete, Undo restoring all
+three with preserved ids; colour threaded into `PartViewport` on Make
+Focus and cleared on Exit Focus), `screen_projection_test.dart`
+(`worldToScreenFocused`'s own identity/null/translation/rotation cases),
+`sketch_orientation_indicator_test.dart` and
+`sketch_constraint_overlay_hit_test_test.dart` (a real `focusTransform`
+composing correctly for both label-center projection and hit-testing),
+and `document_api_client_test.dart` (`deleteOccurrence`/`createOccurrence`/
+`exportAssemblyPart`). No GPU/device in this sandbox to visually confirm
+the actual on-screen rendered result (gizmo/label positions, colour
+tint, or opening the exported STEP file in another CAD package) -
+disclosed, matching this document's own established convention
+throughout; the pure transform math, wiring, and backend geometry
+(bounding-box-verified against the known expected world transform) are
+directly tested.
 
 ---
 
@@ -3373,9 +3693,15 @@ at the same phase it always did.
 ## 4. Known v1 limitations (carried forward from the plan, restated so they
    don't get lost)
 
-- Undo is scoped to component transforms only (Phase 5) — hide/show,
+- ~~Undo is scoped to component transforms only (Phase 5) — hide/show,
   occurrence insert/delete, and mate authoring remain un-undoable, matching
-  the rest of the app's current lack of document-level undo.
+  the rest of the app's current lack of document-level undo.~~ **Widened,
+  gap `[27]` (§2x)**: an Occurrence delete (and its own cascaded Mate/
+  ComponentPattern removal) is now undoable too, via the same Undo FAB.
+  Hide/show, occurrence *insert*, and mate/pattern authoring itself remain
+  un-undoable, matching the rest of the app's current lack of
+  document-level undo — this is still a narrow, delete-specific widening,
+  not general assembly-edit undo.
 - Mate solving in v1 only drives the actively-dragged Occurrence against
   fixed peers — no simultaneous multi-body solving (linkages).
 - No real-time client-side (FFI) mate solving in v1 — debounced
@@ -3977,8 +4303,9 @@ Feature-authoring call/mesh refetch/`FeatureTreePanel` source, plus
 picking/hit-testing and rendering, now correctly targets whichever Part
 is focused, at its real assembly-composed world position, matching the
 Assembly-lens tree/gizmo/mate/pattern's own `focusPartId`-aware pattern
-(Phase 5/8/12). One real, disclosed gap remains outside that phase's own
-scope - see §2v's own "Known gap, deliberately not fixed this phase."
+(Phase 5/8/12). ~~One real, disclosed gap remains outside that phase's
+own scope - see §2v's own "Known gap, deliberately not fixed this
+phase."~~ **That gap is now `[28]` below - fixed, §2x.**
 
 **Open Project hardening (found during Phase 16's own spike, §2s)**:
 `[25]` ~~"Open Project…" never guarded against discarding unsaved
@@ -3989,3 +4316,21 @@ session" path on this screen already confirmed first;
 Phase 16 §2s** - fully implemented and correct since Phase 1, just never
 called from this one site, so the native folder picker showed on every
 launch even with a valid last-used root already known.
+
+**Found by a later completeness audit, not the original 26-item
+inventory (§2x)**: `[27]` ~~no way to delete a placed Occurrence, or
+undo that delete~~ - **fixed, §2x** - full `PATCH` support existed for
+an Occurrence and full CRUD existed for Mates/ComponentPatterns, but no
+`DELETE` for an Occurrence itself ever existed, anywhere; closed with a
+cascading `DELETE` endpoint (removing any Mate/ComponentPattern that
+referenced it too), a client warning dialog naming what would cascade,
+and an Undo entry that restores all of it with the Occurrence's own id
+preserved. `[28]` ~~sketch-overlay/orientation-indicator/dimension-drag
+skip focus-transform composition~~ - **fixed, §2x** - Phase 20's own
+disclosed-but-unnumbered gap (§2v), promoted into this inventory and
+closed via a shared `worldToScreenFocused` helper. `[29]` ~~STEP/STL/
+OBJ/glb export has no assembly awareness~~ - **fixed, §2x** - the
+existing export endpoints only ever exported a Part's own local Bodies;
+new `.../export/assembly-{format}` endpoints walk the full occurrence
+tree (including `ComponentPattern`-derived instances) and export every
+placed instance's own real, world-transformed geometry instead.

@@ -36,11 +36,19 @@ class SketchOrientationIndicator extends StatelessWidget {
   final Size viewportSize;
   final SketchPlaneBasis basis;
 
+  /// Assembly-audit gap `[28]` (`docs/assembly-scope.md`): the focused
+  /// sub-Part's own real world transform - see [worldToScreenFocused]'s own
+  /// doc comment. `null` (the default) while unfocused or focused exactly
+  /// at the document root, mirroring every other `focusWorldTransformMatrix`
+  /// consumer's own "identity/no-op" convention.
+  final vm.Matrix4? focusTransform;
+
   const SketchOrientationIndicator({
     super.key,
     required this.camera,
     required this.viewportSize,
     required this.basis,
+    this.focusTransform,
   });
 
   @override
@@ -49,7 +57,11 @@ class SketchOrientationIndicator extends StatelessWidget {
       child: CustomPaint(
         size: Size.infinite,
         painter: _SketchOrientationPainter(
-            camera: camera, viewportSize: viewportSize, basis: basis),
+          camera: camera,
+          viewportSize: viewportSize,
+          basis: basis,
+          focusTransform: focusTransform,
+        ),
       ),
     );
   }
@@ -86,9 +98,17 @@ const Color _verticalArrowColor =
 /// Typed to the base [Camera] (not [PerspectiveCamera] specifically) - only
 /// uses [Camera.getViewTransform], implemented identically for
 /// [OrthographicCamera].
+/// Assembly-audit gap `[28]` (`docs/assembly-scope.md`): [focusTransform],
+/// when given, is composed onto [worldFromLocal] before the view/pixel
+/// transforms - [basis]'s own axes/origin describe the sketch plane's
+/// placement in the focused sub-Part's own local frame, so this is the
+/// same "forward-compose the focus transform onto local-frame geometry
+/// before it's used" step [worldToScreenFocused] applies for a bare point,
+/// just expressed as a matrix multiply since this whole function already
+/// builds one.
 @visibleForTesting
 vm.Matrix4 planeTransform(
-    Camera camera, Size viewSize, SketchPlaneBasis basis) {
+    Camera camera, Size viewSize, SketchPlaneBasis basis, {vm.Matrix4? focusTransform}) {
   final worldFromLocal = vm.Matrix4.zero()
     ..setColumn(0, vm.Vector4(basis.xAxis.x, basis.xAxis.y, basis.xAxis.z, 0))
     ..setColumn(1, vm.Vector4(basis.yAxis.x, basis.yAxis.y, basis.yAxis.z, 0))
@@ -103,8 +123,10 @@ vm.Matrix4 planeTransform(
     ..setRow(2, vm.Vector4(0, 0, 1, 0))
     ..setRow(3, vm.Vector4(0, 0, 0, 1));
 
+  final focusedWorldFromLocal =
+      focusTransform == null ? worldFromLocal : (focusTransform * worldFromLocal as vm.Matrix4);
   final clipFromLocal =
-      camera.getViewTransform(viewSize) * worldFromLocal as vm.Matrix4;
+      camera.getViewTransform(viewSize) * focusedWorldFromLocal as vm.Matrix4;
   return pixelFromClip * clipFromLocal as vm.Matrix4;
 }
 
@@ -112,27 +134,32 @@ class _SketchOrientationPainter extends CustomPainter {
   final Camera camera;
   final Size viewportSize;
   final SketchPlaneBasis basis;
+  final vm.Matrix4? focusTransform;
 
   const _SketchOrientationPainter(
-      {required this.camera, required this.viewportSize, required this.basis});
+      {required this.camera, required this.viewportSize, required this.basis, this.focusTransform});
 
   @override
   void paint(Canvas canvas, Size size) {
-    final origin = worldToScreen(camera, viewportSize, basis.origin);
+    final origin = worldToScreenFocused(camera, viewportSize, focusTransform, basis.origin);
     if (origin == null) return;
 
     // Scales with camera distance (a fixed world-space length would look
     // huge up close and vanish from far away) - the same "gizmo scales
     // with distance" convention most CAD viewports use for on-scene
     // handles, clamped so it never gets absurdly small/large right at the
-    // clip planes.
-    final distance = (camera.position - basis.origin).length;
+    // clip planes. [basis.origin] composed onto [focusTransform] first -
+    // [camera.position] is always real world-space, so comparing it against
+    // the raw local origin while focused would silently scale the arms by
+    // the wrong (pre-focus-composition) distance.
+    final worldOrigin = focusTransform == null ? basis.origin : focusTransform!.transformed3(basis.origin);
+    final distance = (camera.position - worldOrigin).length;
     final armLengthWorld = distance.clamp(0.5, 500.0) * 0.2;
 
-    final horizontalScreen = worldToScreen(
-        camera, viewportSize, basis.origin + basis.xAxis * armLengthWorld);
-    final verticalScreen = worldToScreen(
-        camera, viewportSize, basis.origin + basis.yAxis * armLengthWorld);
+    final horizontalScreen = worldToScreenFocused(
+        camera, viewportSize, focusTransform, basis.origin + basis.xAxis * armLengthWorld);
+    final verticalScreen = worldToScreenFocused(
+        camera, viewportSize, focusTransform, basis.origin + basis.yAxis * armLengthWorld);
 
     final horizontalPaint = Paint()
       ..color = _horizontalArrowColor
@@ -165,7 +192,7 @@ class _SketchOrientationPainter extends CustomPainter {
   /// corner - see this file's own header doc comment for why this is drawn
   /// through [planeTransform] rather than as a screen-facing label.
   void _paintCanvasPlate(Canvas canvas, double size) {
-    final transform = planeTransform(camera, viewportSize, basis);
+    final transform = planeTransform(camera, viewportSize, basis, focusTransform: focusTransform);
     canvas.save();
     // Canvas.transform needs a Float64List; Matrix4.storage is a
     // Float32List (vector_math's own internal representation) - an
@@ -250,5 +277,6 @@ class _SketchOrientationPainter extends CustomPainter {
   bool shouldRepaint(covariant _SketchOrientationPainter oldDelegate) =>
       oldDelegate.camera != camera ||
       oldDelegate.viewportSize != viewportSize ||
-      oldDelegate.basis != basis;
+      oldDelegate.basis != basis ||
+      oldDelegate.focusTransform != focusTransform;
 }

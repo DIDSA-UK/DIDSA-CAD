@@ -23,6 +23,7 @@ enum ComponentContextMenuAction {
   pattern,
   fix,
   float,
+  delete,
 }
 
 /// Shows the Component context menu for one Occurrence -
@@ -109,6 +110,17 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       action: ComponentContextMenuAction.pattern,
       label: 'Pattern',
       icon: Icons.grid_view_outlined,
+    ),
+    // Assembly-audit gap `[27]` (`docs/assembly-scope.md`): no way to remove
+    // a placed component from an assembly had ever been built - full CRUD
+    // existed for Mates/ComponentPatterns but only ever PATCH for an
+    // Occurrence itself. `part_screen.dart`'s own handler warns first
+    // (naming any Mate/ComponentPattern that would cascade-delete along
+    // with it) before actually calling `DocumentApiClient.deleteOccurrence`.
+    const ActionSheetEntry(
+      action: ComponentContextMenuAction.delete,
+      label: 'Delete',
+      icon: Icons.delete_outline,
     ),
   ]);
 }
