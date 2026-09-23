@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -8,6 +9,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/storage/file_handle.dart';
+import 'package:didsa_cad_client/storage/project_root.dart';
+import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
@@ -66,6 +70,21 @@ class _FakeDocumentBackend {
   /// `name_override`/`transform`/`suppressed`/`hidden`).
   final List<Map<String, dynamic>> occurrences;
 
+  /// The current name of `part-1` itself - only ever changed by a real
+  /// `POST /document/import/native` re-import (Phase 15's "Create
+  /// Component"/"Save All"), never by the initial `createPart` alone.
+  String partOneName = 'Part 1';
+
+  /// Phase 15 (`docs/assembly-scope.md` §6): every Part id `POST
+  /// /document/parts` has minted beyond the session's first ("Create
+  /// Component…"), each a minimal stand-in (`id`/`name`/mutable
+  /// `occurrences`) real enough to drive `export/native`/`import/native`
+  /// end to end through this harness - the same one-time-cost precedent
+  /// Phase 10 already set for [occurrences] itself.
+  final Map<String, Map<String, dynamic>> extraParts = {};
+  int _nextExtraPartId = 2;
+  bool _createdPartOne = false;
+
   static final Map<String, dynamic> _placeholderMesh = {
     'vertices': [
       [0.0, 0.0, 0.0],
@@ -104,11 +123,131 @@ class _FakeDocumentBackend {
     }
 
     if (path == '/document/parts' && method == 'POST') {
+      // First call in any test is [_loadPart]'s own initial "part-1" -
+      // every later call (Phase 15's "Create Component…") mints a genuinely
+      // new id, matching the real backend's [Document.add_part] (never the
+      // hardcoded-`'part-1'` shortcut this fake used to take, which would
+      // have made a second-created Part collide with the first and trip
+      // `mergeComponentIntoDocument`'s own self-reference guard).
+      if (!_createdPartOne) {
+        _createdPartOne = true;
+        partOneName = body['name'] as String? ?? partOneName;
+        return _json({
+          'id': 'part-1',
+          'name': partOneName,
+          'feature_ids': features.map((f) => f['id']).toList(),
+        }, 201);
+      }
+      final id = 'part-${_nextExtraPartId++}';
+      extraParts[id] = {'id': id, 'name': body['name'], 'occurrences': <Map<String, dynamic>>[]};
+      return _json({'id': id, 'name': body['name'], 'feature_ids': <String>[]}, 201);
+    }
+
+    final getPartMatch = RegExp(r'^/document/parts/([^/]+)$').firstMatch(path);
+    if (getPartMatch != null && method == 'GET') {
+      final id = getPartMatch.group(1);
+      if (id == 'part-1') {
+        return _json({
+          'id': 'part-1',
+          'name': partOneName,
+          'feature_ids': features.map((f) => f['id']).toList(),
+          'occurrence_ids': occurrences.map((o) => o['id']).toList(),
+        }, 200);
+      }
+      final extra = extraParts[id];
+      if (extra == null) return http.Response('not found: part', 404);
       return _json({
-        'id': 'part-1',
-        'name': body['name'],
-        'feature_ids': features.map((f) => f['id']).toList(),
-      }, 201);
+        'id': extra['id'],
+        'name': extra['name'],
+        'feature_ids': <String>[],
+        'occurrence_ids': (extra['occurrences'] as List).map((o) => o['id']).toList(),
+      }, 200);
+    }
+
+    // Phase 15 (`docs/assembly-scope.md` §6): `AssemblyDocumentClient.savePart`/
+    // `saveAll`'s own `exportNative`/`importNative` round trip - real enough
+    // to drive "Create Component…"/"Save All"/"Open Project…" end to end.
+    // `part-1`'s own export reuses [features]/[occurrences] verbatim (this
+    // fake's existing state, already wired to every other `part-1` route);
+    // an extra Part (see [extraParts]) has no Feature machinery modeled at
+    // all here, only the `id`/`name`/`occurrences` this phase's own flows
+    // actually touch.
+    if (path == '/document/export/native' && method == 'GET') {
+      Map<String, dynamic> partDict(String id) => id == 'part-1'
+          ? {
+              'id': 'part-1',
+              'name': partOneName,
+              'features': features,
+              'occurrences': occurrences,
+              'mates': <dynamic>[],
+              'component_patterns': <dynamic>[],
+            }
+          : {
+              'id': id,
+              'name': extraParts[id]!['name'],
+              'features': <dynamic>[],
+              'occurrences': extraParts[id]!['occurrences'],
+              'mates': <dynamic>[],
+              'component_patterns': <dynamic>[],
+            };
+      final requestedPartId = request.url.queryParameters['part_id'];
+      final parts = requestedPartId == null
+          ? [partDict('part-1'), for (final id in extraParts.keys) partDict(id)]
+          : (requestedPartId == 'part-1' || extraParts.containsKey(requestedPartId))
+              ? [partDict(requestedPartId)]
+              : null;
+      if (parts == null) return http.Response('not found: part', 404);
+      return _json({
+        'schema_version': 1,
+        'document': {'id': 'doc-1', 'root_part_id': requestedPartId ?? 'part-1', 'parts': parts},
+        'sketches': <dynamic>[],
+      }, 200);
+    }
+    if (path == '/document/import/native' && method == 'POST') {
+      final parts = ((body['document'] as Map?)?['parts'] as List?) ?? const [];
+      for (final partRaw in parts) {
+        if (partRaw is! Map) continue;
+        final id = partRaw['id'] as String?;
+        if (id == null) continue;
+        // Real `native_format.py` defaults a missing/null `transform`
+        // (and `suppressed`/`hidden`/`fixed`) on import to exactly what a
+        // freshly-placed Occurrence already has (Phase 0's own §2) -
+        // `mergeComponentIntoDocument`'s own newly-added Occurrence always
+        // sends `'transform': null`, relying on that backend default; this
+        // fake must apply the same default or `OccurrenceDto.fromJson`
+        // (a real, non-nullable `transform`) throws on the next `GET
+        // .../occurrences` this fake's own routes serve back out.
+        final importedOccurrences = ((partRaw['occurrences'] as List?) ?? const [])
+            .map((o) => Map<String, dynamic>.from(o as Map))
+            .map(
+              (o) => {
+                ...o,
+                'transform': o['transform'] ??
+                    {
+                      'translation': [0.0, 0.0, 0.0],
+                      'rotation_axis': [0.0, 0.0, 1.0],
+                      'rotation_angle_degrees': 0.0,
+                    },
+                'suppressed': o['suppressed'] ?? false,
+                'hidden': o['hidden'] ?? false,
+                'fixed': o['fixed'] ?? false,
+              },
+            )
+            .toList();
+        if (id == 'part-1') {
+          occurrences
+            ..clear()
+            ..addAll(importedOccurrences);
+          partOneName = partRaw['name'] as String? ?? partOneName;
+        } else {
+          extraParts[id] = {
+            'id': id,
+            'name': partRaw['name'] as String? ?? extraParts[id]?['name'] ?? 'Component',
+            'occurrences': importedOccurrences,
+          };
+        }
+      }
+      return _json({'document_id': 'doc-1', 'part_ids': ['part-1', ...extraParts.keys]}, 200);
     }
 
     if (path == '/document/parts/part-1/mesh' && method == 'GET') {
@@ -432,6 +571,44 @@ class _FakeSketchBackend {
     }
     return http.Response('not found: ${request.url.path}', 404);
   }
+}
+
+/// Assembly support Phase 15 (`docs/assembly-scope.md` §6): a minimal fake
+/// `StorageService`, same "copy the small fake, don't share it" convention
+/// `assembly_document_client_test.dart`'s own `_FakeStorageService` already
+/// establishes - `pickOrCreateProjectRoot` returns a fixed root immediately
+/// rather than showing a real platform picker, so "Save All"/"Create
+/// Component…"'s own [PartScreen] flows can be driven end to end here.
+class _FakeStorageService implements StorageService {
+  final Map<String, Uint8List> files = {};
+  final DesktopProjectRoot root = const DesktopProjectRoot('/fake/project');
+
+  @override
+  Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async => root;
+
+  @override
+  Future<ProjectRoot?> lastUsedProjectRoot() async => null;
+
+  @override
+  Future<FileHandle?> resolve(ProjectRoot root, String relativePath) async {
+    if (!files.containsKey(relativePath)) return null;
+    return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
+  }
+
+  @override
+  Future<Uint8List> readFile(FileHandle handle) async => files[handle.relativePath]!;
+
+  @override
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+    files[relativePath] = bytes;
+    return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
+  }
+
+  @override
+  Future<DateTime?> lastModified(FileHandle handle) async => null;
+
+  @override
+  Future<bool> exists(FileHandle handle) async => files.containsKey(handle.relativePath);
 }
 
 /// [WidgetTester.pumpAndSettle] never settles while [PartScreen] shows its
@@ -4019,5 +4196,159 @@ void main() {
       expect(find.text('Exit Focus'), findsOneWidget);
       expect(find.text('Make Focus'), findsNothing);
     });
+  });
+
+  // §6 roadmap Phase 15 (`docs/assembly-scope.md`): the multi-file save
+  // flow - "Create Component…" (top-down, a brand-new empty Part) and
+  // "Save All" (writes every Part currently loaded back to its own file,
+  // correctly stamping `external_ref` first). Both need a real
+  // `StorageService`/`AssemblyDocumentClient`, previously untestable
+  // through this harness - `_FakeStorageService` plus this fake backend's
+  // own new `export/native`/`import/native`/`POST .../parts` (unique id)
+  // routes are the one-time cost that makes that possible, the same
+  // precedent Phase 10 already set for `occurrences`/`mates`/
+  // `component-patterns`/`assembly-mesh`.
+  group('Assembly support Phase 15: multi-file save flow', () {
+    testWidgets('Create Component adds a new Part as a fixed top-level Occurrence', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => backend.handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      await tester.tap(find.text('Create Component…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Create Component'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Create'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // The immediate, skippable relative-path prompt (§3) - this test
+      // exercises the "later" path; Save All's own group below exercises
+      // the prompt itself.
+      expect(find.text('Skip - save later'), findsOneWidget);
+      await tester.tap(find.text('Skip - save later'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.extraParts, hasLength(1));
+      final newPartId = backend.extraParts.keys.single;
+      expect(backend.extraParts[newPartId]!['name'], 'New Component');
+
+      expect(backend.occurrences, hasLength(1));
+      expect(backend.occurrences.single['resolved_part_id'], newPartId);
+      // First-ever Occurrence on this Part is auto-`fixed` (`add_component.dart`'s
+      // own "first component is grounded by convention" rule).
+      expect(backend.occurrences.single['fixed'], isTrue);
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.occurrences, hasLength(1));
+    });
+
+    testWidgets(
+      'Save All prompts for each un-pathed Part, stamps external_ref, and writes every file',
+      (tester) async {
+        final backend = _FakeDocumentBackend(
+          seedOccurrences: [
+            {
+              'id': 'occ-1',
+              'external_ref': 'stale.DIDSAprt',
+              'resolved_part_id': 'part-2',
+              'name_override': null,
+              'transform': null,
+              'suppressed': false,
+              'hidden': false,
+            },
+          ],
+        )..extraParts['part-2'] = {'id': 'part-2', 'name': 'Bracket', 'occurrences': <Map<String, dynamic>>[]};
+        final storage = _FakeStorageService();
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        await tester.ensureVisible(find.text('Save All'));
+        await tester.pump();
+        await tester.tap(find.text('Save All'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // First prompt: `part-1` itself (this session's own root Part) -
+        // has no known path yet either.
+        expect(find.text('Save "Part 1" as…'), findsOneWidget);
+        await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // Second prompt: `part-2` (the Occurrence's own target Part).
+        expect(find.text('Save "Bracket" as…'), findsOneWidget);
+        await tester.enterText(find.byType(TextFormField), 'bracket.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(find.text('Saved 2 file(s)'), findsOneWidget);
+        expect(storage.files.keys, containsAll(['top.DIDSAprt', 'bracket.DIDSAprt']));
+
+        // The critical correctness step (`stampExternalRefs`): the written
+        // `top.DIDSAprt` now names `bracket.DIDSAprt` as the Occurrence's
+        // own `external_ref`, not the stale value the session started with -
+        // without this, the saved files couldn't resolve as a real
+        // assembly on a later "Open Project…".
+        final writtenTop = jsonDecode(utf8.decode(storage.files['top.DIDSAprt']!)) as Map<String, dynamic>;
+        final writtenPartOne = (writtenTop['document']['parts'] as List)
+            .cast<Map<String, dynamic>>()
+            .firstWhere((p) => p['id'] == 'part-1');
+        final writtenOccurrence = (writtenPartOne['occurrences'] as List).single as Map<String, dynamic>;
+        expect(writtenOccurrence['external_ref'], 'bracket.DIDSAprt');
+      },
+    );
   });
 }

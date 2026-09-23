@@ -71,14 +71,11 @@ Future<AssemblyAddMenuAction?> showAssemblyAddMenu(BuildContext context) {
       action: AssemblyAddMenuAction.createNewComponent,
       label: 'Create Component…',
       icon: Icons.note_add_outlined,
-      enabled: false,
-      // A brand-new in-place Part can be created in this session today
-      // (the same mechanism `PartScreen._startNewPart` already uses), but
-      // there is nowhere yet to save it out to its own file - this app has
-      // no multi-file save flow at all (`_saveNativeFile` only ever writes
-      // the single currently-open Part) - so it stays disabled rather than
-      // creating a component the user then has no way to persist.
-      disabledReason: 'Coming soon - needs a multi-file save flow first',
+      // Real as of Phase 15 (`docs/assembly-scope.md` §6): a brand-new
+      // in-session Part (`PartScreen._onCreateNewComponentPressed`,
+      // `DocumentApiClient.createPart`) merged in the same way "Add
+      // Component" merges a picked file (`mergeComponentIntoDocument`),
+      // now that Save All/Open Project… give it somewhere real to be saved.
     ),
     ActionSheetEntry(
       action: AssemblyAddMenuAction.addMate,

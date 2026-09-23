@@ -79,6 +79,21 @@ class PartToolbar extends StatelessWidget {
   final VoidCallback? onOpenNative;
   final VoidCallback? onStartNew;
 
+  /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): the
+  /// `StorageService`/`ProjectRoot`-backed multi-file flow, fully additive
+  /// alongside the Save/Save As/Open entries above (which stay exactly as
+  /// they are - a single-file, `file_picker`-driven, whole-session dump).
+  /// `onOpenProject` opens an existing project-folder-relative `.DIDSAprt`
+  /// file via `AssemblyDocumentClient.openAssembly` (seeding
+  /// `relativePathByPartId` for every Part it composes in);
+  /// `onSaveAll` writes every Part currently loaded in the session back to
+  /// its own file, prompting for a path the first time a Part doesn't have
+  /// one yet (`PartScreen._onSaveAllPressed`). Lives in the File menu
+  /// rather than the Assembly-lens Add-menu FAB, since it's meaningful for
+  /// a plain single-Part session too, not just Assembly lens.
+  final VoidCallback? onOpenProject;
+  final VoidCallback? onSaveAll;
+
   /// Export: writes the current Part's geometry out to one of four
   /// interchange formats (`'step'`/`'stl'`/`'obj'`/`'glb'`) - see
   /// `PartScreen._exportPart`. The four separate format-specific File-menu
@@ -182,6 +197,8 @@ class PartToolbar extends StatelessWidget {
     this.onSaveAsNative,
     this.onOpenNative,
     this.onStartNew,
+    this.onOpenProject,
+    this.onSaveAll,
     this.onExportPart,
     this.onImportGeometry,
     this.onPartProperties,
@@ -293,6 +310,11 @@ class PartToolbar extends StatelessWidget {
           onTap: onOpenNative,
         ),
         ListTile(
+          leading: const Icon(Icons.folder_open_outlined),
+          title: const Text('Open Project…'),
+          onTap: onOpenProject,
+        ),
+        ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_save.svg'),
           title: const Text('Save'),
           onTap: onSaveNative,
@@ -301,6 +323,11 @@ class PartToolbar extends StatelessWidget {
           leading: const SvgIcon('assets/icons/feature/parttoolbar_save_as.svg'),
           title: const Text('Save As…'),
           onTap: onSaveAsNative,
+        ),
+        ListTile(
+          leading: const Icon(Icons.save_alt_outlined),
+          title: const Text('Save All'),
+          onTap: onSaveAll,
         ),
         ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_import.svg'),

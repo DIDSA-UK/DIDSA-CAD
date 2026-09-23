@@ -22,6 +22,8 @@ import '../api/sketch_api_client.dart'
         SketchApiClient,
         TextContourDto;
 import '../assembly/add_component.dart';
+import '../assembly/assembly_document_client.dart';
+import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException;
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
@@ -35,6 +37,9 @@ import '../gear/gear_chain_design_screen.dart';
 import '../gear/gear_design_screen.dart';
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
+import '../storage/project_root.dart';
+import '../storage/storage_service.dart';
+import '../storage/storage_service_factory.dart';
 import 'add_button_menu.dart';
 import 'assembly_tree_panel.dart';
 import 'body_naming.dart';
@@ -77,6 +82,7 @@ import 'plane_context_sheet.dart';
 import 'solid_from_surfaces_panel.dart';
 import 'thicken_panel.dart';
 import 'reference_planes.dart';
+import 'relative_path_dialog.dart';
 import 'render_mode.dart';
 import 'revolve_panel.dart';
 import 'revolve_surface_panel.dart';
@@ -363,6 +369,31 @@ class PartScreen extends StatefulWidget {
   /// freshly-created Part with no Feature yet, or Native Load).
   final List<String> initialWarnings;
 
+  /// Overridable for tests, so "Save All"/"Open Project…"/"Create
+  /// Component…" don't talk to a real platform storage channel - see
+  /// [documentApi]'s own identical convention. Defaults to
+  /// `createStorageService()` (the real platform-picked implementation) in
+  /// [_PartScreenState.initState].
+  final StorageService? storageService;
+
+  /// Overridable for tests, same reasoning as [storageService] - defaults
+  /// to a real `AssemblyDocumentClient` built from [storageService]/[documentApi].
+  final AssemblyDocumentClient? assemblyDocumentClient;
+
+  /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): the
+  /// `StorageService`-backed project folder this session's multi-file
+  /// save/open flow is scoped to, if one has already been chosen this
+  /// launch (carried through a `pushReplacement` the same way
+  /// [initialFileName] is - see that field's own doc comment). `null` for
+  /// every ordinary launch; acquired lazily on first "Save All"/"Open
+  /// Project…" otherwise (see [_PartScreenState._ensureProjectRoot]).
+  final ProjectRoot? initialProjectRoot;
+
+  /// Assembly support Phase 15: which root-relative path each already-known
+  /// Part id's own file lives at within [initialProjectRoot] - carried
+  /// through a `pushReplacement` alongside it. Empty by default.
+  final Map<String, String> initialRelativePathByPartId;
+
   const PartScreen({
     super.key,
     this.documentApi,
@@ -373,6 +404,10 @@ class PartScreen extends StatefulWidget {
     this.initialFileName,
     this.initialFilePath,
     this.initialWarnings = const [],
+    this.storageService,
+    this.assemblyDocumentClient,
+    this.initialProjectRoot,
+    this.initialRelativePathByPartId = const {},
   });
 
   @override
@@ -1413,6 +1448,33 @@ class _PartScreenState extends State<PartScreen> {
   /// silent write to it failed (deleted/moved/permission revoked since) -
   /// either way [_saveNativeFile] falls back to the dialog.
   String? _lastSavedFilePath;
+
+  /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): the
+  /// `StorageService`/`AssemblyDocumentClient` this session's multi-file
+  /// flow ("Save All"/"Open Project…"/"Create Component…") uses - both
+  /// wholly additive alongside [_lastSavedFileName]/[_lastSavedFilePath]
+  /// above, never touching the existing single-file `file_picker` save/open
+  /// path. Set once in [initState], never reassigned afterward.
+  late final StorageService _storageService;
+  late final AssemblyDocumentClient _assemblyDocumentClient;
+
+  /// The project folder "Save All"/"Open Project…" are currently scoped to
+  /// - `null` until the user picks/creates one (lazily, the first time
+  /// either action needs it - see [_ensureProjectRoot]), or until "Open
+  /// Project…" itself sets it. Carried through a `pushReplacement` via
+  /// [PartScreen.initialProjectRoot], mirroring [_lastSavedFileName]'s own
+  /// convention.
+  ProjectRoot? _projectRoot;
+
+  /// Which root-relative path each Part id currently loaded in this session
+  /// is known to live at within [_projectRoot] - seeded by "Open Project…"
+  /// (`AssemblyDocumentClient.openAssembly`'s own returned
+  /// `OpenedAssembly.relativePathByPartId`), extended by "Create
+  /// Component…"/"Save All"'s own path prompt. A Part merged in via "Add
+  /// Component" has no entry here until one of those explicitly assigns
+  /// one - `mergeComponentIntoDocument`'s own `externalRef` is a separate,
+  /// unrelated bare-filename concept (see that function's doc comment).
+  Map<String, String> _relativePathByPartId = {};
 
   /// B4 true-rollback's own "pretend these Features (and hence everything
   /// depending on them) don't exist yet" state (see [_beginRollback]/
@@ -8368,6 +8430,11 @@ class _PartScreenState extends State<PartScreen> {
     super.initState();
     _api = widget.documentApi ?? DocumentApiClient();
     _sketchApi = widget.sketchApiFactory?.call() ?? SketchApiClient();
+    _storageService = widget.storageService ?? createStorageService();
+    _assemblyDocumentClient = widget.assemblyDocumentClient ??
+        AssemblyDocumentClient(storageService: _storageService, documentApiClient: _api);
+    _projectRoot = widget.initialProjectRoot;
+    _relativePathByPartId = Map.of(widget.initialRelativePathByPartId);
     // Native Load: restores whichever Features a just-opened file's own
     // `hidden_feature_ids` named - see [PartScreen.initialHiddenFeatureIds]'s
     // own doc comment. A no-op (empty) for every non-native-Load launch.
@@ -8722,6 +8789,8 @@ class _PartScreenState extends State<PartScreen> {
         builder: (context) => PartScreen(
           documentApi: widget.documentApi,
           sketchApiFactory: widget.sketchApiFactory,
+          storageService: widget.storageService,
+          assemblyDocumentClient: widget.assemblyDocumentClient,
         ),
       ),
     );
@@ -8791,6 +8860,8 @@ class _PartScreenState extends State<PartScreen> {
         builder: (context) => PartScreen(
           documentApi: widget.documentApi,
           sketchApiFactory: widget.sketchApiFactory,
+          storageService: widget.storageService,
+          assemblyDocumentClient: widget.assemblyDocumentClient,
           initialPartId: imported!.partIds.first,
           initialHiddenFeatureIds: hiddenFeatureIds,
           initialSectionPlanes: sectionPlanes,
@@ -10239,15 +10310,12 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the "Add"
-  /// FAB's Assembly-lens branch - shows [showAssemblyAddMenu] and acts on
-  /// whichever (enabled) entry was tapped. [AssemblyAddMenuAction.
-  /// insertExistingComponent], (Phase 6) [addMate], and (Phase 7)
-  /// [patternComponent] are all real; [createNewComponent] alone still
-  /// renders disabled in the sheet itself (needs a multi-file save flow
-  /// this app doesn't have yet) and so never reaches this `switch` -
-  /// mirrors [_onFeaturePressed]'s own "picker already filtered to enabled
-  /// entries" shape.
+  /// Assembly support Phase 3b/15 (`docs/assembly-scope.md` §3/§6): the
+  /// "Add" FAB's Assembly-lens branch - shows [showAssemblyAddMenu] and
+  /// acts on whichever entry was tapped. Every entry is real as of Phase 15
+  /// (`createNewComponent` was the last one still disabled, needing a
+  /// multi-file save flow this app didn't have yet - see
+  /// [_onCreateNewComponentPressed]).
   Future<void> _onAssemblyAddPressed() async {
     final action = await showAssemblyAddMenu(context);
     if (!mounted || action == null) return;
@@ -10259,7 +10327,7 @@ class _PartScreenState extends State<PartScreen> {
       case AssemblyAddMenuAction.patternComponent:
         _openComponentPattern();
       case AssemblyAddMenuAction.createNewComponent:
-        break;
+        await _onCreateNewComponentPressed();
     }
   }
 
@@ -10318,6 +10386,217 @@ class _PartScreenState extends State<PartScreen> {
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
+  }
+
+  /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): lazily
+  /// acquires [_projectRoot] the first time "Save All"/"Create Component…"
+  /// needs one - [StorageService.pickOrCreateProjectRoot] throws
+  /// [StorageException] on cancel (unlike `file_picker`'s null-on-cancel
+  /// convention elsewhere in this screen), treated here as a silent no-op
+  /// rather than an error.
+  Future<ProjectRoot?> _ensureProjectRoot() async {
+    final existing = _projectRoot;
+    if (existing != null) return existing;
+    try {
+      final root = await _storageService.pickOrCreateProjectRoot();
+      if (!mounted) return null;
+      setState(() => _projectRoot = root);
+      return root;
+    } on StorageException {
+      return null;
+    }
+  }
+
+  /// "Create Component…" (top-down: a brand-new, empty Part, unlike "Add
+  /// Component"'s bottom-up insert of an already-existing file) - real as
+  /// of Phase 15. No new backend endpoint needed: [DocumentApiClient.createPart]
+  /// already creates a Part in the current session (the same call
+  /// [_loadPart] uses for a brand-new Document); the freshly-created Part's
+  /// own `exportNative(partId: ...)` is already a well-formed
+  /// `componentPayload`, so [mergeComponentIntoDocument] (Phase 3b) folds
+  /// it in unchanged, exactly the same shape "Add Component" already uses.
+  Future<void> _onCreateNewComponentPressed() async {
+    final rootPartId = _focusStack?.current ?? _part?.id;
+    if (rootPartId == null) return;
+
+    final name = await _promptComponentName();
+    if (name == null || !mounted) return;
+
+    String? newPartId;
+    await _runGuarded(() async {
+      final newPart = await _api.createPart(name);
+      newPartId = newPart.id;
+      final componentPayload = await _api.exportNative(partId: newPart.id);
+      final currentPayload = await _api.exportNative();
+      Map<String, dynamic> merged;
+      try {
+        merged = mergeComponentIntoDocument(
+          currentPayload: currentPayload,
+          componentPayload: componentPayload,
+          rootPartId: rootPartId,
+          occurrenceId: const Uuid().v4(),
+          nameOverride: name,
+        );
+      } on AddComponentException catch (e) {
+        setState(() => _errorMessage = e.message);
+        return;
+      }
+      await _api.importNative(merged);
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+    if (newPartId == null || !mounted) return;
+
+    // Optional immediate path prompt - skippable, since forcing a filename
+    // before any modelling work starts on the new component is bad UX;
+    // "Save All" will prompt again later for anything still missing one.
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) return;
+    final path = await showRelativePathPromptDialog(
+      context,
+      title: 'Save "$name" as…',
+      initialValue: name,
+      storageService: _storageService,
+      root: root,
+      skippable: true,
+    );
+    if (path == null || !mounted) return;
+    setState(() => _relativePathByPartId = {..._relativePathByPartId, newPartId!: path});
+  }
+
+  /// The small "what should this new component be called" prompt behind
+  /// [_onCreateNewComponentPressed] - same `AlertDialog` +
+  /// `StatefulBuilder` + `TextFormField` + disabled-until-valid
+  /// `FilledButton` shape [_openMateEdit] already establishes in this file.
+  Future<String?> _promptComponentName() {
+    String value = 'New Component';
+    return showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Create Component'),
+          content: TextFormField(
+            initialValue: value,
+            autofocus: true,
+            decoration: const InputDecoration(labelText: 'Name'),
+            onChanged: (text) => setDialogState(() => value = text),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: value.trim().isEmpty ? null : () => Navigator.of(context).pop(value.trim()),
+              child: const Text('Create'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// "Save All" (`PartToolbar.onSaveAll`, `docs/assembly-scope.md` §6 Phase
+  /// 15): writes every Part currently loaded in this session back to its
+  /// own file. For any Part id missing from [_relativePathByPartId], prompts
+  /// once per Part (sequentially) before writing anything -
+  /// [AssemblyDocumentClient.saveAll] itself then stamps every Occurrence's
+  /// `external_ref` to the now-fully-known path and re-imports before
+  /// writing each file, so a saved multi-file project's cross-references
+  /// actually resolve on a later "Open Project…".
+  Future<void> _onSaveAllPressed() async {
+    setState(() => _toolbarOpen = false);
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) return;
+
+    Map<String, dynamic>? fullSessionExport;
+    await _runGuarded(() async {
+      fullSessionExport = await _api.exportNative();
+    });
+    final exported = fullSessionExport;
+    if (exported == null || !mounted) return;
+
+    final parts = ((exported['document'] as Map?)?['parts'] as List?) ?? const [];
+    var relativePathByPartId = Map.of(_relativePathByPartId);
+    for (final partRaw in parts) {
+      if (partRaw is! Map) continue;
+      final partId = partRaw['id'] as String?;
+      final partName = partRaw['name'] as String? ?? 'Component';
+      if (partId == null || relativePathByPartId.containsKey(partId)) continue;
+      final path = await showRelativePathPromptDialog(
+        context,
+        title: 'Save "$partName" as…',
+        initialValue: partName,
+        storageService: _storageService,
+        root: root,
+      );
+      if (!mounted) return;
+      if (path == null) continue; // Left un-pathed; Save All skips it below.
+      relativePathByPartId = {...relativePathByPartId, partId: path};
+    }
+    if (!mounted) return;
+    setState(() => _relativePathByPartId = relativePathByPartId);
+    if (relativePathByPartId.isEmpty) return;
+
+    SaveAllResult? result;
+    await _runGuarded(() async {
+      result = await _assemblyDocumentClient.saveAll(root, exported, relativePathByPartId);
+    });
+    if (!mounted) return;
+    final saveResult = result;
+    if (saveResult == null) return;
+    if (saveResult.hasFailures) {
+      final failedNames = saveResult.failures.map((f) => f.relativePath).join(', ');
+      setState(() => _errorMessage = 'Saved ${saveResult.savedRelativePaths.length} of '
+          '${relativePathByPartId.length} files. Failed: $failedNames');
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Saved ${saveResult.savedRelativePaths.length} file(s)')),
+      );
+    }
+  }
+
+  /// "Open Project…" (`PartToolbar.onOpenProject`, Phase 15) - the read
+  /// side of the multi-file save flow, without which
+  /// [_relativePathByPartId] could only ever exist within one running
+  /// session and a saved multi-file project could never be faithfully
+  /// reopened. Composes the whole referenced-file graph
+  /// (`AssemblyGraphComposer`, already implemented since Phase 2) via
+  /// [AssemblyDocumentClient.openAssembly] and pushes a fresh [PartScreen]
+  /// pointed at the resolved root Part - the same "fresh screen, not a
+  /// reload in place" shape [_openNativeFile] already uses, since every
+  /// transient per-Part field on this screen needs to start clean against
+  /// the newly-opened Part's own ids.
+  Future<void> _onOpenProjectPressed() async {
+    setState(() => _toolbarOpen = false);
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) return;
+    final relativePath = await showOpenProjectPathPromptDialog(context);
+    if (relativePath == null || !mounted) return;
+
+    OpenedAssembly? opened;
+    await _runGuarded(() async {
+      try {
+        opened = await _assemblyDocumentClient.openAssembly(root, relativePath);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = e.message);
+      } on AssemblyGraphCycleException catch (e) {
+        setState(() => _errorMessage = e.toString());
+      }
+    });
+    final result = opened;
+    if (result == null || !mounted) return;
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => PartScreen(
+          documentApi: widget.documentApi,
+          sketchApiFactory: widget.sketchApiFactory,
+          storageService: widget.storageService,
+          assemblyDocumentClient: widget.assemblyDocumentClient,
+          initialPartId: result.rootPartId,
+          initialProjectRoot: root,
+          initialRelativePathByPartId: result.relativePathByPartId,
+        ),
+      ),
+    );
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and
@@ -19207,6 +19486,8 @@ class _PartScreenState extends State<PartScreen> {
                     onSaveNative: _saveNativeFile,
                     onSaveAsNative: _saveAsNativeFile,
                     onOpenNative: _openNativeFile,
+                    onOpenProject: _onOpenProjectPressed,
+                    onSaveAll: _onSaveAllPressed,
                     onStartNew: _startNewPart,
                     onExportPart: _exportPart,
                     onImportGeometry: _importGeometry,
