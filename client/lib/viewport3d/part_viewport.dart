@@ -2433,7 +2433,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.assemblyInstances.isEmpty) return;
     final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
-      if (instance.occurrencePath.isEmpty) continue;
+      // Assembly support Phase 20 Stage 4 (`docs/assembly-scope.md` §6
+      // `[24]`/appendix item 2/`[17]`): the root's own `occurrence_path: []`
+      // instance (always present - `get_assembly_mesh`'s own docstring)
+      // used to be skipped here *unconditionally*, since [_syncMeshNode]
+      // always covered the root's own content regardless of focus. Now that
+      // [_syncMeshNode] shows the *focused* Part's content instead once
+      // something is focused, skipping it unconditionally would make the
+      // root's own geometry vanish entirely (not just become
+      // non-interactive - a real, worse-than-before regression this stage
+      // closes) rather than fading to context like every other peer/parent
+      // already does via [assemblyInstanceOpacity] below. Skip it only
+      // while nothing is focused, when [_syncMeshNode] genuinely does cover
+      // it - the exact same condition [_syncMeshNode]'s own `focusTransform`
+      // is identity for.
+      if (instance.occurrencePath.isEmpty && focusedPath.isEmpty) continue;
       // Assembly support Phase 20: the currently-focused Occurrence's own
       // placed instance is now covered by [_syncMeshNode]'s own
       // focus-transform-aware render path instead (its content is what
@@ -2583,8 +2597,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (!widget.renderMode.showsEdges) return;
     if (widget.bodiesHidden) return;
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
+    // Assembly support Phase 20 Stage 4: mirrors [_syncAssemblyInstanceNodes]'s
+    // own identical fix - the root's own `occurrence_path: []` instance
+    // stays skipped only while nothing is focused (covered by
+    // [_syncEdgesNode] in that case), so its edges keep rendering as
+    // context rather than vanishing once something else is focused.
+    final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
-      if (instance.occurrencePath.isEmpty || instance.hidden) continue;
+      if ((instance.occurrencePath.isEmpty && focusedPath.isEmpty) || instance.hidden) continue;
       final transform = matrix4FromRigidTransform(instance.worldTransform);
       final occurrenceKey = instance.occurrencePath.join('/');
       for (final partGeometry in widget.assemblyGeometry) {
@@ -2798,6 +2818,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // On-device feedback: see _syncMeshNode's identical bodiesHidden gate.
     if (widget.bodiesHidden) return;
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
+    // Assembly support Phase 20 Stage 4: found while closing appendix item
+    // [17] - [widget.bodies] renders its filled faces at [focusTransform]
+    // ([_syncMeshNode]) but this wireframe overlay never got the same
+    // treatment, which would have misaligned it against the focused Part's
+    // own real position the instant [_syncMeshNode]'s own fix (Stage 1)
+    // landed. Same reasoning as that method's own `focusTransform` local.
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     var totalSegments = 0;
     for (final body in widget.bodies) {
       // See _syncMeshNode's identical substitution for why - keeps the
@@ -2813,7 +2840,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (biased) {
         segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
       }
-      final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
+      final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor)..localTransform = focusTransform;
       scene.add(node);
       _edgesNodes[body.bodyId] = node;
       totalSegments += segments.length;
@@ -2878,6 +2905,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final node in _sketchNodes.values) {
       scene.remove(node);
     }
+    // Assembly support Phase 20 Stage 4: [widget.sketchGeometries] is the
+    // focused Part's own local data (same reasoning as [_syncMeshNode]'s
+    // own `focusTransform`) - without this, a Sketch's drawn geometry
+    // would keep rendering at identity while the Bodies it's anchored to
+    // moved to their real focused-Part position.
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     _sketchNodes = {
       for (final entry in widget.sketchGeometries.entries)
         if (!entry.value.isEmpty)
@@ -2885,7 +2918,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             entry.key,
             entry.value,
             entityColors: widget.sketchEntityColors,
-          ),
+          )..localTransform = focusTransform,
     };
     for (final node in _sketchNodes.values) {
       scene.add(node);
@@ -3862,7 +3895,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (faceHit != null && faceHit.entity.kind == SelectionEntityKind.face) {
         final normal = _bodyFaceNormal(faceHit.entity.bodyId, faceHit.entity.id);
         if (normal != null) {
-          widget.onSectionPlacementTap!(ray.at(faceHit.rayT), normal);
+          // Assembly support Phase 20 Stage 4: [_bodyFaceNormal] reads the
+          // focused Part's own *local* mesh data - a direction, not a
+          // point, so it needs the focus transform's rotation component
+          // only ([vm.Matrix4.rotated3]) to become a real world-space
+          // normal consistent with `ray.at(faceHit.rayT)` (already
+          // world-space, per [_toLocalRay]'s own rayT-invariance doc
+          // comment) - passing the raw local normal alongside a world
+          // point would otherwise anchor a new section plane facing the
+          // wrong way the instant the focused Part is actually rotated.
+          final worldNormal =
+              (widget.focusWorldTransformMatrix ?? vm.Matrix4.identity()).rotated3(normal).normalized();
+          widget.onSectionPlacementTap!(ray.at(faceHit.rayT), worldNormal);
           return;
         }
       }
@@ -5579,15 +5623,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   /// [_buildEntityHighlightNode]/[_syncSelectedEntityNodes]'s shared face/
-  /// edge/vertex/body Body resolution - [_bodyFor] (root Part geometry,
-  /// untransformed) when [entity.occurrenceId] is empty, [_bodyForOccurrence]
-  /// (placed-instance geometry, transformed into world space) otherwise. The
-  /// returned [vm.Matrix4] is the identity for the root-Part case - callers
-  /// always apply it uniformly rather than branching a second time.
+  /// edge/vertex/body Body resolution - [_bodyFor] ([widget.bodies] -
+  /// whichever Part is currently the live edit target, per
+  /// [PartScreenState._focusPartId]) when [entity.occurrenceId] is empty,
+  /// [_bodyForOccurrence] (placed-instance geometry, transformed into world
+  /// space) otherwise. Callers always apply the returned [vm.Matrix4]
+  /// uniformly rather than branching a second time.
+  ///
+  /// Assembly support Phase 20 Stage 4: the [entity.occurrenceId.isEmpty]
+  /// branch used to return a hardcoded identity transform here - correct
+  /// back when [widget.bodies] only ever meant "the root Part's own
+  /// untransformed geometry," but a real, silent highlight-misalignment bug
+  /// the instant [_syncMeshNode]'s own Stage 1 fix let [widget.bodies] mean
+  /// "the focused Part's geometry" instead - a selected face/edge/vertex
+  /// highlight would have kept rendering at identity while the geometry it
+  /// was supposedly outlining had moved to [focusWorldTransformMatrix].
   (BodyMeshDto, vm.Matrix4)? _bodyAndTransformFor(SelectionEntityRef entity) {
     if (entity.occurrenceId.isEmpty) {
       final body = _bodyFor(entity.bodyId);
-      return body == null ? null : (body, vm.Matrix4.identity());
+      return body == null ? null : (body, widget.focusWorldTransformMatrix ?? vm.Matrix4.identity());
     }
     return _bodyForOccurrence(entity.occurrenceId, entity.bodyId);
   }
