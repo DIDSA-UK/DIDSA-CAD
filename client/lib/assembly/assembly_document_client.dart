@@ -4,6 +4,9 @@ import '../api/document_api_client.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'assembly_graph_composer.dart';
+import 'save_all.dart';
+
+export 'save_all.dart' show PartSaveFailure, SaveAllResult;
 
 /// The result of opening a `.didsa` assembly file - everything a caller
 /// (Phase 3's screen) needs to keep working with the session the backend
@@ -77,5 +80,46 @@ class AssemblyDocumentClient {
     final exported = await _documentApiClient.exportNative(partId: partId);
     final bytes = utf8.encode(jsonEncode(exported));
     await _storageService.writeFile(root, relativePath, bytes);
+  }
+
+  /// Saves every Part named in [relativePathByPartId] back to its own file
+  /// under [root] - "Save All" (`docs/assembly-scope.md` §6 Phase 15).
+  /// [fullSessionExport] is a `DocumentApiClient.exportNative()` snapshot
+  /// (no `partId`) of the whole current session, used only to stamp every
+  /// Occurrence's `external_ref` (`stampExternalRefs`) before re-importing
+  /// it and writing each Part's own file - without this step, an
+  /// Add-Component/Create-Component-merged Occurrence's `external_ref`
+  /// would still be a stale bare filename or `null`, and the saved files
+  /// would silently fail to resolve as a real assembly on a later
+  /// [openAssembly]. Re-importing preserves every Part's own id
+  /// (`native_format.py`'s `_part_from_dict` never regenerates a given
+  /// one), so a caller's own id-keyed screen state stays valid across it.
+  ///
+  /// Never lets one Part's own [StorageException] (a revoked SAF grant,
+  /// disk full) abort the rest - every other Part still gets its own write
+  /// attempt, and every failure is collected onto the returned
+  /// [SaveAllResult] rather than thrown.
+  Future<SaveAllResult> saveAll(
+    ProjectRoot root,
+    Map<String, dynamic> fullSessionExport,
+    Map<String, String> relativePathByPartId,
+  ) async {
+    final stamped = stampExternalRefs(
+      documentPayload: fullSessionExport,
+      relativePathByPartId: relativePathByPartId,
+    );
+    await _documentApiClient.importNative(stamped);
+
+    final saved = <String>[];
+    final failures = <PartSaveFailure>[];
+    for (final entry in relativePathByPartId.entries) {
+      try {
+        await savePart(root, entry.key, entry.value);
+        saved.add(entry.value);
+      } on StorageException catch (e) {
+        failures.add(PartSaveFailure(partId: entry.key, relativePath: entry.value, message: e.message));
+      }
+    }
+    return SaveAllResult(savedRelativePaths: saved, failures: failures);
   }
 }

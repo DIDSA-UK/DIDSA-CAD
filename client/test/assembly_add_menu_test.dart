@@ -45,28 +45,20 @@ void main() {
       expect(await pendingResult, AssemblyAddMenuAction.patternComponent);
     });
 
-    // Phase 7 (`docs/assembly-scope.md` §2j): Pattern Component was enabled
-    // here - Create Component is the only remaining placeholder (needs a
-    // multi-file save flow this app doesn't have yet).
-    testWidgets('Create Component renders disabled', (tester) async {
+    // Phase 15 (`docs/assembly-scope.md` §6): Create Component was the last
+    // remaining placeholder (needed a multi-file save flow this app didn't
+    // have yet) - real as of this phase, the same way Pattern Component
+    // became real in Phase 7.
+    testWidgets('tapping Create Component resolves createNewComponent', (tester) async {
       await openMenu(tester);
-      final tile = tester.widget<ListTile>(
-        find.ancestor(of: find.text('Create Component…'), matching: find.byType(ListTile)),
-      );
-      expect(tile.enabled, isFalse, reason: 'Create Component… should be disabled');
-      expect(find.textContaining('Coming soon'), findsOneWidget);
-    });
-
-    testWidgets('tapping a disabled entry does nothing - the sheet stays open', (tester) async {
-      await openMenu(tester);
-      await tester.tap(find.text('Create Component…'), warnIfMissed: false);
+      await tester.tap(find.text('Create Component…'));
       await tester.pumpAndSettle();
-      expect(find.text('Create Component…'), findsOneWidget);
+      expect(await pendingResult, AssemblyAddMenuAction.createNewComponent);
     });
 
-    testWidgets('Add Component, Add Mate, and Pattern Component are the only enabled entries', (tester) async {
+    testWidgets('every entry is enabled', (tester) async {
       await openMenu(tester);
-      for (final label in ['Add Component', 'Add Mate', 'Pattern Component']) {
+      for (final label in ['Add Component', 'Create Component…', 'Add Mate', 'Pattern Component']) {
         final tile = tester.widget<ListTile>(
           find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
         );

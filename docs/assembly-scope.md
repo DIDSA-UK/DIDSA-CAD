@@ -2464,6 +2464,176 @@ picks the LLM's intended edge versus a coincidentally-equivalent one.
 
 ---
 
+## 2r. Phase 15 — Multi-file save flow (implemented)
+
+§6 roadmap's own Phase 15 entry: closes `[21]` (no multi-file save flow) -
+sequenced ahead of Phase 18 (`add_component`'s own AI step) since a
+multi-part session merged via "Add Component"/"Create Component…" was
+otherwise never savable back out to real separate files at all.
+
+Confirmed directly against the actual code before writing anything (this
+document's own "verify against the code, not assumed" convention): every
+API-surface piece this phase needed already existed and was already tested
+- `GET /document/export/native?part_id=<id>` (single-Part export),
+`POST /document/import/native` (full replace, ids never regenerated on
+import - `native_format.py`'s `_part_from_dict`), `POST /document/parts`
+(`DocumentApiClient.createPart`, already used by `_loadPart`), and
+`client/lib/storage/*`/`AssemblyDocumentClient` (`openAssembly`/`savePart`)
+were all already implemented and unit-tested, just never called from the
+one live screen, `PartScreen` - which still did a single-file,
+`file_picker`-driven, whole-session-dump save/open with no
+`StorageService`/`ProjectRoot` concept at all. **This phase needed zero
+backend changes** - it is pure client wiring plus one new pure-Dart
+correctness step (`stampExternalRefs`, below).
+
+### `PartScreen` acquires `StorageService`/`ProjectRoot` (additive, lazy)
+
+New `PartScreen` constructor params - `storageService`/`assemblyDocumentClient`
+(test-injectable, same convention `documentApi` already establishes) and
+`initialProjectRoot`/`initialRelativePathByPartId` (carried through a
+`pushReplacement` the same way `initialFileName` already is). New state:
+`_projectRoot`/`_relativePathByPartId`, acquired/extended lazily - never
+touching the existing `_lastSavedFileName`/`_lastSavedFilePath`/
+`_openNativeFile`/`_saveNativeFile` path at all, which keeps its hard-won,
+on-device-verified `file_picker` Android-path fix (`part_screen.dart:8565`
+comment) completely undisturbed. `_ensureProjectRoot` calls
+`StorageService.pickOrCreateProjectRoot()` the first time "Save All"/
+"Create Component…" needs one, treating its cancel-throws-`StorageException`
+convention as a silent no-op (unlike `file_picker`'s null-on-cancel
+elsewhere in this screen).
+
+### The correctness step the roadmap's own one-paragraph brief didn't name: `stampExternalRefs`
+
+New pure function, `client/lib/assembly/save_all.dart` (`stampExternalRefs`)
+- found necessary, not assumed, while designing "Save All": `AssemblyDocumentClient
+.savePart` (already implemented) just re-exports whatever `Occurrence
+.external_ref` is *currently stored server-side*, which for a Part merged
+in via "Add Component"/"Create Component…" is still a bare picked-file
+display name or `null` (`add_component.dart`'s own documented reason it
+can't know a real project-relative path at merge time). Writing every
+Part's file with that stale/missing `external_ref` would produce files
+whose cross-references silently fail to resolve on a later
+`AssemblyGraphComposer.compose` - i.e. "Save All" would look like it worked
+but produce an assembly that can't actually be reopened. `stampExternalRefs`
+rewrites every Occurrence's own `external_ref` to the now-fully-known
+root-relative path of whichever Part its `resolved_part_id` names, per the
+caller's own `relativePathByPartId`; an Occurrence whose target Part has no
+known path yet is left untouched, never cleared or guessed.
+
+New `AssemblyDocumentClient.saveAll(root, fullSessionExport,
+relativePathByPartId)` orchestrates the full correct sequence: stamp, then
+re-import the stamped payload (`importNative` - ids are preserved, so a
+caller's own id-keyed screen state stays valid across it), *then* loop
+`savePart` per Part - never the other order. Returns a typed `SaveAllResult`
+(`savedRelativePaths`/`failures`); a `StorageException` from one Part's own
+write (a revoked SAF grant, disk full) is caught *inside* the loop rather
+than left to bubble past `_runGuarded` (which only ever catches
+`ApiException`), so one failed write never aborts every other Part's own.
+
+### The relative-path prompt
+
+New `client/lib/assembly/relative_path.dart` (`validateProjectRelativePath`,
+pure/tested) rejects the concrete path-traversal risk both `StorageService`
+implementations are exposed to (`DesktopStorageService._fullPath`'s bare
+`p.join`, `SafStorageService`'s own per-segment `mkdirp`) - empty input, a
+leading slash, any `..` segment, a Windows drive-letter prefix - while
+staying lenient on everything else (no folder browser exists yet,
+`StorageService.listFiles` is Phase 18's own scope). `withDefaultExtension`
+auto-appends `.DIDSAprt` (confirmed the actual round-tripped extension,
+`part_screen.dart`'s own Save As suggestion/display-name strip regex - not
+the doc-prose `.didsa` shorthand this document itself often uses) only when
+none is given, matching `_openNativeFile`'s own lenient `FileType.any`
+posture. New `client/lib/viewport3d/relative_path_dialog.dart` reuses
+`_openMateEdit`'s own `AlertDialog`+`StatefulBuilder`+`TextFormField`+
+disabled-until-valid-`FilledButton` shape (the closest real precedent in
+this codebase for this exact kind of prompt) rather than inventing a new
+one, plus a non-blocking "already exists, will overwrite" collision warning
+via `StorageService.resolve`.
+
+### "Save All" / "Open Project…" (File menu, not the Assembly Add-menu FAB)
+
+Both live in `part_toolbar.dart`'s existing File `ExpansionTile`, not the
+Assembly-lens Add-menu FAB - `_buildAssemblyMenu` was deliberately removed
+from this toolbar back in Phase 3b as pure duplication of that FAB
+(`part_toolbar.dart`'s own `lens` field doc comment), and Save All is
+meaningful even for a plain single-Part session, not just Assembly lens.
+"Save All" (`_onSaveAllPressed`) discovers every Part currently loaded via
+one full-session `exportNative()`, prompts once per Part missing a known
+path (sequentially), then calls `saveAll` and surfaces a single summary
+(`_errorMessage` naming every failure, or a success `SnackBar`). "Open
+Project…" (`_onOpenProjectPressed`) is the read side this phase's own
+brief didn't originally name but which the gap this phase closes actually
+needs - without it, `relativePathByPartId` could only ever exist within one
+running session, and a saved multi-file project could never be faithfully
+reopened. Uses `AssemblyDocumentClient.openAssembly` (already implemented
+since Phase 2) and pushes a fresh `PartScreen` pointed at the resolved root
+Part, the same "fresh screen, not a reload in place" shape `_openNativeFile`
+already uses (`PartScreen.initialPartId`'s own doc comment explains why).
+
+### "Create Component…" (`AssemblyAddMenuAction.createNewComponent`, now real)
+
+No new backend endpoint needed - `POST /document/parts` (already wired as
+`DocumentApiClient.createPart`, already used by `_loadPart`) mints a
+brand-new empty Part in the current session; its own `exportNative(partId:
+...)` is already a well-formed `componentPayload`, so `_onCreateNewComponentPressed`
+reuses `mergeComponentIntoDocument` (Phase 3b) **completely unchanged** -
+the exact same shape "Add Component" already uses, just sourced from a
+freshly-created Part instead of a picked file. A small new name-entry
+dialog (same `AlertDialog` shape as the relative-path prompt) collects the
+new component's name first; an optional, skippable immediate relative-path
+prompt follows (Save All's own prompt loop catches anything left skipped).
+`add_button_menu.dart`'s `createNewComponent` entry drops its `enabled:
+false`/`disabledReason` (a roadmap-text typo corrected in passing: the real
+enum member is `createNewComponent`, not `createComponent` as §6's own
+prose said); `part_screen.dart`'s switch replaces the old no-op
+`case createNewComponent: break;` with a real call.
+
+**Verified**: no backend changes this phase (confirmed above) - backend
+suite re-confirmed at its current baseline against real
+`pythonocc-core`/`py-slvs` - **2365/2365 passed**, unchanged. Full client
+suite - **2104/2104 passed** (14 GPU-skips, unchanged), `flutter analyze`
+clean on every touched/new file. New client tests: `relative_path_test.dart`
+(new - `validateProjectRelativePath`/`withDefaultExtension` cases); three
+new `stampExternalRefs`/`saveAll` tests in `assembly_document_client_test.dart`
+(pure stamping, happy-path re-import-then-write, partial-`StorageException`
+failure collected without aborting the rest); two new end-to-end
+`part_screen_test.dart` widget tests (Create Component adds a new Part as a
+fixed top-level Occurrence; Save All prompts for each un-pathed Part,
+stamps `external_ref`, and writes every file), which needed real
+prerequisite fixes to `_FakeDocumentBackend` first - the same one-time-cost
+precedent Phase 10 already set for `occurrences`/`mates`/
+`component-patterns`/`assembly-mesh`: `POST /document/parts` now mints a
+genuinely unique id per call (was hardcoded to always return `'part-1'`,
+which would have made a second-created Part collide with the first and
+trip `mergeComponentIntoDocument`'s own self-reference guard), plus new
+`GET /document/parts/{id}`/`export/native`/`import/native` route handlers
+(previously entirely unhandled/404 - the reason Add Component/Save/Open had
+zero coverage through this harness before this phase). A real bug this
+harness work caught before being counted as passing: the fake's own
+`import/native` handler had to default a missing/null `transform` (and
+`suppressed`/`hidden`/`fixed`) the same way the real `native_format.py`'s
+`_occurrence_from_dict` already does - `mergeComponentIntoDocument`'s own
+newly-added Occurrence always sends `'transform': null`, relying on exactly
+that backend default, which this fake was skipping entirely until the first
+real "Create Component…" test caught `OccurrenceDto.fromJson` throwing on
+it. Also updated two pre-existing `assembly_add_menu_test.dart` tests that
+still asserted `createNewComponent` rendered disabled (caught by the full
+suite re-run, not written speculatively).
+
+### Remaining limitations after this phase
+
+No file-browsing capability exists yet (`StorageService.listFiles` is
+Phase 18's own scope) - "Open Project…"'s relative-path entry is a typed
+prompt, not a folder browser, a disclosed v1 limitation rather than a
+silently-glossed-over one. `orient_with_rotation` (Phase 11) still has no
+dedicated panel toggle, unrelated to and unchanged by this phase.
+`[2]` (`add_component`'s own AI-plan step) and the full (plan-local-id)
+version of `[1]` (`pattern_component`) are both still open, now genuinely
+unblocked rather than blocked - Phase 18/19 are next per the roadmap's own
+15 → 18 → 19 dependency chain.
+
+---
+
 ## 3. Phase history (every originally-scoped phase implemented)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
@@ -2526,6 +2696,13 @@ at the same phase it always did.
   same plan produced (§3 item 8).
 - Composed multi-file graph `part_id`s are session-scoped, not persisted
   across app restarts.
+- "Make Focus" never retargets Part-lens Feature editing - toggling to Part
+  lens while focused into a sub-assembly still shows and edits the
+  top-level open Part's own Feature tree/geometry, not the focused
+  component's own. The original brief's "make focus to edit a part in the
+  visual context of the assembly" (this document's own opening sentence)
+  was never actually wired up this way - see §5 item 10 for the full
+  finding and §6's own new Phase 20 entry for the fix.
 
 ## 5. Appendix — scope limits and follow-ups (evaluate after rollout)
 
@@ -2546,7 +2723,12 @@ deleted, so the record of what shipped broken and why stays intact. Items
 whether they're worth fixing at all. Items 7-9 were added during Phase 7
 (§2j)'s own post-ship review, surfaced by direct user questions about the
 new `ComponentPattern` rather than a bug report - all three are still
-open.
+open. Item 10 was added post-Phase-15, also surfaced by direct user
+questions (about what "Make Focus" actually retargets) rather than a bug
+report - unlike every other item here, it isn't something a specific phase
+shipped with a known gap; it traces back to this document's own original
+opening sentence and was simply never wired up by any phase, Phase 3's own
+"mode switching" section included.
 
 1. **~~Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
    flag, never override it.~~ - fixed.** No mutation endpoint existed for
@@ -2719,10 +2901,48 @@ open.
    shaped fields already all have precedent for in this same phase, and a
    toggle in `ComponentPatternPanel` (Linear has no equivalent ambiguity -
    a translation-only pattern has no orientation question to begin with).
+10. **"Make Focus" never retargets Part-lens Feature editing - only the
+    Assembly-lens tree/gizmo/mate/pattern scope.** Surfaced post-Phase-15
+    by a direct question about whether a sub-Part's own geometry can be
+    created/edited from inside an assembly at all. Confirmed by reading
+    the code, not assumed: `AssemblyFocusStack`/`_focusStack.current` is
+    wired into `_refreshAssemblyTree`/`_refreshAssemblyMesh` (Assembly
+    tree contents), the gizmo's own PATCH call-sites (Phase 5/8), and
+    `_confirmMate`/`_confirmComponentPattern` (Phase 12, §2o,
+    `focusPartId = _focusStack?.current ?? _part?.id`) - but **every
+    Part-lens Feature-authoring call is hardcoded to `_part.id`/`part.id`
+    instead**, never `focusPartId`: every one of the ~30
+    `_api.create*Feature(part.id, ...)` call sites, `_refreshFeatures`
+    (`part_screen.dart:9032-9040`, the *only* place `_features` is ever
+    populated - fed straight into `FeatureTreePanel(features: _features,
+    ...)`, `part_screen.dart:19252`), and every post-edit `_refreshMesh`/
+    `_api.getPartMesh(part.id, ...)` re-fetch (`part_screen.dart:1611`,
+    `9364`, `9407`, `13821`, `15502`, `15889`, `17981`, and others).
+    Concretely: switching to Part lens while focused into a sub-assembly
+    shows and edits the *root* Part's own Feature tree/geometry, exactly
+    as if nothing were focused at all - not an error, not a crash, just
+    silently the wrong Part, with nothing in the UI signalling it. The
+    original brief's own "make focus to edit a part in the visual context
+    of the assembly" was never actually built this way; Phase 3's "mode
+    switching" section (§2's own "Mode switching, concretely") describes
+    lens-toggling over *one* Part's own Features/Occurrences, which is
+    exactly what shipped - toggling lens while *focused into a different
+    Part* was never separately designed for. Closely related to, but a
+    distinct and larger gap than, item 2/`[17]` above (the root Part's own
+    Bodies staying selectable regardless of focus) - same root cause
+    (every Part-lens tool unconditionally targets `_part.id`), opposite
+    symptom: item 2 is about the root Part *leaking through* while
+    focused elsewhere; this item is about the *focused* Part never being
+    *reachable* for Feature editing at all. See §6's own new Phase 20
+    entry for the fix this needs and the real design questions it raises
+    (state that's currently modeled as belonging to one Part only -
+    `_hiddenFeatureIds`/`_rollbackExcludedFeatureIds`/`_sectionPlanes` -
+    and what the 3D viewport should show while focus-editing a nested
+    Part's own geometry).
 
 ---
 
-## 6. Follow-up roadmap (Phases 10–19, planned)
+## 6. Follow-up roadmap (Phases 10–20, planned)
 
 Produced by a dedicated planning pass over every still-open item in §4/§5
 and each phase's own "Known v1 limitations" (Phases 6-8) once Phase 9
@@ -2734,10 +2954,18 @@ and one-phase-one-PR convention; each phase below should get its own
 lettered section (§2m, §2n, ...) here once implemented, striking through
 (never deleting) whichever §4/§5 item(s) it closes.
 
+**Update**: Phase 20 was added after this roadmap's initial planning pass,
+once Phase 15 shipped and a direct user question surfaced §5 item 10 (see
+that item's own writeup) - the roadmap's own header/range widened from
+"Phases 10-19" to "Phases 10-20" to match, following the same
+"append, don't silently re-scope" convention item 10 itself was added
+under.
+
 Bracketed `[N]` ids below are stable references into this roadmap's own
-23-item gap inventory (grouped: AI plan pipeline 1-5, ComponentPattern
+24-item gap inventory (grouped: AI plan pipeline 1-5, ComponentPattern
 6-11, Mate solver 12-16, Selection/rendering/focus 17-19, Storage/
-multi-file 20-22, Other 23) - listed in full at the end of this section.
+multi-file 20-22, Other 23, In-context Feature editing 24) - listed in
+full at the end of this section.
 
 **~~Phase 10 — Mechanical gap-closure sweep (small, low risk).~~ — moved to
 §2m, implemented.** Bundled five independent, bounded fixes into one
@@ -2810,14 +3038,20 @@ mirroring `ComponentPatternCreate`, `source_occurrence_ids` as
 `_validate_component_pattern_source_occurrence_ids`/`_validate_component_
 pattern_payload` directly.
 
-**Phase 15 — Multi-file save flow (medium-large).** Closes `[21]`.
-Deliberately sequenced before Phase 18: `add_component` as an AI step is
-only genuinely useful once a multi-part session can be saved back out.
-`AssemblyDocumentClient.savePart` already handles one Part; the gap is
-`PartScreen` never adopting `StorageService`/`ProjectRoot` at all. Adds
-`relativePathByPartId` session state, a relative-path prompt for a
-brand-new in-session Part, a "Save All" action, and finally enables
-`AssemblyAddMenuAction.createComponent`.
+**~~Phase 15 — Multi-file save flow (medium-large).~~ — moved to §2r,
+implemented.** Closes `[21]`. Needed zero backend changes - verified
+smaller in scope than its own original framing once cross-checked against
+the actual code: every API-surface piece (`export/native?part_id=`,
+`import/native`, `POST /document/parts`, `AssemblyDocumentClient.savePart`/
+`openAssembly`) already existed and was already tested, the gap was
+entirely `PartScreen` never calling any of it. One real correctness step
+the original framing didn't name: `stampExternalRefs` (a new pure
+function) must rewrite every Occurrence's own `external_ref` to its now-
+known path and re-import *before* any file gets written, or a saved
+multi-file project's cross-references would silently fail to resolve on
+reopen. Also added "Open Project…" (`AssemblyDocumentClient.openAssembly`),
+not in the original framing either but required to close the loop - without
+it `relativePathByPartId` could never survive past one running session.
 
 **Phase 16 — Multi-file part-id/path persistence: investigate first
 (small, uncertain).** Closes `[22]` - but starts with a spike, not an
@@ -2854,9 +3088,60 @@ depends on 18).** Closes the remainder of `[1]`. Extends
 `PlanTranslator.localIdToRealId` - the same mechanism every other step
 already uses. Pure payoff once Phase 18 lands.
 
-**Dependency summary**: Phases 10, 11, 12, 13, 14, and 17 are mutually
+**Phase 20 — In-context Feature editing: retarget Part-lens tools through
+focus (medium-large, new design questions).** Closes `[24]` (§5 item 10).
+"Make Focus" today only scopes the Assembly-lens tree/gizmo/mate/pattern -
+`AssemblyFocusStack`/`focusPartId = _focusStack?.current ?? _part?.id` is
+wired into `_refreshAssemblyTree`/`_refreshAssemblyMesh`, the gizmo's own
+PATCH call-sites (Phase 5/8), and `_confirmMate`/`_confirmComponentPattern`
+(Phase 12, §2o) - but every Part-lens Feature-authoring call
+(`_api.create*Feature`, ~30 call sites), `_refreshFeatures`
+(`part_screen.dart:9032-9040`, the only place `_features` - what
+`FeatureTreePanel` actually renders - is ever populated), and every
+post-edit `_api.getPartMesh` re-fetch (`part_screen.dart:1611`, `9364`,
+`9407`, `13821`, `15502`, `15889`, `17981`, and others) are hardcoded to
+`_part.id`/`part.id` instead. No backend change needed - every one of
+these endpoints already accepts an arbitrary `part_id`; this is client-only
+wiring, the same `focusPartId` pattern Phase 12 already established,
+mechanically extended to a much larger call-site set (a whole-repo grep
+for `part.id`/`_part!.id` inside `part_screen.dart` is the reliable way to
+find every one, not a partial pass keyed off this list). Three real design
+questions the mechanical swap surfaces, unanswered by any existing phase -
+this is why the phase is sized medium-large rather than a mechanical sweep
+like Phase 10, and should get real design time budgeted up front, the same
+"spike first" posture Phase 16 already takes for a smaller uncertainty:
+
+1. **Per-Part-scoped client-only state.** `_hiddenFeatureIds`/
+   `_rollbackExcludedFeatureIds`/`_sectionPlanes` are flat, single-Part
+   fields today - correct only because exactly one Part's Features have
+   ever been visible/editable in a session. Once a focused sub-Part's own
+   Features become reachable too, these need to become Part-id-keyed
+   (`Map<String, Set<String>>` etc.) or some equivalent scoping - a real
+   state-shape change, not a one-line id swap, since a Feature id is only
+   unique per-Part and this app's state containers currently assume "the
+   one open Part" implicitly throughout.
+2. **What the 3D viewport shows while focus-editing a nested Part.**
+   Today `_part`'s own Bodies render as the "root" content
+   (`_syncMeshNode`) and every Occurrence renders as separately-instanced
+   content (`_syncAssemblyInstanceNodes`, Phase 2/4's `assembly-mesh` +
+   `mesh` split). Retargeting Feature editing to a focused Occurrence needs
+   its own placed instance to become the interactive/hit-testable one
+   (extending the opacity/selectability split Phase 4/5/12 already do for
+   *whole-component* selection) - but `hitTestBodies`/`hitTestFaces` and
+   friends have no occurrence-transform-aware variant today; they only
+   ever hit-test `_part`'s own untransformed local geometry. This is new
+   hit-testing work, not a config flag.
+3. **Appendix item 2/`[17]` (root Part's own Bodies staying selectable
+   regardless of focus) should be revisited as part of this phase's own
+   scoping, not left as a separate deferral** - once a real focus-scoped
+   editing mode exists, leaving the root Part unconditionally selectable
+   while focused elsewhere stops being "no bug report yet" and becomes a
+   concrete way to silently edit the wrong Part.
+
+**Dependency summary**: Phases 10, 11, 12, 13, 14, 17, and 20 are mutually
 independent - resequence or parallelize freely. The one hard chain is
-**15 → 18 → 19**. Phase 16 softly depends on 15.
+**15 → 18 → 19**; 15 is now implemented (§2r), so 18 is unblocked. Phase
+16 softly depends on 15.
 
 **Explicitly deferred again** (recommend re-stating, not silently
 dropping, if this roadmap is revisited): `[12]` multi-body/linkage
@@ -2868,12 +3153,15 @@ already rejected three approaches before landing on today's
 correct-for-practical-cases seed; `[16b]` feature-level breadcrumb tier -
 needs per-face OCCT history attribution that doesn't exist anywhere in the
 backend, recommend a time-boxed spike first; `[17]` root Part's own Bodies
-staying selectable regardless of focus - an explicit "real usage-judgment
-call," touches `hitTestBodies` for a guarantee no bug report has asked
-for; `[23]` general document-level undo - an app-wide pre-existing
+staying selectable regardless of focus - was an explicit "real
+usage-judgment call, no bug report has asked for it," now recommended to
+be revisited as part of Phase 20's own scoping instead (§6's own Phase 20
+entry, item 3) rather than independently, since Phase 20 makes it a
+concrete "silently edits the wrong Part" risk rather than a hypothetical
+one; `[23]` general document-level undo - an app-wide pre-existing
 limitation, not assembly-specific.
 
-### The 23-item gap inventory this roadmap schedules against
+### The 24-item gap inventory this roadmap schedules against
 
 **AI plan pipeline (§2k)**: `[1]` ~~`pattern_component` PlanStep missing~~ -
 **fixed (existing-Occurrence-only half), Phase 14 §2q** - the full version
@@ -2911,9 +3199,15 @@ still top-level-Occurrence-only~~ - **fixed (direct child of focus only,
 not deeper nesting), Phase 12 §2o**; `[19]` ~~latent Focus/Exit-Focus label
 quirk~~ - **fixed, Phase 10 §2m**.
 
-**Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` no
-multi-file save flow; `[22]` composed multi-file `part_id`s are
-session-scoped only.
+**Storage & multi-file**: `[20]` no iOS SAF equivalent; `[21]` ~~no
+multi-file save flow~~ - **fixed, Phase 15 §2r**; `[22]` composed
+multi-file `part_id`s are session-scoped only.
 
 **Other**: `[23]` undo scoped to component-transform drags only (app-wide
 pre-existing limitation, not assembly-specific).
+
+**In-context Feature editing (§5 item 10)**: `[24]` "Make Focus" never
+retargets Part-lens Feature editing - every Feature-authoring call/mesh
+refetch/`FeatureTreePanel` source stays hardcoded to the root open Part
+regardless of focus, unlike the Assembly-lens tree/gizmo/mate/pattern
+(already `focusPartId`-aware since Phase 5/8/12). Scheduled as Phase 20.
