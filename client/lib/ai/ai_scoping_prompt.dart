@@ -290,12 +290,15 @@ not just any earlier local_id.
 
 Only the kinds listed above (and anything named in "Tools currently turned
 off in this app" below, if present) exist. In particular, this tool has no
-Spline and no Text. You cannot place a brand-new component into an
-assembly yourself (no kind exists for that yet - the user must add a
-component themselves first, via this app's own Assembly tools), but once at
-least one component has already been placed by the user, you CAN mate/move/
-hide/isolate it (see "Assembly editing" above, only present when editing an
-existing Part that already has one or more placed components). If a request
+Spline and no Text. You CAN place a brand-new component into an assembly via
+add_component (see "Assembly editing" above), naming a real file already in
+the user's project by its relative path - never one that does not exist.
+Once at least one component exists (already placed by the user, or placed
+earlier in this same plan by your own add_component step), you CAN
+mate/move/hide/isolate/pattern it (see "Assembly editing" above, only
+present when this tool group is enabled and - for referencing an
+*already*-placed component - when editing an existing Part that already has
+one or more placed components). If a request
 genuinely needs a brand-new curve/label/component this tool cannot build
 itself (a hand-drawn freeform curve, a lettered label, a component you would
 need to place from scratch), say so plainly and propose the closest
@@ -561,18 +564,34 @@ entirely.''';
 /// `MateStep`/`MoveComponentStep`/`HideComponentStep`/`IsolateComponentStep`
 /// vocabulary (`ai_tool_groups.dart`'s `'assembly'` group). Only useful (and
 /// only ever shown alongside real ids to reference) when "Editing an
-/// existing Part" below lists at least one Placed Component - there is no
-/// kind here for placing a brand-new one yourself.
+/// existing Part" below lists at least one Placed Component. Since Phase 18
+/// (`docs/assembly-scope.md` §6 `[2]`), add_component itself needs no
+/// existing Placed Component at all - it places the first one - so this
+/// text is included whenever the `'assembly'` tool group is enabled,
+/// regardless of whether "Editing an existing Part" lists anything.
 const String assemblyVocabularyText = '''
-## Assembly editing (existing, already-placed components only)
+## Assembly editing
 
 Every occurrence_id field below (and every "occurrence_id" inside a mate
-step's own "references") must be either the exact literal empty string ""
-(meaning this Part's own local geometry, not a placed component) or the
+step's own "references") must be one of: the exact literal empty string ""
+(meaning this Part's own local geometry, not a placed component); the
 literal token "existing:<id>" using one of the real ids listed under
-"Placed Components" below, copied verbatim - never a local_id you invented
-in this plan (no step kind here creates a brand-new placed component).
+"Placed Components" below, copied verbatim; or a bare local_id (no prefix)
+naming an add_component step earlier in THIS SAME PLAN. Never invent an id
+that is none of these three.
 
+- add_component: {local_id, kind:"add_component", relative_path,
+  name_override?} - places a brand-new component by inserting an
+  already-existing project file (never one you invent). relative_path must
+  be one of the exact paths listed under "Available Component Files" below,
+  copied verbatim (forward slashes, e.g. "parts/bracket.DIDSAprt");
+  name_override is an optional display name for the new component. If
+  nothing suitable is listed (or no "Available Component Files" section
+  appears at all), say so plainly rather than inventing a path. This step's
+  own local_id may then be used, bare (no prefix), as the occurrence_id in a
+  later mate/move_component/hide_component/isolate_component step in this
+  same plan (NOT yet supported for pattern_component's own
+  source_occurrence_ids - that still requires "existing:<id>").
 - mate: {local_id, kind:"mate", type:"coincident"|"concentric"|"parallel"|
   "distance"|"angle", references: [exactly 2 entries], value?, flipped?}
   Each reference is {occurrence_id, subshape_ref} (a face/edge/vertex on
@@ -618,11 +637,10 @@ in this plan (no step kind here creates a brand-new placed component).
   source_occurrence_ids: [one or more occurrence_id entries],
   pattern_type:"linear"|"circular", direction?, count?, spacing?, reverse?,
   axis?, count_angular?, angle_total?, reverse_angular?} - repeats one or
-  more already-placed components. Every source_occurrence_ids entry (and
-  every other occurrence_id on this page) must still be a real
-  "existing:<id>" - a pattern_component step cannot repeat a component
-  another step in this same plan just placed (there is no such step kind
-  yet). Linear fields: "direction" [x, y, z] (default [1,0,0], world
+  more already-placed components. Every source_occurrence_ids entry must
+  still be a real "existing:<id>" - pattern_component cannot yet repeat a
+  component an add_component step earlier in this same plan just placed.
+  Linear fields: "direction" [x, y, z] (default [1,0,0], world
   space), "count" (instances INCLUDING the untouched original - 3 means 2
   new copies), "spacing" (mm between instances), "reverse" (flips
   direction). Circular fields: "axis" {"origin":[x,y,z], "direction":[x,y,z]}
@@ -631,12 +649,14 @@ in this plan (no step kind here creates a brand-new placed component).
   default 360), "reverse_angular". Omit whichever field group doesn't match
   pattern_type.
 
-There is no kind to place a brand-new component or delete an existing
-Mate/component/pattern - if the user asks for one of those, say so plainly
-and tell them to use this app's own Assembly tools for that part of the
-request, then (if anything else in their request is genuinely achievable
-with mate/move_component/hide_component/isolate_component/pattern_component)
-still emit a plan for that remaining part.''';
+add_component places a brand-new component (see above) - but there is still
+no kind to delete an existing Mate/component/pattern, or to place a
+component from a file NOT listed under "Available Component Files" - if the
+user asks for one of those, say so plainly and tell them to use this app's
+own Assembly tools for that part of the request, then (if anything else in
+their request is genuinely achievable with
+add_component/mate/move_component/hide_component/isolate_component/
+pattern_component) still emit a plan for that remaining part.''';
 
 /// Assembles [_vocabularyTemplate] with every tool-group placeholder
 /// substituted: enabled groups (`ai_tool_groups.dart`'s `aiToolGroups`) get
@@ -969,6 +989,27 @@ $existingPartSummary${existingOccurrencesSummary.isEmpty ? '' : '''
 Placed Components (Occurrences already in the Assembly tree):
 $existingOccurrencesSummary'''}''';
 
+/// Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`): locked,
+/// appended whenever [buildAiScopingSystemPrompt] is given a non-empty
+/// [summary] - independent of whether an existing Part is being edited at
+/// all, since add_component can place the very first component into a
+/// brand-new Part too. [summary] is
+/// [summarizeAvailableComponentFilesForPrompt]'s own output
+/// (`ai_component_file_summary.dart`), embedded verbatim.
+String _availableComponentFilesBlock(String summary) => '''
+## Available Component Files
+
+The following project files can be inserted via an add_component step's
+"relative_path" field, copied verbatim exactly as shown (case-sensitive,
+forward slashes):
+
+$summary
+
+Never invent a relative_path not listed here. Attempting to add a file
+whose own root Part is the currently-open Part itself, or one with an
+unsupported/mismatched file version, fails with a clear error at generation
+time - if that happens, do not blindly retry the exact same relative_path.''';
+
 /// Builds the full system prompt, passed to `AiProvider.sendScopingTurn`'s
 /// `systemPrompt` parameter. Assembly order: the user-editable assistant
 /// instructions first (falls back to [_defaultAssistantInstructions] -
@@ -988,6 +1029,7 @@ String buildAiScopingSystemPrompt({
   Set<String> disabledToolGroups = const {},
   String? existingPartSummary,
   String existingOccurrencesSummary = '',
+  String availableComponentFilesSummary = '',
 }) {
   final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
   final assistantInstructions =
@@ -1002,6 +1044,7 @@ String buildAiScopingSystemPrompt({
     _fewShotExamples,
     ...addOnBlocks,
     if (hasExistingPart) _existingPartEditingBlock(existingPartSummary, existingOccurrencesSummary),
+    if (availableComponentFilesSummary.isNotEmpty) _availableComponentFilesBlock(availableComponentFilesSummary),
     _planTerminationFooter,
   ].join('\n\n');
 }

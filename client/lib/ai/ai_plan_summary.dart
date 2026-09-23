@@ -159,6 +159,9 @@ String _summarizeStep(AiGenerationPlan plan, AiPlanStep step) {
       final copySuffix = step.makeCopy ? ' (copy)' : '';
       return 'Move$copySuffix ${step.bodyId}';
 
+    case AiAddComponentStep():
+      return 'Add Component ${step.relativePath}';
+
     case AiMateStep():
       return 'Mate (${step.type.wireValue}) ${step.references.map((r) => r.occurrenceId).join(' ↔ ')}';
 

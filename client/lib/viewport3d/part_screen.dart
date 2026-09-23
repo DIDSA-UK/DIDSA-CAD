@@ -18834,7 +18834,12 @@ class _PartScreenState extends State<PartScreen> {
                 ? null
                 : () => Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => AiModellingScreen(existingPartId: _part!.id, documentApi: widget.documentApi),
+                        builder: (_) => AiModellingScreen(
+                          existingPartId: _part!.id,
+                          documentApi: widget.documentApi,
+                          storageService: _storageService,
+                          projectRoot: _projectRoot,
+                        ),
                       ),
                     ),
           ),

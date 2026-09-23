@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:saf_stream/saf_stream.dart';
 import 'package:saf_util/saf_util.dart';
+import 'package:saf_util/saf_util_platform_interface.dart' show SafDocumentFile;
 
 import 'file_handle.dart';
 import 'project_root.dart';
@@ -120,6 +121,41 @@ class SafStorageService implements StorageService {
   Future<bool> exists(FileHandle handle) async {
     final safHandle = _requireSafHandle(handle);
     return _safUtil.exists(safHandle.uri, false);
+  }
+
+  @override
+  Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) async {
+    final safRoot = _requireSafRoot(root);
+    final stat = await _safUtil.stat(safRoot.treeUri, true, throws: false);
+    if (stat == null) {
+      throw StorageException('Project root is no longer reachable: ${safRoot.treeUri}');
+    }
+    final result = <String>[];
+    // `SafUtil.list` is non-recursive (one directory's immediate children
+    // only) - recurse by hand, joining relative-path segments the same way
+    // `_splitRelativePath` joins them in reverse.
+    Future<void> walk(String uri, List<String> prefix) async {
+      List<SafDocumentFile> children;
+      try {
+        children = await _safUtil.list(uri);
+      } catch (_) {
+        return; // Best-effort: skip an unreadable subtree, keep going.
+      }
+      for (final child in children) {
+        final segments = [...prefix, child.name];
+        if (child.isDir) {
+          await walk(child.uri, segments);
+        } else {
+          final relative = segments.join('/');
+          if (extensionFilter == null || relative.toLowerCase().endsWith(extensionFilter.toLowerCase())) {
+            result.add(relative);
+          }
+        }
+      }
+    }
+
+    await walk(safRoot.treeUri, const []);
+    return result;
   }
 
   List<String> _splitRelativePath(String relativePath) =>

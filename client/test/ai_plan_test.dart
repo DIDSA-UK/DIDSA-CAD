@@ -400,4 +400,40 @@ void main() {
     expect(pattern.skipIndices, isEmpty);
     expect(pattern.orientWithRotation, isTrue);
   });
+
+  test('add_component step parses and round-trips with a name_override', () {
+    final json = {
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'ac1',
+          'kind': 'add_component',
+          'relative_path': 'parts/bracket.DIDSAprt',
+          'name_override': 'Bracket',
+        },
+      ],
+    };
+
+    final step = AiGenerationPlan.fromJson(json).steps.single as AiAddComponentStep;
+    expect(step.localId, 'ac1');
+    expect(step.kind, 'add_component');
+    expect(step.relativePath, 'parts/bracket.DIDSAprt');
+    expect(step.nameOverride, 'Bracket');
+
+    final roundTripped = AiPlanStep.fromJson(step.toJson()) as AiAddComponentStep;
+    expect(roundTripped.relativePath, step.relativePath);
+    expect(roundTripped.nameOverride, step.nameOverride);
+  });
+
+  test('add_component step parses without a name_override and omits it on toJson', () {
+    final step = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {'local_id': 'ac1', 'kind': 'add_component', 'relative_path': 'parts/bracket.DIDSAprt'},
+      ],
+    }).steps.single as AiAddComponentStep;
+
+    expect(step.nameOverride, isNull);
+    expect(step.toJson().containsKey('name_override'), isFalse);
+  });
 }

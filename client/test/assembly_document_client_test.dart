@@ -66,6 +66,9 @@ class _FakeStorageService implements StorageService {
 
   @override
   Future<bool> exists(FileHandle handle) async => files.containsKey(handle.relativePath);
+
+  @override
+  Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) async => files.keys.toList();
 }
 
 Map<String, dynamic> _singlePartPayload({

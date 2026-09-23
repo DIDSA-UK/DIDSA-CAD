@@ -2734,6 +2734,215 @@ item is unchanged.
 
 ---
 
+## 2t. Phase 18 — AI plan pipeline: `add_component` + client file discovery (implemented)
+
+§6 roadmap's own Phase 18 entry, unblocked once Phase 15 shipped: closes
+gap `[2]` - `add_component` had no `PlanStep` kind at all, so every prior
+assembly-related step (`mate`/`move_component`/`hide_component`/
+`isolate_component`/`pattern_component`) could only ever *reference* an
+Occurrence a human already placed by hand, never one the plan itself just
+created. This is the first `PlanStep` kind in this app's history to place a
+brand-new Occurrence and hand later steps in the *same* plan a real way to
+reference it.
+
+### `StorageService.listFiles`
+
+New abstract method (`client/lib/storage/storage_service.dart`):
+`Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter})`
+- a flat, recursive list of POSIX-style relative file paths (never a
+directory), optionally filtered by suffix. Deliberately not a richer
+tree/entry type - the only real consumer today (the prompt-context fetch
+below) wants nothing but relative paths; a future interactive folder-browser
+widget (out of this phase's own scope, see below) can add its own
+non-recursive `listDirectory`-style method later without deprecating this
+one. `DesktopStorageService` implements it via `Directory(root.path).list
+(recursive: true)`; `SafStorageService` hand-rolls the recursion, since the
+real `saf_util: ^3.1.0` package's own `SafUtil.list(uri)` - confirmed
+against its actual Android Kotlin implementation, not just its Dart
+signature - is **non-recursive** (one `ContentResolver.query` per
+directory's immediate children only), a nuance the roadmap's own framing
+didn't spell out. Both implementations swallow a mid-walk I/O error on one
+subtree and return a partial-but-useful list rather than failing outright -
+root-unreachable is the only case that throws `StorageException` - matching
+the sole real consumer's own already-best-effort posture.
+
+### The new `PlanStep` kind: `add_component`
+
+Backend (`ai_plan_schemas.py`): `AddComponentStep {local_id, kind:
+"add_component", relative_path, name_override?}`. The backend is stateless
+(decision #6 - no filesystem/SAF access ever) and can never open
+`relative_path` to discover real geometry, so it's stored verbatim into the
+resulting scratch Occurrence's own `external_ref`, with only a non-empty
+check possible server-side; real existence/shape validation happens
+client-side at execution time, exactly like a human-picked "Insert Existing
+Component" file already fails today.
+
+`_PlanValidator` (`ai_plan.py`) gains a new plan-local registry,
+`self._local_occurrence_by_id: dict[str, Occurrence]`, and a new handler,
+`_handle_add_component`, which builds a scratch `Occurrence` stub
+(`resolved_part_id=None` - no real target-Part geometry is ever known to
+this dry run) and registers it there under the step's own `local_id`.
+`_lookup_occurrence` - the single resolution function every occurrence-
+targeting handler already calls - is widened to check this new registry
+*first*, before falling through to its original `existing:<id>` rule,
+completely unchanged for every existing call site
+(`_mate_entity_ref_from_step`, `_handle_move_component`,
+`_handle_hide_component`, `_handle_isolate_component`,
+`_handle_pattern_component`) - none of them needed a single line of their
+own changed. A local_id that resolves to something in `self.resolved` but
+isn't an Occurrence (e.g. a Feature-producing step's own id) is now a clear
+`wrong_kind_reference`, not the generic "did you forget the prefix"
+fallback; that fallback (`occurrence_requires_existing_prefix`) is otherwise
+left exactly as-is, including its now slightly-imprecise name, for
+backward compatibility with existing tests/callers keying off that exact
+string.
+
+**A finding, not a code change**: `_handle_pattern_component` already
+resolves every `source_occurrence_ids` entry through this same generic
+`_lookup_occurrence` call, with no pattern-specific prefix logic of its
+own - so widening that one function transparently lets `pattern_component`
+accept a plan-local `add_component` id too, for free, even though
+`PatternComponentStep`'s own docstring previously said this "waits on
+Phase 19." Corrected the docstring (a known-stale comment left as-is is
+worse than fixed), but the client's own prompt vocabulary (below)
+deliberately does **not** yet advertise or exercise this combination -
+Phase 19 is still the right place to relax and test that specific
+combination end to end, not something to ship silently ahead of it.
+
+### Client execution: `PlanTranslator`
+
+`_resolveOccurrenceId` (`ai_plan_translator.dart`) - previously an
+unconditional prefix-strip, since every non-empty `occurrence_id` was
+guaranteed `existing:`-prefixed - is widened to the same two-branch shape
+`_resolveId` already uses for Features: `existing:<id>` still strips
+verbatim, anything else looks up `localIdToRealId`. Threaded through
+`ids` at all six call sites (`_mateEntityRefDto`, the mate-solve-target
+resolution, `move_component`, `hide_component`, `isolate_component`,
+`pattern_component`'s own `sourceOccurrenceIds` map) - this same widening
+is exactly what Phase 19 needs with **zero further changes**, confirmed
+directly, not assumed.
+
+`PlanTranslator` gains nullable `storageService`/`projectRoot` constructor
+params - only meaningful to an `add_component` step, which fails clearly
+(`add_component requires an open project folder...`) if executed with
+neither set, rather than crashing. Its own `_executeStep` case mirrors the
+existing human-driven "Insert Existing Component" flow
+(`part_screen.dart`'s `_onInsertComponentPressed`) exactly: resolve the file
+via `StorageService`, `documentApi.exportNative()` the current session,
+mint a brand-new id via `Uuid().v4()` (never read back from a response -
+`DocumentApiClient.importNative` returns no occurrence id at all, since it
+trusts every id in the wire payload verbatim), fold both into
+`mergeComponentIntoDocument` (byte-for-byte the same pure function, kept
+unchanged), then `importNative` the merged result. `StorageException`/
+`AddComponentException` are both caught and rethrown as the one
+`ApiException` type the translator's per-step loop already handles,
+surfacing as an ordinary `PlanTranslationOutcome.stepFailed` rather than an
+uncaught exception. `add_component` is deliberately **not** added to
+`_featureProducingKinds` - an Occurrence id never joins `createdFeatureIds`,
+so "Undo this generation" can never retract a placed component, matching
+this app's existing, pre-existing undo posture (`[23]`: undo is scoped to
+component-transform drags only) rather than a gap this phase closes.
+
+### File-discovery prompt context
+
+New `client/lib/ai/ai_component_file_summary.dart`,
+`summarizeAvailableComponentFilesForPrompt` - `ai_existing_part_summary.dart`'s
+own sibling one level down (files on disk, not already-built
+Features/Occurrences), calling `listFiles` filtered to
+`kNativeFileExtension` (`.DIDSAprt`) and formatting a numbered list, `''`
+when nothing's available (no project root, an unreachable one, or nothing
+found) - no "Available Component Files" section appears in that case, and
+the locked vocabulary text tells the LLM to say so rather than invent a
+path. Deliberately does **not** try to exclude the currently-open Part's
+own file or already-placed components - there's no reliable "this Part's
+own relative path" to exclude by (a Part may be unsaved, or loaded via
+multi-file compose with no single canonical path), and re-inserting an
+already-placed file for a legitimate second Occurrence is *supported*
+behavior, not an error to pre-filter; the one genuine error case
+(self-reference) already fails clearly at execution time.
+
+`AiModellingScreen` gains nullable `storageService`/`projectRoot`
+constructor params, fetching this summary once in `initState` (independent
+of `existingPartId` - files on disk don't change over a conversation's
+lifetime the way this Part's own Features/Occurrences do) and threading it
+into both `buildAiScopingSystemPrompt` call sites and the real
+`PlanTranslator` construction. `part_screen.dart`'s "Continue with AI" call
+site passes its own `_storageService`/`_projectRoot` - whatever's currently
+held, possibly null, deliberately **not** forcing `_ensureProjectRoot()`
+first (that can pop a native folder picker as a side effect of just opening
+a chat screen). `tool_chooser_screen.dart`'s fresh-Part "AI Modelling" entry
+point is explicitly left untouched - there's no `PartScreen` session yet to
+source a project root from, a disclosed scope limit, not an oversight.
+
+### Prompt/vocabulary updates
+
+Three separate "no kind exists to place a brand-new component" statements
+in `ai_scoping_prompt.dart` (the tool-group-independent "Permanent
+limitations" block, `assemblyVocabularyText`'s own opening and closing
+paragraphs) were rewritten; a new `add_component` bullet was added ahead of
+`mate` describing its `relative_path`/`name_override` fields and the new
+"reference this step's own `local_id` bare" convention. `ai_tool_groups.dart`'s
+`'assembly'` group gained `'add_component'` in its `kinds` set, so the
+existing AI Settings → Tools toggle disables it server-side for free.
+
+### Non-goals, deliberately
+
+The existing human-driven "Insert Existing Component"/"Create Component…"
+flow stays on raw `file_picker`, not rewired to browse via `listFiles` - a
+natural, separate follow-up. No interactive folder-browser widget was
+built - `listFiles` is a data-returning capability only. No undo support for
+`add_component` (matches `[23]`'s existing app-wide posture). The full
+plan-local `pattern_component` (`[1]`'s remaining half, Phase 19) needs no
+further changes here, confirmed directly above, not assumed - "pure
+payoff," exactly as the roadmap's own framing predicted.
+
+**Verified**: backend - full suite against real `pythonocc-core`/`py-slvs`
+- **2378/2378 passed, 0 failed** (up from 2365 after Phase 16: 13 new tests
+in `test_ai_plan_assembly_steps.py` - dry-run success, first-vs-second-
+Occurrence `fixed` behavior, empty-`relative_path` rejection, an
+HTTP-layer round trip, a two-step plan for each of `move_component`/
+`hide_component`/`isolate_component`/`mate`/`pattern_component` referencing
+an `add_component` step's own plan-local id, `pattern_component` accepting
+a mixed `existing:<id>` + plan-local list in one call, a
+`wrong_kind_reference` case naming a `sketch` step's own `local_id`, and a
+`depends_on_failed_step` case chained off a rejected `add_component`). Full
+client suite - **2124/2124 passed**
+(up from 2108 after Phase 16; 14 GPU-skips, unchanged), `flutter analyze`
+clean across the whole client. New client tests: 2 `AiAddComponentStep`
+parse/round-trip cases (`ai_plan_test.dart`), 1 summary case
+(`ai_plan_summary_test.dart`), 4 `listFiles` cases each for
+`DesktopStorageService`/`SafStorageService` (real temp dir; a fake
+in-memory `SafUtil.list()` override added to the existing convention's fake
+subclass), and 5 `PlanTranslator` cases (`ai_plan_translator_test.dart`:
+real execution against a real `DesktopStorageService`-shaped in-memory fake
+proving the self-minted id lands in `localIdToRealId` and the right
+Occurrence/Part data reaches `importNative`; a later `move_component` step
+in the same plan resolving the bare plan-local id to the same real id;
+clear-failure cases for no storage/root, a missing file, and a
+self-referencing file). Three pre-existing fake `StorageService`
+implementations (`assembly_document_client_test.dart`,
+`assembly_graph_composer_test.dart`, `part_screen_test.dart`) needed a
+one-line `listFiles` stub added to keep implementing the now-wider
+interface - a real, if small, cost of widening a shared abstract class this
+codebase's own tests already fake in three places, paid here rather than
+left as a `flutter analyze` failure.
+
+### Remaining limitations after this phase
+
+`[1]`'s remaining half (`pattern_component` accepting a plan-local id, both
+in the backend - already true - and advertised/tested end to end) is Phase
+19, not this one. No on-device/real-LLM verification of the full
+authoring loop was possible in this sandbox (no live provider call, no real
+mobile SAF grant) - the translator/storage logic is verified directly
+against real temp-dir I/O and a `MockClient`-driven HTTP layer, but an
+actual "AI picks a file, plan resolves, component appears" round trip
+through a real conversation is real, undone follow-up verification, same
+disclosed limitation this document's own convention already applies
+elsewhere (e.g. Phase 12's gizmo-at-a-nested-position rendering). Every
+other Known v1 limitation/appendix item is unchanged.
+
+---
+
 ## 3. Phase history (every originally-scoped phase implemented)
 
 Phase 4 ("Whole-part selection + context menu") moved to §2f, Phase 5
@@ -3172,18 +3381,19 @@ security-scoped bookmarks, mirroring that class's own reachability-
 revalidation contract. Survey a maintained Dart bookmark plugin the way
 Phase 1 evaluated `saf_util`/`saf_stream` vs. `shared_storage`.
 
-**Phase 18 — AI plan pipeline: `add_component` + client file discovery
-(large).** Closes `[2]`. Feasibility confirmed directly: `saf_util`
-(already a dependency) exposes a real `Future<List<SafDocumentFile>>
-list(String uri)`; `dart:io`'s `Directory.list(recursive: true)` covers
-desktop - not blocked on a missing platform capability, just undesigned.
-`StorageService` gains `listFiles` (ship/checkpoint first, independently
-useful); a new `AddComponentStep` becomes the first `PlanStep` kind to
-ever *produce* a plan-local Occurrence id, needing a genuinely new
-execution path (`add_component.dart`'s `mergeComponentIntoDocument` reading
-via `StorageService` instead of `file_picker`) and a new plan-local-
-resolution branch in `_PlanValidator._lookup_occurrence` before its
-`existing:` fallback. The largest, most genuinely-new-design phase here.
+**~~Phase 18 — AI plan pipeline: `add_component` + client file discovery
+(large).~~ — moved to §2t, implemented.** Closes `[2]`. `StorageService`
+gained `listFiles` - real recursive discovery on desktop
+(`Directory.list(recursive: true)`), hand-rolled recursion on Android since
+the real `SafUtil.list(uri)` turned out non-recursive (one directory's
+immediate children only - a nuance this roadmap entry's own framing didn't
+spell out, confirmed against the actual Android plugin implementation, not
+just its Dart signature). The new `AddComponentStep` is the first `PlanStep`
+kind to ever *produce* a plan-local Occurrence id - `_PlanValidator
+._lookup_occurrence`'s widened resolution (checked before its `existing:`
+fallback) transparently covers every existing occurrence-referencing
+handler, including `_handle_pattern_component`, with zero handler-specific
+changes.
 
 **Phase 19 — AI plan pipeline: `pattern_component` full version (small,
 depends on 18).** Closes the remainder of `[1]`. Extends
@@ -3244,10 +3454,10 @@ like Phase 10, and should get real design time budgeted up front, the same
 
 **Dependency summary**: Phases 10, 11, 12, 13, 14, 17, and 20 are mutually
 independent - resequence or parallelize freely. The one hard chain is
-**15 → 18 → 19**; 15 is now implemented (§2r), so 18 is unblocked. Phase
-16 (implemented, §2s) softly depended on 15 - confirmed by the spike
-itself, which needed Phase 15's real Save All/Open Project flow to test
-the round trip against.
+**15 → 18 → 19**; 15 is now implemented (§2r), and 18 is now implemented
+too (§2t), so 19 is unblocked. Phase 16 (implemented, §2s) softly depended
+on 15 - confirmed by the spike itself, which needed Phase 15's real Save
+All/Open Project flow to test the round trip against.
 
 **Explicitly deferred again** (recommend re-stating, not silently
 dropping, if this roadmap is revisited): `[12]` multi-body/linkage
@@ -3271,9 +3481,10 @@ limitation, not assembly-specific.
 
 **AI plan pipeline (§2k)**: `[1]` ~~`pattern_component` PlanStep missing~~ -
 **fixed (existing-Occurrence-only half), Phase 14 §2q** - the full version
-(a plan-local id this same plan just placed) still waits on `[2]`;
-`[2]` `add_component` PlanStep missing (no client file-discovery
-mechanism); `[3]` ~~no edge-selector heuristic for a Mate's own geometry
+(a plan-local id this same plan just placed) is unblocked now that `[2]`
+is fixed, and is Phase 19's own remaining scope;
+`[2]` ~~`add_component` PlanStep missing (no client file-discovery
+mechanism)~~ - **fixed, Phase 18 §2t**; `[3]` ~~no edge-selector heuristic for a Mate's own geometry
 refs~~ - **fixed, Phase 14 §2q**; `[4]` ~~`move_component` has no payload validation~~ - **fixed,
 Phase 10 §2m**; `[5]` ~~manual Hide/Show/Isolate UI still client-only~~ -
 **fixed, Phase 10 §2m**.

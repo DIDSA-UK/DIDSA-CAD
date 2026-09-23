@@ -136,6 +136,41 @@ void main() {
     });
   });
 
+  group('listFiles', () {
+    test('recursively finds every file under the root', () async {
+      final root = DesktopProjectRoot(tempDir.path);
+      await service.writeFile(root, 'top.didsa', utf8.encode('x'));
+      await service.writeFile(root, 'parts/bracket.didsa', utf8.encode('x'));
+      await service.writeFile(root, 'parts/nested/bolt.didsa', utf8.encode('x'));
+
+      final files = await service.listFiles(root);
+
+      expect(files, unorderedEquals(['top.didsa', 'parts/bracket.didsa', 'parts/nested/bolt.didsa']));
+    });
+
+    test('filters by extension when given', () async {
+      final root = DesktopProjectRoot(tempDir.path);
+      await service.writeFile(root, 'top.DIDSAprt', utf8.encode('x'));
+      await service.writeFile(root, 'readme.txt', utf8.encode('x'));
+
+      final files = await service.listFiles(root, extensionFilter: '.DIDSAprt');
+
+      expect(files, ['top.DIDSAprt']);
+    });
+
+    test('returns an empty list for an empty project root', () async {
+      final root = DesktopProjectRoot(tempDir.path);
+
+      expect(await service.listFiles(root), isEmpty);
+    });
+
+    test('throws StorageException when the root does not exist', () async {
+      final root = DesktopProjectRoot('${tempDir.path}/does-not-exist');
+
+      expect(() => service.listFiles(root), throwsA(isA<StorageException>()));
+    });
+  });
+
   group('cross-implementation type safety', () {
     test('rejects a SafFileHandle from a DesktopStorageService call', () async {
       final safRoot = SafProjectRoot(treeUri: 'content://tree/abc', displayName: 'x');

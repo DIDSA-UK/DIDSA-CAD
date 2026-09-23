@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -9,6 +10,48 @@ import 'package:didsa_cad_client/ai/ai_plan.dart';
 import 'package:didsa_cad_client/ai/ai_plan_translator.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/storage/file_handle.dart';
+import 'package:didsa_cad_client/storage/project_root.dart';
+import 'package:didsa_cad_client/storage/storage_service.dart';
+
+/// A minimal in-memory [StorageService] fake for the `add_component` group
+/// below - only [resolve]/[readFile] are ever exercised by
+/// [PlanTranslator]'s own `AiAddComponentStep` case, so every other method
+/// is left unimplemented (mirroring this file's own "only fake what's
+/// actually called" convention for its `MockClient` handlers).
+class _FakeStorageService implements StorageService {
+  _FakeStorageService(this._filesByRelativePath);
+
+  final Map<String, Uint8List> _filesByRelativePath;
+
+  @override
+  Future<FileHandle?> resolve(ProjectRoot root, String relativePath) async {
+    if (!_filesByRelativePath.containsKey(relativePath)) return null;
+    return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
+  }
+
+  @override
+  Future<Uint8List> readFile(FileHandle handle) async => _filesByRelativePath[handle.relativePath]!;
+
+  @override
+  Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) async =>
+      _filesByRelativePath.keys.toList();
+
+  @override
+  Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) => throw UnimplementedError();
+
+  @override
+  Future<ProjectRoot?> lastUsedProjectRoot() => throw UnimplementedError();
+
+  @override
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) => throw UnimplementedError();
+
+  @override
+  Future<DateTime?> lastModified(FileHandle handle) => throw UnimplementedError();
+
+  @override
+  Future<bool> exists(FileHandle handle) async => _filesByRelativePath.containsKey(handle.relativePath);
+}
 
 /// AI Modelling workstream 4: [PlanTranslator]'s own logic, exercised
 /// directly against fixture plans (no LLM/provider call involved, no
@@ -1451,6 +1494,237 @@ void main() {
       expect(mateBody!['references'][0]['subshape_ref']['body_id'], 'b1');
       // The second reference never used edge_selector - unchanged.
       expect(mateBody!['references'][1]['subshape_ref']['index'], 0);
+    });
+  });
+
+  group('PlanTranslator.execute - Assembly (add_component, Phase 18)', () {
+    Map<String, dynamic> minimalPartPayload(String schemaVersion, String partId, {List<dynamic>? occurrences}) => {
+          'schema_version': schemaVersion,
+          'document': {
+            'id': 'doc-$partId',
+            'root_part_id': partId,
+            'parts': [
+              {'id': partId, if (occurrences != null) 'occurrences': occurrences},
+            ],
+          },
+          'sketches': [],
+        };
+
+    test('reads the file via StorageService, mints a real id, and posts a full-replace import', () async {
+      Map<String, dynamic>? importedPayload;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'ac1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'GET' && request.url.path == '/document/export/native') {
+          return jsonResponse(minimalPartPayload('1', 'part-1'));
+        }
+        if (request.method == 'POST' && request.url.path == '/document/import/native') {
+          importedPayload = decodeBody(request);
+          return jsonResponse({'document_id': 'doc-1', 'part_ids': ['part-1', 'part-2']});
+        }
+        return http.Response('not found', 404);
+      });
+
+      final storage = _FakeStorageService({
+        'parts/bracket.DIDSAprt': Uint8List.fromList(utf8.encode(jsonEncode(minimalPartPayload('1', 'part-2')))),
+      });
+      final root = DesktopProjectRoot('/fake/project');
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'ac1',
+            'kind': 'add_component',
+            'relative_path': 'parts/bracket.DIDSAprt',
+            'name_override': 'Bracket',
+          },
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+        storageService: storage,
+        projectRoot: root,
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      final newOccurrenceId = result.localIdToRealId['ac1'];
+      expect(newOccurrenceId, isNotNull);
+      final parts = (importedPayload!['document']['parts'] as List).cast<Map<String, dynamic>>();
+      final rootPart = parts.firstWhere((p) => p['id'] == 'part-1');
+      final occurrences = (rootPart['occurrences'] as List).cast<Map<String, dynamic>>();
+      expect(occurrences.single['id'], newOccurrenceId);
+      expect(occurrences.single['external_ref'], 'parts/bracket.DIDSAprt');
+      expect(occurrences.single['name_override'], 'Bracket');
+      expect(parts.any((p) => p['id'] == 'part-2'), isTrue);
+      // add_component never counts as a created Feature - nothing for
+      // "Undo this generation" to delete for it.
+      expect(result.createdFeatureIds, isEmpty);
+    });
+
+    test('a later move_component step in the same plan resolves the bare plan-local occurrence id', () async {
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'ac1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'mv1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'GET' && request.url.path == '/document/export/native') {
+          return jsonResponse(minimalPartPayload('1', 'part-1'));
+        }
+        if (request.method == 'POST' && request.url.path == '/document/import/native') {
+          return jsonResponse({'document_id': 'doc-1', 'part_ids': ['part-1', 'part-2']});
+        }
+        if (request.method == 'PATCH' && request.url.path.startsWith('/document/parts/part-1/occurrences/')) {
+          final patchedId = request.url.pathSegments.last;
+          return jsonResponse({
+            'id': patchedId,
+            'external_ref': 'parts/bracket.DIDSAprt',
+            'resolved_part_id': 'part-2',
+            'name_override': null,
+            'transform': {
+              'translation': [5.0, 0.0, 0.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 0.0,
+            },
+            'suppressed': false,
+            'hidden': false,
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final storage = _FakeStorageService({
+        'parts/bracket.DIDSAprt': Uint8List.fromList(utf8.encode(jsonEncode(minimalPartPayload('1', 'part-2')))),
+      });
+      final root = DesktopProjectRoot('/fake/project');
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'ac1', 'kind': 'add_component', 'relative_path': 'parts/bracket.DIDSAprt'},
+          {
+            'local_id': 'mv1',
+            'kind': 'move_component',
+            'occurrence_id': 'ac1',
+            'translation': [5.0, 0.0, 0.0],
+          },
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+        storageService: storage,
+        projectRoot: root,
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.localIdToRealId['mv1'], result.localIdToRealId['ac1']);
+    });
+
+    test('fails clearly when neither storageService nor projectRoot is available', () async {
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'ac1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'ac1', 'kind': 'add_component', 'relative_path': 'parts/bracket.DIDSAprt'},
+        ],
+      });
+      final translator = PlanTranslator(documentApi: DocumentApiClient(httpClient: mock), sketchApi: SketchApiClient(httpClient: mock));
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.stepFailed);
+      expect(result.errorMessage, contains('project folder'));
+    });
+
+    test('fails clearly when the relative_path does not resolve to a real file', () async {
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'ac1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'ac1', 'kind': 'add_component', 'relative_path': 'parts/missing.DIDSAprt'},
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+        storageService: _FakeStorageService({}),
+        projectRoot: DesktopProjectRoot('/fake/project'),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.stepFailed);
+      expect(result.errorMessage, contains('not found'));
+    });
+
+    test('fails clearly (never crashes) on a self-referencing file', () async {
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'ac1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'GET' && request.url.path == '/document/export/native') {
+          return jsonResponse(minimalPartPayload('1', 'part-1'));
+        }
+        return http.Response('not found', 404);
+      });
+
+      final storage = _FakeStorageService({
+        // The "picked file" claims its own root Part id is part-1 too - the
+        // exact same self-reference `AddComponentException` guards against.
+        'parts/self.DIDSAprt': Uint8List.fromList(utf8.encode(jsonEncode(minimalPartPayload('1', 'part-1')))),
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'ac1', 'kind': 'add_component', 'relative_path': 'parts/self.DIDSAprt'},
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+        storageService: storage,
+        projectRoot: DesktopProjectRoot('/fake/project'),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.stepFailed);
+      expect(result.errorMessage, contains('itself'));
     });
   });
 

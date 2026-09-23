@@ -1,12 +1,18 @@
 """Assembly support Phase 8 (`docs/assembly-scope.md` §2k): the AI plan
-pipeline's four new occurrence-targeting `PlanStep` kinds -
-`mate`/`move_component`/`hide_component`/`isolate_component`. Every one of
-them can only ever reference an *already-existing* Occurrence on the Part
-being edited (`existing:<occurrence_id>`) - no `PlanStep` kind places a new
-one yet (`add_component`'s own client-side file-discovery gap) - so every
-test here sets up its Part's real Occurrences directly (mirroring
+pipeline's occurrence-targeting `PlanStep` kinds -
+`mate`/`move_component`/`hide_component`/`isolate_component`/
+`pattern_component`. Every one of them can reference an *already-existing*
+Occurrence on the Part being edited (`existing:<occurrence_id>`) - so most
+tests here set up their Part's real Occurrences directly (mirroring
 `test_occurrence_transform_update.py`'s own composed-payload convention)
 before validating a plan against them.
+
+Phase 18 (`docs/assembly-scope.md` §6 `[2]`) added `add_component` - the
+first `PlanStep` kind that *places* a brand-new Occurrence rather than only
+ever referencing one a human already placed by hand - see the `# ---
+add_component ---` section below for its own tests, including a later step
+in the same plan referencing its plan-local `local_id` directly (no
+`existing:` prefix).
 
 Needs a real pythonocc-core environment (not available in this repo's own
 dev sandbox - see docs/status.md's dated entries for whether a real
@@ -16,12 +22,14 @@ from fastapi.testclient import TestClient
 
 from app.document.ai_plan import _PlanValidator
 from app.document.ai_plan_schemas import (
+    AddComponentStep,
     HideComponentStep,
     IsolateComponentStep,
     MateEntityRefStep,
     MateStep,
     MoveComponentStep,
     PatternComponentStep,
+    SketchStep,
 )
 from app.document.models import MateType
 from app.document.store import get_part_or_404
@@ -180,6 +188,222 @@ def _validate(part_id: str, steps: list[dict]) -> dict:
 
 def _results_by_local_id(response: dict) -> dict[str, dict]:
     return {result["local_id"]: result for result in response["results"]}
+
+
+# --- add_component (Phase 18, docs/assembly-scope.md §6 [2]) ---------------
+
+
+def test_add_component_step_creates_a_structural_occurrence_dry_run():
+    top_id, _, _ = _setup_top_with_two_occurrences()
+    real_part = get_part_or_404(top_id)
+    before_count = len(real_part.occurrences)
+
+    results = _PlanValidator(real_part).run(
+        [AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt")]
+    )
+
+    assert all(r.ok for r in results), results
+    # Never persisted against the real Part - scratch-only, per every other
+    # handler's own contract.
+    assert len(get_part_or_404(top_id).occurrences) == before_count
+
+
+def test_add_component_first_occurrence_is_auto_fixed():
+    top = _create_part("Top")
+    real_part = get_part_or_404(top["id"])
+    validator = _PlanValidator(real_part)
+
+    results = validator.run([AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt")])
+
+    assert all(r.ok for r in results), results
+    assert validator._local_occurrence_by_id["ac1"].fixed is True
+
+
+def test_add_component_second_occurrence_is_not_auto_fixed():
+    top_id, _, _ = _setup_top_with_two_occurrences()
+    real_part = get_part_or_404(top_id)
+    validator = _PlanValidator(real_part)
+
+    results = validator.run([AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt")])
+
+    assert all(r.ok for r in results), results
+    assert validator._local_occurrence_by_id["ac1"].fixed is False
+
+
+def test_add_component_rejects_empty_relative_path():
+    top = _create_part("Top")
+
+    response = _validate(top["id"], [{"local_id": "ac1", "kind": "add_component", "relative_path": "   "}])
+    results = _results_by_local_id(response)
+
+    assert results["ac1"]["ok"] is False
+    assert results["ac1"]["error"]["type"] == "invalid_step_payload"
+
+
+def test_add_component_over_http():
+    top = _create_part("Top")
+
+    response = _validate(
+        top["id"],
+        [{"local_id": "ac1", "kind": "add_component", "relative_path": "parts/bracket.DIDSAprt", "name_override": "Bracket"}],
+    )
+    results = _results_by_local_id(response)
+
+    assert results["ac1"]["ok"] is True, results["ac1"]
+
+
+def test_add_component_then_move_component_references_the_plan_local_occurrence():
+    top = _create_part("Top")
+    real_part = get_part_or_404(top["id"])
+    validator = _PlanValidator(real_part)
+
+    results = validator.run(
+        [
+            AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt"),
+            MoveComponentStep(local_id="m1", occurrence_id="ac1", translation=(1.0, 2.0, 3.0)),
+        ]
+    )
+
+    assert all(r.ok for r in results), results
+    scratch = validator._local_occurrence_by_id["ac1"]
+    assert scratch.transform.translation == (1.0, 2.0, 3.0)
+
+
+def test_add_component_then_hide_component_references_the_plan_local_occurrence():
+    top = _create_part("Top")
+    real_part = get_part_or_404(top["id"])
+    validator = _PlanValidator(real_part)
+
+    results = validator.run(
+        [
+            AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt"),
+            HideComponentStep(local_id="h1", occurrence_id="ac1"),
+        ]
+    )
+
+    assert all(r.ok for r in results), results
+    assert validator._local_occurrence_by_id["ac1"].hidden is True
+
+
+def test_add_component_then_isolate_component_references_the_plan_local_occurrence():
+    top_id, occ_a, _ = _setup_top_with_two_occurrences()
+    real_part = get_part_or_404(top_id)
+    validator = _PlanValidator(real_part)
+
+    results = validator.run(
+        [
+            AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt"),
+            IsolateComponentStep(local_id="i1", occurrence_id="ac1"),
+        ]
+    )
+
+    assert all(r.ok for r in results), results
+    new_occurrence = validator._local_occurrence_by_id["ac1"]
+    assert new_occurrence.hidden is False
+    scratch_a = next(o for o in validator.part.occurrences if o.id == occ_a)
+    assert scratch_a.hidden is True
+
+
+def test_add_component_then_mate_references_the_plan_local_occurrence():
+    top_id, occ_a, _ = _setup_top_with_two_occurrences()
+    real_part = get_part_or_404(top_id)
+    validator = _PlanValidator(real_part)
+
+    results = validator.run(
+        [
+            AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt"),
+            MateStep(
+                local_id="mate1",
+                type=MateType.COINCIDENT,
+                references=[
+                    MateEntityRefStep(occurrence_id=f"existing:{occ_a}", subshape_ref={"body_id": "b1", "shape_type": "face", "index": 0}),
+                    MateEntityRefStep(occurrence_id="ac1", subshape_ref={"body_id": "b1", "shape_type": "face", "index": 0}),
+                ],
+            ),
+        ]
+    )
+
+    assert all(r.ok for r in results), results
+    new_occurrence = validator._local_occurrence_by_id["ac1"]
+    assert any(m.references[1].occurrence_id == new_occurrence.id for m in validator.part.mates)
+
+
+def test_add_component_then_pattern_component_references_the_plan_local_occurrence():
+    top = _create_part("Top")
+    real_part = get_part_or_404(top["id"])
+    validator = _PlanValidator(real_part)
+
+    results = validator.run(
+        [
+            AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt"),
+            PatternComponentStep(local_id="p1", source_occurrence_ids=["ac1"], pattern_type="linear", direction=(1.0, 0.0, 0.0), count=3),
+        ]
+    )
+
+    assert all(r.ok for r in results), results
+    new_occurrence = validator._local_occurrence_by_id["ac1"]
+    assert any(p.source_occurrence_ids == [new_occurrence.id] for p in validator.part.component_patterns)
+
+
+def test_pattern_component_accepts_mixed_existing_and_plan_local_source_occurrence_ids():
+    top_id, occ_a, _ = _setup_top_with_two_occurrences()
+    real_part = get_part_or_404(top_id)
+    validator = _PlanValidator(real_part)
+
+    results = validator.run(
+        [
+            AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt"),
+            PatternComponentStep(
+                local_id="p1",
+                source_occurrence_ids=[f"existing:{occ_a}", "ac1"],
+                pattern_type="linear",
+                direction=(1.0, 0.0, 0.0),
+                count=3,
+            ),
+        ]
+    )
+
+    assert all(r.ok for r in results), results
+
+
+def test_move_component_wrong_kind_reference_when_naming_a_non_occurrence_local_id():
+    """A bare plan-local id that resolves to a Feature-producing step's own
+    `local_id` (never an Occurrence) is a `wrong_kind_reference`, not the
+    generic `occurrence_requires_existing_prefix` fallback - a clearer error
+    than blaming a missing `existing:` prefix on something that was never
+    going to be an Occurrence reference at all."""
+    top = _create_part("Top")
+    real_part = get_part_or_404(top["id"])
+    validator = _PlanValidator(real_part)
+
+    results = validator.run(
+        [
+            SketchStep(local_id="s1", plane="XY"),
+            MoveComponentStep(local_id="m1", occurrence_id="s1"),
+        ]
+    )
+
+    assert results[0].ok is True, results[0]
+    assert results[1].ok is False
+    assert results[1].error["type"] == "wrong_kind_reference"
+    assert results[1].error["actual_kind"] == "sketch"
+
+
+def test_move_component_depends_on_failed_add_component_step():
+    top = _create_part("Top")
+    real_part = get_part_or_404(top["id"])
+    validator = _PlanValidator(real_part)
+
+    results = validator.run(
+        [
+            AddComponentStep(local_id="ac1", relative_path="   "),
+            MoveComponentStep(local_id="m1", occurrence_id="ac1"),
+        ]
+    )
+
+    assert results[0].ok is False
+    assert results[1].ok is False
+    assert results[1].error["type"] == "depends_on_failed_step"
 
 
 # --- move_component --------------------------------------------------------

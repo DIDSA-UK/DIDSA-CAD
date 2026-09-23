@@ -419,10 +419,42 @@ class AiPointRef {
       };
 }
 
+/// `AddComponentStep` (`ai_plan_schemas.py`, Phase 18 - `docs/assembly-
+/// scope.md` §6 `[2]`) - the first `AiPlanStep` kind that places a
+/// brand-new Occurrence rather than only ever referencing one a human
+/// already placed by hand. [relativePath] is a `ProjectRoot`-relative path
+/// resolved for real only at execution time (`PlanTranslator`'s own
+/// `add_component` case) - never opened by the dry-run validate call. A
+/// later mate/move_component/hide_component/isolate_component/
+/// pattern_component step may reference [localId] directly (bare, no
+/// `existing:` prefix) as its own occurrence reference.
+class AiAddComponentStep extends AiPlanStep {
+  final String relativePath;
+  final String? nameOverride;
+
+  const AiAddComponentStep({required super.localId, required this.relativePath, this.nameOverride})
+      : super(kind: 'add_component');
+
+  factory AiAddComponentStep.fromJson(Map<String, dynamic> json) => AiAddComponentStep(
+        localId: json['local_id'] as String,
+        relativePath: json['relative_path'] as String,
+        nameOverride: json['name_override'] as String?,
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'local_id': localId,
+        'kind': kind,
+        'relative_path': relativePath,
+        if (nameOverride != null) 'name_override': nameOverride,
+      };
+}
+
 /// `MateEntityRefStep` (`ai_plan_schemas.py`) - one side of a [AiMateStep].
-/// [occurrenceId] is either `""` (this Part's own root content) or
-/// `existing:<occurrence_id>` - see that Python class's own docstring for
-/// why no plan-local Occurrence id can exist yet. Exactly one of
+/// [occurrenceId] is either `""` (this Part's own root content),
+/// `existing:<occurrence_id>`, or a bare plan-local `local_id` naming an
+/// [AiAddComponentStep] earlier in this same plan (Phase 18) - never any
+/// other step kind's `localId`. Exactly one of
 /// [subshapeRef]/[planeRef]/[pointRef] should be set (a server-side rule,
 /// not enforced here per this file's own permissive-parsing doc comment).
 class AiMateEntityRefStep {
@@ -531,6 +563,8 @@ sealed class AiPlanStep {
         return AiScaleBodyStep.fromJson(json);
       case 'move_body':
         return AiMoveBodyStep.fromJson(json);
+      case 'add_component':
+        return AiAddComponentStep.fromJson(json);
       case 'mate':
         return AiMateStep.fromJson(json);
       case 'move_component':
@@ -1408,7 +1442,8 @@ class AiMateStep extends AiPlanStep {
 /// bodies), but its own placement shape mirrors `RigidTransform` directly - a
 /// free world-space rotation axis, never a sketch-line-derived one - and a
 /// whole-value replace, never a delta (see the Python class's own docstring).
-/// [occurrenceId] is `existing:<occurrence_id>` only.
+/// [occurrenceId] is `existing:<occurrence_id>` or a bare [AiAddComponentStep]
+/// `localId` from earlier in this same plan (Phase 18).
 class AiMoveComponentStep extends AiPlanStep {
   final String occurrenceId;
   final List<double> translation;
@@ -1447,8 +1482,9 @@ class AiMoveComponentStep extends AiPlanStep {
 }
 
 /// `HideComponentStep` (`ai_plan_schemas.py`, `docs/assembly-scope.md` §2k) -
-/// hides [occurrenceId] (`existing:<occurrence_id>` only) for real, via the
-/// widened `OccurrenceTransformUpdate` PATCH.
+/// hides [occurrenceId] (`existing:<occurrence_id>` or a bare
+/// [AiAddComponentStep] `localId` from earlier in this same plan, Phase 18)
+/// for real, via the widened `OccurrenceTransformUpdate` PATCH.
 class AiHideComponentStep extends AiPlanStep {
   final String occurrenceId;
 
@@ -1467,7 +1503,8 @@ class AiHideComponentStep extends AiPlanStep {
 /// §2k) - hides every *other* top-level Occurrence of [occurrenceId]'s own
 /// Part and un-hides [occurrenceId] itself, for real - see that Python
 /// class's own docstring for how this differs from the client's session-only
-/// Isolate toggle.
+/// Isolate toggle. [occurrenceId] is `existing:<occurrence_id>` or a bare
+/// [AiAddComponentStep] `localId` from earlier in this same plan (Phase 18).
 class AiIsolateComponentStep extends AiPlanStep {
   final String occurrenceId;
 
@@ -1515,8 +1552,12 @@ class AiComponentPatternAxisStep {
 /// scope.md` §6 `[1] partial`) - mirrors `ComponentPatternCreate`
 /// (`app.document.schemas`) directly, creating a `ComponentPattern`
 /// repeating one or more already-placed Occurrences. [sourceOccurrenceIds]
-/// entries are `existing:<occurrence_id>` only - see [AiMateEntityRefStep]'s
-/// own doc comment for why no plan-local Occurrence id can exist yet.
+/// entries are `existing:<occurrence_id>` only *by this client's own
+/// vocabulary convention* - the backend's `_PlanValidator._lookup_occurrence`
+/// already resolves a bare [AiAddComponentStep] `localId` here too (Phase 18
+/// landed it for free), but this client deliberately doesn't advertise or
+/// exercise that combination yet; Phase 19 is the dedicated phase for
+/// relaxing this and testing it end to end (`[1]`'s remaining half).
 class AiPatternComponentStep extends AiPlanStep {
   final List<String> sourceOccurrenceIds;
   final String patternType;
