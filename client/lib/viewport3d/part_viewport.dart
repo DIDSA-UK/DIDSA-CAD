@@ -8,7 +8,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus;
+import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus, pathEquals;
 import '../sketch/sketch_controller.dart'
     show
         ConstraintOverlayItem,
@@ -94,6 +94,19 @@ class PartViewport extends StatefulWidget {
   /// [AssemblyFocusStack.currentOccurrencePath] guarantees this on its own
   /// end, so [didUpdateWidget]'s `!=` check here stays meaningful.
   final List<String> focusedOccurrencePath;
+
+  /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): the
+  /// currently-focused Part's own real world transform, composed by
+  /// [PartScreenState] from the already-composed `assembly-mesh` response
+  /// (`findInstanceAtPath`) - identity (the default, `null`) while nothing
+  /// is focused, or while focused exactly at the document root. [bodies]
+  /// itself already reflects the focused Part's own geometry once something
+  /// is focused (`PartScreenState._refreshMesh` now fetches whichever Part
+  /// [PartScreenState._focusPartId] names, not always the root) - this is
+  /// only about *where* [_syncMeshNode]/[_syncTransientPreviewNodes]/
+  /// [_syncCreatePlaneNodes] place that geometry, mirroring
+  /// [buildAssemblyInstanceNode]'s own `localTransform:` shape one level up.
+  final vm.Matrix4? focusWorldTransformMatrix;
 
   /// Test report item 3 (New Mate ghost preview): the target Part id whose
   /// geometry [PartViewportState._syncMatePreviewNode] should render as a
@@ -989,6 +1002,7 @@ class PartViewport extends StatefulWidget {
     this.assemblyGeometry = const [],
     this.assemblyInstances = const [],
     this.focusedOccurrencePath = const [],
+    this.focusWorldTransformMatrix,
     this.matePreviewPartId,
     this.matePreviewTransform,
     this.selectedOccurrenceTransform,
@@ -1813,10 +1827,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.sectionPlanes != oldWidget.sectionPlanes ||
         widget.sectionPreviewMeshes != oldWidget.sectionPreviewMeshes ||
         widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds ||
-        // Assembly support Phase 4: [_syncMeshNode]'s own `effectiveBodyOpacity`
-        // folds this in to dim the root Part's own content while some other
-        // Part is focused - see that local variable's own doc comment.
-        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath) {
+        // Assembly support Phase 20: [_syncMeshNode] now places [bodies] at
+        // [focusWorldTransformMatrix] instead of always identity - a value
+        // change here (e.g. a parent assembly's own gizmo drag composing a
+        // new world position for the still-focused child) must rebuild the
+        // Node the same way a `focusedOccurrencePath` change already does.
+        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath ||
+        widget.focusWorldTransformMatrix != oldWidget.focusWorldTransformMatrix) {
       setState(_syncMeshNode);
     }
     // Assembly support Phase 4: [_syncAssemblyInstanceNodes]'s own three
@@ -2122,20 +2139,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // real Bodies, same "no camera-bounds participation" contract
     // [PartViewport.transientCoarsePreviewBodies]'s own doc comment states.
     _syncTransientPreviewNodes(scene);
-    // Assembly support Phase 4 (`docs/assembly-scope.md` §3): once a focus
-    // has been pushed onto some *other* Occurrence
-    // (`widget.focusedOccurrencePath.isNotEmpty`), this root Part's own
-    // local content becomes context rather than what's actively being
-    // worked on - see [assemblyInstanceOpacity]'s own doc comment for the
-    // identical rule applied to a placed instance. Folded into a single
-    // local multiplier (rather than touching every `widget.bodyOpacity`
-    // read directly) so the user's own Transparency slider and this new
-    // focus-driven dimming compose instead of one silently overriding the
-    // other; `1.0` (no focus active, or none of this Part's own Occurrences
-    // have ever been used) leaves every existing non-assembly Part's
-    // rendering byte-for-byte unchanged.
-    final effectiveBodyOpacity =
-        widget.bodyOpacity * (widget.focusedOccurrencePath.isEmpty ? 1.0 : kNonPrimaryAssemblyOpacity);
+    // Assembly support Phase 4 (`docs/assembly-scope.md` §3) originally
+    // dimmed [bodies] to [kNonPrimaryAssemblyOpacity] whenever some other
+    // Occurrence was focused, back when [bodies] always meant "the root
+    // Part's own content" regardless of focus - genuinely stale context in
+    // that world, so it read as de-emphasized. Phase 20 changes what
+    // [bodies] means: [PartScreenState._refreshMesh] now fetches whichever
+    // Part [PartScreenState._focusPartId] names, so [bodies] is always the
+    // *live edit target* (root when unfocused, the focused sub-Part
+    // otherwise) - never merely context - and belongs at full opacity
+    // (still composed with the user's own Transparency slider, just no
+    // longer with the old focus-driven dimming multiplier folded in).
+    // [focusWorldTransformMatrix] (below) is what now shows *where* this
+    // content actually sits once something is focused - opacity was never
+    // the right signal for that, only ever a stand-in for it.
+    final effectiveBodyOpacity = widget.bodyOpacity;
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
       debugPrint('[PartViewport] _syncMeshNode: no bodies yet');
@@ -2303,7 +2322,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 1,
               )
               ..doubleSided = true);
-        final node = Node(mesh: Mesh(geometry, material));
+        final node = Node(mesh: Mesh(geometry, material))..localTransform = focusTransform;
         scene.add(node);
         _meshNodes[body.bodyId] = node;
 
@@ -2316,7 +2335,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           final capMaterial = UnlitMaterial()
             ..alphaMode = AlphaMode.opaque
             ..baseColorFactor = vm.Vector4(0.85, 0.55, 0.15, 1.0);
-          final capNode = Node(mesh: Mesh(capGeometry, capMaterial));
+          final capNode = Node(mesh: Mesh(capGeometry, capMaterial))..localTransform = focusTransform;
           scene.add(capNode);
           _sectionCutCapNodes[body.bodyId] = capNode;
         }
@@ -2415,6 +2434,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
       if (instance.occurrencePath.isEmpty) continue;
+      // Assembly support Phase 20: the currently-focused Occurrence's own
+      // placed instance is now covered by [_syncMeshNode]'s own
+      // focus-transform-aware render path instead (its content is what
+      // [widget.bodies] fetches once focused - see that method's own
+      // `effectiveBodyOpacity`/`focusTransform` doc comment) - skipping it
+      // here mirrors the root's own `occurrencePath.isEmpty` skip
+      // immediately above, exactly the same "already covered elsewhere"
+      // reasoning, just for whichever Occurrence is focused instead of
+      // always the root. An exact match only - a *nested* child instance
+      // one level deeper is still a distinct, still-live placed instance
+      // this loop must keep rendering normally.
+      if (focusedPath.isNotEmpty && pathEquals(instance.occurrencePath, focusedPath)) continue;
       // Assembly support Phase 3b/4: an instance somewhere along its own
       // chain has been Hidden - the same "genuinely absent, not merely
       // deprioritized" contract [PartViewport.bodiesHidden] already applies
@@ -2595,6 +2626,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _transientMeshNodes = {};
     if (!widget.renderMode.showsFilledFaces || widget.bodiesHidden) return;
+    // Assembly support Phase 20: a not-yet-committed Feature preview is
+    // still the focused Part's own local content (same reasoning as
+    // [_syncMeshNode]'s own identical `focusTransform` - see that method's
+    // doc comment) - placed at the same world position its eventual real
+    // Body will land at once confirmed.
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     for (final body in widget.transientCoarsePreviewBodies) {
       final mesh = body.mesh;
       if (mesh.vertices.isEmpty) continue;
@@ -2602,7 +2639,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final material = UnlitMaterial()
         ..alphaMode = AlphaMode.blend
         ..baseColorFactor = vm.Vector4(0.25, 0.55, 1.0, 0.45);
-      final node = Node(mesh: Mesh(geometry, material));
+      final node = Node(mesh: Mesh(geometry, material))..localTransform = focusTransform;
       scene.add(node);
       _transientMeshNodes[body.bodyId] = node;
     }
@@ -2870,21 +2907,37 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final node in _createPlaneNodes.values) {
       scene.remove(node);
     }
+    // Assembly support Phase 20: [buildCreatePlaneNode]'s own
+    // `localTransform` is purely local (derived only from the plane's own
+    // origin/axes/normal, same as every other Create-Plane math in this
+    // file) - composing [focusTransform] on top places it at the focused
+    // Part's real world position, mirroring [_syncMeshNode]'s identical
+    // reasoning for its own Bodies.
+    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     _createPlaneNodes = {
       for (final entry in widget.createPlanes.entries)
-        entry.key: buildCreatePlaneNode(
+        entry.key: (buildCreatePlaneNode(
           entry.key,
           entry.value.origin,
           entry.value.xAxis,
           entry.value.yAxis,
           entry.value.normal,
           selected: _isCreatePlaneSelected(entry.key),
-        ),
+        )..localTransform = focusTransform * _createPlaneNodeLocalTransform(entry.value)),
     };
     for (final node in _createPlaneNodes.values) {
       scene.add(node);
     }
   }
+
+  /// [_syncCreatePlaneNodes]'s own helper: [buildCreatePlaneNode]'s
+  /// `localTransform` is a pure function of a plane's origin/axes/normal
+  /// (`createPlaneTransform`) - recomputed directly here rather than
+  /// re-reading it off a freshly-built [Node], since the composition above
+  /// needs the *pre*-[focusTransform] local value as an input, not an
+  /// already-built Node to mutate twice.
+  vm.Matrix4 _createPlaneNodeLocalTransform(ResolvedPlaneGeometry plane) =>
+      createPlaneTransform(plane.origin, plane.xAxis, plane.yAxis, plane.normal);
 
   /// Sectioning Tool: mirrors [_syncCreatePlaneNodes]'s own "remove
   /// everything, rebuild wholesale" shape for [PartViewport.sectionPlanes]'
