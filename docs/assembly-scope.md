@@ -2696,6 +2696,13 @@ at the same phase it always did.
   same plan produced (§3 item 8).
 - Composed multi-file graph `part_id`s are session-scoped, not persisted
   across app restarts.
+- "Make Focus" never retargets Part-lens Feature editing - toggling to Part
+  lens while focused into a sub-assembly still shows and edits the
+  top-level open Part's own Feature tree/geometry, not the focused
+  component's own. The original brief's "make focus to edit a part in the
+  visual context of the assembly" (this document's own opening sentence)
+  was never actually wired up this way - see §5 item 10 for the full
+  finding and §6's own new Phase 20 entry for the fix.
 
 ## 5. Appendix — scope limits and follow-ups (evaluate after rollout)
 
@@ -2716,7 +2723,12 @@ deleted, so the record of what shipped broken and why stays intact. Items
 whether they're worth fixing at all. Items 7-9 were added during Phase 7
 (§2j)'s own post-ship review, surfaced by direct user questions about the
 new `ComponentPattern` rather than a bug report - all three are still
-open.
+open. Item 10 was added post-Phase-15, also surfaced by direct user
+questions (about what "Make Focus" actually retargets) rather than a bug
+report - unlike every other item here, it isn't something a specific phase
+shipped with a known gap; it traces back to this document's own original
+opening sentence and was simply never wired up by any phase, Phase 3's own
+"mode switching" section included.
 
 1. **~~Hide/Show/Isolate can only ever *OR* onto the backend's own `hidden`
    flag, never override it.~~ - fixed.** No mutation endpoint existed for
@@ -2889,10 +2901,48 @@ open.
    shaped fields already all have precedent for in this same phase, and a
    toggle in `ComponentPatternPanel` (Linear has no equivalent ambiguity -
    a translation-only pattern has no orientation question to begin with).
+10. **"Make Focus" never retargets Part-lens Feature editing - only the
+    Assembly-lens tree/gizmo/mate/pattern scope.** Surfaced post-Phase-15
+    by a direct question about whether a sub-Part's own geometry can be
+    created/edited from inside an assembly at all. Confirmed by reading
+    the code, not assumed: `AssemblyFocusStack`/`_focusStack.current` is
+    wired into `_refreshAssemblyTree`/`_refreshAssemblyMesh` (Assembly
+    tree contents), the gizmo's own PATCH call-sites (Phase 5/8), and
+    `_confirmMate`/`_confirmComponentPattern` (Phase 12, §2o,
+    `focusPartId = _focusStack?.current ?? _part?.id`) - but **every
+    Part-lens Feature-authoring call is hardcoded to `_part.id`/`part.id`
+    instead**, never `focusPartId`: every one of the ~30
+    `_api.create*Feature(part.id, ...)` call sites, `_refreshFeatures`
+    (`part_screen.dart:9032-9040`, the *only* place `_features` is ever
+    populated - fed straight into `FeatureTreePanel(features: _features,
+    ...)`, `part_screen.dart:19252`), and every post-edit `_refreshMesh`/
+    `_api.getPartMesh(part.id, ...)` re-fetch (`part_screen.dart:1611`,
+    `9364`, `9407`, `13821`, `15502`, `15889`, `17981`, and others).
+    Concretely: switching to Part lens while focused into a sub-assembly
+    shows and edits the *root* Part's own Feature tree/geometry, exactly
+    as if nothing were focused at all - not an error, not a crash, just
+    silently the wrong Part, with nothing in the UI signalling it. The
+    original brief's own "make focus to edit a part in the visual context
+    of the assembly" was never actually built this way; Phase 3's "mode
+    switching" section (§2's own "Mode switching, concretely") describes
+    lens-toggling over *one* Part's own Features/Occurrences, which is
+    exactly what shipped - toggling lens while *focused into a different
+    Part* was never separately designed for. Closely related to, but a
+    distinct and larger gap than, item 2/`[17]` above (the root Part's own
+    Bodies staying selectable regardless of focus) - same root cause
+    (every Part-lens tool unconditionally targets `_part.id`), opposite
+    symptom: item 2 is about the root Part *leaking through* while
+    focused elsewhere; this item is about the *focused* Part never being
+    *reachable* for Feature editing at all. See §6's own new Phase 20
+    entry for the fix this needs and the real design questions it raises
+    (state that's currently modeled as belonging to one Part only -
+    `_hiddenFeatureIds`/`_rollbackExcludedFeatureIds`/`_sectionPlanes` -
+    and what the 3D viewport should show while focus-editing a nested
+    Part's own geometry).
 
 ---
 
-## 6. Follow-up roadmap (Phases 10–19, planned)
+## 6. Follow-up roadmap (Phases 10–20, planned)
 
 Produced by a dedicated planning pass over every still-open item in §4/§5
 and each phase's own "Known v1 limitations" (Phases 6-8) once Phase 9
@@ -2904,10 +2954,18 @@ and one-phase-one-PR convention; each phase below should get its own
 lettered section (§2m, §2n, ...) here once implemented, striking through
 (never deleting) whichever §4/§5 item(s) it closes.
 
+**Update**: Phase 20 was added after this roadmap's initial planning pass,
+once Phase 15 shipped and a direct user question surfaced §5 item 10 (see
+that item's own writeup) - the roadmap's own header/range widened from
+"Phases 10-19" to "Phases 10-20" to match, following the same
+"append, don't silently re-scope" convention item 10 itself was added
+under.
+
 Bracketed `[N]` ids below are stable references into this roadmap's own
-23-item gap inventory (grouped: AI plan pipeline 1-5, ComponentPattern
+24-item gap inventory (grouped: AI plan pipeline 1-5, ComponentPattern
 6-11, Mate solver 12-16, Selection/rendering/focus 17-19, Storage/
-multi-file 20-22, Other 23) - listed in full at the end of this section.
+multi-file 20-22, Other 23, In-context Feature editing 24) - listed in
+full at the end of this section.
 
 **~~Phase 10 — Mechanical gap-closure sweep (small, low risk).~~ — moved to
 §2m, implemented.** Bundled five independent, bounded fixes into one
@@ -3030,7 +3088,57 @@ depends on 18).** Closes the remainder of `[1]`. Extends
 `PlanTranslator.localIdToRealId` - the same mechanism every other step
 already uses. Pure payoff once Phase 18 lands.
 
-**Dependency summary**: Phases 10, 11, 12, 13, 14, and 17 are mutually
+**Phase 20 — In-context Feature editing: retarget Part-lens tools through
+focus (medium-large, new design questions).** Closes `[24]` (§5 item 10).
+"Make Focus" today only scopes the Assembly-lens tree/gizmo/mate/pattern -
+`AssemblyFocusStack`/`focusPartId = _focusStack?.current ?? _part?.id` is
+wired into `_refreshAssemblyTree`/`_refreshAssemblyMesh`, the gizmo's own
+PATCH call-sites (Phase 5/8), and `_confirmMate`/`_confirmComponentPattern`
+(Phase 12, §2o) - but every Part-lens Feature-authoring call
+(`_api.create*Feature`, ~30 call sites), `_refreshFeatures`
+(`part_screen.dart:9032-9040`, the only place `_features` - what
+`FeatureTreePanel` actually renders - is ever populated), and every
+post-edit `_api.getPartMesh` re-fetch (`part_screen.dart:1611`, `9364`,
+`9407`, `13821`, `15502`, `15889`, `17981`, and others) are hardcoded to
+`_part.id`/`part.id` instead. No backend change needed - every one of
+these endpoints already accepts an arbitrary `part_id`; this is client-only
+wiring, the same `focusPartId` pattern Phase 12 already established,
+mechanically extended to a much larger call-site set (a whole-repo grep
+for `part.id`/`_part!.id` inside `part_screen.dart` is the reliable way to
+find every one, not a partial pass keyed off this list). Three real design
+questions the mechanical swap surfaces, unanswered by any existing phase -
+this is why the phase is sized medium-large rather than a mechanical sweep
+like Phase 10, and should get real design time budgeted up front, the same
+"spike first" posture Phase 16 already takes for a smaller uncertainty:
+
+1. **Per-Part-scoped client-only state.** `_hiddenFeatureIds`/
+   `_rollbackExcludedFeatureIds`/`_sectionPlanes` are flat, single-Part
+   fields today - correct only because exactly one Part's Features have
+   ever been visible/editable in a session. Once a focused sub-Part's own
+   Features become reachable too, these need to become Part-id-keyed
+   (`Map<String, Set<String>>` etc.) or some equivalent scoping - a real
+   state-shape change, not a one-line id swap, since a Feature id is only
+   unique per-Part and this app's state containers currently assume "the
+   one open Part" implicitly throughout.
+2. **What the 3D viewport shows while focus-editing a nested Part.**
+   Today `_part`'s own Bodies render as the "root" content
+   (`_syncMeshNode`) and every Occurrence renders as separately-instanced
+   content (`_syncAssemblyInstanceNodes`, Phase 2/4's `assembly-mesh` +
+   `mesh` split). Retargeting Feature editing to a focused Occurrence needs
+   its own placed instance to become the interactive/hit-testable one
+   (extending the opacity/selectability split Phase 4/5/12 already do for
+   *whole-component* selection) - but `hitTestBodies`/`hitTestFaces` and
+   friends have no occurrence-transform-aware variant today; they only
+   ever hit-test `_part`'s own untransformed local geometry. This is new
+   hit-testing work, not a config flag.
+3. **Appendix item 2/`[17]` (root Part's own Bodies staying selectable
+   regardless of focus) should be revisited as part of this phase's own
+   scoping, not left as a separate deferral** - once a real focus-scoped
+   editing mode exists, leaving the root Part unconditionally selectable
+   while focused elsewhere stops being "no bug report yet" and becomes a
+   concrete way to silently edit the wrong Part.
+
+**Dependency summary**: Phases 10, 11, 12, 13, 14, 17, and 20 are mutually
 independent - resequence or parallelize freely. The one hard chain is
 **15 → 18 → 19**; 15 is now implemented (§2r), so 18 is unblocked. Phase
 16 softly depends on 15.
@@ -3045,12 +3153,15 @@ already rejected three approaches before landing on today's
 correct-for-practical-cases seed; `[16b]` feature-level breadcrumb tier -
 needs per-face OCCT history attribution that doesn't exist anywhere in the
 backend, recommend a time-boxed spike first; `[17]` root Part's own Bodies
-staying selectable regardless of focus - an explicit "real usage-judgment
-call," touches `hitTestBodies` for a guarantee no bug report has asked
-for; `[23]` general document-level undo - an app-wide pre-existing
+staying selectable regardless of focus - was an explicit "real
+usage-judgment call, no bug report has asked for it," now recommended to
+be revisited as part of Phase 20's own scoping instead (§6's own Phase 20
+entry, item 3) rather than independently, since Phase 20 makes it a
+concrete "silently edits the wrong Part" risk rather than a hypothetical
+one; `[23]` general document-level undo - an app-wide pre-existing
 limitation, not assembly-specific.
 
-### The 23-item gap inventory this roadmap schedules against
+### The 24-item gap inventory this roadmap schedules against
 
 **AI plan pipeline (§2k)**: `[1]` ~~`pattern_component` PlanStep missing~~ -
 **fixed (existing-Occurrence-only half), Phase 14 §2q** - the full version
@@ -3094,3 +3205,9 @@ multi-file `part_id`s are session-scoped only.
 
 **Other**: `[23]` undo scoped to component-transform drags only (app-wide
 pre-existing limitation, not assembly-specific).
+
+**In-context Feature editing (§5 item 10)**: `[24]` "Make Focus" never
+retargets Part-lens Feature editing - every Feature-authoring call/mesh
+refetch/`FeatureTreePanel` source stays hardcoded to the root open Part
+regardless of focus, unlike the Assembly-lens tree/gizmo/mate/pattern
+(already `focusPartId`-aware since Phase 5/8/12). Scheduled as Phase 20.
