@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -12,12 +13,20 @@ import 'package:speech_to_text/speech_to_text.dart';
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
+import '../assembly/assembly_document_client.dart';
+import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException;
+import '../assembly/assembly_lens.dart';
+import '../assembly/relative_path.dart';
 import '../gear/gear_preset_store.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import '../viewport3d/part_screen.dart';
+import '../viewport3d/relative_path_dialog.dart';
 import 'ai_component_file_summary.dart';
 import 'ai_existing_part_summary.dart';
+import 'ai_generation_mode.dart';
+import 'ai_part_manifest.dart';
+import 'ai_part_naming.dart';
 import 'ai_plan.dart';
 import 'ai_plan_detection.dart';
 import 'ai_plan_export.dart';
@@ -142,6 +151,31 @@ class AiModellingScreen extends StatefulWidget {
   State<AiModellingScreen> createState() => _AiModellingScreenState();
 }
 
+/// An image the user has picked but not yet sent - the client-side
+/// counterpart to [AiImageAttachment] with the extra display-only
+/// [fileName]. Widened from a single scalar to a list-backed pending
+/// attachment strip in Phase B of the multi-part/assembly overhaul
+/// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`).
+class _PendingImage {
+  final Uint8List bytes;
+  final String mimeType;
+  final String fileName;
+
+  const _PendingImage({required this.bytes, required this.mimeType, required this.fileName});
+}
+
+/// Multi-part/assembly overhaul, Phase D: one part cycle's own successful
+/// outcome - what the later assembly-authoring step (Phase E, gated on
+/// Phase D2 - not attempted by this phase) will need to reference each
+/// part by its real, now-on-disk `relativePath`.
+class _SavedAssemblyPart {
+  final String name;
+  final String relativePath;
+  final String partId;
+
+  const _SavedAssemblyPart({required this.name, required this.relativePath, required this.partId});
+}
+
 class _AiModellingScreenState extends State<AiModellingScreen> {
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -150,14 +184,24 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   bool _sending = false;
   String? _sendError;
 
-  // Workstream 10 (image input): the picked-but-not-yet-sent image, shown as
-  // a small preview above the input row. Cleared as soon as `_send()` folds
-  // it into a real `AiChatMessage` (success or failure) - re-attaching is
-  // how a user retries, matching `_sendError`'s own "surfaced, not silently
-  // retried" posture.
-  Uint8List? _pendingImageBytes;
-  String? _pendingImageMimeType;
-  String? _pendingImageFileName;
+  // Multi-part/assembly overhaul, Phase A
+  // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): the per-
+  // conversation mode toggle. Starts from whatever default the user last
+  // set (`AiGenerationModePreferences.defaultMode`) - changing it here only
+  // affects this conversation; persisting a new default is a separate,
+  // explicit action (`_setMode`'s own `persistAsDefault` parameter).
+  AiGenerationMode _mode = AiGenerationModePreferences.defaultMode;
+
+  // Workstream 10 (image input): the picked-but-not-yet-sent image(s), shown
+  // as a small preview strip above the input row. Cleared as soon as
+  // `_send()` folds them into a real `AiChatMessage` (success or failure) -
+  // re-attaching is how a user retries, matching `_sendError`'s own
+  // "surfaced, not silently retried" posture. Widened from a single image to
+  // a list in Phase B of the multi-part/assembly overhaul
+  // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`) - one turn can
+  // now carry more than one image (several distinct parts, or several views
+  // of one assembly).
+  List<_PendingImage> _pendingImages = [];
   bool _preparingImage = false;
   String? _imageError;
 
@@ -185,6 +229,95 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   String _lastRecognizedWords = '';
 
   AiGenerationPlan? _proposedPlan;
+
+  // Multi-part/assembly overhaul, Phase D (`docs/ai-modelling/13-multi-
+  // part-assembly-overhaul.md`): Assembly mode's own detected
+  // part_manifest, awaiting the user's confirm - a sibling of
+  // `_proposedPlan` one level up (a manifest names several parts;
+  // `_proposedPlan` is always exactly one part's own real plan). Kept as a
+  // separate field rather than folded into a union so every existing
+  // `_proposedPlan == null` check elsewhere keeps meaning exactly what it
+  // always did - a turn detects at most one of the two (`_send()`), never
+  // both.
+  AiPartManifest? _partManifest;
+  List<TextEditingController> _manifestNameControllers = [];
+  List<TextEditingController> _manifestPrefixControllers = [];
+
+  // Gap-closure (`13-...md`'s own E-1): existing native files under the
+  // project root, offered on the manifest-confirm panel as an "insert into
+  // this existing assembly instead" choice - loaded once a manifest is
+  // detected (`_loadExistingAssemblyFileOptions`, fired from `_send()`,
+  // mirrors `_refreshAvailableComponentFiles`'s own best-effort fetch
+  // pattern). Empty (the default) means either nothing's been loaded yet or
+  // there's genuinely nothing to offer - either way the dropdown simply
+  // doesn't show, so "always create a new assembly" (the pre-E-1 behavior)
+  // is the correct fallback.
+  List<String> _existingAssemblyFileOptions = [];
+  // `null` (the default) means "create a new assembly file", matching this
+  // workstream's original behavior - set from `_existingAssemblyFileOptions`
+  // via the manifest-confirm panel's own dropdown. Read by `_runAssemblyCycle`
+  // to open-and-merge-into that file (`AssemblyDocumentClient.openAssembly`)
+  // instead of `DocumentApiClient.createPart('Assembly')`.
+  String? _assemblyTargetRelativePath;
+
+  // Set once "Confirm & Generate All" is pressed - drives which panel
+  // `build()` shows in place of `_buildChat`/`_buildReviewAndGenerate`.
+  bool _orchestrating = false;
+  int _currentPartIndex = 0;
+  List<_SavedAssemblyPart> _savedAssemblyParts = [];
+  // Coarse, human-readable progress text for whichever part cycle is
+  // currently in flight (e.g. "Requesting plan for 'Mounting Plate'...",
+  // "Building step 3 of 7...", "Saving..."). Deliberately coarser than
+  // `_stepStatuses`' own per-step list - see this workstream's own doc
+  // Appendix for why a full per-step list wasn't duplicated here too.
+  String? _orchestrationStatus;
+  String? _orchestrationError;
+  // Gap-closure (`13-...md`'s own D-1/E-2): the real Part a failed part
+  // cycle was working on when it stopped, so "Retry" (`_retryOrchestration`)
+  // can target the *same* Part - via the exact `existing:<id>`/
+  // `_pendingRetryPartId` precedent the single-Part flow already built (see
+  // that field's own doc comment) - instead of silently abandoning it and
+  // starting a brand-new one. Only ever set once a real Part was actually
+  // created for the in-flight attempt (never for a failure before that,
+  // e.g. no plan detected) - `null` there is correct, not a gap: nothing
+  // exists yet to retry into, a plain re-request is exactly right. Cleared
+  // on a successful save for that part, or by `_dismissOrchestration`.
+  String? _orchestrationRetryPartId;
+  // Same as [_orchestrationRetryPartId], one level up, for the assembly
+  // cycle (`_runAssemblyCycle`) - E-2's own half of the same gap.
+  String? _assemblyRetryPartId;
+  // Set on a cancelled save specifically (`_runPartCycle`/
+  // `_runAssemblyCycle`'s own "Save cancelled" branch) - the Part/plan are
+  // already real and valid, only the save-path prompt was dismissed, so
+  // "Retry" here re-opens the save dialog directly rather than wastefully
+  // asking the LLM for a plan it doesn't need to revise. `false` (ask the
+  // LLM for a revised plan, the general case) otherwise.
+  bool _orchestrationRetryIsSaveOnly = false;
+  // Gap-closure (`13-...md`'s own D-2/E-3): per-step progress for whichever
+  // part/assembly cycle is currently in flight, alongside the coarse
+  // `_orchestrationStatus` text above - `PlanTranslator.execute`'s
+  // `onStepStatusChanged` callback was already wired for the single-Part
+  // Review & Generate panel's own `_stepStatuses` (see that field's doc
+  // comment) but never passed at all in `_runPartCycle`/`_runAssemblyCycle`,
+  // an omission rather than a harder problem. Reset to one
+  // `TranslationStepStatus.pending` per step at the start of each
+  // `translator.execute` call below (part cycle or assembly cycle, never
+  // both in flight at once), `null` otherwise (between cycles, before a
+  // plan is even known).
+  List<TranslationStepStatus>? _orchestrationStepStatuses;
+
+  // Multi-part/assembly overhaul, Phase E: set once every part above is
+  // saved and `_runAssemblyCycle` starts its own plan/execute/save cycle
+  // against a brand-new assembly Part - a sibling of `_orchestrating`, one
+  // level further along, so `_buildOrchestrationProgress` can tell "still
+  // saving parts" apart from "now building the assembly" without a new top-
+  // level panel state. `_assemblyPartId`/`_assemblyRelativePath` are only
+  // ever both set together, on a successful save - their non-null-ness is
+  // what `_buildOrchestrationProgress`/`_openAssembly` treat as "the
+  // assembly is ready to open".
+  bool _buildingAssembly = false;
+  String? _assemblyPartId;
+  String? _assemblyRelativePath;
 
   bool _generating = false;
   // Set while `_generating`, one entry per `_proposedPlan.steps` - drives
@@ -265,6 +398,24 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // `assemblyVocabularyText` tells the LLM to say so rather than invent a
   // path.
   String _availableComponentFilesSummary = '';
+
+  /// Gap-closure (`13-...md`'s own E-1): best-effort fetch of every native
+  /// file under the project root, offered on the manifest-confirm panel as
+  /// an "insert into an existing assembly" target. Same degrade as
+  /// `_refreshAvailableComponentFiles` - a failure just means the dropdown
+  /// doesn't show, never blocks the manifest-confirm panel itself.
+  Future<void> _loadExistingAssemblyFileOptions() async {
+    final storage = widget.storageService;
+    final root = widget.projectRoot;
+    if (storage == null || root == null) return;
+    try {
+      final files = await storage.listFiles(root, extensionFilter: kNativeFileExtension);
+      if (!mounted) return;
+      setState(() => _existingAssemblyFileOptions = files..sort());
+    } catch (_) {
+      // Best-effort, same degrade as `_refreshAvailableComponentFiles` above.
+    }
+  }
 
   Future<void> _refreshAvailableComponentFiles() async {
     final storage = widget.storageService;
@@ -423,6 +574,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     if (_listening) _speechToText.cancel();
     _inputController.dispose();
     _scrollController.dispose();
+    for (final controller in _manifestNameControllers) {
+      controller.dispose();
+    }
+    for (final controller in _manifestPrefixControllers) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -437,19 +594,36 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     });
   }
 
+  /// Shared by `_send()`, `_shareExternalHandoff()`, and Phase D's own
+  /// orchestration turns (`_runPartCycle`) - every real `sendScopingTurn`
+  /// call this screen ever makes builds the system prompt exactly the same
+  /// way, so it should never drift between call sites (a real risk before
+  /// this was factored out: `_shareExternalHandoff` never threaded
+  /// `multiBodyPartMode`/`assemblyMode` through at all until this refactor).
+  String _buildSystemPrompt() => buildAiScopingSystemPrompt(
+        assistantInstructionsOverride: AiSystemPromptPreferences.override,
+        enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
+        disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
+        existingPartSummary: _existingPartSummary,
+        existingOccurrencesSummary: _existingOccurrencesSummary,
+        availableComponentFilesSummary: _availableComponentFilesSummary,
+        multiBodyPartMode: _mode == AiGenerationMode.multiBodyPart,
+        assemblyMode: _mode == AiGenerationMode.assembly,
+      );
+
   Future<void> _send() async {
     final text = _inputController.text.trim();
-    final hasImage = _pendingImageBytes != null;
-    if ((text.isEmpty && !hasImage) || _sending || (_providerConfigDialogDismissed && _providerUnconfigured)) return;
+    final hasImages = _pendingImages.isNotEmpty;
+    if ((text.isEmpty && !hasImages) || _sending || (_providerConfigDialogDismissed && _providerUnconfigured)) {
+      return;
+    }
 
     final provider = widget.provider ?? AiProviderPreferences.active;
-    final imageBytes = _pendingImageBytes;
-    final imageMimeType = _pendingImageMimeType;
+    final images = _pendingImages;
     final userMessage = AiChatMessage(
       role: AiMessageRole.user,
-      text: text.isEmpty ? '(see attached image)' : text,
-      imageBytes: imageBytes,
-      imageMimeType: imageMimeType,
+      text: text.isEmpty ? '(see attached image${images.length > 1 ? 's' : ''})' : text,
+      images: [for (final image in images) AiImageAttachment(bytes: image.bytes, mimeType: image.mimeType)],
     );
     setState(() {
       _transcript = [..._transcript, userMessage];
@@ -457,15 +631,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _sendError = null;
       // Cleared now, not only on success - re-attaching is how a user
       // retries after a failed send, see this field's own doc comment.
-      _pendingImageBytes = null;
-      _pendingImageMimeType = null;
-      _pendingImageFileName = null;
+      _pendingImages = [];
     });
     _inputController.clear();
     _scrollToBottom();
 
     try {
-      if (imageBytes != null && imageMimeType != null) {
+      if (images.isNotEmpty) {
         // Divergence from `06-image-input-deferred.md`'s "dedicated OCR/CV
         // extraction step" lean - see `10-image-input.md`'s own "Design
         // choices" section: a narrowly-scoped, one-shot call against the
@@ -474,37 +646,45 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         // a turn of its own). Only its text *output* is appended, as a new
         // `user`-role turn - same "real information fed to the LLM, not
         // something it said" reasoning `_appendStoppedRunToTranscript`
-        // already established for a stopped-run error below. The raw image
-        // itself still rides along on `userMessage` above, so it stays
+        // already established for a stopped-run error below. The raw
+        // image(s) still ride along on `userMessage` above, so they stay
         // visible to the provider on every later turn too (the "pinned for
         // the whole conversation" requirement `06`'s own UX carryover
-        // named), not just this one-shot extraction call.
-        final extraction = await provider.extractImageDescription(imageBytes, imageMimeType);
+        // named), not just this one-shot extraction call. Widened to send
+        // every pending image in one extraction call (not one call per
+        // image) in Phase B of the multi-part/assembly overhaul
+        // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`) - the
+        // images likely relate to each other (several parts of one
+        // assembly), so a single call that can reason across all of them at
+        // once is both cheaper and more accurate than N independent calls.
+        final extraction = await provider.extractImageDescription([
+          for (final image in images) AiImageAttachment(bytes: image.bytes, mimeType: image.mimeType),
+        ]);
         final extractionMessage = AiChatMessage(
           role: AiMessageRole.user,
-          text: '[Automated analysis of the attached image]\n$extraction',
+          text: '[Automated analysis of the attached image${images.length > 1 ? 's' : ''}]\n$extraction',
         );
         if (!mounted) return;
         setState(() => _transcript = [..._transcript, extractionMessage]);
       }
 
-      final systemPrompt = buildAiScopingSystemPrompt(
-        assistantInstructionsOverride: AiSystemPromptPreferences.override,
-        enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
-        disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
-        existingPartSummary: _existingPartSummary,
-        existingOccurrencesSummary: _existingOccurrencesSummary,
-        availableComponentFilesSummary: _availableComponentFilesSummary,
-      );
+      final systemPrompt = _buildSystemPrompt();
       final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
       final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
       final detectedPlan = detectPlanInAssistantText(result.assistantText);
+      // Multi-part/assembly overhaul, Phase D: only meaningful in Assembly
+      // mode - never attempted in Multi-body Part mode, which has no
+      // manifest step at all in its own vocabulary.
+      final detectedManifest =
+          _mode == AiGenerationMode.assembly ? detectPartManifestInAssistantText(result.assistantText) : null;
       if (!mounted) return;
       setState(() {
         _transcript = [..._transcript, assistantMessage];
         _sending = false;
         if (detectedPlan != null) _proposedPlan = detectedPlan;
+        if (detectedManifest != null) _setPartManifest(detectedManifest);
       });
+      if (detectedManifest != null) unawaited(_loadExistingAssemblyFileOptions());
       _scrollToBottom();
     } on AiProviderException catch (e) {
       if (!mounted) return;
@@ -515,12 +695,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     }
   }
 
-  /// Workstream 10 (`10-image-input.md`): picks an image via `file_picker`
+  /// Workstream 10 (`10-image-input.md`): picks image(s) via `file_picker`
   /// (same `FileType`-driven, path-based pattern `mesh_viewer_screen.dart`'s
-  /// own `_pickAndLoad` already established), downscales/compresses it to
+  /// own `_pickAndLoad` already established), downscales/compresses each to
   /// roughly [aiImageMaxEdgePx] on its longest edge via
-  /// `flutter_image_compress`, and stores the result as the pending
-  /// attachment shown above the input row.
+  /// `flutter_image_compress`, and appends the results to the pending
+  /// attachment strip shown above the input row. Widened from
+  /// single-image-only (`result.files.single`) to `allowMultiple: true` in
+  /// Phase B of the multi-part/assembly overhaul (`docs/ai-modelling/13-
+  /// multi-part-assembly-overhaul.md`) - a request may show several
+  /// distinct parts across several images, or a single image may show a
+  /// whole assembly.
   ///
   /// `flutter_image_compress` has no Linux/Windows desktop implementation
   /// (Android/iOS/macOS/Web only, per its own platform support table) - on
@@ -530,55 +715,59 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// discipline `mesh_viewer_screen.dart`'s own `_pickAndLoad` doc comment
   /// established, for the same MethodChannel-heap reason), rather than
   /// crashing the attach flow outright.
+  ///
+  /// One file failing to process never aborts the others - each is
+  /// processed independently and a per-file failure is folded into
+  /// [_imageError] (the last failure's message, naming the failing file)
+  /// without discarding whichever files already succeeded, matching this
+  /// codebase's existing "one failure doesn't abort the rest" convention
+  /// (e.g. `AssemblyDocumentClient.saveAll`).
   Future<void> _attachImage() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image);
-    if (result == null) return;
-    final file = result.files.single;
-    final path = file.path;
-    if (path == null) {
-      setState(() => _imageError = 'Could not access "${file.name}" - no local file path was returned.');
-      return;
-    }
+    final result = await FilePicker.platform.pickFiles(type: FileType.image, allowMultiple: true);
+    if (result == null || result.files.isEmpty) return;
 
     setState(() {
       _preparingImage = true;
       _imageError = null;
     });
-    try {
-      Uint8List bytes;
-      String mimeType;
-      try {
-        final compressed = await FlutterImageCompress.compressWithFile(
-          path,
-          minWidth: aiImageMaxEdgePx,
-          minHeight: aiImageMaxEdgePx,
-          quality: 85,
-          format: CompressFormat.jpeg,
-        );
-        if (compressed == null) throw StateError('compressWithFile returned null');
-        bytes = compressed;
-        mimeType = 'image/jpeg';
-      } catch (_) {
-        bytes = await File(path).readAsBytes();
-        mimeType = _mimeTypeForExtension(file.extension ?? '');
+    final prepared = <_PendingImage>[];
+    String? error;
+    for (final file in result.files) {
+      final path = file.path;
+      if (path == null) {
+        error = 'Could not access "${file.name}" - no local file path was returned.';
+        continue;
       }
-      final oriented = _bakeExifOrientation(bytes, mimeType);
-      bytes = oriented.$1;
-      mimeType = oriented.$2;
-      if (!mounted) return;
-      setState(() {
-        _pendingImageBytes = bytes;
-        _pendingImageMimeType = mimeType;
-        _pendingImageFileName = file.name;
-        _preparingImage = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _preparingImage = false;
-        _imageError = 'Could not process "${file.name}": $e';
-      });
+      try {
+        Uint8List bytes;
+        String mimeType;
+        try {
+          final compressed = await FlutterImageCompress.compressWithFile(
+            path,
+            minWidth: aiImageMaxEdgePx,
+            minHeight: aiImageMaxEdgePx,
+            quality: 85,
+            format: CompressFormat.jpeg,
+          );
+          if (compressed == null) throw StateError('compressWithFile returned null');
+          bytes = compressed;
+          mimeType = 'image/jpeg';
+        } catch (_) {
+          bytes = await File(path).readAsBytes();
+          mimeType = _mimeTypeForExtension(file.extension ?? '');
+        }
+        final oriented = _bakeExifOrientation(bytes, mimeType);
+        prepared.add(_PendingImage(bytes: oriented.$1, mimeType: oriented.$2, fileName: file.name));
+      } catch (e) {
+        error = 'Could not process "${file.name}": $e';
+      }
     }
+    if (!mounted) return;
+    setState(() {
+      _pendingImages = [..._pendingImages, ...prepared];
+      _preparingImage = false;
+      _imageError = error;
+    });
   }
 
   /// Bakes a still-present EXIF orientation tag into the image's actual
@@ -623,13 +812,24 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         _ => 'image/jpeg',
       };
 
-  void _removePendingImage() {
+  void _removePendingImage(int index) {
     setState(() {
-      _pendingImageBytes = null;
-      _pendingImageMimeType = null;
-      _pendingImageFileName = null;
+      _pendingImages = [..._pendingImages]..removeAt(index);
       _imageError = null;
     });
+  }
+
+  /// Multi-part/assembly overhaul, Phase A: switches this conversation's
+  /// mode and persists it as the default the *next* fresh conversation
+  /// starts from (`AiGenerationModePreferences.setDefaultMode`) - a
+  /// deliberate "the toggle itself is the settings UI" choice, mirroring
+  /// `AiSystemPromptPreferences.setAddOnEnabled`'s own immediate-write-
+  /// through convention rather than adding a separate settings screen
+  /// control for the same value.
+  Future<void> _setMode(AiGenerationMode mode) async {
+    if (mode == _mode) return;
+    setState(() => _mode = mode);
+    await AiGenerationModePreferences.setDefaultMode(mode);
   }
 
   /// Workstream 11 (`11-voice-input.md`): lazily initializes
@@ -877,6 +1077,717 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     _scrollToBottom();
   }
 
+  /// Multi-part/assembly overhaul, Phase D
+  /// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): a
+  /// `part_manifest` was just detected in `_send()` - stash it and build
+  /// one editable `TextEditingController` pair per part (name/type prefix)
+  /// for the confirm panel (`_buildManifestConfirm`). Called from inside
+  /// `_send()`'s own `setState`, so this mutates fields directly rather
+  /// than calling `setState` itself.
+  void _setPartManifest(AiPartManifest manifest) {
+    for (final controller in _manifestNameControllers) {
+      controller.dispose();
+    }
+    for (final controller in _manifestPrefixControllers) {
+      controller.dispose();
+    }
+    _partManifest = manifest;
+    _manifestNameControllers = [for (final part in manifest.parts) TextEditingController(text: part.name)];
+    _manifestPrefixControllers = [for (final part in manifest.parts) TextEditingController(text: part.typePrefix)];
+  }
+
+  /// "Back to chat" from the confirm-parts panel, before any generation has
+  /// started - discards the manifest entirely; the conversation (already in
+  /// `_transcript`) is untouched, so the user can ask the assistant to
+  /// revise the breakdown and get a fresh manifest.
+  void _cancelPartManifest() {
+    for (final controller in _manifestNameControllers) {
+      controller.dispose();
+    }
+    for (final controller in _manifestPrefixControllers) {
+      controller.dispose();
+    }
+    setState(() {
+      _partManifest = null;
+      _manifestNameControllers = [];
+      _manifestPrefixControllers = [];
+      _existingAssemblyFileOptions = [];
+      _assemblyTargetRelativePath = null;
+    });
+  }
+
+  /// "Confirm & Generate All" - folds whatever edits were made to the
+  /// name/type-prefix fields back into the manifest, then starts the N
+  /// sequential single-Part cycles (this workstream's own Locked
+  /// architecture decision) at part 0.
+  Future<void> _confirmManifestAndGenerateAll() async {
+    final manifest = _partManifest;
+    if (manifest == null || _orchestrating) return;
+    final edited = AiPartManifest(
+      parts: [
+        for (var i = 0; i < manifest.parts.length; i++)
+          AiPartManifestEntry(
+            name: _manifestNameControllers[i].text.trim().isEmpty
+                ? manifest.parts[i].name
+                : _manifestNameControllers[i].text.trim(),
+            typePrefix: _manifestPrefixControllers[i].text.trim().isEmpty
+                ? manifest.parts[i].typePrefix
+                : _manifestPrefixControllers[i].text.trim(),
+            summary: manifest.parts[i].summary,
+          ),
+      ],
+    );
+    setState(() {
+      _partManifest = edited;
+      _orchestrating = true;
+      _currentPartIndex = 0;
+      _savedAssemblyParts = [];
+      _orchestrationError = null;
+    });
+    await _runPartCycle(0);
+  }
+
+  /// Gap-closure (`13-...md`'s own D-1): refreshes this Part's existing-
+  /// Feature context (so the LLM's revised plan sees what's actually
+  /// already there - same reasoning `_generate`'s own `_pendingRetryPartId`
+  /// fix already established) and marks `partId` as the target for the
+  /// *next* `_runPartCycle`/`_runAssemblyCycle` call, instead of creating a
+  /// brand-new Part and silently orphaning this one. `saveOnly: true` for a
+  /// cancelled save (the Part/plan are already valid - only the save-path
+  /// prompt needs retrying, no LLM round-trip needed); `false` for every
+  /// other failure (validation, a real step failure, a gear-request stop, a
+  /// provider/API/storage error) - those need a revised plan first.
+  Future<void> _prepareOrchestrationRetry({required String partId, required bool saveOnly, required bool isAssembly}) async {
+    await _refreshExistingPartContext(partId);
+    if (!mounted) return;
+    setState(() {
+      if (isAssembly) {
+        _assemblyRetryPartId = partId;
+      } else {
+        _orchestrationRetryPartId = partId;
+      }
+      _orchestrationRetryIsSaveOnly = saveOnly;
+    });
+  }
+
+  void _clearPartRetryState() {
+    if (_orchestrationRetryPartId == null && !_orchestrationRetryIsSaveOnly) return;
+    setState(() {
+      _orchestrationRetryPartId = null;
+      _orchestrationRetryIsSaveOnly = false;
+    });
+  }
+
+  void _clearAssemblyRetryState() {
+    if (_assemblyRetryPartId == null && !_orchestrationRetryIsSaveOnly) return;
+    setState(() {
+      _assemblyRetryPartId = null;
+      _orchestrationRetryIsSaveOnly = false;
+    });
+  }
+
+  /// Appends a `user`-role turn describing an orchestration failure that
+  /// isn't a real step failure/gear-request stop (those reuse
+  /// `_appendStoppedRunToTranscript` directly, unchanged) - a validation
+  /// failure before anything was created, no plan detected, a cancelled
+  /// save, or a provider/API/storage error. Same "real information fed to
+  /// the LLM" framing `_appendStoppedRunToTranscript` already established.
+  void _appendOrchestrationFailureToTranscript(String message) {
+    setState(() => _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.user, text: message)]);
+    _scrollToBottom();
+  }
+
+  /// The "propose a filename -> human save-confirm -> save for real ->
+  /// record and advance" tail shared by a part cycle's first attempt and a
+  /// save-only retry (`_orchestrationRetryIsSaveOnly`) - factored out so
+  /// both paths save identically rather than risk drifting apart.
+  Future<void> _savePartAfterExecution({
+    required int index,
+    required AiPartManifestEntry entry,
+    required String partId,
+    required ProjectRoot root,
+    required StorageService storage,
+  }) async {
+    if (!mounted) return;
+    final existingFiles = await storage.listFiles(root, extensionFilter: kNativeFileExtension);
+    final proposedName = nextAvailablePartName(existingFiles, typePrefix: entry.typePrefix);
+    setState(() => _orchestrationStatus = null);
+    if (!mounted) return;
+    final confirmedPath = await showRelativePathPromptDialog(
+      context,
+      title: 'Save "${entry.name}" as…',
+      initialValue: proposedName,
+      storageService: storage,
+      root: root,
+    );
+    if (confirmedPath == null) {
+      await _prepareOrchestrationRetry(partId: partId, saveOnly: true, isAssembly: false);
+      _appendOrchestrationFailureToTranscript(
+        'Save cancelled for "${entry.name}" - the part itself is already built; retrying just re-opens '
+        'the save prompt, no revised plan needed.',
+      );
+      _stopOrchestrationWithError(
+        'Save cancelled for "${entry.name}" - stopping. Already-saved parts are untouched; this '
+        "part's own Features were created in this session but never written to disk.",
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() => _orchestrationStatus = 'Saving "${entry.name}"...');
+    final assemblyClient = AssemblyDocumentClient(storageService: storage, documentApiClient: _documentApi);
+    await assemblyClient.savePart(root, partId, confirmedPath);
+
+    if (!mounted) return;
+    _clearPartRetryState();
+    setState(() {
+      _savedAssemblyParts = [
+        ..._savedAssemblyParts,
+        _SavedAssemblyPart(name: entry.name, relativePath: confirmedPath, partId: partId),
+      ];
+      _currentPartIndex = index + 1;
+      _orchestrationStatus = null;
+      _orchestrationStepStatuses = null;
+    });
+    await _runPartCycle(_currentPartIndex);
+  }
+
+  /// One full part cycle: ask the assistant for exactly this one part's
+  /// plan (a synthetic, visible `user`-role turn - "real information fed
+  /// to the LLM", the same framing `_appendStoppedRunToTranscript` already
+  /// established), dry-run validate + execute it against a brand-new real
+  /// Part (`PlanTranslator`, completely unchanged - this workstream's own
+  /// Locked decision), propose a collision-free filename
+  /// (`nextAvailablePartName`), get a human save-confirm
+  /// (`showRelativePathPromptDialog`, Phase 15's own dialog, reused as-is),
+  /// then save it for real (`AssemblyDocumentClient.savePart`) before
+  /// recursing into the next part. Any failure at any point stops the
+  /// whole orchestration rather than silently skipping ahead - matches
+  /// `00-conventions.md`'s own no-auto-rollback posture: whatever was
+  /// already saved stays saved, whatever this one cycle created but didn't
+  /// reach a real save for stays only in the backend's in-memory session
+  /// (never written to disk, so there's nothing on disk to clean up).
+  ///
+  /// Gap-closure (`13-...md`'s own D-1): a retry (`_orchestrationRetryPartId`
+  /// set by `_retryOrchestration`) reuses the same in-progress Part instead
+  /// of creating a new one, and - unless this is a save-only retry after a
+  /// cancelled save, which needs no LLM round-trip at all - asks the LLM for
+  /// a *revised* plan (the failure was already appended to `_transcript` as
+  /// its own turn) rather than blindly re-running the identical steps that
+  /// just failed.
+  Future<void> _runPartCycle(int index) async {
+    final manifest = _partManifest;
+    if (manifest == null || !mounted) return;
+    if (index >= manifest.parts.length) {
+      _finishPartOrchestration();
+      return;
+    }
+    final root = widget.projectRoot;
+    final storage = widget.storageService;
+    if (root == null || storage == null) {
+      _stopOrchestrationWithError(
+        'Assembly mode needs an open project folder to save parts - reopen AI Modelling from an '
+        'entry point that provides one.',
+      );
+      return;
+    }
+    final entry = manifest.parts[index];
+    final retryPartId = _orchestrationRetryPartId;
+
+    if (retryPartId != null && _orchestrationRetryIsSaveOnly) {
+      try {
+        await _savePartAfterExecution(index: index, entry: entry, partId: retryPartId, root: root, storage: storage);
+      } on ApiException catch (e) {
+        _stopOrchestrationWithError('Error while saving "${entry.name}": ${e.message}');
+      } on StorageException catch (e) {
+        _stopOrchestrationWithError('Could not save "${entry.name}": ${e.message}');
+      }
+      return;
+    }
+
+    final provider = widget.provider ?? AiProviderPreferences.active;
+    final requestMessage = AiChatMessage(
+      role: AiMessageRole.user,
+      text: retryPartId == null
+          ? assemblyModePartRequestText(index: index, total: manifest.parts.length, name: entry.name, summary: entry.summary)
+          : assemblyModePartRetryRequestText(name: entry.name),
+    );
+    setState(() {
+      _transcript = [..._transcript, requestMessage];
+      _orchestrationStatus =
+          retryPartId == null ? 'Requesting the plan for "${entry.name}"...' : 'Requesting a revised plan for "${entry.name}"...';
+      _orchestrationError = null;
+    });
+    _scrollToBottom();
+    String? partId = retryPartId;
+    try {
+      final result = await provider.sendScopingTurn(_transcript, systemPrompt: _buildSystemPrompt());
+      final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
+      if (!mounted) return;
+      setState(() => _transcript = [..._transcript, assistantMessage]);
+      _scrollToBottom();
+
+      final plan = detectPlanInAssistantText(result.assistantText);
+      if (plan == null) {
+        _appendOrchestrationFailureToTranscript(
+          'That reply was not a plan for "${entry.name}" - please reply with an ordinary plan for this '
+          'part only, as described in the Assembly mode instructions.',
+        );
+        _stopOrchestrationWithError(
+          'The assistant did not reply with a plan for "${entry.name}" - stopping. Press Retry to ask '
+          'again, or continue this conversation manually.',
+        );
+        return;
+      }
+
+      if (partId == null) {
+        if (!mounted) return;
+        setState(() => _orchestrationStatus = 'Creating "${entry.name}"...');
+        final part = await _documentApi.createPart(entry.name);
+        partId = part.id;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _orchestrationStatus = 'Validating and building "${entry.name}"...';
+        _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
+      });
+      final translator = PlanTranslator(
+        documentApi: _documentApi,
+        sketchApi: _sketchApi,
+        storageService: widget.storageService,
+        projectRoot: widget.projectRoot,
+      );
+      final translation = await translator.execute(
+        plan: plan,
+        partId: partId,
+        existingFeatures: retryPartId != null ? (_existingFeatures ?? const []) : const [],
+        disabledKinds: AiSystemPromptPreferences.disabledKinds,
+        onStepStatusChanged: (stepIndex, status) {
+          if (!mounted) return;
+          setState(() => _orchestrationStepStatuses![stepIndex] = status);
+        },
+      );
+      if (translation.outcome != PlanTranslationOutcome.success) {
+        final message = switch (translation.outcome) {
+          PlanTranslationOutcome.validationFailed =>
+            'Validation failed for "${entry.name}" - stopping before creating anything for this part.',
+          PlanTranslationOutcome.stepFailed =>
+            'Execution failed for "${entry.name}": ${translation.errorMessage}. Steps before the '
+                'failure were created but never saved to disk.',
+          PlanTranslationOutcome.gearRequestEncountered =>
+            'The assistant proposed a gear step for "${entry.name}", which Assembly mode cannot '
+                'create automatically yet - use the Gear Design tool separately for this part.',
+          PlanTranslationOutcome.success => '',
+        };
+        await _prepareOrchestrationRetry(partId: partId, saveOnly: false, isAssembly: false);
+        if (translation.outcome == PlanTranslationOutcome.stepFailed ||
+            translation.outcome == PlanTranslationOutcome.gearRequestEncountered) {
+          _appendStoppedRunToTranscript(plan, translation);
+        } else {
+          _appendOrchestrationFailureToTranscript(
+            'Validation failed for "${entry.name}" before anything was created: please propose a '
+            'revised plan for this part.',
+          );
+        }
+        _stopOrchestrationWithError(message);
+        return;
+      }
+
+      await _savePartAfterExecution(index: index, entry: entry, partId: partId, root: root, storage: storage);
+    } on ApiException catch (e) {
+      if (partId != null) await _prepareOrchestrationRetry(partId: partId, saveOnly: false, isAssembly: false);
+      _appendOrchestrationFailureToTranscript(
+        'Error while working on "${entry.name}": ${e.message}. Please propose a revised plan for this part.',
+      );
+      _stopOrchestrationWithError('Error while working on "${entry.name}": ${e.message}');
+    } on AiProviderException catch (e) {
+      _stopOrchestrationWithError('Provider error while requesting the plan for "${entry.name}": ${e.message}');
+    } on StorageException catch (e) {
+      if (partId != null) await _prepareOrchestrationRetry(partId: partId, saveOnly: false, isAssembly: false);
+      _appendOrchestrationFailureToTranscript(
+        'Could not save "${entry.name}": ${e.message}. Please propose a revised plan for this part.',
+      );
+      _stopOrchestrationWithError('Could not save "${entry.name}": ${e.message}');
+    }
+  }
+
+  /// Every part saved successfully - stop advancing per-part and move
+  /// straight into the assembly cycle (`_runAssemblyCycle`, Phase E). The
+  /// orchestration panel itself (`_buildOrchestrationProgress`) detects
+  /// "parts done" by `_currentPartIndex >= manifest.parts.length` and
+  /// switches from the per-part list to the "Assembly" row; `unawaited`
+  /// because this method itself stays synchronous (called unawaited from
+  /// the tail of `_runPartCycle`) - `_runAssemblyCycle` drives its own
+  /// `setState` calls exactly like `_runPartCycle` does.
+  void _finishPartOrchestration() {
+    if (!mounted) return;
+    setState(() => _orchestrationStatus = null);
+    unawaited(_runAssemblyCycle());
+  }
+
+  /// The assembly-cycle equivalent of `_savePartAfterExecution` - propose a
+  /// filename, human save-confirm, save for real, record. Shared by the
+  /// first attempt and a save-only retry after a cancelled save.
+  ///
+  /// Gap-closure (`13-...md`'s own E-1): [fixedRelativePath] is set when
+  /// inserting into an already-existing assembly file
+  /// (`_assemblyTargetRelativePath`) - the save-confirm dialog is still
+  /// shown (this app's own "save gate" - a human always confirms/edits the
+  /// path before anything real is written, even here), just pre-filled
+  /// with the file being overwritten instead of a freshly proposed
+  /// collision-free name; `showRelativePathPromptDialog`'s own existing
+  /// collision-warning UI ("A file already exists at this path...") already
+  /// covers making that overwrite visible, no separate confirmation needed.
+  Future<void> _saveAssemblyAfterExecution({
+    required String assemblyPartId,
+    required ProjectRoot root,
+    required StorageService storage,
+    String? fixedRelativePath,
+  }) async {
+    if (!mounted) return;
+    final proposedName = fixedRelativePath ??
+        nextAvailablePartName(await storage.listFiles(root, extensionFilter: kNativeFileExtension), typePrefix: 'ASSEMBLY');
+    setState(() => _orchestrationStatus = null);
+    if (!mounted) return;
+    final confirmedPath = await showRelativePathPromptDialog(
+      context,
+      title: 'Save assembly as…',
+      initialValue: proposedName,
+      storageService: storage,
+      root: root,
+    );
+    if (confirmedPath == null) {
+      await _prepareOrchestrationRetry(partId: assemblyPartId, saveOnly: true, isAssembly: true);
+      _appendOrchestrationFailureToTranscript(
+        'Save cancelled for the assembly - it is already built; retrying just re-opens the save '
+        'prompt, no revised plan needed.',
+      );
+      _stopOrchestrationWithError(
+        'Save cancelled for the assembly - stopping. Every part above is already saved; the '
+        "assembly's own Features/Occurrences were created in this session but never written to disk.",
+      );
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() => _orchestrationStatus = 'Saving the assembly...');
+    final assemblyClient = AssemblyDocumentClient(storageService: storage, documentApiClient: _documentApi);
+    await assemblyClient.savePart(root, assemblyPartId, confirmedPath);
+
+    if (!mounted) return;
+    _clearAssemblyRetryState();
+    setState(() {
+      _assemblyPartId = assemblyPartId;
+      _assemblyRelativePath = confirmedPath;
+      _orchestrationStatus = null;
+      _orchestrationStepStatuses = null;
+    });
+  }
+
+  /// Phase E: the one further plan/execute/save cycle that runs once every
+  /// part above is saved - authored by the LLM against a system prompt
+  /// listing exactly the parts just saved (their real `relative_path`s,
+  /// passed directly here rather than relying on `_availableComponentFilesSummary`,
+  /// which is only ever refreshed once in `initState` and so could be stale
+  /// by the time an orchestration run actually finishes saving new files -
+  /// this workstream's own Phase D note on why a fresh disk scan can't be
+  /// trusted for this). Creates a brand-new assembly Part the same way
+  /// `_runPartCycle` creates each part's own Part - a dedicated
+  /// new-or-reused assembly Part is a real product question this pass
+  /// doesn't attempt (see the plan doc's own Phase E writeup); this always
+  /// starts a fresh one. Mirrors `_runPartCycle`'s own
+  /// plan-request/create/validate-execute/propose-name/confirm/save shape
+  /// one level up (one assembly instead of one part), including its
+  /// no-auto-rollback-on-failure posture and its retry behavior (E-2's own
+  /// half of the same gap-closure as `_runPartCycle`'s own D-1 doc comment).
+  Future<void> _runAssemblyCycle() async {
+    final root = widget.projectRoot;
+    final storage = widget.storageService;
+    if (root == null || storage == null || _savedAssemblyParts.isEmpty || !mounted) return;
+    final retryPartId = _assemblyRetryPartId;
+
+    if (retryPartId != null && _orchestrationRetryIsSaveOnly) {
+      setState(() => _orchestrationError = null);
+      try {
+        await _saveAssemblyAfterExecution(assemblyPartId: retryPartId, root: root, storage: storage, fixedRelativePath: _assemblyTargetRelativePath);
+      } on ApiException catch (e) {
+        _stopOrchestrationWithError('Error while saving the assembly: ${e.message}');
+      } on StorageException catch (e) {
+        _stopOrchestrationWithError('Could not save the assembly: ${e.message}');
+      }
+      return;
+    }
+
+    setState(() {
+      _buildingAssembly = true;
+      _orchestrationStatus = retryPartId == null ? 'Requesting the assembly plan...' : 'Requesting a revised assembly plan...';
+      _orchestrationError = null;
+    });
+    _scrollToBottom();
+    final partsListing = [
+      for (var i = 0; i < _savedAssemblyParts.length; i++)
+        '${i + 1}. ${_savedAssemblyParts[i].relativePath} - "${_savedAssemblyParts[i].name}"',
+    ].join('\n');
+    final targetPath = _assemblyTargetRelativePath;
+    String? assemblyPartId = retryPartId;
+    // Gap-closure (`13-...md`'s own E-1): when inserting into an existing
+    // assembly file, open it *before* asking the LLM for a plan (not after,
+    // like the brand-new-assembly path below) - the LLM needs to know which
+    // components are already placed in it so its own `add_component`/`mate`
+    // steps don't duplicate them, and the file to open is already known
+    // (the user picked it on the manifest-confirm panel), so there's no
+    // reason to wait for a plan first.
+    var existingComponentsListing = '';
+    if (assemblyPartId == null && targetPath != null) {
+      try {
+        setState(() => _orchestrationStatus = 'Opening "$targetPath"...');
+        final assemblyClient = AssemblyDocumentClient(storageService: storage, documentApiClient: _documentApi);
+        final opened = await assemblyClient.openAssembly(root, targetPath);
+        assemblyPartId = opened.rootPartId;
+        existingComponentsListing = opened.relativePathByPartId.entries
+            .where((e) => e.key != opened.rootPartId)
+            .map((e) => e.value)
+            .join('\n');
+      } on StorageException catch (e) {
+        _stopOrchestrationWithError('Could not open "$targetPath": ${e.message}');
+        return;
+      } on ApiException catch (e) {
+        _stopOrchestrationWithError('Could not open "$targetPath": ${e.message}');
+        return;
+      } on AssemblyGraphCycleException catch (e) {
+        _stopOrchestrationWithError('Could not open "$targetPath": ${e.toString()}');
+        return;
+      }
+    }
+    final requestMessage = AiChatMessage(
+      role: AiMessageRole.user,
+      text: retryPartId != null
+          ? assemblyModeAssemblyRetryRequestText()
+          : targetPath == null
+              ? assemblyModeAssemblyRequestText(partsListing)
+              : assemblyModeAssemblyIntoExistingRequestText(
+                  existingAssemblyPath: targetPath,
+                  partsListing: partsListing,
+                  existingComponentsListing: existingComponentsListing,
+                ),
+    );
+    setState(() => _transcript = [..._transcript, requestMessage]);
+    _scrollToBottom();
+    try {
+      final provider = widget.provider ?? AiProviderPreferences.active;
+      final systemPrompt = buildAiScopingSystemPrompt(
+        assistantInstructionsOverride: AiSystemPromptPreferences.override,
+        enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
+        disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
+        existingPartSummary: _existingPartSummary,
+        existingOccurrencesSummary: _existingOccurrencesSummary,
+        availableComponentFilesSummary: partsListing,
+        multiBodyPartMode: _mode == AiGenerationMode.multiBodyPart,
+        assemblyMode: _mode == AiGenerationMode.assembly,
+      );
+      final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
+      final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
+      if (!mounted) return;
+      setState(() => _transcript = [..._transcript, assistantMessage]);
+      _scrollToBottom();
+
+      final plan = detectPlanInAssistantText(result.assistantText);
+      if (plan == null) {
+        _appendOrchestrationFailureToTranscript(
+          'That reply was not an assembly plan - please reply with an ordinary plan placing and mating '
+          'the saved parts, as described in the Assembly mode instructions.',
+        );
+        _stopOrchestrationWithError(
+          'The assistant did not reply with an assembly plan - stopping. Press Retry to ask again, or '
+          'continue this conversation manually.',
+        );
+        return;
+      }
+
+      if (assemblyPartId == null) {
+        if (!mounted) return;
+        setState(() => _orchestrationStatus = 'Creating the assembly...');
+        final assemblyPart = await _documentApi.createPart('Assembly');
+        assemblyPartId = assemblyPart.id;
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _orchestrationStatus = 'Validating and building the assembly...';
+        _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
+      });
+      final translator = PlanTranslator(
+        documentApi: _documentApi,
+        sketchApi: _sketchApi,
+        storageService: storage,
+        projectRoot: root,
+      );
+      final translation = await translator.execute(
+        plan: plan,
+        partId: assemblyPartId,
+        existingFeatures: retryPartId != null ? (_existingFeatures ?? const []) : const [],
+        disabledKinds: AiSystemPromptPreferences.disabledKinds,
+        onStepStatusChanged: (stepIndex, status) {
+          if (!mounted) return;
+          setState(() => _orchestrationStepStatuses![stepIndex] = status);
+        },
+      );
+      if (translation.outcome != PlanTranslationOutcome.success) {
+        final message = switch (translation.outcome) {
+          PlanTranslationOutcome.validationFailed =>
+            'Validation failed for the assembly plan - stopping. Every part above is already saved.',
+          PlanTranslationOutcome.stepFailed =>
+            'Execution failed for the assembly: ${translation.errorMessage}. Steps before the failure '
+                'were created but never saved to disk.',
+          PlanTranslationOutcome.gearRequestEncountered =>
+            'The assistant proposed a gear step for the assembly, which cannot be created '
+                'automatically yet.',
+          PlanTranslationOutcome.success => '',
+        };
+        await _prepareOrchestrationRetry(partId: assemblyPartId, saveOnly: false, isAssembly: true);
+        if (translation.outcome == PlanTranslationOutcome.stepFailed ||
+            translation.outcome == PlanTranslationOutcome.gearRequestEncountered) {
+          _appendStoppedRunToTranscript(plan, translation);
+        } else {
+          _appendOrchestrationFailureToTranscript(
+            'Validation failed for the assembly plan before anything was created: please propose a '
+            'revised assembly plan.',
+          );
+        }
+        _stopOrchestrationWithError(message);
+        return;
+      }
+
+      await _saveAssemblyAfterExecution(assemblyPartId: assemblyPartId, root: root, storage: storage, fixedRelativePath: _assemblyTargetRelativePath);
+    } on ApiException catch (e) {
+      if (assemblyPartId != null) await _prepareOrchestrationRetry(partId: assemblyPartId, saveOnly: false, isAssembly: true);
+      _appendOrchestrationFailureToTranscript(
+        'Error while building the assembly: ${e.message}. Please propose a revised assembly plan.',
+      );
+      _stopOrchestrationWithError('Error while building the assembly: ${e.message}');
+    } on AiProviderException catch (e) {
+      _stopOrchestrationWithError('Provider error while requesting the assembly plan: ${e.message}');
+    } on StorageException catch (e) {
+      if (assemblyPartId != null) await _prepareOrchestrationRetry(partId: assemblyPartId, saveOnly: false, isAssembly: true);
+      _appendOrchestrationFailureToTranscript(
+        'Could not save the assembly: ${e.message}. Please propose a revised assembly plan.',
+      );
+      _stopOrchestrationWithError('Could not save the assembly: ${e.message}');
+    }
+  }
+
+  /// "Open Assembly" - navigates into `PartScreen` for the just-saved
+  /// assembly Part with `AssemblyLens.assembly` already active, the same
+  /// "fresh screen, not a reload in place" shape every other multi-file
+  /// navigation on `PartScreen` itself already uses (see
+  /// `_onOpenProjectPressed`'s own precedent). Carries `initialProjectRoot`/
+  /// `initialRelativePathByPartId` through for every part this run saved
+  /// (the assembly's own path included) so a subsequent "Save All" on the
+  /// new screen already knows where each of them lives, instead of prompting
+  /// again for files this same run just wrote.
+  void _openAssembly() {
+    final assemblyPartId = _assemblyPartId;
+    final assemblyPath = _assemblyRelativePath;
+    final root = widget.projectRoot;
+    if (assemblyPartId == null || assemblyPath == null || root == null || !mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PartScreen(
+          documentApi: widget.documentApi,
+          storageService: widget.storageService,
+          initialPartId: assemblyPartId,
+          initialProjectRoot: root,
+          initialRelativePathByPartId: {
+            for (final part in _savedAssemblyParts) part.partId: part.relativePath,
+            assemblyPartId: assemblyPath,
+          },
+          initialLens: AssemblyLens.assembly,
+        ),
+      ),
+    );
+  }
+
+  /// Stops the orchestration on any failure - `_orchestrating` stays
+  /// `true` so the panel keeps showing exactly where it stopped and why,
+  /// rather than silently dropping back to chat. Gap-closure (`13-...md`'s
+  /// own D-1/E-2): `_retryOrchestration` (wired to a "Retry" button in
+  /// `_buildOrchestrationProgress`, enabled whenever `_canRetryOrchestration`
+  /// is true) is now a real second way out from here, alongside
+  /// `_dismissOrchestration`.
+  void _stopOrchestrationWithError(String message) {
+    if (!mounted) return;
+    setState(() {
+      _orchestrationStatus = null;
+      _orchestrationError = message;
+    });
+  }
+
+  /// Whether "Retry" can do anything useful right now - only once a real
+  /// failure has actually stopped the run. Unlike the coarser
+  /// `_orchestrationError != null` check, this doesn't gate on which Part
+  /// the retry targets: `_runPartCycle`/`_runAssemblyCycle` correctly
+  /// handle a `null` retry-part-id themselves (a plain fresh request, for
+  /// failures that happened before any Part existed yet - "no plan
+  /// detected", "no project folder").
+  bool get _canRetryOrchestration => _orchestrationError != null;
+
+  /// Gap-closure (`13-...md`'s own D-1/E-2): re-enters whichever cycle was
+  /// in flight when it stopped - `_runAssemblyCycle` once every part is
+  /// already saved (`_currentPartIndex >= manifest.parts.length`, the same
+  /// condition `_buildOrchestrationProgress` already uses to switch to the
+  /// "Assembly" row), `_runPartCycle` otherwise. Both methods already know
+  /// how to resume a retry (`_orchestrationRetryPartId`/
+  /// `_assemblyRetryPartId`/`_orchestrationRetryIsSaveOnly`, set by
+  /// `_prepareOrchestrationRetry` just before the failure that led here) -
+  /// this only needs to call back into the right one.
+  Future<void> _retryOrchestration() async {
+    if (!_canRetryOrchestration) return;
+    final manifest = _partManifest;
+    if (manifest == null) return;
+    if (_currentPartIndex >= manifest.parts.length) {
+      await _runAssemblyCycle();
+    } else {
+      await _runPartCycle(_currentPartIndex);
+    }
+  }
+
+  /// "Back to chat" from either the finished or the stopped-with-error
+  /// state - the transcript (every real turn exchanged, including
+  /// whichever part-request turns actually ran) is left untouched, so the
+  /// user can keep chatting normally afterward. Also clears any pending
+  /// retry state (`_orchestrationRetryPartId`/`_assemblyRetryPartId`/
+  /// `_orchestrationRetryIsSaveOnly`) - a genuine "give up" here must mean a
+  /// later, unrelated Generate press starts a real fresh Part again, not
+  /// silently reuse this abandoned one.
+  void _dismissOrchestration() {
+    for (final controller in _manifestNameControllers) {
+      controller.dispose();
+    }
+    for (final controller in _manifestPrefixControllers) {
+      controller.dispose();
+    }
+    setState(() {
+      _orchestrating = false;
+      _partManifest = null;
+      _manifestNameControllers = [];
+      _manifestPrefixControllers = [];
+      _existingAssemblyFileOptions = [];
+      _assemblyTargetRelativePath = null;
+      _currentPartIndex = 0;
+      _savedAssemblyParts = [];
+      _orchestrationStatus = null;
+      _orchestrationError = null;
+      _orchestrationStepStatuses = null;
+      _orchestrationRetryPartId = null;
+      _assemblyRetryPartId = null;
+      _orchestrationRetryIsSaveOnly = false;
+      _buildingAssembly = false;
+      _assemblyPartId = null;
+      _assemblyRelativePath = null;
+    });
+  }
+
   Future<void> _undo() async {
     final partId = _lastRunPartId;
     final createdFeatureIds = _lastRunCreatedFeatureIds;
@@ -1025,14 +1936,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// established, so the user can send it straight to an installed chat
   /// app, AirDrop it, or save it to Files.
   Future<void> _shareExternalHandoff() async {
-    final systemPrompt = buildAiScopingSystemPrompt(
-      assistantInstructionsOverride: AiSystemPromptPreferences.override,
-      enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
-      disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
-      existingPartSummary: _existingPartSummary,
-      existingOccurrencesSummary: _existingOccurrencesSummary,
-      availableComponentFilesSummary: _availableComponentFilesSummary,
-    );
+    final systemPrompt = _buildSystemPrompt();
     final package = buildExternalHandoffPackage(systemPrompt: systemPrompt, transcript: _transcript);
     if (!mounted) return;
 
@@ -1148,13 +2052,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   @override
   Widget build(BuildContext context) {
     final isFreshConversation = _transcript.isEmpty && _proposedPlan == null;
+    // Multi-part/assembly overhaul, Phase D: neither the manifest-confirm
+    // panel nor the orchestration-progress panel is "plain chat" - the
+    // chat-only app-bar actions (preset load/share/import, all plan-JSON-
+    // shaped) don't fit either state.
+    final isPlainChat = _proposedPlan == null && _partManifest == null && !_orchestrating;
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.existingPartId != null ? 'Continue with AI' : 'AI Modelling'),
         actions: [
           if (isFreshConversation)
             IconButton(icon: const Icon(Icons.folder_open_outlined), tooltip: 'Load preset', onPressed: _loadPreset),
-          if (_proposedPlan == null) ...[
+          if (isPlainChat) ...[
             IconButton(icon: const Icon(Icons.ios_share), tooltip: 'Share with external AI', onPressed: _shareExternalHandoff),
             IconButton(
               icon: const Icon(Icons.upload_file_outlined),
@@ -1165,7 +2074,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         ],
       ),
       body: SafeArea(
-        child: _proposedPlan == null ? _buildChat(context) : _buildReviewAndGenerate(context, _proposedPlan!),
+        child: _proposedPlan != null
+            ? _buildReviewAndGenerate(context, _proposedPlan!)
+            : _orchestrating
+                ? _buildOrchestrationProgress(context)
+                : _partManifest != null
+                    ? _buildManifestConfirm(context)
+                    : _buildChat(context),
       ),
     );
   }
@@ -1175,6 +2090,32 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final visionSupported = provider.capabilities.supportsVision;
     return Column(
       children: [
+        // Multi-part/assembly overhaul, Phase A
+        // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): only
+        // shown for a fresh conversation - "Continue with AI"
+        // (`widget.existingPartId != null`) already targets one specific
+        // existing Part, which neither mode's own "recognize several
+        // distinct parts" framing fits.
+        if (widget.existingPartId == null) _buildModeToggle(),
+        // Multi-part/assembly overhaul, Phases D/E: Assembly mode generates
+        // and saves every recognized part as its own file, then
+        // automatically builds, saves, and opens the mated assembly itself
+        // (`_runAssemblyCycle`) - no manual "Insert Existing Component"/
+        // "Add Mate" step required. Disclosed here so the user knows a
+        // fresh assembly file is always created before they start (see
+        // this workstream's own gap [E-1] for "insert into an existing
+        // assembly instead").
+        if (widget.existingPartId == null && _mode == AiGenerationMode.assembly)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: _Banner(
+              key: const Key('aiModellingAssemblyModeBanner'),
+              color: Colors.amber,
+              text: 'Assembly mode generates and saves each recognized part as its own file, then '
+                  'automatically builds, saves, and opens a new, real, mated assembly from them - no '
+                  'manual insert/mate step needed.',
+            ),
+          ),
         if (_transcript.isEmpty)
           Padding(
             padding: const EdgeInsets.all(16),
@@ -1224,7 +2165,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               style: TextStyle(color: Colors.white54),
             ),
           ),
-        if (_pendingImageBytes != null) _buildPendingImagePreview(),
+        if (_pendingImages.isNotEmpty) _buildPendingImagePreview(),
         if (_imageError != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1308,28 +2249,329 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     );
   }
 
-  Widget _buildPendingImagePreview() {
+  /// A horizontal thumbnail strip, one entry per pending image - widened
+  /// from a single fixed preview row in Phase B of the multi-part/assembly
+  /// overhaul (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`).
+  /// Multi-part/assembly overhaul, Phase A
+  /// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): the
+  /// per-conversation mode toggle. Assembly is rendered enabled (not
+  /// hidden) despite being a stub this phase - selecting it is how the
+  /// "coming soon" banner above gets shown at all, the same "let the user
+  /// pick it and explain why it doesn't work yet" posture
+  /// `showAssemblyAddMenu`'s own disabled-but-visible entries already use
+  /// elsewhere in this app, rather than hiding a real, named capability.
+  Widget _buildModeToggle() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: SegmentedButton<AiGenerationMode>(
+          key: const Key('aiModellingModeToggle'),
+          segments: const [
+            ButtonSegment(
+              value: AiGenerationMode.multiBodyPart,
+              label: Text('Multi-body Part'),
+              icon: Icon(Icons.view_in_ar_outlined),
+            ),
+            ButtonSegment(
+              value: AiGenerationMode.assembly,
+              label: Text('Assembly'),
+              icon: Icon(Icons.account_tree_outlined),
+            ),
+          ],
+          selected: {_mode},
+          onSelectionChanged: (selection) => _setMode(selection.first),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPendingImagePreview() {
+    return SizedBox(
+      height: 44,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        itemCount: _pendingImages.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final image = _pendingImages[index];
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Tooltip(
+                  message: image.fileName,
+                  child: Image.memory(image.bytes, width: 44, height: 44, fit: BoxFit.cover),
+                ),
+              ),
+              Positioned(
+                top: -8,
+                right: -8,
+                child: IconButton(
+                  key: Key('aiModellingRemoveImage_$index'),
+                  tooltip: 'Remove this image',
+                  icon: const Icon(Icons.cancel, size: 18),
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(),
+                  padding: EdgeInsets.zero,
+                  onPressed: () => _removePendingImage(index),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// Multi-part/assembly overhaul, Phase D: the pre-generation confirm
+  /// panel, shown once a `part_manifest` is detected and before any
+  /// generation cycle has started - `AiPartManifestEntry.name`/`typePrefix`
+  /// are editable here (`_manifestNameControllers`/`_manifestPrefixControllers`,
+  /// folded back in by `_confirmManifestAndGenerateAll`) since the LLM's
+  /// own proposed breakdown is a starting point, not a final answer, the
+  /// same "human confirms/edits before anything real happens" posture the
+  /// save-gate itself uses one step later.
+  Widget _buildManifestConfirm(BuildContext context) {
+    final manifest = _partManifest!;
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: Image.memory(_pendingImageBytes!, width: 44, height: 44, fit: BoxFit.cover),
+          Text('Found ${manifest.parts.length} part(s)', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 4),
+          const Text(
+            'Review and edit the name/type prefix for each part below, then confirm to generate and '
+            'save every part in sequence.',
+            style: TextStyle(color: Colors.white54),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(height: 12),
+          // Gap-closure (`13-...md`'s own E-1): only shown once there's
+          // actually an existing file to offer - the dropdown's absence
+          // itself communicates "a new assembly will be created", no extra
+          // empty-state text needed.
+          if (_existingAssemblyFileOptions.isNotEmpty) ...[
+            DropdownButtonFormField<String?>(
+              key: const Key('aiModellingManifestAssemblyTarget'),
+              initialValue: _assemblyTargetRelativePath,
+              decoration: const InputDecoration(labelText: 'Assembly'),
+              items: [
+                const DropdownMenuItem<String?>(value: null, child: Text('Create a new assembly file')),
+                for (final path in _existingAssemblyFileOptions)
+                  DropdownMenuItem<String?>(value: path, child: Text('Insert into "$path"')),
+              ],
+              onChanged: (value) => setState(() => _assemblyTargetRelativePath = value),
+            ),
+            const SizedBox(height: 12),
+          ],
           Expanded(
-            child: Text(
-              _pendingImageFileName ?? 'image',
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white54),
+            child: ListView.separated(
+              itemCount: manifest.parts.length,
+              separatorBuilder: (_, __) => const Divider(),
+              itemBuilder: (context, index) {
+                final entry = manifest.parts[index];
+                return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              key: Key('aiModellingManifestName_$index'),
+                              controller: _manifestNameControllers[index],
+                              decoration: const InputDecoration(labelText: 'Name'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          SizedBox(
+                            width: 130,
+                            child: TextFormField(
+                              key: Key('aiModellingManifestPrefix_$index'),
+                              controller: _manifestPrefixControllers[index],
+                              decoration: const InputDecoration(labelText: 'Type prefix'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(entry.summary, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                    ],
+                  ),
+                );
+              },
             ),
           ),
-          IconButton(
-            key: const Key('aiModellingRemoveImage'),
-            tooltip: 'Remove attached image',
-            icon: const Icon(Icons.close, size: 18),
-            onPressed: _removePendingImage,
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                key: const Key('aiModellingManifestCancel'),
+                onPressed: _cancelPartManifest,
+                child: const Text('Back to chat'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                key: const Key('aiModellingManifestConfirm'),
+                onPressed: _confirmManifestAndGenerateAll,
+                child: const Text('Confirm & Generate All'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Multi-part/assembly overhaul, Phases D+E: the per-part progress list
+  /// shown once orchestration has started - one row per manifest entry
+  /// (done/in-progress/pending/failed), plus a coarse status line for
+  /// whichever part is currently in flight (`_orchestrationStatus`,
+  /// deliberately not a full per-step list the way
+  /// `_buildReviewAndGenerate`'s own `_stepStatuses` is - see this
+  /// workstream's own doc Appendix for why), plus (Phase E) one more row
+  /// for the assembly-creation cycle that starts automatically once every
+  /// part is saved (`_finishPartOrchestration` -> `_runAssemblyCycle`).
+  /// "Back to chat"/"Dismiss" only enables once the whole flow (every part,
+  /// then the assembly) has finished or stopped on an error - there's
+  /// nothing useful to do mid-flight except watch it work. "Open Assembly"
+  /// appears only once the assembly itself is real and saved.
+  /// Gap-closure (`13-...md`'s own D-2/E-3): when the part/assembly
+  /// currently in flight has a real plan (`_orchestrationStepStatuses` set
+  /// by `_runPartCycle`/`_runAssemblyCycle` right before `translator.
+  /// execute`), render its own per-step dots via `_stepStatusIcon` -
+  /// `_buildReviewAndGenerate`'s own single-Part progress, reused rather
+  /// than reduced to the coarse `_orchestrationStatus` text alone.
+  Widget _buildOrchestrationStepStatuses() {
+    final statuses = _orchestrationStepStatuses;
+    if (statuses == null || statuses.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(left: 16, bottom: 4),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        children: [for (final status in statuses) _stepStatusIcon(status)],
+      ),
+    );
+  }
+
+  Widget _buildOrchestrationProgress(BuildContext context) {
+    final manifest = _partManifest!;
+    final total = manifest.parts.length;
+    final assemblySaved = _assemblyRelativePath != null;
+    final finished = assemblySaved || _orchestrationError != null;
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            assemblySaved
+                ? 'Assembly ready'
+                : _buildingAssembly
+                    ? 'Building the assembly'
+                    : 'Generating part ${_currentPartIndex + 1} of $total',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: ListView(
+              children: [
+                for (var i = 0; i < total; i++) ...[
+                  ListTile(
+                    leading: Icon(
+                      i < _savedAssemblyParts.length
+                          ? Icons.check_circle
+                          : i == _currentPartIndex && _orchestrationError != null
+                              ? Icons.error
+                              : i == _currentPartIndex
+                                  ? Icons.hourglass_top
+                                  : Icons.circle_outlined,
+                      color: i < _savedAssemblyParts.length
+                          ? Colors.green
+                          : (i == _currentPartIndex && _orchestrationError != null)
+                              ? Colors.redAccent
+                              : null,
+                    ),
+                    title: Text(manifest.parts[i].name),
+                    subtitle: i < _savedAssemblyParts.length
+                        ? Text(_savedAssemblyParts[i].relativePath)
+                        : (i == _currentPartIndex && _orchestrationStatus != null)
+                            ? Text(_orchestrationStatus!)
+                            : null,
+                  ),
+                  if (i == _currentPartIndex && !_buildingAssembly) _buildOrchestrationStepStatuses(),
+                ],
+                if (_buildingAssembly || assemblySaved) ...[
+                  ListTile(
+                    key: const Key('aiModellingAssemblyRow'),
+                    leading: Icon(
+                      assemblySaved
+                          ? Icons.check_circle
+                          : _orchestrationError != null
+                              ? Icons.error
+                              : Icons.hourglass_top,
+                      color: assemblySaved
+                          ? Colors.green
+                          : _orchestrationError != null
+                              ? Colors.redAccent
+                              : null,
+                    ),
+                    title: const Text('Assembly'),
+                    subtitle: assemblySaved
+                        ? Text(_assemblyRelativePath!)
+                        : _orchestrationStatus != null
+                            ? Text(_orchestrationStatus!)
+                            : null,
+                  ),
+                  if (_buildingAssembly && !assemblySaved) _buildOrchestrationStepStatuses(),
+                ],
+              ],
+            ),
+          ),
+          if (_orchestrationError != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(_orchestrationError!, style: const TextStyle(color: Colors.redAccent)),
+            ),
+          if (assemblySaved)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.icon(
+                  key: const Key('aiModellingOpenAssembly'),
+                  onPressed: _openAssembly,
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('Open Assembly'),
+                ),
+              ),
+            ),
+          if (_canRetryOrchestration)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: OutlinedButton.icon(
+                  key: const Key('aiModellingOrchestrationRetry'),
+                  onPressed: _retryOrchestration,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Retry'),
+                ),
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton(
+              key: const Key('aiModellingOrchestrationDismiss'),
+              onPressed: finished ? _dismissOrchestration : null,
+              child: Text(finished ? 'Back to chat' : 'Dismiss'),
+            ),
           ),
         ],
       ),
@@ -1550,7 +2792,7 @@ class _Banner extends StatelessWidget {
   final Color color;
   final String text;
 
-  const _Banner({required this.color, required this.text});
+  const _Banner({super.key, required this.color, required this.text});
 
   @override
   Widget build(BuildContext context) {
@@ -1576,7 +2818,7 @@ class _ChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isUser = message.role == AiMessageRole.user;
-    final imageBytes = message.imageBytes;
+    final images = message.images;
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -1588,19 +2830,34 @@ class _ChatBubble extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
         ),
         // Workstream 10 (`10-image-input.md`): an image-aware variant - a
-        // thumbnail above the text when this turn carries one. Rendered
-        // here (not only on the turn it was attached on), so the image
-        // stays visibly "pinned" in the scroll history for the rest of the
-        // conversation, matching `06-image-input-deferred.md`'s "not
-        // consumed after one turn" UX carryover.
+        // thumbnail strip above the text when this turn carries any.
+        // Rendered here (not only on the turn it was attached on), so every
+        // image stays visibly "pinned" in the scroll history for the rest
+        // of the conversation, matching `06-image-input-deferred.md`'s "not
+        // consumed after one turn" UX carryover. Widened from a single
+        // fixed thumbnail to a horizontal strip in Phase B of the
+        // multi-part/assembly overhaul (`docs/ai-modelling/13-multi-part-
+        // assembly-overhaul.md`).
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (imageBytes != null) ...[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.memory(imageBytes, fit: BoxFit.cover, height: 160),
+            if (images.isNotEmpty) ...[
+              SizedBox(
+                height: 160,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final image in images)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.memory(image.bytes, fit: BoxFit.cover, height: 160),
+                        ),
+                      ),
+                  ],
+                ),
               ),
               const SizedBox(height: 6),
             ],

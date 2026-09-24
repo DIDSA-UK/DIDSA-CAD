@@ -394,6 +394,15 @@ class PartScreen extends StatefulWidget {
   /// through a `pushReplacement` alongside it. Empty by default.
   final Map<String, String> initialRelativePathByPartId;
 
+  /// Multi-part/assembly overhaul, Phase E (`docs/ai-modelling/13-multi-
+  /// part-assembly-overhaul.md`): which lens this screen opens showing -
+  /// `AssemblyLens.part` (the default, unchanged for every pre-Phase-E
+  /// caller) or `AssemblyLens.assembly`, used when AI Modelling's own
+  /// orchestration finishes building a real mated assembly and opens it
+  /// directly into Assembly lens rather than making the user toggle there
+  /// by hand.
+  final AssemblyLens initialLens;
+
   const PartScreen({
     super.key,
     this.documentApi,
@@ -408,6 +417,7 @@ class PartScreen extends StatefulWidget {
     this.assemblyDocumentClient,
     this.initialProjectRoot,
     this.initialRelativePathByPartId = const {},
+    this.initialLens = AssemblyLens.part,
   });
 
   @override
@@ -9193,6 +9203,17 @@ class _PartScreenState extends State<PartScreen> {
       await _refreshFeatures();
       await _refreshSketchGeometries();
       debugPrint('[PartScreen] refreshFeatures done');
+      // Multi-part/assembly overhaul, Phase E (`docs/ai-modelling/13-
+      // multi-part-assembly-overhaul.md`): opens directly into Assembly
+      // lens when asked to - the same tree-then-mesh sequencing
+      // `_toggleAssemblyLens` uses, just run once here (inside this
+      // already-awaited load) rather than fire-and-forget, since there's
+      // no "switch lens mid-session" race to worry about this early.
+      if (widget.initialLens == AssemblyLens.assembly) {
+        setState(() => _lens = AssemblyLens.assembly);
+        await _refreshAssemblyTree();
+        await _refreshAssemblyMesh();
+      }
     });
   }
 
@@ -19157,21 +19178,34 @@ class _PartScreenState extends State<PartScreen> {
           // distinct from `ToolChooserScreen`'s "AI Modelling" tile, which
           // always starts a brand-new Part and stays untouched by this
           // workstream. Disabled until `_part` has actually loaded.
+          //
+          // Multi-part/assembly overhaul, Phase C (`docs/ai-modelling/13-
+          // multi-part-assembly-overhaul.md`): a project folder is now
+          // required up front here too - `_ensureProjectRoot()` (this
+          // screen's own lazy "already have one, else last-used, else
+          // prompt" resolution, unchanged) runs before navigating, and a
+          // cancelled picker means no navigation at all, rather than
+          // reaching `AiModellingScreen` with `projectRoot` still `null` the
+          // way this call site did before this phase.
           IconButton(
             icon: const Icon(Icons.auto_awesome),
             tooltip: 'Continue with AI',
             onPressed: _part == null
                 ? null
-                : () => Navigator.of(context).push(
+                : () async {
+                    final root = await _ensureProjectRoot();
+                    if (root == null || !context.mounted) return;
+                    Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) => AiModellingScreen(
                           existingPartId: _part!.id,
                           documentApi: widget.documentApi,
                           storageService: _storageService,
-                          projectRoot: _projectRoot,
+                          projectRoot: root,
                         ),
                       ),
-                    ),
+                    );
+                  },
           ),
         ],
       ),

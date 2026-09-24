@@ -132,6 +132,18 @@ void main() {
     expect(prompt, contains(aiToolGroups['assembly']!.label));
   });
 
+  // Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-multi-
+  // part-assembly-overhaul.md): the mate edge_selector guidance must match
+  // the real, now-widened backend behavior (backend/app/document/
+  // ai_plan.py's _resolve_occurrence_target_part) - it used to flatly claim
+  // edge_selector never works on a placed component's own occurrence_id
+  // side at all, which stopped being true once D2 shipped.
+  test('mate edge_selector guidance says existing:<id> occurrences are usable, not root-only', () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, contains('existing:<id>" form (an already-real'));
+    expect(prompt, isNot(contains('Only ever usable on the')));
+  });
+
   test('the permanent-limitations text no longer flatly claims there is no multi-Part assembly support', () {
     final prompt = buildAiScopingSystemPrompt();
     expect(prompt, isNot(contains('no multi-Part assembly')));
@@ -199,5 +211,100 @@ Assumptions: hole goes all the way through.
     final plan = detectPlanInAssistantText(reply);
     expect(plan, isNotNull);
     expect(plan!.steps, hasLength(1));
+  });
+
+  // Multi-part/assembly overhaul, Phase A (`docs/ai-modelling/13-multi-
+  // part-assembly-overhaul.md`).
+  group('multiBodyPartMode', () {
+    test('is absent by default', () {
+      final prompt = buildAiScopingSystemPrompt();
+      expect(prompt, isNot(contains(multiBodyPartVocabularyText)));
+      expect(prompt, isNot(contains('Multi-body Part mode')));
+    });
+
+    test('appends multiBodyPartVocabularyText, before the locked footer, when enabled', () {
+      final prompt = buildAiScopingSystemPrompt(multiBodyPartMode: true);
+      expect(prompt, contains(multiBodyPartVocabularyText));
+      expect(prompt.indexOf(multiBodyPartVocabularyText), lessThan(prompt.indexOf('## Final reply format')));
+    });
+  });
+
+  // Multi-part/assembly overhaul, Phase D
+  // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`).
+  group('assemblyMode', () {
+    test('is absent by default', () {
+      final prompt = buildAiScopingSystemPrompt();
+      expect(prompt, isNot(contains(assemblyModeVocabularyText)));
+      expect(prompt, isNot(contains('## Assembly mode')));
+    });
+
+    test('appends assemblyModeVocabularyText, before the locked footer, when enabled', () {
+      final prompt = buildAiScopingSystemPrompt(assemblyMode: true);
+      expect(prompt, contains(assemblyModeVocabularyText));
+      expect(prompt.indexOf(assemblyModeVocabularyText), lessThan(prompt.indexOf('## Final reply format')));
+    });
+
+    test('the part_manifest shape is documented, including the kind discriminator', () {
+      final prompt = buildAiScopingSystemPrompt(assemblyMode: true);
+      expect(prompt, contains('"kind": "part_manifest"'));
+      expect(prompt, contains('type_prefix'));
+    });
+
+    test('multiBodyPartMode and assemblyMode can both be requested at once without erroring '
+        '(the UI never does this, but the builder itself does not assume mutual exclusion)', () {
+      final prompt = buildAiScopingSystemPrompt(multiBodyPartMode: true, assemblyMode: true);
+      expect(prompt, contains(multiBodyPartVocabularyText));
+      expect(prompt, contains(assemblyModeVocabularyText));
+    });
+  });
+
+  // Gap-closure (`13-...md`'s own D-4/E-1): the per-part/per-assembly
+  // request text `_runPartCycle`/`_runAssemblyCycle` send, moved here
+  // alongside `assemblyModeVocabularyText` so the two can't drift apart.
+  group('assembly-mode request text (gap-closure D-4/E-1)', () {
+    test('assemblyModePartRequestText names the part index/total/name/summary', () {
+      final text = assemblyModePartRequestText(index: 0, total: 2, name: 'Mounting Plate', summary: '60x40x10mm plate');
+      expect(text, contains('part 1 of 2'));
+      expect(text, contains('"Mounting Plate"'));
+      expect(text, contains('60x40x10mm plate'));
+    });
+
+    test('assemblyModePartRetryRequestText asks for a revision, not a fresh part brief', () {
+      final text = assemblyModePartRetryRequestText(name: 'Mounting Plate');
+      expect(text, contains('revised plan'));
+      expect(text, contains('"Mounting Plate"'));
+    });
+
+    test('assemblyModeAssemblyRequestText lists the saved parts', () {
+      final text = assemblyModeAssemblyRequestText('1. PLATE_001.DIDSAprt - "Mounting Plate"');
+      expect(text, contains('PLATE_001.DIDSAprt'));
+    });
+
+    test('assemblyModeAssemblyRetryRequestText asks for a revision, not a fresh assembly brief', () {
+      expect(assemblyModeAssemblyRetryRequestText(), contains('revised assembly plan'));
+    });
+
+    test('assemblyModeAssemblyIntoExistingRequestText names the target file and the new parts', () {
+      final text = assemblyModeAssemblyIntoExistingRequestText(
+        existingAssemblyPath: 'TOP.DIDSAprt',
+        partsListing: '1. PLATE_001.DIDSAprt - "Mounting Plate"',
+        existingComponentsListing: '',
+      );
+      expect(text, contains('"TOP.DIDSAprt"'));
+      expect(text, contains('PLATE_001.DIDSAprt'));
+      expect(text, contains('no components placed in it'));
+    });
+
+    test('assemblyModeAssemblyIntoExistingRequestText lists already-placed components when there are any, '
+        'and tells the LLM not to re-add them', () {
+      final text = assemblyModeAssemblyIntoExistingRequestText(
+        existingAssemblyPath: 'TOP.DIDSAprt',
+        partsListing: '1. PLATE_001.DIDSAprt - "Mounting Plate"',
+        existingComponentsListing: 'BRACKET_001.DIDSAprt',
+      );
+      expect(text, contains('BRACKET_001.DIDSAprt'));
+      expect(text, contains('do not add another add_component step'));
+      expect(text, isNot(contains('no components placed in it')));
+    });
   });
 }

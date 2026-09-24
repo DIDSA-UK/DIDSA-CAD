@@ -1,9 +1,58 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:didsa_cad_client/ai/ai_modelling_screen.dart';
 import 'package:didsa_cad_client/sketch/sketch_screen.dart';
+import 'package:didsa_cad_client/storage/file_handle.dart';
+import 'package:didsa_cad_client/storage/project_root.dart';
+import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/tool_chooser_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
+
+/// Multi-part/assembly overhaul, Phase C (`docs/ai-modelling/13-multi-
+/// part-assembly-overhaul.md`): a minimal fake exercising only the two
+/// methods `ToolChooserScreen`'s "AI Modelling" tile actually calls
+/// (`lastUsedProjectRoot`/`pickOrCreateProjectRoot`) - every other method
+/// throws if reached, the same "fail loud on an unexpected call" posture
+/// `ai_plan_translator_test.dart`'s own `_FakeStorageService` already uses.
+class _FakeStorageService implements StorageService {
+  _FakeStorageService({this.lastUsed, this.picked});
+
+  final ProjectRoot? lastUsed;
+  final ProjectRoot? picked;
+  int pickOrCreateCallCount = 0;
+
+  @override
+  Future<ProjectRoot?> lastUsedProjectRoot() async => lastUsed;
+
+  @override
+  Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async {
+    pickOrCreateCallCount++;
+    final root = picked;
+    if (root == null) throw StorageException('cancelled');
+    return root;
+  }
+
+  @override
+  Future<FileHandle?> resolve(ProjectRoot root, String relativePath) => throw UnimplementedError();
+
+  @override
+  Future<Uint8List> readFile(FileHandle handle) => throw UnimplementedError();
+
+  @override
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) => throw UnimplementedError();
+
+  @override
+  Future<DateTime?> lastModified(FileHandle handle) => throw UnimplementedError();
+
+  @override
+  Future<bool> exists(FileHandle handle) => throw UnimplementedError();
+
+  @override
+  Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) => throw UnimplementedError();
+}
 
 void main() {
   testWidgets('ToolChooserScreen offers both destinations and navigates to PartScreen on tap',
@@ -98,5 +147,56 @@ void main() {
     // straight past it.
     expect(find.byType(ToolChooserScreen), findsOneWidget);
     expect(find.text('What would you like to open?'), findsOneWidget);
+  });
+
+  // Multi-part/assembly overhaul, Phase C (`docs/ai-modelling/13-multi-
+  // part-assembly-overhaul.md`): a project folder is now required up front
+  // at the "AI Modelling" entry point too, not just "Continue with AI".
+  group('AI Modelling tile project-folder gate', () {
+    testWidgets('reuses a known last-used project root without prompting, then navigates', (tester) async {
+      const root = DesktopProjectRoot('/tmp/existing-project');
+      final storage = _FakeStorageService(lastUsed: root);
+      await tester.pumpWidget(MaterialApp(home: ToolChooserScreen(storageServiceFactory: () => storage)));
+
+      await tester.ensureVisible(find.text('AI Modelling'));
+      await tester.tap(find.text('AI Modelling'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byType(AiModellingScreen), findsOneWidget);
+      expect(storage.pickOrCreateCallCount, 0);
+      final screen = tester.widget<AiModellingScreen>(find.byType(AiModellingScreen));
+      expect(screen.projectRoot, root);
+      expect(screen.storageService, storage);
+    });
+
+    testWidgets('falls back to the folder picker when no last-used root is known, then navigates', (tester) async {
+      const root = DesktopProjectRoot('/tmp/picked-project');
+      final storage = _FakeStorageService(picked: root);
+      await tester.pumpWidget(MaterialApp(home: ToolChooserScreen(storageServiceFactory: () => storage)));
+
+      await tester.ensureVisible(find.text('AI Modelling'));
+      await tester.tap(find.text('AI Modelling'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byType(AiModellingScreen), findsOneWidget);
+      expect(storage.pickOrCreateCallCount, 1);
+      final screen = tester.widget<AiModellingScreen>(find.byType(AiModellingScreen));
+      expect(screen.projectRoot, root);
+    });
+
+    testWidgets('never navigates when the folder picker is cancelled', (tester) async {
+      final storage = _FakeStorageService(); // no lastUsed, no picked -> pickOrCreateProjectRoot throws
+      await tester.pumpWidget(MaterialApp(home: ToolChooserScreen(storageServiceFactory: () => storage)));
+
+      await tester.ensureVisible(find.text('AI Modelling'));
+      await tester.tap(find.text('AI Modelling'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byType(AiModellingScreen), findsNothing);
+      expect(find.byType(ToolChooserScreen), findsOneWidget);
+    });
   });
 }

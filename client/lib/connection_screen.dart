@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInput;
 import 'package:http/http.dart' as http;
 
+import 'ai/ai_generation_mode.dart';
 import 'ai/ai_provider_preferences.dart';
 import 'ai/ai_system_prompt_preferences.dart';
 import 'config.dart';
@@ -87,6 +88,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     await ApiConfig.load();
     await AiProviderPreferences.load();
     await AiSystemPromptPreferences.load();
+    await AiGenerationModePreferences.load();
     if (!mounted) return;
     setState(() {
       _serverUrlController.text = ApiConfig.baseUrl;

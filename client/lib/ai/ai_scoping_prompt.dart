@@ -601,11 +601,10 @@ that is none of these three.
   name different occurrence_ids. "distance"/"angle" mates require "value"
   (mm or degrees respectively); the others ignore it.
 
-  A reference whose occurrence_id is exactly "" (this Part's own root
-  geometry, never a placed component) may add "edge_selector" as a THIRD,
-  sibling field alongside a subshape_ref whose shape_type is "edge" -
-  {"occurrence_id":"", "subshape_ref":{"body_id":<real body id>,
-  "shape_type":"edge","index":0}, "edge_selector":{"selector":
+  A reference may add "edge_selector" as a THIRD, sibling field alongside
+  a subshape_ref whose shape_type is "edge" - {"occurrence_id":"",
+  "subshape_ref":{"body_id":<real body id>, "shape_type":"edge","index":0},
+  "edge_selector":{"selector":
   "top_face_edges"|"bottom_face_edges"|"vertical_edges"}} or
   {..., "edge_selector":{"selector":"all_edges_of_face_at_position",
   "direction":"+x"|"-x"|"+y"|"-y"|"+z"|"-z"}} - the same four selectors
@@ -613,13 +612,19 @@ that is none of these three.
   (edge_from_sketch_point/edge_from_sketch_line are NOT supported here).
   subshape_ref's own "index" is ignored and overridden once "edge_selector"
   is present - any placeholder value (e.g. 0) is fine there; only its
-  "body_id" is actually used. Only ever usable on the "" (root-content)
-  side of a Mate, never on a placed component's own occurrence_id side. If
-  more than one edge matches the selector (e.g. a box's own 4 vertical
-  edges), one of them is used - which one is not something you can control
-  from here, so only reach for edge_selector when you expect (or don't
-  care which of) the matches to be geometrically equivalent for the mate
-  you're making; otherwise fall back to a raw subshape_ref index instead.
+  "body_id" is actually used. Usable on occurrence_id "" (this Part's own
+  root geometry) AND on a placed component's own occurrence_id, as long as
+  that occurrence_id is the literal "existing:<id>" form (an already-real,
+  already-resolved Occurrence) - never on a bare local_id naming an
+  add_component step earlier in THIS SAME plan, since that component
+  doesn't have real, resolvable geometry yet at dry-run time; reference an
+  already-placed component's own real subshape_ref/edge_selector only via
+  its "existing:<id>" form. If more than one edge matches the selector
+  (e.g. a box's own 4 vertical edges), one of them is used - which one is
+  not something you can control from here, so only reach for edge_selector
+  when you expect (or don't care which of) the matches to be geometrically
+  equivalent for the mate you're making; otherwise fall back to a raw
+  subshape_ref index instead.
 - move_component: {local_id, kind:"move_component", occurrence_id,
   translation?, rotation_axis?, rotation_angle_degrees?} - translation is
   an [x, y, z] triple in mm (world space, not the component's own local
@@ -709,6 +714,149 @@ substitute a workaround for it.''';
       // conspicuous empty gaps in the assembled prompt.
       .replaceAll(RegExp(r'\n{3,}'), '\n\n');
 }
+
+/// Multi-part/assembly overhaul, Phase A
+/// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): appended only
+/// when the conversation has the "Multi-body Part" toggle active. Distinct
+/// from [assemblyVocabularyText] (which is about *already-placed*
+/// Occurrences in an existing multi-file assembly) - this is about
+/// recognizing several distinct sub-parts in one request and modelling each
+/// as its own independent Body *inside the one Part this conversation is
+/// building*, never as separate files/Occurrences. Needs no new PlanStep
+/// kind: a Part already supports several independent Bodies with zero
+/// schema change (confirmed directly against the code -
+/// `backend/app/document/extrude.py`'s `compute_part_bodies` already tracks
+/// a Part's Bodies in a dict keyed by stable id), so this is purely a
+/// recognition/generation-discipline instruction, not new schema surface.
+const String multiBodyPartVocabularyText = '''
+## Multi-body Part mode
+
+This conversation has "Multi-body Part" mode active. If the request
+describes more than one distinct physical part (e.g. "a bracket with two
+mounting plates and a shaft"), do not merge them into one shape and do not
+silently build only one of them - recognize each distinct part, then,
+before proposing a plan, say in plain language how many distinct parts you
+found and a short name for each, and ask the user to confirm that count/
+breakdown is correct before generating (the same "ask before guessing"
+discipline you already apply to a missing dimension).
+
+Once confirmed, build one plan whose steps produce one independent Body per
+recognized part - a separate sketch/extrude(+further feature) chain for
+each, never one chain reused for more than one part. One part's own chain
+must never reference another part's own Body via a target_body_ids/
+source_body_ids/tool_feature_id/boolean/merge step unless the user
+explicitly asked for those parts to be combined into one body - by default
+every recognized part stays its own separate, independent Body in the same
+Part, positioned relative to the others using ordinary sketch-plane
+placement, create_plane, or move_body (never a mate/add_component step -
+there is no assembly file involved in this mode at all). The finished Part
+is ordinary and is saved the normal manual way afterward - this mode never
+writes anything to disk on its own.''';
+
+/// Multi-part/assembly overhaul, Phase D
+/// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): appended only
+/// when the conversation has "Assembly" mode active. Distinct from
+/// [multiBodyPartVocabularyText] (one Part, several independent Bodies) and
+/// from [assemblyVocabularyText] above (editing an *already-open* Part's
+/// own Occurrences/Mates) - this is about producing *several separate
+/// files*, each its own real Part, later inserted and mated into a
+/// dedicated assembly file. Locks in the "N sequential single-Part cycles"
+/// architecture (`13-multi-part-assembly-overhaul.md`'s own Locked
+/// decision): the LLM never authors more than one Part's plan in a single
+/// reply - it first emits a `part_manifest` identifying the distinct parts,
+/// then is asked for each part's own ordinary plan one at a time, by the
+/// app itself (not by the end user typing each request by hand).
+const String assemblyModeVocabularyText = '''
+## Assembly mode
+
+This conversation has "Assembly" mode active - the user wants several
+distinct parts, each saved as its own file, then inserted and mated
+together into one assembly. Ask clarifying questions first if the number
+of parts or the boundary between them is unclear (the same "ask before
+guessing" discipline you always use for a missing dimension) - do not
+guess a part count.
+
+Once you are confident which distinct parts are involved, reply with a
+single fenced JSON object identifying them - nothing else in that message,
+no sketch/feature steps yet - in exactly this shape:
+
+```json
+{"kind": "part_manifest", "parts": [
+  {"name": "Mounting Plate", "type_prefix": "PLATE", "summary": "60x40x10mm plate with two M6 mounting holes"},
+  {"name": "Support Tube", "type_prefix": "TUBE", "summary": "40mm OD x 30mm ID x 120mm tube"}
+]}
+```
+
+"name" is a short human-readable name. "type_prefix" is a short, all-caps,
+underscore-only identifier you choose for this part's *type* (used to build
+its saved file name, e.g. "PLATE" -> a file named PLATE_001) - you choose
+this freely per part, it is never a fixed list. "summary" is one sentence
+describing the part's own shape/size/features. Nothing is created yet - the
+user reviews and confirms this breakdown before you are ever asked for a
+real plan.
+
+Once asked for the plan for one specific part by name, reply with an
+ordinary plan (the {"version": 1, "steps": [...]} shape described above)
+for **that one part only** - never re-emit a part_manifest, never include
+another part's steps in the same message, and never reference another
+part's own local_ids, Bodies, or Sketches - each part is built as its own
+completely independent, freshly-created Part.
+
+Once asked for the assembly plan (after every part above has already been
+created and saved to a real file), reply with an ordinary plan whose steps
+place and mate the parts already saved: an add_component step per part
+(see "Assembly editing" above for its exact shape) using the exact
+relative_path you are given for each one, followed by mate steps
+expressing the fit/attachment already described earlier in this
+conversation. Do not repeat any part's own sketch/feature steps here - by
+this point every part already exists as its own real file; this plan only
+places and mates them.''';
+
+/// Multi-part/assembly overhaul gap-closure (`13-...md`'s own D-4): the
+/// per-part/per-assembly synthetic request turns `_runPartCycle`/
+/// `_runAssemblyCycle` (`ai_modelling_screen.dart`) send the LLM were
+/// hand-written prose living only in that screen, separate from the rest of
+/// [assemblyModeVocabularyText] - risking drift if one is revised without
+/// the other. Moved here, alongside it, so both are reviewed together.
+String assemblyModePartRequestText({required int index, required int total, required String name, required String summary}) =>
+    'Please provide the plan for part ${index + 1} of $total: "$name" ($summary). Reply with an '
+    'ordinary plan for this part only, as described in the Assembly mode instructions.';
+
+/// Same as [assemblyModePartRequestText], for a retry after a stopped part
+/// cycle - the failure itself was already appended to the transcript as its
+/// own turn (mirroring `_appendStoppedRunToTranscript`'s existing single-Part
+/// convention) immediately before this one is sent, so this only needs to
+/// point back at it rather than restate the whole part brief.
+String assemblyModePartRetryRequestText({required String name}) =>
+    'Please propose a revised plan for "$name" that addresses the failure above.';
+
+String assemblyModeAssemblyRequestText(String partsListing) =>
+    'Every part has been saved. Please provide the assembly plan now, placing and mating '
+    'these parts:\n$partsListing';
+
+/// Gap-closure (`13-...md`'s own E-1): the variant of
+/// [assemblyModeAssemblyRequestText] used when the user picked "insert into
+/// an existing assembly" instead of always starting a new one - tells the
+/// LLM which components are already placed in [existingAssemblyPath] (if
+/// any - a brand-new, still-empty assembly file has none) so its
+/// `add_component`/`mate` steps don't collide with or duplicate them.
+String assemblyModeAssemblyIntoExistingRequestText({
+  required String existingAssemblyPath,
+  required String partsListing,
+  required String existingComponentsListing,
+}) {
+  final existingSection = existingComponentsListing.isEmpty
+      ? 'It currently has no components placed in it.'
+      : 'It already has these components placed in it - do not add another add_component step for '
+          'any of them, only mate against them if relevant:\n$existingComponentsListing';
+  return 'Every part has been saved. Please provide the assembly plan now, placing and mating these '
+      'new parts into the existing assembly "$existingAssemblyPath":\n$partsListing\n\n$existingSection';
+}
+
+/// Same as [assemblyModeAssemblyRequestText], for a retry after a stopped
+/// assembly cycle - see [assemblyModePartRetryRequestText]'s own doc comment.
+String assemblyModeAssemblyRetryRequestText() =>
+    'Please propose a revised assembly plan that addresses the failure above.';
 
 const String _unitsConvention = '''
 ## Units
@@ -1030,6 +1178,14 @@ String buildAiScopingSystemPrompt({
   String? existingPartSummary,
   String existingOccurrencesSummary = '',
   String availableComponentFilesSummary = '',
+  // Multi-part/assembly overhaul, Phase A: the per-conversation mode
+  // toggle. `false` (the pre-Phase-A default for every existing caller)
+  // means no behavior change at all - `multiBodyPartVocabularyText` is
+  // simply never appended.
+  bool multiBodyPartMode = false,
+  // Multi-part/assembly overhaul, Phase D: same "opt-in, no effect on any
+  // pre-existing caller" shape as `multiBodyPartMode` above.
+  bool assemblyMode = false,
 }) {
   final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
   final assistantInstructions =
@@ -1043,6 +1199,8 @@ String buildAiScopingSystemPrompt({
     _unitsConvention,
     _fewShotExamples,
     ...addOnBlocks,
+    if (multiBodyPartMode) multiBodyPartVocabularyText,
+    if (assemblyMode) assemblyModeVocabularyText,
     if (hasExistingPart) _existingPartEditingBlock(existingPartSummary, existingOccurrencesSummary),
     if (availableComponentFilesSummary.isNotEmpty) _availableComponentFilesBlock(availableComponentFilesSummary),
     _planTerminationFooter,

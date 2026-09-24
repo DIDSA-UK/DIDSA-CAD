@@ -19,8 +19,19 @@ auto-executed — see `04-translator-and-execution.md`'s "Real scope of
 `gear_request` handling"). Workstreams 7-11 (all five planned post-v1
 extensions — editable system prompt, dimension-driven sketches,
 existing-Part editing, image input, voice input) are now all built too.
-Only the `gear_request` full hand-off remains — see the delivery-order
-table below.
+The `gear_request` full hand-off remains open — see the delivery-order
+table below. Workstream 13 (multi-part/assembly overhaul) is now
+**complete**: Assembly mode really recognizes distinct parts, confirms the
+breakdown, generates/saves each one as its own file, then builds the
+assembly itself (insert + mate) and opens it directly into Assembly lens —
+a plain-English request or photo of a whole assembly can now go all the way
+to a real, mated, multi-file assembly with no manual "now insert/mate by
+hand" step. A follow-up gap-closure pass added in-panel Retry (asking the
+LLM for a revised plan against the same in-progress Part, not a blind
+re-run) and "insert into an existing assembly" as an alternative to always
+starting a new one. See `13-multi-part-assembly-overhaul.md`'s own Appendix
+for the live gap/emergent-work tracker (a handful of disclosed, deliberate
+scope cuts remain — none of them blocking).
 
 ## How to use these docs in a fresh implementation session
 
@@ -51,6 +62,7 @@ a session implementing one workstream never needed most of it).
 | 10 | `10-image-input.md` | 1, 2, 3, 6 | **Built.** Attach-image button (gated on `AiProviderCapabilities.supportsVision`) lets a hand sketch/engineering drawing seed the scoping conversation - a one-shot extraction call against the active provider's own vision capability, a disclosed divergence from `06`'s "dedicated OCR/CV" lean. The image itself stays pinned/visible in the chat for the whole conversation |
 | 11 | `11-voice-input.md` | 2 | **Built.** Mic button beside Send transcribes speech into the existing input field via on-device `speech_to_text` - never auto-sends, fully decoupled from workstream 10 and from the provider/network layer. Spiked platform support first: Android/iOS confirmed, Windows supported-but-beta, Linux has no implementation at all (gated out via a static platform check) |
 | 12 | `12-provenance-edge-selectors.md` | 3, 5 | **Built.** On-device testing (`docs/status.md`'s 2026-09-01 entry) found the four existing Fillet/Chamfer edge selectors are a real ceiling (no single-arbitrary-edge targeting). Two new selectors — `edge_from_sketch_point`/`edge_from_sketch_line`, resolved via OCCT shape-history (`.Generated()`/`.Modified()`), reusing an idiom already shipped in `app.document.gear`'s own root-fillet code — resolve a specific single edge by sketch lineage on Extrude/Revolve/Sweep, cached via a new part-scoped side cache mirroring `app.document.extrude`'s existing `_feature_warnings_cache` pattern exactly. Real, disclosed gaps: only the single-profile/no-target case; a full-360° Revolve's own radial edges can't resolve a "far" counterpart; `sketch_rectangle`/`sketch_polygon`/`sketch_slot` shorthands have no addressable internal Lines (`edge_from_sketch_point` unaffected); the mixed Line/Arc/Spline path and curved Sweep paths are unconfirmed |
+| 13 | `13-multi-part-assembly-overhaul.md` | 1, 2, 3, 5 | **Built — this workstream is complete.** Phases A (Multi-body Part / Assembly mode toggle), B (multi-image upload per turn), C (mandatory project folder + auto-naming convention), D (multi-part orchestration — recognizes distinct parts, confirms the breakdown, then generates and saves each as its own real file), D2 (Document-scoped mate edge/face resolution — a real, confirmed gap in `docs/assembly-scope.md` §2q's own Phase-14 mate edge-selector work, closed with **zero new wire payload**: the backend's own per-session `Document` already held every Part a composed graph pulled in), and E (assembly creation/insert/mate/open — one further plan/execute/save cycle once every part is saved, then opens straight into Assembly lens) are all built — see that file's own Appendix for the live gap/emergent-work tracker (a few disclosed, deliberate scope cuts remain, none blocking) |
 
 ## Spikes (do these first, before committing to the real build)
 
@@ -159,6 +171,10 @@ per-session granularity (see `docs/status.md`'s history):
 | 6+ | On-device feedback round(s) | This project's typical pattern after any client-heavy build — real bugs from a real device/model combo, not assumed working from sandbox-only verification. **Still outstanding for workstreams 7-11 as a whole** — every one of them was written and reviewed, never run, in a sandbox with no Flutter SDK (see each workstream's own "Tests"/"What could and couldn't be verified" section) |
 | 7-11 | Workstreams 7, 8, 9, 10, 11 (editable system prompt, dimension-driven sketches, existing-Part editing, image input, voice input) — **all done** | Every extension originally planned on top of the v1 feature is now built. Workstream 10 diverges from `06`'s own recorded lean (see `10-image-input.md`) |
 | Later, separate arc | `gear_request` full hand-off | `GearDesignScreen`/`GearChainDesignScreen`/`BevelDesignScreen` reworked to accept an existing Part id, so a plan's gear step can land in the same Part the rest of it built — real, separate scope, not pulled into workstream 4 |
+| 12 | Workstream 13, Phases A/B/C (mode toggle + Multi-body Part generation, multi-image upload, mandatory project folder + naming convention) — **done** | Multi-body Part mode is real end-to-end (no new backend/schema needed); Assembly mode is a visible, honest stub; both AI Modelling entry points now resolve a project folder up front |
+| 13 | Workstream 13, Phase D (multi-part orchestration: `part_manifest` detection/confirm, then N sequential single-Part generate-and-save cycles) — **done** | Assembly mode recognizes distinct parts, confirms the breakdown with the user, then really generates and saves each one as its own file — ends there, on purpose (see below) |
+| 14 | Workstream 13, Phase D2 (Document-scoped mate edge/face resolution) — **done** | A Mate step's `edge_selector` can now resolve against a placed Occurrence's own real target Part, not just the root Part's - zero client changes, zero new wire payload (the spike found the backend's own per-session `Document` singleton already held everything needed) |
+| 15 | Workstream 13, Phase E (real assembly creation/insert/mate/open) — **done** | N saved part files -> one further plan/execute/save cycle (`add_component` + `mate` steps against the parts D just saved) -> a real, mated, multi-file assembly, opened directly into Assembly lens. Closes workstream 13 entirely — see `13-multi-part-assembly-overhaul.md` |
 
 ## Bolt-ons folded into v1
 

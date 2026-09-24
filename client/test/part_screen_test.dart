@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/assembly/assembly_lens.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
@@ -4108,6 +4109,37 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
       return backend;
     }
+
+    testWidgets(
+      'initialLens: AssemblyLens.assembly opens directly into Assembly lens, no manual toggle needed',
+      (tester) async {
+        // Multi-part/assembly overhaul, Phase E (`docs/ai-modelling/13-
+        // multi-part-assembly-overhaul.md`): AI Modelling's own
+        // `_openAssembly` navigates straight into Assembly lens on a
+        // freshly-mated assembly rather than making the user tap "Assembly
+        // tree" by hand - unlike `openInAssemblyLens` above, this never taps
+        // the toggle at all; the tree panel must already be showing once
+        // `_loadPart` finishes.
+        final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1')]);
+        final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              initialLens: AssemblyLens.assembly,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.byType(AssemblyTreePanel).evaluate().isNotEmpty);
+
+        expect(find.byType(AssemblyTreePanel), findsOneWidget);
+        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        expect(panel.occurrences.single.id, 'occ-1');
+      },
+    );
 
     testWidgets('Hide PATCHes hidden:true and the tree reflects it after refetch', (tester) async {
       final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);

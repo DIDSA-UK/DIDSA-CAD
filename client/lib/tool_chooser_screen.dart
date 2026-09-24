@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'ai/ai_modelling_screen.dart';
 import 'gear/gear_design_screen.dart';
 import 'sketch/sketch_screen.dart';
+import 'storage/ensure_project_root.dart';
+import 'storage/storage_service.dart';
+import 'storage/storage_service_factory.dart';
 import 'viewport3d/part_screen.dart';
 import 'viewport3d/svg_icon.dart';
 
@@ -25,7 +28,15 @@ import 'viewport3d/svg_icon.dart';
 /// back arrow correctly pops back to this screen rather than skipping past
 /// it straight to [ConnectionScreen].
 class ToolChooserScreen extends StatelessWidget {
-  const ToolChooserScreen({super.key});
+  /// Overridable for tests, so the "AI Modelling" tile's mandatory project-
+  /// folder gate (multi-part/assembly overhaul, Phase C -
+  /// `docs/ai-modelling/13-multi-part-assembly-overhaul.md`) never touches a
+  /// real platform folder picker - same "inject the real dependency,
+  /// substitute a fake for tests" convention this codebase already uses for
+  /// `documentApi`/`storageService` elsewhere.
+  final StorageService Function()? storageServiceFactory;
+
+  const ToolChooserScreen({super.key, this.storageServiceFactory});
 
   @override
   Widget build(BuildContext context) {
@@ -92,9 +103,29 @@ class ToolChooserScreen extends StatelessWidget {
                       // scoping conversation - it never assists an
                       // already-open one.
                       subtitle: 'Start a new part with AI help',
-                      onTap: () => Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const AiModellingScreen()),
-                      ),
+                      // Multi-part/assembly overhaul, Phase C
+                      // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`):
+                      // a project folder is now required up front at *both*
+                      // AI Modelling entry points, not just "Continue with
+                      // AI" - this tile previously pushed `AiModellingScreen`
+                      // with neither `storageService` nor `projectRoot` set
+                      // at all (confirmed during that phase's own
+                      // investigation: a bare `const AiModellingScreen()`
+                      // call, matching `00-conventions.md`'s "no PartScreen
+                      // session yet to source a project root from" disclosed
+                      // scope limit). A cancelled picker is a silent no-op,
+                      // same convention `PartScreen._ensureProjectRoot`
+                      // already established - never a surfaced error.
+                      onTap: () async {
+                        final storageService = (storageServiceFactory ?? createStorageService)();
+                        final root = await ensureProjectRoot(storageService);
+                        if (root == null || !context.mounted) return;
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => AiModellingScreen(storageService: storageService, projectRoot: root),
+                          ),
+                        );
+                      },
                     ),
                   ],
                 ),

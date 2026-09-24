@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -35,8 +34,10 @@ class FakeAiProvider implements AiProvider {
   /// Workstream 10: only exercised by a test that also sets [supportsVision]
   /// - `extractImageDescription` itself already throws before reaching a
   /// real provider when vision isn't supported, so no fake handler is
-  /// needed for that case.
-  final Future<String> Function(Uint8List imageBytes, String mimeType)? imageExtractionHandler;
+  /// needed for that case. Widened from a single image to a list in Phase B
+  /// of the multi-part/assembly overhaul
+  /// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`).
+  final Future<String> Function(List<AiImageAttachment> images)? imageExtractionHandler;
 
   FakeAiProvider(this.handler, {this.supportsVision = false, this.imageExtractionHandler});
 
@@ -49,12 +50,12 @@ class FakeAiProvider implements AiProvider {
       handler(transcript, systemPrompt);
 
   @override
-  Future<String> extractImageDescription(Uint8List imageBytes, String mimeType) {
+  Future<String> extractImageDescription(List<AiImageAttachment> images) {
     final extractionHandler = imageExtractionHandler;
     if (extractionHandler == null) {
       throw StateError('FakeAiProvider.extractImageDescription called with no imageExtractionHandler stubbed');
     }
-    return extractionHandler(imageBytes, mimeType);
+    return extractionHandler(images);
   }
 }
 

@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
 
@@ -55,17 +54,22 @@ class OpenAiCompatibleProvider implements AiProvider {
   /// The wire `content` value for one transcript turn - a plain string for
   /// an ordinary text-only turn (unchanged shape, so every pre-existing
   /// caller/test keeps working byte-for-byte), or OpenAI's own vision
-  /// content-block list (`text` block + `image_url` block with a base64
-  /// data URL) when [AiChatMessage.imageBytes] is set.
+  /// content-block list (one `text` block followed by one `image_url` block
+  /// per attached image, base64 data URLs) when [AiChatMessage.images] is
+  /// non-empty. Widened from a single fixed 2-element pair to N image blocks
+  /// in Phase B of the multi-part/assembly overhaul
+  /// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`) - the wire
+  /// shape (a plain content-block array) already supported this; only this
+  /// function's own fixed-pair assumption didn't.
   static Object _contentFor(AiChatMessage turn) {
-    final imageBytes = turn.imageBytes;
-    if (imageBytes == null) return turn.text;
+    if (turn.images.isEmpty) return turn.text;
     return [
       {'type': 'text', 'text': turn.text},
-      {
-        'type': 'image_url',
-        'image_url': {'url': 'data:${turn.imageMimeType};base64,${base64Encode(imageBytes)}'},
-      },
+      for (final image in turn.images)
+        {
+          'type': 'image_url',
+          'image_url': {'url': 'data:${image.mimeType};base64,${base64Encode(image.bytes)}'},
+        },
     ];
   }
 
@@ -121,35 +125,15 @@ class OpenAiCompatibleProvider implements AiProvider {
     }
   }
 
-  /// Fixed extraction prompt (workstream 10) - deliberately asks only for a
-  /// literal description, never for CAD steps/JSON, so this stays a clean
-  /// text seed for the ordinary scoping conversation rather than a second,
-  /// competing plan-generation path.
-  static const String _imageExtractionPrompt =
-      'You are looking at a hand sketch or engineering drawing of a mechanical/CAD part, which '
-      'may show multiple separate views (e.g. front/top/side, or a folded-profile view plus a '
-      'flat view) of the same part. Describe it in careful technical detail for someone who will '
-      'use your description to plan a 3D CAD model: overall shape and proportions, distinct '
-      'features (holes, fillets, chamfers, ribs, bosses, slots, etc.), any dimension callouts or '
-      'measurements you can read (quote them exactly as written, including units), and anything '
-      'ambiguous or illegible. If the drawing states a projection convention (e.g. "1st angle" or '
-      '"3rd angle projection") or labels any axes, quote that exactly too, and say which view is '
-      'which (front/top/side/etc.) rather than assuming. For every view, describe hole/feature '
-      'positions as distances from that view\'s own labelled edges or corners (e.g. "8mm from the '
-      'right edge, 8mm from the top edge") - never as bare "left"/"right"/"top"/"bottom" without '
-      'saying which edge, since the sketch photo may be rotated relative to how you are reading '
-      'it. Explicitly state how each view lines up with the others (e.g. which edge or feature in '
-      'one view corresponds to which in another) so positions given in one view can be placed '
-      'correctly relative to geometry defined in a different view. If any view or its text/labels '
-      'appears rotated or upside-down in the photo, say so explicitly. Do not propose CAD '
-      'modelling steps or JSON - only describe what you see.';
-
   @override
-  Future<String> extractImageDescription(Uint8List imageBytes, String mimeType) async {
+  Future<String> extractImageDescription(List<AiImageAttachment> images) async {
     if (!capabilities.supportsVision) {
       throw AiProviderException(
         'The active provider is not configured for vision - enable it in AI Provider Settings before attaching an image.',
       );
+    }
+    if (images.isEmpty) {
+      throw AiProviderException('extractImageDescription called with no images');
     }
     final client = httpClient ?? http.Client();
     try {
@@ -159,11 +143,12 @@ class OpenAiCompatibleProvider implements AiProvider {
           {
             'role': 'user',
             'content': [
-              {'type': 'text', 'text': _imageExtractionPrompt},
-              {
-                'type': 'image_url',
-                'image_url': {'url': 'data:$mimeType;base64,${base64Encode(imageBytes)}'},
-              },
+              {'type': 'text', 'text': aiImageExtractionPrompt},
+              for (final image in images)
+                {
+                  'type': 'image_url',
+                  'image_url': {'url': 'data:${image.mimeType};base64,${base64Encode(image.bytes)}'},
+                },
             ],
           },
         ],
