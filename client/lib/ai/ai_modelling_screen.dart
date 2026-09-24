@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -13,6 +14,7 @@ import 'package:speech_to_text/speech_to_text.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../assembly/assembly_document_client.dart';
+import '../assembly/assembly_lens.dart';
 import '../assembly/relative_path.dart';
 import '../gear/gear_preset_store.dart';
 import '../storage/project_root.dart';
@@ -252,6 +254,19 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // Appendix for why a full per-step list wasn't duplicated here too.
   String? _orchestrationStatus;
   String? _orchestrationError;
+
+  // Multi-part/assembly overhaul, Phase E: set once every part above is
+  // saved and `_runAssemblyCycle` starts its own plan/execute/save cycle
+  // against a brand-new assembly Part - a sibling of `_orchestrating`, one
+  // level further along, so `_buildOrchestrationProgress` can tell "still
+  // saving parts" apart from "now building the assembly" without a new top-
+  // level panel state. `_assemblyPartId`/`_assemblyRelativePath` are only
+  // ever both set together, on a successful save - their non-null-ness is
+  // what `_buildOrchestrationProgress`/`_openAssembly` treat as "the
+  // assembly is ready to open".
+  bool _buildingAssembly = false;
+  String? _assemblyPartId;
+  String? _assemblyRelativePath;
 
   bool _generating = false;
   // Set while `_generating`, one entry per `_proposedPlan.steps` - drives
@@ -1198,16 +1213,185 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     }
   }
 
-  /// Every part saved successfully - stop advancing. The orchestration
-  /// panel itself (`_buildOrchestrationProgress`) detects "done" by
-  /// `_currentPartIndex >= manifest.parts.length` and renders the summary/
-  /// "Back to chat" state; assembly creation (inserting + mating these
-  /// parts) is deliberately **not** attempted here - see this workstream's
-  /// own Phase D2/E, still gated on the Document-scoped mate-resolution
-  /// fix.
+  /// Every part saved successfully - stop advancing per-part and move
+  /// straight into the assembly cycle (`_runAssemblyCycle`, Phase E). The
+  /// orchestration panel itself (`_buildOrchestrationProgress`) detects
+  /// "parts done" by `_currentPartIndex >= manifest.parts.length` and
+  /// switches from the per-part list to the "Assembly" row; `unawaited`
+  /// because this method itself stays synchronous (called unawaited from
+  /// the tail of `_runPartCycle`) - `_runAssemblyCycle` drives its own
+  /// `setState` calls exactly like `_runPartCycle` does.
   void _finishPartOrchestration() {
     if (!mounted) return;
     setState(() => _orchestrationStatus = null);
+    unawaited(_runAssemblyCycle());
+  }
+
+  /// Phase E: the one further plan/execute/save cycle that runs once every
+  /// part above is saved - authored by the LLM against a system prompt
+  /// listing exactly the parts just saved (their real `relative_path`s,
+  /// passed directly here rather than relying on `_availableComponentFilesSummary`,
+  /// which is only ever refreshed once in `initState` and so could be stale
+  /// by the time an orchestration run actually finishes saving new files -
+  /// this workstream's own Phase D note on why a fresh disk scan can't be
+  /// trusted for this). Creates a brand-new assembly Part the same way
+  /// `_runPartCycle` creates each part's own Part - a dedicated
+  /// new-or-reused assembly Part is a real product question this pass
+  /// doesn't attempt (see the plan doc's own Phase E writeup); this always
+  /// starts a fresh one. Mirrors `_runPartCycle`'s own
+  /// plan-request/create/validate-execute/propose-name/confirm/save shape
+  /// one level up (one assembly instead of one part), including its
+  /// no-auto-rollback-on-failure posture.
+  Future<void> _runAssemblyCycle() async {
+    final root = widget.projectRoot;
+    final storage = widget.storageService;
+    if (root == null || storage == null || _savedAssemblyParts.isEmpty || !mounted) return;
+    setState(() {
+      _buildingAssembly = true;
+      _orchestrationStatus = 'Requesting the assembly plan...';
+      _orchestrationError = null;
+    });
+    _scrollToBottom();
+    final partsListing = [
+      for (var i = 0; i < _savedAssemblyParts.length; i++)
+        '${i + 1}. ${_savedAssemblyParts[i].relativePath} - "${_savedAssemblyParts[i].name}"',
+    ].join('\n');
+    final requestMessage = AiChatMessage(
+      role: AiMessageRole.user,
+      text: 'Every part has been saved. Please provide the assembly plan now, placing and mating '
+          'these parts:\n$partsListing',
+    );
+    setState(() => _transcript = [..._transcript, requestMessage]);
+    _scrollToBottom();
+    try {
+      final provider = widget.provider ?? AiProviderPreferences.active;
+      final systemPrompt = buildAiScopingSystemPrompt(
+        assistantInstructionsOverride: AiSystemPromptPreferences.override,
+        enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
+        disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
+        existingPartSummary: _existingPartSummary,
+        existingOccurrencesSummary: _existingOccurrencesSummary,
+        availableComponentFilesSummary: partsListing,
+        multiBodyPartMode: _mode == AiGenerationMode.multiBodyPart,
+        assemblyMode: _mode == AiGenerationMode.assembly,
+      );
+      final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
+      final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
+      if (!mounted) return;
+      setState(() => _transcript = [..._transcript, assistantMessage]);
+      _scrollToBottom();
+
+      final plan = detectPlanInAssistantText(result.assistantText);
+      if (plan == null) {
+        _stopOrchestrationWithError(
+          'The assistant did not reply with an assembly plan - stopping. Every part above is already '
+          'saved; you can continue this conversation manually to build the assembly.',
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() => _orchestrationStatus = 'Creating the assembly...');
+      final assemblyPart = await _documentApi.createPart('Assembly');
+
+      if (!mounted) return;
+      setState(() => _orchestrationStatus = 'Validating and building the assembly...');
+      final translator = PlanTranslator(
+        documentApi: _documentApi,
+        sketchApi: _sketchApi,
+        storageService: storage,
+        projectRoot: root,
+      );
+      final translation = await translator.execute(
+        plan: plan,
+        partId: assemblyPart.id,
+        disabledKinds: AiSystemPromptPreferences.disabledKinds,
+      );
+      if (translation.outcome != PlanTranslationOutcome.success) {
+        final message = switch (translation.outcome) {
+          PlanTranslationOutcome.validationFailed =>
+            'Validation failed for the assembly plan - stopping. Every part above is already saved.',
+          PlanTranslationOutcome.stepFailed =>
+            'Execution failed for the assembly: ${translation.errorMessage}. Steps before the failure '
+                'were created but never saved to disk.',
+          PlanTranslationOutcome.gearRequestEncountered =>
+            'The assistant proposed a gear step for the assembly, which cannot be created '
+                'automatically yet.',
+          PlanTranslationOutcome.success => '',
+        };
+        _stopOrchestrationWithError(message);
+        return;
+      }
+
+      if (!mounted) return;
+      final existingFiles = await storage.listFiles(root, extensionFilter: kNativeFileExtension);
+      final proposedName = nextAvailablePartName(existingFiles, typePrefix: 'ASSEMBLY');
+      setState(() => _orchestrationStatus = null);
+      if (!mounted) return;
+      final confirmedPath = await showRelativePathPromptDialog(
+        context,
+        title: 'Save assembly as…',
+        initialValue: proposedName,
+        storageService: storage,
+        root: root,
+      );
+      if (confirmedPath == null) {
+        _stopOrchestrationWithError(
+          'Save cancelled for the assembly - stopping. Every part above is already saved; the '
+          "assembly's own Features/Occurrences were created in this session but never written to disk.",
+        );
+        return;
+      }
+
+      if (!mounted) return;
+      setState(() => _orchestrationStatus = 'Saving the assembly...');
+      final assemblyClient = AssemblyDocumentClient(storageService: storage, documentApiClient: _documentApi);
+      await assemblyClient.savePart(root, assemblyPart.id, confirmedPath);
+
+      if (!mounted) return;
+      setState(() {
+        _assemblyPartId = assemblyPart.id;
+        _assemblyRelativePath = confirmedPath;
+        _orchestrationStatus = null;
+      });
+    } on ApiException catch (e) {
+      _stopOrchestrationWithError('Error while building the assembly: ${e.message}');
+    } on AiProviderException catch (e) {
+      _stopOrchestrationWithError('Provider error while requesting the assembly plan: ${e.message}');
+    } on StorageException catch (e) {
+      _stopOrchestrationWithError('Could not save the assembly: ${e.message}');
+    }
+  }
+
+  /// "Open Assembly" - navigates into `PartScreen` for the just-saved
+  /// assembly Part with `AssemblyLens.assembly` already active, the same
+  /// "fresh screen, not a reload in place" shape every other multi-file
+  /// navigation on `PartScreen` itself already uses (see
+  /// `_onOpenProjectPressed`'s own precedent). Carries `initialProjectRoot`/
+  /// `initialRelativePathByPartId` through for every part this run saved
+  /// (the assembly's own path included) so a subsequent "Save All" on the
+  /// new screen already knows where each of them lives, instead of prompting
+  /// again for files this same run just wrote.
+  void _openAssembly() {
+    final assemblyPartId = _assemblyPartId;
+    final assemblyPath = _assemblyRelativePath;
+    final root = widget.projectRoot;
+    if (assemblyPartId == null || assemblyPath == null || root == null || !mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PartScreen(
+          documentApi: widget.documentApi,
+          storageService: widget.storageService,
+          initialPartId: assemblyPartId,
+          initialProjectRoot: root,
+          initialRelativePathByPartId: {
+            for (final part in _savedAssemblyParts) part.partId: part.relativePath,
+            assemblyPartId: assemblyPath,
+          },
+          initialLens: AssemblyLens.assembly,
+        ),
+      ),
+    );
   }
 
   /// Stops the orchestration on any failure - `_orchestrating` stays
@@ -1243,6 +1427,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _savedAssemblyParts = [];
       _orchestrationStatus = null;
       _orchestrationError = null;
+      _buildingAssembly = false;
+      _assemblyPartId = null;
+      _assemblyRelativePath = null;
     });
   }
 
@@ -1865,26 +2052,35 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     );
   }
 
-  /// Multi-part/assembly overhaul, Phase D: the per-part progress list
+  /// Multi-part/assembly overhaul, Phases D+E: the per-part progress list
   /// shown once orchestration has started - one row per manifest entry
   /// (done/in-progress/pending/failed), plus a coarse status line for
   /// whichever part is currently in flight (`_orchestrationStatus`,
   /// deliberately not a full per-step list the way
   /// `_buildReviewAndGenerate`'s own `_stepStatuses` is - see this
-  /// workstream's own doc Appendix for why). "Back to chat"/"Dismiss" only
-  /// enables once every part succeeded or the run stopped on an error -
-  /// there's nothing useful to do mid-flight except watch it work.
+  /// workstream's own doc Appendix for why), plus (Phase E) one more row
+  /// for the assembly-creation cycle that starts automatically once every
+  /// part is saved (`_finishPartOrchestration` -> `_runAssemblyCycle`).
+  /// "Back to chat"/"Dismiss" only enables once the whole flow (every part,
+  /// then the assembly) has finished or stopped on an error - there's
+  /// nothing useful to do mid-flight except watch it work. "Open Assembly"
+  /// appears only once the assembly itself is real and saved.
   Widget _buildOrchestrationProgress(BuildContext context) {
     final manifest = _partManifest!;
     final total = manifest.parts.length;
-    final done = _currentPartIndex >= total;
+    final assemblySaved = _assemblyRelativePath != null;
+    final finished = assemblySaved || _orchestrationError != null;
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            done ? 'All parts saved' : 'Generating part ${_currentPartIndex + 1} of $total',
+            assemblySaved
+                ? 'Assembly ready'
+                : _buildingAssembly
+                    ? 'Building the assembly'
+                    : 'Generating part ${_currentPartIndex + 1} of $total',
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 12),
@@ -1914,15 +2110,27 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                             ? Text(_orchestrationStatus!)
                             : null,
                   ),
-                if (done)
-                  const Padding(
-                    padding: EdgeInsets.only(top: 8),
-                    child: Text(
-                      'Assembly creation (inserting and mating these parts) is not built yet - see '
-                      'docs/ai-modelling/13-multi-part-assembly-overhaul.md. Use "Insert Existing '
-                      'Component"/"Add Mate" in the Assembly lens to bring them together manually.',
-                      style: TextStyle(color: Colors.white54),
+                if (_buildingAssembly || assemblySaved)
+                  ListTile(
+                    key: const Key('aiModellingAssemblyRow'),
+                    leading: Icon(
+                      assemblySaved
+                          ? Icons.check_circle
+                          : _orchestrationError != null
+                              ? Icons.error
+                              : Icons.hourglass_top,
+                      color: assemblySaved
+                          ? Colors.green
+                          : _orchestrationError != null
+                              ? Colors.redAccent
+                              : null,
                     ),
+                    title: const Text('Assembly'),
+                    subtitle: assemblySaved
+                        ? Text(_assemblyRelativePath!)
+                        : _orchestrationStatus != null
+                            ? Text(_orchestrationStatus!)
+                            : null,
                   ),
               ],
             ),
@@ -1932,12 +2140,25 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text(_orchestrationError!, style: const TextStyle(color: Colors.redAccent)),
             ),
+          if (assemblySaved)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: FilledButton.icon(
+                  key: const Key('aiModellingOpenAssembly'),
+                  onPressed: _openAssembly,
+                  icon: const Icon(Icons.open_in_new),
+                  label: const Text('Open Assembly'),
+                ),
+              ),
+            ),
           Align(
             alignment: Alignment.centerRight,
             child: FilledButton(
               key: const Key('aiModellingOrchestrationDismiss'),
-              onPressed: (_orchestrationError != null || done) ? _dismissOrchestration : null,
-              child: Text(done ? 'Back to chat' : 'Dismiss'),
+              onPressed: finished ? _dismissOrchestration : null,
+              child: Text(finished ? 'Back to chat' : 'Dismiss'),
             ),
           ),
         ],

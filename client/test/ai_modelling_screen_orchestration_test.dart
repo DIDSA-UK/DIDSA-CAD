@@ -11,9 +11,11 @@ import 'package:didsa_cad_client/ai/ai_modelling_screen.dart';
 import 'package:didsa_cad_client/ai/ai_provider.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/assembly/assembly_lens.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
+import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 
 class _FakeAiProvider implements AiProvider {
   final Future<AiTurnResult> Function(List<AiChatMessage> transcript, String? systemPrompt) handler;
@@ -32,11 +34,14 @@ class _FakeAiProvider implements AiProvider {
   Future<String> extractImageDescription(List<AiImageAttachment> images) => throw UnimplementedError();
 }
 
-/// A minimal in-memory [StorageService] - only `listFiles`/`resolve`/
-/// `writeFile` are ever reached by Phase D's own orchestration path
-/// (`nextAvailablePartName` + `showRelativePathPromptDialog`'s own
-/// collision check + `AssemblyDocumentClient.savePart`); every other method
-/// throws if reached, the same "fail loud on an unexpected call" posture
+/// A minimal in-memory [StorageService] - `listFiles`/`resolve`/`writeFile`
+/// cover Phase D's own orchestration path (`nextAvailablePartName` +
+/// `showRelativePathPromptDialog`'s own collision check +
+/// `AssemblyDocumentClient.savePart`); `readFile` covers Phase E's own
+/// `add_component` steps reading a just-saved part's file straight back
+/// (`AiAddComponentStep`'s own `storage.resolve` + `storage.readFile` call,
+/// never HTTP - see `ai_plan_translator.dart`). Every other method throws if
+/// reached, the same "fail loud on an unexpected call" posture
 /// `ai_plan_translator_test.dart`'s own `_FakeStorageService` already uses.
 class _FakeStorageService implements StorageService {
   final Map<String, Uint8List> writtenFiles = {};
@@ -63,7 +68,7 @@ class _FakeStorageService implements StorageService {
   Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) => throw UnimplementedError();
 
   @override
-  Future<Uint8List> readFile(FileHandle handle) => throw UnimplementedError();
+  Future<Uint8List> readFile(FileHandle handle) async => writtenFiles[(handle as DesktopFileHandle).relativePath]!;
 
   @override
   Future<DateTime?> lastModified(FileHandle handle) => throw UnimplementedError();
@@ -95,31 +100,53 @@ Here is the plan.
 ]}
 ```''';
 
-const _onePartLocalIds = ['sk1', 'p1', 'p2', 'p3', 'p4', 'r1', 'f1'];
+/// Phase E's own assembly plan - an `add_component` step per part saved by
+/// the two preceding cycles, referencing the exact `relative_path`s those
+/// cycles' own save-confirm dialogs produce below (`PLATE_001.DIDSAprt`/
+/// `TUBE_001.DIDSAprt`). No `mate` step here - `_runAssemblyCycle` treats
+/// `add_component`/`mate` identically (both are ordinary `PlanStep`s,
+/// unchanged from Phase D's own translator call), so this keeps the fixture
+/// backend small without weakening what this test actually exercises: the
+/// orchestration wiring from "all parts saved" through a real assembly
+/// create/execute/save/open cycle.
+const _assemblyPlanText = '''
+Here is the assembly plan.
+```json
+{"version": 1, "steps": [
+  {"local_id": "ac1", "kind": "add_component", "relative_path": "PLATE_001.DIDSAprt"},
+  {"local_id": "ac2", "kind": "add_component", "relative_path": "TUBE_001.DIDSAprt"}
+]}
+```''';
 
-/// A [MockClient] handler covering every real HTTP call one part cycle
-/// makes - mirrors `ai_modelling_screen_test.dart`'s own `realPlanHandler`,
-/// but mints a genuinely unique Part id per `createPart` call (Phase D
-/// creates one real Part per manifest entry, never reusing `part-1` the
-/// way the single-part fixture always does) and adds `export/native` for
-/// `AssemblyDocumentClient.savePart`.
-Future<http.Response> Function(http.Request) _orchestrationHandler({String? failAtPath}) {
+/// A [MockClient] handler covering every real HTTP call a full Phases D+E
+/// orchestration run makes - mirrors `ai_modelling_screen_test.dart`'s own
+/// `realPlanHandler`, but mints a genuinely unique Part id per `createPart`
+/// call (Phase D creates one real Part per manifest entry plus one more for
+/// Phase E's own assembly, never reusing `part-1` the way the single-part
+/// fixture always does). `/document/export/native` is part-id-aware (each
+/// saved file's bytes carry *that* part's own real id, the way
+/// `AiAddComponentStep`'s own `mergeComponentIntoDocument` call requires
+/// when it later reads a saved part's file back) and `/document/import
+/// /native` covers `add_component`'s own merge-and-replace call.
+/// `ai-plan/validate` echoes back whichever `local_id`s the request body
+/// actually names, since each part's plan and the assembly's own plan use
+/// different step sets.
+Future<http.Response> Function(http.Request) _fullOrchestrationHandler() {
   var partCount = 0;
   var pointCount = 0;
   return (request) async {
     final path = request.url.path;
-    if (failAtPath != null && path == failAtPath) {
-      return http.Response(jsonEncode({'detail': {'type': 'geometry_failed'}}), 422);
-    }
     if (path == '/document/parts' && request.method == 'POST') {
       partCount++;
       return http.Response(jsonEncode({'id': 'part-$partCount', 'name': 'part', 'feature_ids': []}), 201);
     }
     if (path.endsWith('/ai-plan/validate')) {
+      final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
+      final steps = ((body['steps'] as List?) ?? []).cast<Map<String, dynamic>>();
       return http.Response(
         jsonEncode({
           'results': [
-            for (final localId in _onePartLocalIds) {'local_id': localId, 'ok': true, 'warnings': [], 'error': null},
+            for (final step in steps) {'local_id': step['local_id'], 'ok': true, 'warnings': [], 'error': null},
           ],
         }),
         200,
@@ -162,21 +189,44 @@ Future<http.Response> Function(http.Request) _orchestrationHandler({String? fail
       );
     }
     if (path == '/document/export/native') {
-      return http.Response(jsonEncode({'schema_version': 1, 'document': {'parts': []}}), 200);
+      final partId = request.url.queryParameters['part_id'] ?? 'part-$partCount';
+      return http.Response(
+        jsonEncode({
+          'schema_version': 1,
+          'document': {
+            'id': 'doc-$partId',
+            'root_part_id': partId,
+            'parts': [
+              {'id': partId, 'occurrences': []},
+            ],
+          },
+          'sketches': [],
+        }),
+        200,
+      );
+    }
+    if (path == '/document/import/native' && request.method == 'POST') {
+      return http.Response(
+        jsonEncode({
+          'document_id': 'doc-merged',
+          'part_ids': ['part-$partCount', 'part-1', 'part-2'],
+        }),
+        200,
+      );
     }
     return http.Response('not found', 404);
   };
 }
 
-/// Multi-part/assembly overhaul, Phase D
+/// Multi-part/assembly overhaul, Phases D+E
 /// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): the N
 /// sequential single-Part orchestration cycle - manifest detection, the
-/// confirm-parts panel, per-part generate+save, and the final "all parts
-/// saved" state. Kept in its own file (mirrors
-/// `ai_modelling_screen_mode_toggle_test.dart`'s own reasoning), since a
-/// real end-to-end orchestration run needs a much larger fake backend/
-/// storage fixture than any existing test in `ai_modelling_screen_test.dart`
-/// sets up.
+/// confirm-parts panel, per-part generate+save - followed by Phase E's own
+/// one further assembly create/execute/save/open cycle once every part is
+/// saved. Kept in its own file (mirrors `ai_modelling_screen_mode_toggle_test
+/// .dart`'s own reasoning), since a real end-to-end orchestration run needs
+/// a much larger fake backend/storage fixture than any existing test in
+/// `ai_modelling_screen_test.dart` sets up.
 void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
@@ -229,61 +279,105 @@ void main() {
     expect(find.textContaining('A plate and a tube'), findsOneWidget);
   });
 
-  testWidgets('confirming generates and saves every part in sequence, ending at "All parts saved"', (tester) async {
-    final client = DocumentApiClient(httpClient: MockClient(_orchestrationHandler()));
-    final sketchClient = SketchApiClient(httpClient: MockClient(_orchestrationHandler()));
-    final storage = _FakeStorageService();
-    const root = DesktopProjectRoot('/tmp/project');
+  testWidgets(
+    'confirming generates and saves every part, then Phase E builds, saves and opens the assembly',
+    (tester) async {
+      final client = DocumentApiClient(httpClient: MockClient(_fullOrchestrationHandler()));
+      final sketchClient = SketchApiClient(httpClient: MockClient(_fullOrchestrationHandler()));
+      final storage = _FakeStorageService();
+      const root = DesktopProjectRoot('/tmp/project');
 
-    var turnCount = 0;
-    final provider = _FakeAiProvider((_, __) async {
-      turnCount++;
-      // Turn 1: the manifest. Turns 2+: each part's own plan, in order.
-      return AiTurnResult(assistantText: turnCount == 1 ? _manifestText : _onePartPlanText);
-    });
+      var turnCount = 0;
+      final provider = _FakeAiProvider((_, __) async {
+        turnCount++;
+        // Turn 1: the manifest. Turns 2-3: each part's own plan, in order.
+        // Turn 4: the assembly plan, once `_finishPartOrchestration` kicks
+        // off `_runAssemblyCycle` automatically.
+        return AiTurnResult(
+          assistantText: switch (turnCount) {
+            1 => _manifestText,
+            2 || 3 => _onePartPlanText,
+            _ => _assemblyPlanText,
+          },
+        );
+      });
 
-    await tester.pumpWidget(
-      MaterialApp(
-        home: AiModellingScreen(
-          provider: provider,
-          documentApi: client,
-          sketchApi: sketchClient,
-          storageService: storage,
-          projectRoot: root,
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AiModellingScreen(
+            provider: provider,
+            documentApi: client,
+            sketchApi: sketchClient,
+            storageService: storage,
+            projectRoot: root,
+          ),
         ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Assembly'));
-    await tester.pumpAndSettle();
-    await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A plate and a tube');
-    await tester.tap(find.byKey(const Key('aiModellingSend')));
-    await tester.pumpAndSettle();
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Assembly'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A plate and a tube');
+      await tester.tap(find.byKey(const Key('aiModellingSend')));
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
-    await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
+      await tester.pumpAndSettle();
 
-    // First part's save-confirm dialog.
-    expect(find.text('Save "Mounting Plate" as…'), findsOneWidget);
-    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
-    await tester.pumpAndSettle();
+      // First part's save-confirm dialog.
+      expect(find.text('Save "Mounting Plate" as…'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
 
-    // Second part's save-confirm dialog.
-    expect(find.text('Save "Support Tube" as…'), findsOneWidget);
-    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
-    await tester.pumpAndSettle();
+      // Second part's save-confirm dialog.
+      expect(find.text('Save "Support Tube" as…'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
 
-    expect(find.text('All parts saved'), findsOneWidget);
-    expect(find.textContaining('PLATE_001'), findsOneWidget);
-    expect(find.textContaining('TUBE_001'), findsOneWidget);
-    expect(storage.writtenFiles.keys, containsAll(['PLATE_001.DIDSAprt', 'TUBE_001.DIDSAprt']));
+      // Phase E: both parts are saved, so the assembly cycle starts on its
+      // own - no further tap needed - ending at its own save-confirm
+      // dialog, proposing a collision-free ASSEMBLY_### name exactly like
+      // each part's own cycle did.
+      expect(find.text('Save assembly as…'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
 
-    final dismissButton = tester.widget<FilledButton>(find.byKey(const Key('aiModellingOrchestrationDismiss')));
-    expect(dismissButton.onPressed, isNotNull);
-    await tester.tap(find.byKey(const Key('aiModellingOrchestrationDismiss')));
-    await tester.pumpAndSettle();
-    expect(find.text('All parts saved'), findsNothing);
-  });
+      expect(find.text('Assembly ready'), findsOneWidget);
+      expect(find.textContaining('ASSEMBLY_001'), findsOneWidget);
+      expect(
+        storage.writtenFiles.keys,
+        containsAll(['PLATE_001.DIDSAprt', 'TUBE_001.DIDSAprt', 'ASSEMBLY_001.DIDSAprt']),
+      );
+
+      final dismissButton = tester.widget<FilledButton>(find.byKey(const Key('aiModellingOrchestrationDismiss')));
+      expect(dismissButton.onPressed, isNotNull);
+
+      // "Open Assembly" navigates straight into `PartScreen` with Assembly
+      // lens already active, carrying every saved part's own relative path
+      // through - `_openAssembly`'s own contract (mirrors
+      // `_onOpenProjectPressed`'s existing `initialRelativePathByPartId`
+      // convention). One bounded `pump` (not `pumpAndSettle`) is enough to
+      // build the pushed route and inspect its constructor params, without
+      // needing to also mock every endpoint the new screen's own
+      // `_loadPart` would otherwise call.
+      await tester.tap(find.byKey(const Key('aiModellingOpenAssembly')));
+      await tester.pump();
+
+      // `skipOffstage: false` - one bare `pump()` builds the pushed route
+      // but doesn't run its page-transition animation to completion, so the
+      // default `find.byType` (which only ever matches "onstage" - i.e.
+      // fully transitioned-in - elements) misses it here even though it's
+      // already mounted with every constructor param set.
+      final pushedScreen = tester.widget<PartScreen>(find.byType(PartScreen, skipOffstage: false).last);
+      expect(pushedScreen.initialPartId, 'part-3');
+      expect(pushedScreen.initialLens, AssemblyLens.assembly);
+      expect(pushedScreen.initialProjectRoot, root);
+      expect(pushedScreen.initialRelativePathByPartId, {
+        'part-1': 'PLATE_001.DIDSAprt',
+        'part-2': 'TUBE_001.DIDSAprt',
+        'part-3': 'ASSEMBLY_001.DIDSAprt',
+      });
+    },
+  );
 
   testWidgets('a validation failure on one part stops the whole run with a visible error, dismiss enabled',
       (tester) async {

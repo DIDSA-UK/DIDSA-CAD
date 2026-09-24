@@ -8,18 +8,20 @@ same underlying assembly data model/pipeline from two different angles
 (this one from the AI-authoring side, that one from the manual-UI side) and
 should be read together for this workstream specifically.
 
-**Status**: Phases A, B, C, D, D2 **implemented**. Phase D's own scope was
-narrowed during implementation to end at "every recognized part generated
-and saved as its own file" - it deliberately does **not** attempt the
-assembly-insert/mate step itself, that's Phase E, now genuinely unblocked:
-D2 closed the real, confirmed gap in the existing mate edge-selector
-resolution (a Mate's `edge_selector` couldn't resolve against a placed
-Occurrence's own target Part at all before this phase) with **zero new
-wire payload** - the fix turned out to be pure backend wiring, not the
+**Status**: Phases A, B, C, D, D2, E **implemented** - this workstream is
+complete. Phase D's own scope was narrowed during implementation to end at
+"every recognized part generated and saved as its own file" - it
+deliberately did **not** attempt the assembly-insert/mate step itself, that
+was left to Phase E. D2 closed the real, confirmed gap in the existing mate
+edge-selector resolution (a Mate's `edge_selector` couldn't resolve against
+a placed Occurrence's own target Part at all before this phase) with **zero
+new wire payload** - the fix turned out to be pure backend wiring, not the
 Document-scoped-payload redesign the plan's own original framing expected
 (see Phase D2's own section for what the spike actually found). Phase E
-is planned, locked in design, **not yet built** - see its own section
-below.
+then closed the loop: once every part from Phase D is saved, one further
+plan/execute/save cycle builds the assembly itself (`add_component` +
+`mate` steps against the parts D just saved) and opens it directly into
+Assembly lens - see its own section below for exactly how.
 
 ## Context
 
@@ -508,17 +510,93 @@ change.
 
 ---
 
-## Phase E — Assembly creation, insert, mate, open (planned, not built - now unblocked)
+## Phase E — Assembly creation, insert, mate, open (implemented)
 
-Depends on D **and** D2. After Phase D's per-part cycles finish, run one
-more plan/execute cycle targeting a new-or-reused assembly Part, authored
-by the LLM against a system prompt listing exactly the parts Phase D just
-saved (their real `relative_path`s) via `add_component` steps (unchanged,
-`docs/assembly-scope.md` §2t) followed by `mate` steps - `add_component`
-itself is already fully wired end to end; a `mate` step naming an
-`edge_selector` on either just-placed component only works once Phase D2
-ships. On completion, navigate into `PartScreen` for the assembly Part
-with `AssemblyLens.assembly` active.
+Depends on D **and** D2, both already shipped by the time this phase was
+built. Closes the loop Phase D deliberately left open: once every
+recognized part is generated and saved to its own file, one further
+plan/execute/save cycle builds the assembly itself and opens it - no manual
+"now go do Insert Existing Component by hand" step required.
+
+### The assembly cycle (`_runAssemblyCycle`)
+
+Triggered automatically the moment the last part-cycle succeeds
+(`_finishPartOrchestration` now calls `unawaited(_runAssemblyCycle())`
+instead of just stopping) - never a separate button press, since there is
+nothing left for the user to decide before it: every part is already real
+and saved. Mirrors `_runPartCycle`'s own shape one level up (one assembly
+instead of one part), reusing the exact same primitives with zero changes
+to `_PlanValidator`/`PlanTranslator`/the plan schema:
+
+1. Append a synthetic, visible `user`-role turn listing every saved part's
+   own real name and `relative_path` and asking for the assembly plan now
+   - passed both in this request turn's own text and as this one turn's
+   override of the "Available Component Files" system-prompt section
+   (rather than the ordinary `_availableComponentFilesSummary`, which is
+   only ever refreshed once in `initState` and so could be stale by the
+   time an orchestration run actually finishes saving new files - see this
+   doc's own D-4 gap on why the request text and the prompt section can
+   drift, now closed for this one turn by construction rather than by
+   relying on a fresh disk scan).
+2. `detectPlanInAssistantText` on the reply (unchanged) - no plan found
+   stops the run with a clear error, parts already saved untouched.
+3. `DocumentApiClient.createPart('Assembly')` - always a brand-new Part;
+   letting the user pick an existing file to add parts into instead was a
+   real product question the original plan flagged but this pass doesn't
+   attempt (see "Not built this round" below).
+4. `PlanTranslator.execute` (unchanged) - the LLM's `add_component` steps
+   (`docs/assembly-scope.md` §2t, already fully wired since Phase 18) place
+   each saved part; `mate` steps with an `edge_selector` on a just-placed
+   component's own `existing:<occurrence_id>` now resolve for real, thanks
+   to Phase D2.
+5. `nextAvailablePartName(..., typePrefix: 'ASSEMBLY')` (Phase C, reused
+   as-is) proposes a collision-free name.
+6. `showRelativePathPromptDialog` (Phase 15's dialog, reused byte-for-byte)
+   - the same human save-confirm gate every part cycle already used.
+   Cancelling stops the run; every part above stays saved.
+7. `AssemblyDocumentClient.savePart(root, assemblyPartId, path)` writes the
+   assembly file for real.
+
+Any failure at any point uses the identical `_stopOrchestrationWithError`
+posture `_runPartCycle` already established - no auto-rollback, whatever
+was already saved (every part, and the assembly itself once its own save
+succeeds) stays saved.
+
+### Opening the result (`_openAssembly`, `PartScreen.initialLens`)
+
+`PartScreen` gained a new `initialLens` constructor param (default
+`AssemblyLens.part`, so every pre-Phase-E caller is unaffected) - when set
+to `AssemblyLens.assembly`, `_loadPart` runs the same tree-then-mesh
+refresh sequence `_toggleAssemblyLens` already used for a manual switch,
+just once, inside the load it's already awaiting, since there's no
+"switch lens mid-session" race to worry about this early. Once the
+assembly cycle above finishes, the progress panel shows an "Open Assembly"
+button; `_openAssembly` pushes a fresh `PartScreen` (mirrors
+`_onOpenProjectPressed`'s own "fresh screen, not a reload in place"
+precedent) for the assembly Part with `initialLens: AssemblyLens.assembly`
+and `initialRelativePathByPartId` carrying every part's own real path
+through (the assembly's own included) - so a subsequent "Save All" on the
+new screen already knows where each file lives, rather than prompting
+again for files this same run just wrote.
+
+**Files**: `client/lib/ai/ai_modelling_screen.dart` (`_runAssemblyCycle`,
+`_openAssembly`, the `_buildingAssembly`/`_assemblyPartId`/
+`_assemblyRelativePath` state, `_buildOrchestrationProgress`'s new
+"Assembly" row and "Open Assembly" button), `client/lib/viewport3d/
+part_screen.dart` (`initialLens`, wired into `_loadPart`).
+
+**Tests**: `test/ai_modelling_screen_orchestration_test.dart`'s "confirming
+generates and saves every part, then Phase E builds, saves and opens the
+assembly" test extends the existing 2-part happy path through a real
+assembly create/execute/save cycle (a widened `_fullOrchestrationHandler`
+mock backend, part-id-aware `/document/export/native` so each saved part's
+own file bytes carry that part's own real id - needed since `add_component`
+reads a saved file's bytes straight back via `StorageService`, never HTTP)
+and asserts the pushed `PartScreen`'s own constructor params
+(`initialPartId`, `initialLens`, `initialRelativePathByPartId`).
+`test/part_screen_test.dart` gained its own direct, smaller test for
+`initialLens: AssemblyLens.assembly` opening straight into Assembly lens
+with no manual toggle tap needed.
 
 ### Not built this round (disclosed, not silently dropped)
 
@@ -530,6 +608,11 @@ with `AssemblyLens.assembly` active.
 - A richer interactive folder/file browser for the save-confirm dialog -
   reuses the existing typed-prompt-plus-collision-warning shape
   (`docs/assembly-scope.md` §2r), not a new browser widget.
+- **Picking an existing file to add parts into, instead of always creating
+  a new assembly Part.** The original plan flagged this as "a real product
+  question worth a quick confirm at the point this phase is detailed" -
+  `_runAssemblyCycle` always creates a fresh Part; see this section's own
+  Appendix entry (E-1) below.
 
 ---
 
@@ -625,6 +708,22 @@ this section, don't silently let it go stale, as further phases land.
   geometry-selector concept to widen** (they reference a whole Occurrence,
   never a specific edge/face on one), so this phase's own scope is
   correctly narrow to Mate alone, not a gap in coverage.
+- **E-1: no way to add parts into an existing assembly file - `_runAssemblyCycle`
+  always creates a brand-new assembly Part.** Flagged as an open product
+  question in the original plan, not resolved before implementation; revisit
+  if real usage shows re-opening and extending a previously-saved assembly
+  from an AI Modelling conversation is a real workflow, not just building a
+  fresh one each time.
+- **E-2: no "retry the assembly cycle" action, same shape as D-1.** A
+  failure in `_runAssemblyCycle` (no plan detected, validation failed, a
+  step failed, a cancelled save) stops the run the same way a per-part
+  failure does - every part stays saved, but there's no in-panel way to
+  retry just the assembly step without the user continuing the conversation
+  manually. Same deliberate scope cut as D-1, not an oversight.
+- **E-3: the assembly cycle's own progress row shares `_orchestrationStatus`
+  with the per-part rows above it, the same D-2 coarseness, one level up.**
+  No separate fidelity work was done for Phase E specifically - inherits
+  D-2's own tradeoff rather than reopening it.
 
 ### Emergent work (found during implementation, not in the original plan)
 
@@ -696,3 +795,37 @@ this section, don't silently let it go stale, as further phases land.
   composed graph pulled in, so **no new wire payload was needed at all**.
   A case where reading the actual code changed the shape of the fix, not
   just its size.
+- **The orchestration test's `_FakeStorageService.readFile` was never
+  implemented before Phase E - it threw `UnimplementedError`, matching the
+  file's own doc comment that only `listFiles`/`resolve`/`writeFile` were
+  ever reached by anything Phase D exercised.** Phase E's `add_component`
+  steps are the first thing in this fixture's history to actually read a
+  saved file's bytes back (`AiAddComponentStep`'s own `storage.resolve` +
+  `storage.readFile`, never HTTP - see `ai_plan_translator.dart`) - closed
+  by implementing it as a lookup into the same in-memory `writtenFiles` map
+  `writeFile` already populates.
+- **The shared `_orchestrationHandler`/`_onePartLocalIds` test fixtures
+  from Phase D couldn't be reused as-is for Phase E's own test.** Phase E's
+  `add_component` steps need a saved part's file to actually carry *that*
+  part's own real id (`mergeComponentIntoDocument` rejects an empty-Parts
+  file), but Phase D's own `_orchestrationHandler` always returned the same
+  fixed `{'parts': []}` for `/document/export/native` - fine when nothing
+  ever read a saved file's bytes back, wrong once Phase E's own
+  `add_component` steps do. Replaced with a part-id-aware
+  `_fullOrchestrationHandler` (keyed off the `part_id` query parameter
+  `DocumentApiClient.exportNative` sends) and a validate handler that
+  echoes back whichever `local_id`s the request body actually names, rather
+  than Phase D's own hardcoded list - the assembly plan's own steps
+  (`ac1`/`ac2`) are a different set than any one part's plan uses. The now
+  entirely-unused `_orchestrationHandler` was deleted rather than left
+  alongside its replacement.
+- **`find.byType`'s default `skipOffstage: true` hid the just-pushed
+  `PartScreen` from the orchestration test, even though it was already
+  mounted with every constructor param set.** Driving "Open Assembly"
+  with one bounded `tester.pump()` (deliberately not `pumpAndSettle`, to
+  avoid needing to also mock every endpoint the new screen's own
+  `_loadPart` would otherwise call) leaves the pushed route's page
+  transition mid-animation - `flutter_test`'s finders treat that as
+  "offstage" by default and skip it. Found by comparing `tester.allWidgets`
+  (which did include `PartScreen`) against the failing finder; fixed with
+  `find.byType(PartScreen, skipOffstage: false)`.
