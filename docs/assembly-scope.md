@@ -2463,13 +2463,19 @@ execution posting to the real endpoint).
 ### Remaining limitations after this phase
 
 `[2]` (`add_component`, no client-side file-discovery mechanism) is
-unchanged and still fully open - both `[3]`'s own cross-Part scope limit
-and `[1]`'s own "existing-only" scope limit trace back to the same root
-cause (`add_component` never landing yet), not a new gap this phase
-introduced. The Mate edge-selector's own "first match wins on ambiguity"
-behavior (see `[3]`'s own write-up above) is a real, disclosed v1
-limitation worth revisiting once real usage shows how often it actually
-picks the LLM's intended edge versus a coincidentally-equivalent one.
+unchanged and still fully open - `[1]`'s own "existing-only" scope limit
+traces back to the same root cause (`add_component` never landing yet), not
+a new gap this phase introduced. **Update (`docs/ai-modelling/
+13-multi-part-assembly-overhaul.md`, Phase D2):** `[3]`'s own cross-Part
+scope limit described above - a Mate's `edge_selector` only ever resolving
+against the root Part, never a placed Occurrence's own target Part - was
+closed by that workstream's Phase D2 (Document-scoped mate edge/face
+resolution), once `add_component`/assembly-mode generation actually needed
+it. The Mate edge-selector's own "first match wins on ambiguity" behavior
+(see `[3]`'s own write-up above) is unaffected by that fix and remains a
+real, disclosed v1 limitation worth revisiting once real usage shows how
+often it actually picks the LLM's intended edge versus a
+coincidentally-equivalent one.
 
 ---
 

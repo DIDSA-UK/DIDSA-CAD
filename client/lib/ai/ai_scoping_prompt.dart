@@ -812,6 +812,52 @@ conversation. Do not repeat any part's own sketch/feature steps here - by
 this point every part already exists as its own real file; this plan only
 places and mates them.''';
 
+/// Multi-part/assembly overhaul gap-closure (`13-...md`'s own D-4): the
+/// per-part/per-assembly synthetic request turns `_runPartCycle`/
+/// `_runAssemblyCycle` (`ai_modelling_screen.dart`) send the LLM were
+/// hand-written prose living only in that screen, separate from the rest of
+/// [assemblyModeVocabularyText] - risking drift if one is revised without
+/// the other. Moved here, alongside it, so both are reviewed together.
+String assemblyModePartRequestText({required int index, required int total, required String name, required String summary}) =>
+    'Please provide the plan for part ${index + 1} of $total: "$name" ($summary). Reply with an '
+    'ordinary plan for this part only, as described in the Assembly mode instructions.';
+
+/// Same as [assemblyModePartRequestText], for a retry after a stopped part
+/// cycle - the failure itself was already appended to the transcript as its
+/// own turn (mirroring `_appendStoppedRunToTranscript`'s existing single-Part
+/// convention) immediately before this one is sent, so this only needs to
+/// point back at it rather than restate the whole part brief.
+String assemblyModePartRetryRequestText({required String name}) =>
+    'Please propose a revised plan for "$name" that addresses the failure above.';
+
+String assemblyModeAssemblyRequestText(String partsListing) =>
+    'Every part has been saved. Please provide the assembly plan now, placing and mating '
+    'these parts:\n$partsListing';
+
+/// Gap-closure (`13-...md`'s own E-1): the variant of
+/// [assemblyModeAssemblyRequestText] used when the user picked "insert into
+/// an existing assembly" instead of always starting a new one - tells the
+/// LLM which components are already placed in [existingAssemblyPath] (if
+/// any - a brand-new, still-empty assembly file has none) so its
+/// `add_component`/`mate` steps don't collide with or duplicate them.
+String assemblyModeAssemblyIntoExistingRequestText({
+  required String existingAssemblyPath,
+  required String partsListing,
+  required String existingComponentsListing,
+}) {
+  final existingSection = existingComponentsListing.isEmpty
+      ? 'It currently has no components placed in it.'
+      : 'It already has these components placed in it - do not add another add_component step for '
+          'any of them, only mate against them if relevant:\n$existingComponentsListing';
+  return 'Every part has been saved. Please provide the assembly plan now, placing and mating these '
+      'new parts into the existing assembly "$existingAssemblyPath":\n$partsListing\n\n$existingSection';
+}
+
+/// Same as [assemblyModeAssemblyRequestText], for a retry after a stopped
+/// assembly cycle - see [assemblyModePartRetryRequestText]'s own doc comment.
+String assemblyModeAssemblyRetryRequestText() =>
+    'Please propose a revised assembly plan that addresses the failure above.';
+
 const String _unitsConvention = '''
 ## Units
 

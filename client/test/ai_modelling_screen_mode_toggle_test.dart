@@ -73,11 +73,15 @@ void main() {
     expect(find.byKey(const Key('aiModellingModeToggle')), findsNothing);
   });
 
-  // Multi-part/assembly overhaul, Phase D
+  // Multi-part/assembly overhaul, Phases D/E
   // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): Assembly mode
-  // is no longer a pure stub - Send stays enabled, and the banner now
-  // discloses exactly what's real (per-part generation/save) vs. still
-  // unbuilt (the final insert/mate step, gated on Phase D2).
+  // is no longer a pure stub - Send stays enabled, and the banner discloses
+  // what happens (per-part generation/save, then automatic assembly
+  // build/save/open). Gap-closure fix: this banner used to claim the
+  // insert/mate step "is not built yet" and tell the user to do it
+  // manually via "Insert Existing Component"/"Add Mate" - stale the moment
+  // Phase E shipped in the same branch. Asserted explicitly here (not just
+  // a substring match) so that specific regression can't reappear silently.
   testWidgets('selecting Assembly shows the disclosure banner but keeps Send enabled', (tester) async {
     final provider = _FakeAiProvider((_, __) async => const AiTurnResult(assistantText: 'hi'));
     await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
@@ -86,7 +90,11 @@ void main() {
     await tester.tap(find.text('Assembly'));
     await tester.pumpAndSettle();
 
+    expect(find.byKey(const Key('aiModellingAssemblyModeBanner')), findsOneWidget);
     expect(find.textContaining('Assembly mode generates and saves'), findsOneWidget);
+    expect(find.textContaining('automatically builds, saves, and opens'), findsOneWidget);
+    expect(find.textContaining('is not built yet'), findsNothing);
+    expect(find.textContaining('Insert Existing Component'), findsNothing);
     final sendButton = tester.widget<IconButton>(find.byKey(const Key('aiModellingSend')));
     expect(sendButton.onPressed, isNotNull);
   });

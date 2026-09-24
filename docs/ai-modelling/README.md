@@ -26,10 +26,12 @@ breakdown, generates/saves each one as its own file, then builds the
 assembly itself (insert + mate) and opens it directly into Assembly lens —
 a plain-English request or photo of a whole assembly can now go all the way
 to a real, mated, multi-file assembly with no manual "now insert/mate by
-hand" step. See `13-multi-part-assembly-overhaul.md`'s own Appendix for the
-live gap/emergent-work tracker (a handful of disclosed, deliberate scope
-cuts remain — no in-panel retry, no re-opening an existing assembly to add
-more parts to it — none of them blocking).
+hand" step. A follow-up gap-closure pass added in-panel Retry (asking the
+LLM for a revised plan against the same in-progress Part, not a blind
+re-run) and "insert into an existing assembly" as an alternative to always
+starting a new one. See `13-multi-part-assembly-overhaul.md`'s own Appendix
+for the live gap/emergent-work tracker (a handful of disclosed, deliberate
+scope cuts remain — none of them blocking).
 
 ## How to use these docs in a fresh implementation session
 

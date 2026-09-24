@@ -257,4 +257,54 @@ Assumptions: hole goes all the way through.
       expect(prompt, contains(assemblyModeVocabularyText));
     });
   });
+
+  // Gap-closure (`13-...md`'s own D-4/E-1): the per-part/per-assembly
+  // request text `_runPartCycle`/`_runAssemblyCycle` send, moved here
+  // alongside `assemblyModeVocabularyText` so the two can't drift apart.
+  group('assembly-mode request text (gap-closure D-4/E-1)', () {
+    test('assemblyModePartRequestText names the part index/total/name/summary', () {
+      final text = assemblyModePartRequestText(index: 0, total: 2, name: 'Mounting Plate', summary: '60x40x10mm plate');
+      expect(text, contains('part 1 of 2'));
+      expect(text, contains('"Mounting Plate"'));
+      expect(text, contains('60x40x10mm plate'));
+    });
+
+    test('assemblyModePartRetryRequestText asks for a revision, not a fresh part brief', () {
+      final text = assemblyModePartRetryRequestText(name: 'Mounting Plate');
+      expect(text, contains('revised plan'));
+      expect(text, contains('"Mounting Plate"'));
+    });
+
+    test('assemblyModeAssemblyRequestText lists the saved parts', () {
+      final text = assemblyModeAssemblyRequestText('1. PLATE_001.DIDSAprt - "Mounting Plate"');
+      expect(text, contains('PLATE_001.DIDSAprt'));
+    });
+
+    test('assemblyModeAssemblyRetryRequestText asks for a revision, not a fresh assembly brief', () {
+      expect(assemblyModeAssemblyRetryRequestText(), contains('revised assembly plan'));
+    });
+
+    test('assemblyModeAssemblyIntoExistingRequestText names the target file and the new parts', () {
+      final text = assemblyModeAssemblyIntoExistingRequestText(
+        existingAssemblyPath: 'TOP.DIDSAprt',
+        partsListing: '1. PLATE_001.DIDSAprt - "Mounting Plate"',
+        existingComponentsListing: '',
+      );
+      expect(text, contains('"TOP.DIDSAprt"'));
+      expect(text, contains('PLATE_001.DIDSAprt'));
+      expect(text, contains('no components placed in it'));
+    });
+
+    test('assemblyModeAssemblyIntoExistingRequestText lists already-placed components when there are any, '
+        'and tells the LLM not to re-add them', () {
+      final text = assemblyModeAssemblyIntoExistingRequestText(
+        existingAssemblyPath: 'TOP.DIDSAprt',
+        partsListing: '1. PLATE_001.DIDSAprt - "Mounting Plate"',
+        existingComponentsListing: 'BRACKET_001.DIDSAprt',
+      );
+      expect(text, contains('BRACKET_001.DIDSAprt'));
+      expect(text, contains('do not add another add_component step'));
+      expect(text, isNot(contains('no components placed in it')));
+    });
+  });
 }

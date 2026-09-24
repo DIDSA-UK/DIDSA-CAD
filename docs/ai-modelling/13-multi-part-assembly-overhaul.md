@@ -655,45 +655,44 @@ this section, don't silently let it go stale, as further phases land.
   No settings-screen control exists for either. Revisit if real usage
   shows 3 digits or the sanitization rule doesn't fit a real project's own
   naming convention.
-- **Assembly mode's disclosure banner has no test asserting its exact
+- ~~**Assembly mode's disclosure banner has no test asserting its exact
   wording stays in sync with whichever phase actually closes the
   insert/mate gap** - a cosmetic risk (the banner could go stale once
   Phase D2/E ship, still claiming assembly creation isn't built), not a
-  functional one.
-- **D-1: no "retry this part" action.** A per-part failure (validation,
-  real step failure, a cancelled save) stops the *whole* orchestration -
-  already-saved parts are untouched, but there is no in-panel way to
-  retry just the failed part without starting over from part 0 (the user
-  can still continue chatting manually and ask for a revised plan, the
-  same recovery path the single-part flow's own stopped-run case already
-  relies on). A deliberate scope cut to keep the state machine's first
-  real version smaller, not an oversight - revisit if real usage shows
-  restarting from scratch is a genuine friction point.
-- **D-2: the per-part progress UI is coarse (one status string), not a
-  full per-step list.** `_buildReviewAndGenerate`'s own `_stepStatuses`
-  (pending/in-progress/done/failed per step) wasn't duplicated for the
-  in-flight part in `_buildOrchestrationProgress` - a real fidelity
-  reduction versus the single-part flow's own progress UI, accepted to
-  keep the panel's own code size down given it already renders a
-  per-*part* list on top. Revisit if real usage shows the coarse status
-  text isn't informative enough during a long-running part.
-- **D-3: no test exercises the assembly-mode `gear_request`-stop or
-  provider-error paths inside `_runPartCycle`.** The validation-failure
-  and no-plan-detected paths are covered
-  (`ai_modelling_screen_orchestration_test.dart`); the `stepFailed`/
-  `gearRequestEncountered`/`AiProviderException`/`StorageException`
-  branches share the same `_stopOrchestrationWithError` call and are
-  reused, tested code paths individually (each already covered by the
-  single-part flow's own tests), but no orchestration-specific test drives
-  them through a full multi-part run.
-- **D-4: the assembly-mode vocabulary's per-part request text is
+  functional one.~~ - **Closed, gap-closure pass below.** The risk this
+  entry flagged actually materialized (the banner still claimed
+  insert/mate "is not built yet" after Phase E shipped in this same
+  branch) - fixed, and now covered by a direct assertion
+  (`ai_modelling_screen_mode_toggle_test.dart`) that the stale wording
+  can't silently reappear.
+- ~~**D-1: no "retry this part" action.**~~ - **Closed, gap-closure pass
+  below.** Rebuilt as "ask the LLM for a revised plan against the same
+  Part" (reusing the single-Part flow's own `_pendingRetryPartId`/
+  `_appendStoppedRunToTranscript` precedent), not a blind re-run of the
+  identical failed steps - see that section for why, and for the
+  correctness gap this also closed (a stopped orchestration's "continue
+  chatting manually" advice didn't actually work: the in-progress Part id
+  was never captured anywhere `_generate()` could reuse).
+- ~~**D-2: the per-part progress UI is coarse (one status string), not a
+  full per-step list.**~~ - **Closed, gap-closure pass below.**
+  `PlanTranslator.execute`'s `onStepStatusChanged` callback is now wired
+  through `_runPartCycle`/`_runAssemblyCycle` the same way the single-Part
+  flow's own `_stepStatuses` already used it - closed alongside D-1/E-2
+  since both touch the same call sites.
+- ~~**D-3: no test exercises the assembly-mode `gear_request`-stop or
+  provider-error paths inside `_runPartCycle`.**~~ - **Partially closed,
+  gap-closure pass below.** New orchestration tests cover a
+  `validationFailed`-then-retry-succeeds round trip and a cancelled-save
+  retry; a dedicated `gear_request`/`AiProviderException` orchestration
+  test was not added this pass (both still share the same
+  `_stopOrchestrationWithError`/retry-state wiring the new tests do
+  exercise, just not through their own dedicated case).
+- ~~**D-4: the assembly-mode vocabulary's per-part request text is
   hand-written prose (`_runPartCycle`'s own `requestMessage`), not itself
-  part of `ai_scoping_prompt.dart`.** Works today (verified via the
-  orchestration test's own fixture), but means the exact wording sent to
-  the LLM each cycle lives in `ai_modelling_screen.dart` rather than
-  alongside the rest of this mode's vocabulary - worth reviewing together
-  if `assemblyModeVocabularyText`'s own instructions are ever revised, so
-  the two don't drift apart.
+  part of `ai_scoping_prompt.dart`.**~~ - **Closed, gap-closure pass
+  below.** Moved to `ai_scoping_prompt.dart` as
+  `assemblyModePartRequestText`/`assemblyModeAssemblyRequestText` (plus
+  new retry variants), alongside `assemblyModeVocabularyText`.
 - **D2-1: the "first match wins on ambiguity" limitation from Phase 14
   (`docs/assembly-scope.md` §6 `[3]`'s own writeup) is unchanged by this
   phase.** A selector matching more than one edge on a placed Occurrence's
@@ -708,22 +707,103 @@ this section, don't silently let it go stale, as further phases land.
   geometry-selector concept to widen** (they reference a whole Occurrence,
   never a specific edge/face on one), so this phase's own scope is
   correctly narrow to Mate alone, not a gap in coverage.
-- **E-1: no way to add parts into an existing assembly file - `_runAssemblyCycle`
-  always creates a brand-new assembly Part.** Flagged as an open product
-  question in the original plan, not resolved before implementation; revisit
-  if real usage shows re-opening and extending a previously-saved assembly
-  from an AI Modelling conversation is a real workflow, not just building a
-  fresh one each time.
-- **E-2: no "retry the assembly cycle" action, same shape as D-1.** A
-  failure in `_runAssemblyCycle` (no plan detected, validation failed, a
-  step failed, a cancelled save) stops the run the same way a per-part
-  failure does - every part stays saved, but there's no in-panel way to
-  retry just the assembly step without the user continuing the conversation
-  manually. Same deliberate scope cut as D-1, not an oversight.
-- **E-3: the assembly cycle's own progress row shares `_orchestrationStatus`
-  with the per-part rows above it, the same D-2 coarseness, one level up.**
-  No separate fidelity work was done for Phase E specifically - inherits
-  D-2's own tradeoff rather than reopening it.
+- ~~**E-1: no way to add parts into an existing assembly file -
+  `_runAssemblyCycle` always creates a brand-new assembly Part.**~~ -
+  **Closed, gap-closure pass below.** The manifest-confirm panel now offers
+  "insert into an existing assembly" (a dropdown over the project's
+  existing native files) alongside the default "create a new assembly";
+  picking one routes `_runAssemblyCycle` through
+  `AssemblyDocumentClient.openAssembly` (the exact mechanism the manual
+  "Open Project…" UI already uses) instead of `createPart('Assembly')`,
+  opened *before* the LLM is asked for a plan (not after) so its own
+  `add_component`/`mate` steps can be told what's already placed in that
+  assembly and not duplicate it, and the save-confirm dialog is pre-filled
+  with the existing file's own path instead of a freshly proposed name.
+- ~~**E-2: no "retry the assembly cycle" action, same shape as D-1.**~~ -
+  **Closed, gap-closure pass below.** Same `_retryOrchestration`/
+  `_assemblyRetryPartId` mechanism as D-1, one level up.
+- ~~**E-3: the assembly cycle's own progress row shares
+  `_orchestrationStatus` with the per-part rows above it, the same D-2
+  coarseness, one level up.**~~ - **Closed, gap-closure pass below**,
+  alongside D-2.
+
+---
+
+## Gap-closure pass (post-implementation review)
+
+A separate review pass (not part of the original A-E build above) checked
+this workstream's implementation against this doc's own claims and worked
+through this Appendix's disclosed gaps. Two things turned up that weren't
+in the Appendix at all:
+
+- **The Assembly-mode disclosure banner had actually gone stale** (see the
+  Appendix entry above, now closed) - `client/lib/ai/
+  ai_modelling_screen.dart`'s banner still told users the insert/mate step
+  "is not built yet... use Insert Existing Component/Add Mate afterward"
+  even though Phase E (this same branch) made that automatic. Fixed to
+  describe what actually happens, with a test locking the corrected
+  wording in place.
+- **`docs/assembly-scope.md` §2q's "Remaining limitations after this
+  phase" section still said the cross-Part mate edge-selector scope limit
+  (`[3]`) "is unchanged and still fully open"** - contradicted by this
+  workstream's own Phase D2, which closed exactly that limit. Updated with
+  a cross-reference.
+
+D-1/D-2/D-4/E-2/E-3 above were closed together, since they all touch the
+same `_runPartCycle`/`_runAssemblyCycle`/`_buildOrchestrationProgress` call
+sites: a failed part or assembly cycle now offers "Retry", which asks the
+LLM for a *revised* plan against the *same* in-progress Part (reusing the
+single-Part flow's own `_pendingRetryPartId`/`_appendStoppedRunToTranscript`
+precedent - not a blind re-run of the identical steps that just failed),
+except for a cancelled save specifically, where "Retry" just re-opens the
+save dialog directly (the Part/plan are already valid, no LLM round-trip
+needed). This also closed a real correctness gap beyond D-1's own "no
+convenient button" framing: before this fix, a stopped orchestration's own
+"you can continue this conversation manually" advice didn't actually work -
+the in-progress Part's real id was never captured anywhere `_generate()`
+could find it, so a later Generate press would silently abandon it and
+start a genuinely unrelated fresh Part instead. Per-step progress
+(`onStepStatusChanged`) is now wired into the orchestration panel the same
+way the single-Part flow's own `_stepStatuses` already used it (D-2/E-3).
+
+D-3 is only partially closed - see its own updated entry above.
+
+A-1, A-2, C-1, D2-1, D2-2 are unchanged from the original build - all
+still genuinely deliberate scope cuts per their own entries above, not
+revisited this pass.
+
+E-1 was also closed this pass - see its own updated entry above for the
+design. The manifest-confirm panel loads the project's existing native
+files (`_loadExistingAssemblyFileOptions`, fired once a `part_manifest` is
+detected, same best-effort-fetch pattern as `_refreshAvailableComponentFiles`)
+and offers them in a dropdown; picking one sets `_assemblyTargetRelativePath`,
+which `_runAssemblyCycle` checks *before* requesting a plan from the LLM -
+opening the file via `AssemblyDocumentClient.openAssembly` (the same call
+the manual "Open Project…" flow already uses) first, so the request text
+sent to the LLM (`assemblyModeAssemblyIntoExistingRequestText`, new in
+`ai_scoping_prompt.dart`) can list what's already placed in it. A cycle
+error while opening (a missing/unreadable file, a genuine reference cycle)
+uses the same `_stopOrchestrationWithError`/Retry posture as every other
+orchestration failure. **Real limitation found while testing, not part of
+the original E-1 scope note**: a widget-level test driving the actual
+`openAssembly` call through this sandbox's `testWidgets` pump loop hits the
+same real `dart:io`/`FileCache` (`path_provider` platform channel)
+slowness/hang `part_screen_test.dart`'s own "Assembly support Phase 16"
+group already found and documented for `openAssembly` specifically - so,
+following that file's own precedent, this pass tests the new
+manifest-confirm dropdown UI directly (no `openAssembly` call involved) and
+the new request-text wording as a pure unit test, rather than forcing a
+flaky full round-trip widget test; the `openAssembly` call itself is
+already covered, composer-level, by `assembly_document_client_test.dart`.
+
+**Files**: `client/lib/ai/ai_modelling_screen.dart` (retry state/methods,
+per-step progress wiring, corrected banner, E-1's dropdown/open-existing
+wiring), `client/lib/ai/ai_scoping_prompt.dart` (D-4's extracted request
+text, E-1's existing-assembly request text),
+`client/test/ai_modelling_screen_orchestration_test.dart` (retry tests,
+E-1's dropdown tests), `client/test/ai_scoping_prompt_test.dart` (E-1's
+request-text unit tests), `client/test/ai_modelling_screen_mode_toggle_test.dart`
+(banner wording test), `docs/assembly-scope.md` (§2q update).
 
 ### Emergent work (found during implementation, not in the original plan)
 

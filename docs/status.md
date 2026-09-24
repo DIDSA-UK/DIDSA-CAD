@@ -3305,3 +3305,126 @@ CI investigation (workflow run [34597146585](https://github.com/DIDSA-UK/DIDSA-C
 **Not done this session**: no new test was added (the existing test already exercises exactly this scenario - it just couldn't reproduce the fix's target window deterministically without mocking timing, which risked more than it verified); no change to `resolve_bevel_pair_from_bodies`'s member-build pool (both its futures are always in flight together, no analogous idle-serial-work gap exists there).
 
 **Docs**: this entry.
+
+---
+
+## 2026-09-24 — AI Modelling Workstream 13: multi-part/assembly overhaul, Phases A-E (branch `claude/ai-modelling-multi-part-assembly-n3om0f`)
+
+Retroactive entry - this workstream's own build sessions didn't add one at
+the time, a real gap in this file's usual per-session convention, closed by
+the gap-closure pass below. See `docs/ai-modelling/13-multi-part-assembly-overhaul.md`
+for the full phase-by-phase design/implementation writeup; this entry only
+summarizes what shipped and how it was verified.
+
+**What shipped**: a Multi-body Part/Assembly mode toggle (Phase A) and
+multi-image upload per turn (Phase B); a mandatory project-folder gate plus
+an auto-naming convention for generated files (Phase C); `part_manifest`
+detection and an N-sequential-single-Part-cycle orchestration loop that
+recognizes distinct parts from a request/photo, confirms the breakdown with
+the user, then generates and saves each one as its own real file (Phase D);
+Document-scoped mate edge/face resolution in the backend's AI-plan
+validator, so a Mate's `edge_selector` can resolve against a placed
+Occurrence's own target Part, not just the root Part - zero new wire
+payload, the backend's existing per-session `Document` singleton already
+held everything needed (Phase D2); and, once every part is saved, one
+further plan/execute/save cycle that builds the assembly itself
+(`add_component`/`mate` steps) and opens it directly into Assembly lens -
+no manual "Insert Existing Component"/"Add Mate" step required (Phase E).
+
+**Verification** (per the workstream doc's own per-phase "Tests" sections):
+backend - `test_ai_plan_assembly_steps.py` at 44/44 passed (Phase D2's own
+new fixture/tests), full backend suite at 2399 passed, 0 failed. Client -
+`ai_generation_mode_test.dart`, `ai_modelling_screen_mode_toggle_test.dart`,
+`ai_part_naming_test.dart`, `ai_plan_detection_test.dart`, updated
+`ai_scoping_prompt_test.dart`/`anthropic_provider_test.dart`/
+`openai_compatible_provider_test.dart`, `ensure_project_root_test.dart`,
+`tool_chooser_screen_test.dart`, and a new
+`ai_modelling_screen_orchestration_test.dart` covering a full 2-part
+happy path through both save-confirm dialogs into a real assembly
+create/execute/save/open cycle; full client suite at 2214/2214 passed (14
+GPU-skips, unchanged), `flutter analyze` clean.
+
+**Docs**: `docs/ai-modelling/13-multi-part-assembly-overhaul.md` (new, the
+full phase writeup and its own gap/emergent-work Appendix);
+`docs/ai-modelling/README.md` updated to match; this entry (retroactive).
+
+---
+
+## 2026-09-24 (continued) — AI Modelling Workstream 13 gap-closure pass: stale banner fix, retry-with-revised-plan, per-step progress, insert-into-existing-assembly, doc hygiene
+
+Follow-up review session against the just-shipped Phases A-E above:
+checked the implementation directly against `13-multi-part-assembly-overhaul.md`'s
+own claims (client and backend both matched, no undisclosed discrepancies)
+and worked through the doc's own Appendix gap list. Two things turned up
+that weren't in the Appendix: the Assembly-mode disclosure banner had
+actually gone stale (it still told users the insert/mate step "is not
+built yet... use Insert Existing Component/Add Mate afterward" even though
+Phase E, shipped in the same branch, made that automatic - the Appendix's
+own "banner could go stale" risk had materialized for real); and
+`docs/assembly-scope.md` §2q's "Remaining limitations" section still
+claimed the cross-Part mate edge-selector scope limit was "unchanged and
+still fully open", contradicted by this same workstream's own Phase D2.
+
+**Fixes**:
+- Corrected the Assembly-mode banner's wording
+  (`client/lib/ai/ai_modelling_screen.dart`), with a direct widget-test
+  assertion (`ai_modelling_screen_mode_toggle_test.dart`) that the stale
+  claim can't silently reappear.
+- `docs/assembly-scope.md` §2q updated to cross-reference Phase D2's real
+  closure of `[3]`'s cross-Part scope limit.
+- Closed the Appendix's D-1/D-2/D-4/E-2/E-3 together (all touch the same
+  call sites): a failed part or assembly cycle now offers "Retry"
+  (`_retryOrchestration`), which asks the LLM for a *revised* plan against
+  the *same* in-progress Part - reusing the single-Part flow's own
+  `_pendingRetryPartId`/`_appendStoppedRunToTranscript` precedent, not a
+  blind re-run of the identical failed steps - except a cancelled save,
+  where Retry just re-opens the save dialog directly (no LLM round-trip
+  needed, the Part/plan are already valid). This also fixed a real
+  correctness gap beyond D-1's "no convenient button" framing: a stopped
+  orchestration's own "continue chatting manually" advice didn't actually
+  work before this fix - the in-progress Part's real id was never
+  captured anywhere `_generate()` could find it, so a later Generate press
+  would silently abandon it and start a genuinely unrelated fresh Part.
+  Per-step progress (`PlanTranslator.execute`'s `onStepStatusChanged`) is
+  now wired into the orchestration panel the same way the single-Part
+  flow's own `_stepStatuses` already used it (D-2/E-3). D-4's hand-written
+  per-part/per-assembly request text moved into `ai_scoping_prompt.dart`
+  alongside the rest of the Assembly-mode vocabulary.
+- D-3 partially closed: new orchestration tests cover a
+  validation-failure-then-retry-succeeds round trip (asserting the retry
+  reuses the same real Part, not a new one, and that the failure is fed
+  back to the LLM as its own transcript turn before the retry request) and
+  a cancelled-save retry (asserting no extra LLM turn and no extra Part).
+  A dedicated `gear_request`/provider-error orchestration test was not
+  added this pass.
+- A-1, A-2, C-1, D2-1, D2-2 left unchanged - genuinely deliberate scope
+  cuts, not revisited.
+- E-1 (insert generated parts into an existing assembly file, instead of
+  always creating a new one) also closed: the manifest-confirm panel now
+  offers "insert into an existing assembly" (over the project's existing
+  native files) alongside the default "create a new assembly";
+  `_runAssemblyCycle` opens the picked file via
+  `AssemblyDocumentClient.openAssembly` (the same call the manual "Open
+  Project…" flow already uses) *before* asking the LLM for a plan, so it
+  can be told what's already placed in that assembly and not duplicate it,
+  and the save-confirm dialog is pre-filled with the existing file's own
+  path. A widget-level test driving the real `openAssembly` call was
+  attempted and dropped - it hits the same real `dart:io`/`FileCache`
+  (`path_provider` platform channel) slowness/hang
+  `part_screen_test.dart`'s own "Assembly support Phase 16" group already
+  found and documented for `openAssembly` specifically; following that
+  file's own precedent, this pass tests the new dropdown UI directly (no
+  `openAssembly` call involved) and the new request-text wording as a pure
+  unit test instead - the `openAssembly` call itself is already covered,
+  composer-level, by `assembly_document_client_test.dart`.
+
+**Verification**: `flutter analyze` clean (whole client, no issues); full
+client suite - 2225/2225 passed (14 GPU-skips, unchanged) - includes the
+new orchestration retry tests, E-1's dropdown tests, the new
+`ai_scoping_prompt_test.dart` request-text unit tests, and the
+corrected-banner assertion. Backend unchanged this pass - no backend code
+touched.
+
+**Docs**: `docs/ai-modelling/13-multi-part-assembly-overhaul.md`'s own new
+"Gap-closure pass" section and updated Appendix entries; `docs/assembly-scope.md`
+§2q; this entry (and the retroactive one above it).

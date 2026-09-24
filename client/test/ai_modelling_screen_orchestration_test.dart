@@ -431,6 +431,407 @@ void main() {
     expect(find.textContaining('Validation failed for "Mounting Plate"'), findsOneWidget);
     final dismissButton = tester.widget<FilledButton>(find.byKey(const Key('aiModellingOrchestrationDismiss')));
     expect(dismissButton.onPressed, isNotNull);
+    // Gap-closure (`13-...md`'s own D-1): "Retry" is now offered alongside
+    // "Dismiss" instead of stopping being the only way forward.
+    expect(find.byKey(const Key('aiModellingOrchestrationRetry')), findsOneWidget);
     expect(storage.writtenFiles, isEmpty);
+  });
+
+  testWidgets('Retry after a validation failure re-asks the LLM and reuses the same Part, not a new one',
+      (tester) async {
+    var createPartCalls = 0;
+    var validateCalls = 0;
+    Future<http.Response> handler(http.Request request) async {
+      {
+        final path = request.url.path;
+        if (path == '/document/parts' && request.method == 'POST') {
+          createPartCalls++;
+          return http.Response(jsonEncode({'id': 'part-1', 'name': 'part', 'feature_ids': []}), 201);
+        }
+        if (path.endsWith('/ai-plan/validate')) {
+          validateCalls++;
+          final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
+          final steps = ((body['steps'] as List?) ?? []).cast<Map<String, dynamic>>();
+          // First validate call fails outright (mirrors the test above);
+          // every later call (the retry) succeeds.
+          final ok = validateCalls > 1;
+          return http.Response(
+            jsonEncode({
+              'results': [
+                for (final step in steps)
+                  {
+                    'local_id': step['local_id'],
+                    'ok': ok,
+                    'warnings': [],
+                    'error': ok ? null : {'type': 'invalid_step_payload', 'message': 'bad plan'},
+                  },
+              ],
+            }),
+            200,
+          );
+        }
+        if (RegExp(r'^/document/parts/part-\d+/features/sketch$').hasMatch(path)) {
+          return http.Response(jsonEncode({'type': 'sketch', 'id': 'feat-sk-1', 'locked': false, 'sketch_id': 'sketch-1'}), 201);
+        }
+        if (RegExp(r'^/sketch/sketches/sketch-\d+/points$').hasMatch(path)) {
+          return http.Response(jsonEncode({'id': 'point-1', 'x': 0.0, 'y': 0.0}), 201);
+        }
+        if (RegExp(r'^/sketch/sketches/sketch-\d+/rectangles$').hasMatch(path)) {
+          return http.Response(
+            jsonEncode({
+              'id': 'rect-1',
+              'corner_point_ids': ['point-1', 'point-1', 'point-1', 'point-1'],
+              'line_ids': ['line-1', 'line-2', 'line-3', 'line-4'],
+              'axis_aligned': true,
+            }),
+            201,
+          );
+        }
+        if (RegExp(r'^/document/parts/part-\d+/extrude-features$').hasMatch(path)) {
+          return http.Response(
+            jsonEncode({
+              'type': 'extrude',
+              'id': 'feat-extrude-1',
+              'locked': false,
+              'sketch_feature_id': 'feat-sk-1',
+              'extrude_type': 'boss',
+              'start_distance': 0.0,
+              'end_distance': 10.0,
+              'target_body_ids': [],
+            }),
+            201,
+          );
+        }
+        if (path == '/document/parts/part-1/occurrences') {
+          return http.Response(jsonEncode([]), 200);
+        }
+        return http.Response('not found', 404);
+      }
+    }
+
+    final client = DocumentApiClient(httpClient: MockClient(handler));
+    final sketchClient = SketchApiClient(httpClient: MockClient(handler));
+    final storage = _FakeStorageService();
+    const root = DesktopProjectRoot('/tmp/project');
+
+    const onePartManifestText = '''
+I found one distinct part.
+```json
+{"kind": "part_manifest", "parts": [
+  {"name": "Mounting Plate", "type_prefix": "PLATE", "summary": "60x40x10mm plate"}
+]}
+```''';
+
+    var turnCount = 0;
+    final provider = _FakeAiProvider((transcript, __) async {
+      turnCount++;
+      // Turn 1: manifest. Turn 2: the initial (failing) plan. Turn 3: the
+      // retry's own revised-plan request - the failure must already be in
+      // the transcript as its own turn by this point (D-1's whole point).
+      if (turnCount == 3) {
+        expect(
+          transcript.map((m) => m.text),
+          anyElement(contains('Validation failed for "Mounting Plate"')),
+          reason: "the failure must be fed back to the LLM before it's asked to retry",
+        );
+        expect(transcript.last.text, contains('Please propose a revised plan for "Mounting Plate"'));
+        expect(transcript.last.role, AiMessageRole.user);
+      }
+      return AiTurnResult(assistantText: turnCount == 1 ? onePartManifestText : _onePartPlanText);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AiModellingScreen(
+          provider: provider,
+          documentApi: client,
+          sketchApi: sketchClient,
+          storageService: storage,
+          projectRoot: root,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assembly'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A single plate');
+    await tester.tap(find.byKey(const Key('aiModellingSend')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Validation failed for "Mounting Plate"'), findsOneWidget);
+    expect(createPartCalls, 1);
+
+    await tester.tap(find.byKey(const Key('aiModellingOrchestrationRetry')));
+    await tester.pumpAndSettle();
+
+    // The retry succeeded this time - straight through to the save dialog,
+    // still for the *same* real Part ("part-1") `createPartCalls` proves was
+    // only ever created once.
+    expect(find.text('Save "Mounting Plate" as…'), findsOneWidget);
+    expect(createPartCalls, 1);
+    expect(validateCalls, 2);
+  });
+
+  testWidgets('Retry after a cancelled save re-opens the save dialog directly, without another LLM turn',
+      (tester) async {
+    var createPartCalls = 0;
+    Future<http.Response> handler(http.Request request) async {
+      final path = request.url.path;
+      if (path == '/document/parts' && request.method == 'POST') {
+        createPartCalls++;
+        return http.Response(jsonEncode({'id': 'part-1', 'name': 'part', 'feature_ids': []}), 201);
+      }
+      if (path.endsWith('/ai-plan/validate')) {
+        final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
+        final steps = ((body['steps'] as List?) ?? []).cast<Map<String, dynamic>>();
+        return http.Response(
+          jsonEncode({
+            'results': [
+              for (final step in steps) {'local_id': step['local_id'], 'ok': true, 'warnings': [], 'error': null},
+            ],
+          }),
+          200,
+        );
+      }
+      if (RegExp(r'^/document/parts/part-\d+/features/sketch$').hasMatch(path)) {
+        return http.Response(jsonEncode({'type': 'sketch', 'id': 'feat-sk-1', 'locked': false, 'sketch_id': 'sketch-1'}), 201);
+      }
+      if (RegExp(r'^/sketch/sketches/sketch-\d+/points$').hasMatch(path)) {
+        return http.Response(jsonEncode({'id': 'point-1', 'x': 0.0, 'y': 0.0}), 201);
+      }
+      if (RegExp(r'^/sketch/sketches/sketch-\d+/rectangles$').hasMatch(path)) {
+        return http.Response(
+          jsonEncode({
+            'id': 'rect-1',
+            'corner_point_ids': ['point-1', 'point-1', 'point-1', 'point-1'],
+            'line_ids': ['line-1', 'line-2', 'line-3', 'line-4'],
+            'axis_aligned': true,
+          }),
+          201,
+        );
+      }
+      if (RegExp(r'^/document/parts/part-\d+/extrude-features$').hasMatch(path)) {
+        return http.Response(
+          jsonEncode({
+            'type': 'extrude',
+            'id': 'feat-extrude-1',
+            'locked': false,
+            'sketch_feature_id': 'feat-sk-1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'target_body_ids': [],
+          }),
+          201,
+        );
+      }
+      if (path == '/document/parts/part-1/occurrences') {
+        return http.Response(jsonEncode([]), 200);
+      }
+      if (path == '/document/export/native') {
+        return http.Response(
+          jsonEncode({
+            'schema_version': 1,
+            'document': {
+              'id': 'doc-part-1',
+              'root_part_id': 'part-1',
+              'parts': [
+                {'id': 'part-1', 'occurrences': []},
+              ],
+            },
+            'sketches': [],
+          }),
+          200,
+        );
+      }
+      return http.Response('not found', 404);
+    }
+
+    final client = DocumentApiClient(httpClient: MockClient(handler));
+    final sketchClient = SketchApiClient(httpClient: MockClient(handler));
+    final storage = _FakeStorageService();
+    const root = DesktopProjectRoot('/tmp/project');
+
+    const onePartManifestText = '''
+I found one distinct part.
+```json
+{"kind": "part_manifest", "parts": [
+  {"name": "Mounting Plate", "type_prefix": "PLATE", "summary": "60x40x10mm plate"}
+]}
+```''';
+
+    var turnCount = 0;
+    final provider = _FakeAiProvider((_, __) async {
+      turnCount++;
+      return AiTurnResult(assistantText: turnCount == 1 ? onePartManifestText : _onePartPlanText);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AiModellingScreen(
+          provider: provider,
+          documentApi: client,
+          sketchApi: sketchClient,
+          storageService: storage,
+          projectRoot: root,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assembly'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A single plate');
+    await tester.tap(find.byKey(const Key('aiModellingSend')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
+    await tester.pumpAndSettle();
+
+    // The part itself built successfully - only the save prompt is
+    // dismissed.
+    expect(find.text('Save "Mounting Plate" as…'), findsOneWidget);
+    await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Save cancelled for "Mounting Plate"'), findsOneWidget);
+    expect(find.byKey(const Key('aiModellingOrchestrationRetry')), findsOneWidget);
+    expect(createPartCalls, 1);
+    final turnCountAtCancel = turnCount;
+
+    await tester.tap(find.byKey(const Key('aiModellingOrchestrationRetry')));
+    await tester.pumpAndSettle();
+
+    // Straight back to the save dialog - no new LLM turn, no new Part.
+    expect(find.text('Save "Mounting Plate" as…'), findsOneWidget);
+    expect(turnCount, turnCountAtCancel);
+    expect(createPartCalls, 1);
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+
+    expect(storage.writtenFiles.keys, contains('PLATE_001.DIDSAprt'));
+  });
+
+
+  // Gap-closure (`13-...md`'s own E-1): a real end-to-end widget test
+  // driving `_runAssemblyCycle`'s new `AssemblyDocumentClient.openAssembly`
+  // branch through this sandbox's `testWidgets` pump loop was attempted and
+  // dropped - the same real `dart:io`/`FileCache` (`path_provider`'s
+  // platform channel, unavailable in a widget test) that
+  // `part_screen_test.dart`'s own "Assembly support Phase 16" group already
+  // found "reliably too slow/flaky" for `openAssembly` specifically (see
+  // that group's own comment) hangs here too, for the identical reason.
+  // Following that file's own precedent: the manifest-confirm panel's new
+  // UI is covered directly below (no `openAssembly` call involved at all -
+  // selecting an option is pure widget state), and the new request-text
+  // wording `_runAssemblyCycle` sends once it *has* opened an existing
+  // assembly is covered as a pure unit test in `ai_scoping_prompt_test.dart`
+  // (`assemblyModeAssemblyIntoExistingRequestText`) - together these cover
+  // everything genuinely new here except the `openAssembly` call itself,
+  // which is exactly the part already covered, composer-level, by
+  // `assembly_document_client_test.dart`.
+  testWidgets(
+    'Gap-closure E-1: the manifest-confirm panel offers inserting into an existing assembly file, '
+    'defaulting to "create a new assembly"',
+    (tester) async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          if (request.url.path == '/document/parts' && request.method == 'POST') {
+            return http.Response(jsonEncode({'id': 'part-1', 'name': 'part', 'feature_ids': []}), 201);
+          }
+          return http.Response('not found', 404);
+        }),
+      );
+      final storage = _FakeStorageService();
+      const root = DesktopProjectRoot('/tmp/project');
+      // A pre-existing native file under the project root - discovered by
+      // `_loadExistingAssemblyFileOptions` (fired once a manifest is
+      // detected) via the ordinary `StorageService.listFiles` this app
+      // already uses everywhere else for this, no real file I/O beyond
+      // that.
+      storage.writtenFiles['EXISTING_ASM.DIDSAprt'] = Uint8List.fromList(utf8.encode('{}'));
+
+      var turnCount = 0;
+      final provider = _FakeAiProvider((_, __) async {
+        turnCount++;
+        return AiTurnResult(assistantText: turnCount == 1 ? _manifestText : _onePartPlanText);
+      });
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: AiModellingScreen(provider: provider, documentApi: client, storageService: storage, projectRoot: root),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Assembly'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A plate and a tube');
+      await tester.tap(find.byKey(const Key('aiModellingSend')));
+      await tester.pumpAndSettle();
+
+      // Defaults to "create a new assembly" - the pre-E-1 behavior - not
+      // the existing file, even though one is available.
+      final dropdownFinder = find.byKey(const Key('aiModellingManifestAssemblyTarget'));
+      expect(dropdownFinder, findsOneWidget);
+      expect(find.text('Create a new assembly file'), findsOneWidget);
+
+      await tester.tap(dropdownFinder);
+      await tester.pumpAndSettle();
+      expect(find.text('Insert into "EXISTING_ASM.DIDSAprt"'), findsWidgets);
+      await tester.tap(find.text('Insert into "EXISTING_ASM.DIDSAprt"').last);
+      await tester.pumpAndSettle();
+
+      // The selection stuck - the dropdown's own closed-state label now
+      // shows it (asserted by key, `_assemblyTargetRelativePath` is a
+      // private field with no test-visible getter, matching this
+      // codebase's own "assert on what the user sees" convention for
+      // other panel state, e.g. the mode toggle's own tests).
+      expect(
+        find.descendant(of: dropdownFinder, matching: find.text('Insert into "EXISTING_ASM.DIDSAprt"')),
+        findsOneWidget,
+      );
+
+      // "Back to chat" clears the selection, same as every other
+      // manifest-confirm field.
+      await tester.tap(find.byKey(const Key('aiModellingManifestCancel')));
+      await tester.pumpAndSettle();
+      expect(dropdownFinder, findsNothing);
+    },
+  );
+
+  testWidgets('Gap-closure E-1: no existing native files means no assembly-target dropdown at all', (tester) async {
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/parts' && request.method == 'POST') {
+          return http.Response(jsonEncode({'id': 'part-1', 'name': 'part', 'feature_ids': []}), 201);
+        }
+        return http.Response('not found', 404);
+      }),
+    );
+    final storage = _FakeStorageService();
+    const root = DesktopProjectRoot('/tmp/project');
+
+    var turnCount = 0;
+    final provider = _FakeAiProvider((_, __) async {
+      turnCount++;
+      return AiTurnResult(assistantText: turnCount == 1 ? _manifestText : _onePartPlanText);
+    });
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AiModellingScreen(provider: provider, documentApi: client, storageService: storage, projectRoot: root),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assembly'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A plate and a tube');
+    await tester.tap(find.byKey(const Key('aiModellingSend')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('aiModellingManifestAssemblyTarget')), findsNothing);
   });
 }
