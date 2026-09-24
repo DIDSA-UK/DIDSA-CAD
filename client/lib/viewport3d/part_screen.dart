@@ -2134,6 +2134,19 @@ class _PartScreenState extends State<PartScreen> {
     // placing a section must never fall through to the generic accumulate-
     // toggle, in Selection mode or not.
     if (_tryHandleSectionPlacementToggle(entity)) return;
+    // Bug fix (assembly testing: "pattern component tool: selecting a
+    // custom line to use as a direction always seems to silently fail and
+    // fall back to using an X/Y/Z direction vector") - checked before every
+    // other special-case below, same "this exclusive session owns every tap
+    // while it's open" precedence [_tryHandleSectionPlacementToggle] above
+    // already uses. Only an edge tap is meaningful here (a vertex/face has
+    // no well-defined single direction) - anything else falls through to
+    // this function's ordinary behavior unaffected, leaving the pick
+    // session open for a subsequent edge tap.
+    if (_componentPatternPickingDirectionSlot != 0 && entity.kind == SelectionEntityKind.edge) {
+      unawaited(_setComponentPatternDirectionFromEntity(entity));
+      return;
+    }
     // Assembly support Phase 4 (`docs/assembly-scope.md` §3): a whole-
     // component viewport tap has entirely different semantics from every
     // other kind below (single selected Occurrence id, mirroring
@@ -3147,18 +3160,22 @@ class _PartScreenState extends State<PartScreen> {
   /// handles more simply than a cancel-and-restart `Timer`.
   int _measureRequestToken = 0;
 
-  /// Vertex/edge/face, mirroring [_filletSelectionFilter]'s shape - Measure
-  /// has no face-tap special case (unlike Fillet's whole-boundary-loop
-  /// convenience), so `vertex` stays on here where Fillet turns it off.
-  /// `body: true` (unlike most tools) lets Measure/Select Other offer a
-  /// whole Body as its own pick target, for the volume/mass measurement -
-  /// see `_subShapeTypeFor`'s own `body` case and
-  /// `app.document.measure.MeasurementResult.body_volumes`.
+  /// Vertex/edge/face only - mirrors [_mateSelectionFilter]'s `body: false,
+  /// component: false` (bug fix: `body: true` here used to make
+  /// `hitTestBodies` convert every face hit into a whole-body hit whenever
+  /// both were enabled, so a plain tap could never resolve an individual
+  /// face in an assembly - only vertex/edge or a whole Body). A whole Body
+  /// stays reachable for volume/mass measurement via Select Other, which
+  /// already offers a Body candidate alongside faces regardless of this
+  /// filter's own `body` flag - see `_fireSelectOther`'s
+  /// `includeBodyCandidateWithFaces: true` calls and `_subShapeTypeFor`'s
+  /// own `body` case / `app.document.measure.MeasurementResult.body_volumes`.
   static const _measureSelectionFilter = SelectionFilterState(
     vertex: true,
     edge: true,
     face: true,
-    body: true,
+    body: false,
+    component: false,
     sketchPoint: false,
     sketchLine: false,
     sketchCircle: false,
@@ -3581,6 +3598,108 @@ class _PartScreenState extends State<PartScreen> {
   bool _componentPatternSaving = false;
   String? _componentPatternError;
 
+  /// Bug fix (assembly testing: "pattern component tool: selecting a custom
+  /// line to use as a direction always seems to silently fail and fall back
+  /// to using an X/Y/Z direction vector") - see
+  /// [ComponentPatternPanel.pickingDirectionSlot]'s own doc comment for what
+  /// each value means; `0` (the default) means no viewport-pick session is
+  /// active, so [_toggleSelectedEntity]'s own dispatch falls through to its
+  /// ordinary behavior for an edge tap.
+  int _componentPatternPickingDirectionSlot = 0;
+
+  /// Bug fix (assembly testing: "pattern component tool should show a ghost
+  /// preview of the patterned components in their forecast positions") -
+  /// [PartViewport.componentPatternPreviewInstances]' own value, computed
+  /// entirely client-side (no network round-trip, unlike the New Mate ghost
+  /// preview's own server-solved [_matePreviewTransform]) from this panel's
+  /// live, unsaved parameter state, via [linearPatternPreviewStep]/
+  /// [circularPatternPreviewStep] - the same pure vector math
+  /// `assembly.py`'s own `_linear_pattern_step`/`_circular_pattern_step`
+  /// already compute server-side for the real, confirmed pattern, mirrored
+  /// here so the preview updates live as the user drags a slider with no
+  /// debounce/PATCH needed. Empty outside an active Pattern Component flow,
+  /// or once a source Occurrence's own placed instance can't be found in
+  /// [_assemblyMesh] yet (e.g. right after opening the panel, before the
+  /// tree/mesh fetch it depends on has resolved).
+  List<ComponentPatternPreviewInstance> get _componentPatternPreviewInstances {
+    if (!_componentPatternPanelActive) return const [];
+    final direction = resolveComponentPatternVector(_componentPatternDirection, _componentPatternCustomDirection);
+    final direction2 =
+        resolveComponentPatternVector(_componentPatternDirection2, _componentPatternCustomDirection2);
+    final axisDirection =
+        resolveComponentPatternVector(_componentPatternAxisDirection, _componentPatternCustomAxisDirection);
+    final steps = _componentPatternMode == ComponentPatternMode.linear
+        ? _linearComponentPatternPreviewSteps(direction, direction2)
+        : _circularComponentPatternPreviewSteps(axisDirection);
+    if (steps.isEmpty) return const [];
+    final previews = <ComponentPatternPreviewInstance>[];
+    for (final sourceId in _componentPatternSourceOccurrenceIds) {
+      final instance = _instanceForOccurrenceId(sourceId);
+      if (instance == null) continue;
+      final sourceMatrix = matrix4FromRigidTransform(instance.worldTransform);
+      for (final step in steps) {
+        previews.add(ComponentPatternPreviewInstance(partId: instance.partId, worldTransform: step * sourceMatrix));
+      }
+    }
+    return previews;
+  }
+
+  /// [occurrenceId]'s own currently-placed instance, looked up in
+  /// [_assemblyMesh]'s `instances` by path - mirrors [_gizmoParentInstance]'s
+  /// identical lookup, just for an arbitrary Occurrence (a Pattern's own
+  /// source) rather than always [_focusStack]'s current target. A Pattern
+  /// Component's source Occurrences are always direct children of whichever
+  /// Part is currently focused (`ComponentPattern`'s own v1 scope limit), so
+  /// the full path is [_focusStack]'s own current path plus [occurrenceId].
+  AssemblyOccurrenceInstanceDto? _instanceForOccurrenceId(String occurrenceId) {
+    final basePath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    final instances = _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[];
+    return findInstanceAtPath(instances, [...basePath, occurrenceId]);
+  }
+
+  /// Every derived (non-seed) instance step for the Linear mode panel's own
+  /// current, unsaved parameter state - mirrors `assembly.py`'s own
+  /// `expand_component_pattern_instances`' Linear branch (index 0, the seed
+  /// itself, is never included - it's already rendered as the real,
+  /// unpatterned Occurrence). Skip-index support isn't needed here: unlike
+  /// the Part-lens body Pattern feature, a `ComponentPattern` has no
+  /// per-instance skip UI of its own yet for this preview to honor.
+  List<vm.Matrix4> _linearComponentPatternPreviewSteps(List<double> direction, List<double> direction2) {
+    final count1 = math.max(_componentPatternCount, 1);
+    final count2 = _componentPatternHasSecondDirection ? math.max(_componentPatternCount2, 1) : 1;
+    final sign1 = _componentPatternReverse ? -1.0 : 1.0;
+    final sign2 = _componentPatternReverse2 ? -1.0 : 1.0;
+    final steps = <vm.Matrix4>[];
+    for (var i = 0; i < count1; i++) {
+      for (var j = 0; j < count2; j++) {
+        if (i * count2 + j == 0) continue;
+        var step = linearPatternPreviewStep(direction, _componentPatternSpacing * i * sign1);
+        if (count2 > 1) {
+          step = linearPatternPreviewStep(direction2, _componentPatternSpacing2 * j * sign2) * step;
+        }
+        steps.add(step);
+      }
+    }
+    return steps;
+  }
+
+  /// [_linearComponentPatternPreviewSteps]' Circular-mode counterpart -
+  /// mirrors `expand_component_pattern_instances`' Circular branch. Does not
+  /// attempt [ComponentPattern.orientWithRotation]'s "keep the source's own
+  /// orientation" adjustment - out of scope for a forecast preview, whose
+  /// job is showing *where* each instance will land, not exactly how it will
+  /// be oriented once confirmed.
+  List<vm.Matrix4> _circularComponentPatternPreviewSteps(List<double> axisDirection) {
+    final count = math.max(_componentPatternCountAngular, 1);
+    if (count <= 1) return const [];
+    final stepAngle = _componentPatternAngleTotal / count;
+    final sign = _componentPatternReverseAngular ? -1.0 : 1.0;
+    return [
+      for (var index = 1; index < count; index++)
+        circularPatternPreviewStep(_componentPatternAxisOrigin, axisDirection, stepAngle * index * sign),
+    ];
+  }
+
   /// Opens [ComponentPatternPanel] targeting [_selectedOccurrenceId] as its
   /// sole initial source - both the Assembly Add menu's "Pattern Component"
   /// entry and the component long-press menu's "Pattern" entry call this
@@ -3620,6 +3739,7 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternReverseAngular = false;
       _componentPatternSaving = false;
       _componentPatternError = null;
+      _componentPatternPickingDirectionSlot = 0;
       _toolbarOpen = false;
       _featureTreeVisible = false;
     });
@@ -3661,6 +3781,7 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternReverseAngular = pattern.reverseAngular;
       _componentPatternSaving = false;
       _componentPatternError = null;
+      _componentPatternPickingDirectionSlot = 0;
       _toolbarOpen = false;
       _featureTreeVisible = false;
     });
@@ -3674,7 +3795,61 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternPickingSources = false;
       _componentPatternError = null;
       _componentPatternSaving = false;
+      _componentPatternPickingDirectionSlot = 0;
     });
+  }
+
+  /// [ComponentPatternPanel.onToggleDirectionPicking] - toggles
+  /// [_componentPatternPickingDirectionSlot] on/off for [slot]; mirrors
+  /// [_componentPatternPickingSources]' identical "toggle a mode flag,
+  /// `_toggleSelectedEntity`/`_onOccurrenceTap` intercept the next tap"
+  /// shape.
+  void _toggleComponentPatternDirectionPicking(int slot) {
+    setState(() {
+      _componentPatternPickingDirectionSlot = _componentPatternPickingDirectionSlot == slot ? 0 : slot;
+    });
+  }
+
+  /// [_toggleSelectedEntity]'s own Component Pattern special case - resolves
+  /// [entity] (an edge tap, on the root Part's own body or a placed
+  /// Occurrence's) into a plain direction vector via
+  /// `DocumentApiClient.componentPatternDirectionFromRef`, and stores it as
+  /// whichever `custom` direction/axis-direction field
+  /// [_componentPatternPickingDirectionSlot] names - mirrors
+  /// [_setPatternDirectionFromEntity]'s role one level up, just resolving
+  /// through a one-shot API call instead of a live viewport ref (see
+  /// [ComponentPatternDirectionFromRefRequest]'s own doc comment for why).
+  Future<void> _setComponentPatternDirectionFromEntity(SelectionEntityRef entity) async {
+    final part = _part;
+    final slot = _componentPatternPickingDirectionSlot;
+    if (part == null || slot == 0) return;
+    setState(() => _componentPatternPickingDirectionSlot = 0);
+    try {
+      final direction = await _api.componentPatternDirectionFromRef(
+        part.id,
+        MeasureEntityRefDto(
+          occurrenceId: entity.occurrenceId,
+          subshapeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        switch (slot) {
+          case 1:
+            _componentPatternDirection = ComponentPatternAxisPreset.custom;
+            _componentPatternCustomDirection = direction;
+          case 2:
+            _componentPatternDirection2 = ComponentPatternAxisPreset.custom;
+            _componentPatternCustomDirection2 = direction;
+          case 3:
+            _componentPatternAxisDirection = ComponentPatternAxisPreset.custom;
+            _componentPatternCustomAxisDirection = direction;
+        }
+      });
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _componentPatternError = e.message);
+    }
   }
 
   /// [ComponentPatternPanel.onSecondDirectionToggled]'s callback - mirrors
@@ -9290,11 +9465,23 @@ class _PartScreenState extends State<PartScreen> {
   ///
   /// Left `_assemblyMesh == null` (no fetch at all) for a Part with no
   /// Occurrences yet - mirrors [_refreshAssemblyTree]'s own "most sessions
-  /// never need this" cost-avoidance, just checked from [_occurrences]
-  /// (already fetched by the time this is ever called) instead of the lens.
+  /// never need this" cost-avoidance. Bug fix: this used to check
+  /// [_occurrences] directly, but that list is focus-scoped (whichever
+  /// Part [_focusStack] currently makes primary - see [_refreshAssemblyTree]),
+  /// while this method always fetches the *root* Part's mesh. Whenever focus
+  /// was on a sub-part with no Occurrences of its own, that emptiness check
+  /// incorrectly wiped `_assemblyMesh` even though the root assembly had
+  /// plenty of Occurrences - reproduced as "every part but the focused one
+  /// disappears after Make Focus > switch lens", persisting until an
+  /// unrelated hide/unhide toggle happened to re-run this with root-scoped
+  /// `_occurrences` and repopulate it. Only trust the emptiness short-circuit
+  /// while [_focusStack] is unfocused (i.e. [_occurrences] really is the
+  /// root's own list); otherwise always re-fetch, since there is no cheap
+  /// way to know the root's own Occurrence count without asking.
   Future<void> _refreshAssemblyMesh() async {
     final part = _part;
-    if (part == null || _occurrences.isEmpty) {
+    final atRoot = _focusStack == null || !_focusStack!.isFocused;
+    if (part == null || (atRoot && _occurrences.isEmpty)) {
       if (_assemblyMesh != null && mounted) setState(() => _assemblyMesh = null);
       return;
     }
@@ -10616,6 +10803,70 @@ class _PartScreenState extends State<PartScreen> {
           rootPartId: rootPartId,
           occurrenceId: const Uuid().v4(),
           externalRef: result.files.single.name,
+        );
+      } on AddComponentException catch (e) {
+        setState(() => _errorMessage = e.message);
+        return;
+      }
+      await _api.importNative(merged);
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+  }
+
+  /// Bug fix (assembly testing: "if the software cannot find the file, it
+  /// should ask for its location") - [AssemblyTreePanel.onLocateMissingFile]'s
+  /// real call site. Confirms with the user first (this is reachable for
+  /// any unresolved Occurrence, not just a genuinely-missing file - e.g. one
+  /// still mid-resolution right after an import - so a stray tap shouldn't
+  /// immediately throw a file picker up), then re-links [occurrence] to a
+  /// freshly-picked file via [relocateOccurrenceInDocument] - the same
+  /// merge-then-`importNative` shape [_onInsertComponentPressed] already
+  /// uses, just updating [occurrence] in place instead of adding a new one.
+  Future<void> _onLocateMissingFilePressed(OccurrenceDto occurrence) async {
+    final rootPartId = _focusStack?.current ?? _part?.id;
+    if (rootPartId == null) return;
+    final index = _displayOccurrences.indexWhere((o) => o.id == occurrence.id);
+    final name = index >= 0 ? occurrenceDisplayName(_displayOccurrences, index) : 'this component';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('File not found'),
+        content: Text(
+          'The file for "$name" could not be found. Locate it to restore the link, '
+          'or cancel to leave this component unresolved.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Locate…')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
+    if (result == null || result.files.isEmpty || !mounted) return;
+    final bytes = result.files.single.bytes;
+    if (bytes == null) return;
+
+    Map<String, dynamic> componentPayload;
+    try {
+      componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    } catch (_) {
+      setState(() => _errorMessage = 'Not a valid native project file');
+      return;
+    }
+
+    await _runGuarded(() async {
+      final currentPayload = await _api.exportNative();
+      Map<String, dynamic> merged;
+      try {
+        merged = relocateOccurrenceInDocument(
+          currentPayload: currentPayload,
+          componentPayload: componentPayload,
+          rootPartId: rootPartId,
+          occurrenceId: occurrence.id,
+          newExternalRef: result.files.single.name,
         );
       } on AddComponentException catch (e) {
         setState(() => _errorMessage = e.message);
@@ -18898,8 +19149,18 @@ class _PartScreenState extends State<PartScreen> {
   /// showing whichever Part was focused *before* this push/pop until some
   /// unrelated refresh happened to fire. Mirrors [_loadPart]'s own
   /// mesh-then-features-then-sketches sequencing.
+  ///
+  /// Bug fix: also re-fetches [_assemblyMesh] - previously only
+  /// [_toggleAssemblyLens] and a handful of mutation call sites did, so a
+  /// push/pop through this method left [_assemblyMesh] stale relative to the
+  /// newly-focused Part's own [_occurrences], which [_refreshAssemblyMesh]'s
+  /// own root-vs-focus emptiness check depends on (see that method's doc
+  /// comment) - the missing call here was the other half of "every part
+  /// disappears after exiting focus" until an unrelated hide/unhide toggle
+  /// happened to re-run both fetches together.
   Future<void> _refreshFocusTargetContent() async {
     await _refreshAssemblyTree();
+    await _refreshAssemblyMesh();
     await _refreshMesh();
     await _refreshFeatures();
     await _refreshSketchGeometries();
@@ -19250,6 +19511,12 @@ class _PartScreenState extends State<PartScreen> {
                   // own doc comment.
                   matePreviewPartId: _matePreviewPartId,
                   matePreviewTransform: _matePreviewTransform,
+                  // Bug fix (assembly testing: "pattern component tool
+                  // should show a ghost preview") - empty outside an active
+                  // Pattern Component flow, or whenever a source Occurrence
+                  // hasn't resolved a placed instance yet - see
+                  // [_componentPatternPreviewInstances]'s own doc comment.
+                  componentPatternPreviewInstances: _componentPatternPreviewInstances,
                   // Assembly support Phase 5: `null` whenever there's no
                   // gizmo to show - see [_gizmoDisplayTransform]'s own doc
                   // comment for every case that covers.
@@ -19848,6 +20115,7 @@ class _PartScreenState extends State<PartScreen> {
                     onOccurrenceVisibilityToggle: (occurrence) =>
                         unawaited(_setOccurrenceHidden(occurrence, !occurrence.hidden)),
                     onOccurrenceColorTap: (occurrence) => unawaited(_onOccurrenceColorTap(occurrence)),
+                    onLocateMissingFile: (occurrence) => unawaited(_onLocateMissingFilePressed(occurrence)),
                     onClose: () => setState(() => _featureTreeVisible = false),
                     onMateTap: _onMateTap,
                     onMateLongPress: _onMateLongPress,
@@ -20103,6 +20371,8 @@ class _PartScreenState extends State<PartScreen> {
                       onAngleTotalChanged: (angle) => setState(() => _componentPatternAngleTotal = angle),
                       reverseAngular: _componentPatternReverseAngular,
                       onReverseAngularChanged: (reverse) => setState(() => _componentPatternReverseAngular = reverse),
+                      pickingDirectionSlot: _componentPatternPickingDirectionSlot,
+                      onToggleDirectionPicking: _toggleComponentPatternDirectionPicking,
                       editingPatternId: _componentPatternEditingId,
                       saving: _componentPatternSaving,
                       error: _componentPatternError,

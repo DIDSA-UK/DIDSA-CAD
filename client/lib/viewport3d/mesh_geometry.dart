@@ -1033,3 +1033,53 @@ Node buildAssemblyInstanceNode(
 /// itself already sets.
 const double kMatePreviewOpacity = 0.45;
 final vm.Vector3 kMatePreviewTint = vm.Vector3(0.30, 0.58, 0.95);
+
+/// Bug fix (assembly testing: "pattern component tool should show a ghost
+/// preview of the patterned components in their forecast positions"): the
+/// pure-translation [vm.Matrix4] for one Linear `ComponentPattern` step of
+/// [distance] along [direction] - the client-side mirror of
+/// `backend/app/document/assembly.py`'s own `_linear_pattern_step`, used
+/// only to compute a live, entirely local preview (no network round-trip)
+/// while [ComponentPatternPanel] is open; the backend remains the sole
+/// source of truth once the pattern is actually confirmed. A near-zero-
+/// length [direction] returns the identity transform rather than
+/// normalizing a degenerate vector, mirroring [matrix4FromRigidTransform]'s
+/// own convention for a degenerate rotation axis.
+vm.Matrix4 linearPatternPreviewStep(List<double> direction, double distance) {
+  final dir = vm.Vector3(direction[0], direction[1], direction[2]);
+  if (dir.length2 < 1e-12) return vm.Matrix4.identity();
+  return vm.Matrix4.translation(dir.normalized() * distance);
+}
+
+/// [linearPatternPreviewStep]'s Circular-mode counterpart - the client-side
+/// mirror of `assembly.py`'s own `_circular_pattern_step`: a rotation of
+/// [angleDegrees] about the arbitrary world-space line through [origin] in
+/// direction [direction] (translate to the origin, rotate, translate back -
+/// the standard "rotate about an off-origin axis" decomposition). A near-
+/// zero-length [direction] returns the identity transform, same convention
+/// as [linearPatternPreviewStep].
+vm.Matrix4 circularPatternPreviewStep(List<double> origin, List<double> direction, double angleDegrees) {
+  final dir = vm.Vector3(direction[0], direction[1], direction[2]);
+  if (dir.length2 < 1e-12) return vm.Matrix4.identity();
+  final originVec = vm.Vector3(origin[0], origin[1], origin[2]);
+  final rotation = vm.Matrix4.compose(
+    vm.Vector3.zero(),
+    vm.Quaternion.axisAngle(dir.normalized(), angleDegrees * math.pi / 180),
+    vm.Vector3(1, 1, 1),
+  );
+  return vm.Matrix4.translation(originVec) * rotation * vm.Matrix4.translation(-originVec);
+}
+
+/// One ghost instance [PartViewport]'s own [PartViewport.
+/// componentPatternPreviewInstances] renders while [ComponentPatternPanel]
+/// is open - [partId] selects which Part's geometry to draw (the pattern's
+/// source Occurrence's own target Part), [worldTransform] is that geometry's
+/// already-fully-composed forecast placement (the source Occurrence's own
+/// current world transform with a [linearPatternPreviewStep]/
+/// [circularPatternPreviewStep] applied on top).
+class ComponentPatternPreviewInstance {
+  final String partId;
+  final vm.Matrix4 worldTransform;
+
+  const ComponentPatternPreviewInstance({required this.partId, required this.worldTransform});
+}

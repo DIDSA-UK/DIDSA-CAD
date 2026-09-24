@@ -1492,15 +1492,24 @@ class OccurrenceDto {
       );
 
   /// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): [DocumentApiClient
-  /// .createOccurrence]'s own request body - a full round-trip restore
-  /// (deliberately not [resolvedPartId]: that field is never client-settable,
-  /// only ever populated server-side by `import_native`'s own cross-reference
-  /// resolution - a restored Occurrence is unresolved until a later
-  /// full-graph reimport resolves it again, the same single-file-round-trip
-  /// behavior every other Occurrence already has).
+  /// .createOccurrence]'s own request body - a full round-trip restore.
+  ///
+  /// Bug fix (assembly testing: "delete a part, then undo the deletion -
+  /// the file could not be found"): [resolvedPartId] now *is* sent - it
+  /// used to be deliberately withheld (this doc comment previously argued
+  /// "never client-settable", on the theory that only a full reimport
+  /// should ever resolve it), which meant an Undo-of-delete always restored
+  /// the Occurrence unresolved even though this exact value, read straight
+  /// off the still-live [OccurrenceDto] right before the delete, was known
+  /// to be correct - the referenced file was never moved or missing, only
+  /// the client's own restore payload was throwing the cross-reference
+  /// away. The backend (`create_occurrence`) re-validates this against its
+  /// own `document.parts` before trusting it, so a stale value here still
+  /// can't resurrect a reference to a Part that's genuinely gone.
   Map<String, dynamic> toRestoreJson() => {
         'id': id,
         'external_ref': externalRef,
+        'resolved_part_id': resolvedPartId,
         'name_override': nameOverride,
         'transform': transform.toJson(),
         'suppressed': suppressed,
@@ -2758,6 +2767,28 @@ class DocumentApiClient {
               body: jsonEncode({'refs': refs.map((r) => r.toJson()).toList()}),
             ),
         (body) => MeasurementResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Bug fix (assembly testing: "pattern component tool: selecting a
+  /// custom line to use as a direction always seems to silently fail and
+  /// fall back to using an X/Y/Z direction vector") - POST
+  /// /parts/{id}/component-pattern-direction. Resolves a picked edge (any
+  /// placed Occurrence's own geometry, or the root Part's own body) into a
+  /// plain unit direction vector, reusing the Measure tool's own single-
+  /// entity axis resolution server-side - see
+  /// `ComponentPatternDirectionFromRefRequest`'s own doc comment for why
+  /// this resolves once, at pick time, rather than persisting a `direction_
+  /// ref` on the pattern itself. Throws the same `missing_reference`
+  /// [ApiException] `measure` does if [ref] no longer resolves, or a new
+  /// `invalid_direction_ref` one if it resolves to something with no
+  /// well-defined direction (a vertex, a face, a spline).
+  Future<List<double>> componentPatternDirectionFromRef(String partId, MeasureEntityRefDto ref) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/component-pattern-direction'),
+              headers: _headers,
+              body: jsonEncode({'ref': ref.toJson()}),
+            ),
+        (body) => ((body as Map<String, dynamic>)['direction'] as List).map((v) => (v as num).toDouble()).toList(),
       );
 
   /// Partial update for an existing FilletFeature - either/both of

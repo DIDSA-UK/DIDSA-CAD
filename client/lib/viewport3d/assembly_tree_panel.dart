@@ -119,6 +119,17 @@ class AssemblyTreePanel extends StatefulWidget {
   final void Function(OccurrenceDto occurrence)? onOccurrenceVisibilityToggle;
   final void Function(OccurrenceDto occurrence)? onOccurrenceColorTap;
 
+  /// Bug fix (assembly testing: "if the software cannot find the file, it
+  /// should ask for its location") - the red "Missing file" badge
+  /// (`_buildOccurrenceTile`'s own `unresolved` case) is now itself a tap
+  /// target, not just a read-only warning icon: tapping it lets the user
+  /// browse to the file and re-link it, instead of the row staying
+  /// permanently broken until an unrelated full project reopen happens to
+  /// re-resolve it. `null` (the default) leaves the badge inert, same
+  /// "optional, additive" convention [onOccurrenceVisibilityToggle] etc.
+  /// already establish.
+  final void Function(OccurrenceDto occurrence)? onLocateMissingFile;
+
   /// Test report item 5: mirrors [selectedOccurrenceId]'s own "which row is
   /// selected" convention for the Mates section - [onMateTap]'s real call
   /// site (`part_screen.dart`'s `_onMateTap`) sets this alongside selecting
@@ -177,6 +188,7 @@ class AssemblyTreePanel extends StatefulWidget {
     required this.onClose,
     this.onOccurrenceVisibilityToggle,
     this.onOccurrenceColorTap,
+    this.onLocateMissingFile,
     this.onMateTap,
     this.onMateLongPress,
     this.selectedMateId,
@@ -462,41 +474,67 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
             : occurrence.suppressed
                 ? const Text('Suppressed', maxLines: 1, overflow: TextOverflow.ellipsis, style: _rowSubtitleStyle)
                 : null,
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (unresolved) const Icon(Icons.link_off, size: 18, color: Colors.red),
-            // Assembly testing bug fix: same "still visible, clearly
-            // flagged" trailing-icon convention the `hidden`/`unresolved`
-            // icons right alongside it already use - a `fixed` Occurrence's
-            // own row now shows at a glance which component the Move/Rotate
-            // gizmo won't target (`component_context_menu.dart`'s Fix/Float
-            // entry is the only way to change it).
-            if (occurrence.fixed) const Icon(Icons.push_pin, size: 18),
-            // Bug report (assembly testing): the colour disc - see
-            // [_buildColorDisc]'s own doc comment.
-            _buildColorDisc(context, occurrence),
-            // Bug report (assembly testing): was a plain read-only
-            // `Icons.visibility_off` icon, shown only while hidden - now an
-            // always-visible toggle (mirrors `component_context_menu.dart`'s
-            // Hide/Show entry's own icon pair, reachable directly from the
-            // row instead of only via long-press), so both hiding *and*
-            // showing a component again are one tap away without opening
-            // that menu.
-            IconButton(
-              tooltip: occurrence.hidden ? 'Show' : 'Hide',
-              icon: Icon(
-                occurrence.hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                size: 18,
+        // Bug fix (assembly testing): a narrow panel could push this Row of
+        // up to 4 fixed-size badges past `ListTile`'s own `trailing` width
+        // (laid out against the *whole tile width*, not just leftover
+        // space) and throw a RenderFlex overflow. `FittedBox` scales the
+        // whole badge cluster down as a unit instead of overflowing, rather
+        // than dropping badges or clipping the hide/show tap target.
+        trailing: FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerRight,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (unresolved)
+                // Bug fix (assembly testing: "if the software cannot find
+                // the file, it should ask for its location") - was a
+                // plain, inert `Icon` before; now a tap target that opens a
+                // file picker to re-link the missing reference, same "still
+                // visible, but now actionable" upgrade the hide/show icon
+                // right below already got (see its own doc comment).
+                IconButton(
+                  tooltip: 'Locate missing file',
+                  icon: const Icon(Icons.link_off, size: 18, color: Colors.red),
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                  onPressed: widget.onLocateMissingFile == null
+                      ? null
+                      : () => widget.onLocateMissingFile!(occurrence),
+                ),
+              // Assembly testing bug fix: same "still visible, clearly
+              // flagged" trailing-icon convention the `hidden`/`unresolved`
+              // icons right alongside it already use - a `fixed` Occurrence's
+              // own row now shows at a glance which component the Move/Rotate
+              // gizmo won't target (`component_context_menu.dart`'s Fix/Float
+              // entry is the only way to change it).
+              if (occurrence.fixed) const Icon(Icons.push_pin, size: 18),
+              // Bug report (assembly testing): the colour disc - see
+              // [_buildColorDisc]'s own doc comment.
+              _buildColorDisc(context, occurrence),
+              // Bug report (assembly testing): was a plain read-only
+              // `Icons.visibility_off` icon, shown only while hidden - now an
+              // always-visible toggle (mirrors `component_context_menu.dart`'s
+              // Hide/Show entry's own icon pair, reachable directly from the
+              // row instead of only via long-press), so both hiding *and*
+              // showing a component again are one tap away without opening
+              // that menu.
+              IconButton(
+                tooltip: occurrence.hidden ? 'Show' : 'Hide',
+                icon: Icon(
+                  occurrence.hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                  size: 18,
+                ),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                onPressed: widget.onOccurrenceVisibilityToggle == null
+                    ? null
+                    : () => widget.onOccurrenceVisibilityToggle!(occurrence),
               ),
-              visualDensity: VisualDensity.compact,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-              onPressed: widget.onOccurrenceVisibilityToggle == null
-                  ? null
-                  : () => widget.onOccurrenceVisibilityToggle!(occurrence),
-            ),
-          ],
+            ],
+          ),
         ),
         onTap: () => widget.onOccurrenceTap(occurrence),
         onLongPress: () => widget.onOccurrenceLongPress(occurrence),

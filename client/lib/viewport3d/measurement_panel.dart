@@ -140,16 +140,16 @@ class MeasurementPanel extends StatelessWidget {
     final rows = <Widget>[];
     void row(String label, String value) => rows.add(_ResultRow(label: label, value: value));
 
-    if (r.length != null) row('Length', _fmt(r.length!));
-    if (r.diameter != null) row('Diameter', _fmt(r.diameter!));
-    if (r.radius != null) row('Radius', _fmt(r.radius!));
-    if (r.area != null) row('Area', _fmt(r.area!));
-    if (r.point != null) row('Point', _fmtVec(r.point!));
+    if (r.length != null) row('Length', _fmtUnit(r.length!, 'mm'));
+    if (r.diameter != null) row('Diameter', _fmtUnit(r.diameter!, 'mm'));
+    if (r.radius != null) row('Radius', _fmtUnit(r.radius!, 'mm'));
+    if (r.area != null) row('Area', _fmtUnit(r.area!, 'mm²'));
+    if (r.point != null) row('Point', _fmtVecUnit(r.point!, 'mm'));
 
-    if (r.axisDistance != null) row('Axis distance', _fmt(r.axisDistance!));
-    if (r.normalDistance != null) row('Normal distance', _fmt(r.normalDistance!));
-    if (r.distance != null) row('Distance', _fmt(r.distance!));
-    if (r.delta != null) row('ΔX, ΔY, ΔZ', _fmtVec(r.delta!));
+    if (r.axisDistance != null) row('Axis distance', _fmtUnit(r.axisDistance!, 'mm'));
+    if (r.normalDistance != null) row('Normal distance', _fmtUnit(r.normalDistance!, 'mm'));
+    if (r.distance != null) row('Distance', _fmtUnit(r.distance!, 'mm'));
+    if (r.delta != null) row('ΔX, ΔY, ΔZ', _fmtVecUnit(r.delta!, 'mm'));
 
     // Volume/mass of every distinct Body among the current selection - up to
     // 2 rows each when the two selected entities belong to different Bodies
@@ -160,13 +160,13 @@ class MeasurementPanel extends StatelessWidget {
     if (r.bodyVolumes != null) {
       for (final entry in r.bodyVolumes!.entries) {
         final label = multiBody ? '${bodyNames[entry.key] ?? 'Body'} volume' : 'Volume';
-        row(label, _fmt(entry.value));
+        row(label, _fmtUnit(entry.value, 'mm³'));
       }
     }
     if (r.bodyMasses != null) {
       for (final entry in r.bodyMasses!.entries) {
         final label = multiBody ? '${bodyNames[entry.key] ?? 'Body'} mass' : 'Mass';
-        row(label, '${_fmt(entry.value)} g');
+        row(label, _fmtUnit(entry.value, 'g'));
       }
     }
 
@@ -177,6 +177,16 @@ class MeasurementPanel extends StatelessWidget {
       value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toStringAsFixed(3);
 
   static String _fmtVec(List<double> v) => v.map(_fmt).join(', ');
+
+  // Bug fix (assembly testing): every result row now carries its unit -
+  // previously only Mass did ('g', hardcoded inline), leaving Volume (and
+  // every other row) looking unitless right next to it. Backend values are
+  // implicitly all mm/mm²/mm³/g by project convention (see
+  // `app.document.measure`'s own doc comments), so the unit is passed in by
+  // the caller per-row rather than inferred here.
+  static String _fmtUnit(double value, String unit) => '${_fmt(value)} $unit';
+
+  static String _fmtVecUnit(List<double> v, String unit) => '${_fmtVec(v)} $unit';
 }
 
 class _ResultRow extends StatelessWidget {

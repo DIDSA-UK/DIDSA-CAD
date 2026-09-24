@@ -27,6 +27,19 @@ Future<void> showSelectOtherSheet(
 }) async {
   await showModalBottomSheet<void>(
     context: context,
+    // Bug fix (assembly testing): `isScrollControlled: true` lets the sheet
+    // be sized by its own `DraggableScrollableSheet` below instead of
+    // Flutter's default `isScrollControlled: false` cap (9/16 of the screen
+    // height, with no smaller size the user could drag down to) - a long
+    // candidate list used to always balloon straight up against that cap.
+    // `enableDrag: false` turns off the *sheet's own* swipe-to-dismiss
+    // gesture, which otherwise sat as an ancestor `GestureDetector` around
+    // every row and could win the gesture arena against a row's own
+    // long-press-to-preview handlers on any incidental finger movement -
+    // see the per-row `GestureDetector` below. Dismissal still works via tap
+    // outside the sheet or the system back gesture.
+    isScrollControlled: true,
+    enableDrag: false,
     builder: (context) => _SelectOtherSheet(
       candidates: candidates,
       bodyNames: bodyNames,
@@ -71,58 +84,71 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 6),
-            child: _DragHandle(),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text('Select Other', style: Theme.of(context).textTheme.titleMedium),
-            ),
-          ),
-          Flexible(
-            child: ListView.builder(
-              shrinkWrap: true,
-              itemCount: widget.candidates.length,
-              itemBuilder: (context, index) {
-                final entity = widget.candidates[index].entity;
-                // On-device feedback: single tap selects and closes the
-                // sheet immediately - a long-press (touch) or hover
-                // (mouse) only *previews* the highlight, never selects on
-                // its own, so browsing the list can never accidentally
-                // commit a choice.
-                return GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onLongPressStart: (_) => _setPreview(entity),
-                  onLongPressMoveUpdate: (_) => _setPreview(entity),
-                  onLongPressEnd: (_) => _setPreview(null),
-                  onLongPressCancel: () => _setPreview(null),
-                  onTap: () {
-                    widget.onSelect(entity);
-                    Navigator.of(context).pop();
+    // Bug fix (assembly testing): mirrors `SelectionListDrawer`'s own
+    // `DraggableScrollableSheet` convention - starts small enough to leave
+    // most of the 3D view visible, and a long candidate list scrolls within
+    // a bounded, user-resizable region instead of the whole sheet growing
+    // to cover the screen.
+    return DraggableScrollableSheet(
+      initialChildSize: 0.3,
+      minChildSize: 0.15,
+      maxChildSize: 0.5,
+      expand: false,
+      builder: (context, scrollController) {
+        return SafeArea(
+          child: Column(
+            children: [
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 6),
+                child: _DragHandle(),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Select Other', style: Theme.of(context).textTheme.titleMedium),
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  controller: scrollController,
+                  itemCount: widget.candidates.length,
+                  itemBuilder: (context, index) {
+                    final entity = widget.candidates[index].entity;
+                    // On-device feedback: single tap selects and closes the
+                    // sheet immediately - a long-press (touch) or hover
+                    // (mouse) only *previews* the highlight, never selects on
+                    // its own, so browsing the list can never accidentally
+                    // commit a choice.
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onLongPressStart: (_) => _setPreview(entity),
+                      onLongPressMoveUpdate: (_) => _setPreview(entity),
+                      onLongPressEnd: (_) => _setPreview(null),
+                      onLongPressCancel: () => _setPreview(null),
+                      onTap: () {
+                        widget.onSelect(entity);
+                        Navigator.of(context).pop();
+                      },
+                      child: MouseRegion(
+                        onEnter: (_) => _setPreview(entity),
+                        onExit: (_) => _setPreview(null),
+                        child: ListTile(
+                          dense: true,
+                          tileColor:
+                              _previewedEntity == entity ? Theme.of(context).colorScheme.primaryContainer : null,
+                          leading: _iconFor(entity.kind),
+                          title: Text(_titleFor(entity)),
+                        ),
+                      ),
+                    );
                   },
-                  child: MouseRegion(
-                    onEnter: (_) => _setPreview(entity),
-                    onExit: (_) => _setPreview(null),
-                    child: ListTile(
-                      dense: true,
-                      tileColor: _previewedEntity == entity ? Theme.of(context).colorScheme.primaryContainer : null,
-                      leading: _iconFor(entity.kind),
-                      title: Text(_titleFor(entity)),
-                    ),
-                  ),
-                );
-              },
-            ),
+                ),
+              ),
+            ],
           ),
-        ],
-      ),
+        );
+      },
     );
   }
 

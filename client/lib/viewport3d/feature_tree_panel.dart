@@ -865,7 +865,14 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
               ? (featurePickerSelected ? const Icon(Icons.check_circle, size: 18) : null)
               : (hidden ? const Icon(Icons.visibility_off, size: 18) : null);
           final children = [if (pinIcon != null) pinIcon, if (stateIcon != null) stateIcon];
-          return children.isEmpty ? null : Row(mainAxisSize: MainAxisSize.min, children: children);
+          // Bug fix (assembly testing, `assembly_tree_panel.dart`'s sibling
+          // fix): scale down instead of overflowing on a narrow panel.
+          return children.isEmpty
+              ? null
+              : FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Row(mainAxisSize: MainAxisSize.min, children: children),
+                );
         }(),
         onTap: () {
           if (widget.isSketchPickerMode) {

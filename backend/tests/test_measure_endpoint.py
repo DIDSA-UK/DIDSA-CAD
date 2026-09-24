@@ -162,6 +162,111 @@ def test_measuring_two_parallel_faces_of_a_cube_reports_normal_distance():
     assert found["normal_distance"] == 10.0
 
 
+def _circular_edge_indices(part_id: str, body_id: str) -> list[int]:
+    """Every edge index on `body_id` that `single_shape_geometry` reports a
+    `radius` for (i.e. is actually circular) - a filleted cube's fillet adds
+    exactly two (the rounded face's own top/bottom rims), found by probing
+    each edge rather than assuming a fixed index the way `_edge_ref(...,
+    0)` elsewhere in this file gets away with for a plain straight edge."""
+    mesh = _mesh(part_id)[0]["mesh"]
+    edge_count = len(set(mesh["edge_ids"]))
+    circular = []
+    for i in range(edge_count):
+        response = _measure(part_id, [_edge_ref(body_id, i)])
+        if response.status_code == 200 and response.json().get("radius") is not None:
+            circular.append(i)
+    return circular
+
+
+def test_measuring_two_circular_edges_reports_centre_to_centre_distance():
+    """Bug fix (assembly testing: "when the user selects a diameter or arc
+    and another entity ... it should measure to/from the centre point ...
+    e.g. when measuring distance between hole centres")."""
+    part, body_id = _boxy_part_and_body()
+    create_response = _create_fillet(part["id"], [_edge_ref(body_id, 0)], 1.0)
+    assert create_response.status_code == 201
+
+    circular = _circular_edge_indices(part["id"], body_id)
+    assert len(circular) >= 2, "expected a fillet's rounded face to have two circular rim edges"
+    edge_a, edge_b = circular[0], circular[1]
+
+    center_a = _measure(part["id"], [_edge_ref(body_id, edge_a)]).json()["center"]
+    center_b = _measure(part["id"], [_edge_ref(body_id, edge_b)]).json()["center"]
+    expected_distance = sum((a - b) ** 2 for a, b in zip(center_a, center_b)) ** 0.5
+
+    response = _measure(part["id"], [_edge_ref(body_id, edge_a), _edge_ref(body_id, edge_b)])
+    assert response.status_code == 200
+    body = response.json()
+    # Centre-to-centre, not the generic nearest-rim-point distance (which
+    # would be `expected_distance` minus roughly the sum of the two radii
+    # for two coaxial circles of the same radius).
+    assert body["distance"] == pytest.approx(expected_distance)
+    assert tuple(round(c, 9) for c in body["point_a"]) == tuple(round(c, 9) for c in center_a)
+    assert tuple(round(c, 9) for c in body["point_b"]) == tuple(round(c, 9) for c in center_b)
+
+
+def test_measuring_a_circular_edge_and_a_vertex_reports_distance_to_the_circles_centre():
+    part, body_id = _boxy_part_and_body()
+    create_response = _create_fillet(part["id"], [_edge_ref(body_id, 0)], 1.0)
+    assert create_response.status_code == 201
+
+    circular = _circular_edge_indices(part["id"], body_id)
+    assert circular, "expected at least one circular rim edge after filleting"
+    edge_index = circular[0]
+    center = _measure(part["id"], [_edge_ref(body_id, edge_index)]).json()["center"]
+
+    mesh = _mesh(part["id"])[0]["mesh"]
+    vertex_id = mesh["topology_vertex_ids"][0]
+    vertex_point = mesh["topology_vertices"][0]
+
+    response = _measure(part["id"], [_edge_ref(body_id, edge_index), _vertex_ref(body_id, vertex_id)])
+    assert response.status_code == 200
+    body = response.json()
+    expected_distance = sum((c - v) ** 2 for c, v in zip(center, vertex_point)) ** 0.5
+    # Measured from the circle's own centre, not the nearest point on its rim.
+    assert body["distance"] == pytest.approx(expected_distance)
+
+
+# --- Component Pattern direction-from-edge ------------------------------------
+
+
+def test_component_pattern_direction_from_a_straight_edge_reports_its_unit_direction():
+    """Bug fix (assembly testing: "pattern component tool: selecting a
+    custom line to use as a direction always seems to silently fail and
+    fall back to using an X/Y/Z direction vector")."""
+    part, body_id = _boxy_part_and_body()
+    response = client.post(
+        f"/document/parts/{part['id']}/component-pattern-direction",
+        json={"ref": {"occurrence_id": "", "subshape_ref": _edge_ref(body_id, 0)}},
+    )
+    assert response.status_code == 200
+    direction = response.json()["direction"]
+    length = sum(d * d for d in direction) ** 0.5
+    assert abs(length - 1.0) < 1e-9
+
+
+def test_component_pattern_direction_from_a_stale_edge_returns_missing_reference_422():
+    part, body_id = _boxy_part_and_body()
+    response = client.post(
+        f"/document/parts/{part['id']}/component-pattern-direction",
+        json={"ref": {"occurrence_id": "", "subshape_ref": _edge_ref(body_id, 999)}},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "missing_reference"
+
+
+def test_component_pattern_direction_from_a_vertex_returns_invalid_direction_ref_422():
+    part, body_id = _boxy_part_and_body()
+    mesh = _mesh(part["id"])[0]["mesh"]
+    vertex_id = mesh["topology_vertex_ids"][0]
+    response = client.post(
+        f"/document/parts/{part['id']}/component-pattern-direction",
+        json={"ref": {"occurrence_id": "", "subshape_ref": _vertex_ref(body_id, vertex_id)}},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "invalid_direction_ref"
+
+
 # --- Rejections --------------------------------------------------------------
 
 
