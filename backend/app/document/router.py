@@ -12,7 +12,12 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances
-from app.document.assembly_solver import MateSolveResult, preview_mate_solve, solve_occurrence
+from app.document.assembly_solver import (
+    MateSolveResult,
+    _quaternion_from_axis_angle,
+    preview_mate_solve,
+    solve_occurrence,
+)
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -92,7 +97,7 @@ from app.document.graph import (
 from app.document.import_geometry import extract_step_metadata, resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_slider, tessellate_shape
 from app.document.mesh_data import MeshQuality, Triangle
-from app.document.mesh_export import encode_glb, encode_obj, encode_stl
+from app.document.mesh_export import AssemblyGlbInstance, encode_assembly_glb, encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
 from app.document.native_format import NativeFormatError, export_native, import_native
 from app.document.pattern import resolve_pattern, resolve_pattern_coarse
@@ -8584,6 +8589,164 @@ def get_assembly_mesh(
     return AssemblyMeshResponse(geometry=list(geometry_by_part_id.values()), instances=instances)
 
 
+def _assembly_glb_part_mesh_data(part: Part, mesh_quality: MeshQuality, tier: Literal["full", "coarse"]) -> MeshData:
+    """`assembly-mesh.glb`'s own per-Part geometry lookup - the same
+    placeholder-or-real-bodies/`tier="coarse"` logic `_assembly_body_mesh_
+    responses` and `get_part_mesh` already have, but returns one merged
+    `MeshData` per Part (`_merged_body_mesh_data`) rather than a list of
+    per-Body `BodyMeshResponse`s - `encode_assembly_glb` needs exactly one
+    glTF mesh per unique Part (per colour - see that function's own
+    docstring), not one per Body."""
+    if not part.produces_displayable_geometry:
+        box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+        return _merged_body_mesh_data({_PLACEHOLDER_BODY_ID: box}, mesh_quality)
+
+    if tier == "coarse":
+        coarse_eligible = coarse_eligible_feature_ids(part)
+        bodies = {
+            body_id: shape
+            for body_id, shape in compute_part_bodies_coarse(part, frozenset()).items()
+            if base_feature_id(body_id) in coarse_eligible
+        }
+    else:
+        bodies = compute_part_bodies(part, frozenset())
+    return _merged_body_mesh_data(bodies, mesh_quality)
+
+
+def _walk_assembly_glb_instances(
+    document: Document,
+    part: Part,
+    occurrence_path: list[str],
+    transform_chain: list[RigidTransform],
+    hidden: bool,
+    ancestors: frozenset[str],
+    mesh_quality: MeshQuality,
+    tier: Literal["full", "coarse"],
+    geometry_by_part_id: dict[str, MeshData],
+    instances: list[AssemblyGlbInstance],
+    color: str | None = None,
+) -> None:
+    """`assembly-mesh.glb`'s own counterpart to `get_assembly_mesh`'s own
+    `_walk` (identical traversal shape - resolved-`part_id`/suppressed/cycle
+    skips, the same `ComponentPattern` expansion) - deliberately forked
+    rather than shared, the same "don't risk the existing, already-tested
+    assembly-mesh path" reasoning `_walk_assembly_export_bodies` already
+    gives for its own fork. Builds `AssemblyGlbInstance`s (world-space
+    translation + quaternion, `encode_assembly_glb`'s own input shape)
+    instead of `AssemblyOccurrenceInstance`s, and memoizes each unique
+    Part's own merged `MeshData` into `geometry_by_part_id` instead of a
+    `BodyMeshResponse` list."""
+    if part.id not in geometry_by_part_id:
+        geometry_by_part_id[part.id] = _assembly_glb_part_mesh_data(part, mesh_quality, tier)
+
+    world_transform = compose_chain(transform_chain)
+    quaternion = _quaternion_from_axis_angle(world_transform.rotation_axis, world_transform.rotation_angle_degrees)
+    instances.append(
+        AssemblyGlbInstance(
+            part_id=part.id,
+            translation=world_transform.translation,
+            rotation_quaternion=quaternion,
+            color=color,
+            hidden=hidden,
+        )
+    )
+
+    child_ancestors = ancestors | {part.id}
+    for occurrence in part.occurrences:
+        if occurrence.suppressed or occurrence.part_id is None:
+            continue
+        child_part = document.parts.get(occurrence.part_id)
+        if child_part is None or child_part.id in child_ancestors:
+            continue
+        _walk_assembly_glb_instances(
+            document,
+            child_part,
+            [*occurrence_path, occurrence.id],
+            [*transform_chain, occurrence.transform],
+            occurrence.hidden,
+            child_ancestors,
+            mesh_quality,
+            tier,
+            geometry_by_part_id,
+            instances,
+            color=occurrence.color,
+        )
+    for pattern in part.component_patterns:
+        if pattern.suppressed:
+            continue
+        for source_id in pattern.source_occurrence_ids:
+            source_occurrence = next((o for o in part.occurrences if o.id == source_id), None)
+            if source_occurrence is None or source_occurrence.suppressed or source_occurrence.part_id is None:
+                continue
+            pattern_child_part = document.parts.get(source_occurrence.part_id)
+            if pattern_child_part is None or pattern_child_part.id in child_ancestors:
+                continue
+            derived_transforms = expand_component_pattern_instances(pattern, source_occurrence.transform)
+            for index, derived_transform in derived_transforms.items():
+                _walk_assembly_glb_instances(
+                    document,
+                    pattern_child_part,
+                    [*occurrence_path, f"{source_occurrence.id}#pattern:{pattern.id}:{index}"],
+                    [*transform_chain, derived_transform],
+                    source_occurrence.hidden,
+                    child_ancestors,
+                    mesh_quality,
+                    tier,
+                    geometry_by_part_id,
+                    instances,
+                    color=source_occurrence.color,
+                )
+
+
+@router.get("/parts/{part_id}/assembly-mesh.glb")
+def get_assembly_mesh_glb(
+    part_id: str,
+    quality: float | None = Query(default=None, ge=0.0, le=1.0),
+    tier: Literal["full", "coarse"] = Query(default="full"),
+    include_hidden: bool = Query(default=False),
+) -> Response:
+    """`GET /parts/{part_id}/assembly-mesh`'s node-instanced binary glTF
+    sibling (`docs/vr-recon-2026-09-24.md` SS2 point 2, sized for real in
+    `docs/vr-recon-2-2026-09-24.md` SS3 point 3 - a non-Flutter Quest client
+    needs the assembly scene as compact glTF, and one glTF scene per call is
+    the locked-in shape, not per-part files). Walks the exact same
+    Occurrence/`ComponentPattern` tree `get_assembly_mesh` does
+    (`_walk_assembly_glb_instances`, forked the same way `export/assembly-*`
+    already forks from `_walk` - see that function's own docstring), but
+    emits one `app.document.mesh_export.encode_assembly_glb`-shaped node per
+    placed instance pointing at its Part's own shared glTF mesh, instead of
+    JSON (`AssemblyMeshResponse`) or a fully-flattened, one-copy-per-instance
+    file (`export/assembly-glb`).
+
+    `quality`/`tier` behave exactly as they do on `GET /parts/{id}/mesh` -
+    `tier="coarse"` swaps in `compute_part_bodies_coarse` for every Part in
+    the scene, `quality` maps through `mesh_quality_from_slider` the same
+    way. `include_hidden` (default `False`, new to this endpoint - the JSON
+    `assembly-mesh` endpoint always reports every instance's own `hidden`
+    flag and leaves filtering to the client) drops any instance whose own
+    Occurrence is hidden before encoding, so a Quest client that doesn't
+    want to bother decoding-then-discarding hidden geometry doesn't have to;
+    `?include_hidden=true` restores the JSON endpoint's "everything, client
+    filters" behaviour."""
+    document = get_document()
+    root_part = get_part_or_404(part_id)
+    mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
+
+    geometry_by_part_id: dict[str, MeshData] = {}
+    instances: list[AssemblyGlbInstance] = []
+    _walk_assembly_glb_instances(
+        document, root_part, [], [], False, frozenset(), mesh_quality, tier, geometry_by_part_id, instances
+    )
+    visible_instances = instances if include_hidden else [instance for instance in instances if not instance.hidden]
+
+    data = encode_assembly_glb(geometry_by_part_id, visible_instances)
+    return Response(
+        content=data,
+        media_type="model/gltf-binary",
+        headers={"Content-Disposition": f'attachment; filename="{root_part.name}-assembly.glb"'},
+    )
+
+
 @router.post("/parts/{part_id}/section-preview", response_model=list[SectionBodyMeshResponse])
 def preview_section(
     part_id: str, payload: SectionPreviewRequest, quality: float | None = Query(default=None, ge=0.0, le=1.0)
@@ -8677,16 +8840,20 @@ def _export_bodies_or_400(part: Part) -> dict[str, object]:
     return bodies
 
 
-def _merged_body_mesh_data(bodies: dict[str, object]) -> MeshData:
+def _merged_body_mesh_data(bodies: dict[str, object], mesh_quality: MeshQuality = DEFAULT_MESH_QUALITY) -> MeshData:
     """Tessellates every Body in `bodies` and concatenates them into one
     flat `MeshData`, offsetting each Body's own triangle indices past
     whatever's already been appended - a single combined mesh per Part,
     matching a single exported STL/OBJ/glb file (unlike `/mesh`, which
     deliberately keeps Bodies separate for the viewport's own per-Body
-    hit-testing - export has no such need)."""
+    hit-testing - export has no such need). `mesh_quality` defaults to
+    `DEFAULT_MESH_QUALITY` for every existing caller (the single-Part export
+    endpoints below, none of which take a `quality` param); `assembly-mesh.
+    glb`'s own per-Part geometry lookup passes its own resolved `quality`
+    through instead."""
     merged = MeshData()
     for shape in bodies.values():
-        body_mesh = tessellate_shape(shape, DEFAULT_MESH_QUALITY)
+        body_mesh = tessellate_shape(shape, mesh_quality)
         offset = len(merged.vertices)
         merged.vertices.extend(body_mesh.vertices)
         merged.normals.extend(body_mesh.normals)

@@ -8,7 +8,8 @@ import json
 import struct
 
 from app.document.mesh_data import MeshData, Triangle
-from app.document.mesh_export import encode_glb, encode_obj, encode_stl
+from app.document.mesh_export import AssemblyGlbInstance, encode_assembly_glb, encode_glb, encode_obj, encode_stl
+from app.document.mesh_import import decode_gltf
 
 
 def _single_triangle_mesh() -> MeshData:
@@ -119,3 +120,105 @@ def test_glb_of_an_empty_mesh_still_produces_a_valid_container():
     gltf, bin_bytes = _parse_glb(data)
     assert gltf["accessors"][0]["count"] == 0
     assert bin_bytes == b""
+
+
+def _second_triangle_mesh() -> MeshData:
+    mesh = MeshData()
+    mesh.vertices = [(0.0, 0.0, 5.0), (2.0, 0.0, 5.0), (0.0, 2.0, 5.0)]
+    mesh.normals = [(0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 0.0, 1.0)]
+    mesh.triangles = [Triangle(a=0, b=1, c=2)]
+    return mesh
+
+
+def test_assembly_glb_node_count_equals_instance_count():
+    meshes = {"part-a": _single_triangle_mesh(), "part-b": _second_triangle_mesh()}
+    instances = [
+        AssemblyGlbInstance(part_id="part-a", translation=(0.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0)),
+        AssemblyGlbInstance(part_id="part-a", translation=(5.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0)),
+        AssemblyGlbInstance(part_id="part-b", translation=(0.0, 5.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0)),
+    ]
+    data = encode_assembly_glb(meshes, instances)
+    gltf, _bin_bytes = _parse_glb(data)
+    assert len(gltf["nodes"]) == 3
+    assert gltf["scenes"][0]["nodes"] == [0, 1, 2]
+
+
+def test_assembly_glb_mesh_count_equals_unique_parts_when_colour_is_uniform_per_part():
+    meshes = {"part-a": _single_triangle_mesh(), "part-b": _second_triangle_mesh()}
+    instances = [
+        AssemblyGlbInstance(
+            part_id="part-a", translation=(0.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0), color="#ff0000"
+        ),
+        AssemblyGlbInstance(
+            part_id="part-a", translation=(5.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0), color="#ff0000"
+        ),
+        AssemblyGlbInstance(part_id="part-b", translation=(0.0, 5.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0)),
+    ]
+    data = encode_assembly_glb(meshes, instances)
+    gltf, _bin_bytes = _parse_glb(data)
+    assert len(gltf["meshes"]) == 2
+    # Both part-a instances share one mesh entry (same colour).
+    assert gltf["nodes"][0]["mesh"] == gltf["nodes"][1]["mesh"]
+    assert gltf["nodes"][2]["mesh"] != gltf["nodes"][0]["mesh"]
+
+
+def test_assembly_glb_one_material_per_distinct_colour():
+    meshes = {"part-a": _single_triangle_mesh()}
+    instances = [
+        AssemblyGlbInstance(
+            part_id="part-a", translation=(0.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0), color="#ff0000"
+        ),
+        AssemblyGlbInstance(
+            part_id="part-a", translation=(5.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0), color="#00ff00"
+        ),
+        AssemblyGlbInstance(
+            part_id="part-a", translation=(0.0, 5.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0), color="#ff0000"
+        ),
+        AssemblyGlbInstance(part_id="part-a", translation=(0.0, 0.0, 5.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0)),
+    ]
+    data = encode_assembly_glb(meshes, instances)
+    gltf, _bin_bytes = _parse_glb(data)
+    # Two distinct colours used -> two materials; the uncoloured instance's
+    # primitive carries no "material" key at all (renderer default).
+    assert len(gltf["materials"]) == 2
+    assert gltf["materials"][0]["pbrMetallicRoughness"]["baseColorFactor"] == [1.0, 0.0, 0.0, 1.0]
+    assert gltf["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"] == [0.0, 1.0, 0.0, 1.0]
+    red_node = gltf["nodes"][0]
+    uncoloured_node = gltf["nodes"][3]
+    red_primitive = gltf["meshes"][red_node["mesh"]]["primitives"][0]
+    uncoloured_primitive = gltf["meshes"][uncoloured_node["mesh"]]["primitives"][0]
+    assert red_primitive["material"] == 0
+    assert "material" not in uncoloured_primitive
+
+
+def test_assembly_glb_node_transform_matches_instance():
+    meshes = {"part-a": _single_triangle_mesh()}
+    instances = [
+        AssemblyGlbInstance(
+            part_id="part-a",
+            translation=(1.5, -2.0, 3.0),
+            rotation_quaternion=(0.7071067811865476, 0.0, 0.0, 0.7071067811865476),
+        )
+    ]
+    data = encode_assembly_glb(meshes, instances)
+    gltf, _bin_bytes = _parse_glb(data)
+    node = gltf["nodes"][0]
+    assert node["translation"] == [1.5, -2.0, 3.0]
+    # glTF node rotation is (x, y, z, w); the encoder's own input is (w, x, y, z).
+    assert node["rotation"] == [0.0, 0.0, 0.7071067811865476, 0.7071067811865476]
+
+
+def test_assembly_glb_reparses_with_the_existing_gltf_decoder():
+    meshes = {"part-a": _single_triangle_mesh(), "part-b": _second_triangle_mesh()}
+    instances = [
+        AssemblyGlbInstance(part_id="part-a", translation=(0.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0)),
+        AssemblyGlbInstance(part_id="part-b", translation=(0.0, 5.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0)),
+    ]
+    data = encode_assembly_glb(meshes, instances)
+    decoded = decode_gltf(data)
+    # The existing decoder only ever reads `meshes[0]`'s own geometry (it
+    # has no concept of nodes/instancing) - this just proves the container
+    # itself is well-formed glTF, the same "output re-parses" contract every
+    # other encoder in this module already gets exercised against.
+    assert len(decoded.vertices) == 3
+    assert len(decoded.triangles) == 1
