@@ -177,6 +177,46 @@ def _setup_top_with_box_and_two_occurrences() -> tuple[str, str, str, str]:
     return top["id"], top_body_id, "occ-a", "occ-b"
 
 
+def _setup_top_with_occurrence_target_having_its_own_body() -> tuple[str, str, str, str]:
+    """Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-multi-
+    part-assembly-overhaul.md): `_setup_top_with_box_and_two_occurrences`'s
+    own sibling, but `bolt_a` itself (the placed Occurrence's real target
+    Part, not `top`) gets a real box Body - needed to prove `edge_selector`
+    resolution against a *placed Occurrence's own* geometry, not the root
+    Part's. A different depth (15.0, vs. `top`'s own 25.0 in the sibling
+    fixture) keeps the two Parts' own vertical-edge lengths distinguishable
+    - the same "confirm which body actually resolved" discipline that
+    fixture's own tests already rely on. Returns
+    `(top_part_id, bolt_a_part_id, bolt_a_body_id, occurrence_id)`."""
+    top = _create_part("Top")
+    bolt_a = _create_part("BoltA")
+    bolt_a_body_id = _add_box_body(bolt_a["id"], size=10.0, depth=15.0)
+    bolt_b = _create_part("BoltB")
+    top_export = _export_part(top["id"])
+    top_part_dict = top_export["document"]["parts"][0]
+    top_part_dict["occurrences"] = [
+        _occurrence_dict("occ-a", bolt_a["id"], "parts/bolt_a.didsa"),
+        _occurrence_dict("occ-b", bolt_b["id"], "parts/bolt_b.didsa"),
+    ]
+    top_part_dict["mates"] = []
+    bolt_a_export = _export_part(bolt_a["id"])
+    composed_payload = {
+        "schema_version": top_export["schema_version"],
+        "document": {
+            "id": "composed-doc",
+            "root_part_id": top["id"],
+            "parts": [
+                top_part_dict,
+                bolt_a_export["document"]["parts"][0],
+                _export_part(bolt_b["id"])["document"]["parts"][0],
+            ],
+        },
+        "sketches": top_export["sketches"] + bolt_a_export["sketches"],
+    }
+    _import_composed(composed_payload)
+    return top["id"], bolt_a["id"], bolt_a_body_id, "occ-a"
+
+
 def _validate(part_id: str, steps: list[dict]) -> dict:
     response = client.post(
         f"/document/parts/{part_id}/ai-plan/validate",
@@ -779,12 +819,20 @@ def test_mate_edge_selector_direct_call_resolves_to_a_real_vertical_edge():
     assert measure_response.json()["length"] == 25.0
 
 
-def test_mate_edge_selector_rejects_a_placed_occurrence_reference():
-    """`[3]`'s own real scope limit: a placed Occurrence's own target Part
-    is a different Part this single-Part-scoped validator has no geometry
-    access to at all - `edge_selector` is only supported for
-    `occurrence_id == ""`."""
-    top_id, top_body_id, occ_a, _ = _setup_top_with_box_and_two_occurrences()
+def test_mate_edge_selector_resolves_against_a_placed_occurrences_own_real_body():
+    """Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-multi-
+    part-assembly-overhaul.md): the real fix `[3]`'s own scope limit used
+    to block outright - `edge_selector` on a non-root `occurrence_id` now
+    resolves against *that Occurrence's own target Part*, not the root
+    Part's own content, via the current session's `Document`
+    (`get_document()`, already holding every Part a composed multi-file
+    graph pulled in - no new wire payload needed, confirmed directly
+    against the code before this fix). Confirmed via Measure against
+    `bolt_a`'s own body specifically (its own vertical edge is 15.0mm long,
+    distinguishable from `top`'s own 25.0mm in the sibling fixture) -
+    proves this resolved against the *right* Part, not accidentally
+    against `top`'s."""
+    top_id, bolt_a_id, bolt_a_body_id, occ_a = _setup_top_with_occurrence_target_having_its_own_body()
 
     response = _validate(
         top_id,
@@ -794,7 +842,62 @@ def test_mate_edge_selector_rejects_a_placed_occurrence_reference():
                 "kind": "mate",
                 "type": "coincident",
                 "references": [
-                    _edge_ref(f"existing:{occ_a}", top_body_id, edge_selector={"selector": "vertical_edges", "of": ""}),
+                    _edge_ref(
+                        f"existing:{occ_a}", bolt_a_body_id, edge_selector={"selector": "vertical_edges", "of": ""}
+                    ),
+                    _face_ref(""),
+                ],
+            }
+        ],
+    )
+    results = _results_by_local_id(response)
+    assert results["mate1"]["ok"] is True, results["mate1"]
+    resolved = results["mate1"]["resolved_mate_references"]
+    assert resolved is not None
+    assert resolved[0]["body_id"] == bolt_a_body_id
+    resolved_index = resolved[0]["index"]
+
+    measure_response = client.post(
+        f"/document/parts/{bolt_a_id}/measure",
+        json={"refs": [{"body_id": bolt_a_body_id, "shape_type": "edge", "index": resolved_index}]},
+    )
+    assert measure_response.status_code == 200
+    assert measure_response.json()["length"] == 15.0
+
+
+def test_mate_edge_selector_rejects_an_unresolved_occurrence_reference():
+    """Phase D2's own real, still-standing limit: `edge_selector` still
+    can't resolve against an Occurrence whose own target Part isn't
+    actually loaded into this session's `Document` - a `resolved_part_id`
+    naming something outside the same compose/import payload never
+    survives import (`native_format.py`'s own `_resolve_occurrence_part_ids`
+    fails closed), so `Occurrence.part_id` stays `None` and there is
+    genuinely no geometry to resolve against - not a scope limit this
+    phase chose to keep, a real absence of data."""
+    top = _create_part("Top")
+    top_body_id = _add_box_body(top["id"], size=10.0, depth=25.0)
+    top_export = _export_part(top["id"])
+    top_part_dict = top_export["document"]["parts"][0]
+    top_part_dict["occurrences"] = [_occurrence_dict("occ-unresolved", "not-a-real-part-id", "parts/missing.didsa")]
+    top_part_dict["mates"] = []
+    composed_payload = {
+        "schema_version": top_export["schema_version"],
+        "document": {"id": "composed-doc", "root_part_id": top["id"], "parts": [top_part_dict]},
+        "sketches": top_export["sketches"],
+    }
+    _import_composed(composed_payload)
+
+    response = _validate(
+        top["id"],
+        [
+            {
+                "local_id": "mate1",
+                "kind": "mate",
+                "type": "coincident",
+                "references": [
+                    _edge_ref(
+                        "existing:occ-unresolved", top_body_id, edge_selector={"selector": "vertical_edges", "of": ""}
+                    ),
                     _face_ref(""),
                 ],
             }
@@ -803,6 +906,33 @@ def test_mate_edge_selector_rejects_a_placed_occurrence_reference():
     results = _results_by_local_id(response)
     assert results["mate1"]["ok"] is False
     assert results["mate1"]["error"]["type"] == "invalid_step_payload"
+
+
+def test_mate_edge_selector_rejects_a_placed_occurrence_reference_when_validator_has_no_document():
+    """Direct-`_PlanValidator`-call regression guard: a caller that doesn't
+    pass `document` (this module's own default, `None`) keeps the original,
+    pre-Phase-D2 behavior exactly - `edge_selector` on a non-root
+    `occurrence_id` is still rejected outright, never silently resolving
+    against the wrong thing or crashing on a missing `self.document`."""
+    top_id, bolt_a_id, bolt_a_body_id, occ_a = _setup_top_with_occurrence_target_having_its_own_body()
+    real_part = get_part_or_404(top_id)
+
+    results = _PlanValidator(real_part).run(
+        [
+            MateStep(
+                local_id="mate1",
+                type=MateType.COINCIDENT,
+                references=[
+                    MateEntityRefStep.model_validate(
+                        _edge_ref(f"existing:{occ_a}", bolt_a_body_id, edge_selector={"selector": "vertical_edges", "of": ""})
+                    ),
+                    MateEntityRefStep.model_validate(_face_ref("")),
+                ],
+            )
+        ]
+    )
+    assert results[0].ok is False
+    assert results[0].error["type"] == "invalid_step_payload"
 
 
 def test_mate_edge_selector_rejects_a_provenance_selector_kind():

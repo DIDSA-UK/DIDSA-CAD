@@ -112,6 +112,7 @@ from app.document.models import (
     ComponentPatternType,
     CreatePlaneFeature,
     DeleteBodyFeature,
+    Document,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
@@ -238,7 +239,30 @@ class _Resolved:
 
 
 class _PlanValidator:
-    def __init__(self, part: Part, disabled_kinds: frozenset[str] = frozenset()):
+    def __init__(self, part: Part, disabled_kinds: frozenset[str] = frozenset(), document: Document | None = None):
+        # Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-
+        # multi-part-assembly-overhaul.md): the current session's own
+        # Document (every Part currently loaded, keyed by id -
+        # `app.document.store.get_document()`), needed so a Mate step's
+        # `edge_selector` can resolve against a *placed Occurrence's* own
+        # target Part, not just `self.part`'s own root content - see
+        # `_resolve_occurrence_target_part` below. Optional and `None` by
+        # default (every pre-Phase-D2 direct caller of this class, e.g.
+        # `validate_ai_plan`'s own default, keeps working unchanged) -
+        # `edge_selector` on a non-root occurrence_id simply stays
+        # unresolvable without it, the same behavior this class always had.
+        # Spiked directly against the actual code before writing this
+        # (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`'s own
+        # Phase D2 write-up): no new wire payload is needed at all - once a
+        # multi-file assembly graph is composed and imported
+        # (`POST /document/import/native`), every Part it contains already
+        # lives in this same session's `Document.parts` (`app.document.
+        # store.get_document()` is a per-session singleton, not a fresh
+        # per-request fetch) - `Occurrence.part_id` already resolves into
+        # it directly, exactly the same session-local cross-reference
+        # `native_format.py`'s own `_resolve_occurrence_part_ids` already
+        # trusts elsewhere.
+        self.document = document
         # Assembly support Phase 8 (`docs/assembly-scope.md` §2k): `Occurrence`
         # is a mutable dataclass, so a plain `list(part.occurrences)` would
         # only copy the *list*, leaving every element the same object the
@@ -475,6 +499,34 @@ class _PlanValidator:
             )
         raise _StepError({"type": "occurrence_requires_existing_prefix", "field": field, "local_id": local_id})
 
+    def _resolve_occurrence_target_part(self, occurrence: Occurrence, field: str) -> Part:
+        """Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-
+        multi-part-assembly-overhaul.md): resolves a placed Occurrence's
+        own target Part, for a Mate's `edge_selector` to compute real
+        geometry against - real only when this validator was given the
+        current session's `Document` (`self.document`, see `__init__`'s
+        own doc comment). Fails closed exactly like `native_format.py`'s
+        own `_resolve_occurrence_part_ids` invariant: only a
+        `resolved_part_id` actually present in `self.document.parts` is
+        ever trusted, never a bare stored `external_ref` path (this
+        backend has no filesystem access to resolve one anyway) and never
+        `None` (an unresolved Occurrence, or a plan-local `add_component`
+        step's own scratch Occurrence - `_handle_add_component`'s own doc
+        comment: "no real target-Part geometry is ever known to this dry
+        run" - correctly stays unresolvable here too, not a new gap this
+        phase introduces)."""
+        if self.document is None or occurrence.part_id is None or occurrence.part_id not in self.document.parts:
+            raise _StepError(
+                {
+                    "type": "invalid_step_payload",
+                    "message": (
+                        f"{field}.edge_selector needs this occurrence's target Part to be resolvable in the "
+                        "current session - it isn't (unresolved, or not loaded into this session's Document)"
+                    ),
+                }
+            )
+        return self.document.parts[occurrence.part_id]
+
     def _entity_ref(self, resolved: _Resolved, entity_type: SketchEntityType) -> SketchEntityRef:
         return SketchEntityRef(sketch_id=resolved.owning_sketch_id, entity_type=entity_type, entity_id=resolved.entity_id)
 
@@ -489,8 +541,10 @@ class _PlanValidator:
         raise _StepError({"type": "ambiguous_body", "body_id": base_id, "candidates": matches})
 
 
-def validate_ai_plan(part: Part, steps: list[PlanStep], disabled_kinds: frozenset[str] = frozenset()) -> list[StepResult]:
-    return _PlanValidator(part, disabled_kinds).run(steps)
+def validate_ai_plan(
+    part: Part, steps: list[PlanStep], disabled_kinds: frozenset[str] = frozenset(), document: Document | None = None
+) -> list[StepResult]:
+    return _PlanValidator(part, disabled_kinds, document).run(steps)
 
 
 # --- Dimension-driven sketches (docs/ai-modelling/08-dimension-driven-
@@ -959,20 +1013,24 @@ _MATE_EDGE_SELECTOR_UNSUPPORTED_KINDS = frozenset(
 
 
 def _resolve_mate_edge_selector(
-    v: _PlanValidator, subshape_ref: SubShapeRefSchema, selector: EdgeSelector, field: str
+    target_part: Part, subshape_ref: SubShapeRefSchema, selector: EdgeSelector, field: str
 ) -> SubShapeRefSchema:
-    """Phase 14 (`docs/assembly-scope.md` §6 `[3]`): resolves `selector`
-    against `v.part`'s own real, current Body geometry -
+    """Phase 14 (`docs/assembly-scope.md` §6 `[3]`), widened by Phase D2
+    (docs/ai-modelling/13-multi-part-assembly-overhaul.md) to resolve
+    against *any* real Part - originally only ever `v.part` itself
+    (`occurrence_id == ""`); now also a placed Occurrence's own resolved
+    target Part (`_PlanValidator._resolve_occurrence_target_part`), the
+    caller's job to have already resolved before calling this.
     `app.document.ai_plan_edges.resolve_edge_selector` doesn't care whether
-    the Body predates this plan (confirmed directly, not just assumed from
-    its own docstring - the exact same call `_resolve_edges` already makes
-    for Fillet/Chamfer), so the same four heuristic selectors work
-    unchanged here. `subshape_ref.body_id` already names which real Body to
-    search (`EdgeSelector.of` has no plan-local Body-producing step to name
-    in this context, so it's simply never read), the same "the ref already
+    the Body predates this plan or which Part it belongs to (confirmed
+    directly, not just assumed from its own docstring - the exact same
+    call `_resolve_edges` already makes for Fillet/Chamfer), so the same
+    four heuristic selectors work unchanged against either Part.
+    `subshape_ref.body_id` already names which real Body to search
+    (`EdgeSelector.of` has no plan-local Body-producing step to name in
+    this context, so it's simply never read), the same "the ref already
     carries what identifies its own target" shape `subshape_ref` itself
-    always has. Only ever called for `occurrence_id == ""` - see
-    `_mate_entity_ref_from_step`'s own guard just above its call site."""
+    always has."""
     if subshape_ref.shape_type != SubShapeType.EDGE:
         raise _StepError(
             {
@@ -990,7 +1048,7 @@ def _resolve_mate_edge_selector(
                 ),
             }
         )
-    bodies = compute_part_bodies(v.part, frozenset())
+    bodies = compute_part_bodies(target_part, frozenset())
     if subshape_ref.body_id not in bodies:
         raise _StepError(
             {"type": "invalid_step_payload", "message": f"{field}.subshape_ref.body_id not found: {subshape_ref.body_id}"}
@@ -1031,8 +1089,10 @@ def _mate_entity_ref_from_step(
             {"type": "invalid_step_payload", "message": f"{field} requires exactly one of subshape_ref, plane_ref, or point_ref"}
         )
     occurrence_id = ""
+    occurrence: Occurrence | None = None
     if ref.occurrence_id != "":
-        occurrence_id = v._lookup_occurrence(ref.occurrence_id, f"{field}.occurrence_id").id
+        occurrence = v._lookup_occurrence(ref.occurrence_id, f"{field}.occurrence_id")
+        occurrence_id = occurrence.id
 
     subshape_ref = ref.subshape_ref
     resolved_subshape_ref: SubShapeRefSchema | None = None
@@ -1041,18 +1101,14 @@ def _mate_entity_ref_from_step(
             raise _StepError(
                 {"type": "invalid_step_payload", "message": f"{field}.edge_selector requires subshape_ref"}
             )
-        # `[3]`'s own real scope limit - see `_resolve_mate_edge_selector`'s
-        # own doc comment for why: a placed Occurrence's own target Part is
-        # a different Part this single-Part-scoped validator has no
-        # geometry access to at all.
-        if ref.occurrence_id != "":
-            raise _StepError(
-                {
-                    "type": "invalid_step_payload",
-                    "message": f"{field}.edge_selector is only supported for occurrence_id == '' (the currently-open Part's own root content)",
-                }
-            )
-        subshape_ref = _resolve_mate_edge_selector(v, subshape_ref, ref.edge_selector, field)
+        # Phase D2 (docs/ai-modelling/13-multi-part-assembly-overhaul.md):
+        # `occurrence_id == ""` still resolves against `v.part` itself, the
+        # original Phase 14 behavior; a non-root occurrence now resolves
+        # against its own real target Part instead of being unconditionally
+        # rejected - see `_resolve_occurrence_target_part`'s own doc
+        # comment for exactly when that's possible.
+        target_part = v.part if occurrence is None else v._resolve_occurrence_target_part(occurrence, field)
+        subshape_ref = _resolve_mate_edge_selector(target_part, subshape_ref, ref.edge_selector, field)
         resolved_subshape_ref = subshape_ref
 
     entity_ref = MateEntityRef(

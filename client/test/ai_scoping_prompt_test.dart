@@ -132,6 +132,18 @@ void main() {
     expect(prompt, contains(aiToolGroups['assembly']!.label));
   });
 
+  // Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-multi-
+  // part-assembly-overhaul.md): the mate edge_selector guidance must match
+  // the real, now-widened backend behavior (backend/app/document/
+  // ai_plan.py's _resolve_occurrence_target_part) - it used to flatly claim
+  // edge_selector never works on a placed component's own occurrence_id
+  // side at all, which stopped being true once D2 shipped.
+  test('mate edge_selector guidance says existing:<id> occurrences are usable, not root-only', () {
+    final prompt = buildAiScopingSystemPrompt();
+    expect(prompt, contains('existing:<id>" form (an already-real'));
+    expect(prompt, isNot(contains('Only ever usable on the')));
+  });
+
   test('the permanent-limitations text no longer flatly claims there is no multi-Part assembly support', () {
     final prompt = buildAiScopingSystemPrompt();
     expect(prompt, isNot(contains('no multi-Part assembly')));

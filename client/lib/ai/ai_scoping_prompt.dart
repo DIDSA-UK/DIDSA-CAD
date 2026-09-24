@@ -601,11 +601,10 @@ that is none of these three.
   name different occurrence_ids. "distance"/"angle" mates require "value"
   (mm or degrees respectively); the others ignore it.
 
-  A reference whose occurrence_id is exactly "" (this Part's own root
-  geometry, never a placed component) may add "edge_selector" as a THIRD,
-  sibling field alongside a subshape_ref whose shape_type is "edge" -
-  {"occurrence_id":"", "subshape_ref":{"body_id":<real body id>,
-  "shape_type":"edge","index":0}, "edge_selector":{"selector":
+  A reference may add "edge_selector" as a THIRD, sibling field alongside
+  a subshape_ref whose shape_type is "edge" - {"occurrence_id":"",
+  "subshape_ref":{"body_id":<real body id>, "shape_type":"edge","index":0},
+  "edge_selector":{"selector":
   "top_face_edges"|"bottom_face_edges"|"vertical_edges"}} or
   {..., "edge_selector":{"selector":"all_edges_of_face_at_position",
   "direction":"+x"|"-x"|"+y"|"-y"|"+z"|"-z"}} - the same four selectors
@@ -613,13 +612,19 @@ that is none of these three.
   (edge_from_sketch_point/edge_from_sketch_line are NOT supported here).
   subshape_ref's own "index" is ignored and overridden once "edge_selector"
   is present - any placeholder value (e.g. 0) is fine there; only its
-  "body_id" is actually used. Only ever usable on the "" (root-content)
-  side of a Mate, never on a placed component's own occurrence_id side. If
-  more than one edge matches the selector (e.g. a box's own 4 vertical
-  edges), one of them is used - which one is not something you can control
-  from here, so only reach for edge_selector when you expect (or don't
-  care which of) the matches to be geometrically equivalent for the mate
-  you're making; otherwise fall back to a raw subshape_ref index instead.
+  "body_id" is actually used. Usable on occurrence_id "" (this Part's own
+  root geometry) AND on a placed component's own occurrence_id, as long as
+  that occurrence_id is the literal "existing:<id>" form (an already-real,
+  already-resolved Occurrence) - never on a bare local_id naming an
+  add_component step earlier in THIS SAME plan, since that component
+  doesn't have real, resolvable geometry yet at dry-run time; reference an
+  already-placed component's own real subshape_ref/edge_selector only via
+  its "existing:<id>" form. If more than one edge matches the selector
+  (e.g. a box's own 4 vertical edges), one of them is used - which one is
+  not something you can control from here, so only reach for edge_selector
+  when you expect (or don't care which of) the matches to be geometrically
+  equivalent for the mate you're making; otherwise fall back to a raw
+  subshape_ref index instead.
 - move_component: {local_id, kind:"move_component", occurrence_id,
   translation?, rotation_axis?, rotation_angle_degrees?} - translation is
   an [x, y, z] triple in mm (world space, not the component's own local

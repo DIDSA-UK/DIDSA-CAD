@@ -8204,9 +8204,17 @@ def validate_ai_plan(part_id: str, payload: PlanValidateRequest) -> PlanValidate
     Part. A plain, ordinary compute-only endpoint of the same kind this
     backend already has plenty of (`/gear/preview`, `cascade-preview`
     above), not part of the client-direct AI call itself (see
-    docs/ai-modelling/00-conventions.md)."""
+    docs/ai-modelling/00-conventions.md).
+
+    Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-multi-
+    part-assembly-overhaul.md): also passes the current session's own
+    `Document` through, so a Mate step's `edge_selector` can resolve
+    against a placed Occurrence's own target Part - every Part a composed
+    multi-file assembly graph pulled in already lives in this same
+    session's `Document.parts` (`get_document()` is a per-session
+    singleton), not a new payload this endpoint needs to accept."""
     part = get_part_or_404(part_id)
-    results = validate_ai_plan_steps(part, payload.steps, frozenset(payload.disabled_kinds))
+    results = validate_ai_plan_steps(part, payload.steps, frozenset(payload.disabled_kinds), get_document())
     return PlanValidateResponse(results=results)
 
 

@@ -8,13 +8,18 @@ same underlying assembly data model/pipeline from two different angles
 (this one from the AI-authoring side, that one from the manual-UI side) and
 should be read together for this workstream specifically.
 
-**Status**: Phases A, B, C, D **implemented**. Phase D's own scope was
+**Status**: Phases A, B, C, D, D2 **implemented**. Phase D's own scope was
 narrowed during implementation to end at "every recognized part generated
 and saved as its own file" - it deliberately does **not** attempt the
-assembly-insert/mate step, since that needs Phase D2 (a real, confirmed gap
-this session found in the existing mate edge-selector resolution) first,
-per this doc's own dependency graph. Phases D2 and E are planned, locked in
-design, **not yet built** - see each section below.
+assembly-insert/mate step itself, that's Phase E, now genuinely unblocked:
+D2 closed the real, confirmed gap in the existing mate edge-selector
+resolution (a Mate's `edge_selector` couldn't resolve against a placed
+Occurrence's own target Part at all before this phase) with **zero new
+wire payload** - the fix turned out to be pure backend wiring, not the
+Document-scoped-payload redesign the plan's own original framing expected
+(see Phase D2's own section for what the spike actually found). Phase E
+is planned, locked in design, **not yet built** - see its own section
+below.
 
 ## Context
 
@@ -90,15 +95,16 @@ before the much larger assembly-orchestration work is attempted.
 A: Mode toggle + multi-body-part mode  ──┐   [implemented]
 B: Multi-image upload per turn           ├──> D: Multi-part orchestration --> E: Assembly creation + mate + open
 C: Mandatory project folder + naming     ──┘   [implemented]                  ^         [planned]
-D2: Document-scoped mate edge/face resolution (backend, independent) --------/  [planned]
+D2: Document-scoped mate edge/face resolution (backend, independent) --------/  [implemented]
 ```
 
-A, B, C, and D are all **implemented** (D's real scope ends at "every part
-saved" - see its own section below for why). D2 is pure backend work with
-no dependency on D's client orchestration - it can be built independently
-at any time, but E cannot author a real mate between two just-created
-components until D2 ships. E is a strict follow-on to D (done) **and** D2
-(not yet built).
+A, B, C, D, and D2 are all **implemented** (D's real scope ends at "every
+part saved" - see its own section below for why). D2 turned out to be pure
+backend wiring (no new wire payload, no client changes - see its own
+section for the spike's real finding) and shipped independently of D's
+client orchestration, exactly as planned. E is a strict follow-on to D
+**and** D2, both now done - it is the only piece of this workstream still
+not built.
 
 ---
 
@@ -388,26 +394,121 @@ validation-failure-stops-the-run case.
 
 ---
 
-## Phase D2 — Document-scoped mate edge/face resolution (planned, not built)
+## Phase D2 — Document-scoped mate edge/face resolution (implemented)
 
-Backend-only, independent of Phase D's client orchestration. See the
-Locked decision above for the exact confirmed gap
-(`ai_plan.py`'s `occurrence_id == ''`-only `edge_selector` resolution).
-Sized on the order of `docs/assembly-scope.md` §2p (Phase 13's mate-solver
-work) - widen `_PlanValidator` (or add a sibling used only for
-assembly-mode plans) to accept the composed multi-file `Document` the
-client already builds via `AssemblyGraphComposer.compose`
-(`docs/assembly-scope.md` §2c), so a Mate step's `edge_selector` with a
-non-empty `occurrence_id` can resolve `Occurrence.resolved_part_id` -> the
-real target `Part` -> `compute_part_bodies` -> the selector, the same
-deterministic resolution already used for the root Part today. Needs a
-real spike on the wire-payload shape (whole composed graph per dry-run
-call vs. just the specific target Parts a plan's `mate` steps reference) -
-explicitly flagged as unresolved, not assumed.
+Backend-only, no client changes needed at all - confirmed directly, not
+assumed (see "The spike's real answer" below).
+
+### The spike's real answer: no new wire payload needed
+
+The plan's own original framing flagged a real open question - "does the
+validator need the *whole* composed graph on every dry-run call... or can
+it accept just the specific target Parts". Tracing the actual code before
+writing anything answered it differently from either option:
+`app.document.store.get_document()` is a **per-session singleton**
+(`_documents: OrderedDict[str, Document]`, keyed by session id, confirmed
+in `store.py`), not a fresh per-request fetch. Once a composed multi-file
+assembly graph is imported (`POST /document/import/native`), *every* Part
+it contains already lives in that same session's `Document.parts` for as
+long as the session stays open - `Occurrence.part_id` already resolves
+into it directly, the exact same session-local cross-reference
+`native_format.py`'s own `_resolve_occurrence_part_ids` already trusts
+elsewhere (confirmed in `docs/assembly-scope.md` §2c/§2s). So the fix is
+purely: thread the current session's `Document` through
+`_PlanValidator`/`validate_ai_plan`/the router endpoint - **zero** new
+request/response fields, zero client-side changes, zero new
+`DocumentApiClient` methods.
+
+### The fix
+
+- `_PlanValidator.__init__` gains an optional `document: Document | None =
+  None` param (`self.document`) - `None` by default, so every pre-existing
+  direct caller (including this module's own tests that build a
+  `_PlanValidator` without one) keeps the original, pre-Phase-D2 behavior
+  exactly.
+- New `_PlanValidator._resolve_occurrence_target_part(occurrence, field)` -
+  resolves `occurrence.part_id` into `self.document.parts`, failing closed
+  (a clear `invalid_step_payload`) when `self.document` is `None`,
+  `occurrence.part_id` is `None` (an unresolved Occurrence, or a plan-local
+  `add_component` step's own scratch Occurrence - correctly still
+  unresolvable, not a gap this phase introduces), or that id simply isn't
+  present in the session's `Document.parts`.
+- `_resolve_mate_edge_selector` widened from an implicit `v.part` to an
+  explicit `target_part: Part` parameter - `compute_part_bodies(target_part,
+  ...)` now runs against whichever Part actually owns the geometry, root or
+  placed component alike; the selector heuristics themselves
+  (`app.document.ai_plan_edges.resolve_edge_selector`) needed no change at
+  all, confirmed directly (they never cared which Part their Body came
+  from).
+- `_mate_entity_ref_from_step`'s old unconditional rejection
+  (`edge_selector is only supported for occurrence_id == ''`) is gone -
+  replaced with `target_part = v.part if occurrence is None else
+  v._resolve_occurrence_target_part(occurrence, field)`, then the same
+  `_resolve_mate_edge_selector` call as before, just against the right
+  target.
+- `validate_ai_plan(part, steps, disabled_kinds, document=None)` and the
+  `POST /parts/{part_id}/ai-plan/validate` router endpoint both gained the
+  same optional `document` pass-through, the endpoint always supplying
+  `get_document()` (the real fix's only "wiring" step - everything else
+  above is the actual resolution logic).
+
+### What's still correctly unresolvable, and why that's not a gap
+
+An Occurrence with no real target Part loaded into the current session
+(`part_id is None` - either never resolved at import, or a plan-local
+`add_component` step's own scratch Occurrence, which has no real
+geometry by design) still correctly fails with a clear error - there is
+genuinely no Body to resolve a selector against, not a scope limit this
+phase chose to leave in place. Verified directly by a real test
+(`test_mate_edge_selector_rejects_an_unresolved_occurrence_reference`).
+
+**Files**: `backend/app/document/ai_plan.py` (`_PlanValidator.__init__`,
+`_resolve_occurrence_target_part`, `_resolve_mate_edge_selector`,
+`_mate_entity_ref_from_step`, `validate_ai_plan`),
+`backend/app/document/router.py` (`validate_ai_plan`'s own endpoint,
+`GET .../ai-plan/validate` — threads `get_document()` through). Also
+`client/lib/ai/ai_scoping_prompt.dart`'s locked "Assembly editing"
+vocabulary (`assemblyVocabularyText`) - its mate `edge_selector` guidance
+flatly claimed "only ever usable on the '' (root-content) side... never on
+a placed component's own occurrence_id side," which this phase makes
+false; corrected to say `edge_selector` now also works on an
+`existing:<id>` occurrence (an already-real, already-resolved one) but
+still not on a bare plan-local `add_component` reference within the same
+plan (that component has no real geometry yet at dry-run time - see
+"What's still correctly unresolvable" above). This is a live, user-facing
+fix, not prep for Phase E: the "Assembly editing" vocabulary already
+drives real "Continue with AI" conversations against an already-open
+multi-file assembly today, independent of this workstream's own new
+Multi-body-Part/Assembly generation modes.
+
+**Tests**: `backend/tests/test_ai_plan_assembly_steps.py` - a real,
+end-to-end positive case
+(`test_mate_edge_selector_resolves_against_a_placed_occurrences_own_real_body`,
+new fixture `_setup_top_with_occurrence_target_having_its_own_body` gives
+the *placed Occurrence's own target Part* a real box Body, distinguishable
+by dimension from the root Part's own, and confirms via a real `Measure`
+call that the resolved edge belongs to the right Part) plus the two
+still-correctly-rejected cases (no `document` passed at all; an
+unresolved Occurrence) - the previous test asserting outright rejection
+for *any* non-root occurrence was found, while implementing this phase,
+to already be passing for the wrong reason (its own fixture's placed
+Occurrences target genuinely empty Parts with no Body at all, so the old
+assertion happened to still hold post-fix, just via a "body not found"
+error instead of the original scope-limit rejection it claimed to test) -
+rewritten rather than left silently stale (net +2 tests in this file: one
+removed/rewritten, three added). Full targeted run: 44/44 passed in
+`test_ai_plan_assembly_steps.py`; full backend suite (`backend/tests/`,
+real `pythonocc-core`/`py-slvs`, `pytest -n auto`) reconfirmed clean at
+**2399 passed, 0 failed** (15:48 wall-clock). Full client suite
+reconfirmed clean too - **2214/2214 passed** (14 GPU-skips, unchanged),
+`flutter analyze` clean - covering the corrected prompt text's own new
+test (`test/ai_scoping_prompt_test.dart`) alongside the untouched rest of
+the client, confirming this phase genuinely needed no other client
+change.
 
 ---
 
-## Phase E — Assembly creation, insert, mate, open (planned, not built)
+## Phase E — Assembly creation, insert, mate, open (planned, not built - now unblocked)
 
 Depends on D **and** D2. After Phase D's per-part cycles finish, run one
 more plan/execute cycle targeting a new-or-reused assembly Part, authored
@@ -510,6 +611,20 @@ this section, don't silently let it go stale, as further phases land.
   alongside the rest of this mode's vocabulary - worth reviewing together
   if `assemblyModeVocabularyText`'s own instructions are ever revised, so
   the two don't drift apart.
+- **D2-1: the "first match wins on ambiguity" limitation from Phase 14
+  (`docs/assembly-scope.md` §6 `[3]`'s own writeup) is unchanged by this
+  phase.** A selector matching more than one edge on a placed Occurrence's
+  own body (e.g. `vertical_edges` on an ordinary box - four matches) still
+  silently takes the first in `resolve_edge_selector`'s own stable
+  ordering, exactly as it always did for the root Part. D2 only widened
+  *which Part* can be searched, not the disambiguation behavior itself -
+  worth revisiting together if real usage shows either one is a problem
+  worth solving.
+- **D2-2: only Mate's `edge_selector` was widened - `move_component`/
+  `hide_component`/`isolate_component`/`pattern_component` never had any
+  geometry-selector concept to widen** (they reference a whole Occurrence,
+  never a specific edge/face on one), so this phase's own scope is
+  correctly narrow to Mate alone, not a gap in coverage.
 
 ### Emergent work (found during implementation, not in the original plan)
 
@@ -557,3 +672,27 @@ this section, don't silently let it go stale, as further phases land.
   integration (Phase C's `nextAvailablePartName`) made clear the type
   prefix is exactly as user-facing as the name, since it directly becomes
   the saved file's own name.
+- **A pre-existing test was passing for the wrong reason, found only while
+  building D2.** `test_ai_plan_assembly_steps.py`'s own
+  `test_mate_edge_selector_rejects_a_placed_occurrence_reference` (Phase
+  14) asserted `edge_selector` on a non-root `occurrence_id` always fails
+  - true before D2, but its own fixture's placed Occurrences (`bolt_a`/
+  `bolt_b`) are genuinely empty Parts with no Body at all, so after D2's
+  fix the *same* assertion kept passing for an entirely different reason
+  (a "body not found" error on an empty target Part, not the original
+  scope-limit rejection the test's own name and docstring claimed). Caught
+  by actually reading what the fixture set up, not just re-running the
+  suite and seeing green - rewritten into a real positive case (a new
+  fixture giving the target Part its own real Body) plus a correctly-
+  targeted negative case (a genuinely unresolved Occurrence), rather than
+  left silently stale. A concrete reminder that "still passes" and "still
+  tests what it claims to" are different questions.
+- **The spike itself reversed the plan's own original framing.** The plan
+  document's own pre-implementation text asked "does the validator need
+  the whole composed graph on every dry-run call, or just the specific
+  target Parts" - tracing `app.document.store.get_document()` before
+  writing any fix code found the real answer was neither: the backend's
+  existing per-session `Document` singleton already holds every Part a
+  composed graph pulled in, so **no new wire payload was needed at all**.
+  A case where reading the actual code changed the shape of the fix, not
+  just its size.
