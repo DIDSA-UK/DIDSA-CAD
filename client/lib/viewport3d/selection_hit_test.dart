@@ -895,14 +895,36 @@ double? _rayTriangleIntersectionT(
 /// edge/vertex is close enough (see [hitTestMeshEntities]), at which point
 /// "the cursor ray actually passes through this triangle" is itself the
 /// hit-test - no separate proximity radius is meaningful for a filled face.
+///
+/// Bug fix ("user tries to select a face but is only offered an edge; when
+/// user zooms in, user is able to select the face"): when [viewportSize] is
+/// given, the returned [HoverHit.pixelDistance] is repurposed (a face hit
+/// has no real "distance to cursor" of its own - the ray landed on it by
+/// definition) to instead carry the winning triangle's own on-screen size
+/// (half its shortest edge, in pixels) - [hitTestBodies]/
+/// [hitTestComponentInstanceEntities] use this as the other side of a
+/// distance-based tie-break against an in-tolerance vertex/edge: a small/
+/// distant face's entire screen footprint can sit inside the generic
+/// ~12.5px edge tolerance, so an edge belonging to a completely different,
+/// larger neighboring face used to always win there regardless of how
+/// deep into *this* small face the cursor actually was. Comparing the
+/// edge/vertex's own pixel distance against this face's own local size
+/// (rather than a fixed threshold) scales correctly with the face's own
+/// apparent size, fixing exactly the zoomed-out/small-face case without
+/// changing behavior for an edge that's genuinely close relative to its
+/// own face.
 HoverHit? hitTestFaces(
   vm.Ray ray,
   List<(vm.Vector3, vm.Vector3, vm.Vector3)> triangles,
-  List<int> ids,
-) {
+  List<int> ids, {
+  Size? viewportSize,
+  double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
+}) {
   final direction = ray.direction.normalized();
   double? bestT;
   int? bestId;
+  (vm.Vector3, vm.Vector3, vm.Vector3)? bestTriangle;
   for (var i = 0; i < triangles.length; i++) {
     final triangle = triangles[i];
     final t = _rayTriangleIntersectionT(
@@ -916,10 +938,27 @@ HoverHit? hitTestFaces(
     if (bestT == null || t < bestT) {
       bestT = t;
       bestId = ids[i];
+      bestTriangle = triangle;
     }
   }
   if (bestT == null || bestId == null) return null;
-  return HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.face, id: bestId), rayT: bestT);
+  double? localSizePixels;
+  if (viewportSize != null && bestTriangle != null) {
+    final (v0, v1, v2) = bestTriangle;
+    final minEdgeWorld = math.min((v1 - v0).length, math.min((v2 - v1).length, (v0 - v2).length));
+    final unitsPerPixel = _worldUnitsPerPixelAtDepth(
+      bestT,
+      viewportSize,
+      orthographicHalfHeight: orthographicHalfHeight,
+      fovRadiansY: fovRadiansY,
+    );
+    localSizePixels = unitsPerPixel > 0 ? (minEdgeWorld / 2) / unitsPerPixel : null;
+  }
+  return HoverHit(
+    entity: SelectionEntityRef(kind: SelectionEntityKind.face, id: bestId),
+    rayT: bestT,
+    pixelDistance: localSizePixels,
+  );
 }
 
 /// Every distinct face of [triangles] (ids parallel in [ids]) actually
@@ -1089,11 +1128,34 @@ HoverHit? hitTestMeshEntities({
         )
       : null;
 
+  if (!filter.face) {
+    if (vertexHit != null) return vertexHit;
+    return edgeHit;
+  }
+  final faceHit = hitTestFaces(
+    ray,
+    trianglesFromMesh(mesh),
+    mesh.faceIds,
+    viewportSize: viewportSize,
+    orthographicHalfHeight: orthographicHalfHeight,
+    fovRadiansY: fovRadiansY,
+  );
+  // Bug fix ("user tries to select a face but is only offered an edge") -
+  // see [hitTestBodies]' identical tie-break for the full explanation.
+  if (faceHit != null && faceHit.pixelDistance != null) {
+    final faceLocalSizePixels = faceHit.pixelDistance!;
+    if (vertexHit != null && vertexHit.pixelDistance != null && vertexHit.pixelDistance! <= faceLocalSizePixels) {
+      return vertexHit;
+    }
+    if (edgeHit != null && edgeHit.pixelDistance != null && edgeHit.pixelDistance! <= faceLocalSizePixels) {
+      return edgeHit;
+    }
+    return faceHit;
+  }
+
   if (vertexHit != null) return vertexHit;
   if (edgeHit != null) return edgeHit;
-
-  if (!filter.face) return null;
-  return hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
+  return faceHit;
 }
 
 /// Prompt A3: the real multi-body hit-test entry point [PartViewport]
@@ -1240,7 +1302,14 @@ HoverHit? hitTestBodies({
       }
     }
     if (filter.face || filter.body || facesOccludeOtherHits) {
-      final hit = hitTestFaces(ray, trianglesFromMesh(mesh), mesh.faceIds);
+      final hit = hitTestFaces(
+        ray,
+        trianglesFromMesh(mesh),
+        mesh.faceIds,
+        viewportSize: viewportSize,
+        orthographicHalfHeight: orthographicHalfHeight,
+        fovRadiansY: fovRadiansY,
+      );
       if (hit != null && (bestFace == null || hit.rayT < bestFace.rayT)) {
         bestFace = hit;
         bestFaceBodyId = body.bodyId;
@@ -1468,6 +1537,28 @@ HoverHit? hitTestBodies({
     if (bestEdge != null &&
         !isExemptFromFaceOcclusion(bestEdge) &&
         bestEdge.rayT > bestFace.rayT + kFaceOcclusionEpsilon) {
+      bestEdge = null;
+    }
+  }
+
+  // Bug fix ("user tries to select a face but is only offered an edge"):
+  // see [hitTestFaces]' own doc comment for why its `pixelDistance` here
+  // means "this face's own local on-screen size", not "distance to
+  // cursor". Only a vertex/edge whose own distance to the cursor is
+  // actually smaller than that gets to keep winning outright - one that's
+  // farther away than the face itself is wide is background geometry
+  // (e.g. a neighboring larger face's boundary) that only fell inside the
+  // generic tolerance because this face's own footprint is small, not a
+  // deliberate aim at that edge/vertex. Gated on `filter.face || filter.body`
+  // so a face that only exists for [facesOccludeOtherHits]' occlusion check
+  // (not itself a selectable outcome here) never overrides a real vertex/
+  // edge pick.
+  if (bestFace != null && (filter.face || filter.body) && bestFace.pixelDistance != null) {
+    final faceLocalSizePixels = bestFace.pixelDistance!;
+    if (bestVertex != null && bestVertex.pixelDistance != null && bestVertex.pixelDistance! > faceLocalSizePixels) {
+      bestVertex = null;
+    }
+    if (bestEdge != null && bestEdge.pixelDistance != null && bestEdge.pixelDistance! > faceLocalSizePixels) {
       bestEdge = null;
     }
   }
@@ -1930,7 +2021,14 @@ HoverHit? hitTestComponentInstanceEntities({
             for (final t in trianglesFromMesh(mesh))
               (transform.transformed3(t.$1), transform.transformed3(t.$2), transform.transformed3(t.$3)),
           ];
-          final hit = hitTestFaces(ray, worldTriangles, mesh.faceIds);
+          final hit = hitTestFaces(
+            ray,
+            worldTriangles,
+            mesh.faceIds,
+            viewportSize: viewportSize,
+            orthographicHalfHeight: orthographicHalfHeight,
+            fovRadiansY: fovRadiansY,
+          );
           if (hit != null && (bestFace == null || hit.rayT < bestFace.rayT)) {
             bestFace = hit;
             bestFaceOccurrenceKey = occurrenceKey;
@@ -1938,6 +2036,20 @@ HoverHit? hitTestComponentInstanceEntities({
           }
         }
       }
+    }
+  }
+
+  // Bug fix ("user tries to select a face but is only offered an edge") -
+  // see [hitTestBodies]' identical tie-break for the full explanation of
+  // why [HoverHit.pixelDistance] on a face hit means its own local
+  // on-screen size here, not distance to cursor.
+  if (bestFace != null && (filter.face || filter.body) && bestFace.pixelDistance != null) {
+    final faceLocalSizePixels = bestFace.pixelDistance!;
+    if (bestVertex != null && bestVertex.pixelDistance != null && bestVertex.pixelDistance! > faceLocalSizePixels) {
+      bestVertex = null;
+    }
+    if (bestEdge != null && bestEdge.pixelDistance != null && bestEdge.pixelDistance! > faceLocalSizePixels) {
+      bestEdge = null;
     }
   }
 

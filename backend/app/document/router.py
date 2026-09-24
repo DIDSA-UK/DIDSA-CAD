@@ -201,6 +201,8 @@ from app.document.schemas import (
     AssemblyOccurrenceInstance,
     ComponentPatternAxisSchema,
     ComponentPatternCreate,
+    ComponentPatternDirectionFromRefRequest,
+    ComponentPatternDirectionFromRefResponse,
     ComponentPatternResponse,
     ComponentPatternUpdate,
     MateCreate,
@@ -3248,7 +3250,18 @@ def create_occurrence(part_id: str, payload: OccurrenceCreate) -> OccurrenceResp
     ids) and why this endpoint exists at all (Assembly-lens "Undo" after an
     Occurrence delete, `docs/assembly-scope.md`). 409s on a duplicate id -
     restoring is expected to target a fresh id (whatever `delete_occurrence`
-    just removed), never to silently overwrite an already-live Occurrence."""
+    just removed), never to silently overwrite an already-live Occurrence.
+
+    Bug fix (assembly testing: delete-then-undo reporting "file could not be
+    found"): `payload.resolved_part_id` is trusted as the restored
+    Occurrence's own `part_id` only when it names a `Part` already present
+    in `document.parts` - the same trust boundary `import_native`'s own
+    cross-reference resolution already applies for this exact field
+    (`Occurrence.part_id`'s own docstring). Anything else (omitted, or
+    naming a Part this Document doesn't have) leaves `part_id` at `None`,
+    the pre-existing "unresolved until the next full reimport" behavior -
+    this never *weakens* resolution, only closes the gap where a
+    genuinely-still-open Part's own id was being dropped for no reason."""
     part = get_part_or_404(part_id)
     if any(occurrence.id == payload.id for occurrence in part.occurrences):
         raise HTTPException(status_code=409, detail=f"Occurrence '{payload.id}' already exists")
@@ -3261,8 +3274,13 @@ def create_occurrence(part_id: str, payload: OccurrenceCreate) -> OccurrenceResp
         if payload.transform is not None
         else RigidTransform()
     )
+    document = get_document()
+    resolved_part_id = (
+        payload.resolved_part_id if payload.resolved_part_id in document.parts else None
+    )
     occurrence = Occurrence(
         id=payload.id,
+        part_id=resolved_part_id,
         external_ref=payload.external_ref,
         name_override=payload.name_override,
         transform=transform,
@@ -5142,6 +5160,45 @@ def measure_entities(part_id: str, payload: MeasureRequest) -> MeasurementResult
     refs = [_measure_entity_ref_to_domain(ref) for ref in payload.refs]
     result = compute_measurement(document, part, refs)
     return _measurement_result_to_schema(result)
+
+
+@router.post(
+    "/parts/{part_id}/component-pattern-direction",
+    response_model=ComponentPatternDirectionFromRefResponse,
+)
+def component_pattern_direction_from_ref(
+    part_id: str, payload: ComponentPatternDirectionFromRefRequest
+) -> ComponentPatternDirectionFromRefResponse:
+    """Bug fix (assembly testing: "pattern component tool: selecting a
+    custom line to use as a direction always seems to silently fail and
+    fall back to using an X/Y/Z direction vector") - resolves a picked edge
+    (see [ComponentPatternDirectionFromRefRequest]'s own doc comment for why
+    this is a one-time resolve-to-a-vector endpoint rather than a
+    `direction_ref` persisted on `ComponentPattern` itself) into a plain
+    direction vector, entirely by reusing the Measure tool's own single-
+    entity resolution (`compute_measurement`/`single_shape_geometry`'s
+    `axis_direction` - the same fitted line/circle axis direction Measure
+    itself already reports for a straight or circular edge) rather than any
+    new geometry code. Raises the same `missing_reference` 422 as `/measure`
+    if the ref doesn't resolve, or a new `invalid_direction_ref` 422 if it
+    resolves to something with no well-defined direction (a vertex, a face,
+    or a non-linear/non-circular edge like a spline)."""
+    part = get_part_or_404(part_id)
+    document = get_document()
+    ref = _measure_entity_ref_to_domain(payload.ref)
+    result = compute_measurement(document, part, [ref])
+    if result.axis_direction is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "type": "invalid_direction_ref",
+                "occurrence_id": payload.ref.occurrence_id,
+                "body_id": payload.ref.subshape_ref.body_id,
+                "shape_type": payload.ref.subshape_ref.shape_type.value,
+                "index": payload.ref.subshape_ref.index,
+            },
+        )
+    return ComponentPatternDirectionFromRefResponse(direction=result.axis_direction)
 
 
 @router.post(

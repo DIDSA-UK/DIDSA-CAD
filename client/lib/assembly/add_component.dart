@@ -174,3 +174,111 @@ Map<String, dynamic> mergeComponentIntoDocument({
     'sketches': mergedSketches,
   };
 }
+
+/// Bug fix (assembly testing: "if the software cannot find the file, it
+/// should ask for its location") - [mergeComponentIntoDocument]'s own
+/// sibling for re-linking an *already-existing* Occurrence whose reference
+/// couldn't be resolved (`OccurrenceDto.resolvedPartId == null`), rather
+/// than adding a brand-new one: merges [componentPayload]'s own Part(s) into
+/// [currentPayload] exactly the same deduped way, then updates the
+/// Occurrence named [occurrenceId] (on whichever Part has id [rootPartId])
+/// in place - its own `external_ref`/`resolved_part_id` point at the
+/// newly-picked file's root Part, every other field (`transform`, `hidden`,
+/// `fixed`, `color`, ...) left completely untouched, so re-linking a
+/// misplaced file doesn't also reset how it was positioned/configured.
+///
+/// Throws [AddComponentException] for the same reasons
+/// [mergeComponentIntoDocument] does, plus [occurrenceId] not actually
+/// naming an Occurrence on [rootPartId] (should never happen in practice -
+/// this is only ever called from the exact row that's showing the
+/// unresolved Occurrence - but fails loudly rather than silently no-op'ing
+/// if it somehow did).
+Map<String, dynamic> relocateOccurrenceInDocument({
+  required Map<String, dynamic> currentPayload,
+  required Map<String, dynamic> componentPayload,
+  required String rootPartId,
+  required String occurrenceId,
+  String? newExternalRef,
+}) {
+  final currentSchema = currentPayload['schema_version'];
+  final componentSchema = componentPayload['schema_version'];
+  if (componentSchema == null || componentSchema != currentSchema) {
+    throw AddComponentException('Unsupported or mismatched native file version');
+  }
+
+  final componentDocument = componentPayload['document'];
+  if (componentDocument is! Map) {
+    throw AddComponentException('Not a valid native project file');
+  }
+  final componentPartsRaw = componentDocument['parts'];
+  if (componentPartsRaw is! List || componentPartsRaw.isEmpty) {
+    throw AddComponentException('File contains no Parts');
+  }
+  final componentParts = componentPartsRaw.cast<Map<String, dynamic>>();
+  final componentRootPartId =
+      componentDocument['root_part_id'] as String? ?? componentParts.first['id'] as String;
+
+  if (componentRootPartId == rootPartId) {
+    throw AddComponentException('Cannot link a Part to itself');
+  }
+
+  final currentDocument = currentPayload['document'];
+  if (currentDocument is! Map) {
+    throw AddComponentException('Current session has no document to add to');
+  }
+  final currentParts = ((currentDocument['parts'] as List?) ?? const []).cast<Map<String, dynamic>>();
+  final currentRootPart = currentParts.firstWhere(
+    (part) => part['id'] == rootPartId,
+    orElse: () => throw AddComponentException('Current Part is missing from its own session snapshot'),
+  );
+  final existingOccurrences = ((currentRootPart['occurrences'] as List?) ?? const []).cast<Map<String, dynamic>>();
+  if (!existingOccurrences.any((occurrence) => occurrence['id'] == occurrenceId)) {
+    throw AddComponentException('That component is no longer part of this assembly');
+  }
+  final currentPartIds = {for (final part in currentParts) part['id'] as String};
+
+  final mergedParts = [
+    ...currentParts,
+    for (final part in componentParts)
+      if (!currentPartIds.contains(part['id'])) part,
+  ];
+
+  final currentSketches = ((currentPayload['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
+  final componentSketches = ((componentPayload['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
+  final currentSketchIds = {for (final sketch in currentSketches) sketch['id'] as String};
+  final mergedSketches = [
+    ...currentSketches,
+    for (final sketch in componentSketches)
+      if (!currentSketchIds.contains(sketch['id'])) sketch,
+  ];
+
+  final updatedParts = [
+    for (final part in mergedParts)
+      if (part['id'] == rootPartId)
+        {
+          ...part,
+          'occurrences': [
+            for (final occurrence in existingOccurrences)
+              if (occurrence['id'] == occurrenceId)
+                {
+                  ...occurrence,
+                  'external_ref': newExternalRef ?? occurrence['external_ref'],
+                  'resolved_part_id': componentRootPartId,
+                }
+              else
+                occurrence,
+          ],
+        }
+      else
+        part,
+  ];
+
+  return {
+    ...currentPayload,
+    'document': {
+      ...currentDocument,
+      'parts': updatedParts,
+    },
+    'sketches': mergedSketches,
+  };
+}

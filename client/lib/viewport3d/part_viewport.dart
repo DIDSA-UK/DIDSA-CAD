@@ -147,6 +147,15 @@ class PartViewport extends StatefulWidget {
   /// a stale position.
   final RigidTransformDto? matePreviewTransform;
 
+  /// Bug fix (assembly testing: "pattern component tool should show a ghost
+  /// preview of the patterned components in their forecast positions"):
+  /// [PartViewportState._syncComponentPatternPreviewNodes]' own sibling to
+  /// [matePreviewPartId]/[matePreviewTransform] - one ghost instance per
+  /// entry, rather than the single "one Part at one transform" shape those
+  /// two share, since a pattern always forecasts several instances at once.
+  /// `const []` (the default) renders no preview at all.
+  final List<ComponentPatternPreviewInstance> componentPatternPreviewInstances;
+
   /// Assembly support Phase 5 (`docs/assembly-scope.md` §3): the Move/
   /// Rotate gizmo's own target - the selected Occurrence's own current
   /// `RigidTransformDto` (during a live drag, [PartScreen]'s own optimistic
@@ -1022,6 +1031,7 @@ class PartViewport extends StatefulWidget {
     this.focusOccurrenceColorHex,
     this.matePreviewPartId,
     this.matePreviewTransform,
+    this.componentPatternPreviewInstances = const [],
     this.selectedOccurrenceTransform,
     this.selectedOccurrenceBoundingRadius,
     this.onComponentGizmoDragUpdate,
@@ -1284,6 +1294,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// same "clear, then rebuild" shape. Always empty outside an active New
   /// Mate flow.
   Map<String, Node> _matePreviewNodes = {};
+
+  /// [_matePreviewNodes]' own sibling for [PartViewport.
+  /// componentPatternPreviewInstances] - keyed by list index (each entry's
+  /// own [ComponentPatternPreviewInstance.partId]/`bodyId` pair isn't
+  /// guaranteed unique across several forecast instances of the same
+  /// source, unlike [_matePreviewNodes]' single-Part-at-a-time case),
+  /// rebuilt wholesale by [_syncComponentPatternPreviewNodes] the same
+  /// "clear, then rebuild" shape. Always empty outside an active Pattern
+  /// Component flow.
+  List<Node> _componentPatternPreviewNodes = [];
 
   /// Stage 11: the Part's real OCCT edge polylines, one [Node] per Body
   /// (Prompt A3), rendered separately from [_meshNodes]' filled faces -
@@ -1781,6 +1801,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncMeshNode();
         _syncAssemblyInstanceNodes();
         _syncMatePreviewNode();
+        _syncComponentPatternPreviewNodes();
         _syncComponentGizmoNode();
         _syncEdgesNode();
         _syncAssemblyInstanceEdgesNode();
@@ -1883,6 +1904,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.matePreviewPartId != oldWidget.matePreviewPartId ||
         widget.matePreviewTransform != oldWidget.matePreviewTransform) {
       setState(_syncMatePreviewNode);
+    }
+    // Bug fix (assembly testing: pattern component ghost preview) -
+    // [_syncComponentPatternPreviewNodes]' own inputs, same "each sync
+    // method owns exactly its own Node list" convention as the mate preview
+    // pair right above.
+    if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
+        widget.componentPatternPreviewInstances != oldWidget.componentPatternPreviewInstances) {
+      setState(_syncComponentPatternPreviewNodes);
     }
     // Bug fix (bug report: "on child parts... edges do not appear to
     // render"): [_syncAssemblyInstanceEdgesNode]'s own inputs - the
@@ -2600,6 +2629,38 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         );
         scene.add(node);
         _matePreviewNodes[body.bodyId] = node;
+      }
+    }
+  }
+
+  /// Bug fix (assembly testing: "pattern component tool should show a ghost
+  /// preview of the patterned components in their forecast positions") -
+  /// [_syncMatePreviewNode]'s own sibling for [PartViewport.
+  /// componentPatternPreviewInstances]: same "clear, then rebuild wholesale"
+  /// shape, reusing the same [kMatePreviewOpacity]/[kMatePreviewTint] "not
+  /// placed yet, only a proposal" styling, just one ghost per forecast
+  /// instance instead of at most one.
+  void _syncComponentPatternPreviewNodes() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final node in _componentPatternPreviewNodes) {
+      scene.remove(node);
+    }
+    _componentPatternPreviewNodes = [];
+    for (final preview in widget.componentPatternPreviewInstances) {
+      for (final partGeometry in widget.assemblyGeometry) {
+        if (partGeometry.partId != preview.partId) continue;
+        for (final body in partGeometry.bodies) {
+          if (body.mesh.vertices.isEmpty) continue;
+          final node = buildAssemblyInstanceNode(
+            body.mesh,
+            localTransform: preview.worldTransform,
+            opacity: kMatePreviewOpacity,
+            tint: kMatePreviewTint,
+          );
+          scene.add(node);
+          _componentPatternPreviewNodes.add(node);
+        }
       }
     }
   }

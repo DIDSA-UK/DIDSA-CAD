@@ -294,6 +294,32 @@ class MeasureRequest(BaseModel):
         ]
 
 
+class ComponentPatternDirectionFromRefRequest(BaseModel):
+    """Bug fix (assembly testing: "pattern component tool: selecting a
+    custom line to use as a direction always seems to silently fail and
+    fall back to using an X/Y/Z direction vector"): `ComponentPatternPanel`
+    previously had no way at all to resolve a picked edge into a direction -
+    only typed X/Y/Z fields (see `ComponentPatternAxisPreset`'s own doc
+    comment). This is the wire payload for `POST /parts/{part_id}/
+    component-pattern-direction`, which lets the client resolve a picked
+    edge (any placed Occurrence's own geometry, or the root Part's own body,
+    exactly like [MeasureEntityRefSchema]) into a plain direction vector
+    *once*, at pick time - deliberately not a `direction_ref` stored on
+    `ComponentPattern` itself (`ComponentPatternAxis`'s own docstring: a
+    `ComponentPattern`'s direction/axis are free world-space vectors, never
+    re-resolved from geometry on every `assembly-mesh` fetch, to keep that
+    expansion path OCCT-free by design). The resolved vector is sent back to
+    the client, which then treats it exactly like any other `custom`
+    direction value - no new field on `ComponentPatternCreate`/`Update` at
+    all."""
+
+    ref: MeasureEntityRefSchema
+
+
+class ComponentPatternDirectionFromRefResponse(BaseModel):
+    direction: tuple[float, float, float]
+
+
 class AxisSchema(BaseModel):
     """A `gp_Ax1` (origin + direction), for a circular edge's or
     cylindrical face's own fitted axis."""
@@ -2959,7 +2985,23 @@ class OccurrenceCreate(BaseModel):
     verbatim (this is genuinely a full round-trip restore, not a narrower
     "insert a new component" shape - compare `add_component.dart`'s own
     `mergeComponentIntoDocument`, which goes through a full `import_native`
-    instead and is untouched by this endpoint)."""
+    instead and is untouched by this endpoint).
+
+    Bug fix (assembly testing: "delete a part, then undo the deletion - the
+    file could not be found, even though it hadn't moved and was available"):
+    `resolved_part_id` closes the gap that caused this - the pre-delete
+    `Occurrence.part_id` cross-reference used to be dropped entirely on
+    restore (never part of this schema, so the client had nothing to send it
+    with even though it still had the value from right before the delete),
+    leaving the restored Occurrence's own `part_id` stuck at `None` until an
+    unrelated full project reopen re-resolved it - `AssemblyTreePanel` reads
+    that as "Missing file" (`resolvedPartId == null`), even though the
+    referenced file was never actually moved or missing. `create_occurrence`
+    only ever trusts this when it names a `Part` already present in
+    `document.parts` (the same validation rule `import_native`'s own
+    cross-reference resolution already applies for this exact field -
+    `Occurrence.part_id`'s own docstring), so a stale or fabricated id here
+    can't resurrect a reference to a Part that doesn't (or no longer) exist."""
 
     id: str
     external_ref: str | None = None
@@ -2969,6 +3011,7 @@ class OccurrenceCreate(BaseModel):
     hidden: bool = False
     fixed: bool = False
     color: str | None = None
+    resolved_part_id: str | None = None
 
 
 class MateEntityRefResponse(BaseModel):

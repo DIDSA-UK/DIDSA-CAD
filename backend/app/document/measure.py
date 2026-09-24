@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
 from OCC.Core.BRepExtrema import BRepExtrema_DistShapeShape
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line, GeomAbs_Plane
@@ -145,6 +146,32 @@ def _face_surface_type(ref: SubShapeRef, shape: TopoDS_Shape):
     if ref.shape_type != SubShapeType.FACE:
         return None
     return BRepAdaptor_Surface(topods.Face(shape), True).GetType()
+
+
+def _circle_center_shape(ref: SubShapeRef, shape: TopoDS_Shape) -> TopoDS_Shape | None:
+    """Bug fix (assembly testing: "when the user selects a diameter or arc
+    and another entity ... it should measure to/from the centre point, e.g.
+    when measuring distance between hole centres"): `None` unless `ref` is a
+    circular EDGE (a circle or arc - the only case with a well-defined,
+    bounded centre point; a cylindrical FACE's own "axis" is infinite, with
+    no single centre point of its own, so is deliberately left out of scope
+    here - it keeps its existing axis-based `axis_distance` treatment in
+    `_measure_pair` instead), in which case returns a synthetic zero-size
+    vertex `TopoDS_Shape` at that circle's own centre
+    (`BRepAdaptor_Curve.Circle().Location()`, the same point
+    `single_shape_geometry`'s own circular-edge case already reports as
+    `center`). Building a real vertex Shape (rather than hand-rolling a
+    point-to-shape distance) lets `_measure_pair` reuse the exact same
+    `BRepExtrema_DistShapeShape` call it already makes for the generic case,
+    substituting this centre vertex in place of the circular edge itself -
+    correct for every pairing (vertex, straight edge, planar/cylindrical
+    face, or another circle) with no separate formula needed."""
+    if ref.shape_type != SubShapeType.EDGE:
+        return None
+    curve = BRepAdaptor_Curve(topods.Edge(shape))
+    if curve.GetType() != GeomAbs_Circle:
+        return None
+    return BRepBuilderAPI_MakeVertex(curve.Circle().Location()).Shape()
 
 
 def _axis_to_axis_distance(a: gp_Ax1, b: gp_Ax1) -> tuple[float, bool]:
@@ -301,7 +328,19 @@ def _measure_pair(
     layers a named result (axis distance, normal distance) on top only
     when a specific geometric relationship is actually detected - per the
     product requirement, there is no "unsupported combination" error for
-    two entities; every pair gets at least the generic fields."""
+    two entities; every pair gets at least the generic fields.
+
+    Bug fix: when either (or both) operand is a circular edge (circle/arc),
+    the generic `BRepExtrema_DistShapeShape` result above - the *nearest rim
+    point* on that circle, wherever the other entity happens to sit - is
+    replaced with a distance/points computed from that circle's own centre
+    instead (see `_circle_center_shape`'s own doc comment). Two circular
+    edges paired together measure true centre-to-centre (e.g. "distance
+    between hole centres"); a circle paired with anything else (a vertex, a
+    straight edge, a face) measures from its centre to that other entity's
+    own nearest point. A cylindrical face is unaffected - it keeps its
+    existing axis-based `axis_distance` treatment below, not this centre
+    substitution."""
     extrema = BRepExtrema_DistShapeShape(shape_a, shape_b)
     if not extrema.IsDone() or extrema.NbSolution() < 1:
         raise _measure_failed([ref_a, ref_b])
@@ -309,6 +348,18 @@ def _measure_pair(
     distance = extrema.Value()
     p1, p2 = extrema.PointOnShape1(1), extrema.PointOnShape2(1)
     delta = (p2.X() - p1.X(), p2.Y() - p1.Y(), p2.Z() - p1.Z())
+
+    center_shape_a = _circle_center_shape(ref_a, shape_a)
+    center_shape_b = _circle_center_shape(ref_b, shape_b)
+    if center_shape_a is not None or center_shape_b is not None:
+        center_extrema = BRepExtrema_DistShapeShape(
+            center_shape_a if center_shape_a is not None else shape_a,
+            center_shape_b if center_shape_b is not None else shape_b,
+        )
+        if center_extrema.IsDone() and center_extrema.NbSolution() >= 1:
+            distance = center_extrema.Value()
+            p1, p2 = center_extrema.PointOnShape1(1), center_extrema.PointOnShape2(1)
+            delta = (p2.X() - p1.X(), p2.Y() - p1.Y(), p2.Z() - p1.Z())
 
     result = MeasurementResult(
         distance=distance,

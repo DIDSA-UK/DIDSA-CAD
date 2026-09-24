@@ -217,6 +217,7 @@ def test_restoring_a_deleted_occurrence_round_trips_its_full_field_set():
         json={
             "id": before["id"],
             "external_ref": before["external_ref"],
+            "resolved_part_id": before["resolved_part_id"],
             "name_override": before["name_override"],
             "transform": before["transform"],
             "suppressed": before["suppressed"],
@@ -230,15 +231,41 @@ def test_restoring_a_deleted_occurrence_round_trips_its_full_field_set():
     assert restored["id"] == occ_1
     assert restored["color"] == "#AABBCC"
     assert restored["hidden"] is True
-    # `resolved_part_id` is deliberately not part of `OccurrenceCreate` (it
-    # is never client-settable, only ever populated by `import_native`'s own
-    # cross-reference resolution) - a restored Occurrence is unresolved
-    # until a later full-graph reimport resolves it again, the same
-    # single-file-round-trip behavior every other Occurrence already has.
-    assert restored["resolved_part_id"] is None
+    # Bug fix (assembly testing: "delete a part, then undo the deletion -
+    # the file could not be found, even though it hadn't moved"): the
+    # client now sends `resolved_part_id` (read straight off the still-live
+    # Occurrence right before the delete) on restore, and the backend
+    # trusts it since it still names a real, still-open Part - the
+    # restored Occurrence comes back immediately resolved, not stuck
+    # unresolved until an unrelated full reimport.
+    assert restored["resolved_part_id"] == before["resolved_part_id"]
 
     occurrences = client.get(f"/document/parts/{top_id}/occurrences").json()
     assert sorted(o["id"] for o in occurrences) == sorted([occ_1, _occ_2])
+
+
+def test_restoring_with_a_resolved_part_id_naming_an_unknown_part_stays_unresolved():
+    """The other half of the fix: `resolved_part_id` is only ever trusted
+    when it names a Part this Document actually has - a stale or
+    fabricated id can't resurrect a reference to a Part that doesn't (or no
+    longer) exist."""
+    top_id, occ_1, _occ_2 = _setup_top_with_two_occurrences()
+    before = next(
+        o for o in client.get(f"/document/parts/{top_id}/occurrences").json() if o["id"] == occ_1
+    )
+    assert client.delete(f"/document/parts/{top_id}/occurrences/{occ_1}").status_code == 204
+
+    response = client.post(
+        f"/document/parts/{top_id}/occurrences",
+        json={
+            "id": before["id"],
+            "external_ref": before["external_ref"],
+            "resolved_part_id": "does-not-exist",
+            "transform": before["transform"],
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["resolved_part_id"] is None
 
 
 def test_restoring_with_a_duplicate_id_is_rejected():

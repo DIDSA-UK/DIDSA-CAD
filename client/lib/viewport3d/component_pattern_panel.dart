@@ -159,6 +159,20 @@ class ComponentPatternPanel extends StatelessWidget {
   /// branches create vs. update.
   final String? editingPatternId;
 
+  /// Bug fix (assembly testing: "pattern component tool: selecting a custom
+  /// line to use as a direction always seems to silently fail and fall back
+  /// to using an X/Y/Z direction vector") - `0` while nothing is being
+  /// picked, else which `custom` direction slot (`1` = Direction, `2` =
+  /// Direction 2, `3` = Axis direction) the next edge tap in the viewport
+  /// resolves into, via `part_screen.dart`'s own
+  /// `_setComponentPatternDirectionFromEntity`. Mirrors `PatternPanel`'s own
+  /// live viewport-pick affordance (`_patternActiveDirectionSlot`), the
+  /// parity this panel previously lacked entirely - see
+  /// [ComponentPatternAxisPreset]'s own doc comment for why `custom` used to
+  /// be typed-numbers-only.
+  final int pickingDirectionSlot;
+  final ValueChanged<int> onToggleDirectionPicking;
+
   final bool saving;
   final String? error;
 
@@ -207,6 +221,8 @@ class ComponentPatternPanel extends StatelessWidget {
     required this.onAngleTotalChanged,
     required this.reverseAngular,
     required this.onReverseAngularChanged,
+    this.pickingDirectionSlot = 0,
+    required this.onToggleDirectionPicking,
     this.editingPatternId,
     required this.saving,
     required this.error,
@@ -296,6 +312,8 @@ class ComponentPatternPanel extends StatelessWidget {
         if (direction == ComponentPatternAxisPreset.custom) ...[
           const SizedBox(height: 8),
           _vectorFields(customDirection, onCustomDirectionChanged),
+          const SizedBox(height: 4),
+          _pickFromViewportButton(context, slot: 1),
         ],
         const SizedBox(height: 8),
         _numberField('Count', count.toString(), (text) {
@@ -324,6 +342,8 @@ class ComponentPatternPanel extends StatelessWidget {
           if (direction2 == ComponentPatternAxisPreset.custom) ...[
             const SizedBox(height: 8),
             _vectorFields(customDirection2, onCustomDirection2Changed, keyPrefix: 'direction2-'),
+            const SizedBox(height: 4),
+            _pickFromViewportButton(context, slot: 2),
           ],
           const SizedBox(height: 8),
           _numberField(
@@ -398,6 +418,8 @@ class ComponentPatternPanel extends StatelessWidget {
         if (axisDirection == ComponentPatternAxisPreset.custom) ...[
           const SizedBox(height: 8),
           _vectorFields(customAxisDirection, onCustomAxisDirectionChanged),
+          const SizedBox(height: 4),
+          _pickFromViewportButton(context, slot: 3),
         ],
         const SizedBox(height: 8),
         _numberField('Instance count', countAngular.toString(), (text) {
@@ -432,6 +454,28 @@ class ComponentPatternPanel extends StatelessWidget {
       ],
       selected: {selected},
       onSelectionChanged: (selection) => onChanged(selection.first),
+    );
+  }
+
+  /// Bug fix (assembly testing: "pattern component tool: selecting a custom
+  /// line to use as a direction always seems to silently fail and fall back
+  /// to using an X/Y/Z direction vector") - toggles [pickingDirectionSlot]
+  /// for [slot] on/off; `part_screen.dart`'s own tap dispatch checks it
+  /// before its ordinary select/focus behavior (mirrors
+  /// [pickingMoreSources]' identical "this panel intercepts the next
+  /// viewport tap" shape), resolving the tapped edge into a direction
+  /// vector via `DocumentApiClient.componentPatternDirectionFromRef`.
+  Widget _pickFromViewportButton(BuildContext context, {required int slot}) {
+    final active = pickingDirectionSlot == slot;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: ChoiceChip(
+        label: Text(active ? 'Tap an edge in the viewport…' : 'Pick from viewport'),
+        avatar: Icon(active ? Icons.touch_app : Icons.ads_click, size: 18),
+        visualDensity: VisualDensity.compact,
+        selected: active,
+        onSelected: (_) => onToggleDirectionPicking(active ? 0 : slot),
+      ),
     );
   }
 
