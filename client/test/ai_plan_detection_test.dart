@@ -86,4 +86,42 @@ $minimalPlanJson
     expect(plan, isNotNull);
     expect(plan!.steps.single.localId, 'g1');
   });
+
+  // Multi-part/assembly overhaul, Phase D
+  // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`):
+  // [detectPartManifestInAssistantText] - the manifest sibling of
+  // [detectPlanInAssistantText], including the two never colliding on the
+  // same text.
+  group('detectPartManifestInAssistantText', () {
+    const manifestJson = '{"kind": "part_manifest", "parts": ['
+        '{"name": "Mounting Plate", "type_prefix": "PLATE", "summary": "a plate"},'
+        '{"name": "Support Tube", "type_prefix": "TUBE", "summary": "a tube"}'
+        ']}';
+
+    test('detects a manifest fenced in prose', () {
+      final text = 'Here is the breakdown:\n```json\n$manifestJson\n```\nDoes that look right?';
+      final manifest = detectPartManifestInAssistantText(text);
+      expect(manifest, isNotNull);
+      expect(manifest!.parts, hasLength(2));
+      expect(manifest.parts[0].name, 'Mounting Plate');
+      expect(manifest.parts[0].typePrefix, 'PLATE');
+      expect(manifest.parts[1].name, 'Support Tube');
+    });
+
+    test('returns null for an ordinary plan (no "kind": "part_manifest")', () {
+      expect(detectPartManifestInAssistantText(minimalPlanJson), isNull);
+    });
+
+    test('detectPlanInAssistantText returns null for a manifest (no "steps" key)', () {
+      expect(detectPlanInAssistantText(manifestJson), isNull);
+    });
+
+    test('returns null for prose with no JSON at all', () {
+      expect(detectPartManifestInAssistantText('Sounds good, let me think about the parts involved.'), isNull);
+    });
+
+    test('a manifest with no parts is rejected (FormatException caught internally, returns null)', () {
+      expect(detectPartManifestInAssistantText('{"kind": "part_manifest", "parts": []}'), isNull);
+    });
+  });
 }

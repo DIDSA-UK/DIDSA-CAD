@@ -216,4 +216,33 @@ Assumptions: hole goes all the way through.
       expect(prompt.indexOf(multiBodyPartVocabularyText), lessThan(prompt.indexOf('## Final reply format')));
     });
   });
+
+  // Multi-part/assembly overhaul, Phase D
+  // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`).
+  group('assemblyMode', () {
+    test('is absent by default', () {
+      final prompt = buildAiScopingSystemPrompt();
+      expect(prompt, isNot(contains(assemblyModeVocabularyText)));
+      expect(prompt, isNot(contains('## Assembly mode')));
+    });
+
+    test('appends assemblyModeVocabularyText, before the locked footer, when enabled', () {
+      final prompt = buildAiScopingSystemPrompt(assemblyMode: true);
+      expect(prompt, contains(assemblyModeVocabularyText));
+      expect(prompt.indexOf(assemblyModeVocabularyText), lessThan(prompt.indexOf('## Final reply format')));
+    });
+
+    test('the part_manifest shape is documented, including the kind discriminator', () {
+      final prompt = buildAiScopingSystemPrompt(assemblyMode: true);
+      expect(prompt, contains('"kind": "part_manifest"'));
+      expect(prompt, contains('type_prefix'));
+    });
+
+    test('multiBodyPartMode and assemblyMode can both be requested at once without erroring '
+        '(the UI never does this, but the builder itself does not assume mutual exclusion)', () {
+      final prompt = buildAiScopingSystemPrompt(multiBodyPartMode: true, assemblyMode: true);
+      expect(prompt, contains(multiBodyPartVocabularyText));
+      expect(prompt, contains(assemblyModeVocabularyText));
+    });
+  });
 }

@@ -8,8 +8,13 @@ same underlying assembly data model/pipeline from two different angles
 (this one from the AI-authoring side, that one from the manual-UI side) and
 should be read together for this workstream specifically.
 
-**Status**: Phases A, B, C **implemented** (this session). Phases D, D2, E
-are planned, locked in design, **not yet built** - see each section below.
+**Status**: Phases A, B, C, D **implemented**. Phase D's own scope was
+narrowed during implementation to end at "every recognized part generated
+and saved as its own file" - it deliberately does **not** attempt the
+assembly-insert/mate step, since that needs Phase D2 (a real, confirmed gap
+this session found in the existing mate edge-selector resolution) first,
+per this doc's own dependency graph. Phases D2 and E are planned, locked in
+design, **not yet built** - see each section below.
 
 ## Context
 
@@ -82,20 +87,18 @@ before the much larger assembly-orchestration work is attempted.
 ## Phase breakdown
 
 ```
-A: Mode toggle + multi-body-part mode  ──┐
+A: Mode toggle + multi-body-part mode  ──┐   [implemented]
 B: Multi-image upload per turn           ├──> D: Multi-part orchestration --> E: Assembly creation + mate + open
-C: Mandatory project folder + naming     ──┘                                  ^
-D2: Document-scoped mate edge/face resolution (backend, independent) --------/
+C: Mandatory project folder + naming     ──┘   [implemented]                  ^         [planned]
+D2: Document-scoped mate edge/face resolution (backend, independent) --------/  [planned]
 ```
 
-A, B, C, and D2 are mutually independent and can ship in any order. D needs
-A (the toggle is Assembly mode's entry point) and C (naming/folder); B
-materially improves D/E's real-world usefulness (a photo of a whole
-assembly) but isn't a hard blocker for D's text-only path. D2 is pure
-backend work with no dependency on D's client orchestration - it can be
-built in parallel with A/B/C/D, but E cannot author a real mate between two
-just-created components until D2 ships. E is a strict follow-on to D **and**
-D2.
+A, B, C, and D are all **implemented** (D's real scope ends at "every part
+saved" - see its own section below for why). D2 is pure backend work with
+no dependency on D's client orchestration - it can be built independently
+at any time, but E cannot author a real mate between two just-created
+components until D2 ships. E is a strict follow-on to D (done) **and** D2
+(not yet built).
 
 ---
 
@@ -280,28 +283,108 @@ when the picker is cancelled).
 
 ---
 
-## Phase D — Multi-part orchestration (planned, not built)
+## Phase D — Multi-part orchestration (implemented, scope ends before assembly creation)
 
-Needs a real design spike before the full build, the same way
-`docs/assembly-scope.md`'s Phase 20 budgeted real design time for its own
-per-Part-scoped-state question - the "N sequential cycles" approach is
-Locked above, but the concrete state-machine shape inside
-`AiModellingScreen` (today built around one `_activePartId`/one
-transcript/one Review-&-Generate panel) needs real design time, not a
-mechanical extension.
+**Scope note, decided during implementation**: the original entry below
+(kept for the historical record where it differs) sketched generation
+*and* an implied path into assembly creation. Building it surfaced that
+authoring real `mate` steps against freshly-placed components needs Phase
+D2's Document-scoped mate resolution first (this doc's own dependency
+graph already said so) - so this phase's real scope ends at "every
+recognized part has been generated and saved as its own file," and stops
+there with a clear, honest message rather than attempting a `mate`-bearing
+assembly plan that would very likely fail dry-run validation today. This
+is a scope *narrowing* found while building, not a silent cut - matches
+this doc set's own "verify against the code, not assumed" convention.
 
-Planned shape: once the scoping conversation and the user's confirmation
-(Phase A/B's "I see N parts - proceed?", already built into
-`multiBodyPartVocabularyText`'s discipline and extendable to Assembly
-mode's own vocabulary) settle on a part list, run the *existing*
-single-Part flow once per part - `createPart(proposedName)` -> dry-run
-validate -> execute -> propose a filename via Phase C's
-`nextAvailablePartName` -> save-confirm dialog (reusing
-`docs/assembly-scope.md` §2r's `relative_path_dialog.dart` shape) ->
-`StorageService.writeFile`. A step failure mid-cycle uses the existing
-no-auto-rollback posture within that one part's cycle; a whole-cycle
-failure stops the orchestration before advancing, never silently
-proceeding to the assembly step with a part missing.
+### The `part_manifest` mechanism (the design question this phase needed answered)
+
+Assembly mode's scoping conversation doesn't jump straight from prose to
+N plans. The LLM first emits a small, distinct structured shape - a
+`part_manifest` (new `client/lib/ai/ai_part_manifest.dart`,
+`AiPartManifest`/`AiPartManifestEntry`: `name`/`type_prefix`/`summary` per
+part) - detected by a new `detectPartManifestInAssistantText`
+(`ai_plan_detection.dart`, reusing `detectPlanInAssistantText`'s own
+candidate-scanning helpers). The two detectors can never collide: a real
+plan has no top-level `kind` field, a manifest has no `steps` field.
+
+Once a manifest is detected, `AiModellingScreen` shows a confirm panel
+(`_buildManifestConfirm`) with one editable name/type-prefix row per part
+(`_manifestNameControllers`/`_manifestPrefixControllers`) - the LLM's own
+breakdown is a starting point, not a final answer, the same "human
+confirms/edits before anything real happens" posture the save-gate itself
+uses one step later. "Confirm & Generate All"
+(`_confirmManifestAndGenerateAll`) folds any edits back in and starts the
+orchestration at part 0.
+
+### The orchestration loop (`_runPartCycle`)
+
+Exactly the Locked "N sequential single-Part cycles" architecture, with
+**zero** changes to `_PlanValidator`/`PlanTranslator`/the plan schema:
+
+1. Append a synthetic, visible `user`-role turn asking for exactly one
+   part's plan ("Please provide the plan for part 2 of 3: ... Reply with
+   an ordinary plan for this part only...") - real information exchanged
+   with the LLM, shown in the transcript like any other turn, not hidden
+   bookkeeping.
+2. `detectPlanInAssistantText` on the reply (completely unchanged) - if no
+   plan is found, the whole orchestration stops with a clear error (no
+   silent retry loop).
+3. `DocumentApiClient.createPart(entry.name)` - a real, brand-new Part,
+   exactly as the single-Part flow's own `_generate()` already does.
+4. `PlanTranslator.execute` (unchanged) - the existing dry-run-then-
+   real-execution pair, with progress reflected via a coarse
+   `_orchestrationStatus` string rather than a full per-step list (see
+   this doc's own Appendix for why the fuller `_stepStatuses` UI wasn't
+   duplicated here).
+5. `nextAvailablePartName` (Phase C) proposes a filename from whatever
+   `StorageService.listFiles` currently reports, filtered to
+   `kNativeFileExtension`.
+6. `showRelativePathPromptDialog` (Phase 15's own dialog,
+   `client/lib/viewport3d/relative_path_dialog.dart`, reused byte-for-byte)
+   - the human save-confirm the Locked decision requires. Cancelling stops
+   the whole orchestration cleanly (already-saved parts untouched; this
+   part's Features exist only in the backend's in-memory session, never
+   written to disk, so there is nothing on disk to clean up).
+7. `AssemblyDocumentClient.savePart(root, partId, path)` (Phase 15's own
+   client, reused as-is) writes the file for real, then recurses into the
+   next part.
+
+Any failure at any point (a step failure, a validation failure, a
+`gear_request` step, a provider error, a storage error, a cancelled save)
+stops the whole run rather than silently skipping ahead - `_orchestrating`
+stays `true` so the progress panel keeps showing exactly where and why it
+stopped (`_stopOrchestrationWithError`); `_dismissOrchestration` is the
+only way back to chat from there (**no retry-this-part action was built
+this pass** - see this doc's own Appendix).
+
+Once every part succeeds, the progress panel
+(`_buildOrchestrationProgress`) shows an "All parts saved" summary naming
+each part's own real `relativePath`, plus an explicit note that assembly
+creation isn't built yet and how to do it manually today (Insert Existing
+Component / Add Mate in the Assembly lens) - never a silent stop with no
+explanation.
+
+**Files**: `client/lib/ai/ai_part_manifest.dart` (new),
+`client/lib/ai/ai_plan_detection.dart` (`detectPartManifestInAssistantText`),
+`client/lib/ai/ai_scoping_prompt.dart` (`assemblyModeVocabularyText`, the
+new `assemblyMode` param), `client/lib/ai/ai_modelling_screen.dart` (the
+bulk of the new state machine: manifest state, `_runPartCycle`,
+`_confirmManifestAndGenerateAll`, `_stopOrchestrationWithError`,
+`_dismissOrchestration`, the two new panel builders, `_buildSystemPrompt`
+factored out as a shared helper so `_send`/`_shareExternalHandoff`/
+`_runPartCycle` can never drift on how the system prompt gets built).
+
+**Tests**: `test/ai_plan_detection_test.dart`'s new
+`detectPartManifestInAssistantText` group (fenced-in-prose detection, the
+two detectors never colliding on the same text, empty-parts rejection);
+`test/ai_scoping_prompt_test.dart`'s new `assemblyMode` group;
+`test/ai_modelling_screen_orchestration_test.dart` (new file, mirroring
+`ai_modelling_screen_mode_toggle_test.dart`'s own "keep it separate"
+reasoning): manifest-detected-shows-confirm-panel,
+cancel-returns-to-chat, a full 2-part happy-path run (through both real
+save-confirm dialogs, asserting the exact files written), and a
+validation-failure-stops-the-run case.
 
 ---
 
@@ -388,12 +471,45 @@ this section, don't silently let it go stale, as further phases land.
   No settings-screen control exists for either. Revisit if real usage
   shows 3 digits or the sanitization rule doesn't fit a real project's own
   naming convention.
-- **Assembly mode's "coming soon" banner has no test asserting its exact
-  wording stays in sync with whichever phase actually closes it** - a
-  cosmetic risk (the banner could go stale once Phase D/E ship, still
-  claiming to be unbuilt), not a functional one, since `_mode ==
-  AiGenerationMode.assembly` gating Send is independently tested and isn't
-  itself hardcoded to the banner text.
+- **Assembly mode's disclosure banner has no test asserting its exact
+  wording stays in sync with whichever phase actually closes the
+  insert/mate gap** - a cosmetic risk (the banner could go stale once
+  Phase D2/E ship, still claiming assembly creation isn't built), not a
+  functional one.
+- **D-1: no "retry this part" action.** A per-part failure (validation,
+  real step failure, a cancelled save) stops the *whole* orchestration -
+  already-saved parts are untouched, but there is no in-panel way to
+  retry just the failed part without starting over from part 0 (the user
+  can still continue chatting manually and ask for a revised plan, the
+  same recovery path the single-part flow's own stopped-run case already
+  relies on). A deliberate scope cut to keep the state machine's first
+  real version smaller, not an oversight - revisit if real usage shows
+  restarting from scratch is a genuine friction point.
+- **D-2: the per-part progress UI is coarse (one status string), not a
+  full per-step list.** `_buildReviewAndGenerate`'s own `_stepStatuses`
+  (pending/in-progress/done/failed per step) wasn't duplicated for the
+  in-flight part in `_buildOrchestrationProgress` - a real fidelity
+  reduction versus the single-part flow's own progress UI, accepted to
+  keep the panel's own code size down given it already renders a
+  per-*part* list on top. Revisit if real usage shows the coarse status
+  text isn't informative enough during a long-running part.
+- **D-3: no test exercises the assembly-mode `gear_request`-stop or
+  provider-error paths inside `_runPartCycle`.** The validation-failure
+  and no-plan-detected paths are covered
+  (`ai_modelling_screen_orchestration_test.dart`); the `stepFailed`/
+  `gearRequestEncountered`/`AiProviderException`/`StorageException`
+  branches share the same `_stopOrchestrationWithError` call and are
+  reused, tested code paths individually (each already covered by the
+  single-part flow's own tests), but no orchestration-specific test drives
+  them through a full multi-part run.
+- **D-4: the assembly-mode vocabulary's per-part request text is
+  hand-written prose (`_runPartCycle`'s own `requestMessage`), not itself
+  part of `ai_scoping_prompt.dart`.** Works today (verified via the
+  orchestration test's own fixture), but means the exact wording sent to
+  the LLM each cycle lives in `ai_modelling_screen.dart` rather than
+  alongside the rest of this mode's vocabulary - worth reviewing together
+  if `assemblyModeVocabularyText`'s own instructions are ever revised, so
+  the two don't drift apart.
 
 ### Emergent work (found during implementation, not in the original plan)
 
@@ -422,3 +538,22 @@ this section, don't silently let it go stale, as further phases land.
   (`aiModellingRemoveImage_$index`) rather than reusing the old single
   fixed key (`aiModellingRemoveImage`) - not called out in the original
   plan's UI sketch, found while implementing the thumbnail strip.
+- **`_shareExternalHandoff` never threaded `multiBodyPartMode`/
+  `assemblyMode` through at all until Phase D's own refactor.** Building
+  `_runPartCycle` (which also needed the exact same system-prompt
+  construction `_send()` already had) surfaced that the "share with
+  external AI" hand-off had silently drifted from the in-app prompt the
+  moment Phase A shipped - a real, if minor, pre-existing gap from Phase
+  A, only found and fixed while factoring out `_buildSystemPrompt()` for
+  Phase D's own needs.
+- **Phase D's original plan text (this file's own earlier draft) implied
+  generation could flow straight into assembly creation.** Confirmed
+  false while implementing, not assumed - see the Phase D section's own
+  "Scope note" above. The phase's real boundary (stop after every part is
+  saved) was decided mid-implementation, not up front.
+- **`AiPartManifestEntry`'s `type_prefix` needed its own edit field in the
+  confirm panel, not just `name`.** The original UI sketch only mentioned
+  reviewing/editing parts generically; implementing the naming-convention
+  integration (Phase C's `nextAvailablePartName`) made clear the type
+  prefix is exactly as user-facing as the name, since it directly becomes
+  the saved file's own name.

@@ -748,6 +748,65 @@ there is no assembly file involved in this mode at all). The finished Part
 is ordinary and is saved the normal manual way afterward - this mode never
 writes anything to disk on its own.''';
 
+/// Multi-part/assembly overhaul, Phase D
+/// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): appended only
+/// when the conversation has "Assembly" mode active. Distinct from
+/// [multiBodyPartVocabularyText] (one Part, several independent Bodies) and
+/// from [assemblyVocabularyText] above (editing an *already-open* Part's
+/// own Occurrences/Mates) - this is about producing *several separate
+/// files*, each its own real Part, later inserted and mated into a
+/// dedicated assembly file. Locks in the "N sequential single-Part cycles"
+/// architecture (`13-multi-part-assembly-overhaul.md`'s own Locked
+/// decision): the LLM never authors more than one Part's plan in a single
+/// reply - it first emits a `part_manifest` identifying the distinct parts,
+/// then is asked for each part's own ordinary plan one at a time, by the
+/// app itself (not by the end user typing each request by hand).
+const String assemblyModeVocabularyText = '''
+## Assembly mode
+
+This conversation has "Assembly" mode active - the user wants several
+distinct parts, each saved as its own file, then inserted and mated
+together into one assembly. Ask clarifying questions first if the number
+of parts or the boundary between them is unclear (the same "ask before
+guessing" discipline you always use for a missing dimension) - do not
+guess a part count.
+
+Once you are confident which distinct parts are involved, reply with a
+single fenced JSON object identifying them - nothing else in that message,
+no sketch/feature steps yet - in exactly this shape:
+
+```json
+{"kind": "part_manifest", "parts": [
+  {"name": "Mounting Plate", "type_prefix": "PLATE", "summary": "60x40x10mm plate with two M6 mounting holes"},
+  {"name": "Support Tube", "type_prefix": "TUBE", "summary": "40mm OD x 30mm ID x 120mm tube"}
+]}
+```
+
+"name" is a short human-readable name. "type_prefix" is a short, all-caps,
+underscore-only identifier you choose for this part's *type* (used to build
+its saved file name, e.g. "PLATE" -> a file named PLATE_001) - you choose
+this freely per part, it is never a fixed list. "summary" is one sentence
+describing the part's own shape/size/features. Nothing is created yet - the
+user reviews and confirms this breakdown before you are ever asked for a
+real plan.
+
+Once asked for the plan for one specific part by name, reply with an
+ordinary plan (the {"version": 1, "steps": [...]} shape described above)
+for **that one part only** - never re-emit a part_manifest, never include
+another part's steps in the same message, and never reference another
+part's own local_ids, Bodies, or Sketches - each part is built as its own
+completely independent, freshly-created Part.
+
+Once asked for the assembly plan (after every part above has already been
+created and saved to a real file), reply with an ordinary plan whose steps
+place and mate the parts already saved: an add_component step per part
+(see "Assembly editing" above for its exact shape) using the exact
+relative_path you are given for each one, followed by mate steps
+expressing the fit/attachment already described earlier in this
+conversation. Do not repeat any part's own sketch/feature steps here - by
+this point every part already exists as its own real file; this plan only
+places and mates them.''';
+
 const String _unitsConvention = '''
 ## Units
 
@@ -1073,6 +1132,9 @@ String buildAiScopingSystemPrompt({
   // means no behavior change at all - `multiBodyPartVocabularyText` is
   // simply never appended.
   bool multiBodyPartMode = false,
+  // Multi-part/assembly overhaul, Phase D: same "opt-in, no effect on any
+  // pre-existing caller" shape as `multiBodyPartMode` above.
+  bool assemblyMode = false,
 }) {
   final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
   final assistantInstructions =
@@ -1087,6 +1149,7 @@ String buildAiScopingSystemPrompt({
     _fewShotExamples,
     ...addOnBlocks,
     if (multiBodyPartMode) multiBodyPartVocabularyText,
+    if (assemblyMode) assemblyModeVocabularyText,
     if (hasExistingPart) _existingPartEditingBlock(existingPartSummary, existingOccurrencesSummary),
     if (availableComponentFilesSummary.isNotEmpty) _availableComponentFilesBlock(availableComponentFilesSummary),
     _planTerminationFooter,

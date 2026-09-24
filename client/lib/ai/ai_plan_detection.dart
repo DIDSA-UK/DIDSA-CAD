@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'ai_part_manifest.dart';
 import 'ai_plan.dart';
 
 /// AI Modelling workstream 2: the plan-detection fallback
@@ -30,6 +31,28 @@ AiGenerationPlan? detectPlanInAssistantText(String text) {
     } catch (_) {
       // Not valid JSON, or valid JSON that doesn't parse against the plan
       // schema (e.g. an unknown `kind`) - try the next candidate.
+      continue;
+    }
+  }
+  return null;
+}
+
+/// Multi-part/assembly overhaul, Phase D
+/// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): the
+/// [AiPartManifest] sibling of [detectPlanInAssistantText] - same candidate-
+/// scanning strategy (reuses the same private helpers), but looks for the
+/// `"kind": "part_manifest"` shape instead of a `"steps"` list. The two can
+/// never collide: a real plan has no top-level `kind` field at all, and a
+/// manifest has no `steps` field - `_candidateJsonObjects` is shared, but
+/// each detector's own `decoded[...]` check only ever matches its own shape.
+AiPartManifest? detectPartManifestInAssistantText(String text) {
+  for (final candidate in _candidateJsonObjects(text)) {
+    try {
+      final decoded = jsonDecode(candidate);
+      if (decoded is Map<String, dynamic> && decoded['kind'] == 'part_manifest' && decoded['parts'] is List) {
+        return AiPartManifest.fromJson(decoded);
+      }
+    } catch (_) {
       continue;
     }
   }

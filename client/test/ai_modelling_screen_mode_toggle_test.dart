@@ -56,8 +56,8 @@ void main() {
     expect(find.byKey(const Key('aiModellingModeToggle')), findsOneWidget);
     expect(find.text('Multi-body Part'), findsOneWidget);
     expect(find.text('Assembly'), findsOneWidget);
-    // No "coming soon" banner while Multi-body Part (the default) is selected.
-    expect(find.textContaining('Assembly mode is not built yet'), findsNothing);
+    // No Assembly-mode banner while Multi-body Part (the default) is selected.
+    expect(find.textContaining('Assembly mode generates and saves'), findsNothing);
   });
 
   testWidgets('"Continue with AI" (existingPartId set) never shows the toggle', (tester) async {
@@ -73,34 +73,25 @@ void main() {
     expect(find.byKey(const Key('aiModellingModeToggle')), findsNothing);
   });
 
-  testWidgets('selecting Assembly shows the "coming soon" banner and disables Send, without calling the provider',
-      (tester) async {
-    var callCount = 0;
-    final provider = _FakeAiProvider((_, __) async {
-      callCount++;
-      return const AiTurnResult(assistantText: 'hi');
-    });
+  // Multi-part/assembly overhaul, Phase D
+  // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): Assembly mode
+  // is no longer a pure stub - Send stays enabled, and the banner now
+  // discloses exactly what's real (per-part generation/save) vs. still
+  // unbuilt (the final insert/mate step, gated on Phase D2).
+  testWidgets('selecting Assembly shows the disclosure banner but keeps Send enabled', (tester) async {
+    final provider = _FakeAiProvider((_, __) async => const AiTurnResult(assistantText: 'hi'));
     await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Assembly'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Assembly mode is not built yet'), findsOneWidget);
+    expect(find.textContaining('Assembly mode generates and saves'), findsOneWidget);
     final sendButton = tester.widget<IconButton>(find.byKey(const Key('aiModellingSend')));
-    expect(sendButton.onPressed, isNull);
-
-    // Guards the `onSubmitted` bypass too (Enter key on the text field
-    // reaches `_send()` directly, not through the Send button's own
-    // `onPressed` gating) - `_send()` itself must also refuse to call the
-    // provider while Assembly mode is selected.
-    await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A bracket');
-    await tester.testTextInput.receiveAction(TextInputAction.done);
-    await tester.pumpAndSettle();
-    expect(callCount, 0);
+    expect(sendButton.onPressed, isNotNull);
   });
 
-  testWidgets('switching back to Multi-body Part re-enables Send', (tester) async {
+  testWidgets('switching back to Multi-body Part removes the Assembly-mode banner', (tester) async {
     final provider = _FakeAiProvider((_, __) async => const AiTurnResult(assistantText: 'hi'));
     await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
     await tester.pumpAndSettle();
@@ -110,9 +101,28 @@ void main() {
     await tester.tap(find.text('Multi-body Part'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('Assembly mode is not built yet'), findsNothing);
+    expect(find.textContaining('Assembly mode generates and saves'), findsNothing);
     final sendButton = tester.widget<IconButton>(find.byKey(const Key('aiModellingSend')));
     expect(sendButton.onPressed, isNotNull);
+  });
+
+  testWidgets('Assembly mode threads assemblyMode through to the system prompt', (tester) async {
+    String? capturedSystemPrompt;
+    final provider = _FakeAiProvider((_, systemPrompt) async {
+      capturedSystemPrompt = systemPrompt;
+      return const AiTurnResult(assistantText: 'hi');
+    });
+    await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider)));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Assembly'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A bracket with two plates');
+    await tester.tap(find.byKey(const Key('aiModellingSend')));
+    await tester.pumpAndSettle();
+
+    expect(capturedSystemPrompt, contains('Assembly mode'));
+    expect(capturedSystemPrompt, isNot(contains('Multi-body Part mode')));
   });
 
   testWidgets('Multi-body Part mode (the default) threads multiBodyPartMode through to the system prompt',
