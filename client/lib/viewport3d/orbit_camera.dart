@@ -620,6 +620,18 @@ class OrbitCamera {
   /// geometry). Defaults to the origin when omitted or when [radius] is
   /// non-positive.
   void setZoomBoundsForRadius(double radius, {vm.Vector3? center}) {
+    // Bug fix ("zoom level changes when hiding/showing the only part in an
+    // assembly"): a non-positive [radius] used to always fall through to the
+    // generic `default*` bounds below and re-clamp [distance] into them -
+    // correct the first time this is ever called (nothing real to derive
+    // bounds from yet), but wrong once [sceneRadius] is already positive:
+    // that only happens when every instance/body that contributed to it has
+    // gone invisible (e.g. hiding the assembly's only part), not when the
+    // geometry itself stopped existing. Keep the last-known-good bounds/
+    // distance untouched in that case rather than snapping the camera into
+    // the unrelated 5-300 default window - showing the part again
+    // immediately recomputes the real bounds on the next call.
+    if (radius <= 0 && sceneRadius > 0) return;
     sceneRadius = radius > 0 ? radius : 0;
     sceneCenter = sceneRadius > 0 ? (center ?? vm.Vector3.zero()) : vm.Vector3.zero();
     if (radius > 0) {

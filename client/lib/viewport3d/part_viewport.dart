@@ -2112,6 +2112,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // event).
       setState(_syncHoverNode);
     }
+    if (widget.highlightOverride != oldWidget.highlightOverride) {
+      // Bug fix ("Select Other" preview dimming): `_syncMeshNode`'s/
+      // `_syncAssemblyInstanceNodes`'s own per-body opacity both read
+      // [highlightOverride] now too (see their own doc comments) - re-run
+      // them on every change so dimming updates live as the user moves
+      // between candidate rows, not just the highlight overlay above.
+      setState(() {
+        _syncMeshNode();
+        _syncAssemblyInstanceNodes();
+      });
+    }
     if (widget.bodies != oldWidget.bodies && widget.selectionMode) {
       // The mesh's entity ids are only stable within one response (see
       // MeshDto's doc comments) - a hover/selection computed against the
@@ -2167,6 +2178,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     );
   }
 
+  /// Bug fix ("Select Other" long-press preview: bodies should dim to
+  /// mid-level transparency, with the previewed entity's own body/instance
+  /// staying fully opaque): whether [bodyId] (plus [occurrenceId] for a
+  /// placed-instance Body, empty for the root Part's own) is the Body/
+  /// instance that owns [override] - a `component`-kind override names the
+  /// whole Occurrence ([occurrenceId] alone), every other kind names one
+  /// specific Body via [SelectionEntityRef.bodyId] (already Occurrence-
+  /// attributed when it comes from a placed instance, same convention
+  /// [_bodyAndTransformFor] already relies on).
+  bool _isHighlightOwner(SelectionEntityRef override, {required String bodyId, required String occurrenceId}) {
+    if (override.kind == SelectionEntityKind.component) return override.occurrenceId == occurrenceId;
+    return override.bodyId == bodyId && override.occurrenceId == occurrenceId;
+  }
+
   void _syncMeshNode() {
     final scene = _scene;
     if (scene == null) return;
@@ -2204,7 +2229,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [focusWorldTransformMatrix] (below) is what now shows *where* this
     // content actually sits once something is focused - opacity was never
     // the right signal for that, only ever a stand-in for it.
-    final effectiveBodyOpacity = widget.bodyOpacity;
+    final baseBodyOpacity = widget.bodyOpacity;
     final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
@@ -2317,6 +2342,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           '[PartViewport] _syncMeshNode: geometryFromMesh(${body.bodyId}, '
           '${displayMesh.vertices.length} verts)...',
         );
+        // Bug fix ("Select Other" preview dimming): every Body that isn't
+        // the previewed candidate's own owner dims to `kSelectOtherDimOpacity`
+        // while `highlightOverride` is set - `math.min` with the existing
+        // Transparency-slider opacity so this never brightens a Body the
+        // slider already made more transparent, and never fights
+        // `kNonPrimaryAssemblyOpacity`'s own, unrelated focus-fade signal.
+        final highlightOverride = widget.highlightOverride;
+        final dimmedForSelectOther = highlightOverride != null &&
+            !_isHighlightOwner(highlightOverride, bodyId: body.bodyId, occurrenceId: '');
+        final effectiveBodyOpacity =
+            dimmedForSelectOther ? math.min(baseBodyOpacity, kSelectOtherDimOpacity) : baseBodyOpacity;
         // Face-culling bug fix: any translucent material below (preview
         // overlays are always translucent; a confirmed Body is translucent
         // whenever bodyOpacity < 1.0) needs double-sided-winding geometry,
@@ -2339,15 +2375,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // reads as its own state at a glance rather than being mistaken for
         // either.
         final material = isSkippedInstance
-            ? (UnlitMaterial()
+            ? (NormalDepthUnlitMaterial()
               ..alphaMode = AlphaMode.blend
               ..baseColorFactor = vm.Vector4(0.55, 0.55, 0.55, 0.25))
             : isCoarseOverlay
-            ? (UnlitMaterial()
+            ? (NormalDepthUnlitMaterial()
               ..alphaMode = AlphaMode.blend
               ..baseColorFactor = vm.Vector4(0.25, 0.55, 1.0, 0.45))
             : (widget.isPreviewMesh || isPreviewOverlay)
-            ? (UnlitMaterial()
+            ? (NormalDepthUnlitMaterial()
               ..alphaMode = AlphaMode.blend
               ..baseColorFactor = vm.Vector4(1.0, 0.65, 0.0, 0.45))
             // Lighting/shading upgrade: a confirmed Body now gets a real,
@@ -2361,7 +2397,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // this disproves this file's own earlier assumption that real
             // OCCT-tessellated geometry's winding is always culling-safe;
             // apparently it isn't always, so the same fix applies here too.
-            : (PhysicallyBasedMaterial()
+            : (NormalDepthPhysicallyBasedMaterial()
               ..alphaMode = effectiveBodyOpacity < 1.0 ? AlphaMode.blend : AlphaMode.opaque
               // Colour-during-focus fix (`docs/assembly-scope.md`): the
               // focused Occurrence's own colour override (if any) wins over
@@ -2390,7 +2426,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // MeshPrimitive only ever takes one Material.
         if (cutCapMesh != null && cutCapMesh.triangleIndices.isNotEmpty) {
           final capGeometry = geometryFromMesh(cutCapMesh, doubleSidedWinding: true);
-          final capMaterial = UnlitMaterial()
+          final capMaterial = NormalDepthUnlitMaterial()
             ..alphaMode = AlphaMode.opaque
             ..baseColorFactor = vm.Vector4(0.85, 0.55, 0.15, 1.0);
           final capNode = Node(mesh: Mesh(capGeometry, capMaterial))..localTransform = focusTransform;
@@ -2577,17 +2613,26 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // the root Part's own bodies).
           }
           if (displayMesh.triangleIndices.isEmpty) continue;
+          // Bug fix ("Select Other" preview dimming): same per-body
+          // `kSelectOtherDimOpacity` dimming `_syncMeshNode` applies to the
+          // root Part's own Bodies, applied here for a placed-instance Body -
+          // `math.min` composes with the existing focus-fade `opacity`
+          // (`assemblyInstanceOpacity`) above without fighting it.
+          final highlightOverride = widget.highlightOverride;
+          final dimmedForSelectOther = highlightOverride != null &&
+              !_isHighlightOwner(highlightOverride, bodyId: body.bodyId, occurrenceId: occurrenceKey);
+          final effectiveOpacity = dimmedForSelectOther ? math.min(opacity, kSelectOtherDimOpacity) : opacity;
           final node = buildAssemblyInstanceNode(
             displayMesh,
             localTransform: nodeTransform,
-            opacity: opacity,
+            opacity: effectiveOpacity,
             tint: tint,
           );
           scene.add(node);
           _assemblyInstanceNodes[sectionKey] = node;
           if (cutCapMesh != null) {
             final capGeometry = geometryFromMesh(cutCapMesh, doubleSidedWinding: true);
-            final capMaterial = UnlitMaterial()
+            final capMaterial = NormalDepthUnlitMaterial()
               ..alphaMode = AlphaMode.opaque
               ..baseColorFactor = vm.Vector4(0.85, 0.55, 0.15, 1.0);
             final capNode = Node(mesh: Mesh(capGeometry, capMaterial));
@@ -2746,7 +2791,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final mesh = body.mesh;
       if (mesh.vertices.isEmpty) continue;
       final geometry = geometryFromMesh(mesh, doubleSidedWinding: true);
-      final material = UnlitMaterial()
+      final material = NormalDepthUnlitMaterial()
         ..alphaMode = AlphaMode.blend
         ..baseColorFactor = vm.Vector4(0.25, 0.55, 1.0, 0.45);
       final node = Node(mesh: Mesh(geometry, material))..localTransform = focusTransform;
@@ -6279,7 +6324,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// arbitrary [color]), reusing the same [doubleSidedQuadBuffers] geometry
   /// those build from.
   Node _buildPlaneHighlightNode(vm.Matrix4 transform, double halfSize, vm.Vector4 color) {
-    final material = UnlitMaterial()
+    final material = NormalDepthUnlitMaterial()
       ..alphaMode = AlphaMode.blend
       ..baseColorFactor = color;
     final buffers = doubleSidedQuadBuffers(halfSize);

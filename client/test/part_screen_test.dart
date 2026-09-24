@@ -3970,7 +3970,12 @@ void main() {
   // own kind's dispatch without needing a real Pattern feature behind
   // every case.
   group('Assembly support Phase 4: component selection toggle', () {
-    testWidgets('a component entity never lands in PartViewport.selectedEntities', (tester) async {
+    // Bug fix ("selecting a component doesn't highlight it in 3D"): a
+    // component entity now DOES land in `selectedEntities` - that's the only
+    // thing `PartViewport._syncSelectedEntityNodes`'s own already-working
+    // `component` case reads to actually highlight it. Renamed/inverted from
+    // this test's old assertion, which encoded the bug being fixed here.
+    testWidgets('a component entity lands in PartViewport.selectedEntities so it highlights', (tester) async {
       final documentApi = DocumentApiClient(
         httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
       );
@@ -3986,13 +3991,12 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
-            const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1'),
-          );
+      const entity = SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1');
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(entity);
       await tester.pump();
 
       expect(tester.takeException(), isNull);
-      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, isEmpty);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, {entity});
     });
 
     testWidgets('an ordinary face entity still accumulates into selectedEntities as before', (tester) async {

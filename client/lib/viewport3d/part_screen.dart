@@ -30,6 +30,7 @@ import '../assembly/focus_stack.dart';
 import '../assembly/occurrence_visibility.dart';
 import 'component_context_menu.dart';
 import 'component_gizmo.dart';
+import 'component_selection_toolbar.dart';
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
@@ -2039,6 +2040,14 @@ class _PartScreenState extends State<PartScreen> {
   /// comment for the ambiguous stale-highlight bug this fixes.
   bool _selectOtherSheetOpen = false;
 
+  /// Bug fix ("selecting a component shows no contextual toolbar"): true
+  /// while `_onOccurrenceLongPress`'s `showComponentContextMenu` modal sheet,
+  /// or `_confirmDeleteOccurrence`'s own confirmation dialog, is open - both
+  /// have Move/Rotate/Fix/Float/Delete-labelled actions of their own that
+  /// would otherwise render at the same time as `ComponentSelectionToolbar`'s
+  /// identically-labelled buttons.
+  bool _componentContextMenuOpen = false;
+
   /// Bug report ("if one body is entirely inside another body, it cannot be
   /// selected"): fired by [PartViewport.onSelectOtherRequested] once the
   /// user's click-then-click-and-hold gesture fires over existing geometry.
@@ -2171,7 +2180,15 @@ class _PartScreenState extends State<PartScreen> {
         });
         return;
       }
-      setState(() => _selectedOccurrenceId = entity.occurrenceId);
+      // Bug fix ("selecting a component doesn't highlight it in 3D"): `entity`
+      // is already a fully-formed component-kind `SelectionEntityRef` from
+      // hit-testing - feed it into `_selectedEntities` too, same as
+      // `_onOccurrenceTap`'s own identical fix.
+      setState(() {
+        _selectedOccurrenceId = entity.occurrenceId;
+        _selectedEntities = {entity};
+        _selectedMateId = null;
+      });
       return;
     }
     // Measure: caps the selection at 2 entities. Toggling an already-
@@ -9386,6 +9403,24 @@ class _PartScreenState extends State<PartScreen> {
       // no "switch lens mid-session" race to worry about this early.
       if (widget.initialLens == AssemblyLens.assembly) {
         setState(() => _lens = AssemblyLens.assembly);
+      }
+      // Bug fix ("sub components aren't visible until the user switches to
+      // assembly lens"): this fetch used to be gated purely behind
+      // `widget.initialLens == AssemblyLens.assembly` above - but the
+      // viewport renders `_assemblyMesh`'s geometry unconditionally,
+      // regardless of `_lens` (see the `PartViewport` build site below), so
+      // opening a saved assembly without explicitly requesting Assembly lens
+      // (both `_openNativeFile`/`_onOpenProjectPressed`) left `_assemblyMesh`
+      // null - and so every sub-component invisible - until some other,
+      // unrelated action (e.g. `_toggleAssemblyLens`) happened to fetch it.
+      // `part.occurrenceIds` (`PartDto`'s own cheap id-only summary, already
+      // in hand from the `getPart`/`createPart` response just above - no
+      // extra round-trip) is the real "does this document actually have
+      // assembly content" signal - fetching only when it's non-empty (or
+      // Assembly lens was explicitly requested) keeps a plain single-Part
+      // document exactly as fast as before, while still catching every
+      // saved assembly regardless of which lens it opens into.
+      if (part.occurrenceIds.isNotEmpty || widget.initialLens == AssemblyLens.assembly) {
         await _refreshAssemblyTree();
         await _refreshAssemblyMesh();
       }
@@ -9444,6 +9479,11 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatterns = patterns;
       if (_selectedOccurrenceId != null && !occurrences.any((o) => o.id == _selectedOccurrenceId)) {
         _selectedOccurrenceId = null;
+        // Bug fix ("selecting a component doesn't highlight it in 3D"): a
+        // component-kind `_selectedEntities` entry has no meaning once its
+        // own Occurrence is gone - clear it alongside `_selectedOccurrenceId`
+        // so no orphaned 3D highlight survives.
+        _selectedEntities = {};
       }
     });
   }
@@ -18755,7 +18795,17 @@ class _PartScreenState extends State<PartScreen> {
       });
       return;
     }
-    setState(() => _selectedOccurrenceId = occurrence.id);
+    // Bug fix ("selecting a component doesn't highlight it in 3D"):
+    // `PartViewport`'s persistent highlighting is driven entirely by
+    // `selectedEntities` (`_syncSelectedEntityNodes`'s already-working
+    // `component` case) - `_selectedOccurrenceId` alone was never enough,
+    // mirrors `_onMateTap`'s own "select, then also populate
+    // `_selectedEntities`" shape just below in this file.
+    setState(() {
+      _selectedOccurrenceId = occurrence.id;
+      _selectedEntities = {SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: occurrence.id)};
+      _selectedMateId = null;
+    });
   }
 
   /// [AssemblyTreePanel.onOccurrenceLongPress] - Phase 4's real call site
@@ -18806,7 +18856,14 @@ class _PartScreenState extends State<PartScreen> {
   /// pre-selection directly, since a ComponentPattern's source genuinely is
   /// "the whole component that was long-pressed."
   Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence) async {
-    setState(() => _selectedOccurrenceId = occurrence.id);
+    // Bug fix ("selecting a component doesn't highlight it in 3D"): same
+    // `_selectedEntities` population as `_onOccurrenceTap`'s own identical
+    // fix, so a long-press-selected component highlights too.
+    setState(() {
+      _selectedOccurrenceId = occurrence.id;
+      _selectedEntities = {SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: occurrence.id)};
+      _selectedMateId = null;
+    });
     final resolvedPartId = occurrence.resolvedPartId;
     final focusStack = _focusStack;
     // §6 roadmap Phase 10 (`[19]`): was `focusStack.current ==
@@ -18820,7 +18877,14 @@ class _PartScreenState extends State<PartScreen> {
     final isFocused = focusStack?.currentOccurrencePath.contains(occurrence.id) ?? false;
     final hidden = occurrence.hidden;
     final fixed = occurrence.fixed;
+    // Bug fix ("selecting a component shows no contextual toolbar"): this
+    // menu's own Move/Rotate/Fix/Float/Delete entries duplicate
+    // `ComponentSelectionToolbar`'s buttons of the same names - hide that
+    // toolbar for the lifetime of this modal sheet so the two never render
+    // (and so collide, e.g. in a `find.text('Fix')` widget test) at once.
+    setState(() => _componentContextMenuOpen = true);
     final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden, fixed: fixed);
+    if (mounted) setState(() => _componentContextMenuOpen = false);
     if (!mounted || action == null) return;
     switch (action) {
       case ComponentContextMenuAction.makeFocus:
@@ -19091,6 +19155,14 @@ class _PartScreenState extends State<PartScreen> {
     final content = warningLines.isEmpty
         ? 'This cannot be undone.'
         : 'Deleting this component will also delete ${warningLines.join(' and ')}. This cannot be undone.';
+    // Bug fix ("selecting a component shows no contextual toolbar"): this
+    // dialog has its own "Delete" button, which would otherwise render at
+    // the same time as `ComponentSelectionToolbar`'s identically-labelled
+    // one (the Occurrence being deleted is still selected while this dialog
+    // is up) - reuses `_componentContextMenuOpen` to hide that toolbar for
+    // any modal sheet/dialog its own actions can lead to, not just the
+    // context menu itself.
+    setState(() => _componentContextMenuOpen = true);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -19102,6 +19174,7 @@ class _PartScreenState extends State<PartScreen> {
         ],
       ),
     );
+    if (mounted) setState(() => _componentContextMenuOpen = false);
     if (confirmed != true || !mounted) return;
     try {
       _componentTransformUndoStack.add(
@@ -19892,6 +19965,44 @@ class _PartScreenState extends State<PartScreen> {
                       ),
                       bodyNames: _selectionBodyNames,
                     ),
+                  ),
+                // Bug fix ("selecting a component shows no contextual
+                // toolbar"): the Assembly-lens equivalent of the
+                // SelectionListDrawer/SelectionContextPanel block just above
+                // (deliberately Part-lens-only, per its own gating comment) -
+                // Move/Fix-Float/Delete for a single selected Occurrence,
+                // gated the same "no other tool/picker session already owns
+                // the screen" way every other overlay in this Stack is.
+                // `!_anyToolPanelOpen` already covers `_moveRotateComponentActive`
+                // itself, so this toolbar auto-hides once Move opens
+                // `MoveRotateComponentPanel` below, avoiding overlapping UI.
+                if (_lens == AssemblyLens.assembly &&
+                    _selectedOccurrenceId != null &&
+                    !_anyToolPanelOpen &&
+                    !_anyFeatureOrSourcePickerSessionActive &&
+                    !_mateActive &&
+                    !_componentPatternPickingSources &&
+                    !_selectOtherSheetOpen &&
+                    !_componentContextMenuOpen)
+                  Builder(
+                    builder: (context) {
+                      final index = _occurrences.indexWhere((o) => o.id == _selectedOccurrenceId);
+                      if (index == -1) return const SizedBox.shrink();
+                      final occurrence = _occurrences[index];
+                      return Align(
+                        alignment: Alignment.bottomCenter,
+                        child: ComponentSelectionToolbar(
+                          fixed: occurrence.fixed,
+                          onMove: () => setState(() {
+                            _selectionMode = false;
+                            _moveRotateComponentActive = true;
+                            _moveRotateComponentMode = MoveRotateComponentMode.move;
+                          }),
+                          onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
+                          onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
+                        ),
+                      );
+                    },
                   ),
                 // Assembly support Phase 3: only one of FeatureTreePanel/
                 // AssemblyTreePanel is ever built at a time, gated on

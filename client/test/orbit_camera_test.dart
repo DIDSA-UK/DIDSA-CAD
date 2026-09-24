@@ -606,16 +606,53 @@ void main() {
     expect(camera.halfHeight, camera.maxHalfHeight);
   });
 
-  test('setZoomBoundsForRadius falls back to the fixed defaults for a non-positive radius', () {
+  test('setZoomBoundsForRadius falls back to the fixed defaults for a non-positive radius on first use', () {
     final camera = OrbitCamera();
 
-    camera.setZoomBoundsForRadius(10);
     camera.setZoomBoundsForRadius(0);
 
     expect(camera.minDistance, OrbitCamera.defaultMinDistance);
     expect(camera.maxDistance, OrbitCamera.defaultMaxDistance);
     expect(camera.nearClip, OrbitCamera.defaultNearClip);
     expect(camera.farClip, OrbitCamera.defaultFarClip);
+  });
+
+  // Bug fix ("zoom level changes when hiding/showing the only part in an
+  // assembly"): a non-positive radius used to always collapse straight back
+  // to the generic defaults above and re-clamp the camera's current distance
+  // into them - correct the first time this is ever called (nothing real to
+  // derive bounds from yet, covered by the test just above), but wrong once
+  // real bounds are already known: that only happens when everything that
+  // contributed to them went invisible (e.g. hiding an assembly's only
+  // part), not when the geometry itself stopped existing.
+  test('setZoomBoundsForRadius keeps the last real bounds when radius collapses to non-positive afterward', () {
+    final camera = OrbitCamera()..setZoomBoundsForRadius(10, center: vm.Vector3(1, 2, 3));
+
+    final minDistance = camera.minDistance;
+    final maxDistance = camera.maxDistance;
+    final nearClip = camera.nearClip;
+    final farClip = camera.farClip;
+    final sceneRadius = camera.sceneRadius;
+    final sceneCenter = camera.sceneCenter;
+    camera.distance = maxDistance;
+
+    camera.setZoomBoundsForRadius(0);
+
+    expect(camera.minDistance, minDistance);
+    expect(camera.maxDistance, maxDistance);
+    expect(camera.nearClip, nearClip);
+    expect(camera.farClip, farClip);
+    expect(camera.sceneRadius, sceneRadius);
+    expect(camera.sceneCenter, sceneCenter);
+    // The whole point of the fix: a non-positive radius must never re-clamp
+    // the camera's current distance either, once real bounds already exist.
+    expect(camera.distance, maxDistance);
+
+    // Real geometry becoming visible again immediately recomputes real
+    // bounds, same as if the non-positive call in between never happened.
+    camera.setZoomBoundsForRadius(20, center: vm.Vector3(4, 5, 6));
+    expect(camera.sceneRadius, 20);
+    expect(camera.sceneCenter, vm.Vector3(4, 5, 6));
   });
 
   // Bug fix (on-device feedback: "when zooming very close to a body and the
