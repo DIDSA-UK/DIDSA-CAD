@@ -198,8 +198,7 @@ void main() {
         AiChatMessage(
           role: AiMessageRole.user,
           text: 'What is this?',
-          imageBytes: fakeImageBytes,
-          imageMimeType: 'image/jpeg',
+          images: [AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/jpeg')],
         ),
       ]);
 
@@ -210,6 +209,47 @@ void main() {
         'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': base64Encode(fakeImageBytes)},
       });
       expect(content[1], {'type': 'text', 'text': 'What is this?'});
+    });
+
+    test('sendScopingTurn emits one image block per attached image, all ahead of the text block', () async {
+      Map<String, dynamic> capturedBody = {};
+      final secondImageBytes = Uint8List.fromList([9, 9, 9]);
+      final provider = AnthropicProvider(
+        apiKey: 'sk-ant-test',
+        model: 'claude-opus-5',
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'content': [
+              {'type': 'text', 'text': 'ok'},
+            ],
+          });
+        }),
+      );
+
+      await provider.sendScopingTurn([
+        AiChatMessage(
+          role: AiMessageRole.user,
+          text: 'Two parts',
+          images: [
+            AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/jpeg'),
+            AiImageAttachment(bytes: secondImageBytes, mimeType: 'image/png'),
+          ],
+        ),
+      ]);
+
+      final messages = capturedBody['messages'] as List<dynamic>;
+      final content = (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
+      expect(content.length, 3);
+      expect(content[0], {
+        'type': 'image',
+        'source': {'type': 'base64', 'media_type': 'image/jpeg', 'data': base64Encode(fakeImageBytes)},
+      });
+      expect(content[1], {
+        'type': 'image',
+        'source': {'type': 'base64', 'media_type': 'image/png', 'data': base64Encode(secondImageBytes)},
+      });
+      expect(content[2], {'type': 'text', 'text': 'Two parts'});
     });
 
     test('sendScopingTurn keeps content a plain string for a text-only turn even when other turns carry images', () async {
@@ -228,7 +268,11 @@ void main() {
       );
 
       await provider.sendScopingTurn([
-        AiChatMessage(role: AiMessageRole.user, text: 'Look at this', imageBytes: fakeImageBytes, imageMimeType: 'image/jpeg'),
+        AiChatMessage(
+          role: AiMessageRole.user,
+          text: 'Look at this',
+          images: [AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/jpeg')],
+        ),
         const AiChatMessage(role: AiMessageRole.assistant, text: 'What am I looking at?'),
       ]);
 
@@ -251,7 +295,9 @@ void main() {
         }),
       );
 
-      final description = await provider.extractImageDescription(fakeImageBytes, 'image/png');
+      final description = await provider.extractImageDescription([
+        AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/png'),
+      ]);
 
       expect(description, 'A bracket with two mounting holes, 60mm x 40mm.');
       final messages = capturedBody['messages'] as List<dynamic>;
@@ -262,7 +308,34 @@ void main() {
         'source': {'type': 'base64', 'media_type': 'image/png', 'data': base64Encode(fakeImageBytes)},
       });
       expect((content[1] as Map<String, dynamic>)['type'], 'text');
-      expect((content[1] as Map<String, dynamic>)['text'], contains('hand sketch or engineering drawing'));
+      expect((content[1] as Map<String, dynamic>)['text'], contains('mechanical/CAD design'));
+    });
+
+    test('extractImageDescription posts one image block per attached image', () async {
+      Map<String, dynamic> capturedBody = {};
+      final secondImageBytes = Uint8List.fromList([7, 7, 7]);
+      final provider = AnthropicProvider(
+        apiKey: 'sk-ant-test',
+        model: 'claude-opus-5',
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'content': [
+              {'type': 'text', 'text': 'Two parts.'},
+            ],
+          });
+        }),
+      );
+
+      await provider.extractImageDescription([
+        AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/png'),
+        AiImageAttachment(bytes: secondImageBytes, mimeType: 'image/jpeg'),
+      ]);
+
+      final messages = capturedBody['messages'] as List<dynamic>;
+      final content = (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
+      // Two image blocks + one text block.
+      expect(content.length, 3);
     });
   });
 }

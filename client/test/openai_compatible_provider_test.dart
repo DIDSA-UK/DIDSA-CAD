@@ -212,8 +212,7 @@ void main() {
         AiChatMessage(
           role: AiMessageRole.user,
           text: 'What is this?',
-          imageBytes: fakeImageBytes,
-          imageMimeType: 'image/jpeg',
+          images: [AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/jpeg')],
         ),
       ]);
 
@@ -225,6 +224,50 @@ void main() {
       expect(content[1], {
         'type': 'image_url',
         'image_url': {'url': 'data:image/jpeg;base64,${base64Encode(fakeImageBytes)}'},
+      });
+    });
+
+    test('sendScopingTurn emits one image_url block per attached image', () async {
+      Map<String, dynamic> capturedBody = {};
+      final secondImageBytes = Uint8List.fromList([9, 9, 9]);
+      final provider = OpenAiCompatibleProvider(
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        supportsVision: true,
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'choices': [
+              {
+                'message': {'content': 'ok'},
+              },
+            ],
+          });
+        }),
+      );
+
+      await provider.sendScopingTurn([
+        AiChatMessage(
+          role: AiMessageRole.user,
+          text: 'Two parts',
+          images: [
+            AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/jpeg'),
+            AiImageAttachment(bytes: secondImageBytes, mimeType: 'image/png'),
+          ],
+        ),
+      ]);
+
+      final messages = capturedBody['messages'] as List<dynamic>;
+      final content = (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
+      expect(content.length, 3);
+      expect(content[0], {'type': 'text', 'text': 'Two parts'});
+      expect(content[1], {
+        'type': 'image_url',
+        'image_url': {'url': 'data:image/jpeg;base64,${base64Encode(fakeImageBytes)}'},
+      });
+      expect(content[2], {
+        'type': 'image_url',
+        'image_url': {'url': 'data:image/png;base64,${base64Encode(secondImageBytes)}'},
       });
     });
 
@@ -247,7 +290,11 @@ void main() {
       );
 
       await provider.sendScopingTurn([
-        AiChatMessage(role: AiMessageRole.user, text: 'Look at this', imageBytes: fakeImageBytes, imageMimeType: 'image/jpeg'),
+        AiChatMessage(
+          role: AiMessageRole.user,
+          text: 'Look at this',
+          images: [AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/jpeg')],
+        ),
         const AiChatMessage(role: AiMessageRole.assistant, text: 'What am I looking at?'),
         const AiChatMessage(role: AiMessageRole.user, text: 'A bracket'),
       ]);
@@ -275,18 +322,50 @@ void main() {
         }),
       );
 
-      final description = await provider.extractImageDescription(fakeImageBytes, 'image/png');
+      final description = await provider.extractImageDescription([
+        AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/png'),
+      ]);
 
       expect(description, 'A bracket with two mounting holes, 60mm x 40mm.');
       final messages = capturedBody['messages'] as List<dynamic>;
       expect(messages.length, 1);
       final content = (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
       expect((content[0] as Map<String, dynamic>)['type'], 'text');
-      expect((content[0] as Map<String, dynamic>)['text'], contains('hand sketch or engineering drawing'));
+      expect((content[0] as Map<String, dynamic>)['text'], contains('mechanical/CAD design'));
       expect(content[1], {
         'type': 'image_url',
         'image_url': {'url': 'data:image/png;base64,${base64Encode(fakeImageBytes)}'},
       });
+    });
+
+    test('extractImageDescription posts one image_url block per attached image', () async {
+      Map<String, dynamic> capturedBody = {};
+      final secondImageBytes = Uint8List.fromList([7, 7, 7]);
+      final provider = OpenAiCompatibleProvider(
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5',
+        supportsVision: true,
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'choices': [
+              {
+                'message': {'content': 'Two parts.'},
+              },
+            ],
+          });
+        }),
+      );
+
+      await provider.extractImageDescription([
+        AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/png'),
+        AiImageAttachment(bytes: secondImageBytes, mimeType: 'image/jpeg'),
+      ]);
+
+      final messages = capturedBody['messages'] as List<dynamic>;
+      final content = (messages.single as Map<String, dynamic>)['content'] as List<dynamic>;
+      // text block + two image_url blocks.
+      expect(content.length, 3);
     });
 
     test('extractImageDescription throws without hitting the network when supportsVision is false', () async {
@@ -301,7 +380,7 @@ void main() {
       );
 
       await expectLater(
-        provider.extractImageDescription(fakeImageBytes, 'image/jpeg'),
+        provider.extractImageDescription([AiImageAttachment(bytes: fakeImageBytes, mimeType: 'image/jpeg')]),
         throwsA(isA<AiProviderException>()),
       );
       expect(called, isFalse);

@@ -19157,21 +19157,34 @@ class _PartScreenState extends State<PartScreen> {
           // distinct from `ToolChooserScreen`'s "AI Modelling" tile, which
           // always starts a brand-new Part and stays untouched by this
           // workstream. Disabled until `_part` has actually loaded.
+          //
+          // Multi-part/assembly overhaul, Phase C (`docs/ai-modelling/13-
+          // multi-part-assembly-overhaul.md`): a project folder is now
+          // required up front here too - `_ensureProjectRoot()` (this
+          // screen's own lazy "already have one, else last-used, else
+          // prompt" resolution, unchanged) runs before navigating, and a
+          // cancelled picker means no navigation at all, rather than
+          // reaching `AiModellingScreen` with `projectRoot` still `null` the
+          // way this call site did before this phase.
           IconButton(
             icon: const Icon(Icons.auto_awesome),
             tooltip: 'Continue with AI',
             onPressed: _part == null
                 ? null
-                : () => Navigator.of(context).push(
+                : () async {
+                    final root = await _ensureProjectRoot();
+                    if (root == null || !context.mounted) return;
+                    Navigator.of(context).push(
                       MaterialPageRoute(
                         builder: (_) => AiModellingScreen(
                           existingPartId: _part!.id,
                           documentApi: widget.documentApi,
                           storageService: _storageService,
-                          projectRoot: _projectRoot,
+                          projectRoot: root,
                         ),
                       ),
-                    ),
+                    );
+                  },
           ),
         ],
       ),

@@ -200,4 +200,20 @@ Assumptions: hole goes all the way through.
     expect(plan, isNotNull);
     expect(plan!.steps, hasLength(1));
   });
+
+  // Multi-part/assembly overhaul, Phase A (`docs/ai-modelling/13-multi-
+  // part-assembly-overhaul.md`).
+  group('multiBodyPartMode', () {
+    test('is absent by default', () {
+      final prompt = buildAiScopingSystemPrompt();
+      expect(prompt, isNot(contains(multiBodyPartVocabularyText)));
+      expect(prompt, isNot(contains('Multi-body Part mode')));
+    });
+
+    test('appends multiBodyPartVocabularyText, before the locked footer, when enabled', () {
+      final prompt = buildAiScopingSystemPrompt(multiBodyPartMode: true);
+      expect(prompt, contains(multiBodyPartVocabularyText));
+      expect(prompt.indexOf(multiBodyPartVocabularyText), lessThan(prompt.indexOf('## Final reply format')));
+    });
+  });
 }

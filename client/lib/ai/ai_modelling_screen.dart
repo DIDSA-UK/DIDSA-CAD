@@ -18,6 +18,7 @@ import '../storage/storage_service.dart';
 import '../viewport3d/part_screen.dart';
 import 'ai_component_file_summary.dart';
 import 'ai_existing_part_summary.dart';
+import 'ai_generation_mode.dart';
 import 'ai_plan.dart';
 import 'ai_plan_detection.dart';
 import 'ai_plan_export.dart';
@@ -142,6 +143,19 @@ class AiModellingScreen extends StatefulWidget {
   State<AiModellingScreen> createState() => _AiModellingScreenState();
 }
 
+/// An image the user has picked but not yet sent - the client-side
+/// counterpart to [AiImageAttachment] with the extra display-only
+/// [fileName]. Widened from a single scalar to a list-backed pending
+/// attachment strip in Phase B of the multi-part/assembly overhaul
+/// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`).
+class _PendingImage {
+  final Uint8List bytes;
+  final String mimeType;
+  final String fileName;
+
+  const _PendingImage({required this.bytes, required this.mimeType, required this.fileName});
+}
+
 class _AiModellingScreenState extends State<AiModellingScreen> {
   final TextEditingController _inputController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
@@ -150,14 +164,24 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   bool _sending = false;
   String? _sendError;
 
-  // Workstream 10 (image input): the picked-but-not-yet-sent image, shown as
-  // a small preview above the input row. Cleared as soon as `_send()` folds
-  // it into a real `AiChatMessage` (success or failure) - re-attaching is
-  // how a user retries, matching `_sendError`'s own "surfaced, not silently
-  // retried" posture.
-  Uint8List? _pendingImageBytes;
-  String? _pendingImageMimeType;
-  String? _pendingImageFileName;
+  // Multi-part/assembly overhaul, Phase A
+  // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): the per-
+  // conversation mode toggle. Starts from whatever default the user last
+  // set (`AiGenerationModePreferences.defaultMode`) - changing it here only
+  // affects this conversation; persisting a new default is a separate,
+  // explicit action (`_setMode`'s own `persistAsDefault` parameter).
+  AiGenerationMode _mode = AiGenerationModePreferences.defaultMode;
+
+  // Workstream 10 (image input): the picked-but-not-yet-sent image(s), shown
+  // as a small preview strip above the input row. Cleared as soon as
+  // `_send()` folds them into a real `AiChatMessage` (success or failure) -
+  // re-attaching is how a user retries, matching `_sendError`'s own
+  // "surfaced, not silently retried" posture. Widened from a single image to
+  // a list in Phase B of the multi-part/assembly overhaul
+  // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`) - one turn can
+  // now carry more than one image (several distinct parts, or several views
+  // of one assembly).
+  List<_PendingImage> _pendingImages = [];
   bool _preparingImage = false;
   String? _imageError;
 
@@ -439,17 +463,24 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
   Future<void> _send() async {
     final text = _inputController.text.trim();
-    final hasImage = _pendingImageBytes != null;
-    if ((text.isEmpty && !hasImage) || _sending || (_providerConfigDialogDismissed && _providerUnconfigured)) return;
+    final hasImages = _pendingImages.isNotEmpty;
+    if ((text.isEmpty && !hasImages) ||
+        _sending ||
+        (_providerConfigDialogDismissed && _providerUnconfigured) ||
+        // Multi-part/assembly overhaul, Phase A: Assembly mode is a stub
+        // until Phases D/D2/E land - guarded here too (not just the Send
+        // button's own `onPressed`), since `onSubmitted` on the text field
+        // reaches this method directly, bypassing that button entirely.
+        _mode == AiGenerationMode.assembly) {
+      return;
+    }
 
     final provider = widget.provider ?? AiProviderPreferences.active;
-    final imageBytes = _pendingImageBytes;
-    final imageMimeType = _pendingImageMimeType;
+    final images = _pendingImages;
     final userMessage = AiChatMessage(
       role: AiMessageRole.user,
-      text: text.isEmpty ? '(see attached image)' : text,
-      imageBytes: imageBytes,
-      imageMimeType: imageMimeType,
+      text: text.isEmpty ? '(see attached image${images.length > 1 ? 's' : ''})' : text,
+      images: [for (final image in images) AiImageAttachment(bytes: image.bytes, mimeType: image.mimeType)],
     );
     setState(() {
       _transcript = [..._transcript, userMessage];
@@ -457,15 +488,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _sendError = null;
       // Cleared now, not only on success - re-attaching is how a user
       // retries after a failed send, see this field's own doc comment.
-      _pendingImageBytes = null;
-      _pendingImageMimeType = null;
-      _pendingImageFileName = null;
+      _pendingImages = [];
     });
     _inputController.clear();
     _scrollToBottom();
 
     try {
-      if (imageBytes != null && imageMimeType != null) {
+      if (images.isNotEmpty) {
         // Divergence from `06-image-input-deferred.md`'s "dedicated OCR/CV
         // extraction step" lean - see `10-image-input.md`'s own "Design
         // choices" section: a narrowly-scoped, one-shot call against the
@@ -474,15 +503,23 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         // a turn of its own). Only its text *output* is appended, as a new
         // `user`-role turn - same "real information fed to the LLM, not
         // something it said" reasoning `_appendStoppedRunToTranscript`
-        // already established for a stopped-run error below. The raw image
-        // itself still rides along on `userMessage` above, so it stays
+        // already established for a stopped-run error below. The raw
+        // image(s) still ride along on `userMessage` above, so they stay
         // visible to the provider on every later turn too (the "pinned for
         // the whole conversation" requirement `06`'s own UX carryover
-        // named), not just this one-shot extraction call.
-        final extraction = await provider.extractImageDescription(imageBytes, imageMimeType);
+        // named), not just this one-shot extraction call. Widened to send
+        // every pending image in one extraction call (not one call per
+        // image) in Phase B of the multi-part/assembly overhaul
+        // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`) - the
+        // images likely relate to each other (several parts of one
+        // assembly), so a single call that can reason across all of them at
+        // once is both cheaper and more accurate than N independent calls.
+        final extraction = await provider.extractImageDescription([
+          for (final image in images) AiImageAttachment(bytes: image.bytes, mimeType: image.mimeType),
+        ]);
         final extractionMessage = AiChatMessage(
           role: AiMessageRole.user,
-          text: '[Automated analysis of the attached image]\n$extraction',
+          text: '[Automated analysis of the attached image${images.length > 1 ? 's' : ''}]\n$extraction',
         );
         if (!mounted) return;
         setState(() => _transcript = [..._transcript, extractionMessage]);
@@ -495,6 +532,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         existingPartSummary: _existingPartSummary,
         existingOccurrencesSummary: _existingOccurrencesSummary,
         availableComponentFilesSummary: _availableComponentFilesSummary,
+        multiBodyPartMode: _mode == AiGenerationMode.multiBodyPart,
       );
       final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
       final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
@@ -515,12 +553,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     }
   }
 
-  /// Workstream 10 (`10-image-input.md`): picks an image via `file_picker`
+  /// Workstream 10 (`10-image-input.md`): picks image(s) via `file_picker`
   /// (same `FileType`-driven, path-based pattern `mesh_viewer_screen.dart`'s
-  /// own `_pickAndLoad` already established), downscales/compresses it to
+  /// own `_pickAndLoad` already established), downscales/compresses each to
   /// roughly [aiImageMaxEdgePx] on its longest edge via
-  /// `flutter_image_compress`, and stores the result as the pending
-  /// attachment shown above the input row.
+  /// `flutter_image_compress`, and appends the results to the pending
+  /// attachment strip shown above the input row. Widened from
+  /// single-image-only (`result.files.single`) to `allowMultiple: true` in
+  /// Phase B of the multi-part/assembly overhaul (`docs/ai-modelling/13-
+  /// multi-part-assembly-overhaul.md`) - a request may show several
+  /// distinct parts across several images, or a single image may show a
+  /// whole assembly.
   ///
   /// `flutter_image_compress` has no Linux/Windows desktop implementation
   /// (Android/iOS/macOS/Web only, per its own platform support table) - on
@@ -530,55 +573,59 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// discipline `mesh_viewer_screen.dart`'s own `_pickAndLoad` doc comment
   /// established, for the same MethodChannel-heap reason), rather than
   /// crashing the attach flow outright.
+  ///
+  /// One file failing to process never aborts the others - each is
+  /// processed independently and a per-file failure is folded into
+  /// [_imageError] (the last failure's message, naming the failing file)
+  /// without discarding whichever files already succeeded, matching this
+  /// codebase's existing "one failure doesn't abort the rest" convention
+  /// (e.g. `AssemblyDocumentClient.saveAll`).
   Future<void> _attachImage() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image);
-    if (result == null) return;
-    final file = result.files.single;
-    final path = file.path;
-    if (path == null) {
-      setState(() => _imageError = 'Could not access "${file.name}" - no local file path was returned.');
-      return;
-    }
+    final result = await FilePicker.platform.pickFiles(type: FileType.image, allowMultiple: true);
+    if (result == null || result.files.isEmpty) return;
 
     setState(() {
       _preparingImage = true;
       _imageError = null;
     });
-    try {
-      Uint8List bytes;
-      String mimeType;
-      try {
-        final compressed = await FlutterImageCompress.compressWithFile(
-          path,
-          minWidth: aiImageMaxEdgePx,
-          minHeight: aiImageMaxEdgePx,
-          quality: 85,
-          format: CompressFormat.jpeg,
-        );
-        if (compressed == null) throw StateError('compressWithFile returned null');
-        bytes = compressed;
-        mimeType = 'image/jpeg';
-      } catch (_) {
-        bytes = await File(path).readAsBytes();
-        mimeType = _mimeTypeForExtension(file.extension ?? '');
+    final prepared = <_PendingImage>[];
+    String? error;
+    for (final file in result.files) {
+      final path = file.path;
+      if (path == null) {
+        error = 'Could not access "${file.name}" - no local file path was returned.';
+        continue;
       }
-      final oriented = _bakeExifOrientation(bytes, mimeType);
-      bytes = oriented.$1;
-      mimeType = oriented.$2;
-      if (!mounted) return;
-      setState(() {
-        _pendingImageBytes = bytes;
-        _pendingImageMimeType = mimeType;
-        _pendingImageFileName = file.name;
-        _preparingImage = false;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _preparingImage = false;
-        _imageError = 'Could not process "${file.name}": $e';
-      });
+      try {
+        Uint8List bytes;
+        String mimeType;
+        try {
+          final compressed = await FlutterImageCompress.compressWithFile(
+            path,
+            minWidth: aiImageMaxEdgePx,
+            minHeight: aiImageMaxEdgePx,
+            quality: 85,
+            format: CompressFormat.jpeg,
+          );
+          if (compressed == null) throw StateError('compressWithFile returned null');
+          bytes = compressed;
+          mimeType = 'image/jpeg';
+        } catch (_) {
+          bytes = await File(path).readAsBytes();
+          mimeType = _mimeTypeForExtension(file.extension ?? '');
+        }
+        final oriented = _bakeExifOrientation(bytes, mimeType);
+        prepared.add(_PendingImage(bytes: oriented.$1, mimeType: oriented.$2, fileName: file.name));
+      } catch (e) {
+        error = 'Could not process "${file.name}": $e';
+      }
     }
+    if (!mounted) return;
+    setState(() {
+      _pendingImages = [..._pendingImages, ...prepared];
+      _preparingImage = false;
+      _imageError = error;
+    });
   }
 
   /// Bakes a still-present EXIF orientation tag into the image's actual
@@ -623,13 +670,24 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         _ => 'image/jpeg',
       };
 
-  void _removePendingImage() {
+  void _removePendingImage(int index) {
     setState(() {
-      _pendingImageBytes = null;
-      _pendingImageMimeType = null;
-      _pendingImageFileName = null;
+      _pendingImages = [..._pendingImages]..removeAt(index);
       _imageError = null;
     });
+  }
+
+  /// Multi-part/assembly overhaul, Phase A: switches this conversation's
+  /// mode and persists it as the default the *next* fresh conversation
+  /// starts from (`AiGenerationModePreferences.setDefaultMode`) - a
+  /// deliberate "the toggle itself is the settings UI" choice, mirroring
+  /// `AiSystemPromptPreferences.setAddOnEnabled`'s own immediate-write-
+  /// through convention rather than adding a separate settings screen
+  /// control for the same value.
+  Future<void> _setMode(AiGenerationMode mode) async {
+    if (mode == _mode) return;
+    setState(() => _mode = mode);
+    await AiGenerationModePreferences.setDefaultMode(mode);
   }
 
   /// Workstream 11 (`11-voice-input.md`): lazily initializes
@@ -1175,6 +1233,23 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final visionSupported = provider.capabilities.supportsVision;
     return Column(
       children: [
+        // Multi-part/assembly overhaul, Phase A
+        // (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): only
+        // shown for a fresh conversation - "Continue with AI"
+        // (`widget.existingPartId != null`) already targets one specific
+        // existing Part, which neither mode's own "recognize several
+        // distinct parts" framing fits.
+        if (widget.existingPartId == null) _buildModeToggle(),
+        if (widget.existingPartId == null && _mode == AiGenerationMode.assembly)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: _Banner(
+              color: Colors.amber,
+              text: 'Assembly mode is not built yet - see docs/ai-modelling/'
+                  '13-multi-part-assembly-overhaul.md (Phases D/D2/E). Switch to '
+                  'Multi-body Part to continue this conversation.',
+            ),
+          ),
         if (_transcript.isEmpty)
           Padding(
             padding: const EdgeInsets.all(16),
@@ -1224,7 +1299,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               style: TextStyle(color: Colors.white54),
             ),
           ),
-        if (_pendingImageBytes != null) _buildPendingImagePreview(),
+        if (_pendingImages.isNotEmpty) _buildPendingImagePreview(),
         if (_imageError != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1288,7 +1363,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               const SizedBox(width: 8),
               IconButton.filled(
                 key: const Key('aiModellingSend'),
-                onPressed: (_sending || (_providerConfigDialogDismissed && _providerUnconfigured)) ? null : _send,
+                onPressed: (_sending ||
+                        (_providerConfigDialogDismissed && _providerUnconfigured) ||
+                        _mode == AiGenerationMode.assembly)
+                    ? null
+                    : _send,
                 icon: const Icon(Icons.send),
               ),
             ],
@@ -1308,30 +1387,79 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     );
   }
 
-  Widget _buildPendingImagePreview() {
+  /// A horizontal thumbnail strip, one entry per pending image - widened
+  /// from a single fixed preview row in Phase B of the multi-part/assembly
+  /// overhaul (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`).
+  /// Multi-part/assembly overhaul, Phase A
+  /// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): the
+  /// per-conversation mode toggle. Assembly is rendered enabled (not
+  /// hidden) despite being a stub this phase - selecting it is how the
+  /// "coming soon" banner above gets shown at all, the same "let the user
+  /// pick it and explain why it doesn't work yet" posture
+  /// `showAssemblyAddMenu`'s own disabled-but-visible entries already use
+  /// elsewhere in this app, rather than hiding a real, named capability.
+  Widget _buildModeToggle() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Row(
-        children: [
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: Image.memory(_pendingImageBytes!, width: 44, height: 44, fit: BoxFit.cover),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              _pendingImageFileName ?? 'image',
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white54),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: SegmentedButton<AiGenerationMode>(
+          key: const Key('aiModellingModeToggle'),
+          segments: const [
+            ButtonSegment(
+              value: AiGenerationMode.multiBodyPart,
+              label: Text('Multi-body Part'),
+              icon: Icon(Icons.view_in_ar_outlined),
             ),
-          ),
-          IconButton(
-            key: const Key('aiModellingRemoveImage'),
-            tooltip: 'Remove attached image',
-            icon: const Icon(Icons.close, size: 18),
-            onPressed: _removePendingImage,
-          ),
-        ],
+            ButtonSegment(
+              value: AiGenerationMode.assembly,
+              label: Text('Assembly'),
+              icon: Icon(Icons.account_tree_outlined),
+            ),
+          ],
+          selected: {_mode},
+          onSelectionChanged: (selection) => _setMode(selection.first),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPendingImagePreview() {
+    return SizedBox(
+      height: 44,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        itemCount: _pendingImages.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final image = _pendingImages[index];
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Tooltip(
+                  message: image.fileName,
+                  child: Image.memory(image.bytes, width: 44, height: 44, fit: BoxFit.cover),
+                ),
+              ),
+              Positioned(
+                top: -8,
+                right: -8,
+                child: IconButton(
+                  key: Key('aiModellingRemoveImage_$index'),
+                  tooltip: 'Remove this image',
+                  icon: const Icon(Icons.cancel, size: 18),
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(),
+                  padding: EdgeInsets.zero,
+                  onPressed: () => _removePendingImage(index),
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
@@ -1576,7 +1704,7 @@ class _ChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isUser = message.role == AiMessageRole.user;
-    final imageBytes = message.imageBytes;
+    final images = message.images;
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -1588,19 +1716,34 @@ class _ChatBubble extends StatelessWidget {
           borderRadius: BorderRadius.circular(12),
         ),
         // Workstream 10 (`10-image-input.md`): an image-aware variant - a
-        // thumbnail above the text when this turn carries one. Rendered
-        // here (not only on the turn it was attached on), so the image
-        // stays visibly "pinned" in the scroll history for the rest of the
-        // conversation, matching `06-image-input-deferred.md`'s "not
-        // consumed after one turn" UX carryover.
+        // thumbnail strip above the text when this turn carries any.
+        // Rendered here (not only on the turn it was attached on), so every
+        // image stays visibly "pinned" in the scroll history for the rest
+        // of the conversation, matching `06-image-input-deferred.md`'s "not
+        // consumed after one turn" UX carryover. Widened from a single
+        // fixed thumbnail to a horizontal strip in Phase B of the
+        // multi-part/assembly overhaul (`docs/ai-modelling/13-multi-part-
+        // assembly-overhaul.md`).
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            if (imageBytes != null) ...[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(8),
-                child: Image.memory(imageBytes, fit: BoxFit.cover, height: 160),
+            if (images.isNotEmpty) ...[
+              SizedBox(
+                height: 160,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    for (final image in images)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(8),
+                          child: Image.memory(image.bytes, fit: BoxFit.cover, height: 160),
+                        ),
+                      ),
+                  ],
+                ),
               ),
               const SizedBox(height: 6),
             ],

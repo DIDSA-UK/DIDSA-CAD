@@ -710,6 +710,44 @@ substitute a workaround for it.''';
       .replaceAll(RegExp(r'\n{3,}'), '\n\n');
 }
 
+/// Multi-part/assembly overhaul, Phase A
+/// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): appended only
+/// when the conversation has the "Multi-body Part" toggle active. Distinct
+/// from [assemblyVocabularyText] (which is about *already-placed*
+/// Occurrences in an existing multi-file assembly) - this is about
+/// recognizing several distinct sub-parts in one request and modelling each
+/// as its own independent Body *inside the one Part this conversation is
+/// building*, never as separate files/Occurrences. Needs no new PlanStep
+/// kind: a Part already supports several independent Bodies with zero
+/// schema change (confirmed directly against the code -
+/// `backend/app/document/extrude.py`'s `compute_part_bodies` already tracks
+/// a Part's Bodies in a dict keyed by stable id), so this is purely a
+/// recognition/generation-discipline instruction, not new schema surface.
+const String multiBodyPartVocabularyText = '''
+## Multi-body Part mode
+
+This conversation has "Multi-body Part" mode active. If the request
+describes more than one distinct physical part (e.g. "a bracket with two
+mounting plates and a shaft"), do not merge them into one shape and do not
+silently build only one of them - recognize each distinct part, then,
+before proposing a plan, say in plain language how many distinct parts you
+found and a short name for each, and ask the user to confirm that count/
+breakdown is correct before generating (the same "ask before guessing"
+discipline you already apply to a missing dimension).
+
+Once confirmed, build one plan whose steps produce one independent Body per
+recognized part - a separate sketch/extrude(+further feature) chain for
+each, never one chain reused for more than one part. One part's own chain
+must never reference another part's own Body via a target_body_ids/
+source_body_ids/tool_feature_id/boolean/merge step unless the user
+explicitly asked for those parts to be combined into one body - by default
+every recognized part stays its own separate, independent Body in the same
+Part, positioned relative to the others using ordinary sketch-plane
+placement, create_plane, or move_body (never a mate/add_component step -
+there is no assembly file involved in this mode at all). The finished Part
+is ordinary and is saved the normal manual way afterward - this mode never
+writes anything to disk on its own.''';
+
 const String _unitsConvention = '''
 ## Units
 
@@ -1030,6 +1068,11 @@ String buildAiScopingSystemPrompt({
   String? existingPartSummary,
   String existingOccurrencesSummary = '',
   String availableComponentFilesSummary = '',
+  // Multi-part/assembly overhaul, Phase A: the per-conversation mode
+  // toggle. `false` (the pre-Phase-A default for every existing caller)
+  // means no behavior change at all - `multiBodyPartVocabularyText` is
+  // simply never appended.
+  bool multiBodyPartMode = false,
 }) {
   final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
   final assistantInstructions =
@@ -1043,6 +1086,7 @@ String buildAiScopingSystemPrompt({
     _unitsConvention,
     _fewShotExamples,
     ...addOnBlocks,
+    if (multiBodyPartMode) multiBodyPartVocabularyText,
     if (hasExistingPart) _existingPartEditingBlock(existingPartSummary, existingOccurrencesSummary),
     if (availableComponentFilesSummary.isNotEmpty) _availableComponentFilesBlock(availableComponentFilesSummary),
     _planTerminationFooter,
