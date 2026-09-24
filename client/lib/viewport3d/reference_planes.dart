@@ -4,6 +4,8 @@ import 'dart:typed_data';
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'mesh_geometry.dart' show NormalDepthUnlitMaterial;
+
 /// One of the three fixed, origin-centered axis-aligned reference planes -
 /// XY (z=0), XZ (y=0), YZ (x=0). There are no arbitrary/custom user-defined
 /// planes in this stage; a later Extrude-capable stage may add them, but
@@ -219,7 +221,7 @@ DoubleSidedQuadBuffers doubleSidedQuadBuffers(double halfSize) {
 /// for the geometry layout, and [hitTestReferencePlanes] below is the pure
 /// counterpart for plane selection.
 Node buildReferencePlaneNode(ReferencePlaneKind plane, {bool selected = false}) {
-  final fillMaterial = UnlitMaterial()
+  final fillMaterial = NormalDepthUnlitMaterial()
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = plane.tintColor(selected: selected);
   final fillBuffers = doubleSidedQuadBuffers(_referencePlaneHalfSize);
@@ -229,7 +231,7 @@ Node buildReferencePlaneNode(ReferencePlaneKind plane, {bool selected = false}) 
     indices: fillBuffers.indices,
   );
 
-  final borderMaterial = UnlitMaterial()
+  final borderMaterial = NormalDepthUnlitMaterial()
     ..alphaMode = AlphaMode.opaque
     ..baseColorFactor = plane.borderColor;
   final borderGeometry = PolylineGeometry(

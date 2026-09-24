@@ -49,6 +49,53 @@ class AlwaysOnTopMaterial extends UnlitMaterial {
   }
 }
 
+/// Bug fix ("Select Other" long-press preview: the same wrong visual effect
+/// regardless of entity kind, described on-device as "a near face hides and
+/// internal faces are visible"): closes [AlwaysOnTopMaterial]'s own leak.
+/// `flutter_scene`'s `SceneEncoder` sets the RenderPass's depth-compare
+/// operation to `lessEqual` exactly once, at the start of each frame's
+/// opaque phase (`scene_encoder.dart`'s own constructor) - nothing in the
+/// package ever resets it again afterward, and `SceneEncoder.flush()`
+/// re-sorts every opaque draw by (pipeline, depth) and every translucent
+/// draw back-to-front, so a Scene-node's *insertion* order (e.g. "add the
+/// hover node last") never guarantees it is drawn last in the actual GPU
+/// command stream. So the instant one [AlwaysOnTopMaterial] primitive draws
+/// (`setDepthCompareOperation(always)`), depth testing is left disabled for
+/// every remaining draw in that frame - including ordinary Body/assembly-
+/// instance faces, since neither `UnlitMaterial.bind()` nor the third-party
+/// `PhysicallyBasedMaterial.bind()` ever reassert it themselves. This was
+/// already diagnosed once before in this codebase for a different call site
+/// (`part_viewport.dart`'s `_syncSelectedEntityNodes`, reverted rather than
+/// ship the real, broader fix unverified) - this class *is* that broader
+/// fix: since every primitive's own `bind()` already runs immediately
+/// before its own draw call, having every OTHER material used in this
+/// Scene reassert the normal comparison here makes an `AlwaysOnTopMaterial`
+/// primitive's leak self-heal on the very next primitive drawn afterward,
+/// regardless of Scene draw order, containing the corruption to exactly
+/// that one always-on-top primitive's own draw and nothing else. Use this
+/// (or [NormalDepthPhysicallyBasedMaterial]) in place of the bare
+/// `UnlitMaterial`/`PhysicallyBasedMaterial` constructor for every material
+/// this Scene builds that does *not* itself want always-on-top treatment.
+class NormalDepthUnlitMaterial extends UnlitMaterial {
+  @override
+  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
+    super.bind(pass, transientsBuffer, lighting);
+    pass.setDepthCompareOperation(gpu.CompareFunction.lessEqual);
+  }
+}
+
+/// [NormalDepthUnlitMaterial]'s `PhysicallyBasedMaterial` sibling - see that
+/// class's own doc comment. Needed separately since `PhysicallyBasedMaterial`
+/// (the third-party class every Body/assembly-instance mesh in this Scene
+/// renders with) is not a subclass of `UnlitMaterial`.
+class NormalDepthPhysicallyBasedMaterial extends PhysicallyBasedMaterial {
+  @override
+  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
+    super.bind(pass, transientsBuffer, lighting);
+    pass.setDepthCompareOperation(gpu.CompareFunction.lessEqual);
+  }
+}
+
 /// **Currently unused by the Part Modeller** (`part_viewport.dart` no longer
 /// calls this - see its `_syncMeshNode`/edge-sync doc comments) - on-device
 /// follow-up testing (2026-07-21, same day this was added) found it was
@@ -600,7 +647,7 @@ Node buildMeshEdgesNode(
         ..alphaMode = AlphaMode.opaque
         ..baseColorFactor = color
         ..doubleSided = true)
-      : (UnlitMaterial()
+      : (NormalDepthUnlitMaterial()
         ..alphaMode = AlphaMode.opaque
         ..baseColorFactor = color
         ..doubleSided = true);
@@ -781,7 +828,7 @@ Node buildHighlightFacesNode(
       ? (AlwaysOnTopMaterial()
         ..alphaMode = AlphaMode.opaque
         ..baseColorFactor = color)
-      : (UnlitMaterial()
+      : (NormalDepthUnlitMaterial()
         ..alphaMode = AlphaMode.opaque
         ..baseColorFactor = color);
   return Node(name: 'highlight-faces', mesh: Mesh(geometry, material));
@@ -963,6 +1010,14 @@ double assemblyInstanceOpacity({required bool focusActive, required bool isFocus
 /// preference.
 const double kNonPrimaryAssemblyOpacity = 0.25;
 
+/// "Select Other" preview: mid-level dim for every body/instance that is NOT
+/// the long-pressed candidate's own owner while `PartViewport.highlightOverride`
+/// is set - distinct from [kNonPrimaryAssemblyOpacity]'s focus-fade signal
+/// (an unrelated "you are not editing this right now" meaning) so the two
+/// compose independently (`PartViewportState._isHighlightOwner`'s callers
+/// take `math.min` of the two rather than picking one).
+const double kSelectOtherDimOpacity = 0.5;
+
 /// Assembly support Phase 4: builds the [Node] rendering one placed
 /// Occurrence instance's own Body mesh - [_syncMeshNode]'s sibling for
 /// assembly-instance rendering (`PartViewport._syncAssemblyInstanceNodes`),
@@ -1017,7 +1072,7 @@ Node buildAssemblyInstanceNode(
   final isTranslucent = opacity < 1.0;
   final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
   final color = tint ?? vm.Vector3(0.68, 0.72, 0.78);
-  final material = PhysicallyBasedMaterial()
+  final material = NormalDepthPhysicallyBasedMaterial()
     ..alphaMode = isTranslucent ? AlphaMode.blend : AlphaMode.opaque
     ..baseColorFactor = vm.Vector4(color.x, color.y, color.z, opacity)
     ..roughnessFactor = 0.6

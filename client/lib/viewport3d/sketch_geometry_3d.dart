@@ -8,7 +8,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 import '../api/document_api_client.dart' show MeshDto;
 import '../api/sketch_api_client.dart';
 import '../sketch/pattern_mirror_expansion.dart';
-import 'mesh_geometry.dart' show AlwaysOnTopMaterial, vertexMarkerSegments;
+import 'mesh_geometry.dart' show AlwaysOnTopMaterial, NormalDepthUnlitMaterial, vertexMarkerSegments;
 import 'reference_planes.dart';
 
 /// C3: a Sketch's local-(x, y) -> world embedding basis - either one of the
@@ -1421,7 +1421,7 @@ Node buildSketchPlaneSurfaceNode(SketchPlaneBasis basis, {required vm.Vector4 co
       () {
         final t = step / (_sketchPlaneSurfaceFadeSteps - 1);
         final halfSize = _sketchPlaneSurfaceHalfSize * (0.8 + 0.2 * t);
-        final material = UnlitMaterial()
+        final material = NormalDepthUnlitMaterial()
           ..alphaMode = AlphaMode.blend
           ..baseColorFactor = vm.Vector4(color.x, color.y, color.z, layerAlpha);
         final buffers = doubleSidedSketchPlaneQuadBuffers(basis, halfSize);
@@ -1528,7 +1528,7 @@ Node buildSketchGridNode(
       final normalizedDist = math.max(localX.abs(), localY.abs()) / extent;
       final alpha = _edgeFadeAlpha(normalizedDist) * sketchGridLineColor.w;
       if (alpha < 0.01) continue;
-      final material = UnlitMaterial()
+      final material = NormalDepthUnlitMaterial()
         ..alphaMode = AlphaMode.blend
         ..baseColorFactor = vm.Vector4(sketchGridLineColor.x, sketchGridLineColor.y, sketchGridLineColor.z, alpha);
       primitives.add(MeshPrimitive(PolylineGeometry([p1, p2], width: sketchGridLineWidth), material));
@@ -1567,7 +1567,7 @@ const double sketchGhostLineWidth = sketchLineWidth;
 /// nodes elsewhere.
 Node? buildSketchGhostNode(List<List<vm.Vector3>> polylines, {vm.Vector4? color}) {
   if (polylines.isEmpty) return null;
-  final material = UnlitMaterial()
+  final material = NormalDepthUnlitMaterial()
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = color ?? sketchGhostLineColor;
   final primitives = <MeshPrimitive>[
@@ -1714,7 +1714,7 @@ Node? buildProfileFillNode(
   vm.Vector4? color,
 }) {
   final fillColor = color ?? sketchProfileFillColor;
-  final material = UnlitMaterial()
+  final material = NormalDepthUnlitMaterial()
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = fillColor;
   final primitives = <MeshPrimitive>[];

@@ -1,6 +1,7 @@
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'mesh_geometry.dart' show NormalDepthUnlitMaterial;
 import 'reference_planes.dart' show doubleSidedQuadBuffers, closedLoopBorderPoints;
 
 /// C2: half-extent of a rendered Create Plane quad - a fixed default rather
@@ -89,7 +90,7 @@ Node buildCreatePlaneNode(
   bool selected = false,
 }) {
   final alpha = selected ? _createPlaneSelectedAlpha : _createPlaneAlpha;
-  final fillMaterial = UnlitMaterial()
+  final fillMaterial = NormalDepthUnlitMaterial()
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = vm.Vector4(
       _createPlaneBaseColor.x,
@@ -104,7 +105,7 @@ Node buildCreatePlaneNode(
     indices: fillBuffers.indices,
   );
 
-  final borderMaterial = UnlitMaterial()
+  final borderMaterial = NormalDepthUnlitMaterial()
     ..alphaMode = AlphaMode.opaque
     ..baseColorFactor = vm.Vector4(
       _createPlaneBaseColor.x,
