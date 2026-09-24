@@ -504,6 +504,24 @@ roadmap entry" ask.
 
 ## Other open items
 
+- **Shared network storage + server-side assembly composition for a
+  non-Flutter VR/XR (Quest) client - not scoped, placeholder only.**
+  `docs/vr-recon-2026-09-24.md`/`docs/vr-recon-2-2026-09-24.md` (two
+  read-only recon sessions) found no existing roadmap item covering a
+  shared-storage model with composition moved server-side - the two
+  closest hits in `docs/assembly-scope.md`, decisions #4 (multi-file
+  assembly composition is entirely client-side) and #6 (this backend has
+  no filesystem/SAF access of its own), state the *opposite* as
+  "locked in." Moving composition server-side and adding shared storage
+  would explicitly supersede both decisions, not silently contradict
+  them - needs its own dedicated scoping doc (reopening #4/#6 by name)
+  before any implementation starts, covering at minimum: the server's own
+  mount/storage model, per-file optimistic-concurrency writes as the cheap
+  first step before attempting real occurrence/mate-level merge, and how
+  the existing single-session-per-`X-Document-Session` model relates to
+  "who can write which file" once composition is server-owned. Not
+  implemented here - this entry is a placeholder marking the gap, per the
+  recon sessions' own §5/§6 findings.
 - **A sketch's origin point reportedly doesn't line up with the correct 3D
   viewport origin.** User report (2026-07-21), investigated the same day -
   every basis-resolution path audited (backend `basis_for_sketch`, client
