@@ -151,6 +151,18 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
+      # find_package(OpenCASCADE CONFIG REQUIRED) lives in client/native/
+      # occt/CMakeLists.txt, a subdirectory of this configure (added via
+      # add_subdirectory from client/linux/CMakeLists.txt), not this job's
+      # own CMAKE_SOURCE_DIR - so vcpkg's manifest-mode auto-install (which
+      # only looks for vcpkg.json at CMAKE_SOURCE_DIR by default) would
+      # never see client/native/occt/vcpkg.json's pinned version at all.
+      # client/linux/CMakeLists.txt now sets VCPKG_MANIFEST_DIR to point
+      # manifest mode at that subdirectory explicitly (see its own comment)
+      # - confirmed necessary by a real CI failure ("Could not find a
+      # package configuration file provided by \"OpenCASCADE\"") before
+      # this was added; this step no longer needs its own explicit
+      # `vcpkg install` at all, matching the Windows job below.
       - name: Build Linux (with STEP/OCCT support)
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -158,12 +170,13 @@ jobs:
           DIDSA_ENABLE_OCCT: "1"
           VCPKG_TARGET_TRIPLET: x64-linux
           VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libgtk-3-dev
-          git clone https://github.com/microsoft/vcpkg.git ../vcpkg
-          ../vcpkg/bootstrap-vcpkg.sh
-          export CMAKE_TOOLCHAIN_FILE="$(pwd)/../vcpkg/scripts/buildsystems/vcpkg.cmake"
+          [ -d "$VCPKG_ROOT" ] || git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh"
+          export CMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
           flutter build linux --release
 
       # arm64-android triplet support for vcpkg's own "opencascade" port is
@@ -174,6 +187,12 @@ jobs:
       # blocks the real debug-APK build/publish steps above, mirroring the
       # honesty of this same file's own long-standing gap for
       # client/native/slvs/ (see this job's "Build debug APK" step comment).
+      #
+      # Shares the same $VCPKG_ROOT checkout the Linux step above already
+      # cloned (same job, same workspace) rather than cloning a second time
+      # into the same path - confirmed necessary by a real CI failure
+      # ("destination path ... already exists and is not empty directory")
+      # before the `[ -d ... ] ||` guard was added to both steps.
       - name: Build Android STEP/OCCT native shim (allowed to fail)
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -182,7 +201,7 @@ jobs:
           DIDSA_ENABLE_OCCT: "1"
           VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
         run: |
-          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          [ -d "$VCPKG_ROOT" ] || git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh"
           flutter build apk --debug
 
@@ -224,6 +243,19 @@ jobs:
       # between runs. `x-gha` is vcpkg's built-in GitHub Actions
       # binary-cache backend - after the first successful build, later runs
       # restore the prebuilt package instead of recompiling OCCT.
+      #
+      # This step used to run a standalone `vcpkg install opencascade
+      # --triplet x64-windows` before building - that's vcpkg's *classic*
+      # mode (an explicit port name on the command line), which completely
+      # ignores client/native/occt/vcpkg.json's pinned "overrides" and
+      # installs whatever opencascade's current default baseline happens to
+      # be. Confirmed by a real CI failure: it silently reinstalled 8.0.1
+      # again despite the pin, reproducing the exact TKSTEP.lib link
+      # failure the pin exists to avoid. Removed - client/windows/
+      # CMakeLists.txt's VCPKG_MANIFEST_DIR now points manifest mode at
+      # that vcpkg.json directly, so `flutter build windows`'s own cmake
+      # configure installs the pinned version automatically, the same way
+      # the Linux job's configure now does.
       - name: Export vcpkg GitHub Actions binary cache variables
         uses: actions/github-script@v7
         with:
@@ -237,7 +269,6 @@ jobs:
           VCPKG_TARGET_TRIPLET: x64-windows
           VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
         run: |
-          vcpkg install opencascade --triplet x64-windows
           $env:CMAKE_TOOLCHAIN_FILE = "$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
           flutter build windows --release
 

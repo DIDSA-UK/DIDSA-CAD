@@ -13,6 +13,19 @@
 # Windows job).
 if(DEFINED ENV{DIDSA_ENABLE_OCCT} AND DEFINED ENV{CMAKE_TOOLCHAIN_FILE})
   set(CMAKE_TOOLCHAIN_FILE "$ENV{CMAKE_TOOLCHAIN_FILE}" CACHE FILEPATH "Vcpkg toolchain file")
+  # vcpkg's manifest-mode auto-install only looks for vcpkg.json at
+  # CMAKE_SOURCE_DIR by default (i.e. this file's own directory) - but the
+  # manifest actually lives in client/native/occt/ (added below via
+  # add_subdirectory, so it's a subdirectory of this configure, not its
+  # root). Without this, vcpkg.json's pinned "overrides" (which fix a real
+  # OCCT-8.0.1-vs-7.9.3 toolkit-naming break - see client/native/occt/
+  # CMakeLists.txt's own comment) are silently never applied if anything
+  # upstream of this configure (e.g. a bare `vcpkg install opencascade`)
+  # already installed a different version via classic mode - confirmed by
+  # a real CI failure where the Windows job's own separate `vcpkg install`
+  # step reinstalled 8.0.1 despite this pin, because that step never
+  # pointed at this manifest at all.
+  set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../native/occt" CACHE PATH "Vcpkg manifest directory (occt shim's own vcpkg.json)")
 endif()
 if(DEFINED ENV{VCPKG_TARGET_TRIPLET})
   set(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_TARGET_TRIPLET}" CACHE STRING "Vcpkg triplet")

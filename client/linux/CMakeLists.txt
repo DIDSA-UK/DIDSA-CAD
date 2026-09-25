@@ -13,6 +13,16 @@
 # running `flutter build linux` (see .github/workflows/client-verify.yml).
 if(DEFINED ENV{DIDSA_ENABLE_OCCT} AND DEFINED ENV{CMAKE_TOOLCHAIN_FILE})
   set(CMAKE_TOOLCHAIN_FILE "$ENV{CMAKE_TOOLCHAIN_FILE}" CACHE FILEPATH "Vcpkg toolchain file")
+  # vcpkg's manifest-mode auto-install only looks for vcpkg.json at
+  # CMAKE_SOURCE_DIR by default (i.e. this file's own directory) - but the
+  # manifest actually lives in client/native/occt/ (added below via
+  # add_subdirectory, so it's a subdirectory of this configure, not its
+  # root). Without this, find_package(OpenCASCADE CONFIG REQUIRED) in that
+  # subdirectory's own CMakeLists.txt has nothing to find at all -
+  # confirmed by a real CI failure: "Could not find a package configuration
+  # file provided by \"OpenCASCADE\"" because manifest mode never
+  # triggered and nothing else installed the port for this triplet.
+  set(VCPKG_MANIFEST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../native/occt" CACHE PATH "Vcpkg manifest directory (occt shim's own vcpkg.json)")
 endif()
 if(DEFINED ENV{VCPKG_TARGET_TRIPLET})
   set(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_TARGET_TRIPLET}" CACHE STRING "Vcpkg triplet")
