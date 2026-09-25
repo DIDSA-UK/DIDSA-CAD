@@ -120,10 +120,20 @@ jobs:
       # on and a real vcpkg-built opencascade port available - it never
       # ships anywhere.
       #
-      # Best-effort, not battle-tested: vcpkg's own `opencascade` port is a
-      # large, slow build (the underlying OCCT source tree itself, not a
-      # prebuilt binary) - this may need a longer job timeout and/or vcpkg
-      # binary caching to be practical in real CI, neither tuned here.
+      # vcpkg's own `opencascade` port is a large, slow build (the
+      # underlying OCCT source tree itself, not a prebuilt binary) - a real
+      # CI run took ~1.7h just to build it, every single time, because
+      # nothing was caching the compiled result across runs. Fixed below by
+      # exporting vcpkg's own GitHub Actions binary-caching backend
+      # (`x-gha`) - vcpkg checks the cache for an already-built
+      # `opencascade` package (keyed by its own content hash, which
+      # vcpkg.json's pinned "overrides" version keeps stable) before
+      # rebuilding, so only the *first* run after this change (or after the
+      # pinned version changes) pays the ~1.7h cost; later runs restore the
+      # prebuilt package in seconds. `actions/github-script` is the
+      # documented way to surface the two env vars vcpkg's GHA backend
+      # needs (`ACTIONS_CACHE_URL`/`ACTIONS_RUNTIME_TOKEN`) - they exist in
+      # every Actions run but aren't in `env` by default.
       #
       # `flutter build linux -- -DFOO=BAR` does NOT forward trailing args to
       # the underlying cmake configure - confirmed by a real CI failure
@@ -133,12 +143,21 @@ jobs:
       # VCPKG_TARGET_TRIPLET from the environment (set before project(), so
       # vcpkg's toolchain actually takes effect) - so this step exports them
       # as env vars rather than passing `-- -D...` args.
+      - name: Export vcpkg GitHub Actions binary cache variables
+        if: ${{ !cancelled() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Build Linux (with STEP/OCCT support)
         if: ${{ !cancelled() }}
         continue-on-error: true
         env:
           DIDSA_ENABLE_OCCT: "1"
           VCPKG_TARGET_TRIPLET: x64-linux
+          VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libgtk-3-dev
@@ -161,6 +180,7 @@ jobs:
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
           DIDSA_ENABLE_OCCT: "1"
+          VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh"
@@ -197,10 +217,25 @@ jobs:
       # DIDSA_ENABLE_OCCT/CMAKE_TOOLCHAIN_FILE/VCPKG_TARGET_TRIPLET from the
       # environment (set before project(), so vcpkg's toolchain actually
       # takes effect) - so this step exports them as env vars instead.
+      #
+      # Also confirmed by a real CI failure: without binary caching, this
+      # step rebuilds opencascade from source (~1.7h) on every single run,
+      # even though vcpkg.json pins an exact version that never changes
+      # between runs. `x-gha` is vcpkg's built-in GitHub Actions
+      # binary-cache backend - after the first successful build, later runs
+      # restore the prebuilt package instead of recompiling OCCT.
+      - name: Export vcpkg GitHub Actions binary cache variables
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
       - name: Build Windows (with STEP/OCCT support)
         env:
           DIDSA_ENABLE_OCCT: "1"
           VCPKG_TARGET_TRIPLET: x64-windows
+          VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
         run: |
           vcpkg install opencascade --triplet x64-windows
           $env:CMAKE_TOOLCHAIN_FILE = "$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"

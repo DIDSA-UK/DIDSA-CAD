@@ -60,11 +60,27 @@ target_include_directories(didsa_occt_ffi PRIVATE ${OpenCASCADE_INCLUDE_DIR})
 # `STEPCAFControl_Reader` links against `TKXDESTEP` specifically) is not in
 # the plan's original list above TKMesh - added here, confirmed necessary by
 # a real `undefined symbol: _ZN21STEPCAFControl_ReaderC1Ev` link failure
-# before this was added. A different OCCT/vcpkg port version may name this
-# toolkit differently (some releases fold STEP CAF support into a renamed
-# `TKDESTEP`) - if `TKXDESTEP` isn't found for a given vcpkg triplet, check
-# that port's own toolkit list for STEPCAFControl_Reader's actual home.
-target_link_libraries(didsa_occt_ffi PRIVATE
+# before this was added.
+#
+# vcpkg.json pins opencascade to exactly 7.9.3#1 via "overrides" (matching
+# the backend's own pythonocc-core-wrapped OCCT version in
+# backend/environment.yml, rather than tracking vcpkg's latest baseline) -
+# this is load-bearing, not just for parity: a real CI failure confirmed
+# that OCCT 8.0.x (vcpkg's default baseline at the time) renames/
+# consolidates the classic TKSTEP/TKSTEPBase/TKSTEPAttr/TKSTEP209/TKXSBase
+# toolkits this list below still names ("LINK : fatal error LNK1181: cannot
+# open input file 'TKSTEP.lib'"), so linking against 8.0.x with these exact
+# names fails outright. The `if(TARGET ...)` guards below are a second,
+# independent safety net on top of that pin - if a future vcpkg.json bump
+# (or a platform triplet whose port build genuinely differs) reintroduces
+# a version where some of these targets don't exist, the build degrades to
+# "link whatever of this list actually exists" instead of a hard
+# configure-time or link-time failure, though occt_ffi_shim.cpp's own
+# #include/API usage still assumes the classic (pre-8.0) toolkit shape and
+# would need real changes to work against a consolidated TKDE/TKDESTEP
+# layout - this guard only prevents linking a nonexistent name, it doesn't
+# make the shim itself version-agnostic.
+set(_didsa_occt_step_toolkits
     TKernel
     TKMath
     TKBRep
@@ -84,6 +100,13 @@ target_link_libraries(didsa_occt_ffi PRIVATE
     TKCAF
     TKLCAF
     TKMesh)
+foreach(_didsa_occt_toolkit ${_didsa_occt_step_toolkits})
+    if(TARGET ${_didsa_occt_toolkit})
+        target_link_libraries(didsa_occt_ffi PRIVATE ${_didsa_occt_toolkit})
+    else()
+        message(WARNING "didsa_occt_ffi: expected OCCT toolkit '${_didsa_occt_toolkit}' not found as a CMake target - skipping it, but occt_ffi_shim.cpp may fail to link/behave correctly without it. Check vcpkg.json's pinned opencascade version.")
+    endif()
+endforeach()
 
 set_target_properties(didsa_occt_ffi PROPERTIES
     CXX_STANDARD 17
