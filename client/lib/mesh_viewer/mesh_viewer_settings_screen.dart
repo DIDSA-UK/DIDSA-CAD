@@ -24,7 +24,6 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
   MeshUpAxis _upAxis = MeshViewerPreferences.defaultUpAxis;
   bool _mirror = MeshViewerPreferences.defaultMirror;
   bool _debugShowCameraOrientation = MeshViewerPreferences.defaultDebugShowCameraOrientation;
-  StepTessellationQuality _stepTessellationQuality = MeshViewerPreferences.defaultStepTessellationQuality;
   bool _loaded = false;
 
   @override
@@ -41,7 +40,6 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
       _upAxis = MeshViewerPreferences.upAxis;
       _mirror = MeshViewerPreferences.mirror;
       _debugShowCameraOrientation = MeshViewerPreferences.debugShowCameraOrientation;
-      _stepTessellationQuality = MeshViewerPreferences.stepTessellationQuality;
       _loaded = true;
     });
   }
@@ -65,11 +63,6 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
   Future<void> _onDebugShowCameraOrientationChanged(bool value) async {
     setState(() => _debugShowCameraOrientation = value);
     await MeshViewerPreferences.setDebugShowCameraOrientation(value);
-  }
-
-  Future<void> _onStepTessellationQualityChanged(StepTessellationQuality quality) async {
-    setState(() => _stepTessellationQuality = quality);
-    await MeshViewerPreferences.setStepTessellationQuality(quality);
   }
 
   static String _formatTriangleCount(int n) {
@@ -148,26 +141,6 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
                   ],
                   selected: {_mirror},
                   onSelectionChanged: (selection) => _onMirrorChanged(selection.first),
-                ),
-                const SizedBox(height: 24),
-                Text('STEP tessellation quality', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 4),
-                Text(
-                  "How finely a STEP file's curved surfaces are tessellated into triangles - "
-                  "linear deflection is computed as a fraction of the whole assembly's own bounding-box "
-                  "diagonal, so it scales with the model's own size. Higher quality means smoother "
-                  "curves but more triangles (and a slower load) for a large or highly-curved assembly.",
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                const SizedBox(height: 12),
-                SegmentedButton<StepTessellationQuality>(
-                  segments: const [
-                    ButtonSegment(value: StepTessellationQuality.low, label: Text('Low')),
-                    ButtonSegment(value: StepTessellationQuality.medium, label: Text('Medium')),
-                    ButtonSegment(value: StepTessellationQuality.high, label: Text('High')),
-                  ],
-                  selected: {_stepTessellationQuality},
-                  onSelectionChanged: (selection) => _onStepTessellationQualityChanged(selection.first),
                 ),
                 const SizedBox(height: 24),
                 Text('Debug: camera orientation readout', style: Theme.of(context).textTheme.titleMedium),
