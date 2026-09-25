@@ -90,6 +90,7 @@ import 'revolve_surface_panel.dart';
 import 'move_body_panel.dart';
 import 'move_face_panel.dart';
 import 'move_rotate_component_panel.dart';
+import 'multi_select_action_bar.dart';
 import 'occurrence_colour_sheet.dart';
 import 'rollback.dart';
 import 'ruled_surface_panel.dart';
@@ -106,6 +107,7 @@ import 'sketch_orientation_indicator.dart';
 import 'split_panel.dart';
 import 'surface_panel.dart';
 import 'swept_surface_panel.dart';
+import 'tree_multi_select_controller.dart';
 import 'sweep_panel.dart';
 import 'svg_icon.dart';
 import 'scene_preferences.dart';
@@ -2047,6 +2049,35 @@ class _PartScreenState extends State<PartScreen> {
   /// would otherwise render at the same time as `ComponentSelectionToolbar`'s
   /// identically-labelled buttons.
   bool _componentContextMenuOpen = false;
+
+  /// Feature 1 (tree multi-select): the Build Tree's long-press bulk
+  /// multi-select session - its keys are [TreeMultiSelectKeys]-encoded
+  /// Feature/Body/Surface row keys. At most one of this and
+  /// [_assemblyMultiSelect] is ever active (see [_enterMultiSelect]).
+  final TreeMultiSelectController _buildMultiSelect = TreeMultiSelectController(TreeMultiSelectScope.buildTree);
+
+  /// Feature 1 (tree multi-select): the Assembly Tree's counterpart to
+  /// [_buildMultiSelect] - its keys are bare Occurrence ids.
+  final TreeMultiSelectController _assemblyMultiSelect =
+      TreeMultiSelectController(TreeMultiSelectScope.assemblyTree);
+
+  /// Whichever tree multi-select session is active, if any.
+  TreeMultiSelectController? get _activeMultiSelect => _buildMultiSelect.active
+      ? _buildMultiSelect
+      : _assemblyMultiSelect.active
+          ? _assemblyMultiSelect
+          : null;
+
+  /// True while a bulk Hide/Show/Delete from [MultiSelectActionBar] is in
+  /// flight - disables that bar's buttons so a second tap can't start an
+  /// overlapping batch.
+  bool _multiSelectBusy = false;
+
+  /// The Occurrence whose long-press started the current Assembly Tree
+  /// session - [_multiSelectMore]'s fallback when that row is no longer in
+  /// [_occurrences] (e.g. it's the currently-focused component, which the
+  /// tree lists only as its breadcrumb root, not as one of its own rows).
+  OccurrenceDto? _assemblyMultiSelectAnchor;
 
   /// Bug report ("if one body is entirely inside another body, it cannot be
   /// selected"): fired by [PartViewport.onSelectOtherRequested] once the
@@ -5502,6 +5533,7 @@ class _PartScreenState extends State<PartScreen> {
     _ProfilePickerTarget target,
     List<Set<String>> loops,
   ) {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _profilePickerActive = true;
       _profilePickerTarget = target;
@@ -5739,6 +5771,7 @@ class _PartScreenState extends State<PartScreen> {
     List<SketchEntityRefDto> profileRefs, {
     _PathPickerTarget target = _PathPickerTarget.sweep,
   }) {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _pathPickerActive = true;
       _pathPickerTarget = target;
@@ -6396,6 +6429,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startRevolveSketchPicker] exactly, for the Sweep picker.
   void _startSweepSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _sweepSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -7094,6 +7128,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_startSweepSketchPicker], minus the eligibility refresh (see
   /// this block's own top comment for why every Sketch is pickable here).
   void _startLoftSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _loftSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -7229,6 +7264,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startLoftSketchPicker] exactly.
   void _startLoftSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _loftSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -7626,6 +7662,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startLoftSurfaceSketchPicker] exactly.
   void _startRuledSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _ruledSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -7879,6 +7916,7 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   void _startThickenSourcePicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _thickenSourcePickerActive = true;
       _featureTreeVisible = true;
@@ -8061,6 +8099,7 @@ class _PartScreenState extends State<PartScreen> {
   bool get _knitSurfaceActive => _knitSurfaceSurfaces.length >= 2;
 
   void _startKnitSurfacePicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _knitSurfacePickerActive = true;
       _featureTreeVisible = true;
@@ -8215,6 +8254,7 @@ class _PartScreenState extends State<PartScreen> {
   bool get _solidFromSurfacesActive => _solidFromSurfacesSurfaces.length >= 2;
 
   void _startSolidFromSurfacesPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _solidFromSurfacesPickerActive = true;
       _featureTreeVisible = true;
@@ -8435,6 +8475,7 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   void _startOffsetSurfaceSourcePicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _offsetSurfaceSourcePickerActive = true;
       _featureTreeVisible = true;
@@ -11267,6 +11308,7 @@ class _PartScreenState extends State<PartScreen> {
   /// background so the tree can start dimming ineligible Sketches once that
   /// resolves.
   void _startSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _sketchPickerActive = true;
       _featureTreeVisible = true;
@@ -11351,6 +11393,7 @@ class _PartScreenState extends State<PartScreen> {
   /// immediately pickable for a Surface, so [_pickableSurfaceSketchIds] is
   /// just every current Sketch Feature's id, computed synchronously.
   void _startSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _surfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -11601,6 +11644,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startSketchPicker] exactly, for the Revolve picker.
   void _startRevolveSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _revolveSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -12121,6 +12165,476 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  // --- Feature 1: tree multi-select ------------------------------------------
+  // Long-pressing a Build Tree (Body/Surface/Plane/Feature) or Assembly Tree
+  // (Occurrence) row enters a bulk multi-select session with that row
+  // selected; while active, row taps toggle membership instead of doing
+  // their normal thing, and [MultiSelectActionBar] (inside a
+  // [SelectionListDrawer]) offers Hide/Show, Delete and Cancel over the
+  // whole selection. Long-press used to open each row's single-item context
+  // menu directly - that menu is still one tap away via the bar's "More"
+  // button while exactly one row is selected (see [_multiSelectMore]), so
+  // none of its non-hide/delete actions (Extrude, Pattern, Assign Material,
+  // Make Focus, ...) became unreachable.
+
+  /// Concurrency cap for the per-item HTTP loops below - no bulk endpoints
+  /// exist server-side, so a bulk action is N single-item calls, sent at
+  /// most this many at a time.
+  static const int _multiSelectBatchSize = 8;
+
+  /// The single "leave every special tree/picker mode" switch - called on
+  /// entry to *any* such mode (every `_startXxxPicker`, the Component
+  /// Pattern panel's "+ Add source" picking toggle, and both tree
+  /// multi-select sessions), so at most one is ever active at a time.
+  /// Each picker's own `_cancelXxx` does the actual teardown (a no-op
+  /// guard skips inactive ones). Deliberately does *not* touch an open
+  /// tool panel's own internal picking steps (Mirror/Delete Body/etc.) -
+  /// those can only be cancelled through their panel's own async Cancel
+  /// path, and the trees that enter multi-select are hidden while any such
+  /// panel is open anyway (see [_featureTreePanelVisible]).
+  void _exitAllPickerAndSelectModes() {
+    _exitMultiSelect();
+    if (_sketchPickerActive) _cancelSketchPicker();
+    if (_surfaceSketchPickerActive) _cancelSurfaceSketchPicker();
+    if (_revolveSketchPickerActive) _cancelRevolveSketchPicker();
+    if (_sweepSketchPickerActive) _cancelSweepSketchPicker();
+    if (_loftSketchPickerActive) _cancelLoftSketchPicker();
+    if (_loftSurfaceSketchPickerActive) _cancelLoftSurfaceSketchPicker();
+    if (_ruledSurfaceSketchPickerActive) _cancelRuledSurfaceSketchPicker();
+    if (_planarSurfaceSketchPickerActive) _cancelPlanarSurfaceSketchPicker();
+    if (_revolveSurfaceSketchPickerActive) _cancelRevolveSurfaceSketchPicker();
+    if (_sweptSurfaceSketchPickerActive) _cancelSweptSurfaceSketchPicker();
+    if (_thickenSourcePickerActive) _cancelThickenSourcePicker();
+    if (_knitSurfacePickerActive) _cancelKnitSurfacePicker();
+    if (_solidFromSurfacesPickerActive) _cancelSolidFromSurfacesPicker();
+    if (_offsetSurfaceSourcePickerActive) _cancelOffsetSurfaceSourcePicker();
+    if (_sourceFeaturePickerTarget != null) _cancelSourceFeaturePicker();
+    if (_profilePickerActive) _cancelProfilePicker();
+    if (_pathPickerActive) _cancelPathPicker();
+    if (_componentPatternPickingSources) setState(() => _componentPatternPickingSources = false);
+  }
+
+  /// Ends whichever tree multi-select session is active (a no-op if none
+  /// is) - the action bar's Cancel, the tree's own close button, the back
+  /// gesture and a lens switch all lead here.
+  void _exitMultiSelect() {
+    final wasAssembly = _assemblyMultiSelect.active;
+    if (!_buildMultiSelect.active && !wasAssembly) return;
+    setState(() {
+      _buildMultiSelect.exit();
+      _assemblyMultiSelect.exit();
+      // The Assembly session mirrors its selection into [_selectedEntities]
+      // for viewport highlighting (see [_syncAssemblyMultiSelectHighlight])
+      // - drop that too rather than leaving a stale multi-highlight behind.
+      if (wasAssembly) _selectedEntities = {};
+    });
+  }
+
+  /// Starts [controller]'s session with [key] selected, after leaving every
+  /// other mode (including the *other* tree's session).
+  void _enterMultiSelect(TreeMultiSelectController controller, String key) {
+    if (_busy) return;
+    _exitAllPickerAndSelectModes();
+    setState(() {
+      controller.enter(key);
+      if (identical(controller, _assemblyMultiSelect)) _syncAssemblyMultiSelectHighlight();
+    });
+  }
+
+  /// Toggles [key] in [controller]'s session - ending it if that empties
+  /// the selection (see [TreeMultiSelectController.toggle]).
+  void _toggleMultiSelectMember(TreeMultiSelectController controller, String key) {
+    setState(() {
+      controller.toggle(key);
+      if (identical(controller, _assemblyMultiSelect)) {
+        if (controller.active) {
+          _syncAssemblyMultiSelectHighlight();
+        } else {
+          _selectedEntities = {};
+        }
+      }
+    });
+  }
+
+  /// Highlights every multi-selected Occurrence in the viewport - the same
+  /// `component`-kind [_selectedEntities] entries [_onOccurrenceTap] uses for
+  /// one - and clears the single-row selection, so
+  /// [ComponentSelectionToolbar]'s single-item actions never target one
+  /// arbitrary member of a bulk selection. Call inside `setState`.
+  void _syncAssemblyMultiSelectHighlight() {
+    _selectedOccurrenceId = null;
+    _selectedMateId = null;
+    _selectedEntities = {
+      for (final id in _assemblyMultiSelect.selectedIds)
+        SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: id),
+    };
+  }
+
+  /// The Feature a Build Tree multi-select key acts on - itself for a
+  /// Feature row, or (like [_onBodyLongPress]) the Feature that produced a
+  /// Body/Surface row, since Hide/Show and Delete are both Feature-scoped.
+  String? _featureIdForMultiSelectKey(String key) {
+    final featureId = TreeMultiSelectKeys.featureIdOf(key);
+    if (featureId != null) return featureId;
+    final shapeId = TreeMultiSelectKeys.bodyIdOf(key) ?? TreeMultiSelectKeys.surfaceIdOf(key);
+    return shapeId == null ? null : baseFeatureId(shapeId);
+  }
+
+  /// Every still-existing Feature id the Build Tree selection resolves to,
+  /// deduplicated (a Body and its own Feature, or two Bodies of one
+  /// Feature, collapse to one), in [_features]' own order.
+  List<String> get _buildMultiSelectFeatureIds {
+    final ids = {
+      for (final key in _buildMultiSelect.selectedIds) _featureIdForMultiSelectKey(key),
+    };
+    return [
+      for (final feature in _features)
+        if (ids.contains(feature.id)) feature.id,
+    ];
+  }
+
+  /// The selected Occurrences still present in [_occurrences].
+  List<OccurrenceDto> get _assemblyMultiSelectOccurrences => [
+        for (final occurrence in _occurrences)
+          if (_assemblyMultiSelect.contains(occurrence.id)) occurrence,
+      ];
+
+  /// Whether every member of the active selection is already hidden - see
+  /// [MultiSelectActionBar.allHidden].
+  bool get _multiSelectAllHidden {
+    if (_buildMultiSelect.active) {
+      final ids = _buildMultiSelectFeatureIds;
+      return ids.isNotEmpty && ids.every(_hiddenFeatureIds.contains);
+    }
+    final occurrences = _assemblyMultiSelectOccurrences;
+    return occurrences.isNotEmpty && occurrences.every((o) => o.hidden);
+  }
+
+  /// Runs [op] over [items] at most [_multiSelectBatchSize] at a time,
+  /// returning how many calls failed (never throws) - each item's failure
+  /// is independent, so one bad item never aborts the rest of the batch.
+  Future<int> _runInBatches<T>(List<T> items, Future<void> Function(T item) op) async {
+    var failures = 0;
+    for (var start = 0; start < items.length; start += _multiSelectBatchSize) {
+      final batch = items.sublist(start, math.min(start + _multiSelectBatchSize, items.length));
+      final results = await Future.wait(batch.map((item) async {
+        try {
+          await op(item);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }));
+      failures += results.where((ok) => !ok).length;
+    }
+    return failures;
+  }
+
+  /// Surfaces a partial bulk-action failure as "N of M succeeded".
+  void _reportBatchResult(String verb, int total, int failures) {
+    if (failures == 0 || !mounted) return;
+    _showSnack('$verb: ${total - failures} of $total succeeded');
+  }
+
+  /// The action bar's Hide/Show button: hides every member, or - when every
+  /// member is already hidden - shows every member. The session stays open
+  /// afterwards (so the same selection can be shown again or deleted).
+  Future<void> _multiSelectToggleVisibility() async {
+    if (_busy || _multiSelectBusy) return;
+    final hide = !_multiSelectAllHidden;
+    if (_buildMultiSelect.active) {
+      _buildMultiSelectSetHidden(hide);
+      await _runGuarded(_refreshMesh);
+    } else if (_assemblyMultiSelect.active) {
+      await _assemblyMultiSelectSetHidden(hide);
+    }
+  }
+
+  /// Bulk counterpart of [_toggleFeatureVisibility] - purely local
+  /// ([_hiddenFeatureIds] only, no HTTP call), applied to every selected
+  /// Feature in one `setState` so the caller refreshes the mesh just once.
+  void _buildMultiSelectSetHidden(bool hide) {
+    final featureIds = _buildMultiSelectFeatureIds;
+    setState(() {
+      for (final id in featureIds) {
+        if (hide) {
+          _hiddenFeatureIds.add(id);
+        } else {
+          _hiddenFeatureIds.remove(id);
+        }
+        _autoHiddenSketchFeatureIds.remove(id);
+      }
+      _recomputeVisibleSketchGeometries();
+      _recomputeCreatePlaneGeometries();
+    });
+  }
+
+  /// Bulk counterpart of [_setOccurrenceHidden] - one real PATCH per
+  /// Occurrence whose state actually changes, batched, then one tree/mesh
+  /// re-fetch for the lot.
+  Future<void> _assemblyMultiSelectSetHidden(bool hide) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    final targets = _assemblyMultiSelectOccurrences.where((o) => o.hidden != hide).toList();
+    if (targets.isEmpty) return;
+    var failures = 0;
+    setState(() => _multiSelectBusy = true);
+    await _runGuarded(() async {
+      failures = await _runInBatches<OccurrenceDto>(
+        targets,
+        (occurrence) => _api.updateOccurrenceHidden(focusPartId, occurrence.id, hide),
+      );
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+    if (!mounted) return;
+    setState(() {
+      _multiSelectBusy = false;
+      if (_assemblyMultiSelect.active) _syncAssemblyMultiSelectHighlight();
+    });
+    _reportBatchResult(hide ? 'Hide' : 'Show', targets.length, failures);
+  }
+
+  /// The action bar's Delete button.
+  Future<void> _multiSelectDelete() async {
+    if (_busy || _multiSelectBusy) return;
+    if (_buildMultiSelect.active) {
+      await _buildMultiSelectDelete();
+    } else if (_assemblyMultiSelect.active) {
+      await _assemblyMultiSelectDelete();
+    }
+  }
+
+  /// Bulk counterpart of [_cascadeDeleteFeature]: previews every selected
+  /// Feature's cascade concurrently, unions the dependents (deduplicated
+  /// against the selection itself and each other), confirms once, then
+  /// cascade-deletes. Always the cascade endpoint, same as
+  /// [_cascadeDeleteFeature] (which never falls back to the plain
+  /// single-Feature delete) - it's a strict superset that simply removes
+  /// nothing extra when a Feature has no dependents. The deletes run
+  /// sequentially, not batched: they all mutate the same Part, and one
+  /// cascade can remove a later selected Feature outright - each result's
+  /// `deletedFeatureIds` is used to skip ids that are already gone rather
+  /// than sending a delete that would 404.
+  Future<void> _buildMultiSelectDelete() async {
+    final part = _part;
+    if (part == null) return;
+    final primaryIds = _buildMultiSelectFeatureIds;
+    if (primaryIds.isEmpty) return;
+
+    List<List<String>> previews;
+    setState(() => _multiSelectBusy = true);
+    try {
+      previews = await Future.wait(primaryIds.map((id) => _api.previewCascadeDelete(part.id, id)));
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _multiSelectBusy = false;
+        _errorMessage = e.message;
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _multiSelectBusy = false);
+    final primarySet = primaryIds.toSet();
+    final dependentIds = {
+      for (final preview in previews) ...preview,
+    }.difference(primarySet);
+
+    String namesFor(Set<String> ids) => [
+          for (var i = 0; i < _features.length; i++)
+            if (ids.contains(_features[i].id)) featureDisplayName(_features, i),
+        ].join('\n');
+    final n = primaryIds.length;
+    final m = dependentIds.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(n == 1 ? 'Delete 1 feature?' : 'Delete $n features?'),
+        content: SingleChildScrollView(
+          child: Text(
+            '${m == 0 ? 'This will permanently delete:' : 'Deleting $n feature${n == 1 ? '' : 's'} will also remove '
+                '$m dependent feature${m == 1 ? '' : 's'}.'}\n\n'
+            '${namesFor(primarySet)}'
+            '${m == 0 ? '' : '\n\nDependent features:\n${namesFor(dependentIds)}'}',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(n + m == 1 ? 'Delete' : 'Delete all'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    var failures = 0;
+    var attempted = 0;
+    setState(() => _multiSelectBusy = true);
+    await _runGuarded(() async {
+      final deleted = <String>{};
+      for (final id in primaryIds) {
+        if (deleted.contains(id)) continue;
+        attempted++;
+        try {
+          final result = await _api.cascadeDeleteFeature(part.id, id);
+          deleted
+            ..add(id)
+            ..addAll(result.deletedFeatureIds);
+        } on ApiException {
+          failures++;
+        }
+      }
+      await _refreshAfterFeatureDelete();
+    });
+    if (!mounted) return;
+    setState(() => _multiSelectBusy = false);
+    _exitMultiSelect();
+    _reportBatchResult('Delete', attempted, failures);
+  }
+
+  /// Bulk counterpart of [_confirmDeleteOccurrence]: one "Delete N
+  /// components?" confirmation (naming how many Mates/ComponentPatterns
+  /// cascade server-side, from the already-loaded [_mates]/
+  /// [_componentPatterns] - no preview endpoint exists for Occurrences),
+  /// then one batched DELETE per Occurrence. Unlike the single-item path
+  /// this pushes no Undo entries: two selected Occurrences can share a
+  /// Mate, which per-Occurrence [_DeleteUndoEntry]s would each try to
+  /// re-create.
+  Future<void> _assemblyMultiSelectDelete() async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    final targets = _assemblyMultiSelectOccurrences;
+    if (targets.isEmpty) return;
+    final targetIds = {for (final o in targets) o.id};
+    final mateCount = _mates.where((m) => m.references.any((r) => targetIds.contains(r.occurrenceId))).length;
+    final patternCount =
+        _componentPatterns.where((p) => p.sourceOccurrenceIds.any(targetIds.contains)).length;
+    final n = targets.length;
+    final cascadeLines = [
+      if (mateCount > 0) '$mateCount mate${mateCount == 1 ? '' : 's'}',
+      if (patternCount > 0) '$patternCount pattern${patternCount == 1 ? '' : 's'}',
+    ];
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(n == 1 ? 'Delete 1 component?' : 'Delete $n components?'),
+        content: Text(
+          cascadeLines.isEmpty
+              ? 'This cannot be undone.'
+              : 'This will also delete ${cascadeLines.join(' and ')}. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    var failures = 0;
+    setState(() => _multiSelectBusy = true);
+    await _runGuarded(() async {
+      failures = await _runInBatches<OccurrenceDto>(
+        targets,
+        (occurrence) => _api.deleteOccurrence(focusPartId, occurrence.id),
+      );
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+    if (!mounted) return;
+    setState(() {
+      _multiSelectBusy = false;
+      if (targetIds.contains(_selectedOccurrenceId)) _selectedOccurrenceId = null;
+      _selectedMateId = null;
+    });
+    _exitMultiSelect();
+    _reportBatchResult('Delete', n, failures);
+  }
+
+  /// The action bar's "More" button (exactly one row selected): ends the
+  /// session and opens that row's original single-item context menu - the
+  /// one long-press used to open directly.
+  Future<void> _multiSelectMore() async {
+    if (_buildMultiSelect.active && _buildMultiSelect.count == 1) {
+      final key = _buildMultiSelect.selectedIds.single;
+      _exitMultiSelect();
+      final featureId = TreeMultiSelectKeys.featureIdOf(key);
+      final bodyId = TreeMultiSelectKeys.bodyIdOf(key);
+      final surfaceId = TreeMultiSelectKeys.surfaceIdOf(key);
+      if (featureId != null) {
+        final feature = _featureById(featureId);
+        if (feature != null) await _onFeatureLongPress(feature);
+      } else if (bodyId != null) {
+        await _onBodyLongPress(bodyId);
+      } else if (surfaceId != null) {
+        await _onSurfaceLongPress(surfaceId);
+      }
+    } else if (_assemblyMultiSelect.active && _assemblyMultiSelect.count == 1) {
+      final id = _assemblyMultiSelect.selectedIds.single;
+      _exitMultiSelect();
+      final index = _occurrences.indexWhere((o) => o.id == id);
+      final anchor = _assemblyMultiSelectAnchor;
+      final occurrence = index != -1 ? _occurrences[index] : (anchor?.id == id ? anchor : null);
+      if (occurrence != null) await _onOccurrenceLongPress(occurrence);
+    }
+  }
+
+  /// The drawer's rows for the active session, in selection order.
+  List<SelectionListDrawerItem> _multiSelectDrawerItems() {
+    final controller = _activeMultiSelect;
+    if (controller == null) return const [];
+    final items = <SelectionListDrawerItem>[];
+    for (final key in controller.selectedIds) {
+      void remove() => _toggleMultiSelectMember(controller, key);
+      if (identical(controller, _assemblyMultiSelect)) {
+        final index = _occurrences.indexWhere((o) => o.id == key);
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const Icon(Icons.view_in_ar_outlined),
+          title: index == -1 ? 'Component' : occurrenceDisplayName(_occurrences, index),
+          onRemove: remove,
+        ));
+        continue;
+      }
+      final featureId = TreeMultiSelectKeys.featureIdOf(key);
+      final bodyId = TreeMultiSelectKeys.bodyIdOf(key);
+      final surfaceId = TreeMultiSelectKeys.surfaceIdOf(key);
+      if (featureId != null) {
+        final index = _features.indexWhere((f) => f.id == featureId);
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const SvgIcon('assets/icons/feature/feature_tree.svg'),
+          title: index == -1 ? 'Feature' : featureDisplayName(_features, index),
+          onRemove: remove,
+        ));
+      } else if (bodyId != null) {
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const SvgIcon('assets/icons/viewport/selection_body.svg'),
+          title: _bodyNames[bodyId] ?? 'Body',
+          onRemove: remove,
+        ));
+      } else if (surfaceId != null) {
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const SvgIcon('assets/icons/feature/feature_surface.svg'),
+          title: _surfaceNames[surfaceId] ?? 'Surface',
+          onRemove: remove,
+        ));
+      }
+    }
+    return items;
+  }
+
+  /// Feature 1 (tree multi-select): no longer the tree row's long-press
+  /// handler itself (long-press now enters multi-select - see
+  /// [_enterMultiSelect]); reached via [MultiSelectActionBar]'s "More"
+  /// button ([_multiSelectMore]) with exactly this one Feature selected.
+  ///
   /// A long-press on any Feature (locked or not) opens a context menu of
   /// actions for it, rather than triggering anything directly - the menu
   /// is what lets later stages add actions (rename, edit, ...) alongside
@@ -12986,6 +13500,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_startRevolveSketchPicker] exactly, for the Planar Surface
   /// picker.
   void _startPlanarSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _planarSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -13240,6 +13755,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startSurfaceSketchPicker] exactly.
   void _startRevolveSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _revolveSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -13554,6 +14070,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [_refreshPickableSweepSketchIds]-style refresh Sweep's own picker
   /// still needs.
   void _startSweptSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _sweptSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -14481,6 +14998,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Bodies/Planes/Features toggle, this session needs it open to pick
   /// from).
   void _startSourceFeaturePicker(_SourceFeaturePickerTarget target) {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _sourceFeaturePickerTarget = target;
       _selectedSourceFeatureIds = {
@@ -18690,30 +19208,36 @@ class _PartScreenState extends State<PartScreen> {
 
     await _runGuarded(() async {
       await _api.cascadeDeleteFeature(part.id, feature.id);
-      // Re-fetch rather than trim local state, so the tree always reflects
-      // genuine backend state rather than an assumption about what the
-      // cascade just did.
-      await _refreshFeatures();
-      await _refreshSketchGeometries();
-      if (_selectedFeatureId != null && !_features.any((f) => f.id == _selectedFeatureId)) {
-        _selectedFeatureId = null;
-      }
-      _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
-      _autoHiddenSketchFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
-      // Bug-fix: deleting the ExtrudeFeature that consumed a Sketch (see
-      // _confirmExtrude's auto-hide) used to leave that Sketch stuck in
-      // _hiddenFeatureIds forever, since it never stopped existing - only
-      // stopped being locked - so the tree/viewport kept treating it as
-      // hidden even once it was editable again. The Sketch was only ever
-      // hidden because something depended on it; once the new last Feature
-      // is unlocked again, there's nothing left to make it redundant clutter.
-      if (_features.isNotEmpty && !_features.last.locked) {
-        _hiddenFeatureIds.remove(_features.last.id);
-        _autoHiddenSketchFeatureIds.remove(_features.last.id);
-      }
-      _recomputeVisibleSketchGeometries();
-      await _refreshMesh();
+      await _refreshAfterFeatureDelete();
     });
+  }
+
+  /// Everything [_cascadeDeleteFeature] (and its bulk counterpart,
+  /// [_buildMultiSelectDelete]) does after the delete call itself returns.
+  Future<void> _refreshAfterFeatureDelete() async {
+    // Re-fetch rather than trim local state, so the tree always reflects
+    // genuine backend state rather than an assumption about what the
+    // cascade just did.
+    await _refreshFeatures();
+    await _refreshSketchGeometries();
+    if (_selectedFeatureId != null && !_features.any((f) => f.id == _selectedFeatureId)) {
+      _selectedFeatureId = null;
+    }
+    _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
+    _autoHiddenSketchFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
+    // Bug-fix: deleting the ExtrudeFeature that consumed a Sketch (see
+    // _confirmExtrude's auto-hide) used to leave that Sketch stuck in
+    // _hiddenFeatureIds forever, since it never stopped existing - only
+    // stopped being locked - so the tree/viewport kept treating it as
+    // hidden even once it was editable again. The Sketch was only ever
+    // hidden because something depended on it; once the new last Feature
+    // is unlocked again, there's nothing left to make it redundant clutter.
+    if (_features.isNotEmpty && !_features.last.locked) {
+      _hiddenFeatureIds.remove(_features.last.id);
+      _autoHiddenSketchFeatureIds.remove(_features.last.id);
+    }
+    _recomputeVisibleSketchGeometries();
+    await _refreshMesh();
   }
 
   /// Stage 19b Item 1's dedicated FAB - toggles the Feature tree panel
@@ -18736,6 +19260,9 @@ class _PartScreenState extends State<PartScreen> {
   /// Assembly mode (see [_refreshAssemblyTree]'s own doc comment for why
   /// this isn't instead kept always-fresh in the background).
   void _toggleAssemblyLens() {
+    // Feature 1 (tree multi-select): a session belongs to one tree, and
+    // only the current lens's tree is ever mounted.
+    _exitMultiSelect();
     setState(() {
       _lens = _lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part;
     });
@@ -19447,7 +19974,11 @@ class _PartScreenState extends State<PartScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_confirmingSketchOrientation) {
+        if (_activeMultiSelect != null) {
+          // Feature 1 (tree multi-select): back cancels the session, same
+          // as the action bar's own Cancel.
+          _exitMultiSelect();
+        } else if (_confirmingSketchOrientation) {
           _cancelPendingOrientation();
         } else if (_sketchPickerActive) {
           _cancelSketchPicker();
@@ -19930,7 +20461,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_deleteFaceActive &&
                     !_moveFaceActive &&
                     !_profilePickerActive &&
-                    !_pathPickerActive)
+                    !_pathPickerActive &&
+                    _activeMultiSelect == null)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
@@ -19978,6 +20510,7 @@ class _PartScreenState extends State<PartScreen> {
                 // `MoveRotateComponentPanel` below, avoiding overlapping UI.
                 if (_lens == AssemblyLens.assembly &&
                     _selectedOccurrenceId != null &&
+                    !_assemblyMultiSelect.active &&
                     !_anyToolPanelOpen &&
                     !_anyFeatureOrSourcePickerSessionActive &&
                     !_mateActive &&
@@ -20023,12 +20556,23 @@ class _PartScreenState extends State<PartScreen> {
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
                     onFeatureTap: _onFeatureTap,
-                    onFeatureLongPress: _onFeatureLongPress,
+                    // Feature 1 (tree multi-select): long-press enters bulk
+                    // multi-select; the old per-row context menu is reached
+                    // via the action bar's "More" button instead (see
+                    // [_multiSelectMore]).
+                    onFeatureLongPress: (feature) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.feature(feature.id)),
+                    isMultiSelectMode: _buildMultiSelect.active,
+                    selectedMultiSelectIds: _buildMultiSelect.selectedIds,
+                    onMultiSelectToggle: (key) => _toggleMultiSelectMember(_buildMultiSelect, key),
                     pendingDetailFeatureIds: _pendingDetailFeatureIds,
                     pinnedCoarseFeatureIds: _pinnedCoarseFeatureIds,
                     onToggleCoarsePin: _toggleCoarsePin,
                     onClose: () {
-                      if (_sketchPickerActive) {
+                      if (_buildMultiSelect.active) {
+                        _exitMultiSelect();
+                        setState(() => _featureTreeVisible = false);
+                      } else if (_sketchPickerActive) {
                         _cancelSketchPicker();
                       } else if (_surfaceSketchPickerActive) {
                         _cancelSurfaceSketchPicker();
@@ -20192,7 +20736,8 @@ class _PartScreenState extends State<PartScreen> {
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
-                    onBodyLongPress: _onBodyLongPress,
+                    onBodyLongPress: (bodyId) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.body(bodyId)),
                     hiddenBodyIds: {
                       for (final body in _bodies)
                         if (body.hidden && !body.isSurface) body.bodyId,
@@ -20200,7 +20745,8 @@ class _PartScreenState extends State<PartScreen> {
                     surfaceIds: _computedSurfaceIds,
                     surfaceNames: _surfaceNames,
                     onSurfaceTap: _onSurfaceTap,
-                    onSurfaceLongPress: _onSurfaceLongPress,
+                    onSurfaceLongPress: (surfaceId) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.surface(surfaceId)),
                     hiddenSurfaceIds: {
                       for (final body in _bodies)
                         if (body.hidden && body.isSurface) body.bodyId,
@@ -20222,12 +20768,21 @@ class _PartScreenState extends State<PartScreen> {
                     patterns: _componentPatterns,
                     selectedOccurrenceId: _selectedOccurrenceId,
                     onOccurrenceTap: _onOccurrenceTap,
-                    onOccurrenceLongPress: _onOccurrenceLongPress,
+                    onOccurrenceLongPress: (occurrence) {
+                      _assemblyMultiSelectAnchor = occurrence;
+                      _enterMultiSelect(_assemblyMultiSelect, occurrence.id);
+                    },
+                    isMultiSelectMode: _assemblyMultiSelect.active,
+                    selectedMultiSelectIds: _assemblyMultiSelect.selectedIds,
+                    onMultiSelectToggle: (id) => _toggleMultiSelectMember(_assemblyMultiSelect, id),
                     onOccurrenceVisibilityToggle: (occurrence) =>
                         unawaited(_setOccurrenceHidden(occurrence, !occurrence.hidden)),
                     onOccurrenceColorTap: (occurrence) => unawaited(_onOccurrenceColorTap(occurrence)),
                     onLocateMissingFile: (occurrence) => unawaited(_onLocateMissingFilePressed(occurrence)),
-                    onClose: () => setState(() => _featureTreeVisible = false),
+                    onClose: () {
+                      _exitMultiSelect();
+                      setState(() => _featureTreeVisible = false);
+                    },
                     onMateTap: _onMateTap,
                     onMateLongPress: _onMateLongPress,
                     selectedMateId: _selectedMateId,
@@ -20243,6 +20798,32 @@ class _PartScreenState extends State<PartScreen> {
                     rootLabel: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
                   ),
                 ),
+                // Feature 1 (tree multi-select): replaces the Part-lens
+                // SelectionListDrawer (and, in Assembly lens,
+                // ComponentSelectionToolbar) above for the lifetime of a
+                // tree multi-select session - same drawer shell, listing the
+                // selected tree rows instead of mesh entities, with
+                // MultiSelectActionBar as its header. Stacked *above* both
+                // tree panels (unlike SelectionListDrawer) since the tree is
+                // always open during a session and would otherwise cover
+                // this drawer's left side.
+                if (_activeMultiSelect != null)
+                  Positioned.fill(
+                    child: SelectionListDrawer(
+                      selectedEntities: const {},
+                      onRemove: (_) {},
+                      items: _multiSelectDrawerItems(),
+                      header: MultiSelectActionBar(
+                        count: _activeMultiSelect!.count,
+                        allHidden: _multiSelectAllHidden,
+                        busy: _busy || _multiSelectBusy,
+                        onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
+                        onDelete: () => unawaited(_multiSelectDelete()),
+                        onCancel: _exitMultiSelect,
+                        onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
+                      ),
+                    ),
+                  ),
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,
@@ -20443,8 +21024,10 @@ class _PartScreenState extends State<PartScreen> {
                       ],
                       onRemoveSource: _removeComponentPatternSource,
                       pickingMoreSources: _componentPatternPickingSources,
-                      onPickingMoreSourcesChanged: (picking) =>
-                          setState(() => _componentPatternPickingSources = picking),
+                      onPickingMoreSourcesChanged: (picking) {
+                        if (picking) _exitAllPickerAndSelectModes();
+                        setState(() => _componentPatternPickingSources = picking);
+                      },
                       direction: _componentPatternDirection,
                       onDirectionChanged: (preset) => setState(() => _componentPatternDirection = preset),
                       customDirection: _componentPatternCustomDirection,

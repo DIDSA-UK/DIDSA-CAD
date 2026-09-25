@@ -3,6 +3,21 @@ import 'package:flutter/material.dart';
 import 'selection_hit_test.dart';
 import 'svg_icon.dart';
 
+/// Feature 1 (tree multi-select): one row of [SelectionListDrawer.items] -
+/// a pre-labelled entry for something that isn't a mesh
+/// [SelectionEntityRef] (a Build Tree Feature/Body row or an Assembly Tree
+/// Occurrence row), so the drawer can list a tree multi-select session with
+/// the exact same sheet shell, drag handle and remove-button affordance.
+class SelectionListDrawerItem {
+  const SelectionListDrawerItem({required this.key, required this.icon, required this.title, required this.onRemove});
+
+  /// Stable identity for this row (used as its widget key).
+  final String key;
+  final Widget icon;
+  final String title;
+  final VoidCallback onRemove;
+}
+
 /// Stage 23 Item 5 (Fix 5): the persistent (non-modal) drawer listing every
 /// currently-selected mesh entity - [PartScreen] decides when/where to show
 /// this (gated on [selectedEntities] being non-empty); this widget always
@@ -35,6 +50,12 @@ class SelectionListDrawer extends StatelessWidget {
   /// real call site now always supplies a complete map).
   final Map<String, String> bodyNames;
 
+  /// Feature 1 (tree multi-select): when non-null, the drawer lists these
+  /// pre-labelled rows instead of [selectedEntities] (which is then
+  /// ignored) - and, mirroring the entity case, renders nothing at all
+  /// while this list is empty.
+  final List<SelectionListDrawerItem>? items;
+
   /// Clears the bottom-right FAB column (each FAB is 56dp wide with 16dp of
   /// margin from the Scaffold edge) - matches the brief's example value.
   static const double _fabColumnClearance = 72;
@@ -45,10 +66,32 @@ class SelectionListDrawer extends StatelessWidget {
     required this.onRemove,
     this.header,
     this.bodyNames = const {},
+    this.items,
   });
 
   @override
   Widget build(BuildContext context) {
+    final customItems = items;
+    if (customItems != null) {
+      if (customItems.isEmpty) return const SizedBox.shrink();
+      return _buildSheet(
+        itemCount: customItems.length,
+        itemBuilder: (context, index) {
+          final item = customItems[index];
+          return ListTile(
+            key: ValueKey('selection-list-item-${item.key}'),
+            dense: true,
+            leading: item.icon,
+            title: Text(item.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+            trailing: IconButton(
+              tooltip: 'Remove from selection',
+              icon: const Icon(Icons.close, size: 18),
+              onPressed: item.onRemove,
+            ),
+          );
+        },
+      );
+    }
     if (selectedEntities.isEmpty) return const SizedBox.shrink();
     final entries = selectedEntities.toList()
       ..sort((a, b) {
@@ -71,6 +114,27 @@ class SelectionListDrawer extends StatelessWidget {
         final bodyOrder = a.bodyId.compareTo(b.bodyId);
         return bodyOrder != 0 ? bodyOrder : a.id.compareTo(b.id);
       });
+    return _buildSheet(
+      itemCount: entries.length,
+      itemBuilder: (context, index) {
+        final entity = entries[index];
+        return ListTile(
+          dense: true,
+          leading: _iconFor(entity.kind),
+          title: Text(_titleFor(entity)),
+          trailing: IconButton(
+            tooltip: 'Remove from selection',
+            icon: const Icon(Icons.close, size: 18),
+            onPressed: () => onRemove(entity),
+          ),
+        );
+      },
+    );
+  }
+
+  /// The shared sheet shell (drag handle + [header] + a list of rows) for
+  /// both the mesh-entity and [items] cases.
+  Widget _buildSheet({required int itemCount, required NullableIndexedWidgetBuilder itemBuilder}) {
     return DraggableScrollableSheet(
       initialChildSize: 0.18,
       minChildSize: 0.12,
@@ -103,22 +167,7 @@ class SelectionListDrawer extends StatelessWidget {
                     ),
                   ),
                   if (header != null) SliverToBoxAdapter(child: header),
-                  SliverList.builder(
-                    itemCount: entries.length,
-                    itemBuilder: (context, index) {
-                      final entity = entries[index];
-                      return ListTile(
-                        dense: true,
-                        leading: _iconFor(entity.kind),
-                        title: Text(_titleFor(entity)),
-                        trailing: IconButton(
-                          tooltip: 'Remove from selection',
-                          icon: const Icon(Icons.close, size: 18),
-                          onPressed: () => onRemove(entity),
-                        ),
-                      );
-                    },
-                  ),
+                  SliverList.builder(itemCount: itemCount, itemBuilder: itemBuilder),
                 ],
               ),
             ),

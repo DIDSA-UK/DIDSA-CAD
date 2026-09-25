@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
 import 'svg_icon.dart';
+import 'tree_multi_select_controller.dart';
 
 /// `docs/lod-strategy/01-design.md` SS3: every `FeatureDto.type` the
 /// backend's `compute_part_bodies_coarse`/`coarse_eligible_feature_ids`
@@ -389,6 +390,25 @@ class FeatureTreePanel extends StatefulWidget {
   /// convention in this widget.
   final void Function(FeatureDto feature)? onToggleCoarsePin;
 
+  /// Feature 1 (tree multi-select): true while a long-press-entered bulk
+  /// multi-select session is active. Deliberately a sibling of - not a
+  /// reuse of - [isFeaturePickerMode]: that picker dims rows of an
+  /// ineligible *type* for one specific tool, whereas every Body/Surface/
+  /// Plane/Feature row here is hide/delete-capable and so always eligible.
+  /// While active, a row tap (or long-press) toggles that row's membership
+  /// via [onMultiSelectToggle] instead of its normal tap behavior.
+  final bool isMultiSelectMode;
+
+  /// While [isMultiSelectMode], the selected rows' keys - encoded with
+  /// [TreeMultiSelectKeys] (`feature:`/`body:`/`surface:` prefixed), since a
+  /// single-body Feature's Body id and Feature id are the same string.
+  final Set<String> selectedMultiSelectIds;
+
+  /// [isMultiSelectMode]'s tap handler, called with the tapped row's
+  /// [TreeMultiSelectKeys] key. Unused (and may be left null) outside
+  /// multi-select mode.
+  final void Function(String key)? onMultiSelectToggle;
+
   const FeatureTreePanel({
     super.key,
     required this.visible,
@@ -419,6 +439,9 @@ class FeatureTreePanel extends StatefulWidget {
     this.pendingDetailFeatureIds = const {},
     this.pinnedCoarseFeatureIds = const {},
     this.onToggleCoarsePin,
+    this.isMultiSelectMode = false,
+    this.selectedMultiSelectIds = const {},
+    this.onMultiSelectToggle,
   });
 
   @override
@@ -535,6 +558,21 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                                   ),
                                 ),
                               ),
+                            if (widget.isMultiSelectMode)
+                              Container(
+                                width: double.infinity,
+                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                child: Text(
+                                  'Tap rows to select - ${widget.selectedMultiSelectIds.length} selected',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
                             Expanded(child: _buildGroupedTree(context)),
                           ],
                         ),
@@ -549,6 +587,20 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         );
       },
     );
+  }
+
+  /// Feature 1 (tree multi-select): whether the row keyed [key] is in the
+  /// active multi-select session's selection.
+  bool _isMultiSelected(String key) => widget.isMultiSelectMode && widget.selectedMultiSelectIds.contains(key);
+
+  /// Feature 1 (tree multi-select): the trailing indicator a Body/Surface/
+  /// Plane row shows - a checkmark while multi-selected, otherwise the
+  /// usual hidden-state eye-slash.
+  Widget? _simpleRowTrailing({required bool hidden, required String key}) {
+    if (widget.isMultiSelectMode) {
+      return _isMultiSelected(key) ? const Icon(Icons.check_circle, size: 18) : null;
+    }
+    return hidden ? const Icon(Icons.visibility_off, size: 18) : null;
   }
 
   /// The trailing-edge resize grip - a 24px-wide invisible hit target
@@ -640,11 +692,13 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
   /// instead.
   Widget _buildBodyTile(String bodyId) {
     final hidden = widget.hiddenBodyIds.contains(bodyId);
+    final key = TreeMultiSelectKeys.body(bodyId);
     return Opacity(
       opacity: hidden ? 0.5 : 1.0,
       child: ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
+        selected: _isMultiSelected(key),
         leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 24),
         title: Text(
           widget.bodyNames[bodyId] ?? bodyId,
@@ -652,9 +706,15 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
           overflow: TextOverflow.ellipsis,
           style: _rowTitleStyle,
         ),
-        trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
-        onTap: () => widget.onBodyTap(bodyId),
-        onLongPress: widget.onBodyLongPress == null ? null : () => widget.onBodyLongPress!(bodyId),
+        trailing: _simpleRowTrailing(hidden: hidden, key: key),
+        onTap: widget.isMultiSelectMode
+            ? () => widget.onMultiSelectToggle?.call(key)
+            : () => widget.onBodyTap(bodyId),
+        onLongPress: widget.isMultiSelectMode
+            ? () => widget.onMultiSelectToggle?.call(key)
+            : widget.onBodyLongPress == null
+                ? null
+                : () => widget.onBodyLongPress!(bodyId),
       ),
     );
   }
@@ -681,11 +741,13 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         for (final feature in planeFeatures)
           Builder(builder: (context) {
             final hidden = widget.hiddenFeatureIds.contains(feature.id);
+            final key = TreeMultiSelectKeys.feature(feature.id);
             return Opacity(
               opacity: hidden ? 0.5 : 1.0,
               child: ListTile(
                 dense: true,
                 visualDensity: VisualDensity.compact,
+                selected: _isMultiSelected(key),
                 leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 24),
                 title: Text(
                   featureDisplayName(widget.features, widget.features.indexOf(feature)),
@@ -693,15 +755,19 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                   overflow: TextOverflow.ellipsis,
                   style: _rowTitleStyle,
                 ),
-                trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
-                onTap: () => widget.onFeatureTap(feature),
+                trailing: _simpleRowTrailing(hidden: hidden, key: key),
+                onTap: widget.isMultiSelectMode
+                    ? () => widget.onMultiSelectToggle?.call(key)
+                    : () => widget.onFeatureTap(feature),
                 // Bug fix: this row (a shortcut into the same Feature the
                 // "Features" section below already lists) never wired
                 // long-press at all - Hide/Show (and every other
                 // FeatureContextMenuAction) was only reachable via that
                 // other row, not from here, despite this looking like an
                 // equally normal place to long-press for it.
-                onLongPress: () => widget.onFeatureLongPress(feature),
+                onLongPress: widget.isMultiSelectMode
+                    ? () => widget.onMultiSelectToggle?.call(key)
+                    : () => widget.onFeatureLongPress(feature),
               ),
             );
           }),
@@ -734,11 +800,13 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
   /// [_buildBodyTile] exactly.
   Widget _buildSurfaceTile(String surfaceId) {
     final hidden = widget.hiddenSurfaceIds.contains(surfaceId);
+    final key = TreeMultiSelectKeys.surface(surfaceId);
     return Opacity(
       opacity: hidden ? 0.5 : 1.0,
       child: ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
+        selected: _isMultiSelected(key),
         leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 24),
         title: Text(
           widget.surfaceNames[surfaceId] ?? surfaceId,
@@ -746,9 +814,17 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
           overflow: TextOverflow.ellipsis,
           style: _rowTitleStyle,
         ),
-        trailing: hidden ? const Icon(Icons.visibility_off, size: 18) : null,
-        onTap: widget.onSurfaceTap == null ? null : () => widget.onSurfaceTap!(surfaceId),
-        onLongPress: widget.onSurfaceLongPress == null ? null : () => widget.onSurfaceLongPress!(surfaceId),
+        trailing: _simpleRowTrailing(hidden: hidden, key: key),
+        onTap: widget.isMultiSelectMode
+            ? () => widget.onMultiSelectToggle?.call(key)
+            : widget.onSurfaceTap == null
+                ? null
+                : () => widget.onSurfaceTap!(surfaceId),
+        onLongPress: widget.isMultiSelectMode
+            ? () => widget.onMultiSelectToggle?.call(key)
+            : widget.onSurfaceLongPress == null
+                ? null
+                : () => widget.onSurfaceLongPress!(surfaceId),
       ),
     );
   }
@@ -797,12 +873,16 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         widget.isFeaturePickerMode && !widget.pickableFeaturePickerIds.contains(feature.id);
     final featurePickerSelected =
         widget.isFeaturePickerMode && widget.selectedFeaturePickerIds.contains(feature.id);
+    // Feature 1 (tree multi-select): every Feature row is eligible (all are
+    // hide/delete-capable), so unlike the picker above nothing is dimmed.
+    final multiSelectKey = TreeMultiSelectKeys.feature(feature.id);
+    final multiSelected = _isMultiSelected(multiSelectKey);
     return Opacity(
       opacity: hidden || pickerDimmed || featurePickerDimmed ? 0.5 : 1.0,
       child: ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
-        selected: selected || featurePickerSelected,
+        selected: widget.isMultiSelectMode ? multiSelected : selected || featurePickerSelected,
         // Sketcher-roadmap Phase 4.3 v1: hasLostReference is its own,
         // independent overlay badge - kept alongside (not instead of) the
         // type glyph below.
@@ -851,7 +931,10 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                   : _rowSubtitleStyle,
         ),
         trailing: () {
-          final pinIcon = widget.onToggleCoarsePin != null && isCoarseEligible && !widget.isFeaturePickerMode
+          final pinIcon = widget.onToggleCoarsePin != null &&
+                  isCoarseEligible &&
+                  !widget.isFeaturePickerMode &&
+                  !widget.isMultiSelectMode
               ? IconButton(
                   icon: Icon(isPinnedCoarse ? Icons.blur_on : Icons.blur_off, size: 18),
                   tooltip: isPinnedCoarse ? 'Always showing simplified geometry' : 'Always show simplified geometry',
@@ -863,7 +946,9 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
               : null;
           final stateIcon = widget.isFeaturePickerMode
               ? (featurePickerSelected ? const Icon(Icons.check_circle, size: 18) : null)
-              : (hidden ? const Icon(Icons.visibility_off, size: 18) : null);
+              : widget.isMultiSelectMode
+                  ? (multiSelected ? const Icon(Icons.check_circle, size: 18) : null)
+                  : (hidden ? const Icon(Icons.visibility_off, size: 18) : null);
           final children = [if (pinIcon != null) pinIcon, if (stateIcon != null) stateIcon];
           // Bug fix (assembly testing, `assembly_tree_panel.dart`'s sibling
           // fix): scale down instead of overflowing on a narrow panel.
@@ -879,13 +964,17 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
             if (isSketch) widget.onSketchPicked?.call(feature);
           } else if (widget.isFeaturePickerMode) {
             if (!featurePickerDimmed) widget.onFeaturePickerToggle?.call(feature);
+          } else if (widget.isMultiSelectMode) {
+            widget.onMultiSelectToggle?.call(multiSelectKey);
           } else {
             widget.onFeatureTap(feature);
           }
         },
         onLongPress: widget.isSketchPickerMode || widget.isFeaturePickerMode
             ? null
-            : () => widget.onFeatureLongPress(feature),
+            : widget.isMultiSelectMode
+                ? () => widget.onMultiSelectToggle?.call(multiSelectKey)
+                : () => widget.onFeatureLongPress(feature),
       ),
     );
   }
