@@ -201,6 +201,24 @@ class ExtrudeFeature(Feature):
     # before this field existed keeps its current wall side unchanged).
     thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
 
+    # Extrude draft: `None` (default) is the ordinary straight-walled prism,
+    # completely unchanged. Set (degrees, strictly inside (0, 90) - see
+    # `app.document.router._validate_draft_payload`), every lateral face of
+    # the prism is tapered by this angle via `BRepOffsetAPI_DraftAngle`
+    # (see `app.document.extrude._apply_draft`). The neutral plane - the
+    # one cross-section that stays exactly true to the sketched profile -
+    # is always the Sketch plane itself, never a separately picked face
+    # (standard CAD behavior for a draft built into the extrude itself).
+    # v1: mutually exclusive with `thickness` and restricted to a
+    # single-profile selection (both enforced by the router, the latter
+    # re-checked at resolve time for Sketch drift).
+    draft_angle: float | None = None
+
+    # Meaningful only when `draft_angle` is set: True (default) tapers the
+    # walls outward, so the solid gets wider moving away from the Sketch
+    # plane; False tapers them inward (narrower away from the plane).
+    draft_outward: bool = True
+
     @property
     def type(self) -> str:
         return "extrude"

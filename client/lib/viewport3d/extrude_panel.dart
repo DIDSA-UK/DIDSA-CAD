@@ -75,6 +75,16 @@ class ExtrudePanel extends StatefulWidget {
   /// for a positive thickness, before this field existed).
   final ThicknessDirection initialThicknessDirection;
 
+  /// Feature 5 (Extrude draft): the draft angle (degrees) this panel opens
+  /// with - `null` (default) opens with the Draft toggle off (a plain
+  /// straight-walled extrude). The neutral plane is always the sketch
+  /// plane itself, so angle + [initialDraftOutward] are the only inputs.
+  final double? initialDraftAngle;
+
+  /// Meaningful only when [initialDraftAngle] is set: `true` tapers the
+  /// walls outward (wider away from the sketch plane), `false` inward.
+  final bool initialDraftOutward;
+
   /// Prompt A4: how many target bodies are currently picked in the 3D
   /// viewport (see [PartScreen]'s body-picking flow, driven independently
   /// of this panel's own fields) - read live on every build, unlike
@@ -83,8 +93,12 @@ class ExtrudePanel extends StatefulWidget {
   /// Drives Cut's "requires 1+" rule below.
   final int targetBodyCount;
 
-  final void Function(ExtrudeType type, double startDistance,
-      double endDistance, double? thickness, ThicknessDirection thicknessDirection) onChanged;
+  /// [draftAngle] is `null` whenever the Draft toggle is off, or its Angle
+  /// field doesn't currently hold a value strictly inside (0, 90) - Confirm
+  /// is disabled in that second case, mirroring [thickness]'s own
+  /// "null while invalid" convention.
+  final void Function(ExtrudeType type, double startDistance, double endDistance,
+      double? thickness, ThicknessDirection thicknessDirection, double? draftAngle, bool draftOutward) onChanged;
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -97,6 +111,8 @@ class ExtrudePanel extends StatefulWidget {
     this.initialEndDistance = 10.0,
     this.initialThickness,
     this.initialThicknessDirection = ThicknessDirection.outward,
+    this.initialDraftAngle,
+    this.initialDraftOutward = true,
     required this.targetBodyCount,
     required this.onChanged,
     required this.onConfirm,
@@ -114,6 +130,16 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
   late bool _isThin;
   late final TextEditingController _thicknessController;
   late ThicknessDirection _thicknessDirection;
+
+  /// Feature 5: whether the Draft toggle is on - mirrors [_isThin]'s gating
+  /// exactly. Draft and thin-wall are mutually exclusive (v1, enforced by
+  /// the backend's `_validate_draft_payload` too) - each toggle is disabled
+  /// while the other is on, so the common case never round-trips a 422.
+  late bool _hasDraft;
+  late final TextEditingController _draftAngleController;
+  late bool _draftOutward;
+
+  static const double _defaultDraftAngle = 5;
 
   /// The depth implied by the current start/end fields - `null` once they
   /// no longer parse as numbers, so [build] can fall back to not showing a
@@ -137,6 +163,10 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     _thicknessController = TextEditingController(
         text: widget.initialThickness == null ? '' : _formatDistance(widget.initialThickness!));
     _thicknessDirection = widget.initialThicknessDirection;
+    _hasDraft = widget.initialDraftAngle != null;
+    _draftAngleController =
+        TextEditingController(text: _formatDistance(widget.initialDraftAngle ?? _defaultDraftAngle));
+    _draftOutward = widget.initialDraftOutward;
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits a field - onChanged was only ever wired
     // to the TextField/SegmentedButton callbacks, never fired for the
@@ -144,7 +174,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         widget.onChanged(_type, widget.initialStartDistance, widget.initialEndDistance,
-            widget.initialThickness, _thicknessDirection);
+            widget.initialThickness, _thicknessDirection, _draftAngle, _draftOutward);
       }
     });
   }
@@ -154,6 +184,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     _startController.dispose();
     _endController.dispose();
     _thicknessController.dispose();
+    _draftAngleController.dispose();
     super.dispose();
   }
 
@@ -172,11 +203,22 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     return (value == null || value == 0) ? null : value;
   }
 
+  /// Feature 5: the Draft field's angle when [_hasDraft] is on and it
+  /// parses to a value strictly inside (0, 90) degrees, else `null` - 90
+  /// itself would lay the walls flat onto the sketch plane (a degenerate
+  /// taper the backend rejects too).
+  double? get _draftAngle {
+    if (!_hasDraft) return null;
+    final value = double.tryParse(_draftAngleController.text);
+    return (value == null || value <= 0 || value >= 90) ? null : value;
+  }
+
   bool get _canConfirm =>
       _depth != null &&
       _depth! > 0 &&
       !(_type == ExtrudeType.cut && widget.targetBodyCount == 0) &&
-      (!_isThin || _thickness != null);
+      (!_isThin || _thickness != null) &&
+      (!_hasDraft || _draftAngle != null);
 
   void _emitChange() {
     final start = double.tryParse(_startController.text);
@@ -184,7 +226,11 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
     setState(
         () => _depth = (start != null && end != null) ? end - start : null);
     if (start == null || end == null) return;
-    widget.onChanged(_type, start, end, _thickness, _thicknessDirection);
+    // While the Draft field holds an invalid angle, don't fire a preview
+    // update at all (Confirm is disabled) - otherwise the preview would
+    // silently flip back to an undrafted extrude mid-typing.
+    if (_hasDraft && _draftAngle == null) return;
+    widget.onChanged(_type, start, end, _thickness, _thicknessDirection, _draftAngle, _draftOutward);
   }
 
   void _onTypeChanged(ExtrudeType type) {
@@ -194,6 +240,16 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
 
   void _onThinToggled(bool value) {
     setState(() => _isThin = value);
+    _emitChange();
+  }
+
+  void _onDraftToggled(bool value) {
+    setState(() => _hasDraft = value);
+    _emitChange();
+  }
+
+  void _onDraftOutwardChanged(bool outward) {
+    setState(() => _draftOutward = outward);
     _emitChange();
   }
 
@@ -302,8 +358,9 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
             contentPadding: EdgeInsets.zero,
             controlAffinity: ListTileControlAffinity.leading,
             title: const Text('Thin extrude'),
+            subtitle: _hasDraft ? const Text('Not available with draft') : null,
             value: _isThin,
-            onChanged: (value) => _onThinToggled(value ?? false),
+            onChanged: _hasDraft ? null : (value) => _onThinToggled(value ?? false),
           ),
           if (_isThin) ...[
             Padding(
@@ -326,6 +383,47 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
                 ],
                 selected: {_thicknessDirection},
                 onSelectionChanged: (selection) => _onDirectionChanged(selection.first),
+              ),
+            ),
+          ],
+          CheckboxListTile(
+            key: const ValueKey('extrude-draft-toggle'),
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('Draft'),
+            subtitle: _isThin ? const Text('Not available with thin extrude') : null,
+            value: _hasDraft,
+            onChanged: _isThin ? null : (value) => _onDraftToggled(value ?? false),
+          ),
+          if (_hasDraft) ...[
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: TextField(
+                key: const ValueKey('extrude-draft-angle-field'),
+                controller: _draftAngleController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(labelText: 'Draft angle (°)'),
+                onChanged: (_) => _emitChange(),
+              ),
+            ),
+            if (_draftAngle == null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  'Enter an angle between 0 and 90',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: SegmentedButton<bool>(
+                key: const ValueKey('extrude-draft-direction'),
+                segments: const [
+                  ButtonSegment(value: true, label: Text('Outward')),
+                  ButtonSegment(value: false, label: Text('Inward')),
+                ],
+                selected: {_draftOutward},
+                onSelectionChanged: (selection) => _onDraftOutwardChanged(selection.first),
               ),
             ),
           ],

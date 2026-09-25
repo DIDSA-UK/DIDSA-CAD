@@ -992,6 +992,8 @@ def _feature_to_dict(feature: Feature) -> dict:
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
             "thickness": feature.thickness,
             "thickness_direction": feature.thickness_direction.value,
+            "draft_angle": feature.draft_angle,
+            "draft_outward": feature.draft_outward,
         }
     if isinstance(feature, SurfaceFeature):
         return {
@@ -1379,6 +1381,8 @@ def _feature_from_dict(data: dict) -> Feature:
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
             thickness=data.get("thickness"),
             thickness_direction=ThicknessDirection(data.get("thickness_direction", ThicknessDirection.OUTWARD.value)),
+            draft_angle=data.get("draft_angle"),
+            draft_outward=data.get("draft_outward", True),
         )
     if feature_type == "surface":
         return SurfaceFeature(

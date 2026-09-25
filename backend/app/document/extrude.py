@@ -23,10 +23,11 @@ from OCC.Core.BRepBuilderAPI import (
 )
 from OCC.Core.BRepCheck import BRepCheck_Analyzer
 from OCC.Core.BRepGProp import brepgprop
+from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_DraftAngle
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.GeomAbs import GeomAbs_BSplineSurface, GeomAbs_Circle
-from OCC.Core.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.ShapeUpgrade import ShapeUpgrade_ShapeConvertToBezier, ShapeUpgrade_UnifySameDomain
 from OCC.Core.TColgp import TColgp_Array1OfPnt
@@ -802,6 +803,135 @@ def _thin_wall_solid_for_direction(
     return thicken_capped_solid_to_solid(capped_solid, closing_faces, thickness)
 
 
+def _draft_extrude_failed(feature_id: str) -> HTTPException:
+    """A structurally-valid drafted Extrude (a single real profile, an angle
+    inside (0, 90)) that OCCT nonetheless couldn't taper - e.g. an inward
+    draft steep enough for opposite walls to cross before the far end, or a
+    profile with a lateral face `BRepOffsetAPI_DraftAngle` can't taper at
+    all (only planar/cylindrical/conical faces are supported - a spline or
+    ellipse edge's prismed face is neither). Mirrors `_thin_extrude_failed`."""
+    return HTTPException(
+        status_code=422, detail={"type": "draft_extrude_failed", "feature_id": feature_id}
+    )
+
+
+def _draft_multi_profile(feature_id: str) -> HTTPException:
+    """A drafted Extrude whose Sketch currently yields more than one outer
+    profile - v1 restricts draft to a single profile (checked eagerly at the
+    router by `_validate_draft_payload`; this is the resolve-time re-check
+    for a Sketch that drifted into several loops after the fact)."""
+    return HTTPException(
+        status_code=422, detail={"type": "draft_multi_profile", "feature_id": feature_id}
+    )
+
+
+def _apply_draft(
+    prism: BRepPrimAPI_MakePrism,
+    pull_direction: gp_Dir,
+    neutral_plane: gp_Pln,
+    angle_degrees: float,
+    outward: bool,
+    feature_id: str,
+) -> TopoDS_Shape:
+    """Tapers every lateral (non-cap) face of `prism`'s solid by
+    `angle_degrees` about `neutral_plane` (always the Sketch plane - the one
+    cross-section that stays exactly true to the sketched profile).
+
+    Confirmed against this sandbox's real pythonocc-core 7.9.0 kernel (20x20
+    square prismed 20mm, 5 degrees): `BRepOffsetAPI_DraftAngle.Add(face,
+    gp_Dir, angle, gp_Pln[, Flag=True])` takes the angle in RADIANS, and
+    `pull_direction` names "the side of the neutral plane from which matter
+    is removed if the angle is positive" - with `pull_direction` pointing
+    away from the Sketch plane into the extruded material, a POSITIVE angle
+    shrinks the far end (volume 8000 -> 6681.8) and a NEGATIVE one grows it
+    (8000 -> 9481.5, exactly the 20->23.5 frustum; bbox +/-11.75 =
+    10 + 20*tan(5deg)). So `outward` negates the angle - the opposite of the
+    naive "outward = positive" guess. The same sign keeps hole walls
+    consistent too: an inward draft shrinks the outer walls and widens an
+    inner hole (both "remove material"), outward the reverse.
+
+    Caps are recognised by `IsSame` against `prism.FirstShape()`/
+    `LastShape()` - the same two faces the thin-wall branch passes as its
+    `closing_faces`. `AddDone()` is checked after every `Add` (a subsequent
+    `Add` after a failed one raises `Standard_ConstructionError`), and
+    `IsDone()` before `Shape()` (an over-steep inward draft makes `Build`
+    fail, and `Shape()` then raises rather than returning a null shape)."""
+    shape = prism.Shape()
+    first_cap, last_cap = prism.FirstShape(), prism.LastShape()
+    angle_rad = math.radians(-angle_degrees if outward else angle_degrees)
+    try:
+        draft = BRepOffsetAPI_DraftAngle(shape)
+        explorer = TopExp_Explorer(shape, TopAbs_FACE)
+        while explorer.More():
+            face = topods.Face(explorer.Current())
+            if not face.IsSame(first_cap) and not face.IsSame(last_cap):
+                draft.Add(face, pull_direction, angle_rad, neutral_plane)
+                if not draft.AddDone():
+                    raise _draft_extrude_failed(feature_id)
+            explorer.Next()
+        draft.Build()
+        if not draft.IsDone():
+            raise _draft_extrude_failed(feature_id)
+        result = draft.Shape()
+    except RuntimeError:
+        raise _draft_extrude_failed(feature_id) from None
+    if result.IsNull() or not BRepCheck_Analyzer(result).IsValid() or _volume(result) <= 0:
+        raise _draft_extrude_failed(feature_id)
+    return result
+
+
+def _drafted_prism_for_face(
+    face: TopoDS_Shape, feature: ExtrudeFeature, basis: ResolvedPlane
+) -> TopoDS_Shape:
+    """The drafted counterpart of `_prism_for_profile`'s straight prism.
+    "Outward"/"inward" is always relative to the Sketch plane: outward means
+    wider moving AWAY from it, whichever side of it the material is on - so
+    the span is split at the Sketch plane and each side is drafted with its
+    own pull direction (pointing away from the plane on that side):
+
+    - `start_distance >= 0`: one prism on the normal side, pulled along +normal.
+    - `end_distance <= 0`: one prism behind the plane, pulled along -normal.
+    - straddling (`start < 0 < end`, e.g. a symmetric/mid-plane extrude):
+      one drafted prism per side, fused - both ends then taper the same way
+      (both wider for outward), matching standard CAD mid-plane-draft
+      behavior rather than a single linear taper straight through the
+      plane (which would make one end wider and the other narrower).
+
+    A span that doesn't touch the Sketch plane (e.g. start 5, end 15) is
+    still tapered about the Sketch plane, so its near end is already
+    slightly scaled - consistent with "the Sketch plane is the neutral
+    plane" regardless of offsets."""
+    normal = basis_normal(basis)
+    direction = gp_Vec(normal.X(), normal.Y(), normal.Z())
+    ox, oy, oz = basis.origin
+    neutral_plane = gp_Pln(gp_Pnt(ox, oy, oz), normal)
+
+    def drafted_segment(seg_start: float, seg_end: float, pull: gp_Dir) -> TopoDS_Shape:
+        transform = gp_Trsf()
+        transform.SetTranslation(direction.Multiplied(seg_start))
+        moved = BRepBuilderAPI_Transform(face, transform, True).Shape()
+        prism = BRepPrimAPI_MakePrism(moved, direction.Multiplied(seg_end - seg_start))
+        return _apply_draft(
+            prism, pull, neutral_plane, feature.draft_angle, feature.draft_outward, feature.id
+        )
+
+    start, end = feature.start_distance, feature.end_distance
+    if start >= 0:
+        return drafted_segment(start, end, normal)
+    if end <= 0:
+        return drafted_segment(start, end, normal.Reversed())
+    front = drafted_segment(0.0, end, normal)
+    back = drafted_segment(start, 0.0, normal.Reversed())
+    vol_front, vol_back = _volume(front), _volume(back)
+    fuse = _run_fuse(front, back)
+    if not fuse.IsDone():
+        raise _draft_extrude_failed(feature.id)
+    solid = fuse.Shape()
+    if not _fuse_result_is_sane(solid, vol_front, vol_back):
+        raise _draft_extrude_failed(feature.id)
+    return _unify_same_domain(solid)
+
+
 def _prism_for_profile(
     sketch: Sketch, profile: Profile, feature: ExtrudeFeature, basis: ResolvedPlane
 ) -> tuple[TopoDS_Shape, dict[str, dict[str, EdgeProvenanceEntry]] | None]:
@@ -865,6 +995,14 @@ def _prism_for_profile(
         if solid is None:
             raise _thin_extrude_failed(feature.id)
         return solid, None
+
+    if feature.draft_angle is not None:
+        # Extrude draft: tapered lateral walls about the Sketch plane (see
+        # `_drafted_prism_for_face`). No edge-index provenance, for the same
+        # "topology no longer lines up with `_profile_boundary_shapes`"
+        # reason as the thin branch above - `BRepOffsetAPI_DraftAngle`
+        # rebuilds every lateral face and edge.
+        return _drafted_prism_for_face(face, feature, basis), None
 
     prism = BRepPrimAPI_MakePrism(moved_face, prism_vector)
     shape = prism.Shape()
@@ -1030,6 +1168,8 @@ def _solid_for_extrude_feature(
     else:
         candidates = result.loops
     profiles = select_profiles(candidates, feature.profile_refs)
+    if feature.draft_angle is not None and len(profiles) > 1:
+        raise _draft_multi_profile(feature.id)
     prism_results = [_prism_for_profile(sketch, profile, feature, basis) for profile in profiles]
     solids = [shape for shape, _provenance in prism_results]
 

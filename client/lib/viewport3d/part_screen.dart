@@ -2946,6 +2946,8 @@ class _PartScreenState extends State<PartScreen> {
     List<SketchEntityRefDto> profileRefs,
     double? thickness,
     ThicknessDirection thicknessDirection,
+    double? draftAngle,
+    bool draftOutward,
   })? _extrudeEditSnapshot;
 
   /// Prompt G: which outer profile(s) of [_extrudeSketchFeature] to use -
@@ -2974,6 +2976,15 @@ class _PartScreenState extends State<PartScreen> {
   /// through [_ensureExtrudeFeatureExists] the same way [_extrudeThickness]
   /// is.
   ThicknessDirection _extrudeThicknessDirection = ThicknessDirection.outward;
+
+  /// Feature 5 (Extrude draft): `null` (default) is no draft - see
+  /// [ExtrudePanel.initialDraftAngle]'s own doc comment. Threaded through
+  /// [_ensureExtrudeFeatureExists] the same way [_extrudeThickness] is.
+  double? _extrudeDraftAngle;
+
+  /// Meaningful only when [_extrudeDraftAngle] is set - see
+  /// [ExtrudePanel.initialDraftOutward].
+  bool _extrudeDraftOutward = true;
 
   /// Debounces the panel's live-preview PATCH/POST + mesh refresh by 500ms
   /// after the last field change, per the brief - cancelled outright by
@@ -12882,6 +12893,8 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeEndDistance = 10.0;
       _extrudeThickness = null;
       _extrudeThicknessDirection = ThicknessDirection.outward;
+      _extrudeDraftAngle = null;
+      _extrudeDraftOutward = true;
       _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
@@ -12931,6 +12944,8 @@ class _PartScreenState extends State<PartScreen> {
     final profileRefs = feature.profileRefs;
     final thickness = feature.thickness;
     final thicknessDirection = ThicknessDirection.fromApiValue(feature.thicknessDirection);
+    final draftAngle = feature.draftAngle;
+    final draftOutward = feature.draftOutward;
 
     setState(() {
       _extrudeSketchFeature = sketchFeature;
@@ -12944,6 +12959,8 @@ class _PartScreenState extends State<PartScreen> {
         profileRefs: profileRefs,
         thickness: thickness,
         thicknessDirection: thicknessDirection,
+        draftAngle: draftAngle,
+        draftOutward: draftOutward,
       );
       _meshBeforeExtrude = _bodies;
       _extrudeType = type;
@@ -12951,6 +12968,8 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeEndDistance = end;
       _extrudeThickness = thickness;
       _extrudeThicknessDirection = thicknessDirection;
+      _extrudeDraftAngle = draftAngle;
+      _extrudeDraftOutward = draftOutward;
       _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {
@@ -12992,6 +13011,8 @@ class _PartScreenState extends State<PartScreen> {
     List<SketchEntityRefDto> profileRefs, [
     double? thickness,
     ThicknessDirection thicknessDirection = ThicknessDirection.outward,
+    double? draftAngle,
+    bool draftOutward = true,
   ]) async {
     final part = _part;
     final sketchFeature = _extrudeSketchFeature;
@@ -13009,6 +13030,8 @@ class _PartScreenState extends State<PartScreen> {
         profileRefs: profileRefs,
         thickness: thickness,
         thicknessDirection: thicknessDirection.apiValue,
+        draftAngle: draftAngle,
+        draftOutward: draftOutward,
       );
       _previewExtrudeFeatureId = created.id;
     } else {
@@ -13021,7 +13044,14 @@ class _PartScreenState extends State<PartScreen> {
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
         thicknessDirection: thicknessDirection.apiValue,
+        // Feature 5: always the panel's full current state - an explicit
+        // null turns thin-wall/draft off (they're mutually exclusive, so
+        // switching one on must clear the other in the same PATCH).
         thickness: thickness,
+        clearThickness: true,
+        draftAngle: draftAngle,
+        clearDraftAngle: true,
+        draftOutward: draftOutward,
       );
     }
     await _refreshMesh();
@@ -13041,12 +13071,14 @@ class _PartScreenState extends State<PartScreen> {
   /// [_confirmExtrude] always has them, even mid-debounce) and (re)starts
   /// the 500ms debounce before actually hitting the backend.
   void _onExtrudeValuesChanged(ExtrudeType type, double start, double end, double? thickness,
-      ThicknessDirection thicknessDirection) {
+      ThicknessDirection thicknessDirection, double? draftAngle, bool draftOutward) {
     _extrudeType = type;
     _extrudeStartDistance = start;
     _extrudeEndDistance = end;
     _extrudeThickness = thickness;
     _extrudeThicknessDirection = thicknessDirection;
+    _extrudeDraftAngle = draftAngle;
+    _extrudeDraftOutward = draftOutward;
     _scheduleExtrudePreview();
   }
 
@@ -13067,6 +13099,8 @@ class _PartScreenState extends State<PartScreen> {
             _extrudeProfileRefs,
             _extrudeThickness,
             _extrudeThicknessDirection,
+            _extrudeDraftAngle,
+            _extrudeDraftOutward,
           ));
     });
   }
@@ -13120,6 +13154,8 @@ class _PartScreenState extends State<PartScreen> {
         _extrudeProfileRefs,
         _extrudeThickness,
         _extrudeThicknessDirection,
+        _extrudeDraftAngle,
+        _extrudeDraftOutward,
       );
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -13153,6 +13189,8 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeProfileRefs = [];
       _extrudeThickness = null;
       _extrudeThicknessDirection = ThicknessDirection.outward;
+      _extrudeDraftAngle = null;
+      _extrudeDraftOutward = true;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -13205,6 +13243,8 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeProfileRefs = [];
       _extrudeThickness = null;
       _extrudeThicknessDirection = ThicknessDirection.outward;
+      _extrudeDraftAngle = null;
+      _extrudeDraftOutward = true;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -13224,7 +13264,11 @@ class _PartScreenState extends State<PartScreen> {
             targetBodyIds: editSnapshot.targetBodyIds,
             profileRefs: editSnapshot.profileRefs,
             thickness: editSnapshot.thickness,
+            clearThickness: true,
             thicknessDirection: editSnapshot.thicknessDirection.apiValue,
+            draftAngle: editSnapshot.draftAngle,
+            clearDraftAngle: true,
+            draftOutward: editSnapshot.draftOutward,
           );
           await _refreshFeatures();
         });
@@ -21353,6 +21397,8 @@ class _PartScreenState extends State<PartScreen> {
                       initialEndDistance: _extrudeEndDistance,
                       initialThickness: _extrudeThickness,
                       initialThicknessDirection: _extrudeThicknessDirection,
+                      initialDraftAngle: _extrudeDraftAngle,
+                      initialDraftOutward: _extrudeDraftOutward,
                       targetBodyCount: _selectedEntities.length,
                       onChanged: _onExtrudeValuesChanged,
                       onConfirm: _confirmExtrude,

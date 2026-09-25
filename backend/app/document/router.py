@@ -382,7 +382,7 @@ from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
 from app.session_context import bind_session_id
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
-from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
@@ -877,6 +877,8 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             thickness=feature.thickness,
             thickness_direction=feature.thickness_direction,
+            draft_angle=feature.draft_angle,
+            draft_outward=feature.draft_outward,
             produces=feature.produces,
         )
     if isinstance(feature, SurfaceFeature):
@@ -2432,7 +2434,7 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
     return feature
 
 
-def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[SketchEntityRef]) -> None:
+def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[SketchEntityRef]) -> list[Profile]:
     """Prompt G: eagerly validates `profile_refs` against `sketch_feature`'s
     *current* Profile detection, discarding the result - fails closed with
     `invalid_profile_ref` (see `app.document.extrude.select_profiles`)
@@ -2448,11 +2450,51 @@ def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[Ske
     `sketch_feature` resolves to a real, currently-extrudable SketchFeature -
     this re-runs `detect_profile` once more (cheap) rather than threading
     that call's own result through, keeping this a standalone, reusable
-    check for both Extrude's and Revolve's create/update endpoints."""
+    check for both Extrude's and Revolve's create/update endpoints.
+
+    Returns the selected profiles (discarded by every caller except
+    Extrude's draft check, `_validate_draft_payload`, which needs to know
+    how many outer profiles the Extrude will actually use)."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
     candidates = [result.profile] if result.status == ProfileStatus.CLOSED_LOOP else result.loops
-    select_profiles(candidates, profile_refs)
+    return select_profiles(candidates, profile_refs)
+
+
+def _validate_draft_payload(draft_angle: float | None, thickness: float | None, profile_count: int) -> None:
+    """Extrude draft (v1): a no-op when `draft_angle` is None (no draft).
+    Otherwise:
+
+    - `draft_angle` must lie strictly inside (0, 90) degrees - 0 is "no
+      draft" (send `null` instead) and 90 would lay the walls flat onto the
+      Sketch plane, a degenerate taper. 400, the same plain numeric-field
+      shape as `_validate_thickness_nonzero`/Chamfer's own angle check.
+    - Mutually exclusive with thin-wall (`thickness`) - 422, mirroring
+      `_validate_tool_feature_payload`'s own "X is mutually exclusive with
+      Y" conflict shape. Rejected outright rather than letting either field
+      silently win, so a client can't fall into the "looks configured but
+      isn't" trap.
+    - Only a single outer profile (`profile_count`, from `_validate_
+      profile_refs`: the profiles `profile_refs` actually selects, or every
+      detected one when it's empty) - 422. A MultiProfile draft is left out
+      of v1's scope; `app.document.extrude._solid_for_extrude_feature`
+      re-checks this at resolve time in case the Sketch later drifts into
+      several loops."""
+    if draft_angle is None:
+        return
+    if not 0 < draft_angle < 90:
+        raise HTTPException(status_code=400, detail="draft_angle must be between 0 and 90 degrees (exclusive)")
+    if thickness is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Extrude draft_angle is mutually exclusive with thickness (thin-wall extrude)",
+        )
+    if profile_count > 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Extrude draft requires a single profile - this Extrude selects "
+            f"{profile_count} profiles",
+        )
 
 
 def _validate_surface_payload(
@@ -4268,8 +4310,9 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
     _validate_extrude_distances(payload.start_distance, payload.end_distance)
     _validate_target_body_ids(part, payload.extrude_type == ExtrudeType.CUT, payload.target_body_ids)
     profile_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
-    _validate_profile_refs(sketch_feature, profile_refs)
+    selected_profiles = _validate_profile_refs(sketch_feature, profile_refs)
     _validate_thickness_nonzero(payload.thickness)
+    _validate_draft_payload(payload.draft_angle, payload.thickness, len(selected_profiles))
     feature = ExtrudeFeature(
         id=str(uuid.uuid4()),
         sketch_feature_id=payload.sketch_feature_id,
@@ -4280,6 +4323,8 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
         profile_refs=profile_refs,
         thickness=payload.thickness,
         thickness_direction=payload.thickness_direction,
+        draft_angle=payload.draft_angle,
+        draft_outward=payload.draft_outward,
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -4327,12 +4372,18 @@ def update_extrude_feature(
         else feature.profile_refs
     )
     sketch_feature = _require_closed_sketch_feature(part, feature.sketch_feature_id)
-    _validate_profile_refs(sketch_feature, new_profile_refs)
-    new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
+    selected_profiles = _validate_profile_refs(sketch_feature, new_profile_refs)
+    # `thickness`/`draft_angle`: omitted keeps the current value, an
+    # explicit `null` clears it - see `ExtrudeFeatureUpdate`'s own docstring.
+    fields_set = payload.model_fields_set
+    new_thickness = payload.thickness if "thickness" in fields_set else feature.thickness
     _validate_thickness_nonzero(new_thickness)
     new_thickness_direction = (
         payload.thickness_direction if payload.thickness_direction is not None else feature.thickness_direction
     )
+    new_draft_angle = payload.draft_angle if "draft_angle" in fields_set else feature.draft_angle
+    new_draft_outward = payload.draft_outward if payload.draft_outward is not None else feature.draft_outward
+    _validate_draft_payload(new_draft_angle, new_thickness, len(selected_profiles))
 
     feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
@@ -4341,6 +4392,8 @@ def update_extrude_feature(
     feature.profile_refs = new_profile_refs
     feature.thickness = new_thickness
     feature.thickness_direction = new_thickness_direction
+    feature.draft_angle = new_draft_angle
+    feature.draft_outward = new_draft_outward
     return _feature_response(part, feature)
 
 

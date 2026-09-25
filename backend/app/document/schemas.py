@@ -198,6 +198,14 @@ class ExtrudeFeatureCreate(BaseModel):
     # Meaningful only when `thickness` is set - see `ThicknessDirection`'s
     # own doc comment.
     thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+    # Extrude draft (degrees, strictly inside (0, 90)): `None` (default) is
+    # the ordinary straight-walled prism. Mutually exclusive with
+    # `thickness` and single-profile only in v1 - see `app.document.router.
+    # _validate_draft_payload` and `ExtrudeFeature.draft_angle`.
+    draft_angle: float | None = None
+    # Meaningful only when `draft_angle` is set: True tapers outward (wider
+    # away from the Sketch plane), False inward.
+    draft_outward: bool = True
 
 
 class ExtrudeFeatureUpdate(BaseModel):
@@ -208,7 +216,15 @@ class ExtrudeFeatureUpdate(BaseModel):
     an explicit `[]` replaces them with an empty list (rejected for Cut,
     same as on create). Prompt G: `profile_refs` follows the identical
     omitted-vs-empty-list convention - omitted keeps the Feature's current
-    selection, an explicit `[]` reverts to "every outer profile"."""
+    selection, an explicit `[]` reverts to "every outer profile".
+
+    `thickness` and `draft_angle` distinguish omitted from an explicit
+    `null` (via pydantic's `model_fields_set` - see `app.document.router.
+    update_extrude_feature`): omitted keeps the Feature's current value, an
+    explicit `null` clears it (turns thin-wall/draft off). Needed since the
+    two are mutually exclusive - switching a preview from thin-wall to
+    draft must be able to clear `thickness` in the same PATCH that sets
+    `draft_angle`, and vice versa."""
 
     extrude_type: ExtrudeType | None = None
     start_distance: float | None = None
@@ -217,6 +233,8 @@ class ExtrudeFeatureUpdate(BaseModel):
     profile_refs: list[SketchEntityRefSchema] | None = None
     thickness: float | None = None
     thickness_direction: ThicknessDirection | None = None
+    draft_angle: float | None = None
+    draft_outward: bool | None = None
 
 
 class ExtrudeFeatureResponse(BaseModel):
@@ -231,6 +249,8 @@ class ExtrudeFeatureResponse(BaseModel):
     profile_refs: list[SketchEntityRefSchema] = []
     thickness: float | None = None
     thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+    draft_angle: float | None = None
+    draft_outward: bool = True
     # B1: see SketchFeatureResponse.produces above - always BODY for an
     # ExtrudeFeature today (Boss and Cut alike).
     produces: Produces

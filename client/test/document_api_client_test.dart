@@ -420,6 +420,39 @@ void main() {
       expect(capturedBody.containsKey('target_body_ids'), isTrue);
       expect(capturedBody['target_body_ids'], <String>[]);
     });
+
+    test('updateExtrudeFeature sends explicit nulls for thickness/draft_angle only when asked',
+        () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'extrude',
+            'id': 'extrude-1',
+            'sketch_feature_id': 'sketch-1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'locked': false,
+            'draft_angle': 5.0,
+            'draft_outward': false,
+          }, status: 200);
+        }),
+      );
+
+      await client.updateExtrudeFeature('part-1', 'extrude-1', endDistance: 10.0);
+      expect(capturedBody.containsKey('thickness'), isFalse);
+      expect(capturedBody.containsKey('draft_angle'), isFalse);
+
+      final feature = await client.updateExtrudeFeature('part-1', 'extrude-1',
+          clearThickness: true, draftAngle: 5.0, clearDraftAngle: true, draftOutward: false);
+      expect(capturedBody.containsKey('thickness'), isTrue);
+      expect(capturedBody['thickness'], isNull);
+      expect(capturedBody['draft_angle'], 5.0);
+      expect(capturedBody['draft_outward'], isFalse);
+      expect(feature.draftAngle, 5.0);
+      expect(feature.draftOutward, isFalse);
+    });
   });
 
   group('SubShapeRefDto / SketchEntityRefDto round-trip', () {

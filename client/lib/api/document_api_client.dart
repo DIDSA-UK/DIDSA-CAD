@@ -734,6 +734,16 @@ class FeatureDto {
   /// for a positive [thickness], before this field existed).
   final String thicknessDirection;
 
+  /// Feature 5: only present on an `"extrude"` Feature - the draft angle in
+  /// degrees (`ExtrudeFeature.draft_angle`; `null` is the ordinary
+  /// straight-walled prism). The neutral plane is always the sketch plane.
+  final double? draftAngle;
+
+  /// Meaningful only when [draftAngle] is set: `true` (default, matching
+  /// the backend's) tapers outward - wider away from the sketch plane -
+  /// `false` inward.
+  final bool draftOutward;
+
   /// Only present on a `"loft"` Feature - `true` when a thin Loft
   /// ([thickness] set) sources its sections as closed profiles (a hollow
   /// tube, open at both ends) instead of open chains - see
@@ -1061,6 +1071,8 @@ class FeatureDto {
     this.ruled = false,
     this.thickness,
     this.thicknessDirection = 'outward',
+    this.draftAngle,
+    this.draftOutward = true,
     this.thinFromClosedProfile,
     this.guideCurveRefs = const [],
     this.hasLostReference = false,
@@ -1177,6 +1189,8 @@ class FeatureDto {
         ruled: json['ruled'] as bool? ?? false,
         thickness: (json['thickness'] as num?)?.toDouble(),
         thicknessDirection: json['thickness_direction'] as String? ?? 'outward',
+        draftAngle: (json['draft_angle'] as num?)?.toDouble(),
+        draftOutward: json['draft_outward'] as bool? ?? true,
         thinFromClosedProfile: json['thin_from_closed_profile'] as bool?,
         guideCurveRefs: (json['guide_curve_refs'] as List?)
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
@@ -2698,6 +2712,8 @@ class DocumentApiClient {
     List<SketchEntityRefDto> profileRefs = const [],
     double? thickness,
     String? thicknessDirection,
+    double? draftAngle,
+    bool? draftOutward,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2712,6 +2728,8 @@ class DocumentApiClient {
                 'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
                 if (thickness != null) 'thickness': thickness,
                 if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
+                if (draftAngle != null) 'draft_angle': draftAngle,
+                if (draftOutward != null) 'draft_outward': draftOutward,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2725,6 +2743,13 @@ class DocumentApiClient {
   /// others, so a live-preview re-solve that never touched target-body/
   /// profile picking doesn't accidentally clear it). Used for the
   /// live-preview debounced re-solve.
+  ///
+  /// Feature 5: [clearThickness]/[clearDraftAngle] send an explicit JSON
+  /// `null` for `thickness`/`draft_angle` when the matching value is null -
+  /// the backend treats an explicit null as "turn thin-wall/draft off"
+  /// (omitted still means "keep"), needed since the two are mutually
+  /// exclusive and switching from one to the other must clear the old one
+  /// in the same PATCH.
   Future<FeatureDto> updateExtrudeFeature(
     String partId,
     String featureId, {
@@ -2734,7 +2759,11 @@ class DocumentApiClient {
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
     double? thickness,
+    bool clearThickness = false,
     String? thicknessDirection,
+    double? draftAngle,
+    bool clearDraftAngle = false,
+    bool? draftOutward,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2747,8 +2776,10 @@ class DocumentApiClient {
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)
                   'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
-                if (thickness != null) 'thickness': thickness,
+                if (thickness != null || clearThickness) 'thickness': thickness,
                 if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
+                if (draftAngle != null || clearDraftAngle) 'draft_angle': draftAngle,
+                if (draftOutward != null) 'draft_outward': draftOutward,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
