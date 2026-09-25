@@ -656,6 +656,17 @@ class FilletFeatureResponse(BaseModel):
     produces: Produces
 
 
+class ChamferEdgeOptionsSchema(BaseModel):
+    """Feature 3: wire counterpart to `app.document.models.
+    ChamferEdgeOptions` - see that dataclass for the semantics. `angle` is
+    in degrees, exclusive `(0, 180)` (checked by `app.document.router.
+    _validate_chamfer_edge_options`); `face_ref` must be a FACE."""
+
+    face_ref: SubShapeRefSchema | None = None
+    angle: float | None = None
+    flip: bool = False
+
+
 class ChamferFeatureCreate(BaseModel):
     """Prompt E: mirrors `FilletFeatureCreate` exactly, substituting
     `distance` for `radius` - see `app.document.router.
@@ -665,14 +676,22 @@ class ChamferFeatureCreate(BaseModel):
 
     edge_refs: list[SubShapeRefSchema] = []
     distance: float
+    # Feature 3: sparse per-edge angle/flip overrides, keyed by index into
+    # `edge_refs` (JSON object keys arrive as strings; pydantic coerces).
+    edge_options: dict[int, ChamferEdgeOptionsSchema] = {}
 
 
 class ChamferFeatureUpdate(BaseModel):
     """Partial update, same omitted-vs-current-value convention as
-    `FilletFeatureUpdate`."""
+    `FilletFeatureUpdate`. `edge_options`: `None` (omitted) keeps the
+    current value; `{}` clears every override. Note that replacing
+    `edge_refs` while omitting `edge_options` keeps the existing index-keyed
+    overrides, which the router then re-validates against the new edge
+    count."""
 
     edge_refs: list[SubShapeRefSchema] | None = None
     distance: float | None = None
+    edge_options: dict[int, ChamferEdgeOptionsSchema] | None = None
 
 
 class ChamferFeatureResponse(BaseModel):
@@ -680,6 +699,7 @@ class ChamferFeatureResponse(BaseModel):
     id: str
     edge_refs: list[SubShapeRefSchema] = []
     distance: float
+    edge_options: dict[int, ChamferEdgeOptionsSchema] = {}
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # ChamferFeature (it modifies, rather than creates, a Body).

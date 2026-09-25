@@ -536,13 +536,34 @@ class FilletFeature(Feature):
         return Produces.BODY
 
 
+@dataclass(frozen=True)
+class ChamferEdgeOptions:
+    """Feature 3 (Chamfer angle + flip): optional per-edge overrides for one
+    `ChamferFeature.edge_refs` entry, keyed by that entry's index in
+    `ChamferFeature.edge_options`. An edge with no entry (or an entry whose
+    `angle` is None) keeps the original symmetric distance-only chamfer.
+
+    With `angle` set the edge is chamfered via OCCT `BRepFilletAPI_
+    MakeChamfer.AddDA(distance, angle, edge, face)` - `distance` is measured
+    along the *reference face* and `angle` (degrees here; converted to
+    radians for OCCT, confirmed on-device) is measured from it. The
+    reference face is `face_ref` if given, else the lower-indexed of the
+    edge's two adjacent faces; `flip` swaps to the *other* adjacent face
+    (the standard CAD "flip chamfer direction")."""
+
+    face_ref: SubShapeRef | None = None
+    angle: float | None = None
+    flip: bool = False
+
+
 @dataclass
 class ChamferFeature(Feature):
     """Prompt E: bevels every edge named in `edge_refs` (all of which must
     belong to the same Body - see `app.document.chamfer._mixed_body_
     selection`) with one shared `distance`, via OCCT `BRepFilletAPI_
     MakeChamfer`. Same narrow v1 scope as `FilletFeature`: no per-edge
-    distances, no two-distance/angle chamfer variants - this prompt follows
+    distances (Feature 3 later added an optional per-edge distance-angle
+    variant via `edge_options` - see `ChamferEdgeOptions`) - this prompt follows
     Prompt D's design decisions exactly rather than re-deriving them (see
     that Feature's own docstring for the reasoning in full).
 
@@ -557,6 +578,10 @@ class ChamferFeature(Feature):
     id: str
     edge_refs: list[SubShapeRef] = field(default_factory=list)
     distance: float = 0.0
+    # Feature 3: sparse per-edge angle/flip overrides - key = index into
+    # `edge_refs`. Empty (the default, and every pre-Feature-3 document) =
+    # every edge gets the symmetric distance-only chamfer, unchanged.
+    edge_options: dict[int, ChamferEdgeOptions] = field(default_factory=dict)
 
     @property
     def type(self) -> str:

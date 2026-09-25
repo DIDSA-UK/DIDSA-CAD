@@ -108,6 +108,7 @@ from app.document.models import (
     BevelPairFeature,
     BevelPairMemberSpec,
     BooleanFeature,
+    ChamferEdgeOptions,
     ChamferFeature,
     ComponentPattern,
     ComponentPatternAxis,
@@ -227,6 +228,7 @@ from app.document.schemas import (
     BooleanFeatureUpdate,
     CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
+    ChamferEdgeOptionsSchema,
     ChamferFeatureCreate,
     ChamferFeatureResponse,
     ChamferFeatureUpdate,
@@ -446,6 +448,32 @@ def _subshape_ref_to_domain(schema: SubShapeRefSchema) -> SubShapeRef:
 
 def _subshape_ref_to_schema(ref: SubShapeRef) -> SubShapeRefSchema:
     return SubShapeRefSchema(body_id=ref.body_id, shape_type=ref.shape_type, index=ref.index)
+
+
+def _chamfer_edge_options_to_domain(
+    options: dict[int, ChamferEdgeOptionsSchema],
+) -> dict[int, ChamferEdgeOptions]:
+    return {
+        i: ChamferEdgeOptions(
+            face_ref=_subshape_ref_to_domain(opts.face_ref) if opts.face_ref is not None else None,
+            angle=opts.angle,
+            flip=opts.flip,
+        )
+        for i, opts in options.items()
+    }
+
+
+def _chamfer_edge_options_to_schema(
+    options: dict[int, ChamferEdgeOptions],
+) -> dict[int, ChamferEdgeOptionsSchema]:
+    return {
+        i: ChamferEdgeOptionsSchema(
+            face_ref=_subshape_ref_to_schema(opts.face_ref) if opts.face_ref is not None else None,
+            angle=opts.angle,
+            flip=opts.flip,
+        )
+        for i, opts in sorted(options.items())
+    }
 
 
 def _measure_entity_ref_to_domain(schema: MeasureEntityRefSchema) -> MeasureEntityRef:
@@ -943,6 +971,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             id=feature.id,
             edge_refs=[_subshape_ref_to_schema(ref) for ref in feature.edge_refs],
             distance=feature.distance,
+            edge_options=_chamfer_edge_options_to_schema(feature.edge_options),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -2649,6 +2678,27 @@ def _validate_chamfer_edge_refs(edge_refs: list[SubShapeRef]) -> None:
     for ref in edge_refs:
         if ref.shape_type != SubShapeType.EDGE:
             raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
+
+
+def _validate_chamfer_edge_options(edge_options: dict[int, ChamferEdgeOptions], edge_count: int) -> None:
+    """Feature 3: payload-shape checks for `ChamferFeature.edge_options` -
+    every key must index an existing `edge_refs` entry and every `face_ref`
+    must be a FACE (422, mirroring `_validate_chamfer_edge_refs`'s own
+    shape_type check); `angle`, when set, must lie strictly inside
+    `(0, 180)` degrees (400, `_validate_chamfer_distance`'s own plain-400
+    convention for a bare numeric-field check). Whether a `face_ref` is
+    actually adjacent to its edge is referential, so checked by
+    `app.document.chamfer.resolve_chamfer` instead."""
+    for index, opts in edge_options.items():
+        if not 0 <= index < edge_count:
+            raise HTTPException(
+                status_code=422,
+                detail=f"edge_options key {index} is not a valid edge_refs index",
+            )
+        if opts.face_ref is not None and opts.face_ref.shape_type != SubShapeType.FACE:
+            raise HTTPException(status_code=422, detail="edge_options face_ref must have shape_type=FACE")
+        if opts.angle is not None and not 0 < opts.angle < 180:
+            raise HTTPException(status_code=400, detail="angle must be between 0 and 180 degrees (exclusive)")
 
 
 def _validate_shell_thickness(thickness: float) -> None:
@@ -5320,7 +5370,11 @@ def create_chamfer_feature(part_id: str, payload: ChamferFeatureCreate) -> Chamf
     edge_refs = [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
     _validate_chamfer_edge_refs(edge_refs)
     _validate_chamfer_distance(payload.distance)
-    feature = ChamferFeature(id=str(uuid.uuid4()), edge_refs=edge_refs, distance=payload.distance)
+    edge_options = _chamfer_edge_options_to_domain(payload.edge_options)
+    _validate_chamfer_edge_options(edge_options, len(edge_refs))
+    feature = ChamferFeature(
+        id=str(uuid.uuid4()), edge_refs=edge_refs, distance=payload.distance, edge_options=edge_options
+    )
     resolve_chamfer(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -5350,12 +5404,21 @@ def update_chamfer_feature(
     new_distance = payload.distance if payload.distance is not None else feature.distance
     _validate_chamfer_edge_refs(new_edge_refs)
     _validate_chamfer_distance(new_distance)
+    new_edge_options = (
+        _chamfer_edge_options_to_domain(payload.edge_options)
+        if payload.edge_options is not None
+        else feature.edge_options
+    )
+    _validate_chamfer_edge_options(new_edge_options, len(new_edge_refs))
 
-    candidate = ChamferFeature(id=feature.id, edge_refs=new_edge_refs, distance=new_distance)
+    candidate = ChamferFeature(
+        id=feature.id, edge_refs=new_edge_refs, distance=new_distance, edge_options=new_edge_options
+    )
     resolve_chamfer(part, candidate)  # raises on an unresolvable reference
 
     feature.edge_refs = candidate.edge_refs
     feature.distance = candidate.distance
+    feature.edge_options = candidate.edge_options
     return _feature_response(part, feature)
 
 

@@ -5338,7 +5338,8 @@ class _PartScreenState extends State<PartScreen> {
 
   /// B4: the edited Feature's own stored values from just before editing
   /// started - mirrors [_filletEditSnapshot].
-  ({List<SubShapeRefDto> edgeRefs, double distance})? _chamferEditSnapshot;
+  ({List<SubShapeRefDto> edgeRefs, double distance, Map<int, ChamferEdgeOptionsDto> edgeOptions})?
+      _chamferEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - mirrors
   /// [_entitiesBeforeFillet].
@@ -5346,6 +5347,15 @@ class _PartScreenState extends State<PartScreen> {
 
   /// The panel's live distance field value - mirrors [_filletRadius].
   double _chamferDistance = 1.0;
+
+  /// Feature 3: the panel's live Angle value (degrees) - null while its
+  /// Angle toggle is off (plain symmetric chamfer). v1 applies it, with
+  /// [_chamferFlip], uniformly to every selected edge - see
+  /// [_currentChamferEdgeOptions].
+  double? _chamferAngle;
+
+  /// Feature 3: the panel's live Flip toggle.
+  bool _chamferFlip = false;
 
   Timer? _chamferDebounce;
 
@@ -19341,6 +19351,8 @@ class _PartScreenState extends State<PartScreen> {
       _entitiesBeforeChamfer = _selectedEntities;
       _selectedEntities = edgeEntities.toSet();
       _chamferDistance = 1.0;
+      _chamferAngle = null;
+      _chamferFlip = false;
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
@@ -19361,12 +19373,23 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_openFilletPanelForEdit] exactly.
   Future<void> _openChamferPanelForEdit(FeatureDto feature) async {
     final distance = feature.distance ?? 1.0;
+    // Feature 3: v1's panel edits one uniform angle/flip - seed it from the
+    // lowest-indexed edge that has an angle (every edge does, when the
+    // Feature was made by this panel).
+    final angledIndices = [
+      for (final e in feature.edgeOptions.entries)
+        if (e.value.angle != null) e.key
+    ]..sort();
+    final seed = angledIndices.isEmpty ? null : feature.edgeOptions[angledIndices.first];
     setState(() {
       _chamferActive = true;
       _editingChamferFeatureId = feature.id;
       _previewChamferFeatureId = feature.id;
       _chamferDistance = distance;
-      _chamferEditSnapshot = (edgeRefs: feature.edgeRefs, distance: distance);
+      _chamferAngle = seed?.angle;
+      _chamferFlip = seed?.flip ?? false;
+      _chamferEditSnapshot =
+          (edgeRefs: feature.edgeRefs, distance: distance, edgeOptions: feature.edgeOptions);
       _entitiesBeforeChamfer = _selectedEntities;
       _selectedEntities = {
         for (final ref in feature.edgeRefs)
@@ -19385,6 +19408,17 @@ class _PartScreenState extends State<PartScreen> {
             SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
       ];
 
+  /// Feature 3: the uniform v1 angle/flip applied to every one of
+  /// [edgeCount] edges - `{}` (plain symmetric chamfer) while the panel's
+  /// Angle toggle is off.
+  Map<int, ChamferEdgeOptionsDto> _currentChamferEdgeOptions(int edgeCount) {
+    final angle = _chamferAngle;
+    if (angle == null) return const {};
+    return {
+      for (var i = 0; i < edgeCount; i++) i: ChamferEdgeOptionsDto(angle: angle, flip: _chamferFlip),
+    };
+  }
+
   /// Mirrors [_currentFilletBodyId] exactly.
   String? _currentChamferBodyId() {
     for (final entity in _selectedEntities) {
@@ -19396,6 +19430,14 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_onFilletRadiusChanged] exactly.
   void _onChamferDistanceChanged(double distance) {
     _chamferDistance = distance;
+    _scheduleChamferPreview();
+  }
+
+  /// Feature 3: [ChamferPanel.onAngleChanged] - same debounced live-preview
+  /// path as [_onChamferDistanceChanged].
+  void _onChamferAngleChanged(double? angle, bool flip) {
+    _chamferAngle = angle;
+    _chamferFlip = flip;
     _scheduleChamferPreview();
   }
 
@@ -19411,19 +19453,24 @@ class _PartScreenState extends State<PartScreen> {
   /// self-exclusion-on-create fix and concurrent preview-mesh fetch - see
   /// that method's own doc comment (and `docs/live-preview-pattern.md`) for
   /// the full reasoning.
+  ///
+  /// Feature 3: also sends the panel's current uniform angle/flip as
+  /// `edge_options` (always on update - `{}` clears any previous angle).
   Future<void> _ensureChamferFeatureExists(double distance, List<SubShapeRefDto> edgeRefs) async {
     final part = _part;
     if (part == null || edgeRefs.isEmpty) return;
     final existingId = _previewChamferFeatureId;
+    final edgeOptions = _currentChamferEdgeOptions(edgeRefs.length);
     if (existingId == null) {
-      final feature =
-          await _api.createChamferFeature(_focusPartId, edgeRefs: edgeRefs, distance: distance);
+      final feature = await _api.createChamferFeature(_focusPartId,
+          edgeRefs: edgeRefs, distance: distance, edgeOptions: edgeOptions);
       _previewChamferFeatureId = feature.id;
       setState(() => _rollbackExcludedFeatureIds.add(feature.id));
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
     } else {
-      await _api.updateChamferFeature(_focusPartId, existingId, edgeRefs: edgeRefs, distance: distance);
+      await _api.updateChamferFeature(_focusPartId, existingId,
+          edgeRefs: edgeRefs, distance: distance, edgeOptions: edgeOptions);
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
     }
@@ -19517,6 +19564,7 @@ class _PartScreenState extends State<PartScreen> {
             previewId,
             edgeRefs: editSnapshot.edgeRefs,
             distance: editSnapshot.distance,
+            edgeOptions: editSnapshot.edgeOptions,
           );
           await _refreshFeatures();
           await _refreshMesh();
@@ -21492,7 +21540,10 @@ class _PartScreenState extends State<PartScreen> {
                       title: _editingChamferFeatureId != null ? 'Edit Chamfer' : 'Chamfer',
                       tooltip: _previewChamferFeatureId == null ? 'Select edges (or a face) to chamfer' : null,
                       initialDistance: _chamferDistance,
+                      initialAngle: _chamferAngle,
+                      initialFlip: _chamferFlip,
                       onDistanceChanged: _onChamferDistanceChanged,
+                      onAngleChanged: _onChamferAngleChanged,
                       onConfirm: _confirmChamfer,
                       onCancel: _cancelChamfer,
                     ),

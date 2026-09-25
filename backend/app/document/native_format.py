@@ -27,6 +27,7 @@ from app.document.models import (
     BevelPairMemberSpec,
     BooleanFeature,
     BooleanOperation,
+    ChamferEdgeOptions,
     ChamferFeature,
     ComponentPattern,
     ComponentPatternAxis,
@@ -717,6 +718,23 @@ def _subshape_ref_from_dict(data: dict) -> SubShapeRef:
     )
 
 
+def _chamfer_edge_options_to_dict(opts: ChamferEdgeOptions) -> dict:
+    return {
+        "face_ref": _subshape_ref_to_dict(opts.face_ref) if opts.face_ref is not None else None,
+        "angle": opts.angle,
+        "flip": opts.flip,
+    }
+
+
+def _chamfer_edge_options_from_dict(data: dict) -> ChamferEdgeOptions:
+    face_ref = data.get("face_ref")
+    return ChamferEdgeOptions(
+        face_ref=_subshape_ref_from_dict(face_ref) if face_ref else None,
+        angle=data.get("angle"),
+        flip=bool(data.get("flip", False)),
+    )
+
+
 def _sketch_or_edge_ref_to_dict(ref: SketchOrEdgeRef) -> dict:
     """`SketchOrEdgeRef`'s native-export counterpart to `app.document.
     router._sketch_or_edge_ref_to_schema` - same flat-fields-plus-optional-
@@ -1077,6 +1095,11 @@ def _feature_to_dict(feature: Feature) -> dict:
             "id": feature.id,
             "edge_refs": [_subshape_ref_to_dict(r) for r in feature.edge_refs],
             "distance": feature.distance,
+            # Feature 3: JSON object keys must be strings - converted back
+            # to int on read. Absent in pre-Feature-3 files (read as {}).
+            "edge_options": {
+                str(i): _chamfer_edge_options_to_dict(opts) for i, opts in sorted(feature.edge_options.items())
+            },
         }
     if isinstance(feature, RevolveFeature):
         return {
@@ -1446,6 +1469,9 @@ def _feature_from_dict(data: dict) -> Feature:
             id=feature_id,
             edge_refs=[_subshape_ref_from_dict(r) for r in data.get("edge_refs", [])],
             distance=data.get("distance", 0.0),
+            edge_options={
+                int(i): _chamfer_edge_options_from_dict(opts) for i, opts in data.get("edge_options", {}).items()
+            },
         )
     if feature_type == "revolve":
         return RevolveFeature(

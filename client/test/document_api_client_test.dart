@@ -900,6 +900,77 @@ void main() {
     });
   });
 
+  group('Feature 3: chamfer edge_options (angle + flip)', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    Map<String, dynamic> chamferJson({Map<String, dynamic>? edgeOptions}) => {
+          'type': 'chamfer',
+          'id': 'chamfer-1',
+          'locked': false,
+          'produces': 'body',
+          'edge_refs': [
+            {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+          ],
+          'distance': 1.0,
+          if (edgeOptions != null) 'edge_options': edgeOptions,
+        };
+
+    test('FeatureDto.fromJson parses string-keyed edge_options', () {
+      final dto = FeatureDto.fromJson(chamferJson(edgeOptions: {
+        '0': {
+          'face_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 2},
+          'angle': 30.0,
+          'flip': true,
+        },
+      }));
+      final opts = dto.edgeOptions[0]!;
+      expect(opts.angle, 30.0);
+      expect(opts.flip, isTrue);
+      expect(opts.faceRef!.index, 2);
+    });
+
+    test('FeatureDto.fromJson defaults edgeOptions to empty', () {
+      expect(FeatureDto.fromJson(chamferJson()).edgeOptions, isEmpty);
+    });
+
+    test('createChamferFeature omits edge_options when empty and sends them when set', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return jsonResponse(chamferJson());
+        }),
+      );
+      const refs = [SubShapeRefDto(bodyId: 'body-1', shapeType: 'edge', index: 0)];
+
+      await client.createChamferFeature('part-1', edgeRefs: refs, distance: 1.0);
+      await client.createChamferFeature('part-1',
+          edgeRefs: refs,
+          distance: 1.0,
+          edgeOptions: const {0: ChamferEdgeOptionsDto(angle: 30.0, flip: true)});
+
+      expect(bodies[0].containsKey('edge_options'), isFalse);
+      expect(bodies[1]['edge_options'], {
+        '0': {'angle': 30.0, 'flip': true},
+      });
+    });
+
+    test('updateChamferFeature sends an empty edge_options map to clear', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse(chamferJson(), status: 200);
+        }),
+      );
+
+      await client.updateChamferFeature('part-1', 'chamfer-1', edgeOptions: const {});
+
+      expect(capturedBody, {'edge_options': <String, dynamic>{}});
+    });
+  });
+
   group('Prompt E: DocumentApiClient createChamferFeature/updateChamferFeature', () {
     http.Response jsonResponse(Object body, {int status = 201}) =>
         http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});

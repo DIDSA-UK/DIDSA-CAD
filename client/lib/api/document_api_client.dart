@@ -128,6 +128,40 @@ class SubShapeRefDto {
   Map<String, dynamic> toJson() => {'body_id': bodyId, 'shape_type': shapeType, 'index': index};
 }
 
+/// Feature 3 (Chamfer angle + flip): the wire counterpart to the backend's
+/// `ChamferEdgeOptionsSchema` - one per-edge override on a Chamfer, keyed
+/// (in [FeatureDto.edgeOptions]) by index into [FeatureDto.edgeRefs].
+/// [angle] is in degrees (exclusive `(0, 180)`); null means the edge keeps
+/// the symmetric distance-only chamfer. [flip] swaps which of the edge's two
+/// adjacent faces the distance/angle is measured from. [faceRef] pins an
+/// explicit reference face (null = the backend's deterministic default).
+class ChamferEdgeOptionsDto {
+  final SubShapeRefDto? faceRef;
+  final double? angle;
+  final bool flip;
+
+  const ChamferEdgeOptionsDto({this.faceRef, this.angle, this.flip = false});
+
+  factory ChamferEdgeOptionsDto.fromJson(Map<String, dynamic> json) => ChamferEdgeOptionsDto(
+        faceRef: json['face_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
+        angle: (json['angle'] as num?)?.toDouble(),
+        flip: json['flip'] as bool? ?? false,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (faceRef != null) 'face_ref': faceRef!.toJson(),
+        if (angle != null) 'angle': angle,
+        'flip': flip,
+      };
+}
+
+/// Feature 3: `{index: options}` -> the JSON object shape the backend
+/// expects (string keys).
+Map<String, dynamic> _chamferEdgeOptionsToJson(Map<int, ChamferEdgeOptionsDto> options) =>
+    {for (final e in options.entries) '${e.key}': e.value.toJson()};
+
 /// Assembly-testing bug fix: the wire counterpart to the backend's
 /// `MeasureEntityRefSchema` - `occurrenceId` (`""` for the currently-open
 /// Part's own root content, mirroring [MateEntityRefDto]'s identical
@@ -634,6 +668,11 @@ class FeatureDto {
   /// that actually differ between Fillet's and Chamfer's wire shape.
   final double? distance;
 
+  /// Feature 3: only meaningful on a `"chamfer"` Feature - sparse per-edge
+  /// angle/flip overrides keyed by index into [edgeRefs]. Empty for a plain
+  /// symmetric chamfer (and for every other Feature type).
+  final Map<int, ChamferEdgeOptionsDto> edgeOptions;
+
   /// Prompt F: only present on a `"revolve"` Feature - the Sketch Line
   /// reference the Profile is revolved around. Not required to belong to
   /// the same Sketch as [sketchFeatureId] (confirmed decision - see the
@@ -1012,6 +1051,7 @@ class FeatureDto {
     this.edgeRefs = const [],
     this.radius,
     this.distance,
+    this.edgeOptions = const {},
     this.axisRef,
     this.angle,
     this.mode,
@@ -1113,6 +1153,10 @@ class FeatureDto {
             const [],
         radius: (json['radius'] as num?)?.toDouble(),
         distance: (json['distance'] as num?)?.toDouble(),
+        edgeOptions: (json['edge_options'] as Map<String, dynamic>?)?.map(
+              (k, v) => MapEntry(int.parse(k), ChamferEdgeOptionsDto.fromJson(v as Map<String, dynamic>)),
+            ) ??
+            const {},
         axisRef: json['axis_ref'] == null
             ? null
             : SketchEntityRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>),
@@ -2859,10 +2903,15 @@ class DocumentApiClient {
   /// exactly, substituting [distance] for `radius` (`mixed_body_selection`/
   /// `chamfer_failed`/`missing_reference` on failure - see
   /// `app.document.router.create_chamfer_feature`).
+  ///
+  /// Feature 3: [edgeOptions] (index into [edgeRefs] -> per-edge angle/flip)
+  /// is only sent when non-empty, so a plain symmetric chamfer's payload is
+  /// unchanged.
   Future<FeatureDto> createChamferFeature(
     String partId, {
     required List<SubShapeRefDto> edgeRefs,
     required double distance,
+    Map<int, ChamferEdgeOptionsDto> edgeOptions = const {},
   }) =>
       _send(
         () => _httpClient.post(
@@ -2871,18 +2920,22 @@ class DocumentApiClient {
               body: jsonEncode({
                 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 'distance': distance,
+                if (edgeOptions.isNotEmpty) 'edge_options': _chamferEdgeOptionsToJson(edgeOptions),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing ChamferFeature - mirrors
-  /// [updateFilletFeature] exactly.
+  /// [updateFilletFeature] exactly. Feature 3: [edgeOptions] follows the
+  /// same omitted-keeps-current convention - null leaves the Feature's
+  /// existing per-edge options alone, an empty map clears them.
   Future<FeatureDto> updateChamferFeature(
     String partId,
     String featureId, {
     List<SubShapeRefDto>? edgeRefs,
     double? distance,
+    Map<int, ChamferEdgeOptionsDto>? edgeOptions,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2891,6 +2944,7 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 if (distance != null) 'distance': distance,
+                if (edgeOptions != null) 'edge_options': _chamferEdgeOptionsToJson(edgeOptions),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
