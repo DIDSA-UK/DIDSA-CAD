@@ -2867,6 +2867,19 @@ class _PartScreenState extends State<PartScreen> {
   bool _featureTreeVisible = false;
   bool _toolbarOpen = false;
 
+  /// Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+  /// §3.4): whether anything has changed since the last successful Save/
+  /// Save As/Save All. Deliberately coarse - [_runGuarded] sets this `true`
+  /// unconditionally at the top of every guarded action (171 call sites,
+  /// covering essentially every backend-mutating action in this file),
+  /// since a false positive (flagged dirty by something that turned out to
+  /// be read-only) is harmless - just an extra "unsaved" indicator - unlike
+  /// a false negative, which would silently let real unsaved work through
+  /// [_confirmExitPart]'s guard. Cleared at the end of each successful save
+  /// path ([_saveNativeFile]/[_saveFocusedPart]/[_saveAsNativeFile]/
+  /// [_saveFocusedPartAs]/[_onSaveAllPressed]).
+  bool _isDirty = false;
+
   /// Prompt D: true while the Feature tree is acting as a Sketch picker for
   /// a pending Extrude - entered by [_extrudeSelectedFeature] when no
   /// eligible Sketch is already selected, exited by [_onSketchPicked] (a
@@ -9079,7 +9092,14 @@ class _PartScreenState extends State<PartScreen> {
   /// any of those. Returns `true` only if the user actually confirmed (and
   /// the widget is still mounted afterwards) - callers don't need to
   /// separately re-check [mounted].
+  ///
+  /// Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+  /// §3.4): skips the dialog entirely when [_isDirty] is `false` - this
+  /// used to warn unconditionally on every exit, even with nothing to
+  /// lose, since nothing tracked whether anything had actually changed
+  /// since the last save.
   Future<bool> _confirmExitPart() async {
+    if (!_isDirty) return true;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -9211,18 +9231,24 @@ class _PartScreenState extends State<PartScreen> {
   /// actually be trusted for a later silent write - see
   /// [_canPersistFilePathForReuse]'s own doc comment for why mobile never
   /// gets this.
-  Future<void> _saveNativeFileViaDialog(String suggestedFileName, Uint8List bytes) async {
+  /// Returns `true` once bytes are genuinely on disk, `false` if the user
+  /// cancelled the dialog - Save/project overhaul Phase 4
+  /// (`docs/save-project-overhaul-scope.md` §3.4) needs this to know
+  /// whether to clear [_isDirty]; a cancelled dialog must never be
+  /// mistaken for a successful save.
+  Future<bool> _saveNativeFileViaDialog(String suggestedFileName, Uint8List bytes) async {
     final savedPath = await FilePicker.platform.saveFile(
       dialogTitle: 'Save Project',
       fileName: suggestedFileName,
       bytes: bytes,
     );
-    if (savedPath == null) return;
+    if (savedPath == null) return false;
     if (_canPersistFilePathForReuse) {
       await File(savedPath).writeAsBytes(bytes);
     }
     _lastSavedFileName = savedPath.split('/').last;
     _lastSavedFilePath = _canPersistFilePathForReuse ? savedPath : null;
+    return true;
   }
 
   /// Native Save: on-device feedback fix - a plain Save used to always go
@@ -9259,12 +9285,14 @@ class _PartScreenState extends State<PartScreen> {
       if (knownPath != null) {
         try {
           await File(knownPath).writeAsBytes(bytes);
+          setState(() => _isDirty = false);
           return;
         } catch (_) {
           // Falls through to the dialog below.
         }
       }
-      await _saveNativeFileViaDialog(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      final saved = await _saveNativeFileViaDialog(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      if (saved) setState(() => _isDirty = false);
     });
   }
 
@@ -9286,7 +9314,8 @@ class _PartScreenState extends State<PartScreen> {
     }
     await _runGuarded(() async {
       final bytes = await _buildNativeExportBytes();
-      await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      final saved = await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      if (saved) setState(() => _isDirty = false);
     });
   }
 
@@ -9333,6 +9362,7 @@ class _PartScreenState extends State<PartScreen> {
         setState(() => _errorMessage = 'Failed to save: ${e.message}');
         return;
       }
+      setState(() => _isDirty = false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
       }
@@ -9386,7 +9416,10 @@ class _PartScreenState extends State<PartScreen> {
         setState(() => _errorMessage = 'Failed to save: ${e.message}');
         return;
       }
-      setState(() => _relativePathByPartId = {..._relativePathByPartId, focusPartId: newPath});
+      setState(() {
+        _relativePathByPartId = {..._relativePathByPartId, focusPartId: newPath};
+        _isDirty = false;
+      });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved as $newPath')));
       }
@@ -9403,24 +9436,31 @@ class _PartScreenState extends State<PartScreen> {
   /// doc comment for why that's deliberate.
   Future<void> _startNewPart() async {
     setState(() => _toolbarOpen = false);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Start a new project?'),
-        content: const Text(
-          'Any changes since your last Save will be lost. This does not delete the current '
-          'project - it will still be there if you open it again.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('New Project'),
+    // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+    // §3.4): same [_isDirty] skip-if-nothing-to-lose guard
+    // [_confirmExitPart] gates on - this dialog keeps its own distinct
+    // title/button wording ("Start a new project?"/"New Project" vs. "Exit
+    // this project?"/"Exit"), so it isn't simply routed through that method.
+    if (_isDirty) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Start a new project?'),
+          content: const Text(
+            'Any changes since your last Save will be lost. This does not delete the current '
+            'project - it will still be there if you open it again.',
           ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('New Project'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
 
     await Navigator.of(context).pushReplacement(
       MaterialPageRoute(
@@ -9707,6 +9747,14 @@ class _PartScreenState extends State<PartScreen> {
         await _refreshAssemblyTree();
         await _refreshAssemblyMesh();
       }
+      // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+      // §3.4): loading isn't "the user changed something" - a freshly
+      // opened Part matches disk exactly, and a freshly created blank one
+      // has nothing to lose yet either way. Without this, [_runGuarded]'s
+      // own coarse default would mark every session dirty from the first
+      // frame, defeating [_confirmExitPart]'s whole point for the common
+      // "opened it, didn't touch anything, exited" case.
+      setState(() => _isDirty = false);
     });
   }
 
@@ -11404,6 +11452,13 @@ class _PartScreenState extends State<PartScreen> {
       setState(() => _errorMessage = 'Saved ${saveResult.savedRelativePaths.length} of '
           '${relativePathByPartId.length} files. Failed: $failedNames');
     } else {
+      // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+      // §3.4): only a fully successful Save All (every Part written, no
+      // failures) clears the dirty flag - a partial failure leaves real
+      // unsaved work on disk, so [_isDirty] staying `true` is the safe
+      // choice, matching [_isDirty]'s own "never a false negative" doc
+      // comment.
+      setState(() => _isDirty = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Saved ${saveResult.savedRelativePaths.length} file(s)')),
       );
@@ -20707,6 +20762,10 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _busy = true;
       _errorMessage = null;
+      // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+      // §3.4): coarse dirty-flag set - see [_isDirty]'s own doc comment for
+      // why "every guarded action" is the right granularity here.
+      _isDirty = true;
     });
     _busyOverlayTimer?.cancel();
     _busyOverlayTimer = Timer(_busyOverlayDelay, () {
@@ -21612,6 +21671,7 @@ class _PartScreenState extends State<PartScreen> {
                     onExit: _exitToConnectionScreen,
                     onSaveNative: _saveNativeFile,
                     onSaveAsNative: _saveAsNativeFile,
+                    hasUnsavedChanges: _isDirty,
                     onOpenNative: _openNativeFile,
                     onOpenProject: _onOpenProjectPressed,
                     onSaveAll: _onSaveAllPressed,

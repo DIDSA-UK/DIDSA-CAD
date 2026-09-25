@@ -5201,6 +5201,22 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
+      // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+      // §3.4): a freshly-loaded, untouched Part is no longer considered
+      // dirty (see the sibling "no confirmation" test below), so this test
+      // makes a real change first - creating a component, same zero-dialog
+      // flow Phase 1's own tests exercise - to genuinely put something at
+      // risk of being lost.
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Create Component…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
       await tester.tap(find.byTooltip('Open toolbar'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -5214,16 +5230,67 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(find.text('Exit this project?'), findsOneWidget);
+      // Create Component (used above to dirty the session) already
+      // resolved a `ProjectRoot` once of its own accord (auto-path
+      // assignment, §3.1) - the call count captured here is that one, not
+      // Open Project's own.
+      final callCountBeforeCancel = storage.pickOrCreateProjectRootCallCount;
       await tester.tap(find.text('Cancel'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      // Cancelling never reached `_ensureProjectRoot` at all - the folder
-      // picker was never shown, and the "Part 1" screen is still here.
-      expect(storage.pickOrCreateProjectRootCallCount, 0);
+      // Cancelling never reached `_ensureProjectRoot` a second time for
+      // Open Project's own sake - the folder picker was never shown again,
+      // and the "Part 1" screen is still here (now showing its own root
+      // Part's row alongside the just-created component - findsWidgets,
+      // not findsOneWidget, since Create Component's own assembly tree is
+      // still open, unlike the original pre-Phase-4 version of this test).
+      expect(storage.pickOrCreateProjectRootCallCount, callCountBeforeCancel);
       expect(find.text('Open Project'), findsNothing);
-      expect(find.text('Part 1'), findsOneWidget);
+      expect(find.text('Part 1'), findsWidgets);
     });
+
+    testWidgets(
+      'Open Project… skips the confirmation entirely when nothing has changed since load '
+      '(save/project overhaul Phase 4)',
+      (tester) async {
+        final backend = _FakeDocumentBackend();
+        final storage = _FakeStorageService();
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Open Project…'));
+        await tester.pump();
+        await tester.tap(find.text('Open Project…'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // No warning - straight to the folder picker / relative-path
+        // prompt, since nothing changed since this Part was loaded.
+        expect(find.text('Exit this project?'), findsNothing);
+        expect(storage.pickOrCreateProjectRootCallCount, 1);
+      },
+    );
 
     testWidgets('Save All skips the folder picker when a valid last-used root is known, per [26]', (
       tester,
@@ -5623,6 +5690,70 @@ void main() {
 
       expect(storage.writeCounts['renamed-top.DIDSAprt'], 2);
       expect(storage.writeCounts['top.DIDSAprt'], 1);
+    });
+  });
+
+  // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+  // §3.4): the toolbar's own small "unsaved changes" indicator next to
+  // Save - `PartToolbar.hasUnsavedChanges`, mirroring `PartScreen._isDirty`.
+  group('Save/project overhaul Phase 4: unsaved-changes indicator', () {
+    testWidgets('shows after a real change, and clears once Save All succeeds', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // Checked directly on `PartToolbar` itself (always in the tree
+      // regardless of `visible`, same "grab the widget" approach the
+      // Phase 3 tests above use) rather than by repeatedly opening the
+      // sliding File sub-menu, which this suite's own harness struggles to
+      // reopen reliably more than once or twice in a single test.
+      PartToolbar toolbar() => tester.widget<PartToolbar>(find.byType(PartToolbar));
+
+      // Nothing changed since load - no indicator yet.
+      expect(toolbar().hasUnsavedChanges, isFalse);
+
+      // Create a component - a real, guarded change.
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Create Component…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(toolbar().hasUnsavedChanges, isTrue);
+
+      // Save All - both Parts were already auto-pathed by Create Component
+      // itself (§3.1), so this succeeds with no further prompt - a full,
+      // un-failed save clears the indicator.
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Save All'));
+      await tester.pump();
+      await tester.tap(find.text('Save All'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Saved 2 file(s)'), findsOneWidget);
+      expect(toolbar().hasUnsavedChanges, isFalse);
     });
   });
 }

@@ -84,6 +84,12 @@ class PartToolbar extends StatelessWidget {
   final VoidCallback? onOpenNative;
   final VoidCallback? onStartNew;
 
+  /// Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+  /// §3.4): mirrors `PartScreen._isDirty` - shows a small dot next to the
+  /// Save entry while anything is unsaved, `false` right after a
+  /// successful Save/Save As/Save All.
+  final bool hasUnsavedChanges;
+
   /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): the
   /// `StorageService`/`ProjectRoot`-backed multi-file flow. `onOpenProject`
   /// opens an existing project-folder-relative `.DIDSAprt` file via
@@ -201,6 +207,7 @@ class PartToolbar extends StatelessWidget {
     this.onSaveAsNative,
     this.onOpenNative,
     this.onStartNew,
+    this.hasUnsavedChanges = false,
     this.onOpenProject,
     this.onSaveAll,
     this.onExportPart,
@@ -321,6 +328,14 @@ class PartToolbar extends StatelessWidget {
         ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_save.svg'),
           title: const Text('Save'),
+          // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+          // §3.4): a small dot while there's anything unsaved - the same
+          // signal `_confirmExitPart` now uses to skip its own warning
+          // dialog, made visible here rather than only ever showing up as
+          // "no dialog on exit."
+          trailing: hasUnsavedChanges
+              ? Icon(Icons.circle, size: 8, color: Theme.of(context).colorScheme.primary)
+              : null,
           onTap: onSaveNative,
         ),
         ListTile(

@@ -47,15 +47,16 @@ Client: `client/lib/viewport3d/part_screen.dart` (the ~23k-line
 (`project_root.dart`, `storage_service.dart`, `recent_project_store.dart`,
 `saf_storage_service.dart`).
 
-**Status: Phases 1-3 implemented** (zero-dialog Create Component with
+**Status: Phases 1-4 implemented** (zero-dialog Create Component with
 auto-naming/auto-pathing, §3.1; the assembly tree's Rename action,
 backend + client + all three `StorageService` platforms, §3.2; Save/Save
-As now split on Project-vs-not, §3.3) **— Phase 3's Open/Open Project
-unification deliberately deferred** (a real feature-parity gap surfaced
-mid-implementation, see §3.3's own note). Phases 4 (dirty-state) and 5
-(Open picker convenience) not started; a new Phase 6 (Open unification,
-once the extras-restoration gap is resolved) was added to §5. `dart
-analyze` clean across `client/lib`/`client/test`; every touched widget
+As now split on Project-vs-not, §3.3; accurate dirty-state tracking
+replacing the unconditional exit warning, §3.4) **— Phase 3's Open/Open
+Project unification deliberately deferred** (a real feature-parity gap
+surfaced mid-implementation, see §3.3's own note). Phase 5 (Open picker
+convenience) not started; a new Phase 6 (Open unification, once the
+extras-restoration gap is resolved) was added to §5. `dart analyze` clean
+across `client/lib`/`client/test`; every touched widget
 test file passing; the full backend suite (2488 tests) passing.
 
 ---
@@ -526,11 +527,34 @@ Save/Save As/Save All; Open deliberately not touched.**
   fresh content under a new path and rebinds future Saves to it, leaving
   the old file in place.
 
-**Phase 4 — §3.4: dirty-state tracking. Not started.**
-- Add `_isDirty` to `_PartScreenState`; set in `_runGuarded`; clear at the
-  end of each Phase 3 save path.
-- Modify `_confirmExitPart` to gate on it.
-- Purely additive; can ship independently of anything above.
+**Phase 4 — §3.4: dirty-state tracking. Implemented.**
+- `_isDirty` added to `_PartScreenState`, set unconditionally at the top
+  of `_runGuarded`; cleared at the end of every successful save path
+  (`_saveNativeFile`'s two branches, `_saveFocusedPart`,
+  `_saveFocusedPartAs`, `_onSaveAllPressed` - only on a fully successful
+  Save All, a partial failure leaves it `true`). `_saveNativeFileViaDialog`
+  changed to return `bool` (saved vs. cancelled) so a cancelled Save/Save
+  As dialog is never mistaken for success.
+- One refinement beyond the original plan: `_loadPart` also clears
+  `_isDirty` at the end of its own guarded body - loading isn't "the user
+  changed something" (a freshly opened Part matches disk exactly, a
+  freshly created blank one has nothing to lose), so without this every
+  session would start dirty from the first frame purely from
+  `_runGuarded`'s own coarse default, defeating the point for the common
+  "opened it, didn't touch anything, exited" case.
+- `_confirmExitPart` skips its dialog when `!_isDirty`; `_startNewPart`'s
+  own separate "Start a new project?" dialog (never routed through
+  `_confirmExitPart` - distinct title/button wording) got the same guard
+  added directly rather than left inconsistent.
+- `PartToolbar` gained `hasUnsavedChanges`, shown as a small dot next to
+  the Save entry.
+- Tests: `part_screen_test.dart`'s existing "Open Project… asks to
+  confirm" test updated to actually dirty the session first (creating a
+  component) since a fresh, untouched load no longer warns on its own;
+  a new sibling test confirms the no-warning case directly; a new
+  "unsaved-changes indicator" test confirms the toolbar's own dot
+  appears/clears correctly. Full `flutter test` suite (2281 tests, 14
+  pre-existing skips) passing.
 
 **Phase 5 — §3.5: project-files convenience (listFiles-backed Open
 picker). Not started.**
@@ -557,14 +581,8 @@ once the extras-restoration gap is resolved. Not started.**
 
 No phase requires a `SCHEMA_VERSION` bump or a data migration script —
 per §4, every file created under today's system keeps working before,
-during, and after this plan lands. Verification for Phases 1-3: `flutter
-analyze`/`dart analyze` clean across `client/lib` and `client/test`; every
-widget test file touched (`part_screen_test.dart`,
-`part_toolbar_test.dart`, `assembly_add_menu_test.dart`,
-`component_context_menu_test.dart`, `desktop_storage_service_test.dart`,
-`saf_storage_service_test.dart`, `ios_storage_service_test.dart`,
-`assembly_document_client_test.dart`, `assembly_graph_composer_test.dart`,
-`ensure_project_root_test.dart`, `ai_plan_translator_test.dart`,
-`ai_modelling_screen_orchestration_test.dart`,
-`tool_chooser_screen_test.dart`) passing; the full backend suite
+during, and after this plan lands. Verification for Phases 1-4: `flutter
+analyze`/`dart analyze` clean across `client/lib` and `client/test`; the
+full `flutter test` suite (2281 tests, 14 pre-existing skips) passing, not
+just the individually-touched files; the full backend suite
 (`backend/tests/`, 2488 tests) passing.
