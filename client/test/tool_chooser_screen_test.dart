@@ -52,6 +52,10 @@ class _FakeStorageService implements StorageService {
 
   @override
   Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) => throw UnimplementedError();
+
+  @override
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) =>
+      throw UnimplementedError();
 }
 
 void main() {

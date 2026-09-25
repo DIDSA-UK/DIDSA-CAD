@@ -23,6 +23,7 @@ enum ComponentContextMenuAction {
   pattern,
   fix,
   float,
+  rename,
   delete,
 }
 
@@ -110,6 +111,17 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       action: ComponentContextMenuAction.pattern,
       label: 'Pattern',
       icon: Icons.grid_view_outlined,
+    ),
+    // Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+    // §3.2): the correction path for Create Component's own auto-generated
+    // "Component N" default - `part_screen.dart`'s own handler renames the
+    // Occurrence's display name always, and (when this Part is only
+    // instanced once in the current session) the underlying Part's own
+    // name and on-disk file too.
+    const ActionSheetEntry(
+      action: ComponentContextMenuAction.rename,
+      label: 'Rename',
+      icon: Icons.drive_file_rename_outline,
     ),
     // Assembly-audit gap `[27]` (`docs/assembly-scope.md`): no way to remove
     // a placed component from an assembly had ever been built - full CRUD

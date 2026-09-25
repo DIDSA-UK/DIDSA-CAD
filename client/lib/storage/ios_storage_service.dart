@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
+import '../assembly/relative_path.dart';
 import 'file_handle.dart';
 import 'ios_bookmark_channel.dart';
 import 'project_root.dart';
@@ -167,6 +168,25 @@ class IosStorageService implements StorageService {
     } finally {
       await _channel.stopAccessing(resolved.path);
     }
+  }
+
+  @override
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) async {
+    final iosRoot = _requireIosRoot(root);
+    final newRelativePath = siblingRelativePath(relativePath, newFileName);
+    return _withRootAccess(iosRoot, (rootPath) async {
+      final fullPath = _fullPath(rootPath, relativePath);
+      final newFullPath = _fullPath(rootPath, newRelativePath);
+      if (await _channel.exists(newFullPath)) {
+        throw StorageException('A file already exists at $newRelativePath');
+      }
+      try {
+        await _channel.renameFile(fullPath, newFileName);
+      } catch (e) {
+        throw StorageException('Failed to rename $relativePath to $newFileName', cause: e);
+      }
+      return IosFileHandle(root: iosRoot, relativePath: newRelativePath, resolvedPath: newFullPath);
+    });
   }
 
   String _fullPath(String rootPath, String relativePath) => p.posix.join(rootPath, relativePath);

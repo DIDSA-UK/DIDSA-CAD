@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 
+import '../assembly/relative_path.dart';
 import 'file_handle.dart';
 import 'project_root.dart';
 import 'recent_project_store.dart';
@@ -110,6 +111,23 @@ class DesktopStorageService implements StorageService {
       // permission hiccup - return whatever was already collected.
     }
     return result;
+  }
+
+  @override
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) async {
+    final desktopRoot = _requireDesktopRoot(root);
+    final oldFullPath = _fullPath(desktopRoot, relativePath);
+    final newRelativePath = siblingRelativePath(relativePath, newFileName);
+    final newFullPath = _fullPath(desktopRoot, newRelativePath);
+    if (await File(newFullPath).exists()) {
+      throw StorageException('A file already exists at $newRelativePath');
+    }
+    try {
+      await File(oldFullPath).rename(newFullPath);
+    } on IOException catch (e) {
+      throw StorageException('Failed to rename $relativePath to $newFileName', cause: e);
+    }
+    return DesktopFileHandle(root: desktopRoot, relativePath: newRelativePath, path: newFullPath);
   }
 
   String _fullPath(DesktopProjectRoot root, String relativePath) => p.join(root.path, relativePath);

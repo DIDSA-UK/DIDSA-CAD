@@ -28,6 +28,8 @@ import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
 import '../assembly/occurrence_visibility.dart';
+import '../assembly/relative_path.dart';
+import '../assembly/save_all.dart' show stampExternalRefs;
 import 'component_context_menu.dart';
 import 'component_gizmo.dart';
 import 'component_selection_toolbar.dart';
@@ -9236,8 +9238,21 @@ class _PartScreenState extends State<PartScreen> {
   /// overwrite on mobile would need this app to hold onto a persisted
   /// Storage Access Framework/security-scoped-bookmark permission instead
   /// of a plain path string, which nothing here does yet.
+  ///
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): this whole-session flat-dump body is now only for a session
+  /// with no [_projectRoot] yet - a lone Part with nowhere else to live.
+  /// Once a Project exists, plain Save means something narrower
+  /// ([_saveFocusedPart]): write back just the Part currently being edited,
+  /// not the entire loaded session (that's [_onSaveAllPressed]'s job) -
+  /// same "Save is the active document, Save All is everything" split real
+  /// CAD tools already draw.
   Future<void> _saveNativeFile() async {
     setState(() => _toolbarOpen = false);
+    if (_projectRoot != null) {
+      await _saveFocusedPart();
+      return;
+    }
     await _runGuarded(() async {
       final bytes = await _buildNativeExportBytes();
       final knownPath = _lastSavedFilePath;
@@ -9257,11 +9272,124 @@ class _PartScreenState extends State<PartScreen> {
   /// through the save dialog - the deliberate difference from plain Save,
   /// which skips the dialog entirely once a path is known (see
   /// [_saveNativeFile]'s own doc comment).
+  ///
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): this whole-session flat-dump body is now only for a session
+  /// with no [_projectRoot] yet, mirroring [_saveNativeFile]'s own split -
+  /// once a Project exists, Save As means renaming/relocating just the
+  /// currently focused Part's own file ([_saveFocusedPartAs]).
   Future<void> _saveAsNativeFile() async {
     setState(() => _toolbarOpen = false);
+    if (_projectRoot != null) {
+      await _saveFocusedPartAs();
+      return;
+    }
     await _runGuarded(() async {
       final bytes = await _buildNativeExportBytes();
       await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', bytes);
+    });
+  }
+
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): plain Save's real behavior once a Project exists - writes back
+  /// only the *currently focused* Part's own file, not the whole session
+  /// (that's [_onSaveAllPressed]'s job). Stamps every Occurrence's
+  /// `external_ref` across the whole session first (the same
+  /// `stampExternalRefs` step [_onSaveAllPressed] already relies on) and
+  /// re-imports before writing, so the focused Part's own file reflects any
+  /// newly-known paths for the components it references - but only *this*
+  /// Part's own file is actually written to disk; a sibling Part whose own
+  /// file needs the same refresh still needs its own Save/Save All.
+  ///
+  /// If the focused Part has no known path yet (rare now that Create
+  /// Component auto-assigns one, §3.1 - realistically only "Add Component"/
+  /// "Locate Missing File" reach this), one is silently auto-derived from
+  /// the Part's own name via [_autoAssignPath], same auto-derive-first
+  /// philosophy as component creation - never a blocking dialog for a plain
+  /// Save.
+  Future<void> _saveFocusedPart() async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    final root = _projectRoot;
+    if (focusPartId == null || root == null) return;
+
+    await _runGuarded(() async {
+      final fullSessionExport = await _api.exportNative();
+      final stamped = stampExternalRefs(
+        documentPayload: fullSessionExport,
+        relativePathByPartId: _relativePathByPartId,
+      );
+      await _api.importNative(stamped);
+
+      var relativePath = _relativePathByPartId[focusPartId];
+      if (relativePath == null) {
+        final part = await _api.getPart(focusPartId);
+        relativePath = await _autoAssignPath(root, part.name, _relativePathByPartId);
+        setState(() => _relativePathByPartId = {..._relativePathByPartId, focusPartId: relativePath!});
+      }
+
+      try {
+        await _assemblyDocumentClient.savePart(root, focusPartId, relativePath);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = 'Failed to save: ${e.message}');
+        return;
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
+      }
+    });
+  }
+
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): Save As's real behavior once a Project exists - saves the
+  /// *currently focused* Part's current content under a newly-chosen
+  /// project-relative path (reusing [showRelativePathPromptDialog], the
+  /// same "pick a path within this root" prompt Save All's own per-Part
+  /// loop already uses), and rebinds this Part's own path to it (a later
+  /// plain Save targets the new file from then on) - standard "Save As"
+  /// semantics.
+  ///
+  /// Deliberately always writes a *fresh* export to the new path rather
+  /// than physically moving the old file
+  /// ([StorageService.renameFile]/§3.2's own tool for that) - Save As saves
+  /// the Part's current in-session state, which could differ from
+  /// whatever was last written to its old file. If the old path differs
+  /// from the new one, the old file is simply left in place rather than
+  /// deleted - `StorageService` has no delete primitive (a real, deliberate
+  /// scope limit, not an oversight), so an orphaned stale file is the
+  /// honest, safe outcome here, never a silent data loss.
+  Future<void> _saveFocusedPartAs() async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    final root = _projectRoot;
+    if (focusPartId == null || root == null) return;
+
+    var partName = 'part';
+    await _runGuarded(() async {
+      final part = await _api.getPart(focusPartId);
+      partName = part.name;
+    });
+    if (!mounted) return;
+
+    final currentPath = _relativePathByPartId[focusPartId];
+    final newPath = await showRelativePathPromptDialog(
+      context,
+      title: 'Save "$partName" as…',
+      initialValue: currentPath ?? partName,
+      storageService: _storageService,
+      root: root,
+    );
+    if (newPath == null || !mounted) return;
+
+    await _runGuarded(() async {
+      try {
+        await _assemblyDocumentClient.savePart(root, focusPartId, newPath);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = 'Failed to save: ${e.message}');
+        return;
+      }
+      setState(() => _relativePathByPartId = {..._relativePathByPartId, focusPartId: newPath});
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved as $newPath')));
+      }
     });
   }
 
@@ -11114,19 +11242,38 @@ class _PartScreenState extends State<PartScreen> {
   /// own `exportNative(partId: ...)` is already a well-formed
   /// `componentPayload`, so [mergeComponentIntoDocument] (Phase 3b) folds
   /// it in unchanged, exactly the same shape "Add Component" already uses.
+  ///
+  /// Save/Project overhaul Phase 1 (`docs/save-project-overhaul-scope.md`
+  /// §3.1): no longer prompts for a name or a file path up front - the new
+  /// component is created immediately as [_nextComponentName]'s auto-
+  /// generated "Component N" (the same fallback [occurrenceDisplayName]
+  /// already used for *display*, now made the real, persisted name), and
+  /// both this new Part's and the parent's own relative paths are
+  /// silently auto-assigned in the same step (see [_autoAssignPath]) -
+  /// closing the gap where only the child ever got one, guaranteeing a
+  /// later Save All prompt for the parent. A wrong auto-name is corrected
+  /// afterward via the assembly tree's own Rename action, not by gating
+  /// creation on a dialog.
   Future<void> _onCreateNewComponentPressed() async {
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
 
-    final name = await _promptComponentName();
-    if (name == null || !mounted) return;
+    final name = _nextComponentName();
 
     String? newPartId;
+    String? parentName;
     await _runGuarded(() async {
       final newPart = await _api.createPart(name);
       newPartId = newPart.id;
       final componentPayload = await _api.exportNative(partId: newPart.id);
       final currentPayload = await _api.exportNative();
+      final currentParts = ((currentPayload['document'] as Map?)?['parts'] as List?) ?? const [];
+      for (final partRaw in currentParts) {
+        if (partRaw is Map && partRaw['id'] == rootPartId) {
+          parentName = partRaw['name'] as String?;
+          break;
+        }
+      }
       Map<String, dynamic> merged;
       try {
         merged = mergeComponentIntoDocument(
@@ -11146,50 +11293,61 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (newPartId == null || !mounted) return;
 
-    // Optional immediate path prompt - skippable, since forcing a filename
-    // before any modelling work starts on the new component is bad UX;
-    // "Save All" will prompt again later for anything still missing one.
     final root = await _ensureProjectRoot();
     if (root == null || !mounted) return;
-    final path = await showRelativePathPromptDialog(
-      context,
-      title: 'Save "$name" as…',
-      initialValue: name,
-      storageService: _storageService,
-      root: root,
-      skippable: true,
-    );
-    if (path == null || !mounted) return;
-    setState(() => _relativePathByPartId = {..._relativePathByPartId, newPartId!: path});
+
+    var relativePathByPartId = _relativePathByPartId;
+    if (!relativePathByPartId.containsKey(newPartId)) {
+      final childPath = await _autoAssignPath(root, name, relativePathByPartId);
+      relativePathByPartId = {...relativePathByPartId, newPartId!: childPath};
+    }
+    if (!relativePathByPartId.containsKey(rootPartId) && parentName != null) {
+      final parentPath = await _autoAssignPath(root, parentName!, relativePathByPartId);
+      relativePathByPartId = {...relativePathByPartId, rootPartId: parentPath};
+    }
+    if (!mounted) return;
+    setState(() => _relativePathByPartId = relativePathByPartId);
   }
 
-  /// The small "what should this new component be called" prompt behind
-  /// [_onCreateNewComponentPressed] - same `AlertDialog` +
-  /// `StatefulBuilder` + `TextFormField` + disabled-until-valid
-  /// `FilledButton` shape [_openMateEdit] already establishes in this file.
-  Future<String?> _promptComponentName() {
-    String value = 'New Component';
-    return showDialog<String>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Create Component'),
-          content: TextFormField(
-            initialValue: value,
-            autofocus: true,
-            decoration: const InputDecoration(labelText: 'Name'),
-            onChanged: (text) => setDialogState(() => value = text),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: value.trim().isEmpty ? null : () => Navigator.of(context).pop(value.trim()),
-              child: const Text('Create'),
-            ),
-          ],
-        ),
-      ),
-    );
+  /// The auto-generated default name for a newly created component -
+  /// [_onCreateNewComponentPressed] no longer prompts for one.  Mirrors
+  /// [occurrenceDisplayName]'s own "Component N" fallback exactly (same
+  /// ordinal convention), but checked against every name already in use
+  /// among [_occurrences] (not just a running count) so a manually renamed
+  /// sibling can never collide with a freshly generated one.
+  String _nextComponentName() {
+    final existingNames = <String>{
+      for (var i = 0; i < _occurrences.length; i++) occurrenceDisplayName(_occurrences, i),
+    };
+    var ordinal = _occurrences.length + 1;
+    var name = 'Component $ordinal';
+    while (existingNames.contains(name)) {
+      ordinal++;
+      name = 'Component $ordinal';
+    }
+    return name;
+  }
+
+  /// Silently derives a collision-free `ProjectRoot`-relative path for
+  /// [baseName] under [root], for [_onCreateNewComponentPressed]'s own
+  /// auto-path assignment - no dialog, since a rare collision (re-running
+  /// Create Component enough times to exhaust a folder's own default
+  /// names) is far better resolved with a numbered suffix than a popup.
+  /// [alreadyAssigned] is checked too, so two Parts created in the same
+  /// action (the new component and its still-unpathed parent) can never be
+  /// silently assigned the same file.
+  Future<String> _autoAssignPath(
+    ProjectRoot root,
+    String baseName,
+    Map<String, String> alreadyAssigned,
+  ) async {
+    var candidate = withDefaultExtension(baseName);
+    var suffix = 2;
+    while (alreadyAssigned.containsValue(candidate) || await _storageService.resolve(root, candidate) != null) {
+      candidate = withDefaultExtension('$baseName ($suffix)');
+      suffix++;
+    }
+    return candidate;
   }
 
   /// "Save All" (`PartToolbar.onSaveAll`, `docs/assembly-scope.md` §6 Phase
@@ -19966,6 +20124,8 @@ class _PartScreenState extends State<PartScreen> {
         _openMate();
       case ComponentContextMenuAction.pattern:
         _openComponentPattern();
+      case ComponentContextMenuAction.rename:
+        await _renameOccurrence(occurrence);
       case ComponentContextMenuAction.delete:
         await _confirmDeleteOccurrence(occurrence);
     }
@@ -20289,6 +20449,123 @@ class _PartScreenState extends State<PartScreen> {
       await _api.updateOccurrenceFixed(focusPartId, occurrence.id, fixed);
       await _refreshAssemblyTree();
     });
+  }
+
+  /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  /// §3.2): the assembly tree's own Rename action - the correction path for
+  /// Create Component's own auto-generated "Component N" default (§3.1).
+  /// Always PATCHes [occurrence]'s own `name_override`
+  /// ([DocumentApiClient.updateOccurrenceName]) - that's the tree's own
+  /// display label and always safe to change. Also renames the underlying
+  /// Part's own `name` ([DocumentApiClient.updatePart]) and, if it already
+  /// has one, its on-disk file ([StorageService.renameFile]) - but only
+  /// when [occurrence]'s target Part is instanced exactly once across the
+  /// *whole* current session, not just this focused Part's own children
+  /// ([_occurrences] is scoped to those alone - a full [_api.exportNative]
+  /// is needed to see every Part's own occurrences). Renaming a shared
+  /// file/Part name out from under an instance elsewhere in the tree would
+  /// silently relabel every one of them, so that case only ever touches
+  /// this one Occurrence's own label - [_promptRenameComponent] says so
+  /// plainly rather than silently doing the narrower thing unexplained.
+  Future<void> _renameOccurrence(OccurrenceDto occurrence) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+
+    final occurrenceIndex = _occurrences.indexWhere((o) => o.id == occurrence.id);
+    final currentName = occurrenceIndex >= 0
+        ? occurrenceDisplayName(_occurrences, occurrenceIndex)
+        : occurrenceDisplayName([occurrence], 0);
+    final resolvedPartId = occurrence.resolvedPartId;
+
+    var instanceCount = 1;
+    if (resolvedPartId != null) {
+      await _runGuarded(() async {
+        final fullSession = await _api.exportNative();
+        final parts = ((fullSession['document'] as Map?)?['parts'] as List?) ?? const [];
+        var count = 0;
+        for (final partRaw in parts) {
+          if (partRaw is! Map) continue;
+          for (final occurrenceRaw in (partRaw['occurrences'] as List?) ?? const []) {
+            if (occurrenceRaw is Map && occurrenceRaw['resolved_part_id'] == resolvedPartId) count++;
+          }
+        }
+        instanceCount = count;
+      });
+    }
+    if (!mounted) return;
+
+    final singlyInstanced = resolvedPartId != null && instanceCount <= 1;
+    final newName = await _promptRenameComponent(currentName, singlyInstanced: singlyInstanced);
+    if (newName == null || !mounted || newName == currentName) return;
+
+    await _runGuarded(() async {
+      await _api.updateOccurrenceName(focusPartId, occurrence.id, newName);
+      if (singlyInstanced) {
+        final partId = resolvedPartId;
+        await _api.updatePart(partId, name: newName);
+        final oldPath = _relativePathByPartId[partId];
+        final root = _projectRoot;
+        if (oldPath != null && root != null) {
+          final newFileName = withDefaultExtension(newName);
+          try {
+            await _storageService.renameFile(root, oldPath, newFileName);
+            final newPath = siblingRelativePath(oldPath, newFileName);
+            setState(() => _relativePathByPartId = {..._relativePathByPartId, partId: newPath});
+          } on StorageException catch (e) {
+            setState(() => _errorMessage = 'Renamed the component, but could not rename its file: ${e.message}');
+          }
+        }
+      }
+      await _refreshAssemblyTree();
+    });
+  }
+
+  /// The rename dialog behind [_renameOccurrence] - same `AlertDialog` +
+  /// `StatefulBuilder` + `TextFormField` + disabled-until-valid
+  /// `FilledButton` shape this file already establishes for a small
+  /// text-entry prompt (`relative_path_dialog.dart`'s own
+  /// `showRelativePathPromptDialog`). When [singlyInstanced] is false, adds
+  /// a note that only this component's own display label will change -
+  /// its underlying Part is used elsewhere too, so its own name/file are
+  /// deliberately left alone.
+  Future<String?> _promptRenameComponent(String currentName, {required bool singlyInstanced}) {
+    String value = currentName;
+    return showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Rename'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextFormField(
+                initialValue: value,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Name'),
+                onChanged: (text) => setDialogState(() => value = text),
+              ),
+              if (!singlyInstanced)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'This component is used more than once - renaming it only changes this '
+                    "instance's label, not its underlying file.",
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: value.trim().isEmpty ? null : () => Navigator.of(context).pop(value.trim()),
+              child: const Text('Rename'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// Bug report (assembly testing): [AssemblyTreePanel.onOccurrenceColorTap]'s

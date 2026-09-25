@@ -69,6 +69,10 @@ class _FakeStorageService implements StorageService {
 
   @override
   Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) async => files.keys.toList();
+
+  @override
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) =>
+      throw UnimplementedError();
 }
 
 Map<String, dynamic> _singlePartPayload({

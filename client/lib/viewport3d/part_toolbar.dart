@@ -67,30 +67,34 @@ class PartToolbar extends StatelessWidget {
   /// lands on.
   final VoidCallback? onExit;
 
-  /// Native Save/Load: reads/writes the whole Document (every Part's
-  /// ordered Feature list, plus every Sketch it references) as this app's
-  /// own native project file - see `PartScreen._saveNativeFile`/
-  /// `_openNativeFile`. `onSaveAsNative` always prompts a fresh filename
-  /// (see `PartScreen._saveAsNativeFile`'s own doc comment for how this
-  /// differs from plain Save); `onStartNew` abandons the current Part for
-  /// a brand-new blank one, after confirming (see `PartScreen._startNewPart`).
+  /// Native Save/Load - see `PartScreen._saveNativeFile`/`_openNativeFile`.
+  ///
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): `onSaveNative`/`onSaveAsNative` only mean "the whole Document as
+  /// one flat file" for a session with no Project yet - once
+  /// `PartScreen._projectRoot` exists, plain Save writes back just the
+  /// currently-focused Part's own file (`PartScreen._saveFocusedPart`) and
+  /// Save As renames/relocates it (`PartScreen._saveFocusedPartAs`),
+  /// mirroring `onSaveAll`'s own "the active Part vs. everything" split
+  /// below - see either method's own doc comment. `onStartNew` abandons the
+  /// current Part for a brand-new blank one, after confirming (see
+  /// `PartScreen._startNewPart`).
   final VoidCallback? onSaveNative;
   final VoidCallback? onSaveAsNative;
   final VoidCallback? onOpenNative;
   final VoidCallback? onStartNew;
 
   /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): the
-  /// `StorageService`/`ProjectRoot`-backed multi-file flow, fully additive
-  /// alongside the Save/Save As/Open entries above (which stay exactly as
-  /// they are - a single-file, `file_picker`-driven, whole-session dump).
-  /// `onOpenProject` opens an existing project-folder-relative `.DIDSAprt`
-  /// file via `AssemblyDocumentClient.openAssembly` (seeding
-  /// `relativePathByPartId` for every Part it composes in);
-  /// `onSaveAll` writes every Part currently loaded in the session back to
-  /// its own file, prompting for a path the first time a Part doesn't have
-  /// one yet (`PartScreen._onSaveAllPressed`). Lives in the File menu
-  /// rather than the Assembly-lens Add-menu FAB, since it's meaningful for
-  /// a plain single-Part session too, not just Assembly lens.
+  /// `StorageService`/`ProjectRoot`-backed multi-file flow. `onOpenProject`
+  /// opens an existing project-folder-relative `.DIDSAprt` file via
+  /// `AssemblyDocumentClient.openAssembly` (seeding `relativePathByPartId`
+  /// for every Part it composes in); `onSaveAll` writes back every Part
+  /// currently loaded in the session, prompting for a path the first time a
+  /// Part doesn't have one yet (`PartScreen._onSaveAllPressed`) - unlike
+  /// plain Save above, which (once a Project exists) only ever touches the
+  /// one Part currently being edited. Lives in the File menu rather than
+  /// the Assembly-lens Add-menu FAB, since it's meaningful for a plain
+  /// single-Part session too, not just Assembly lens.
   final VoidCallback? onOpenProject;
   final VoidCallback? onSaveAll;
 

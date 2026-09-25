@@ -49,7 +49,16 @@ class PartUpdate(BaseModel):
     `supplier`/`supplier_part_number` are DIDSA-CAD-only metadata (see
     `app.document.models.Part`'s own docstring) - stored here alongside the
     STEP-portable fields for a uniform Part Properties CRUD surface, but
-    `app.document.step_export` deliberately never reads them."""
+    `app.document.step_export` deliberately never reads them.
+
+    Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+    §3.2): widened to also accept `name` - the assembly tree's own Rename
+    action, closing the gap where `Part.name` (set once at `create_part`
+    time) had no mutation path of its own at all. Unlike every other field
+    here, `name` can't use the plain omitted-vs-cleared convention:
+    `Part.name` is a required `str`, never `None`, so an explicitly empty
+    value is rejected by `update_part` rather than silently clearing
+    anything - see that endpoint's own docstring."""
 
     part_number: str | None = None
     description: str | None = None
@@ -57,6 +66,7 @@ class PartUpdate(BaseModel):
     remarks: str | None = None
     supplier: str | None = None
     supplier_part_number: str | None = None
+    name: str | None = None
 
 
 class MaterialAssignmentUpdate(BaseModel):
@@ -3038,12 +3048,20 @@ class OccurrenceTransformUpdate(BaseModel):
     override untouched; `""` (empty string) explicitly clears it back to
     `None`; anything else is stored verbatim, the same "opaque, client-owned
     string, never parsed or validated by this backend" convention
-    `GearGroup.display_color` already establishes for a display colour."""
+    `GearGroup.display_color` already establishes for a display colour.
+
+    Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+    §3.2): widened again to also accept `name_override`, the assembly
+    tree's own Rename action - same `None`-omitted/`""`-clears/anything-
+    else-stored-verbatim tri-state as `color` just above, for the same
+    reason: renaming back to "whatever this Part/file is called" needs to
+    be expressible as distinct from "don't touch the current override"."""
 
     transform: RigidTransformResponse | None = None
     hidden: bool | None = None
     fixed: bool | None = None
     color: str | None = None
+    name_override: str | None = None
 
 
 class OccurrenceCreate(BaseModel):

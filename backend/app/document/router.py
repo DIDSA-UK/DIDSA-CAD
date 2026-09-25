@@ -3177,7 +3177,17 @@ def update_part(part_id: str, payload: PartUpdate) -> PartResponse:
     material assignment has its own dedicated endpoints below (a whole-
     object replace, not a field-by-field PATCH, since a `MaterialAssignment`
     is always set or cleared as one unit, never partially). Same omitted-
-    vs-current-value convention as every `*FeatureUpdate` endpoint."""
+    vs-current-value convention as every `*FeatureUpdate` endpoint.
+
+    Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+    §3.2): widened to also accept `name` - the assembly tree's own Rename
+    action, when renaming a singly-instanced component's own Occurrence
+    also renames the Part it resolves to (see `PartUpdate.name`'s own
+    docstring for why). Unlike the metadata fields above, an explicitly
+    empty/whitespace-only `name` is rejected with a 422 rather than
+    silently applied - `Part.name` is a required field with no "cleared"
+    state, unlike the `str | None` metadata above that's fine to blank
+    out."""
     part = get_part_or_404(part_id)
     if payload.part_number is not None:
         part.part_number = payload.part_number
@@ -3191,6 +3201,11 @@ def update_part(part_id: str, payload: PartUpdate) -> PartResponse:
         part.supplier = payload.supplier
     if payload.supplier_part_number is not None:
         part.supplier_part_number = payload.supplier_part_number
+    if payload.name is not None:
+        stripped_name = payload.name.strip()
+        if not stripped_name:
+            raise HTTPException(status_code=422, detail="name must not be empty")
+        part.name = stripped_name
     return _part_response(part)
 
 
@@ -3355,7 +3370,14 @@ def update_occurrence_transform(
 
     Bug report (assembly testing): widened again to also accept `color` -
     see `OccurrenceTransformUpdate.color`'s own docstring for its
-    `None`-omitted/`""`-clears/anything-else-stored-verbatim tri-state."""
+    `None`-omitted/`""`-clears/anything-else-stored-verbatim tri-state.
+
+    Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+    §3.2): widened again to also accept `name_override` - the assembly
+    tree's own Rename action, closing the last of the three fields §2e's
+    docstring above originally flagged as having no mutation path
+    (`suppressed` still doesn't - nothing needs it yet). Same tri-state as
+    `color`."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     effective_fixed = payload.fixed if payload.fixed is not None else occurrence.fixed
@@ -3376,6 +3398,8 @@ def update_occurrence_transform(
         occurrence.fixed = payload.fixed
     if payload.color is not None:
         occurrence.color = payload.color or None
+    if payload.name_override is not None:
+        occurrence.name_override = payload.name_override or None
     return _occurrence_response(occurrence)
 
 

@@ -55,3 +55,14 @@ String withDefaultExtension(String raw) {
   }
   return '$trimmed$kNativeFileExtension';
 }
+
+/// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+/// §3.2): the new relative path for renaming the file at [relativePath] to
+/// [newFileName] (a bare file name, never a further relative path) while
+/// keeping it in the same directory - `StorageService.renameFile`'s own
+/// same-directory-only contract, matching what `saf_util.rename`/iOS's
+/// `moveItem` both natively support without a separate move step.
+String siblingRelativePath(String relativePath, String newFileName) {
+  final lastSlash = relativePath.lastIndexOf('/');
+  return lastSlash == -1 ? newFileName : '${relativePath.substring(0, lastSlash + 1)}$newFileName';
+}

@@ -47,9 +47,16 @@ Client: `client/lib/viewport3d/part_screen.dart` (the ~23k-line
 (`project_root.dart`, `storage_service.dart`, `recent_project_store.dart`,
 `saf_storage_service.dart`).
 
-**Status: not started.** Nothing in this document is implemented. §5 lays
-out a suggested phased delivery order; each phase is independently
-shippable and leaves the app fully working.
+**Status: Phases 1-3 implemented** (zero-dialog Create Component with
+auto-naming/auto-pathing, §3.1; the assembly tree's Rename action,
+backend + client + all three `StorageService` platforms, §3.2; Save/Save
+As now split on Project-vs-not, §3.3) **— Phase 3's Open/Open Project
+unification deliberately deferred** (a real feature-parity gap surfaced
+mid-implementation, see §3.3's own note). Phases 4 (dirty-state) and 5
+(Open picker convenience) not started; a new Phase 6 (Open unification,
+once the extras-restoration gap is resolved) was added to §5. `dart
+analyze` clean across `client/lib`/`client/test`; every touched widget
+test file passing; the full backend suite (2488 tests) passing.
 
 ---
 
@@ -295,6 +302,27 @@ confirm runs the three updates above.
 
 ### 3.3 Four entrances, not more: Save, Save As, Save All, Open
 
+**Implemented for Save/Save As/Save All** (`part_screen.dart`'s
+`_saveNativeFile`/`_saveAsNativeFile`/`_saveFocusedPart`/
+`_saveFocusedPartAs`/`_onSaveAllPressed`) **— Open/Open Project were
+deliberately left as two separate entries, not unified.** Implementing
+this section surfaced a real feature-parity gap the planning pass missed:
+legacy `_openNativeFile` restores two client-only extras that only live in
+the *root* file's own top-level JSON keys — `hidden_feature_ids` and
+`section_planes` — neither of which `AssemblyGraphComposer.compose`/
+`AssemblyDocumentClient.openAssembly` (the "Open Project…" path) has ever
+carried; that composer only ever merges `document.parts`. Collapsing Open
+into the Project-style reader as originally written here would have
+silently dropped hidden-feature/section-plane restoration for the common
+"just open one file" case — a real regression, not a wording nit. Fixing
+that properly means teaching the composer (or a wrapper around it) to
+extract and re-apply the *root* file's own extras after composing, which
+is its own small design/verification task, not a same-afternoon menu
+merge. Left as an explicit open item (§5, deferred phase) rather than
+guessed at under time pressure. **Save/Save As did *not* have an
+equivalent hidden gap** and shipped as originally scoped, with one
+correction below (Save As).
+
 The first pass introduced "Save a Copy…" and "Save as Project…" on top of
 the legacy four. With §2's model, neither is needed:
 
@@ -315,57 +343,52 @@ than invented ones, each with one clear, non-overlapping meaning
 (standard CAD convention — SolidWorks/Fusion 360 draw this line the same
 way):
 
-- **Save** — saves the *currently focused* Part only (`_focusStack?.current
-  ?? _part?.id`, the same resolution `_onCreateNewComponentPressed:11118`
-  already uses for "which Part is this action about"). For a lone Part
-  with no assembly yet, this is the whole document — one native
-  "where do you want this" prompt on first save (exactly today's
-  `_saveNativeFile`/`_saveNativeFileViaDialog` shape, `:9239`/`:9212`,
-  unchanged), reused thereafter via `_lastSavedFilePath` on desktop
-  (`_canPersistFilePathForReuse`, `:9156`). Once a `ProjectRoot` exists,
-  writes that one Part's file back via `AssemblyDocumentClient.savePart`
-  (`assembly_document_client.dart:79`) using its already-known path — no
-  dialog in the steady state, since §3.1 guarantees every Part gets one at
-  creation time.
-- **Save As** — renames/relocates the *currently focused* Part's own file
-  (standard rebinding "Save As": a later plain Save targets the new
-  location from then on). Opens the same native save-file dialog as
-  today's `_saveAsNativeFile` (`:9260`) allows picking a different folder
-  entirely, not just a new name in place. If the focused Part is
-  referenced by any Occurrence elsewhere in the session, its
-  `external_ref` is corrected at the next Save/Save All via
-  `stampExternalRefs`, same mechanism as §3.2's file rename.
+- **Save** (`_saveNativeFile`) — dispatches on whether `_projectRoot` is
+  set. With no Project yet, it's exactly today's whole-session flat-dump
+  behavior, unchanged (`_lastSavedFilePath` reuse on desktop via
+  `_canPersistFilePathForReuse`, a dialog on first save). Once a Project
+  exists, it calls the new `_saveFocusedPart`: saves the *currently
+  focused* Part only (`_focusStack?.current ?? _part?.id`, the same
+  resolution `_onCreateNewComponentPressed` already uses), not the whole
+  session — stamps every `Occurrence.external_ref` across the full session
+  first (`stampExternalRefs`, re-imported) so the focused Part's own file
+  reflects any newly-known paths for the components it references, then
+  writes just that one file via `AssemblyDocumentClient.savePart`. A
+  focused Part with no known path yet (rare — realistically only "Add
+  Component"/"Locate Missing File") gets one silently auto-derived via
+  `_autoAssignPath` (§3.1), never a blocking dialog for a plain Save.
+- **Save As** (`_saveAsNativeFile` → `_saveFocusedPartAs`) — same
+  Project-vs-not dispatch. In Project mode: prompts for a new
+  project-relative path via the existing `showRelativePathPromptDialog`
+  (reused as-is, not a new dialog), then **always writes a fresh export**
+  of the focused Part's current in-session content to that path via
+  `savePart` — deliberately *not* a physical move/rename of the old file.
+  This was a correction made during implementation: the original plan here
+  said to reuse `StorageService.renameFile` (§3.2), but `renameFile` only
+  relocates existing bytes — reusing it for Save As would have silently
+  saved the Part's *old, previously-written* content under the new name
+  rather than its current state, which is exactly backwards for what "Save
+  As" means. If the new path differs from the old one, the old file is
+  left in place rather than deleted — `StorageService` has no delete
+  primitive (a deliberate scope limit, not an oversight), so an orphaned
+  stale file is the honest, safe outcome, never silent data loss. A later
+  plain Save targets the new path from then on (standard "Save As"
+  rebinding semantics).
 - **Save All** — writes back every loaded/dirty Part in the whole session,
-  i.e. today's `_onSaveAllPressed` (`:11203`) behavior, carrying forward
+  i.e. today's `_onSaveAllPressed` behavior, unchanged, carrying forward
   §3.1's auto-path improvements so it prompts only for a genuinely
-  unpathed Part (one added via Add Component/Locate Missing File with an
-  external, non-safe-default filename) rather than anything Create
-  Component already handled. For a lone Part, Save and Save All are
-  simply identical — the same non-event they are in any CAD tool before
-  an assembly exists.
-- **Open** — one entry, replacing today's separate `Open…`/`Open
-  Project…` (`part_toolbar.dart:309-310`/`:314-315`). Opens any
-  `.DIDSAprt` file and composes whatever it references
-  (`AssemblyGraphComposer.compose` already handles a file with zero
-  `external_ref`s fine — a lone Part composes as a trivial single-node
-  graph, so there's no behavioral fork needed once a root is known). How
-  that root is obtained still genuinely differs by platform, and that
-  split is kept deliberately rather than forced uniform:
-  - **Desktop**: a single native "Open File" dialog (`file_picker`,
-    unchanged from today's plain Open), `ProjectRoot` silently set to
-    `DesktopProjectRoot(dirname(pickedPath))` — no separate folder step,
-    since plain `dart:io` access has no scoped permission to negotiate.
-  - **Android/iOS**: keeps today's two-step shape (grant/resolve the
-    containing folder via SAF/bookmark, then pick the file inside it) — a
-    genuine platform constraint (a single-document SAF pick grants no
-    tree-level write access to siblings), not leftover caution. Step two
-    improves via §3.5's listFiles-backed picker instead of free text.
+  unpathed Part rather than anything Create Component already handled.
+  For a lone Part, Save and Save All are simply identical — the same
+  non-event they are in any CAD tool before an assembly exists.
+- **Open** — **not implemented this pass; still two entries** (`Open…`/
+  `Open Project…`), per this section's own opening note. Left for its own
+  follow-up once the hidden-feature/section-plane extras-restoration gap
+  is actually resolved.
 
-`part_toolbar.dart`'s five File-menu entries (`:309-330`) collapse to
-these four; the corresponding callback fields (`:77-95`) collapse
-similarly (`onSaveNative`/`onSaveAll` stay two distinct callbacks — they
-now mean genuinely different things, per above — `onOpenNative`/
-`onOpenProject` merge into one `onOpen`).
+`part_toolbar.dart`'s File-menu doc comments were updated to describe the
+new Save/Save As split (`onSaveNative`/`onSaveAsNative`'s own doc comment,
+`onSaveAll`'s own), but the menu's five entries/callback fields are
+unchanged in count — `onOpenNative`/`onOpenProject` were not merged.
 
 ### 3.4 Accurate dirty-state, replacing the unconditional exit warning
 
@@ -433,68 +456,115 @@ replacement at its own call sites, ships independently, and leaves the
 app fully working before the next phase starts.
 
 **Phase 1 — §3.1: zero-dialog Create Component, auto-name, auto-path both
-Parts.**
-- Modify `_onCreateNewComponentPressed` (`part_screen.dart:11117`) to
-  generate a name locally instead of prompting, and to register both the
+Parts. Implemented.**
+- `_onCreateNewComponentPressed` (`part_screen.dart`) generates a name
+  locally via the new `_nextComponentName` (mirrors
+  `occurrenceDisplayName`'s own "Component N" ordinal, checked against
+  every name already in use) instead of prompting, and registers both the
   new child's and the parent's paths in `_relativePathByPartId` in the
-  same step.
-- Remove: `_promptComponentName` (`:11170`).
+  same step via the new `_autoAssignPath` helper.
+- Removed: `_promptComponentName`.
 - Unchanged: `mergeComponentIntoDocument` (`add_component.dart`),
-  `_ensureProjectRoot` (`:11090`), `_onSaveAllPressed` (`:11203`) — still
-  the correct fallback for anything this phase doesn't cover (e.g. Add
-  Component's own pre-existing external-ref gap). Lowest risk in this
-  plan: one call site changes, nothing else in the File menu is touched.
+  `_ensureProjectRoot`, `_onSaveAllPressed` — still the correct fallback
+  for anything this phase doesn't cover (e.g. Add Component's own
+  pre-existing external-ref gap).
+- Tests: `client/test/part_screen_test.dart`'s "Create Component creates
+  an auto-named, auto-pathed Part…" test rewritten for the zero-dialog
+  flow, including a same-action Save All assertion proving neither Part
+  needs a further prompt.
 
-**Phase 2 — §3.2: rename action (assembly tree, long-press).**
-- Backend: add `name: str | None` to `PartUpdate`
-  (`schemas.py:46-59`) and handle it in `update_part`
-  (`router.py:3173-3190`); extend the occurrence PATCH with
-  `name_override` the same way `updateOccurrenceHidden` added `hidden`.
-- Client: add `ComponentContextMenuAction.rename`
-  (`component_context_menu.dart:14-25`) and its menu entry; a new rename
-  dialog; `DocumentApiClient.updateOccurrenceName`/`updatePartName`
-  methods; `StorageService.renameFile` (new interface method,
-  `saf_util.rename` on Android, `File.rename` on desktop, a small
-  `IosStoragePlugin.swift` addition on iOS); wire the "only rename the
-  file/Part name when single-instanced" check described in §3.2.
-- Ship after Phase 1 so components arrive pre-named ("Component N") and
-  this phase's rename action is the concrete, exercised correction path
-  from day one rather than a rarely-used extra.
+**Phase 2 — §3.2: rename action (assembly tree, long-press). Implemented.**
+- Backend: `PartUpdate.name` added (`schemas.py`) and handled in
+  `update_part` (`router.py`) — rejects an empty/whitespace-only name
+  with a 422 rather than silently applying it, since `Part.name` has no
+  "cleared" state the way the metadata fields do. `OccurrenceTransformUpdate`
+  widened with `name_override` (same tri-state as the existing `color`
+  field: omitted leaves it untouched, `""` clears it, anything else sets
+  it), handled in `update_occurrence_transform`.
+- Client: `ComponentContextMenuAction.rename` added, with its menu entry;
+  new `_renameOccurrence`/`_promptRenameComponent` in `part_screen.dart`;
+  `DocumentApiClient.updateOccurrenceName` (mirrors `updateOccurrenceColor`
+  exactly) and `updatePart`'s new `name` parameter;
+  `StorageService.renameFile` added to the interface and implemented on
+  all three platforms — `saf_util.rename`/`delete` already existed in the
+  Android plugin and needed no native changes; desktop uses
+  `File.rename`; iOS needed a small, real addition (`IosStoragePlugin.swift`'s
+  new `renameFile` case wrapping `FileManager.moveItem`, plus
+  `IosBookmarkChannel.renameFile`) since no rename primitive existed
+  there before. Same-directory-only by design (§3.2's own reasoning) —
+  every real call site only ever changes a file's own name.
+  `relative_path.dart` gained `siblingRelativePath` for computing the
+  resulting relative path.
+- The "only rename the file/Part name when instanced exactly once"
+  check counts occurrences across the *whole session* (a fresh
+  `exportNative()`), not just the focused Part's own children, since a
+  shared Part could be instanced inside a different sub-assembly than the
+  one currently focused.
+- Tests: two new `part_screen_test.dart` widget tests (singly- vs.
+  multiply-instanced rename), plus unit tests for `renameFile` added to
+  `desktop_storage_service_test.dart`, `saf_storage_service_test.dart`
+  (needed a `rename` implementation added to that file's own fake
+  `SafUtil`), and `ios_storage_service_test.dart` (same, for its fake
+  `IosBookmarkChannel`), and backend tests added to
+  `test_occurrence_transform_update.py` for both the `name_override`
+  tri-state and `update_part`'s new `name` field/validation.
 
-**Phase 3 — §3.3: collapse the File menu to Save / Save As / Save All /
-Open.**
-- Modify `part_toolbar.dart`: replace the five entries at `:309-330` with
-  four (drop the separate `Open Project…` entry, `onOpenNative`/
-  `onOpenProject` merge into one `onOpen`; `onSaveNative`/`onSaveAll` stay
-  distinct, now with the meanings in §3.3).
-- Modify `part_screen.dart`: `_saveNativeFile`/`_onSaveAllPressed` gain the
-  "focused Part only" vs. "everything" split described in §3.3 (today's
-  `_saveNativeFile` already only ever touches one flat export — this
-  phase changes *what* it writes back to, not its dialog shape); a new
-  `_onOpenPressed` implementing §3.3's platform-aware root derivation,
-  replacing `_onOpenProjectPressed` (`:11270`) as the sole Open entry
-  point; `_saveAsNativeFile` (`:9260`) becomes the focused-Part rename/
-  relocate action described in §3.3.
-- Medium risk — the most heavily-used entries in the app change meaning;
-  needs the existing widget-test coverage for the File menu (see
-  `docs/flutter-widget-test-lessons.md`) extended before landing. Ship
-  after Phases 1-2 so Save's steady-state prompt count can be verified
-  end-to-end against components that already arrive named and pathed.
+**Phase 3 — §3.3: Save/Save As split on Project-vs-not. Implemented for
+Save/Save As/Save All; Open deliberately not touched.**
+- `_saveNativeFile` and `_saveAsNativeFile` now dispatch on `_projectRoot`:
+  unchanged legacy whole-session behavior with no Project yet; the new
+  `_saveFocusedPart`/`_saveFocusedPartAs` once one exists (§3.3's own
+  description, including the Save-As correction — a fresh export, not a
+  physical file move).
+- `_onSaveAllPressed`/`Open…`/`Open Project…` left entirely unchanged.
+  `part_toolbar.dart`'s doc comments updated to describe the new split;
+  the menu's own five entries were **not** collapsed to four (see §3.3's
+  opening note on the Open extras-restoration gap this surfaced).
+- Tests: two new `part_screen_test.dart` widget tests — plain Save writes
+  only the focused Part (a `writeCounts`-per-path instrumentation added to
+  the test file's fake `StorageService` to prove this), and Save As saves
+  fresh content under a new path and rebinds future Saves to it, leaving
+  the old file in place.
 
-**Phase 4 — §3.4: dirty-state tracking.**
-- Add `_isDirty` to `_PartScreenState`; set in `_runGuarded` (`:20429`);
-  clear at the end of each Phase 3 save path.
-- Modify `_confirmExitPart` (`:9080`) to gate on it.
-- Purely additive; can ship independently of, or even before, Phase 3.
+**Phase 4 — §3.4: dirty-state tracking. Not started.**
+- Add `_isDirty` to `_PartScreenState`; set in `_runGuarded`; clear at the
+  end of each Phase 3 save path.
+- Modify `_confirmExitPart` to gate on it.
+- Purely additive; can ship independently of anything above.
 
 **Phase 5 — §3.5: project-files convenience (listFiles-backed Open
-picker).**
-- New small panel using `StorageService.listFiles` (`storage_service.dart:91`).
-- Modify `showOpenProjectPathPromptDialog`
-  (`relative_path_dialog.dart:104-140`) to offer the list with free-text
-  fallback.
-- Lowest priority; pure polish, safe to drop without affecting Phases 1-4.
+picker). Not started.**
+- New small panel using `StorageService.listFiles`.
+- Modify `showOpenProjectPathPromptDialog` to offer the list with
+  free-text fallback.
+- Lowest priority; pure polish.
+
+**Phase 6 (new, added during implementation) — unify Open/Open Project,
+once the extras-restoration gap is resolved. Not started.**
+- Needs `AssemblyGraphComposer`/`AssemblyDocumentClient.openAssembly` (or
+  a thin wrapper around it) to also extract and re-apply the *root* file's
+  own `hidden_feature_ids`/`section_planes` — currently only
+  `_openNativeFile`'s direct-JSON-decode path restores these, and they'd
+  be silently dropped by a naive merge into the composer-based reader.
+  Design that restoration path first (its own small scoping decision:
+  where do the extras live once the root file is composed together with
+  N referenced files — do they still only ever describe the root, or
+  could a referenced Part meaningfully carry its own too?), then collapse
+  `Open…`/`Open Project…` into one entry per §3.3's original platform
+  split (desktop: single native file dialog, root derived from the picked
+  file's own parent directory; Android/iOS: keep the folder-grant step,
+  improved by Phase 5's picker).
 
 No phase requires a `SCHEMA_VERSION` bump or a data migration script —
 per §4, every file created under today's system keeps working before,
-during, and after this plan lands.
+during, and after this plan lands. Verification for Phases 1-3: `flutter
+analyze`/`dart analyze` clean across `client/lib` and `client/test`; every
+widget test file touched (`part_screen_test.dart`,
+`part_toolbar_test.dart`, `assembly_add_menu_test.dart`,
+`component_context_menu_test.dart`, `desktop_storage_service_test.dart`,
+`saf_storage_service_test.dart`, `ios_storage_service_test.dart`,
+`assembly_document_client_test.dart`, `assembly_graph_composer_test.dart`,
+`ensure_project_root_test.dart`, `ai_plan_translator_test.dart`,
+`ai_modelling_screen_orchestration_test.dart`,
+`tool_chooser_screen_test.dart`) passing; the full backend suite
+(`backend/tests/`, 2488 tests) passing.

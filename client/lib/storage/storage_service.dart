@@ -89,4 +89,20 @@ abstract class StorageService {
   /// prompt-context fetch) is already a best-effort operation elsewhere in
   /// this codebase.
   Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter});
+
+  /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  /// §3.2): the assembly tree's own Rename action - renames the file at
+  /// `relativePath` to `newFileName` (a bare file name, e.g.
+  /// `"Bracket.DIDSAprt"` - never a further relative path/subdirectory of
+  /// its own), keeping it in the same directory. Same-directory-only is a
+  /// deliberate scope limit, not an oversight: every real call site (this
+  /// Rename action, a Create-Component auto-path collision fallback) only
+  /// ever changes a file's own name, never its location - and both
+  /// platform primitives this delegates to (`saf_util.rename`, iOS's
+  /// `moveItem` within one parent) natively support exactly that without
+  /// a separate move step. Use `relative_path.dart`'s own
+  /// `siblingRelativePath` to compute the resulting relative path from the
+  /// return value. Throws `StorageException` if nothing exists at
+  /// `relativePath`, or if a file already exists at the destination.
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName);
 }

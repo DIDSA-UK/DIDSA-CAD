@@ -73,6 +73,21 @@ class _FakeIosBookmarkChannel extends IosBookmarkChannel {
   @override
   Future<bool> exists(String path) async => _files.containsKey(path);
 
+  /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  /// §3.2): renames the file at `path` to `newFileName`, keeping it in the
+  /// same directory - mirrors `IosStoragePlugin.swift`'s own `moveItem`
+  /// within one parent.
+  @override
+  Future<String> renameFile(String path, String newFileName) async {
+    final bytes = _files[path];
+    if (bytes == null) throw StateError('no such file: $path');
+    final lastSlash = path.lastIndexOf('/');
+    final newPath = lastSlash == -1 ? newFileName : '${path.substring(0, lastSlash + 1)}$newFileName';
+    _files[newPath] = _files.remove(path)!;
+    _mtimesMs[newPath] = _mtimesMs.remove(path) ?? _mtimeCounter++;
+    return newPath;
+  }
+
   @override
   Future<List<String>> listFilesRecursive(String rootPath, {String? extensionFilter}) async {
     final prefix = rootPath.endsWith('/') ? rootPath : '$rootPath/';
@@ -119,6 +134,43 @@ void main() {
       expect((second as IosFileHandle).resolvedPath, (first as IosFileHandle).resolvedPath);
       expect(second.relativePath, first.relativePath);
       expect(await service.readFile(second), [2]);
+    });
+  });
+
+  group('renameFile', () {
+    test('renames the file, keeping it in the same directory', () async {
+      await service.writeFile(root, 'parts/bracket.DIDSAprt', Uint8List.fromList([1, 2, 3]));
+
+      final handle = await service.renameFile(root, 'parts/bracket.DIDSAprt', 'left-bracket.DIDSAprt');
+
+      expect(handle.relativePath, 'parts/left-bracket.DIDSAprt');
+      expect(await service.readFile(handle), [1, 2, 3]);
+      expect(await service.resolve(root, 'parts/bracket.DIDSAprt'), isNull);
+    });
+
+    test('renames a top-level file with no directory of its own', () async {
+      await service.writeFile(root, 'bracket.DIDSAprt', Uint8List.fromList([1]));
+
+      final handle = await service.renameFile(root, 'bracket.DIDSAprt', 'left-bracket.DIDSAprt');
+
+      expect(handle.relativePath, 'left-bracket.DIDSAprt');
+    });
+
+    test('throws StorageException when a file already exists at the destination', () async {
+      await service.writeFile(root, 'bracket.DIDSAprt', Uint8List.fromList([1]));
+      await service.writeFile(root, 'left-bracket.DIDSAprt', Uint8List.fromList([2]));
+
+      expect(
+        () => service.renameFile(root, 'bracket.DIDSAprt', 'left-bracket.DIDSAprt'),
+        throwsA(isA<StorageException>()),
+      );
+    });
+
+    test('throws StorageException when nothing exists at the source path', () async {
+      expect(
+        () => service.renameFile(root, 'does-not-exist.DIDSAprt', 'new-name.DIDSAprt'),
+        throwsA(isA<StorageException>()),
+      );
     });
   });
 

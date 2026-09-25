@@ -482,3 +482,124 @@ def test_assembly_mesh_instance_reports_the_occurrence_color():
     # has no Occurrence of its own to carry a colour override.
     root_instance = next(i for i in mesh["instances"] if i["occurrence_path"] == [])
     assert root_instance["color"] is None
+
+
+# --- Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+# §3.2): the assembly tree's own Rename action, `name_override` ---
+
+
+def test_patching_name_override_only_leaves_transform_untouched():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={
+            "transform": {
+                "translation": [4.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            }
+        },
+    )
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"name_override": "Left Bolt"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name_override"] == "Left Bolt"
+    assert body["transform"]["translation"] == [4.0, 0.0, 0.0]
+
+
+def test_omitting_name_override_leaves_the_current_one_untouched():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"name_override": "Left Bolt"},
+    )
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"hidden": True},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["hidden"] is True
+    assert body["name_override"] == "Left Bolt"
+
+
+def test_an_empty_string_name_override_explicitly_clears_it():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"name_override": "Left Bolt"},
+    )
+
+    response = client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"name_override": ""},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["name_override"] is None
+
+
+def test_name_override_survives_a_native_export_import_round_trip():
+    top_id, occurrence_id = _setup_top_with_one_occurrence()
+    client.patch(
+        f"/document/parts/{top_id}/occurrences/{occurrence_id}",
+        json={"name_override": "Left Bolt"},
+    )
+
+    exported = _export_part(top_id)
+    exported_occurrence = exported["document"]["parts"][0]["occurrences"][0]
+    assert exported_occurrence["name_override"] == "Left Bolt"
+
+    _import_composed(exported)
+    occurrences = client.get(f"/document/parts/{top_id}/occurrences").json()
+    assert occurrences[0]["name_override"] == "Left Bolt"
+
+
+# --- Save/project overhaul Phase 2: `update_part`'s own new `name` field ---
+
+
+def test_patching_part_name_updates_it_and_leaves_other_metadata_alone():
+    part = _create_part("Bracket")
+    client.patch(f"/document/parts/{part['id']}", json={"description": "A bracket"})
+
+    response = client.patch(f"/document/parts/{part['id']}", json={"name": "Bracket v2"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Bracket v2"
+    assert body["description"] == "A bracket"
+
+
+def test_omitting_name_leaves_the_current_one_untouched():
+    part = _create_part("Bracket")
+
+    response = client.patch(f"/document/parts/{part['id']}", json={"description": "A bracket"})
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Bracket"
+
+
+def test_patching_an_empty_or_whitespace_only_name_is_rejected():
+    part = _create_part("Bracket")
+
+    response = client.patch(f"/document/parts/{part['id']}", json={"name": "   "})
+
+    assert response.status_code == 422
+    # Rejected before anything else in the payload was applied.
+    assert client.get(f"/document/parts/{part['id']}").json()["name"] == "Bracket"
+
+
+def test_patching_name_strips_surrounding_whitespace():
+    part = _create_part("Bracket")
+
+    response = client.patch(f"/document/parts/{part['id']}", json={"name": "  Bracket v2  "})
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Bracket v2"
