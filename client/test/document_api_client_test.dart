@@ -832,6 +832,74 @@ void main() {
     });
   });
 
+  group('Shell: DocumentApiClient createShellFeature/updateShellFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    Map<String, dynamic> shellJson({double thickness = 2.0, String direction = 'inward'}) => {
+          'type': 'shell',
+          'id': 'shell-1',
+          'locked': false,
+          'produces': 'body',
+          'body_id': 'body-1',
+          'faces_to_remove': [
+            {'body_id': 'body-1', 'shape_type': 'face', 'index': 5},
+          ],
+          'thickness': thickness,
+          'thickness_direction': direction,
+        };
+
+    test('createShellFeature posts to shell-features and parses the response', () async {
+      late http.Request captured;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          captured = request;
+          return jsonResponse(shellJson());
+        }),
+      );
+
+      final feature = await client.createShellFeature(
+        'part-1',
+        bodyId: 'body-1',
+        facesToRemove: const [SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 5)],
+        thickness: 2.0,
+        thicknessDirection: 'inward',
+      );
+
+      expect(captured.method, 'POST');
+      expect(captured.url.path, endsWith('/document/parts/part-1/shell-features'));
+      expect(jsonDecode(captured.body), {
+        'body_id': 'body-1',
+        'faces_to_remove': [
+          {'body_id': 'body-1', 'shape_type': 'face', 'index': 5},
+        ],
+        'thickness': 2.0,
+        'thickness_direction': 'inward',
+      });
+      expect(feature.type, 'shell');
+      expect(feature.bodyId, 'body-1');
+      expect(feature.facesToRemove.single.index, 5);
+      expect(feature.thickness, 2.0);
+      expect(feature.thicknessDirection, 'inward');
+    });
+
+    test('updateShellFeature only sends the fields supplied', () async {
+      late http.Request captured;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          captured = request;
+          return jsonResponse(shellJson(thickness: 3.0, direction: 'symmetric'), status: 200);
+        }),
+      );
+
+      await client.updateShellFeature('part-1', 'shell-1', thickness: 3.0, thicknessDirection: 'symmetric');
+
+      expect(captured.method, 'PATCH');
+      expect(captured.url.path, endsWith('/document/parts/part-1/shell-features/shell-1'));
+      expect(jsonDecode(captured.body), {'thickness': 3.0, 'thickness_direction': 'symmetric'});
+    });
+  });
+
   group('Prompt E: DocumentApiClient createChamferFeature/updateChamferFeature', () {
     http.Response jsonResponse(Object body, {int status = 201}) =>
         http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});

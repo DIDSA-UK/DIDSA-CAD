@@ -2845,6 +2845,50 @@ class MoveFaceFeature(Feature):
         return Produces.BODY
 
 
+@dataclass
+class ShellFeature(Feature):
+    """Hollows the solid Body `body_id` into a thin-walled shell: every face
+    named in `faces_to_remove` (1+ entries, every one a FACE ref on
+    `body_id` itself - payload shape validated by `app.document.router.
+    _validate_shell_faces_to_remove`, same-Body check by `app.document.
+    shell._shell_mixed_body_selection`) is opened up, and every remaining
+    face becomes a wall of uniform `thickness` (> 0, `app.document.router.
+    _validate_shell_thickness`).
+
+    Built via `app.document.extrude._thin_wall_solid_for_direction` - the
+    exact same `BRepOffsetAPI_MakeThickSolid.MakeThickSolidByJoin` +
+    `ClosingFaces` primitive (`app.document.shell_ops.thicken_capped_solid_
+    to_solid`) the thin-wall Extrude path already relies on, so
+    `thickness_direction` reuses `ThicknessDirection` (and that helper's
+    OUTWARD/INWARD/SYMMETRIC handling) verbatim rather than inventing a
+    Shell-specific enum: OUTWARD grows each wall outside the Body's
+    original boundary, INWARD grows it inside (the Body's outer
+    dimensions are preserved), SYMMETRIC straddles it.
+
+    v1 scope: one uniform `thickness` for every wall - per-face thickness
+    overrides are an explicit future v2 (they need OCCT's variable-offset
+    shell API, not yet proven in this codebase). Modifies the shared
+    `body_id` in place (Fillet/Chamfer's "keep the same id" pattern)."""
+
+    id: str
+    body_id: str
+    faces_to_remove: list[SubShapeRef] = field(default_factory=list)  # every entry's shape_type must be FACE
+    thickness: float = 0.0
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+
+    @property
+    def type(self) -> str:
+        return "shell"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass(frozen=True)
 class MaterialAssignment:
     """A resolved material as assigned to a Part (default) or a specific

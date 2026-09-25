@@ -95,6 +95,7 @@ import 'occurrence_colour_sheet.dart';
 import 'rollback.dart';
 import 'ruled_surface_panel.dart';
 import 'scale_body_panel.dart';
+import 'shell_panel.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
 import 'select_other_sheet.dart';
@@ -1864,6 +1865,7 @@ class _PartScreenState extends State<PartScreen> {
       !_moveBodyActive &&
       !_deleteFaceActive &&
       !_moveFaceActive &&
+      !_shellActive &&
       !_profilePickerActive &&
       !_pathPickerActive &&
       !_measureActive;
@@ -1902,6 +1904,7 @@ class _PartScreenState extends State<PartScreen> {
           !_moveBodyActive &&
           !_deleteFaceActive &&
           !_moveFaceActive &&
+          !_shellActive &&
           !_profilePickerActive &&
           !_pathPickerActive &&
           !_measureActive) ||
@@ -2021,6 +2024,7 @@ class _PartScreenState extends State<PartScreen> {
       _moveBodyActive ||
       _deleteFaceActive ||
       _moveFaceActive ||
+      _shellActive ||
       _moveRotateComponentActive ||
       _profilePickerActive ||
       _pathPickerActive ||
@@ -2601,6 +2605,7 @@ class _PartScreenState extends State<PartScreen> {
     // above already does.
     if (_deleteFaceActive) _scheduleDeleteFacePreview();
     if (_moveFaceActive) _scheduleMoveFacePreview();
+    if (_shellActive) _scheduleShellPreview();
   }
 
   /// Pattern/Mirror scoping Phase 1: [_toggleSelectedEntity]'s plane-like-kind
@@ -4573,6 +4578,66 @@ class _PartScreenState extends State<PartScreen> {
     edge: false,
     face: false,
     body: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  // --- Shell ------------------------------------------------------------------
+  // Hollows one solid Body, opening every picked face and giving every
+  // remaining face a uniform wall thickness (v1 - no per-face overrides).
+  // Mirrors Delete Face's continuous face re-pick session shape (preview-
+  // overlay mesh, self-exclusion rollback, generic accumulate-toggle) plus
+  // Chamfer's debounced live-tunable numeric field.
+
+  /// True while a Shell session (create or B4 edit) is live - mirrors
+  /// [_deleteFaceActive].
+  bool _shellActive = false;
+
+  /// The ShellFeature created (or, in edit mode, already existing) for the
+  /// panel session - mirrors [_previewDeleteFaceFeatureId].
+  String? _previewShellFeatureId;
+
+  /// B4: non-null while [ShellPanel] is editing an *already-existing*
+  /// ShellFeature - mirrors [_editingDeleteFaceFeatureId].
+  String? _editingShellFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - mirrors [_chamferEditSnapshot].
+  ({
+    String bodyId,
+    List<SubShapeRefDto> facesToRemove,
+    double thickness,
+    ThicknessDirection thicknessDirection,
+  })? _shellEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened.
+  Set<SelectionEntityRef>? _entitiesBeforeShell;
+
+  /// The panel's live thickness/direction values - mirrors
+  /// [_chamferDistance].
+  double _shellThickness = 1.0;
+  ThicknessDirection _shellThicknessDirection = ThicknessDirection.outward;
+
+  Timer? _shellDebounce;
+
+  /// Mirrors [_deleteFacePreviewBodyId].
+  String? _shellPreviewBodyId;
+
+  /// Mirrors [_deleteFacePreviewMesh].
+  MeshDto? _shellPreviewMesh;
+
+  /// Locks [_selectionFilterOverrides] to faces only for the whole session -
+  /// mirrors [_deleteFaceSelectionFilter].
+  static const _shellSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: false,
     sketchPoint: false,
     sketchLine: false,
     sketchCircle: false,
@@ -11876,6 +11941,11 @@ class _PartScreenState extends State<PartScreen> {
       // _confirmMoveFace/_cancelMoveFace instead.
       final opened = await _openMoveFacePanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'shell') {
+      // Shell: mirrors the delete_face branch above exactly - rollback is
+      // ended by _confirmShell/_cancelShell instead.
+      final opened = await _openShellPanelForEdit(feature);
+      if (!opened) await _endRollback();
     } else if (feature.type == 'boolean') {
       // Boolean family, Subtract/Common: mirrors the merge branch just
       // above exactly - rollback is ended by _confirmBoolean/_cancelBoolean
@@ -16651,6 +16721,269 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Shell ------------------------------------------------------------------
+  // See this file's own "Shell" state-field section header comment.
+
+  /// [SelectionContextPanel.onShell]'s callback - `contextActionsFor`
+  /// enables this button for one or more faces of the same solid Body,
+  /// nothing else, selected. Mirrors [_onDeleteFaceTapped].
+  void _onShellTapped() {
+    final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
+    if (faces.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
+    _openShellPanel(faceEntities: faces);
+  }
+
+  /// Opens [ShellPanel] - mirrors [_openDeleteFacePanel]. The initial
+  /// create is driven by [ShellPanel]'s own post-frame [ShellPanel.onChanged]
+  /// emit (same as [ChamferPanel]'s), but is also attempted eagerly here so a
+  /// Shell that can't be built at all (e.g. `shell_failed`) closes the panel
+  /// back out rather than leaving it stuck open with nothing to edit.
+  Future<void> _openShellPanel({required List<SelectionEntityRef> faceEntities}) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      _shellActive = true;
+      _entitiesBeforeShell = _selectedEntities;
+      _selectedEntities = faceEntities.toSet();
+      _shellThickness = 1.0;
+      _shellThicknessDirection = ThicknessDirection.outward;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_shellSelectionFilter);
+    });
+    if (faceEntities.isEmpty) return;
+    await _runGuarded(() => _ensureShellFeatureExists());
+    if (_previewShellFeatureId == null && mounted) {
+      _shellDebounce?.cancel();
+      setState(() {
+        _shellActive = false;
+        _selectedEntities = _entitiesBeforeShell ?? {};
+        _entitiesBeforeShell = null;
+        _selectionFilterOverrides.pop();
+      });
+    }
+  }
+
+  /// B4: opens [ShellPanel] to edit an *already-existing* ShellFeature -
+  /// mirrors [_openDeleteFacePanelForEdit].
+  Future<bool> _openShellPanelForEdit(FeatureDto feature) async {
+    final facesToRemove = feature.facesToRemove;
+    final bodyId = feature.bodyId;
+    if (facesToRemove.isEmpty || bodyId == null) return false;
+    final thickness = feature.thickness ?? 1.0;
+    final direction = ThicknessDirection.fromApiValue(feature.thicknessDirection);
+    setState(() {
+      _shellActive = true;
+      _editingShellFeatureId = feature.id;
+      _previewShellFeatureId = feature.id;
+      _shellThickness = thickness;
+      _shellThicknessDirection = direction;
+      _shellEditSnapshot = (
+        bodyId: bodyId,
+        facesToRemove: facesToRemove,
+        thickness: thickness,
+        thicknessDirection: direction,
+      );
+      _entitiesBeforeShell = _selectedEntities;
+      _selectedEntities = {
+        for (final ref in facesToRemove)
+          SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: ref.bodyId, id: ref.index),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_shellSelectionFilter);
+    });
+    await _beginRollback({feature.id});
+    return true;
+  }
+
+  /// [_selectedEntities]' faces while [_shellActive] - mirrors
+  /// [_currentDeleteFaceRefs].
+  List<SubShapeRefDto> _currentShellFaceRefs() => [
+        for (final entity in _selectedEntities)
+          if (entity.kind == SelectionEntityKind.face)
+            SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
+      ];
+
+  /// The Body the Shell hollows - the Body of its first picked face
+  /// (mirrors [_currentDeleteFaceBodyId]); every other picked face must
+  /// share it, which the backend enforces (`mixed_body_selection`).
+  String? _currentShellBodyId() {
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.face) return entity.bodyId;
+    }
+    return null;
+  }
+
+  /// [ShellPanel.onChanged] - mirrors [_onChamferDistanceChanged].
+  void _onShellParamsChanged(double thickness, ThicknessDirection direction) {
+    _shellThickness = thickness;
+    _shellThicknessDirection = direction;
+    _scheduleShellPreview();
+  }
+
+  /// Shared by every thickness/direction edit and every face pick/removal
+  /// ([_toggleSelectedEntity]'s generic accumulate-toggle) - mirrors
+  /// [_scheduleChamferPreview]'s debounce.
+  void _scheduleShellPreview() {
+    _shellDebounce?.cancel();
+    _shellDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureShellFeatureExists());
+    });
+  }
+
+  /// Serializes [_ensureShellFeatureExists] calls: [_openShellPanel]'s
+  /// eager create and [ShellPanel]'s own post-frame initial emit (debounced
+  /// by [_scheduleShellPreview]) can otherwise overlap - a slow OCCT shell
+  /// still in flight when the debounce fires would see no
+  /// [_previewShellFeatureId] yet and create a second, duplicate Feature.
+  Future<void> _shellEnsureChain = Future<void>.value();
+
+  /// Create-or-update against the current picks/thickness/direction -
+  /// mirrors [_ensureDeleteFaceFeatureExists]/[_ensureChamferFeatureExists]
+  /// (including the self-exclusion-on-create fix and the concurrent preview
+  /// mesh fetch). Skips the request entirely while no face is picked, or
+  /// once the session has already ended (a queued call landing after
+  /// Confirm/Cancel). Errors still propagate to the caller's [_runGuarded].
+  Future<void> _ensureShellFeatureExists() {
+    final next = _shellEnsureChain.then((_) => _ensureShellFeatureExistsNow());
+    _shellEnsureChain = next.catchError((Object _) {});
+    return next;
+  }
+
+  Future<void> _ensureShellFeatureExistsNow() async {
+    if (!_shellActive || !mounted) return;
+    final part = _part;
+    final facesToRemove = _currentShellFaceRefs();
+    final bodyId = _currentShellBodyId();
+    if (part == null || facesToRemove.isEmpty || bodyId == null) return;
+    final existingId = _previewShellFeatureId;
+    if (existingId == null) {
+      final feature = await _api.createShellFeature(
+        _focusPartId,
+        bodyId: bodyId,
+        facesToRemove: facesToRemove,
+        thickness: _shellThickness,
+        thicknessDirection: _shellThicknessDirection.apiValue,
+      );
+      _previewShellFeatureId = feature.id;
+      setState(() => _rollbackExcludedFeatureIds.add(feature.id));
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshShellPreviewMesh()]);
+    } else {
+      await _api.updateShellFeature(
+        _focusPartId,
+        existingId,
+        bodyId: bodyId,
+        facesToRemove: facesToRemove,
+        thickness: _shellThickness,
+        thicknessDirection: _shellThicknessDirection.apiValue,
+      );
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshShellPreviewMesh()]);
+    }
+  }
+
+  /// Fetches the *actual* current effect of the in-progress Shell - mirrors
+  /// [_refreshDeleteFacePreviewMesh] exactly.
+  Future<void> _refreshShellPreviewMesh() async {
+    final part = _part;
+    final featureId = _previewShellFeatureId;
+    final bodyId = _currentShellBodyId();
+    if (part == null || featureId == null || bodyId == null) {
+      if (!mounted) return;
+      setState(() {
+        _shellPreviewBodyId = null;
+        _shellPreviewMesh = null;
+      });
+      return;
+    }
+    final response = await _api.getPartMesh(
+      _focusPartId,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+      meshQuality: _meshQuality,
+    );
+    if (!mounted) return;
+    BodyMeshDto? match;
+    for (final body in response) {
+      if (body.bodyId == bodyId) {
+        match = body;
+        break;
+      }
+    }
+    setState(() {
+      _shellPreviewBodyId = bodyId;
+      _shellPreviewMesh = match?.mesh;
+    });
+  }
+
+  /// Keeps the just-created/edited ShellFeature - mirrors [_confirmChamfer].
+  Future<void> _confirmShell() async {
+    _shellDebounce?.cancel();
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _shellActive = false;
+      _selectedEntities = _entitiesBeforeShell ?? {};
+      _entitiesBeforeShell = null;
+      _previewShellFeatureId = null;
+      _editingShellFeatureId = null;
+      _shellEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _shellPreviewBodyId = null;
+      _shellPreviewMesh = null;
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview ShellFeature (new-shell flow) or
+  /// PATCHes [_shellEditSnapshot]'s stashed original values back (edit
+  /// flow) - mirrors [_cancelChamfer].
+  Future<void> _cancelShell() async {
+    _shellDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewShellFeatureId;
+    final wasEditing = _editingShellFeatureId != null;
+    final editSnapshot = _shellEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _shellActive = false;
+      _selectedEntities = _entitiesBeforeShell ?? {};
+      _entitiesBeforeShell = null;
+      _previewShellFeatureId = null;
+      _editingShellFeatureId = null;
+      _shellEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _shellPreviewBodyId = null;
+      _shellPreviewMesh = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateShellFeature(
+            _focusPartId,
+            previewId,
+            bodyId: editSnapshot.bodyId,
+            facesToRemove: editSnapshot.facesToRemove,
+            thickness: editSnapshot.thickness,
+            thicknessDirection: editSnapshot.thicknessDirection.apiValue,
+          );
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(_focusPartId, previewId);
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   // --- Direct Editing family, fifth/last entry: Move Face ----------------------
   // See this file's own "Direct Editing family, fifth/last entry: Move Face"
   // state-field section header comment for the full reasoning.
@@ -20219,14 +20552,18 @@ class _PartScreenState extends State<PartScreen> {
                           ? _chamferPreviewBodyId
                           : _deleteFaceActive
                               ? _deleteFacePreviewBodyId
-                              : _moveFacePreviewBodyId,
+                              : _shellActive
+                                  ? _shellPreviewBodyId
+                                  : _moveFacePreviewBodyId,
                   previewOverlayMesh: _filletActive
                       ? _filletPreviewMesh
                       : _chamferActive
                           ? _chamferPreviewMesh
                           : _deleteFaceActive
                               ? _deleteFacePreviewMesh
-                              : _moveFacePreviewMesh,
+                              : _shellActive
+                                  ? _shellPreviewMesh
+                                  : _moveFacePreviewMesh,
                   // `docs/lod-strategy/01-design.md` SS5 chunk 5: [_effectiveCoarseOverlayMeshes]
                   // is [_coarseOverlayMeshes] as-is - genuinely-pending Bodies
                   // and pinned-Feature Bodies render identically, only their
@@ -20460,6 +20797,7 @@ class _PartScreenState extends State<PartScreen> {
                     !_moveBodyActive &&
                     !_deleteFaceActive &&
                     !_moveFaceActive &&
+                    !_shellActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive &&
                     _activeMultiSelect == null)
@@ -20485,6 +20823,7 @@ class _PartScreenState extends State<PartScreen> {
                         onMoveBody: _onMoveBodyTapped,
                         onDeleteFace: _onDeleteFaceTapped,
                         onMoveFace: _onMoveFaceTapped,
+                        onShell: _onShellTapped,
                         // Bug fix (on-device feedback: the breadcrumb bar
                         // used to float over the viewport as its own
                         // overlay, obscuring part of this same drawer no
@@ -21233,6 +21572,24 @@ class _PartScreenState extends State<PartScreen> {
                       faceCount: _currentDeleteFaceRefs().length,
                       onConfirm: _confirmDeleteFace,
                       onCancel: _cancelDeleteFace,
+                    ),
+                  ),
+                // Shell: mirrors the Chamfer/Delete Face slots - the viewport
+                // does the live face picking, the panel owns the thickness/
+                // direction and reports the live face count.
+                if (_shellActive)
+                  Positioned.fill(
+                    key: const ValueKey('shell-panel-slot'),
+                    child: ShellPanel(
+                      key: ValueKey(_editingShellFeatureId ?? _previewShellFeatureId),
+                      title: _editingShellFeatureId != null ? 'Edit Shell' : 'Shell',
+                      tooltip: _currentShellFaceRefs().isEmpty ? 'Select faces to open' : null,
+                      initialThickness: _shellThickness,
+                      initialThicknessDirection: _shellThicknessDirection,
+                      faceCount: _currentShellFaceRefs().length,
+                      onChanged: _onShellParamsChanged,
+                      onConfirm: _confirmShell,
+                      onCancel: _cancelShell,
                     ),
                   ),
                 // Direct Editing family (fifth/last entry), V2: [MoveFacePanel]'s
@@ -22151,6 +22508,7 @@ class _PartScreenState extends State<PartScreen> {
                         _moveBodyActive ||
                         _deleteFaceActive ||
                         _moveFaceActive ||
+                        _shellActive ||
                         // Bug fix (on-device feedback: "the fab sits on top of
                         // the tool bar obscuring part of the measure tool
                         // bar"): MeasurementPanel is the same bottom-docked
@@ -22208,6 +22566,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_moveBodyActive &&
                       !_deleteFaceActive &&
                       !_moveFaceActive &&
+                      !_shellActive &&
                       // Bug fix ("the 'new' FAB should not obscure the
                       // Move/Rotate toolbar"): same "hide the FAB outright"
                       // list every other bottom-docked ResizableToolPanel

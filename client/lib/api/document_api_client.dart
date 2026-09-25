@@ -915,6 +915,14 @@ class FeatureDto {
   /// key `face_refs`, hence this field's own distinct Dart name).
   final List<SubShapeRefDto> directEditFaceRefs;
 
+  /// Shell: only present on a `"shell"` Feature - the faces of [bodyId]
+  /// opened up by the Shell (the backend `ShellFeature.faces_to_remove`).
+  /// The Shell's own wall thickness/side reuse [thickness]/
+  /// [thicknessDirection] verbatim (identical wire keys, same "no separate
+  /// field needed" reasoning [radius]/[distance] already share), and its
+  /// target Body reuses [bodyId].
+  final List<SubShapeRefDto> facesToRemove;
+
   /// Direct Editing family, fifth entry - only present on a `"move_face"`
   /// Feature using its offset-along-normal mode - exactly one of this,
   /// [delta], or [directionRef]+[directionDistance] is set on any given
@@ -1025,6 +1033,7 @@ class FeatureDto {
     this.rotationAxis,
     this.rotationAngleDegrees,
     this.directEditFaceRefs = const [],
+    this.facesToRemove = const [],
     this.offsetDistance,
     this.directionDistance,
     this.surfaceFeatureId,
@@ -1172,6 +1181,10 @@ class FeatureDto {
                     .toList() ??
                 const []
             : const [],
+        facesToRemove: (json['faces_to_remove'] as List?)
+                ?.map((r) => SubShapeRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
         offsetDistance: (json['offset_distance'] as num?)?.toDouble(),
         directionDistance: (json['direction_distance'] as num?)?.toDouble(),
         surfaceFeatureId: json['surface_feature_id'] as String?,
@@ -3125,6 +3138,58 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 if (faceRefs != null) 'face_refs': faceRefs.map((r) => r.toJson()).toList(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Shell: creates a ShellFeature hollowing [bodyId], opening every face in
+  /// [facesToRemove] (1+, all on [bodyId]) and giving every remaining face
+  /// a uniform wall [thickness] (> 0) grown on the side named by
+  /// [thicknessDirection] (`'outward'`/`'inward'`/`'symmetric'`) - see the
+  /// backend's `app.document.router.create_shell_feature`
+  /// (`shell_failed`/`mixed_body_selection`/`missing_reference` on failure).
+  Future<FeatureDto> createShellFeature(
+    String partId, {
+    required String bodyId,
+    required List<SubShapeRefDto> facesToRemove,
+    required double thickness,
+    String thicknessDirection = 'outward',
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/shell-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'body_id': bodyId,
+                'faces_to_remove': facesToRemove.map((r) => r.toJson()).toList(),
+                'thickness': thickness,
+                'thickness_direction': thicknessDirection,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing ShellFeature - mirrors
+  /// [updateChamferFeature]'s omitted-keeps-current-value shape.
+  Future<FeatureDto> updateShellFeature(
+    String partId,
+    String featureId, {
+    String? bodyId,
+    List<SubShapeRefDto>? facesToRemove,
+    double? thickness,
+    String? thicknessDirection,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/shell-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyId != null) 'body_id': bodyId,
+                if (facesToRemove != null)
+                  'faces_to_remove': facesToRemove.map((r) => r.toJson()).toList(),
+                if (thickness != null) 'thickness': thickness,
+                if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

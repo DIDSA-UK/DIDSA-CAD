@@ -305,6 +305,8 @@ List<SelectionContextAction> contextActionsFor(
         if (solid) const SelectionContextAction('Fillet', enabled: true),
         if (solid) const SelectionContextAction('Delete Face', enabled: true),
         if (solid) const SelectionContextAction('Move Face', enabled: true),
+        // Shell: the picked face becomes the Shell's one open face.
+        if (solid) const SelectionContextAction('Shell', enabled: true),
       ];
     }
     // On-device feedback (bug fix): a lone reference plane or existing
@@ -352,6 +354,10 @@ List<SelectionContextAction> contextActionsFor(
               : null;
       actions.add(SelectionContextAction('Delete Face', enabled: enabled, disabledReason: reason));
       actions.add(SelectionContextAction('Move Face', enabled: enabled, disabledReason: reason));
+      // Shell: every picked face becomes one of the Shell's open faces -
+      // same single-solid-Body constraint (`MakeThickSolidByJoin` hollows
+      // one solid at a time), same disabled-with-reason idiom.
+      actions.add(SelectionContextAction('Shell', enabled: enabled, disabledReason: reason));
     }
     if (actions.isNotEmpty) return actions;
   }

@@ -167,6 +167,7 @@ from app.document.models import (
     RigidTransform,
     RuledSurfaceFeature,
     ScaleBodyFeature,
+    ShellFeature,
     SketchFeature,
     SketchOrEdgeRef,
     SolidFromSurfacesFeature,
@@ -187,6 +188,7 @@ from app.document.move_body import resolve_move_body
 from app.document.move_face import resolve_move_face
 from app.document.offset_surface import resolve_offset_surface
 from app.document.scale_body import resolve_scale_body
+from app.document.shell import resolve_shell
 from app.document.solid_from_surfaces import resolve_solid_from_surfaces
 from app.document.thicken import resolve_thicken
 from app.document.schemas import (
@@ -254,6 +256,9 @@ from app.document.schemas import (
     ScaleBodyFeatureCreate,
     ScaleBodyFeatureResponse,
     ScaleBodyFeatureUpdate,
+    ShellFeatureCreate,
+    ShellFeatureResponse,
+    ShellFeatureUpdate,
     ExternalEdgeReferenceResponse,
     ExternalVertexReferenceCreate,
     ExtrudeFeatureCreate,
@@ -1027,6 +1032,16 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         return DeleteFaceFeatureResponse(
             id=feature.id,
             face_refs=[_subshape_ref_to_schema(r) for r in feature.face_refs],
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
+    if isinstance(feature, ShellFeature):
+        return ShellFeatureResponse(
+            id=feature.id,
+            body_id=feature.body_id,
+            faces_to_remove=[_subshape_ref_to_schema(r) for r in feature.faces_to_remove],
+            thickness=feature.thickness,
+            thickness_direction=feature.thickness_direction,
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -2633,6 +2648,30 @@ def _validate_chamfer_edge_refs(edge_refs: list[SubShapeRef]) -> None:
     for ref in edge_refs:
         if ref.shape_type != SubShapeType.EDGE:
             raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
+
+
+def _validate_shell_thickness(thickness: float) -> None:
+    """Mirrors `_validate_chamfer_distance`'s plain-400 convention for a
+    bare numeric-field check - a Shell's wall `thickness` is a magnitude
+    (its side is chosen by `thickness_direction`, never by sign), so it
+    must be strictly positive."""
+    if thickness <= 0:
+        raise HTTPException(status_code=400, detail="thickness must be greater than 0")
+
+
+def _validate_shell_faces_to_remove(faces_to_remove: list[SubShapeRef]) -> None:
+    """Mirrors `_validate_chamfer_edge_refs` - payload-shape checks only
+    (at least one entry, every entry a FACE). Whether they resolve, and
+    whether they all belong to the Shell's own `body_id`, is checked by
+    `app.document.shell.resolve_shell` instead."""
+    if not faces_to_remove:
+        raise HTTPException(
+            status_code=422,
+            detail="ShellFeature requires at least one faces_to_remove entry",
+        )
+    for ref in faces_to_remove:
+        if ref.shape_type != SubShapeType.FACE:
+            raise HTTPException(status_code=422, detail="faces_to_remove entries must have shape_type=FACE")
 
 
 def _validate_revolve_angle(angle: float) -> None:
@@ -5316,6 +5355,76 @@ def update_chamfer_feature(
 
     feature.edge_refs = candidate.edge_refs
     feature.distance = candidate.distance
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/shell-features", response_model=ShellFeatureResponse, status_code=201
+)
+def create_shell_feature(part_id: str, payload: ShellFeatureCreate) -> ShellFeatureResponse:
+    """Mirrors `create_chamfer_feature` exactly - unlocked from the start,
+    fails closed (payload shape, then `resolve_shell`'s referential/
+    geometric check) before ever persisting an unresolvable Shell."""
+    part = get_part_or_404(part_id)
+    faces_to_remove = [_subshape_ref_to_domain(ref) for ref in payload.faces_to_remove]
+    _validate_shell_faces_to_remove(faces_to_remove)
+    _validate_shell_thickness(payload.thickness)
+    feature = ShellFeature(
+        id=str(uuid.uuid4()),
+        body_id=payload.body_id,
+        faces_to_remove=faces_to_remove,
+        thickness=payload.thickness,
+        thickness_direction=payload.thickness_direction,
+    )
+    resolve_shell(part, feature)  # raises on an unresolvable reference or failed shell
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_shell_feature_or_404(part: Part, feature_id: str) -> ShellFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, ShellFeature):
+        raise HTTPException(status_code=404, detail="Shell feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/shell-features/{feature_id}", response_model=ShellFeatureResponse)
+def update_shell_feature(
+    part_id: str, feature_id: str, payload: ShellFeatureUpdate
+) -> ShellFeatureResponse:
+    """Mirrors `update_chamfer_feature` exactly - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_shell_feature_or_404(part, feature_id)
+
+    new_body_id = payload.body_id if payload.body_id is not None else feature.body_id
+    new_faces_to_remove = (
+        [_subshape_ref_to_domain(ref) for ref in payload.faces_to_remove]
+        if payload.faces_to_remove is not None
+        else feature.faces_to_remove
+    )
+    new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
+    new_thickness_direction = (
+        payload.thickness_direction
+        if payload.thickness_direction is not None
+        else feature.thickness_direction
+    )
+    _validate_shell_faces_to_remove(new_faces_to_remove)
+    _validate_shell_thickness(new_thickness)
+
+    candidate = ShellFeature(
+        id=feature.id,
+        body_id=new_body_id,
+        faces_to_remove=new_faces_to_remove,
+        thickness=new_thickness,
+        thickness_direction=new_thickness_direction,
+    )
+    resolve_shell(part, candidate)  # raises on an unresolvable reference or failed shell
+
+    feature.body_id = candidate.body_id
+    feature.faces_to_remove = candidate.faces_to_remove
+    feature.thickness = candidate.thickness
+    feature.thickness_direction = candidate.thickness_direction
     return _feature_response(part, feature)
 
 

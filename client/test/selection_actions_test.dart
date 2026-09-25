@@ -40,7 +40,7 @@ void main() {
     test(
       'C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face), plus '
       'on-device feedback\'s New Sketch on Face, Chamfer, and Fillet shortcuts, plus (Direct '
-      'Editing family) Delete Face and Move Face - both require solid only',
+      'Editing family) Delete Face, Move Face and Shell - all require solid only',
       () {
         final actions = contextActionsFor({_face0});
         expect(actions, [
@@ -50,6 +50,7 @@ void main() {
           const SelectionContextAction('Fillet', enabled: true),
           const SelectionContextAction('Delete Face', enabled: true),
           const SelectionContextAction('Move Face', enabled: true),
+          const SelectionContextAction('Shell', enabled: true),
         ]);
       },
     );
@@ -64,6 +65,7 @@ void main() {
           const SelectionContextAction('Fillet', enabled: true),
           const SelectionContextAction('Delete Face', enabled: true),
           const SelectionContextAction('Move Face', enabled: true),
+          const SelectionContextAction('Shell', enabled: true),
         ]);
       },
     );
@@ -98,6 +100,7 @@ void main() {
           const SelectionContextAction('Create Plane (Midplane)', enabled: true),
           const SelectionContextAction('Delete Face', enabled: true),
           const SelectionContextAction('Move Face', enabled: true),
+          const SelectionContextAction('Shell', enabled: true),
         ]);
       },
     );
@@ -109,6 +112,7 @@ void main() {
       expect(actions, [
         const SelectionContextAction('Delete Face', enabled: true),
         const SelectionContextAction('Move Face', enabled: true),
+        const SelectionContextAction('Shell', enabled: true),
       ]);
     });
 
@@ -125,6 +129,10 @@ void main() {
           'Move Face',
           disabledReason: 'Selected faces must all belong to the same Body',
         ),
+        const SelectionContextAction(
+          'Shell',
+          disabledReason: 'Selected faces must all belong to the same Body',
+        ),
       ]);
     });
 
@@ -139,6 +147,10 @@ void main() {
         ),
         const SelectionContextAction(
           'Move Face',
+          disabledReason: 'Selected faces must belong to a solid Body',
+        ),
+        const SelectionContextAction(
+          'Shell',
           disabledReason: 'Selected faces must belong to a solid Body',
         ),
       ]);

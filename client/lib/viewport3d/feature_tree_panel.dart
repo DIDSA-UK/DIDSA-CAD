@@ -72,6 +72,7 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'delete_face' => 'Delete Face',
     // Direct Editing family, fifth/last entry.
     'move_face' => 'Move Face',
+    'shell' => 'Shell',
     // Gear-tree UX: the gear-family Feature types (built straight from
     // parameters via their own dedicated design screen - GearDesignScreen/
     // BevelDesignScreen/GearChainDesignScreen - never through a Sketch, see
@@ -168,6 +169,8 @@ String _featureTypeAsset(String type) => switch (type) {
       'delete_face' => 'assets/icons/feature/feature_delete_face.svg',
       // Direct Editing family, fifth/last entry: its own distinct glyph.
       'move_face' => 'assets/icons/feature/feature_move_face.svg',
+      // Shell: its own distinct glyph (a hollowed, open-topped section).
+      'shell' => 'assets/icons/feature/feature_shell.svg',
       // Gear-tree UX: one shared "gear" category glyph for every gear-family
       // Feature type (spur/internal gear, rack, bevel gear, bevel pair, gear
       // chain, planetary set) - they're all built by the same family of

@@ -83,6 +83,7 @@ from app.document.models import (
     RevolveMode,
     RevolveSurfaceFeature,
     RuledSurfaceFeature,
+    ShellFeature,
     SketchFeature,
     SolidFromSurfacesFeature,
     SplitFeature,
@@ -1833,6 +1834,7 @@ def _apply_feature_to_bodies_impl(
     from app.document.move_body import resolve_move_body_from_bodies
     from app.document.move_face import resolve_move_face_from_bodies
     from app.document.scale_body import resolve_scale_body_from_bodies
+    from app.document.shell import resolve_shell_from_bodies
     from app.document.import_geometry import resolve_import
     from app.document.mirror import (
         effective_mirror_source_body_ids,
@@ -1861,6 +1863,18 @@ def _apply_feature_to_bodies_impl(
             logger.warning("Skipping ChamferFeature %s: could not be resolved", feature.id)
             return
         bodies[body_id] = chamfered_shape
+        return
+
+    if isinstance(feature, ShellFeature):
+        # Hollows its Body in place (Fillet/Chamfer's "keep the same id"
+        # pattern) - see `app.document.shell.resolve_shell_from_bodies`.
+        # Same skip-with-warning resilience convention as Chamfer above.
+        try:
+            body_id, shelled_shape = resolve_shell_from_bodies(bodies, feature)
+        except HTTPException:
+            logger.warning("Skipping ShellFeature %s: could not be resolved", feature.id)
+            return
+        bodies[body_id] = shelled_shape
         return
 
     if isinstance(feature, ImportFeature):

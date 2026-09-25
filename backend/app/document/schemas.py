@@ -1112,6 +1112,43 @@ class DeleteFaceFeatureResponse(BaseModel):
     produces: Produces
 
 
+class ShellFeatureCreate(BaseModel):
+    """Creates a `ShellFeature` - hollows the solid Body `body_id`, opening
+    every face named in `faces_to_remove` (1+ FACE refs, all on `body_id`)
+    and giving every remaining face a uniform wall `thickness` (> 0), grown
+    on the side named by `thickness_direction` (the same `ThicknessDirection`
+    thin-wall Extrude uses). See `app.document.router._validate_shell_faces_
+    to_remove`/`_validate_shell_thickness` for the payload-shape checks."""
+
+    body_id: str
+    faces_to_remove: list[SubShapeRefSchema] = []
+    thickness: float
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+
+
+class ShellFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ChamferFeatureUpdate`."""
+
+    body_id: str | None = None
+    faces_to_remove: list[SubShapeRefSchema] | None = None
+    thickness: float | None = None
+    thickness_direction: ThicknessDirection | None = None
+
+
+class ShellFeatureResponse(BaseModel):
+    type: Literal["shell"] = "shell"
+    id: str
+    body_id: str
+    faces_to_remove: list[SubShapeRefSchema]
+    thickness: float
+    thickness_direction: ThicknessDirection
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # ShellFeature (it modifies, rather than creates, a Body).
+    produces: Produces
+
+
 class MoveFaceFeatureCreate(BaseModel):
     """Direct Editing family (fifth/last entry): creates a `MoveFaceFeature`
     moving every face named in `face_refs` (1+ entries, all belonging to
@@ -2569,6 +2606,7 @@ FeatureResponse = Union[
     BooleanFeatureResponse,
     DeleteBodyFeatureResponse,
     DeleteFaceFeatureResponse,
+    ShellFeatureResponse,
     ScaleBodyFeatureResponse,
     MoveBodyFeatureResponse,
     MoveFaceFeatureResponse,

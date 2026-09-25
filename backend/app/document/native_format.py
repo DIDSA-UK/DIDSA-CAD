@@ -84,6 +84,7 @@ from app.document.models import (
     RigidTransform,
     RuledSurfaceFeature,
     ScaleBodyFeature,
+    ShellFeature,
     SketchFeature,
     SketchOrEdgeRef,
     SolidFromSurfacesFeature,
@@ -1166,6 +1167,15 @@ def _feature_to_dict(feature: Feature) -> dict:
             "id": feature.id,
             "face_refs": [_subshape_ref_to_dict(r) for r in feature.face_refs],
         }
+    if isinstance(feature, ShellFeature):
+        return {
+            "type": "shell",
+            "id": feature.id,
+            "body_id": feature.body_id,
+            "faces_to_remove": [_subshape_ref_to_dict(r) for r in feature.faces_to_remove],
+            "thickness": feature.thickness,
+            "thickness_direction": feature.thickness_direction.value,
+        }
     if isinstance(feature, MoveFaceFeature):
         return {
             "type": "move_face",
@@ -1517,6 +1527,14 @@ def _feature_from_dict(data: dict) -> Feature:
         return DeleteFaceFeature(
             id=feature_id,
             face_refs=[_subshape_ref_from_dict(r) for r in data.get("face_refs", [])],
+        )
+    if feature_type == "shell":
+        return ShellFeature(
+            id=feature_id,
+            body_id=_require(data, "body_id"),
+            faces_to_remove=[_subshape_ref_from_dict(r) for r in data.get("faces_to_remove", [])],
+            thickness=data.get("thickness", 0.0),
+            thickness_direction=ThicknessDirection(data.get("thickness_direction", ThicknessDirection.OUTWARD.value)),
         )
     if feature_type == "move_face":
         raw_delta = data.get("delta")

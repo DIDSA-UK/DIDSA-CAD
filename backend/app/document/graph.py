@@ -70,6 +70,7 @@ from app.document.models import (
     RevolveSurfaceFeature,
     RuledSurfaceFeature,
     ScaleBodyFeature,
+    ShellFeature,
     SketchFeature,
     SketchOrEdgeRef,
     SolidFromSurfacesFeature,
@@ -547,6 +548,14 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
         elif isinstance(feature, ChamferFeature):
             depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
+        elif isinstance(feature, ShellFeature):
+            # Modifies exactly one Body in place - its own `body_id` (every
+            # `faces_to_remove` entry must share it, but include theirs too
+            # so a malformed payload can never hide a real dependency).
+            depends_on = tuple(
+                {base_feature_id(feature.body_id)}
+                | {base_feature_id(ref.body_id) for ref in feature.faces_to_remove}
+            )
         elif isinstance(feature, RevolveFeature):
             depends_on = _revolve_dependencies(part, feature)
         elif isinstance(feature, SweepFeature):
