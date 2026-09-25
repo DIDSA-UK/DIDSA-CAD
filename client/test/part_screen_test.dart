@@ -5196,6 +5196,15 @@ void main() {
             documentApi: documentApi,
             sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
             storageService: storage,
+            // Save/project overhaul Phase 6 (`docs/save-project-overhaul-scope.md`
+            // §5): "Open…"/"Open Project…" are now one unified entry that
+            // branches on platform - forced away from the real, unmockable
+            // `FilePicker.platform` desktop path so this test (running on
+            // this repo's Linux-hosted harness, which would otherwise always
+            // take that branch) can still exercise the `StorageService`-driven
+            // one, exactly as it always could back when "Open Project…" was
+            // its own always-reachable menu entry with no platform gate.
+            canPersistFilePathForReuse: false,
           ),
         ),
       );
@@ -5223,9 +5232,9 @@ void main() {
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      await tester.ensureVisible(find.text('Open Project…'));
+      await tester.ensureVisible(find.text('Open…'));
       await tester.pump();
-      await tester.tap(find.text('Open Project…'));
+      await tester.tap(find.text('Open…'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -5268,6 +5277,8 @@ void main() {
               sketchApiFactory: () =>
                   SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
               storageService: storage,
+              // See the sibling "asks to confirm" test's own comment for why.
+              canPersistFilePathForReuse: false,
             ),
           ),
         );
@@ -5279,9 +5290,9 @@ void main() {
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
-        await tester.ensureVisible(find.text('Open Project…'));
+        await tester.ensureVisible(find.text('Open…'));
         await tester.pump();
-        await tester.tap(find.text('Open Project…'));
+        await tester.tap(find.text('Open…'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
 
@@ -5755,5 +5766,128 @@ void main() {
       expect(find.text('Saved 2 file(s)'), findsOneWidget);
       expect(toolbar().hasUnsavedChanges, isFalse);
     });
+  });
+
+  // Save/project overhaul Phase 6 (`docs/save-project-overhaul-scope.md`
+  // §5, Phase 6): the unified "Open…" entry - reads the picked file first
+  // and routes to whichever reader its own shape actually needs, rather
+  // than making the user pick the right menu entry up front.
+  group('Save/project overhaul Phase 6: unified Open', () {
+    testWidgets(
+      'opening a legacy multi-Part Bundle imports it directly and restores hidden features/sections, '
+      'with no Project attached',
+      (tester) async {
+        final backend = _FakeDocumentBackend();
+        final storage = _FakeStorageService();
+        storage.files['bundle.DIDSAprt'] = Uint8List.fromList(
+          utf8.encode(
+            jsonEncode({
+              'schema_version': 1,
+              'document': {
+                'id': 'doc-1',
+                'root_part_id': 'part-1',
+                'parts': [
+                  {
+                    'id': 'part-1',
+                    'name': 'Part 1',
+                    'features': <dynamic>[],
+                    'occurrences': <dynamic>[],
+                    'mates': <dynamic>[],
+                    'component_patterns': <dynamic>[],
+                  },
+                  {
+                    'id': 'part-2',
+                    'name': 'Bracket',
+                    'features': <dynamic>[],
+                    'occurrences': <dynamic>[],
+                    'mates': <dynamic>[],
+                    'component_patterns': <dynamic>[],
+                  },
+                ],
+              },
+              'sketches': <dynamic>[],
+              'hidden_feature_ids': ['feature-abc'],
+              'section_planes': [
+                {
+                  'id': 'section-1',
+                  'origin': [0.0, 0.0, 0.0],
+                  'normal': [0.0, 0.0, 1.0],
+                  'anchor_origin': [0.0, 0.0, 0.0],
+                  'flipped': false,
+                  'enabled': true,
+                },
+              ],
+            }),
+          ),
+        );
+        final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+              canPersistFilePathForReuse: false,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Open…'));
+        await tester.pump();
+        await tester.tap(find.text('Open…'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // Phase 5's listFiles-backed picker lists the one seeded file -
+        // tapping it resolves immediately, no free-text entry needed.
+        expect(find.text('bundle.DIDSAprt'), findsOneWidget);
+        await tester.tap(find.text('bundle.DIDSAprt'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // `pushReplacement`'s own transition briefly holds both the old and
+        // new screen in the tree - `.last` is the one just pushed.
+        final pushedScreen = tester.widgetList<PartScreen>(find.byType(PartScreen)).last;
+        expect(pushedScreen.initialPartId, 'part-1');
+        expect(pushedScreen.initialHiddenFeatureIds, ['feature-abc']);
+        expect(pushedScreen.initialSectionPlanes, hasLength(1));
+        expect(pushedScreen.initialSectionPlanes.single.id, 'section-1');
+        // A Bundle never gets a Project attached - it stays exactly the
+        // single-file session it always was.
+        expect(pushedScreen.initialProjectRoot, isNull);
+        expect(pushedScreen.initialRelativePathByPartId, isEmpty);
+      },
+    );
+
+    // The Project-shaped (single-Part, composed-graph) half of the unified
+    // Open entry is deliberately not tested here through the real screen -
+    // confirmed directly during this phase's own implementation that even
+    // a single-Part, zero-Occurrence file's `_openComposedProject` (real
+    // `AssemblyGraphComposer` + real `AssemblyDocumentClient` against a
+    // `MockClient`-backed backend) never settles inside this suite's own
+    // `testWidgets` pump loop, the exact "real dart:io/HTTP-shaped async
+    // chain + testWidgets' own fake-async pump loop" combination the Phase
+    // 16 group's own doc comment above already found reliably too slow/
+    // flaky to drive through the real screen (its own dedicated "Open
+    // Project… through the real screen" test was dropped for the same
+    // reason). Coverage for what actually changed in this phase is split
+    // instead: `native_file_shape_test.dart` unit-tests the new
+    // `isBundleShapedNativeFile` routing decision directly (promoted to a
+    // free function specifically so it could be), the Bundle half of the
+    // dispatch is exercised end-to-end just above (it never reaches
+    // `_openComposedProject` at all), and the graph composition itself
+    // already has its own real, non-flaky coverage in
+    // `assembly_graph_composer_test.dart`/`assembly_document_client_test.dart`.
   });
 }

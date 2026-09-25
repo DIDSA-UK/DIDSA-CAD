@@ -47,16 +47,17 @@ Client: `client/lib/viewport3d/part_screen.dart` (the ~23k-line
 (`project_root.dart`, `storage_service.dart`, `recent_project_store.dart`,
 `saf_storage_service.dart`).
 
-**Status: Phases 1-5 implemented** (zero-dialog Create Component with
+**Status: all six phases implemented** (zero-dialog Create Component with
 auto-naming/auto-pathing, §3.1; the assembly tree's Rename action,
 backend + client + all three `StorageService` platforms, §3.2; Save/Save
-As now split on Project-vs-not, §3.3; accurate dirty-state tracking
-replacing the unconditional exit warning, §3.4; the Open-Project prompt's
-listFiles-backed picker, §3.5) **— Phase 3's Open/Open Project unification
-deliberately deferred** (a real feature-parity gap surfaced
-mid-implementation, see §3.3's own note; tracked as a new Phase 6). `dart
-analyze` clean across `client/lib`/`client/test`; the full `flutter test`
-suite (2286 tests) passing; the full backend suite (2488 tests) passing.
+As split on Project-vs-not, §3.3; accurate dirty-state tracking replacing
+the unconditional exit warning, §3.4; the Open-Project prompt's
+listFiles-backed picker, §3.5; Open/Open Project unified into one entry,
+§5's Phase 6, once the extras-restoration design question §3.3's first
+implementation pass raised was actually resolved rather than guessed at).
+`dart analyze` clean across `client/lib`/`client/test`; the full `flutter
+test` suite (2292 tests) passing; the full backend suite (2488 tests)
+passing.
 
 ---
 
@@ -302,26 +303,33 @@ confirm runs the three updates above.
 
 ### 3.3 Four entrances, not more: Save, Save As, Save All, Open
 
-**Implemented for Save/Save As/Save All** (`part_screen.dart`'s
+**Fully implemented, including Open** (`part_screen.dart`'s
 `_saveNativeFile`/`_saveAsNativeFile`/`_saveFocusedPart`/
-`_saveFocusedPartAs`/`_onSaveAllPressed`) **— Open/Open Project were
-deliberately left as two separate entries, not unified.** Implementing
-this section surfaced a real feature-parity gap the planning pass missed:
-legacy `_openNativeFile` restores two client-only extras that only live in
-the *root* file's own top-level JSON keys — `hidden_feature_ids` and
-`section_planes` — neither of which `AssemblyGraphComposer.compose`/
+`_saveFocusedPartAs`/`_onSaveAllPressed`/`_onOpenPressed`). The first
+implementation pass shipped Save/Save As/Save All but deliberately left
+Open/Open Project as two separate entries, having surfaced a real
+feature-parity gap the planning pass missed: legacy `_openNativeFile`
+restores two client-only extras that only live in the *root* file's own
+top-level JSON keys — `hidden_feature_ids` and `section_planes` — neither
+of which `AssemblyGraphComposer.compose`/
 `AssemblyDocumentClient.openAssembly` (the "Open Project…" path) has ever
-carried; that composer only ever merges `document.parts`. Collapsing Open
-into the Project-style reader as originally written here would have
-silently dropped hidden-feature/section-plane restoration for the common
-"just open one file" case — a real regression, not a wording nit. Fixing
-that properly means teaching the composer (or a wrapper around it) to
-extract and re-apply the *root* file's own extras after composing, which
-is its own small design/verification task, not a same-afternoon menu
-merge. Left as an explicit open item (§5, deferred phase) rather than
-guessed at under time pressure. **Save/Save As did *not* have an
-equivalent hidden gap** and shipped as originally scoped, with one
-correction below (Save As).
+carried; that composer only ever merges `document.parts`, and, more
+fundamentally, requires **exactly one Part per file** (it throws a
+`FormatException` otherwise) — a legacy Bundle's whole point is *multiple*
+Parts in one file, so the composer couldn't even read one at all, let
+alone restore its extras. Phase 6 (below) resolved this not by teaching
+the composer to also carry the extras, but by resolving the underlying
+design question directly: **read the file first and let its own shape
+decide which reader it needs**, rather than picking a reader and hoping.
+A Bundle (`document.parts.length > 1`) goes through the exact same direct
+`import_native` + extras-restoration `_openNativeFile` always used
+(factored into `_openBundlePayload`); anything else goes through the real
+composer (`_openComposedProject`). Since the two shapes are mutually
+exclusive by construction (a Project's own per-Part `savePart` export
+never had a way to write more than one Part into a file, and a Bundle's
+`_buildNativeExportBytes` never resolves `external_ref`s into a real
+graph), there's no case where the "wrong" reader could plausibly apply —
+the shape check is a completeness guarantee, not a heuristic.
 
 The first pass introduced "Save a Copy…" and "Save as Project…" on top of
 the legacy four. With §2's model, neither is needed:
@@ -380,15 +388,40 @@ way):
   unpathed Part rather than anything Create Component already handled.
   For a lone Part, Save and Save All are simply identical — the same
   non-event they are in any CAD tool before an assembly exists.
-- **Open** — **not implemented this pass; still two entries** (`Open…`/
-  `Open Project…`), per this section's own opening note. Left for its own
-  follow-up once the hidden-feature/section-plane extras-restoration gap
-  is actually resolved.
+- **Open** (`_onOpenPressed`) — one entry, replacing `Open…`/`Open
+  Project…`. Still genuinely differs by platform for *how the root file
+  gets picked* (this part of the original plan held up unchanged):
+  - **Desktop** (`_openViaDesktopFilePicker`): a single native "Open File"
+    dialog (`file_picker`, unchanged from the old plain Open), bytes
+    already in hand from the picker. `ProjectRoot` is derived from the
+    picked file's own parent directory
+    (`DesktopProjectRoot(p.dirname(pickedPath))`) only if the file turns
+    out not to be Bundle-shaped — a Bundle never gets a `ProjectRoot`
+    attached at all, staying exactly the single-file session it always
+    was (no separate folder step either way, since plain `dart:io` access
+    has no scoped permission to negotiate).
+  - **Android/iOS** (`_openViaProjectFolderPicker`): keeps the two-step
+    shape — grant/resolve the containing folder (`_ensureProjectRoot`),
+    then pick the file inside it (§3.5's listFiles-backed picker) — a
+    genuine platform constraint (a single-document SAF pick grants no
+    tree-level write access to siblings), not leftover caution. Reads the
+    picked file's own bytes through `StorageService` purely to sniff its
+    shape (`_openComposedProject` re-reads it again as part of its own
+    real graph walk — a small, accepted duplication for a small JSON
+    file).
+  - Either way, the decoded file is handed to the new
+    `isBundleShapedNativeFile` (promoted to a free function in a new
+    `client/lib/assembly/native_file_shape.dart`, specifically so it's
+    directly unit-testable — see §5's own testing note) to choose between
+    `_openBundlePayload` (`import_native` + `hidden_feature_ids`/
+    `section_planes` restoration, exactly `_openNativeFile`'s old body)
+    and `_openComposedProject` (`AssemblyDocumentClient.openAssembly`,
+    exactly `_onOpenProjectPressed`'s old body) — both former methods
+    removed, their logic folded into these two shared helpers so either
+    platform half of `_onOpenPressed` can reach them.
 
-`part_toolbar.dart`'s File-menu doc comments were updated to describe the
-new Save/Save As split (`onSaveNative`/`onSaveAsNative`'s own doc comment,
-`onSaveAll`'s own), but the menu's five entries/callback fields are
-unchanged in count — `onOpenNative`/`onOpenProject` were not merged.
+`part_toolbar.dart`'s File-menu entries dropped from five to four —
+`onOpenNative`/`onOpenProject` merged into one `onOpen` callback field.
 
 ### 3.4 Accurate dirty-state, replacing the unconditional exit warning
 
@@ -579,26 +612,59 @@ picker). Implemented.**
   was already dropped as too flaky for this harness - see the Phase 16
   test group's own doc comment).
 
-**Phase 6 (new, added during implementation) — unify Open/Open Project,
-once the extras-restoration gap is resolved. Not started.**
-- Needs `AssemblyGraphComposer`/`AssemblyDocumentClient.openAssembly` (or
-  a thin wrapper around it) to also extract and re-apply the *root* file's
-  own `hidden_feature_ids`/`section_planes` — currently only
-  `_openNativeFile`'s direct-JSON-decode path restores these, and they'd
-  be silently dropped by a naive merge into the composer-based reader.
-  Design that restoration path first (its own small scoping decision:
-  where do the extras live once the root file is composed together with
-  N referenced files — do they still only ever describe the root, or
-  could a referenced Part meaningfully carry its own too?), then collapse
-  `Open…`/`Open Project…` into one entry per §3.3's original platform
-  split (desktop: single native file dialog, root derived from the picked
-  file's own parent directory; Android/iOS: keep the folder-grant step,
-  improved by Phase 5's picker).
+**Phase 6 (new, added during implementation) — unify Open/Open Project.
+Implemented.**
+- Resolved the design question §3.3's first-pass note raised directly
+  (§3.3 above has the full reasoning): rather than teaching the composer
+  to carry `hidden_feature_ids`/`section_planes`, read the file first and
+  let its own shape (`isBundleShapedNativeFile`, new
+  `client/lib/assembly/native_file_shape.dart`) decide which reader it
+  needs. The two shapes are mutually exclusive by construction (a
+  Project's own per-Part export can't produce more than one Part in a
+  file; a Bundle's export never resolves `external_ref`s into a graph),
+  so this is a completeness guarantee, not a heuristic guess.
+- `part_screen.dart`: removed `_openNativeFile` and `_onOpenProjectPressed`
+  as standalone methods; their bodies became `_openBundlePayload`/
+  `_openComposedProject`, both reachable from the new `_onOpenPressed`
+  (dispatches on `_canPersistFilePathForReuse`) via
+  `_openViaDesktopFilePicker`/`_openViaProjectFolderPicker`.
+- `part_toolbar.dart`: `Open…`/`Open Project…` merged into one `Open…`
+  entry backed by a single `onOpen` callback.
+- A real testability gap surfaced here too: `_canPersistFilePathForReuse`
+  wraps a genuine `dart:io Platform.isX` check, which (unlike Flutter's
+  own `defaultTargetPlatform`) has no override seam - every widget test in
+  this suite runs on a Linux host, so a platform-gated Open would
+  otherwise always take the desktop `file_picker` branch and never
+  reach the `StorageService`-driven Android/iOS one, silently untesting
+  what the pre-existing "Open Project hardening" tests already covered
+  before unification removed its own always-reachable menu entry. Fixed
+  by adding `PartScreen.canPersistFilePathForReuse` (nullable, defaults to
+  the real platform check), the same "inject a test override" convention
+  `documentApi`/`storageService`/`assemblyDocumentClient` already
+  establish - threaded through every `PartScreen(...)` re-construction so
+  the override survives a `pushReplacement`.
+- Tests: `native_file_shape_test.dart` (new, plain non-widget tests for
+  `isBundleShapedNativeFile`); a new widget test confirming a Bundle opens
+  directly with its `hidden_feature_ids`/`section_planes` restored and no
+  `ProjectRoot` attached; the pre-existing "Open Project hardening" tests
+  updated to force `canPersistFilePathForReuse: false` and tap the unified
+  `Open…` entry. **Deliberately not tested through the real screen**: the
+  Project-shaped (composed-graph) half of the dispatch - confirmed
+  directly during this phase that even a trivial single-Part,
+  zero-Occurrence file's `openAssembly` call never reliably settles inside
+  this suite's own `testWidgets` pump loop, the exact "real dart:io/HTTP
+  async chain + testWidgets' own fake-async pump loop" combination the
+  Phase 16 test group's own doc comment already found too flaky to drive
+  through the real screen (its own "Open Project… through the real
+  screen" test was dropped for the same reason). That branch's own
+  routing decision is what `native_file_shape_test.dart` covers directly;
+  the graph composition itself already has real, non-flaky coverage in
+  `assembly_graph_composer_test.dart`/`assembly_document_client_test.dart`.
 
 No phase requires a `SCHEMA_VERSION` bump or a data migration script —
 per §4, every file created under today's system keeps working before,
-during, and after this plan lands. Verification for Phases 1-5: `flutter
+during, and after this plan lands. Verification for Phases 1-6: `flutter
 analyze`/`dart analyze` clean across `client/lib` and `client/test`; the
-full `flutter test` suite (2286 tests, 14 pre-existing skips) passing, not
+full `flutter test` suite (2292 tests, 14 pre-existing skips) passing, not
 just the individually-touched files; the full backend suite
-(`backend/tests/`, 2488 tests) passing.
+(`backend/tests/`, 2488 tests) passing (Phase 6 made no backend changes).

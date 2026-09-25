@@ -67,7 +67,7 @@ class PartToolbar extends StatelessWidget {
   /// lands on.
   final VoidCallback? onExit;
 
-  /// Native Save/Load - see `PartScreen._saveNativeFile`/`_openNativeFile`.
+  /// Native Save/Load - see `PartScreen._saveNativeFile`/`_onOpenPressed`.
   ///
   /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
   /// §3.3): `onSaveNative`/`onSaveAsNative` only mean "the whole Document as
@@ -79,9 +79,16 @@ class PartToolbar extends StatelessWidget {
   /// below - see either method's own doc comment. `onStartNew` abandons the
   /// current Part for a brand-new blank one, after confirming (see
   /// `PartScreen._startNewPart`).
+  ///
+  /// Save/project overhaul Phase 6: `onOpen` is now the *only* Open entry -
+  /// see `PartScreen._onOpenPressed`'s own doc comment for how it tells a
+  /// legacy whole-session Bundle apart from a Project's own per-Part file
+  /// and reads either one correctly, replacing what used to be two
+  /// separate entries here (`onOpenNative`/`onOpenProject`) the user had to
+  /// already know which one their file needed.
   final VoidCallback? onSaveNative;
   final VoidCallback? onSaveAsNative;
-  final VoidCallback? onOpenNative;
+  final VoidCallback? onOpen;
   final VoidCallback? onStartNew;
 
   /// Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
@@ -91,17 +98,14 @@ class PartToolbar extends StatelessWidget {
   final bool hasUnsavedChanges;
 
   /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): the
-  /// `StorageService`/`ProjectRoot`-backed multi-file flow. `onOpenProject`
-  /// opens an existing project-folder-relative `.DIDSAprt` file via
-  /// `AssemblyDocumentClient.openAssembly` (seeding `relativePathByPartId`
-  /// for every Part it composes in); `onSaveAll` writes back every Part
-  /// currently loaded in the session, prompting for a path the first time a
-  /// Part doesn't have one yet (`PartScreen._onSaveAllPressed`) - unlike
-  /// plain Save above, which (once a Project exists) only ever touches the
-  /// one Part currently being edited. Lives in the File menu rather than
-  /// the Assembly-lens Add-menu FAB, since it's meaningful for a plain
-  /// single-Part session too, not just Assembly lens.
-  final VoidCallback? onOpenProject;
+  /// `StorageService`/`ProjectRoot`-backed multi-file flow. `onSaveAll`
+  /// writes back every Part currently loaded in the session, prompting for
+  /// a path the first time a Part doesn't have one yet
+  /// (`PartScreen._onSaveAllPressed`) - unlike plain Save above, which
+  /// (once a Project exists) only ever touches the one Part currently
+  /// being edited. Lives in the File menu rather than the Assembly-lens
+  /// Add-menu FAB, since it's meaningful for a plain single-Part session
+  /// too, not just Assembly lens.
   final VoidCallback? onSaveAll;
 
   /// Export: writes the current Part's geometry out to one of four
@@ -205,10 +209,9 @@ class PartToolbar extends StatelessWidget {
     this.onExit,
     this.onSaveNative,
     this.onSaveAsNative,
-    this.onOpenNative,
+    this.onOpen,
     this.onStartNew,
     this.hasUnsavedChanges = false,
-    this.onOpenProject,
     this.onSaveAll,
     this.onExportPart,
     this.onImportGeometry,
@@ -318,12 +321,7 @@ class PartToolbar extends StatelessWidget {
         ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_open.svg'),
           title: const Text('Open…'),
-          onTap: onOpenNative,
-        ),
-        ListTile(
-          leading: const Icon(Icons.folder_open_outlined),
-          title: const Text('Open Project…'),
-          onTap: onOpenProject,
+          onTap: onOpen,
         ),
         ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_save.svg'),
