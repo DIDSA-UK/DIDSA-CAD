@@ -10,6 +10,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
+import 'package:didsa_cad_client/assembly/relative_path.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
@@ -17,6 +18,7 @@ import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
+import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
@@ -188,6 +190,27 @@ class _FakeDocumentBackend {
         'feature_ids': <String>[],
         'occurrence_ids': (extra['occurrences'] as List).map((o) => o['id']).toList(),
       }, 200);
+    }
+
+    // Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+    // §3.2): the assembly tree's own Rename action's `updatePart(name:...)`
+    // call - only `name` is modeled here (this fake has no Part Properties
+    // fields of its own to update).
+    if (getPartMatch != null && method == 'PATCH') {
+      final id = getPartMatch.group(1);
+      final newName = body['name'] as String?;
+      if (id == 'part-1') {
+        if (newName != null) partOneName = newName;
+        return _json({
+          'id': 'part-1',
+          'name': partOneName,
+          'feature_ids': features.map((f) => f['id']).toList(),
+        }, 200);
+      }
+      final extra = extraParts[id];
+      if (extra == null) return http.Response('not found: part', 404);
+      if (newName != null) extra['name'] = newName;
+      return _json({'id': extra['id'], 'name': extra['name'], 'feature_ids': <String>[]}, 200);
     }
 
     // Phase 15 (`docs/assembly-scope.md` §6): `AssemblyDocumentClient.savePart`/
@@ -640,6 +663,9 @@ class _FakeDocumentBackend {
       if (body.containsKey('hidden')) occurrence['hidden'] = body['hidden'];
       if (body.containsKey('fixed')) occurrence['fixed'] = body['fixed'];
       if (body.containsKey('color')) occurrence['color'] = (body['color'] as String).isEmpty ? null : body['color'];
+      if (body.containsKey('name_override')) {
+        occurrence['name_override'] = (body['name_override'] as String).isEmpty ? null : body['name_override'];
+      }
       return _json(occurrence, 200);
     }
     // Assembly-audit gap `[27]` (`docs/assembly-scope.md`): the cascade
@@ -731,6 +757,12 @@ class _FakeStorageService implements StorageService {
   final Map<String, Uint8List> files = {};
   final DesktopProjectRoot root = const DesktopProjectRoot('/fake/project');
 
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): how many times [writeFile] wrote to each relative path - lets a
+  /// test confirm plain Save only ever rewrites the currently-focused
+  /// Part's own file, never every loaded Part's (that's Save All's job).
+  final Map<String, int> writeCounts = {};
+
   /// Phase 16 (`docs/assembly-scope.md` §2s): how many times
   /// [pickOrCreateProjectRoot] was actually invoked - lets a test confirm
   /// [presetLastUsedRoot] genuinely short-circuits the picker rather than
@@ -764,6 +796,7 @@ class _FakeStorageService implements StorageService {
   @override
   Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
     files[relativePath] = bytes;
+    writeCounts[relativePath] = (writeCounts[relativePath] ?? 0) + 1;
     return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
   }
 
@@ -775,6 +808,19 @@ class _FakeStorageService implements StorageService {
 
   @override
   Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) async => files.keys.toList();
+
+  @override
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) async {
+    if (!files.containsKey(relativePath)) {
+      throw StorageException('Cannot rename $relativePath: no such file');
+    }
+    final newRelativePath = siblingRelativePath(relativePath, newFileName);
+    if (files.containsKey(newRelativePath)) {
+      throw StorageException('A file already exists at $newRelativePath');
+    }
+    files[newRelativePath] = files.remove(relativePath)!;
+    return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: newRelativePath, path: newRelativePath);
+  }
 }
 
 /// [WidgetTester.pumpAndSettle] never settles while [PartScreen] shows its
@@ -4956,63 +5002,82 @@ void main() {
   // precedent Phase 10 already set for `occurrences`/`mates`/
   // `component-patterns`/`assembly-mesh`.
   group('Assembly support Phase 15: multi-file save flow', () {
-    testWidgets('Create Component adds a new Part as a fixed top-level Occurrence', (tester) async {
-      final backend = _FakeDocumentBackend();
-      final storage = _FakeStorageService();
-      final documentApi = DocumentApiClient(
-        httpClient: MockClient((request) async => backend.handle(request)),
-      );
-      final sketchBackend = _FakeSketchBackend();
+    testWidgets(
+      'Create Component creates an auto-named, auto-pathed Part as a fixed top-level Occurrence '
+      '(save/project overhaul Phase 1 - no dialog at all)',
+      (tester) async {
+        final backend = _FakeDocumentBackend();
+        final storage = _FakeStorageService();
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: PartScreen(
-            documentApi: documentApi,
-            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
-            storageService: storage,
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+            ),
           ),
-        ),
-      );
-      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.byTooltip('Assembly tree'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
 
-      await tester.tap(find.byTooltip('Add'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.byTooltip('Add'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
 
-      await tester.tap(find.text('Create Component…'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Create Component…'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
 
-      expect(find.text('Create Component'), findsOneWidget);
-      await tester.tap(find.widgetWithText(FilledButton, 'Create'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+        // docs/save-project-overhaul-scope.md §3.1: no "name it" dialog and
+        // no "save it" prompt any more - the component is created, named
+        // ("Component 1", `_nextComponentName`'s auto-generated default),
+        // and pathed immediately.
+        expect(find.text('Create Component'), findsNothing);
+        expect(find.text('Skip - save later'), findsNothing);
 
-      // The immediate, skippable relative-path prompt (§3) - this test
-      // exercises the "later" path; Save All's own group below exercises
-      // the prompt itself.
-      expect(find.text('Skip - save later'), findsOneWidget);
-      await tester.tap(find.text('Skip - save later'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+        expect(backend.extraParts, hasLength(1));
+        final newPartId = backend.extraParts.keys.single;
+        expect(backend.extraParts[newPartId]!['name'], 'Component 1');
 
-      expect(backend.extraParts, hasLength(1));
-      final newPartId = backend.extraParts.keys.single;
-      expect(backend.extraParts[newPartId]!['name'], 'New Component');
+        expect(backend.occurrences, hasLength(1));
+        expect(backend.occurrences.single['resolved_part_id'], newPartId);
+        expect(backend.occurrences.single['name_override'], 'Component 1');
+        // First-ever Occurrence on this Part is auto-`fixed` (`add_component.dart`'s
+        // own "first component is grounded by convention" rule).
+        expect(backend.occurrences.single['fixed'], isTrue);
 
-      expect(backend.occurrences, hasLength(1));
-      expect(backend.occurrences.single['resolved_part_id'], newPartId);
-      // First-ever Occurrence on this Part is auto-`fixed` (`add_component.dart`'s
-      // own "first component is grounded by convention" rule).
-      expect(backend.occurrences.single['fixed'], isTrue);
+        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        expect(panel.occurrences, hasLength(1));
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      expect(panel.occurrences, hasLength(1));
-    });
+        // Both the new component and its parent ("Part 1") were silently
+        // given a path in the same step - Save All needs no further prompt
+        // for either (the gap `docs/save-project-pipeline-findings.md` §3
+        // originally flagged: only the child ever used to get one).
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Save All'));
+        await tester.pump();
+        await tester.tap(find.text('Save All'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(find.text('Saved 2 file(s)'), findsOneWidget);
+        expect(storage.files.keys, containsAll(['Part 1.DIDSAprt', 'Component 1.DIDSAprt']));
+      },
+    );
 
     testWidgets(
       'Save All prompts for each un-pathed Part, stamps external_ref, and writes every file',
@@ -5131,10 +5196,35 @@ void main() {
             documentApi: documentApi,
             sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
             storageService: storage,
+            // Save/project overhaul Phase 6 (`docs/save-project-overhaul-scope.md`
+            // §5): "Open…"/"Open Project…" are now one unified entry that
+            // branches on platform - forced away from the real, unmockable
+            // `FilePicker.platform` desktop path so this test (running on
+            // this repo's Linux-hosted harness, which would otherwise always
+            // take that branch) can still exercise the `StorageService`-driven
+            // one, exactly as it always could back when "Open Project…" was
+            // its own always-reachable menu entry with no platform gate.
+            canPersistFilePathForReuse: false,
           ),
         ),
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+      // §3.4): a freshly-loaded, untouched Part is no longer considered
+      // dirty (see the sibling "no confirmation" test below), so this test
+      // makes a real change first - creating a component, same zero-dialog
+      // flow Phase 1's own tests exercise - to genuinely put something at
+      // risk of being lost.
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Create Component…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
 
       await tester.tap(find.byTooltip('Open toolbar'));
       await tester.pump();
@@ -5142,23 +5232,76 @@ void main() {
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      await tester.ensureVisible(find.text('Open Project…'));
+      await tester.ensureVisible(find.text('Open…'));
       await tester.pump();
-      await tester.tap(find.text('Open Project…'));
+      await tester.tap(find.text('Open…'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(find.text('Exit this project?'), findsOneWidget);
+      // Create Component (used above to dirty the session) already
+      // resolved a `ProjectRoot` once of its own accord (auto-path
+      // assignment, §3.1) - the call count captured here is that one, not
+      // Open Project's own.
+      final callCountBeforeCancel = storage.pickOrCreateProjectRootCallCount;
       await tester.tap(find.text('Cancel'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      // Cancelling never reached `_ensureProjectRoot` at all - the folder
-      // picker was never shown, and the "Part 1" screen is still here.
-      expect(storage.pickOrCreateProjectRootCallCount, 0);
+      // Cancelling never reached `_ensureProjectRoot` a second time for
+      // Open Project's own sake - the folder picker was never shown again,
+      // and the "Part 1" screen is still here (now showing its own root
+      // Part's row alongside the just-created component - findsWidgets,
+      // not findsOneWidget, since Create Component's own assembly tree is
+      // still open, unlike the original pre-Phase-4 version of this test).
+      expect(storage.pickOrCreateProjectRootCallCount, callCountBeforeCancel);
       expect(find.text('Open Project'), findsNothing);
-      expect(find.text('Part 1'), findsOneWidget);
+      expect(find.text('Part 1'), findsWidgets);
     });
+
+    testWidgets(
+      'Open Project… skips the confirmation entirely when nothing has changed since load '
+      '(save/project overhaul Phase 4)',
+      (tester) async {
+        final backend = _FakeDocumentBackend();
+        final storage = _FakeStorageService();
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+              // See the sibling "asks to confirm" test's own comment for why.
+              canPersistFilePathForReuse: false,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Open…'));
+        await tester.pump();
+        await tester.tap(find.text('Open…'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // No warning - straight to the folder picker / relative-path
+        // prompt, since nothing changed since this Part was loaded.
+        expect(find.text('Exit this project?'), findsNothing);
+        expect(storage.pickOrCreateProjectRootCallCount, 1);
+      },
+    );
 
     testWidgets('Save All skips the folder picker when a valid last-used root is known, per [26]', (
       tester,
@@ -5206,5 +5349,545 @@ void main() {
       // (`pickOrCreateProjectRoot`) was never invoked.
       expect(storage.pickOrCreateProjectRootCallCount, 0);
     });
+  });
+
+  // Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  // §3.2): the assembly tree's own Rename action - keeps the Occurrence's
+  // display name, its underlying Part's own name, and its on-disk file (if
+  // it has one) in sync, except when that Part is instanced more than once
+  // in the session, where only the display name changes.
+  group('Save/project overhaul Phase 2: Rename', () {
+    Map<String, dynamic> occurrence(String id, {String? nameOverride}) => {
+          'id': id,
+          'external_ref': null,
+          'resolved_part_id': 'part-2',
+          'name_override': nameOverride,
+          'transform': {
+            'translation': [0.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'suppressed': false,
+          'hidden': false,
+          'fixed': false,
+        };
+
+    testWidgets(
+      'Renaming a singly-instanced component renames its label, its Part, and its file',
+      (tester) async {
+        final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1')])
+          ..extraParts['part-2'] = {'id': 'part-2', 'name': 'Bracket', 'occurrences': <Map<String, dynamic>>[]};
+        final storage = _FakeStorageService();
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        // Save All first, so `part-2` already has a known on-disk file for
+        // Rename to also rename.
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Save All'));
+        await tester.pump();
+        await tester.tap(find.text('Save All'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(find.text('Save "Part 1" as…'), findsOneWidget);
+        await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(find.text('Save "Bracket" as…'), findsOneWidget);
+        await tester.enterText(find.byType(TextFormField), 'bracket.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(find.text('Saved 2 file(s)'), findsOneWidget);
+        expect(storage.files.keys, contains('bracket.DIDSAprt'));
+
+        await tester.tap(find.byTooltip('Assembly tree'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        panel.onOccurrenceLongPress(panel.occurrences.single);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.byTooltip('More actions'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        await tester.tap(find.text('Rename'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // No "used more than once" note for a singly-instanced component.
+        expect(find.textContaining('used more than once'), findsNothing);
+
+        await tester.enterText(find.byType(TextFormField), 'Left Bracket');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(backend.occurrences.single['name_override'], 'Left Bracket');
+        expect(backend.extraParts['part-2']!['name'], 'Left Bracket');
+        expect(storage.files.keys, contains('Left Bracket.DIDSAprt'));
+        expect(storage.files.keys, isNot(contains('bracket.DIDSAprt')));
+      },
+    );
+
+    testWidgets(
+      'Renaming a component instanced more than once only changes its own label',
+      (tester) async {
+        final backend = _FakeDocumentBackend(
+          seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')],
+        )..extraParts['part-2'] = {'id': 'part-2', 'name': 'Bracket', 'occurrences': <Map<String, dynamic>>[]};
+        final storage = _FakeStorageService();
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tester.tap(find.byTooltip('Assembly tree'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
+        panel.onOccurrenceLongPress(target);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.byTooltip('More actions'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        await tester.tap(find.text('Rename'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // Two Occurrences resolve to `part-2` - Renaming this one must say
+        // so, and must never touch the shared Part name/file.
+        expect(find.textContaining('used more than once'), findsOneWidget);
+
+        await tester.enterText(find.byType(TextFormField), 'Left Bracket');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Rename'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        final renamed = backend.occurrences.firstWhere((o) => o['id'] == 'occ-1');
+        final untouched = backend.occurrences.firstWhere((o) => o['id'] == 'occ-2');
+        expect(renamed['name_override'], 'Left Bracket');
+        expect(untouched['name_override'], isNull);
+        expect(backend.extraParts['part-2']!['name'], 'Bracket');
+      },
+    );
+  });
+
+  // Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  // §3.3): once a Project exists, plain Save only writes back the
+  // currently-focused Part's own file (never every loaded Part - that's
+  // Save All's job), and Save As saves the focused Part's current content
+  // under a newly-chosen path and rebinds future Saves to it.
+  group('Save/project overhaul Phase 3: Save/Save As', () {
+    testWidgets('plain Save writes only the focused Part, not every loaded Part', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedOccurrences: [
+          {
+            'id': 'occ-1',
+            'external_ref': null,
+            'resolved_part_id': 'part-2',
+            'name_override': null,
+            'transform': {
+              'translation': [0.0, 0.0, 0.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 0.0,
+            },
+            'suppressed': false,
+            'hidden': false,
+            'fixed': false,
+          },
+        ],
+      )..extraParts['part-2'] = {'id': 'part-2', 'name': 'Bracket', 'occurrences': <Map<String, dynamic>>[]};
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // Save All first, to establish the Project and give both Parts a
+      // known path.
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Save All'));
+      await tester.pump();
+      await tester.tap(find.text('Save All'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Save "Bracket" as…'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField), 'bracket.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Saved 2 file(s)'), findsOneWidget);
+      expect(storage.writeCounts['top.DIDSAprt'], 1);
+      expect(storage.writeCounts['bracket.DIDSAprt'], 1);
+      // Let the first SnackBar fully dismiss (its default ~4s display
+      // duration) before triggering a second one below - `ScaffoldMessenger`
+      // queues a new SnackBar behind one still showing rather than
+      // replacing it, so the next "Saved" check would otherwise see the
+      // first SnackBar's own text, or find the second one still queued.
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      // Plain Save, still focused on the root Part ("Part 1") - only its
+      // own file should be rewritten. Invoked directly via `PartToolbar`'s
+      // own callback (same "grab the widget, call its callback" approach
+      // `AssemblyTreePanel.onOccurrenceLongPress` calls already use above),
+      // rather than re-navigating the sliding toolbar panel's own File
+      // sub-menu a second time in one test - `PartToolbar` itself always
+      // exists in the tree regardless of `visible`, so this is exactly
+      // what tapping "Save" would do without needing to fight the
+      // panel's open/close animation for a second round.
+      tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveNative!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // No per-Part prompt - both Parts already had a known path.
+      expect(find.text('Save "Part 1" as…'), findsNothing);
+      expect(find.text('Saved'), findsOneWidget);
+      expect(storage.writeCounts['top.DIDSAprt'], 2);
+      expect(storage.writeCounts['bracket.DIDSAprt'], 1);
+    });
+
+    testWidgets('Save As saves the focused Part under a new path and rebinds future Saves to it', (
+      tester,
+    ) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // Save All first, to establish the Project and a known path.
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Save All'));
+      await tester.pump();
+      await tester.tap(find.text('Save All'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Saved 1 file(s)'), findsOneWidget);
+      // Let the first SnackBar fully dismiss before triggering a second one
+      // below - see the sibling "plain Save" test's own comment for why.
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      // Save As - a new path for the same Part. Invoked directly via
+      // `PartToolbar`'s own callback (see the sibling "plain Save" test's
+      // own comment for why) rather than re-navigating the sliding
+      // toolbar panel's File sub-menu a second time in one test.
+      final toolbar = tester.widget<PartToolbar>(find.byType(PartToolbar));
+      toolbar.onSaveAsNative!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField), 'renamed-top.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Saved as renamed-top.DIDSAprt'), findsOneWidget);
+      expect(storage.files.keys, contains('renamed-top.DIDSAprt'));
+      // The old file is left in place (no delete primitive exists) rather
+      // than silently discarded.
+      expect(storage.files.keys, contains('top.DIDSAprt'));
+
+      // A later plain Save now targets the new path, not the old one.
+      toolbar.onSaveNative!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(storage.writeCounts['renamed-top.DIDSAprt'], 2);
+      expect(storage.writeCounts['top.DIDSAprt'], 1);
+    });
+  });
+
+  // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+  // §3.4): the toolbar's own small "unsaved changes" indicator next to
+  // Save - `PartToolbar.hasUnsavedChanges`, mirroring `PartScreen._isDirty`.
+  group('Save/project overhaul Phase 4: unsaved-changes indicator', () {
+    testWidgets('shows after a real change, and clears once Save All succeeds', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      // Checked directly on `PartToolbar` itself (always in the tree
+      // regardless of `visible`, same "grab the widget" approach the
+      // Phase 3 tests above use) rather than by repeatedly opening the
+      // sliding File sub-menu, which this suite's own harness struggles to
+      // reopen reliably more than once or twice in a single test.
+      PartToolbar toolbar() => tester.widget<PartToolbar>(find.byType(PartToolbar));
+
+      // Nothing changed since load - no indicator yet.
+      expect(toolbar().hasUnsavedChanges, isFalse);
+
+      // Create a component - a real, guarded change.
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Create Component…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(toolbar().hasUnsavedChanges, isTrue);
+
+      // Save All - both Parts were already auto-pathed by Create Component
+      // itself (§3.1), so this succeeds with no further prompt - a full,
+      // un-failed save clears the indicator.
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Save All'));
+      await tester.pump();
+      await tester.tap(find.text('Save All'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Saved 2 file(s)'), findsOneWidget);
+      expect(toolbar().hasUnsavedChanges, isFalse);
+    });
+  });
+
+  // Save/project overhaul Phase 6 (`docs/save-project-overhaul-scope.md`
+  // §5, Phase 6): the unified "Open…" entry - reads the picked file first
+  // and routes to whichever reader its own shape actually needs, rather
+  // than making the user pick the right menu entry up front.
+  group('Save/project overhaul Phase 6: unified Open', () {
+    testWidgets(
+      'opening a legacy multi-Part Bundle imports it directly and restores hidden features/sections, '
+      'with no Project attached',
+      (tester) async {
+        final backend = _FakeDocumentBackend();
+        final storage = _FakeStorageService();
+        storage.files['bundle.DIDSAprt'] = Uint8List.fromList(
+          utf8.encode(
+            jsonEncode({
+              'schema_version': 1,
+              'document': {
+                'id': 'doc-1',
+                'root_part_id': 'part-1',
+                'parts': [
+                  {
+                    'id': 'part-1',
+                    'name': 'Part 1',
+                    'features': <dynamic>[],
+                    'occurrences': <dynamic>[],
+                    'mates': <dynamic>[],
+                    'component_patterns': <dynamic>[],
+                  },
+                  {
+                    'id': 'part-2',
+                    'name': 'Bracket',
+                    'features': <dynamic>[],
+                    'occurrences': <dynamic>[],
+                    'mates': <dynamic>[],
+                    'component_patterns': <dynamic>[],
+                  },
+                ],
+              },
+              'sketches': <dynamic>[],
+              'hidden_feature_ids': ['feature-abc'],
+              'section_planes': [
+                {
+                  'id': 'section-1',
+                  'origin': [0.0, 0.0, 0.0],
+                  'normal': [0.0, 0.0, 1.0],
+                  'anchor_origin': [0.0, 0.0, 0.0],
+                  'flipped': false,
+                  'enabled': true,
+                },
+              ],
+            }),
+          ),
+        );
+        final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+              canPersistFilePathForReuse: false,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Open…'));
+        await tester.pump();
+        await tester.tap(find.text('Open…'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // Phase 5's listFiles-backed picker lists the one seeded file -
+        // tapping it resolves immediately, no free-text entry needed.
+        expect(find.text('bundle.DIDSAprt'), findsOneWidget);
+        await tester.tap(find.text('bundle.DIDSAprt'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // `pushReplacement`'s own transition briefly holds both the old and
+        // new screen in the tree - `.last` is the one just pushed.
+        final pushedScreen = tester.widgetList<PartScreen>(find.byType(PartScreen)).last;
+        expect(pushedScreen.initialPartId, 'part-1');
+        expect(pushedScreen.initialHiddenFeatureIds, ['feature-abc']);
+        expect(pushedScreen.initialSectionPlanes, hasLength(1));
+        expect(pushedScreen.initialSectionPlanes.single.id, 'section-1');
+        // A Bundle never gets a Project attached - it stays exactly the
+        // single-file session it always was.
+        expect(pushedScreen.initialProjectRoot, isNull);
+        expect(pushedScreen.initialRelativePathByPartId, isEmpty);
+      },
+    );
+
+    // The Project-shaped (single-Part, composed-graph) half of the unified
+    // Open entry is deliberately not tested here through the real screen -
+    // confirmed directly during this phase's own implementation that even
+    // a single-Part, zero-Occurrence file's `_openComposedProject` (real
+    // `AssemblyGraphComposer` + real `AssemblyDocumentClient` against a
+    // `MockClient`-backed backend) never settles inside this suite's own
+    // `testWidgets` pump loop, the exact "real dart:io/HTTP-shaped async
+    // chain + testWidgets' own fake-async pump loop" combination the Phase
+    // 16 group's own doc comment above already found reliably too slow/
+    // flaky to drive through the real screen (its own dedicated "Open
+    // Project… through the real screen" test was dropped for the same
+    // reason). Coverage for what actually changed in this phase is split
+    // instead: `native_file_shape_test.dart` unit-tests the new
+    // `isBundleShapedNativeFile` routing decision directly (promoted to a
+    // free function specifically so it could be), the Bundle half of the
+    // dispatch is exercised end-to-end just above (it never reaches
+    // `_openComposedProject` at all), and the graph composition itself
+    // already has its own real, non-flaky coverage in
+    // `assembly_graph_composer_test.dart`/`assembly_document_client_test.dart`.
   });
 }

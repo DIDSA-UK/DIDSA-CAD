@@ -50,6 +50,10 @@ class _FakeStorageService implements StorageService {
   Future<List<String>> listFiles(ProjectRoot root, {String? extensionFilter}) async => writtenFiles.keys.toList();
 
   @override
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) =>
+      throw UnimplementedError();
+
+  @override
   Future<FileHandle?> resolve(ProjectRoot root, String relativePath) async {
     if (!writtenFiles.containsKey(relativePath)) return null;
     return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);

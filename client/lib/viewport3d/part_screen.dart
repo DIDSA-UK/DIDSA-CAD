@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
@@ -27,7 +28,10 @@ import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleExcepti
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
+import '../assembly/native_file_shape.dart';
 import '../assembly/occurrence_visibility.dart';
+import '../assembly/relative_path.dart';
+import '../assembly/save_all.dart' show stampExternalRefs;
 import 'component_context_menu.dart';
 import 'component_gizmo.dart';
 import 'component_selection_toolbar.dart';
@@ -321,9 +325,10 @@ class PartScreen extends StatefulWidget {
 
   /// Native Load: when set, [_loadPart] opens this existing Part (via
   /// [DocumentApiClient.getPart]) instead of the default "always start
-  /// fresh" `createPart` call - set by [_PartScreenState._openNativeFile]
-  /// when it pushes a brand-new [PartScreen] onto whichever Part a native
-  /// file import just replaced the backend's Document with. A fresh
+  /// fresh" `createPart` call - set by [_PartScreenState._openBundlePayload]/
+  /// [_PartScreenState._openComposedProject] when either pushes a
+  /// brand-new [PartScreen] onto whichever Part a native file import just
+  /// replaced the backend's Document with. A fresh
   /// [PartScreen]/State pair (rather than mutating the current one in
   /// place) is deliberate: it's the simplest way to guarantee every one of
   /// this screen's many transient fields (selection, hidden/rollback sets,
@@ -334,7 +339,7 @@ class PartScreen extends StatefulWidget {
 
   /// Native Load: the Hide/Show feature-id set a native file's own
   /// `hidden_feature_ids` entry carried (see [_PartScreenState._saveNativeFile]/
-  /// [_PartScreenState._openNativeFile]) - restored into the fresh screen's
+  /// [_PartScreenState._openBundlePayload]) - restored into the fresh screen's
   /// [_PartScreenState._hiddenFeatureIds] at [_PartScreenState.initState],
   /// same reasoning as [initialPartId] for why this is a constructor param
   /// on a brand-new screen rather than mutated in place. Empty by default,
@@ -343,7 +348,7 @@ class PartScreen extends StatefulWidget {
 
   /// Native Load: [SectionPlane]s a native file's own client-only
   /// `section_planes` stash carried (see [_PartScreenState._buildNativeExportBytes]/
-  /// [_PartScreenState._openNativeFile]) - restored into the fresh screen's
+  /// [_PartScreenState._openBundlePayload]) - restored into the fresh screen's
   /// [_PartScreenState._sectionPlanes] at [_PartScreenState.initState], same
   /// "constructor param on a brand-new screen, not mutated in place" reasoning
   /// as [initialHiddenFeatureIds]. Empty by default, matching a Part that
@@ -351,7 +356,7 @@ class PartScreen extends StatefulWidget {
   final List<SectionPlane> initialSectionPlanes;
 
   /// Native Load/Save: the filename Open just read this Part from (see
-  /// [_PartScreenState._openNativeFile]), or null for a brand-new (never
+  /// [_PartScreenState._openBundlePayload]), or null for a brand-new (never
   /// Opened) Part - remembered as [_PartScreenState._lastSavedFileName]'s
   /// own starting point, so a subsequent plain Save on the fresh screen
   /// re-suggests the same file instead of falling back to a generic
@@ -379,6 +384,21 @@ class PartScreen extends StatefulWidget {
   /// `createStorageService()` (the real platform-picked implementation) in
   /// [_PartScreenState.initState].
   final StorageService? storageService;
+
+  /// Overridable for tests, same reasoning as [storageService] -
+  /// [_PartScreenState._canPersistFilePathForReuse]'s own real `dart:io
+  /// Platform.isX` check has no test seam of its own (unlike Flutter's
+  /// `defaultTargetPlatform`, `dart:io`'s `Platform` always reflects the
+  /// real host OS, by design), so widget tests running on this repo's
+  /// Linux-hosted harness would otherwise always take
+  /// [_PartScreenState._onOpenPressed]'s desktop-file-picker branch and
+  /// never reach the Android/iOS-shaped `StorageService`-driven one (Save/
+  /// Save As have the identical, pre-existing gap - untested for the same
+  /// reason, just never worked around before this had its own always-
+  /// reachable "Open Project…" menu entry to test through instead of a
+  /// platform-gated shared one). `null` (the default) means "use the real
+  /// per-platform answer."
+  final bool? canPersistFilePathForReuse;
 
   /// Overridable for tests, same reasoning as [storageService] - defaults
   /// to a real `AssemblyDocumentClient` built from [storageService]/[documentApi].
@@ -418,6 +438,7 @@ class PartScreen extends StatefulWidget {
     this.initialFilePath,
     this.initialWarnings = const [],
     this.storageService,
+    this.canPersistFilePathForReuse,
     this.assemblyDocumentClient,
     this.initialProjectRoot,
     this.initialRelativePathByPartId = const {},
@@ -990,7 +1011,7 @@ class _PartScreenState extends State<PartScreen> {
   /// a `Feature` (see `section_plane.dart`'s own doc comment for the full
   /// "why"). Persisted only as a client-only stash in the native save file
   /// (mirrors [_hiddenFeatureIds] - see [_buildNativeExportBytes]/
-  /// [_openNativeFile]), never through the backend's own Feature tree. See
+  /// [_openBundlePayload]), never through the backend's own Feature tree. See
   /// the `_sectionPlanes`/`_hiddenFeatureIds`/`_rollbackExcludedFeatureIds`
   /// getters/setter (near [_hiddenFeatureIdsByPart]) for the actual backing
   /// storage - declared there, not here, now that all three are per-Part.
@@ -1527,7 +1548,7 @@ class _PartScreenState extends State<PartScreen> {
   /// On-device feedback: purely client-side state means a native Save/Load
   /// round-trip lost it entirely (the backend never sees it outside a
   /// single `/mesh` request's query param) - [_saveNativeFile]/
-  /// [_openNativeFile] now carry it through the file's own JSON as a
+  /// [_openBundlePayload] now carry it through the file's own JSON as a
   /// `hidden_feature_ids` array the backend's own `export_native`/
   /// `import_native` know nothing about and simply pass through unexamined.
   /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`):
@@ -2864,6 +2885,19 @@ class _PartScreenState extends State<PartScreen> {
   /// space - revealed via [_toolbarOpen]'s "Show Feature Tree" action.
   bool _featureTreeVisible = false;
   bool _toolbarOpen = false;
+
+  /// Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+  /// §3.4): whether anything has changed since the last successful Save/
+  /// Save As/Save All. Deliberately coarse - [_runGuarded] sets this `true`
+  /// unconditionally at the top of every guarded action (171 call sites,
+  /// covering essentially every backend-mutating action in this file),
+  /// since a false positive (flagged dirty by something that turned out to
+  /// be read-only) is harmless - just an extra "unsaved" indicator - unlike
+  /// a false negative, which would silently let real unsaved work through
+  /// [_confirmExitPart]'s guard. Cleared at the end of each successful save
+  /// path ([_saveNativeFile]/[_saveFocusedPart]/[_saveAsNativeFile]/
+  /// [_saveFocusedPartAs]/[_onSaveAllPressed]).
+  bool _isDirty = false;
 
   /// Prompt D: true while the Feature tree is acting as a Sketch picker for
   /// a pending Extrude - entered by [_extrudeSelectedFeature] when no
@@ -9072,12 +9106,19 @@ class _PartScreenState extends State<PartScreen> {
   /// Shared "unsaved work would be lost" confirmation for leaving the Part -
   /// used by [_exitToConnectionScreen] (File > Exit), the system back
   /// gesture (see the [PopScope] in [build]), [_startNewPart], and (Phase
-  /// 16, §2s) [_onOpenProjectPressed] - navigating to a different project
+  /// 16, §2s) [_openComposedProject] - navigating to a different project
   /// is just as destructive to the current session's unsaved changes as
   /// any of those. Returns `true` only if the user actually confirmed (and
   /// the widget is still mounted afterwards) - callers don't need to
   /// separately re-check [mounted].
+  ///
+  /// Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+  /// §3.4): skips the dialog entirely when [_isDirty] is `false` - this
+  /// used to warn unconditionally on every exit, even with nothing to
+  /// lose, since nothing tracked whether anything had actually changed
+  /// since the last save.
   Future<bool> _confirmExitPart() async {
+    if (!_isDirty) return true;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -9153,7 +9194,11 @@ class _PartScreenState extends State<PartScreen> {
   /// returned path has the same "would need a fresh security-scoped grant
   /// to reuse reliably, not just the path string" uncertainty. Desktop's
   /// real path is the only case this app can actually trust for this.
-  bool get _canPersistFilePathForReuse => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+  ///
+  /// Overridable via [PartScreen.canPersistFilePathForReuse] - see that
+  /// field's own doc comment for why a test seam is needed here at all.
+  bool get _canPersistFilePathForReuse =>
+      widget.canPersistFilePathForReuse ?? (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
   /// Shared by [_saveNativeFile]/[_saveAsNativeFile]: exports the whole
   /// Document (every Part's ordered Feature list, plus every Sketch it
@@ -9209,18 +9254,24 @@ class _PartScreenState extends State<PartScreen> {
   /// actually be trusted for a later silent write - see
   /// [_canPersistFilePathForReuse]'s own doc comment for why mobile never
   /// gets this.
-  Future<void> _saveNativeFileViaDialog(String suggestedFileName, Uint8List bytes) async {
+  /// Returns `true` once bytes are genuinely on disk, `false` if the user
+  /// cancelled the dialog - Save/project overhaul Phase 4
+  /// (`docs/save-project-overhaul-scope.md` §3.4) needs this to know
+  /// whether to clear [_isDirty]; a cancelled dialog must never be
+  /// mistaken for a successful save.
+  Future<bool> _saveNativeFileViaDialog(String suggestedFileName, Uint8List bytes) async {
     final savedPath = await FilePicker.platform.saveFile(
       dialogTitle: 'Save Project',
       fileName: suggestedFileName,
       bytes: bytes,
     );
-    if (savedPath == null) return;
+    if (savedPath == null) return false;
     if (_canPersistFilePathForReuse) {
       await File(savedPath).writeAsBytes(bytes);
     }
     _lastSavedFileName = savedPath.split('/').last;
     _lastSavedFilePath = _canPersistFilePathForReuse ? savedPath : null;
+    return true;
   }
 
   /// Native Save: on-device feedback fix - a plain Save used to always go
@@ -9236,20 +9287,35 @@ class _PartScreenState extends State<PartScreen> {
   /// overwrite on mobile would need this app to hold onto a persisted
   /// Storage Access Framework/security-scoped-bookmark permission instead
   /// of a plain path string, which nothing here does yet.
+  ///
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): this whole-session flat-dump body is now only for a session
+  /// with no [_projectRoot] yet - a lone Part with nowhere else to live.
+  /// Once a Project exists, plain Save means something narrower
+  /// ([_saveFocusedPart]): write back just the Part currently being edited,
+  /// not the entire loaded session (that's [_onSaveAllPressed]'s job) -
+  /// same "Save is the active document, Save All is everything" split real
+  /// CAD tools already draw.
   Future<void> _saveNativeFile() async {
     setState(() => _toolbarOpen = false);
+    if (_projectRoot != null) {
+      await _saveFocusedPart();
+      return;
+    }
     await _runGuarded(() async {
       final bytes = await _buildNativeExportBytes();
       final knownPath = _lastSavedFilePath;
       if (knownPath != null) {
         try {
           await File(knownPath).writeAsBytes(bytes);
+          setState(() => _isDirty = false);
           return;
         } catch (_) {
           // Falls through to the dialog below.
         }
       }
-      await _saveNativeFileViaDialog(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      final saved = await _saveNativeFileViaDialog(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      if (saved) setState(() => _isDirty = false);
     });
   }
 
@@ -9257,11 +9323,129 @@ class _PartScreenState extends State<PartScreen> {
   /// through the save dialog - the deliberate difference from plain Save,
   /// which skips the dialog entirely once a path is known (see
   /// [_saveNativeFile]'s own doc comment).
+  ///
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): this whole-session flat-dump body is now only for a session
+  /// with no [_projectRoot] yet, mirroring [_saveNativeFile]'s own split -
+  /// once a Project exists, Save As means renaming/relocating just the
+  /// currently focused Part's own file ([_saveFocusedPartAs]).
   Future<void> _saveAsNativeFile() async {
     setState(() => _toolbarOpen = false);
+    if (_projectRoot != null) {
+      await _saveFocusedPartAs();
+      return;
+    }
     await _runGuarded(() async {
       final bytes = await _buildNativeExportBytes();
-      await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      final saved = await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      if (saved) setState(() => _isDirty = false);
+    });
+  }
+
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): plain Save's real behavior once a Project exists - writes back
+  /// only the *currently focused* Part's own file, not the whole session
+  /// (that's [_onSaveAllPressed]'s job). Stamps every Occurrence's
+  /// `external_ref` across the whole session first (the same
+  /// `stampExternalRefs` step [_onSaveAllPressed] already relies on) and
+  /// re-imports before writing, so the focused Part's own file reflects any
+  /// newly-known paths for the components it references - but only *this*
+  /// Part's own file is actually written to disk; a sibling Part whose own
+  /// file needs the same refresh still needs its own Save/Save All.
+  ///
+  /// If the focused Part has no known path yet (rare now that Create
+  /// Component auto-assigns one, §3.1 - realistically only "Add Component"/
+  /// "Locate Missing File" reach this), one is silently auto-derived from
+  /// the Part's own name via [_autoAssignPath], same auto-derive-first
+  /// philosophy as component creation - never a blocking dialog for a plain
+  /// Save.
+  Future<void> _saveFocusedPart() async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    final root = _projectRoot;
+    if (focusPartId == null || root == null) return;
+
+    await _runGuarded(() async {
+      final fullSessionExport = await _api.exportNative();
+      final stamped = stampExternalRefs(
+        documentPayload: fullSessionExport,
+        relativePathByPartId: _relativePathByPartId,
+      );
+      await _api.importNative(stamped);
+
+      var relativePath = _relativePathByPartId[focusPartId];
+      if (relativePath == null) {
+        final part = await _api.getPart(focusPartId);
+        relativePath = await _autoAssignPath(root, part.name, _relativePathByPartId);
+        setState(() => _relativePathByPartId = {..._relativePathByPartId, focusPartId: relativePath!});
+      }
+
+      try {
+        await _assemblyDocumentClient.savePart(root, focusPartId, relativePath);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = 'Failed to save: ${e.message}');
+        return;
+      }
+      setState(() => _isDirty = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
+      }
+    });
+  }
+
+  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
+  /// §3.3): Save As's real behavior once a Project exists - saves the
+  /// *currently focused* Part's current content under a newly-chosen
+  /// project-relative path (reusing [showRelativePathPromptDialog], the
+  /// same "pick a path within this root" prompt Save All's own per-Part
+  /// loop already uses), and rebinds this Part's own path to it (a later
+  /// plain Save targets the new file from then on) - standard "Save As"
+  /// semantics.
+  ///
+  /// Deliberately always writes a *fresh* export to the new path rather
+  /// than physically moving the old file
+  /// ([StorageService.renameFile]/§3.2's own tool for that) - Save As saves
+  /// the Part's current in-session state, which could differ from
+  /// whatever was last written to its old file. If the old path differs
+  /// from the new one, the old file is simply left in place rather than
+  /// deleted - `StorageService` has no delete primitive (a real, deliberate
+  /// scope limit, not an oversight), so an orphaned stale file is the
+  /// honest, safe outcome here, never a silent data loss.
+  Future<void> _saveFocusedPartAs() async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    final root = _projectRoot;
+    if (focusPartId == null || root == null) return;
+
+    var partName = 'part';
+    await _runGuarded(() async {
+      final part = await _api.getPart(focusPartId);
+      partName = part.name;
+    });
+    if (!mounted) return;
+
+    final currentPath = _relativePathByPartId[focusPartId];
+    final newPath = await showRelativePathPromptDialog(
+      context,
+      title: 'Save "$partName" as…',
+      initialValue: currentPath ?? partName,
+      storageService: _storageService,
+      root: root,
+    );
+    if (newPath == null || !mounted) return;
+
+    await _runGuarded(() async {
+      try {
+        await _assemblyDocumentClient.savePart(root, focusPartId, newPath);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = 'Failed to save: ${e.message}');
+        return;
+      }
+      setState(() {
+        _relativePathByPartId = {..._relativePathByPartId, focusPartId: newPath};
+        _isDirty = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved as $newPath')));
+      }
     });
   }
 
@@ -9275,24 +9459,31 @@ class _PartScreenState extends State<PartScreen> {
   /// doc comment for why that's deliberate.
   Future<void> _startNewPart() async {
     setState(() => _toolbarOpen = false);
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Start a new project?'),
-        content: const Text(
-          'Any changes since your last Save will be lost. This does not delete the current '
-          'project - it will still be there if you open it again.',
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('New Project'),
+    // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+    // §3.4): same [_isDirty] skip-if-nothing-to-lose guard
+    // [_confirmExitPart] gates on - this dialog keeps its own distinct
+    // title/button wording ("Start a new project?"/"New Project" vs. "Exit
+    // this project?"/"Exit"), so it isn't simply routed through that method.
+    if (_isDirty) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Start a new project?'),
+          content: const Text(
+            'Any changes since your last Save will be lost. This does not delete the current '
+            'project - it will still be there if you open it again.',
           ),
-        ],
-      ),
-    );
-    if (confirmed != true || !mounted) return;
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('New Project'),
+            ),
+          ],
+        ),
+      );
+      if (confirmed != true || !mounted) return;
+    }
 
     await Navigator.of(context).pushReplacement(
       MaterialPageRoute(
@@ -9301,52 +9492,153 @@ class _PartScreenState extends State<PartScreen> {
           sketchApiFactory: widget.sketchApiFactory,
           storageService: widget.storageService,
           assemblyDocumentClient: widget.assemblyDocumentClient,
+          canPersistFilePathForReuse: widget.canPersistFilePathForReuse,
         ),
       ),
     );
   }
 
-  /// Native Load: reads a native project file the user picks and imports it
-  /// - a full replace of the backend's whole Document/Sketch store (see
-  /// [DocumentApiClient.importNative]'s own docstring) - then pushes a
-  /// brand-new [PartScreen] pointed at whichever Part the import returned
-  /// (this app has no "pick an existing Part" UI, see [PartScreen]'s own
-  /// doc comment, so the first one is simply which Part opens). Pushing a
-  /// fresh screen rather than reloading in place is deliberate - see
-  /// [PartScreen.initialPartId]'s own doc comment for why.
-  Future<void> _openNativeFile() async {
+  /// Save/project overhaul Phase 6 (`docs/save-project-overhaul-scope.md`
+  /// §5, Phase 6): the unified Open entry, replacing what used to be two
+  /// separate File-menu entries - a legacy whole-session Bundle Open (this
+  /// method's own former home, `_openNativeFile`) and a Project-only
+  /// "Open Project…" (`_onOpenProjectPressed`). The user never had a
+  /// reliable way to know up front which one a given `.DIDSAprt` file
+  /// actually needed - this reads the file first and picks correctly:
+  /// `isBundleShapedNativeFile` mirrors [AssemblyGraphComposer.compose]'s
+  /// own "exactly one Part per file" rule to tell a legacy
+  /// multi-Part-in-one-file Bundle apart from a Project's own per-Part
+  /// file (promoted to a free, pure function - `native_file_shape.dart` -
+  /// rather than a private method here, so it's directly unit-testable on
+  /// its own, sidestepping this suite's own documented "real dart:io/HTTP
+  /// async chains don't reliably settle inside `testWidgets`' pump loop"
+  /// limitation for anything past this point), then dispatches
+  /// to [_openBundlePayload] (a direct `import_native`, restoring the
+  /// file's own client-only `hidden_feature_ids`/`section_planes` extras -
+  /// only ever meaningful for a Bundle, since a Project's own per-Part
+  /// `AssemblyDocumentClient.savePart` export never wrote them in the
+  /// first place) or [_openComposedProject] (the real multi-file graph
+  /// walk) accordingly. How the root file itself gets picked still
+  /// genuinely differs by platform - see [_openViaDesktopFilePicker]/
+  /// [_openViaProjectFolderPicker]'s own doc comments for why that split
+  /// is kept rather than forced uniform.
+  Future<void> _onOpenPressed() async {
     setState(() => _toolbarOpen = false);
-    // On-device feedback: `FileType.custom` + `allowedExtensions` filters by
-    // OS-guessed MIME type - Android has no MIME mapping for a made-up
-    // extension like `.didsacad`, so a saved file shows up greyed out/
-    // unselectable in the picker even though it's visible. `FileType.any`
-    // sidesteps that entirely; content is already validated just below
-    // (JSON decode, then the backend's own schema_version check), so the
-    // extension filter was a UX nicety only, never load-bearing.
+    if (!await _confirmExitPart()) return;
+    if (!mounted) return;
+    if (_canPersistFilePathForReuse) {
+      await _openViaDesktopFilePicker();
+    } else {
+      await _openViaProjectFolderPicker();
+    }
+  }
+
+  /// Desktop half of [_onOpenPressed]: a single native "Open File" dialog
+  /// (`file_picker`, the same one the old `_openNativeFile` used) -
+  /// `ProjectRoot` is silently derived from the picked file's own parent
+  /// directory (`DesktopProjectRoot(p.dirname(pickedPath))`) rather than a
+  /// separate folder-grant step, since plain `dart:io` access has no
+  /// scoped permission to negotiate. `FileType.any` (not a `.DIDSAprt`
+  /// allow-list) for the same on-device reason `_openNativeFile` always
+  /// used it: Android has no MIME mapping for a made-up extension, so a
+  /// saved file shows up greyed out/unselectable in the picker even though
+  /// it's visible - content is validated just below regardless (JSON
+  /// decode, then the backend's own schema_version check), so the
+  /// extension filter was only ever a UX nicety, never load-bearing.
+  Future<void> _openViaDesktopFilePicker() async {
     final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
     if (result == null || result.files.isEmpty || !mounted) return;
     final bytes = result.files.single.bytes;
     if (bytes == null) return;
 
-    Map<String, dynamic> decoded;
-    try {
-      decoded = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
-    } catch (_) {
-      setState(() => _errorMessage = 'Not a valid native project file');
+    final decoded = _decodeNativeFileOrShowError(bytes);
+    if (decoded == null) return;
+
+    final pickedPath = result.files.single.path;
+    if (pickedPath != null && !isBundleShapedNativeFile(decoded)) {
+      final root = DesktopProjectRoot(p.dirname(pickedPath));
+      await _openComposedProject(root, p.basename(pickedPath));
       return;
     }
+    await _openBundlePayload(decoded, fileName: result.files.single.name, filePath: pickedPath);
+  }
 
-    // On-device feedback: the file's own Hide/Show state (see
-    // [_saveNativeFile]) - the backend's `import_native` doesn't know this
-    // key exists and simply ignores it, so it's read back here instead.
+  /// Android/iOS half of [_onOpenPressed]: keeps today's two-step shape -
+  /// grant/resolve the containing folder via SAF/bookmark
+  /// ([_ensureProjectRoot]), then pick the file inside it
+  /// ([showRelativePathPromptDialog]'s own listFiles-backed picker, §3.5) -
+  /// a genuine platform constraint, not leftover caution: a single-document
+  /// SAF pick grants no tree-level write access to siblings, so a later
+  /// Save couldn't write the project's other files without a separate
+  /// grant regardless. Reads the picked file's own bytes through
+  /// [_storageService] (unlike desktop, which already has them from the
+  /// file picker) purely to sniff its shape via `isBundleShapedNativeFile` -
+  /// [_openComposedProject] re-reads it as part of its own real graph
+  /// walk, a small, acceptable duplication for a small JSON file.
+  Future<void> _openViaProjectFolderPicker() async {
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) return;
+    final relativePath = await showOpenProjectPathPromptDialog(context, storageService: _storageService, root: root);
+    if (relativePath == null || !mounted) return;
+
+    Uint8List? bytes;
+    await _runGuarded(() async {
+      try {
+        final handle = await _storageService.resolve(root, relativePath);
+        if (handle == null) {
+          throw StorageException('File not found: $relativePath');
+        }
+        bytes = await _storageService.readFile(handle);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = e.message);
+      }
+    });
+    if (bytes == null || !mounted) return;
+
+    final decoded = _decodeNativeFileOrShowError(bytes!);
+    if (decoded == null) return;
+
+    if (isBundleShapedNativeFile(decoded)) {
+      await _openBundlePayload(decoded, fileName: relativePath, filePath: null);
+      return;
+    }
+    await _openComposedProject(root, relativePath);
+  }
+
+  Map<String, dynamic>? _decodeNativeFileOrShowError(Uint8List bytes) {
+    try {
+      return jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+    } catch (_) {
+      setState(() => _errorMessage = 'Not a valid native project file');
+      return null;
+    }
+  }
+
+  /// The legacy whole-session Bundle import - a full replace of the
+  /// backend's whole Document/Sketch store (see
+  /// [DocumentApiClient.importNative]'s own docstring), then pushes a
+  /// brand-new [PartScreen] pointed at whichever Part the import returned
+  /// (this app has no "pick an existing Part" UI, see [PartScreen]'s own
+  /// doc comment, so the first one is simply which Part opens) - restoring
+  /// the file's own client-only `hidden_feature_ids`/`section_planes`
+  /// extras, which the backend's `import_native` doesn't know exist and
+  /// simply ignores. Pushing a fresh screen rather than reloading in place
+  /// is deliberate - see [PartScreen.initialPartId]'s own doc comment for
+  /// why. [fileName]/[filePath] seed [PartScreen.initialFileName]/
+  /// [PartScreen.initialFilePath] so a subsequent plain Save on the fresh
+  /// screen re-suggests (desktop: writes straight back to) the same file.
+  Future<void> _openBundlePayload(
+    Map<String, dynamic> decoded, {
+    required String? fileName,
+    required String? filePath,
+  }) async {
+    // Sectioning Tool: tolerant of a single corrupt entry (skips just that
+    // one, per [SectionPlane.fromJson]'s own doc comment) rather than
+    // failing the whole Open on account of one bad section - a foreign/
+    // hand-edited file is the only realistic way this key would ever be
+    // malformed, and losing every section over one typo in one of them
+    // would be a needlessly harsh failure mode.
     final hiddenFeatureIds = (decoded['hidden_feature_ids'] as List?)?.cast<String>() ?? const [];
-    // Sectioning Tool: same "backend ignores this key, read it back
-    // ourselves" restore as [hiddenFeatureIds] above. Tolerant of a single
-    // corrupt entry (skips just that one, per [SectionPlane.fromJson]'s own
-    // doc comment) rather than failing the whole Open on account of one bad
-    // section - a foreign/hand-edited file is the only realistic way this
-    // key would ever be malformed, and losing every section over one typo
-    // in one of them would be a needlessly harsh failure mode.
     final sectionPlanesRaw = (decoded['section_planes'] as List?) ?? const [];
     final sectionPlanes = <SectionPlane>[];
     for (final raw in sectionPlanesRaw) {
@@ -9372,11 +9664,50 @@ class _PartScreenState extends State<PartScreen> {
           sketchApiFactory: widget.sketchApiFactory,
           storageService: widget.storageService,
           assemblyDocumentClient: widget.assemblyDocumentClient,
+          canPersistFilePathForReuse: widget.canPersistFilePathForReuse,
           initialPartId: imported!.partIds.first,
           initialHiddenFeatureIds: hiddenFeatureIds,
           initialSectionPlanes: sectionPlanes,
-          initialFileName: result.files.single.name,
-          initialFilePath: result.files.single.path,
+          initialFileName: fileName,
+          initialFilePath: filePath,
+        ),
+      ),
+    );
+  }
+
+  /// The Project-shaped Open path - what used to be `_onOpenProjectPressed`'s
+  /// own body, factored out so both halves of [_onOpenPressed] can reach it
+  /// once they've each resolved a `(root, relativePath)` pair their own way.
+  /// Composes the whole referenced-file graph
+  /// (`AssemblyGraphComposer`) via [AssemblyDocumentClient.openAssembly]
+  /// and pushes a fresh [PartScreen] pointed at the resolved root Part,
+  /// seeded with `initialRelativePathByPartId` so a later Save/Save All
+  /// already knows where each Part it composed in lives.
+  Future<void> _openComposedProject(ProjectRoot root, String relativePath) async {
+    OpenedAssembly? opened;
+    await _runGuarded(() async {
+      try {
+        opened = await _assemblyDocumentClient.openAssembly(root, relativePath);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = e.message);
+      } on AssemblyGraphCycleException catch (e) {
+        setState(() => _errorMessage = e.toString());
+      }
+    });
+    final result = opened;
+    if (result == null || !mounted) return;
+
+    await Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (context) => PartScreen(
+          documentApi: widget.documentApi,
+          sketchApiFactory: widget.sketchApiFactory,
+          storageService: widget.storageService,
+          assemblyDocumentClient: widget.assemblyDocumentClient,
+          canPersistFilePathForReuse: widget.canPersistFilePathForReuse,
+          initialPartId: result.rootPartId,
+          initialProjectRoot: root,
+          initialRelativePathByPartId: result.relativePathByPartId,
         ),
       ),
     );
@@ -9565,7 +9896,7 @@ class _PartScreenState extends State<PartScreen> {
       // viewport renders `_assemblyMesh`'s geometry unconditionally,
       // regardless of `_lens` (see the `PartViewport` build site below), so
       // opening a saved assembly without explicitly requesting Assembly lens
-      // (both `_openNativeFile`/`_onOpenProjectPressed`) left `_assemblyMesh`
+      // (both `_openBundlePayload`/`_openComposedProject`) left `_assemblyMesh`
       // null - and so every sub-component invisible - until some other,
       // unrelated action (e.g. `_toggleAssemblyLens`) happened to fetch it.
       // `part.occurrenceIds` (`PartDto`'s own cheap id-only summary, already
@@ -9579,6 +9910,14 @@ class _PartScreenState extends State<PartScreen> {
         await _refreshAssemblyTree();
         await _refreshAssemblyMesh();
       }
+      // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+      // §3.4): loading isn't "the user changed something" - a freshly
+      // opened Part matches disk exactly, and a freshly created blank one
+      // has nothing to lose yet either way. Without this, [_runGuarded]'s
+      // own coarse default would mark every session dirty from the first
+      // frame, defeating [_confirmExitPart]'s whole point for the common
+      // "opened it, didn't touch anything, exited" case.
+      setState(() => _isDirty = false);
     });
   }
 
@@ -10956,7 +11295,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// "Add Component" (bottom-up insert an existing `.didsa` file) - the
   /// piece of Phase 3b that actually closes Phase 3's gap (Assembly lens
-  /// was read/view-only). Picks a file the same way [_openNativeFile]
+  /// was read/view-only). Picks a file the same way [_openBundlePayload]
   /// already does (`file_picker`, `FileType.any` - see that method's own
   /// doc comment for why not an extension allow-list; there is no
   /// `StorageService`/`ProjectRoot` session wired into this screen to
@@ -10965,7 +11304,7 @@ class _PartScreenState extends State<PartScreen> {
   /// own exported document into this session's current full snapshot
   /// (`add_component.dart`'s `mergeComponentIntoDocument`), and re-imports
   /// the merged result - a full replace, the same semantics
-  /// [_openNativeFile] already relies on, just staying on this screen
+  /// [_openBundlePayload] already relies on, just staying on this screen
   /// instead of pushing a new one (the currently-open Part keeps its own
   /// id across the reimport - `native_format.py`'s `_part_from_dict` never
   /// regenerates an id it's given).
@@ -11114,19 +11453,38 @@ class _PartScreenState extends State<PartScreen> {
   /// own `exportNative(partId: ...)` is already a well-formed
   /// `componentPayload`, so [mergeComponentIntoDocument] (Phase 3b) folds
   /// it in unchanged, exactly the same shape "Add Component" already uses.
+  ///
+  /// Save/Project overhaul Phase 1 (`docs/save-project-overhaul-scope.md`
+  /// §3.1): no longer prompts for a name or a file path up front - the new
+  /// component is created immediately as [_nextComponentName]'s auto-
+  /// generated "Component N" (the same fallback [occurrenceDisplayName]
+  /// already used for *display*, now made the real, persisted name), and
+  /// both this new Part's and the parent's own relative paths are
+  /// silently auto-assigned in the same step (see [_autoAssignPath]) -
+  /// closing the gap where only the child ever got one, guaranteeing a
+  /// later Save All prompt for the parent. A wrong auto-name is corrected
+  /// afterward via the assembly tree's own Rename action, not by gating
+  /// creation on a dialog.
   Future<void> _onCreateNewComponentPressed() async {
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
 
-    final name = await _promptComponentName();
-    if (name == null || !mounted) return;
+    final name = _nextComponentName();
 
     String? newPartId;
+    String? parentName;
     await _runGuarded(() async {
       final newPart = await _api.createPart(name);
       newPartId = newPart.id;
       final componentPayload = await _api.exportNative(partId: newPart.id);
       final currentPayload = await _api.exportNative();
+      final currentParts = ((currentPayload['document'] as Map?)?['parts'] as List?) ?? const [];
+      for (final partRaw in currentParts) {
+        if (partRaw is Map && partRaw['id'] == rootPartId) {
+          parentName = partRaw['name'] as String?;
+          break;
+        }
+      }
       Map<String, dynamic> merged;
       try {
         merged = mergeComponentIntoDocument(
@@ -11146,50 +11504,61 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (newPartId == null || !mounted) return;
 
-    // Optional immediate path prompt - skippable, since forcing a filename
-    // before any modelling work starts on the new component is bad UX;
-    // "Save All" will prompt again later for anything still missing one.
     final root = await _ensureProjectRoot();
     if (root == null || !mounted) return;
-    final path = await showRelativePathPromptDialog(
-      context,
-      title: 'Save "$name" as…',
-      initialValue: name,
-      storageService: _storageService,
-      root: root,
-      skippable: true,
-    );
-    if (path == null || !mounted) return;
-    setState(() => _relativePathByPartId = {..._relativePathByPartId, newPartId!: path});
+
+    var relativePathByPartId = _relativePathByPartId;
+    if (!relativePathByPartId.containsKey(newPartId)) {
+      final childPath = await _autoAssignPath(root, name, relativePathByPartId);
+      relativePathByPartId = {...relativePathByPartId, newPartId!: childPath};
+    }
+    if (!relativePathByPartId.containsKey(rootPartId) && parentName != null) {
+      final parentPath = await _autoAssignPath(root, parentName!, relativePathByPartId);
+      relativePathByPartId = {...relativePathByPartId, rootPartId: parentPath};
+    }
+    if (!mounted) return;
+    setState(() => _relativePathByPartId = relativePathByPartId);
   }
 
-  /// The small "what should this new component be called" prompt behind
-  /// [_onCreateNewComponentPressed] - same `AlertDialog` +
-  /// `StatefulBuilder` + `TextFormField` + disabled-until-valid
-  /// `FilledButton` shape [_openMateEdit] already establishes in this file.
-  Future<String?> _promptComponentName() {
-    String value = 'New Component';
-    return showDialog<String>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('Create Component'),
-          content: TextFormField(
-            initialValue: value,
-            autofocus: true,
-            decoration: const InputDecoration(labelText: 'Name'),
-            onChanged: (text) => setDialogState(() => value = text),
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
-            FilledButton(
-              onPressed: value.trim().isEmpty ? null : () => Navigator.of(context).pop(value.trim()),
-              child: const Text('Create'),
-            ),
-          ],
-        ),
-      ),
-    );
+  /// The auto-generated default name for a newly created component -
+  /// [_onCreateNewComponentPressed] no longer prompts for one.  Mirrors
+  /// [occurrenceDisplayName]'s own "Component N" fallback exactly (same
+  /// ordinal convention), but checked against every name already in use
+  /// among [_occurrences] (not just a running count) so a manually renamed
+  /// sibling can never collide with a freshly generated one.
+  String _nextComponentName() {
+    final existingNames = <String>{
+      for (var i = 0; i < _occurrences.length; i++) occurrenceDisplayName(_occurrences, i),
+    };
+    var ordinal = _occurrences.length + 1;
+    var name = 'Component $ordinal';
+    while (existingNames.contains(name)) {
+      ordinal++;
+      name = 'Component $ordinal';
+    }
+    return name;
+  }
+
+  /// Silently derives a collision-free `ProjectRoot`-relative path for
+  /// [baseName] under [root], for [_onCreateNewComponentPressed]'s own
+  /// auto-path assignment - no dialog, since a rare collision (re-running
+  /// Create Component enough times to exhaust a folder's own default
+  /// names) is far better resolved with a numbered suffix than a popup.
+  /// [alreadyAssigned] is checked too, so two Parts created in the same
+  /// action (the new component and its still-unpathed parent) can never be
+  /// silently assigned the same file.
+  Future<String> _autoAssignPath(
+    ProjectRoot root,
+    String baseName,
+    Map<String, String> alreadyAssigned,
+  ) async {
+    var candidate = withDefaultExtension(baseName);
+    var suffix = 2;
+    while (alreadyAssigned.containsValue(candidate) || await _storageService.resolve(root, candidate) != null) {
+      candidate = withDefaultExtension('$baseName ($suffix)');
+      suffix++;
+    }
+    return candidate;
   }
 
   /// "Save All" (`PartToolbar.onSaveAll`, `docs/assembly-scope.md` §6 Phase
@@ -11246,62 +11615,17 @@ class _PartScreenState extends State<PartScreen> {
       setState(() => _errorMessage = 'Saved ${saveResult.savedRelativePaths.length} of '
           '${relativePathByPartId.length} files. Failed: $failedNames');
     } else {
+      // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+      // §3.4): only a fully successful Save All (every Part written, no
+      // failures) clears the dirty flag - a partial failure leaves real
+      // unsaved work on disk, so [_isDirty] staying `true` is the safe
+      // choice, matching [_isDirty]'s own "never a false negative" doc
+      // comment.
+      setState(() => _isDirty = false);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Saved ${saveResult.savedRelativePaths.length} file(s)')),
       );
     }
-  }
-
-  /// "Open Project…" (`PartToolbar.onOpenProject`, Phase 15) - the read
-  /// side of the multi-file save flow, without which
-  /// [_relativePathByPartId] could only ever exist within one running
-  /// session and a saved multi-file project could never be faithfully
-  /// reopened. Composes the whole referenced-file graph
-  /// (`AssemblyGraphComposer`, already implemented since Phase 2) via
-  /// [AssemblyDocumentClient.openAssembly] and pushes a fresh [PartScreen]
-  /// pointed at the resolved root Part - the same "fresh screen, not a
-  /// reload in place" shape [_openNativeFile] already uses, since every
-  /// transient per-Part field on this screen needs to start clean against
-  /// the newly-opened Part's own ids. Bug fix (Phase 16, §2s): confirms via
-  /// [_confirmExitPart] first - this used to navigate away with no warning
-  /// at all, silently discarding any unsaved edits still only in the
-  /// backend's in-memory session, unlike every other "abandon the current
-  /// session" path on this screen.
-  Future<void> _onOpenProjectPressed() async {
-    setState(() => _toolbarOpen = false);
-    if (!await _confirmExitPart()) return;
-    if (!mounted) return;
-    final root = await _ensureProjectRoot();
-    if (root == null || !mounted) return;
-    final relativePath = await showOpenProjectPathPromptDialog(context);
-    if (relativePath == null || !mounted) return;
-
-    OpenedAssembly? opened;
-    await _runGuarded(() async {
-      try {
-        opened = await _assemblyDocumentClient.openAssembly(root, relativePath);
-      } on StorageException catch (e) {
-        setState(() => _errorMessage = e.message);
-      } on AssemblyGraphCycleException catch (e) {
-        setState(() => _errorMessage = e.toString());
-      }
-    });
-    final result = opened;
-    if (result == null || !mounted) return;
-
-    await Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (context) => PartScreen(
-          documentApi: widget.documentApi,
-          sketchApiFactory: widget.sketchApiFactory,
-          storageService: widget.storageService,
-          assemblyDocumentClient: widget.assemblyDocumentClient,
-          initialPartId: result.rootPartId,
-          initialProjectRoot: root,
-          initialRelativePathByPartId: result.relativePathByPartId,
-        ),
-      ),
-    );
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and
@@ -19966,6 +20290,8 @@ class _PartScreenState extends State<PartScreen> {
         _openMate();
       case ComponentContextMenuAction.pattern:
         _openComponentPattern();
+      case ComponentContextMenuAction.rename:
+        await _renameOccurrence(occurrence);
       case ComponentContextMenuAction.delete:
         await _confirmDeleteOccurrence(occurrence);
     }
@@ -20291,6 +20617,123 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  /// §3.2): the assembly tree's own Rename action - the correction path for
+  /// Create Component's own auto-generated "Component N" default (§3.1).
+  /// Always PATCHes [occurrence]'s own `name_override`
+  /// ([DocumentApiClient.updateOccurrenceName]) - that's the tree's own
+  /// display label and always safe to change. Also renames the underlying
+  /// Part's own `name` ([DocumentApiClient.updatePart]) and, if it already
+  /// has one, its on-disk file ([StorageService.renameFile]) - but only
+  /// when [occurrence]'s target Part is instanced exactly once across the
+  /// *whole* current session, not just this focused Part's own children
+  /// ([_occurrences] is scoped to those alone - a full [_api.exportNative]
+  /// is needed to see every Part's own occurrences). Renaming a shared
+  /// file/Part name out from under an instance elsewhere in the tree would
+  /// silently relabel every one of them, so that case only ever touches
+  /// this one Occurrence's own label - [_promptRenameComponent] says so
+  /// plainly rather than silently doing the narrower thing unexplained.
+  Future<void> _renameOccurrence(OccurrenceDto occurrence) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+
+    final occurrenceIndex = _occurrences.indexWhere((o) => o.id == occurrence.id);
+    final currentName = occurrenceIndex >= 0
+        ? occurrenceDisplayName(_occurrences, occurrenceIndex)
+        : occurrenceDisplayName([occurrence], 0);
+    final resolvedPartId = occurrence.resolvedPartId;
+
+    var instanceCount = 1;
+    if (resolvedPartId != null) {
+      await _runGuarded(() async {
+        final fullSession = await _api.exportNative();
+        final parts = ((fullSession['document'] as Map?)?['parts'] as List?) ?? const [];
+        var count = 0;
+        for (final partRaw in parts) {
+          if (partRaw is! Map) continue;
+          for (final occurrenceRaw in (partRaw['occurrences'] as List?) ?? const []) {
+            if (occurrenceRaw is Map && occurrenceRaw['resolved_part_id'] == resolvedPartId) count++;
+          }
+        }
+        instanceCount = count;
+      });
+    }
+    if (!mounted) return;
+
+    final singlyInstanced = resolvedPartId != null && instanceCount <= 1;
+    final newName = await _promptRenameComponent(currentName, singlyInstanced: singlyInstanced);
+    if (newName == null || !mounted || newName == currentName) return;
+
+    await _runGuarded(() async {
+      await _api.updateOccurrenceName(focusPartId, occurrence.id, newName);
+      if (singlyInstanced) {
+        final partId = resolvedPartId;
+        await _api.updatePart(partId, name: newName);
+        final oldPath = _relativePathByPartId[partId];
+        final root = _projectRoot;
+        if (oldPath != null && root != null) {
+          final newFileName = withDefaultExtension(newName);
+          try {
+            await _storageService.renameFile(root, oldPath, newFileName);
+            final newPath = siblingRelativePath(oldPath, newFileName);
+            setState(() => _relativePathByPartId = {..._relativePathByPartId, partId: newPath});
+          } on StorageException catch (e) {
+            setState(() => _errorMessage = 'Renamed the component, but could not rename its file: ${e.message}');
+          }
+        }
+      }
+      await _refreshAssemblyTree();
+    });
+  }
+
+  /// The rename dialog behind [_renameOccurrence] - same `AlertDialog` +
+  /// `StatefulBuilder` + `TextFormField` + disabled-until-valid
+  /// `FilledButton` shape this file already establishes for a small
+  /// text-entry prompt (`relative_path_dialog.dart`'s own
+  /// `showRelativePathPromptDialog`). When [singlyInstanced] is false, adds
+  /// a note that only this component's own display label will change -
+  /// its underlying Part is used elsewhere too, so its own name/file are
+  /// deliberately left alone.
+  Future<String?> _promptRenameComponent(String currentName, {required bool singlyInstanced}) {
+    String value = currentName;
+    return showDialog<String>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Rename'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextFormField(
+                initialValue: value,
+                autofocus: true,
+                decoration: const InputDecoration(labelText: 'Name'),
+                onChanged: (text) => setDialogState(() => value = text),
+              ),
+              if (!singlyInstanced)
+                const Padding(
+                  padding: EdgeInsets.only(top: 8),
+                  child: Text(
+                    'This component is used more than once - renaming it only changes this '
+                    "instance's label, not its underlying file.",
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: value.trim().isEmpty ? null : () => Navigator.of(context).pop(value.trim()),
+              child: const Text('Rename'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// Bug report (assembly testing): [AssemblyTreePanel.onOccurrenceColorTap]'s
   /// real call site - opens [showOccurrenceColourSheet] pre-highlighting
   /// `occurrence`'s own current override, then persists whatever was picked
@@ -20430,6 +20873,10 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _busy = true;
       _errorMessage = null;
+      // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
+      // §3.4): coarse dirty-flag set - see [_isDirty]'s own doc comment for
+      // why "every guarded action" is the right granularity here.
+      _isDirty = true;
     });
     _busyOverlayTimer?.cancel();
     _busyOverlayTimer = Timer(_busyOverlayDelay, () {
@@ -21335,8 +21782,8 @@ class _PartScreenState extends State<PartScreen> {
                     onExit: _exitToConnectionScreen,
                     onSaveNative: _saveNativeFile,
                     onSaveAsNative: _saveAsNativeFile,
-                    onOpenNative: _openNativeFile,
-                    onOpenProject: _onOpenProjectPressed,
+                    hasUnsavedChanges: _isDirty,
+                    onOpen: _onOpenPressed,
                     onSaveAll: _onSaveAllPressed,
                     onStartNew: _startNewPart,
                     onExportPart: _exportPart,

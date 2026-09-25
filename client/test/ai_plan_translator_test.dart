@@ -38,6 +38,10 @@ class _FakeStorageService implements StorageService {
       _filesByRelativePath.keys.toList();
 
   @override
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) =>
+      throw UnimplementedError();
+
+  @override
   Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) => throw UnimplementedError();
 
   @override

@@ -1681,7 +1681,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// assembly Part with `AssemblyLens.assembly` already active, the same
   /// "fresh screen, not a reload in place" shape every other multi-file
   /// navigation on `PartScreen` itself already uses (see
-  /// `_onOpenProjectPressed`'s own precedent). Carries `initialProjectRoot`/
+  /// `PartScreen._openComposedProject`'s own precedent). Carries `initialProjectRoot`/
   /// `initialRelativePathByPartId` through for every part this run saved
   /// (the assembly's own path included) so a subsequent "Save All" on the
   /// new screen already knows where each of them lives, instead of prompting

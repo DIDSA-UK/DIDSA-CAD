@@ -81,6 +81,13 @@ class IosStoragePlugin: NSObject {
             }
             writeFile(path: path, data: bytes.data, result: result)
 
+        case "renameFile":
+            guard let path = args?["path"] as? String, let newFileName = args?["newFileName"] as? String else {
+                result(FlutterError(code: "bad_args", message: "path and newFileName are required", details: nil))
+                return
+            }
+            renameFile(path: path, newFileName: newFileName, result: result)
+
         case "lastModifiedMs":
             guard let path = args?["path"] as? String else {
                 result(FlutterError(code: "bad_args", message: "path is required", details: nil))
@@ -197,6 +204,24 @@ class IosStoragePlugin: NSObject {
             result(nil)
         } catch {
             result(FlutterError(code: "write_failed", message: "Failed to write \(path)", details: "\(error)"))
+        }
+    }
+
+    /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+    /// §3.2): the assembly tree's own Rename action - renames the file at
+    /// `path` to `newFileName`, keeping it in the same directory (a plain
+    /// `moveItem` within one parent, mirroring `SafStorageService`'s own
+    /// same-directory-only `renameFile` contract). Returns the new full
+    /// path on success, so the caller can compute the new relative path
+    /// itself the same way `writeFile`'s own caller already does.
+    private func renameFile(path: String, newFileName: String, result: @escaping FlutterResult) {
+        let sourceURL = URL(fileURLWithPath: path)
+        let destinationURL = sourceURL.deletingLastPathComponent().appendingPathComponent(newFileName)
+        do {
+            try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
+            result(destinationURL.path)
+        } catch {
+            result(FlutterError(code: "rename_failed", message: "Failed to rename \(path)", details: "\(error)"))
         }
     }
 

@@ -75,6 +75,35 @@ class _FakeSafUtil extends SafUtil {
   @override
   Future<bool> exists(String uri, bool isDir) async => _nodesByUri.containsKey(uri);
 
+  /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  /// §3.2): renames a node in place, keeping it under the same parent - the
+  /// real `saf_util.rename`'s own same-directory-only contract. Finds the
+  /// parent by a linear scan (no parent back-reference on `_FakeNode`) -
+  /// fine for this fake's small test trees.
+  @override
+  Future<SafDocumentFile> rename(String uri, bool isDir, String newName) async {
+    final node = _nodesByUri[uri];
+    if (node == null) {
+      throw StateError('rename against an unknown node: $uri');
+    }
+    for (final candidate in _nodesByUri.values) {
+      String? key;
+      for (final entry in candidate.children.entries) {
+        if (entry.value == node) {
+          key = entry.key;
+          break;
+        }
+      }
+      if (key != null) {
+        candidate.children.remove(key);
+        candidate.children[newName] = node;
+        break;
+      }
+    }
+    node.name = newName;
+    return node.toDocumentFile();
+  }
+
   @override
   Future<List<SafDocumentFile>> list(String uri) async {
     final node = _nodesByUri[uri];
@@ -89,7 +118,7 @@ class _FakeNode {
   _FakeNode({required this.uri, required this.name, required this.isDir, this.bytes});
 
   final String uri;
-  final String name;
+  String name;
   final bool isDir;
   Uint8List? bytes;
   int lastModifiedMs = 1000;
@@ -193,6 +222,43 @@ void main() {
 
     test('writeFile without a file name in the relative path throws', () async {
       expect(() => service.writeFile(root, '', Uint8List(0)), throwsA(isA<StorageException>()));
+    });
+  });
+
+  group('renameFile', () {
+    test('renames the file, keeping it in the same directory', () async {
+      await service.writeFile(root, 'parts/bracket.DIDSAprt', Uint8List.fromList([1, 2, 3]));
+
+      final handle = await service.renameFile(root, 'parts/bracket.DIDSAprt', 'left-bracket.DIDSAprt');
+
+      expect(handle.relativePath, 'parts/left-bracket.DIDSAprt');
+      expect(await service.readFile(handle), [1, 2, 3]);
+      expect(await service.resolve(root, 'parts/bracket.DIDSAprt'), isNull);
+    });
+
+    test('renames a top-level file with no directory of its own', () async {
+      await service.writeFile(root, 'bracket.DIDSAprt', Uint8List.fromList([1]));
+
+      final handle = await service.renameFile(root, 'bracket.DIDSAprt', 'left-bracket.DIDSAprt');
+
+      expect(handle.relativePath, 'left-bracket.DIDSAprt');
+    });
+
+    test('throws StorageException when nothing exists at the source path', () async {
+      expect(
+        () => service.renameFile(root, 'does-not-exist.DIDSAprt', 'new-name.DIDSAprt'),
+        throwsA(isA<StorageException>()),
+      );
+    });
+
+    test('throws StorageException when a file already exists at the destination', () async {
+      await service.writeFile(root, 'bracket.DIDSAprt', Uint8List.fromList([1]));
+      await service.writeFile(root, 'left-bracket.DIDSAprt', Uint8List.fromList([2]));
+
+      expect(
+        () => service.renameFile(root, 'bracket.DIDSAprt', 'left-bracket.DIDSAprt'),
+        throwsA(isA<StorageException>()),
+      );
     });
   });
 

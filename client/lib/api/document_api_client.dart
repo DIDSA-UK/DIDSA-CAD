@@ -2624,6 +2624,13 @@ class DocumentApiClient {
   /// (material assignment has its own dedicated endpoints below) - omitted
   /// fields keep their current value, same convention every Feature Update
   /// call already uses.
+  ///
+  /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  /// §3.2): widened to also accept [name] - the assembly tree's own Rename
+  /// action, when the renamed Occurrence's own Part is only instanced once
+  /// in the current session. Unlike the metadata fields above, an empty/
+  /// whitespace-only [name] is rejected by the backend with a 422 rather
+  /// than silently applied - see `PartUpdate.name`'s own docstring.
   Future<PartDto> updatePart(
     String partId, {
     String? partNumber,
@@ -2632,6 +2639,7 @@ class DocumentApiClient {
     String? remarks,
     String? supplier,
     String? supplierPartNumber,
+    String? name,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2644,6 +2652,7 @@ class DocumentApiClient {
                 if (remarks != null) 'remarks': remarks,
                 if (supplier != null) 'supplier': supplier,
                 if (supplierPartNumber != null) 'supplier_part_number': supplierPartNumber,
+                if (name != null) 'name': name,
               }),
             ),
         (body) => PartDto.fromJson(body as Map<String, dynamic>),
@@ -4649,6 +4658,28 @@ class DocumentApiClient {
               _uri('/document/parts/$partId/occurrences/$occurrenceId'),
               headers: _headers,
               body: jsonEncode({'color': hex}),
+            ),
+        (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  /// §3.2): `PATCH /document/parts/{part_id}/occurrences/{occurrence_id}`
+  /// with only `name_override` set - mirrors [updateOccurrenceColor] exactly,
+  /// the assembly tree's own Rename action's persistence call. [name] is a
+  /// non-empty display name to set, or `''` (empty string) to explicitly
+  /// clear it back to falling through to [OccurrenceDto.externalRef]'s file
+  /// basename/the "Component N" ordinal (`occurrenceDisplayName`) - same
+  /// tri-state as [updateOccurrenceColor]'s own [hex] param.
+  Future<OccurrenceDto> updateOccurrenceName(
+    String partId,
+    String occurrenceId,
+    String name,
+  ) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId'),
+              headers: _headers,
+              body: jsonEncode({'name_override': name}),
             ),
         (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
       );

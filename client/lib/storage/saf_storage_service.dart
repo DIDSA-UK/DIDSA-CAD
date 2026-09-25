@@ -4,6 +4,7 @@ import 'package:saf_stream/saf_stream.dart';
 import 'package:saf_util/saf_util.dart';
 import 'package:saf_util/saf_util_platform_interface.dart' show SafDocumentFile;
 
+import '../assembly/relative_path.dart';
 import 'file_handle.dart';
 import 'project_root.dart';
 import 'recent_project_store.dart';
@@ -156,6 +157,30 @@ class SafStorageService implements StorageService {
 
     await walk(safRoot.treeUri, const []);
     return result;
+  }
+
+  @override
+  Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) async {
+    final safRoot = _requireSafRoot(root);
+    final doc = await _safUtil.child(safRoot.treeUri, _splitRelativePath(relativePath));
+    if (doc == null || doc.isDir) {
+      throw StorageException('Cannot rename $relativePath: no such file');
+    }
+    final newRelativePath = siblingRelativePath(relativePath, newFileName);
+    final parentSegments = _splitRelativePath(relativePath)..removeLast();
+    final existing = await _safUtil.child(
+      parentSegments.isEmpty ? safRoot.treeUri : (await _safUtil.mkdirp(safRoot.treeUri, parentSegments)).uri,
+      [newFileName],
+    );
+    if (existing != null) {
+      throw StorageException('A file already exists at $newRelativePath');
+    }
+    try {
+      final renamed = await _safUtil.rename(doc.uri, false, newFileName);
+      return SafFileHandle(root: safRoot, relativePath: newRelativePath, uri: renamed.uri);
+    } catch (e) {
+      throw StorageException('Failed to rename $relativePath to $newFileName', cause: e);
+    }
   }
 
   List<String> _splitRelativePath(String relativePath) =>

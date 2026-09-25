@@ -94,6 +94,19 @@ class IosBookmarkChannel {
     await _channel.invokeMethod<void>('writeFile', {'path': path, 'bytes': bytes});
   }
 
+  /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
+  /// §3.2): renames the file at `path` to `newFileName`, keeping it in the
+  /// same directory - see `IosStoragePlugin.swift`'s own `renameFile` for
+  /// the native `moveItem` call this wraps. Returns the renamed file's new
+  /// full path.
+  Future<String> renameFile(String path, String newFileName) async {
+    final result = await _channel.invokeMethod<String>('renameFile', {'path': path, 'newFileName': newFileName});
+    if (result == null) {
+      throw PlatformException(code: 'rename_failed', message: 'renameFile returned no path for $path');
+    }
+    return result;
+  }
+
   /// The file's last-modified time in epoch milliseconds, or `null` if it
   /// can't be determined (missing file, unreadable attributes).
   Future<int?> lastModifiedMs(String path) async {

@@ -136,6 +136,48 @@ void main() {
     });
   });
 
+  group('renameFile', () {
+    test('renames the file, keeping it in the same directory', () async {
+      final root = DesktopProjectRoot(tempDir.path);
+      await service.writeFile(root, 'parts/bracket.DIDSAprt', utf8.encode('x'));
+
+      final handle = await service.renameFile(root, 'parts/bracket.DIDSAprt', 'left-bracket.DIDSAprt');
+
+      expect(handle.relativePath, 'parts/left-bracket.DIDSAprt');
+      expect(await File((handle as DesktopFileHandle).path).exists(), isTrue);
+      expect(await File('${tempDir.path}/parts/bracket.DIDSAprt').exists(), isFalse);
+    });
+
+    test('renames a top-level file with no directory of its own', () async {
+      final root = DesktopProjectRoot(tempDir.path);
+      await service.writeFile(root, 'bracket.DIDSAprt', utf8.encode('x'));
+
+      final handle = await service.renameFile(root, 'bracket.DIDSAprt', 'left-bracket.DIDSAprt');
+
+      expect(handle.relativePath, 'left-bracket.DIDSAprt');
+    });
+
+    test('throws StorageException when nothing exists at the source path', () async {
+      final root = DesktopProjectRoot(tempDir.path);
+
+      expect(
+        () => service.renameFile(root, 'does-not-exist.DIDSAprt', 'new-name.DIDSAprt'),
+        throwsA(isA<StorageException>()),
+      );
+    });
+
+    test('throws StorageException when a file already exists at the destination', () async {
+      final root = DesktopProjectRoot(tempDir.path);
+      await service.writeFile(root, 'bracket.DIDSAprt', utf8.encode('x'));
+      await service.writeFile(root, 'left-bracket.DIDSAprt', utf8.encode('y'));
+
+      expect(
+        () => service.renameFile(root, 'bracket.DIDSAprt', 'left-bracket.DIDSAprt'),
+        throwsA(isA<StorageException>()),
+      );
+    });
+  });
+
   group('listFiles', () {
     test('recursively finds every file under the root', () async {
       final root = DesktopProjectRoot(tempDir.path);
