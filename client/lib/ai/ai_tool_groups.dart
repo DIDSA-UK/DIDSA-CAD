@@ -72,6 +72,12 @@ const Map<String, AiToolGroup> aiToolGroups = {
     vocabularyText: filletChamferVocabularyText,
     manualToolHint: 'the Fillet/Chamfer tool in the Feature toolbar',
   ),
+  'shell': AiToolGroup(
+    label: 'Shell',
+    kinds: {'shell'},
+    vocabularyText: shellVocabularyText,
+    manualToolHint: 'the Shell tool in the Feature toolbar',
+  ),
   'pattern': AiToolGroup(
     label: 'Pattern',
     kinds: {'pattern'},

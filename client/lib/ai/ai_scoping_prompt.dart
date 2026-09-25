@@ -248,6 +248,7 @@ real cut step).
 {{OPTIONAL_CREATE_PLANE_BULLET}}
 {{OPTIONAL_GEAR_ROUTING_SECTION}}
 {{OPTIONAL_FILLET_CHAMFER_SECTION}}
+{{OPTIONAL_SHELL_SECTION}}
 {{OPTIONAL_ASSEMBLY_SECTION}}
 ## Reference kind-checking
 
@@ -264,12 +265,15 @@ earlier local_id that happens to exist:
   leaving profile_refs empty uses every outer profile of the Sketch).
 - "axis_ref" (revolve) must name a sketch_line step specifically - never
   a sketch_circle/sketch_arc/etc.
-- "of" (fillet/chamfer), "target_body_ids", "source_body_ids", and
-  "tool_feature_id" must each name a step that produces a Body: extrude,
-  revolve, sweep, loft, pattern, mirror, merge, boolean, scale_body,
-  move_body, or gear_request - never a sketch, create_plane, delete_body,
-  fillet, or chamfer step (delete_body produces nothing at all - it can
-  never be referenced by a later step).
+- "of" (fillet/chamfer), "body_of" (shell), "target_body_ids",
+  "source_body_ids", and "tool_feature_id" must each name a step that
+  produces a Body: extrude, revolve, sweep, loft, pattern, mirror, merge,
+  boolean, scale_body, move_body, or gear_request - never a sketch,
+  create_plane, delete_body, fillet, chamfer, or shell step (delete_body
+  produces nothing at all - it can never be referenced by a later step;
+  fillet/chamfer/shell each modify a Body in place rather than producing a
+  new one - name the ORIGINAL Body-producing step instead, which still
+  reflects every fillet/chamfer/shell already applied to it).
 - "line_ref"/"sketch_line_ref" fields must name a sketch_line step;
   "point_ref"/"point_refs" must name sketch_point step(s);
   "plane_feature_id" fields (on sketch, create_plane, mirror_plane) must
@@ -561,6 +565,36 @@ center, easier to reason about directly than a second point) or reconsider
 whether a Fillet feature on a downstream Body would avoid this arithmetic
 entirely.''';
 
+/// `ShellStep` vocabulary (`ai_tool_groups.dart`'s `'shell'` group).
+const String shellVocabularyText = '''
+- shell: {local_id, kind:"shell", body_of: <local_id>, faces_to_remove:
+  [<direction>, ...], thickness, thickness_direction?:"outward"|"inward"|
+  "symmetric"}
+  Hollows the solid Body named by "body_of" into a thin-walled shell,
+  opening every face named in "faces_to_remove" and giving every remaining
+  face a uniform wall "thickness" (> 0), grown on the side named by
+  "thickness_direction" (default "outward" - the wall grows outside the
+  Body's original boundary; "inward" keeps the Body's outer dimensions and
+  grows the wall inside instead; "symmetric" straddles the original
+  boundary).
+
+  Like Fillet/Chamfer's edges, a face cannot be named by raw index - Body
+  faces do not exist yet when you write a plan. Each "faces_to_remove"
+  entry is instead one of the six world-axis directions
+  "+x"|"-x"|"+y"|"-y"|"+z"|"-z", naming the one planar face of "body_of"
+  whose outward normal most closely aligns with that direction (the same
+  heuristic "all_edges_of_face_at_position" uses for Fillet/Chamfer, above -
+  relative to the world/global axes, never a tilted Sketch's own local
+  plane). At least one entry is required. If the shape the user describes
+  needs a face opened that isn't cleanly "the top/bottom/one side" (e.g. a
+  specific one of several similar side faces on a non-box shape), this is
+  scope ambiguity to ask about rather than guess at - there is currently no
+  way to name a face any more precisely than these six directions.
+
+  "body_of" must name a step that actually produces a solid Body - extrude,
+  revolve, sweep, pattern, mirror, or gear_request - never a sketch,
+  create_plane, fillet, chamfer, or another shell step.''';
+
 /// `MateStep`/`MoveComponentStep`/`HideComponentStep`/`IsolateComponentStep`
 /// vocabulary (`ai_tool_groups.dart`'s `'assembly'` group). Only useful (and
 /// only ever shown alongside real ids to reference) when "Editing an
@@ -707,6 +741,7 @@ substitute a workaround for it.''';
       .replaceFirst('{{OPTIONAL_CREATE_PLANE_BULLET}}', group('create_plane', createPlaneVocabularyText))
       .replaceFirst('{{OPTIONAL_GEAR_ROUTING_SECTION}}', group('gear_routing', gearRoutingVocabularyText))
       .replaceFirst('{{OPTIONAL_FILLET_CHAMFER_SECTION}}', group('fillet_chamfer', filletChamferVocabularyText))
+      .replaceFirst('{{OPTIONAL_SHELL_SECTION}}', group('shell', shellVocabularyText))
       .replaceFirst('{{OPTIONAL_ASSEMBLY_SECTION}}', group('assembly', assemblyVocabularyText))
       .replaceFirst('{{OPTIONAL_DISABLED_TOOLS_BLOCK}}', disabledBlock)
       // Collapse any run of 3+ blank lines a removed section leaves behind
@@ -1089,9 +1124,9 @@ where a local_id you defined earlier in this plan would otherwise go - e.g.
 Only four things about the existing Part are directly referenceable this
 way - nothing else:
 - A Feature that produces a solid Body - as target_body_ids/
-  source_body_ids/tool_feature_id, or as the "of" in a fillet/chamfer edges
-  selector, exactly like a Body-producing step you define fresh in this
-  same plan.
+  source_body_ids/tool_feature_id, as the "of" in a fillet/chamfer edges
+  selector, or as a shell step's own "body_of", exactly like a Body-
+  producing step you define fresh in this same plan.
 - A Feature that produces a construction Plane - as a plane_feature_id,
   exactly like a create_plane step you define fresh in this same plan.
 - A whole existing Sketch - as the sketch_feature_id anchor for brand-new

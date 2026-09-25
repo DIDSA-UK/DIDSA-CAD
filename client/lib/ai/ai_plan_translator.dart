@@ -85,7 +85,7 @@ class PlanTranslationResult {
   final PlanTranslationOutcome outcome;
 
   /// Every plan `local_id` resolved to a real backend id so far - a
-  /// SketchFeature/Extrude/Revolve/Sweep/Fillet/Chamfer/Pattern/Mirror/
+  /// SketchFeature/Extrude/Revolve/Sweep/Fillet/Chamfer/Shell/Pattern/Mirror/
   /// CreatePlane step's own real Feature id, or a sketch-entity step's
   /// real Point/Line/Circle/Arc/Ellipse/Polygon/Slot/Rectangle id.
   final Map<String, String> localIdToRealId;
@@ -187,6 +187,7 @@ const Set<String> _featureProducingKinds = {
   'sweep',
   'fillet',
   'chamfer',
+  'shell',
   'pattern',
   'mirror',
   'create_plane',
@@ -284,6 +285,14 @@ class PlanTranslator {
       for (final r in validation.results)
         if (r.resolvedEdges != null) r.localId: r.resolvedEdges!,
     };
+    // `resolvedEdgesByLocalId`'s own Shell-specific sibling: a `shell` step's
+    // `faces_to_remove` world-axis selector needs real OCCT topology to
+    // resolve too, never available client-side - see `StepResult.
+    // resolved_faces`'s own doc comment in `ai_plan_schemas.py`.
+    final resolvedFacesByLocalId = <String, List<SubShapeRefDto>>{
+      for (final r in validation.results)
+        if (r.resolvedFaces != null) r.localId: r.resolvedFaces!,
+    };
     // Assembly support Phase 14 (`docs/assembly-scope.md` §6 `[3]`): the
     // resolved index for any `mate` step reference that used `edgeSelector`
     // - `resolvedEdgesByLocalId`'s own sibling, one level down (per-
@@ -332,6 +341,7 @@ class PlanTranslator {
           sketchIds: sketchIdByLocalId,
           resolvedEdgesByLocalId: resolvedEdgesByLocalId,
           resolvedMateReferencesByLocalId: resolvedMateReferencesByLocalId,
+          resolvedFacesByLocalId: resolvedFacesByLocalId,
         );
         localIdToRealId[step.localId] = realId;
         if (_featureProducingKinds.contains(step.kind)) createdFeatureIds.add(realId);
@@ -399,6 +409,7 @@ class PlanTranslator {
     required Map<String, String> sketchIds,
     required Map<String, List<SubShapeRefDto>> resolvedEdgesByLocalId,
     required Map<String, List<SubShapeRefDto?>> resolvedMateReferencesByLocalId,
+    required Map<String, List<SubShapeRefDto>> resolvedFacesByLocalId,
   }) async {
     switch (step) {
       case AiSketchStep():
@@ -639,6 +650,25 @@ class PlanTranslator {
           partId,
           edgeRefs: [for (final e in planEdges) _realSubShapeRef(step.edges.of!, e, ids)],
           distance: step.distance,
+        );
+        return feature.id;
+
+      case AiShellStep():
+        // `bodyId` (a separate `ShellFeature` field, unlike Fillet/Chamfer's
+        // edge-refs-only shape) must carry the same `#N` multi-solid suffix
+        // every resolved face ref itself does - `_realSubShapeRef` already
+        // derives that from `step.bodyOf`'s own real id, so the first
+        // rewritten face's `bodyId` is reused rather than re-deriving the
+        // suffix by hand (`faces_to_remove` is guaranteed non-empty by the
+        // backend's own `invalid_step_payload` check this plan already
+        // passed dry-run validation for).
+        final realFaces = [for (final f in resolvedFacesByLocalId[step.localId]!) _realSubShapeRef(step.bodyOf, f, ids)];
+        final feature = await documentApi.createShellFeature(
+          partId,
+          bodyId: realFaces.first.bodyId,
+          facesToRemove: realFaces,
+          thickness: step.thickness,
+          thicknessDirection: step.thicknessDirection,
         );
         return feature.id;
 

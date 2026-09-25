@@ -308,6 +308,48 @@ void main() {
     expect(fillet.edges.toJson()['of'], 'f1');
   });
 
+  test('shell step parses body_of/faces_to_remove/thickness and round-trips', () {
+    final shell = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 's1',
+          'kind': 'shell',
+          'body_of': 'f1',
+          'faces_to_remove': ['+z'],
+          'thickness': 2,
+          'thickness_direction': 'inward',
+        },
+      ],
+    }).steps.single as AiShellStep;
+    expect(shell.bodyOf, 'f1');
+    expect(shell.facesToRemove, [AiCardinalDirection.plusZ]);
+    expect(shell.thickness, 2);
+    expect(shell.thicknessDirection, 'inward');
+
+    final roundTripped = AiPlanStep.fromJson(shell.toJson()) as AiShellStep;
+    expect(roundTripped.bodyOf, 'f1');
+    expect(roundTripped.facesToRemove, [AiCardinalDirection.plusZ]);
+    expect(roundTripped.thickness, 2);
+    expect(roundTripped.thicknessDirection, 'inward');
+  });
+
+  test('shell step defaults thickness_direction to outward when omitted', () {
+    final shell = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 's1',
+          'kind': 'shell',
+          'body_of': 'f1',
+          'faces_to_remove': ['+z'],
+          'thickness': 2,
+        },
+      ],
+    }).steps.single as AiShellStep;
+    expect(shell.thicknessDirection, 'outward');
+  });
+
   test('pattern_component step parses a linear pattern and round-trips it', () {
     final json = {
       'version': 1,

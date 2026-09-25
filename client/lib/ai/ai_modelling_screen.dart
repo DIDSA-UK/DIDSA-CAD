@@ -2700,13 +2700,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// output, since only this validation response - not the plan itself -
   /// carries `resolvedEdges`/`holeCount` at all:
   /// - **3a**: a Fillet/Chamfer step's `resolvedEdges` was already fetched
-  ///   but never shown - append the real resolved edge count.
+  ///   but never shown - append the real resolved edge count. A Shell
+  ///   step's `resolvedFaces` mirrors this exactly, one level down (faces
+  ///   rather than edges).
   /// - **3b**: an Extrude/Revolve/Sweep step's `holeCount` (real backend
   ///   truth from `detect_profile`, never a client-side guess).
   String _validationResultText(AiPlanStepResultDto r) {
     if (!r.ok) return _formatStepError(r.error);
     final edgeCount = r.resolvedEdges?.length;
     if (edgeCount != null) return 'ok ($edgeCount edge${edgeCount == 1 ? '' : 's'})';
+    final faceCount = r.resolvedFaces?.length;
+    if (faceCount != null) return 'ok ($faceCount face${faceCount == 1 ? '' : 's'})';
     final holeCount = r.holeCount;
     if (holeCount != null && holeCount > 0) return 'ok — includes $holeCount hole${holeCount == 1 ? '' : 's'}';
     return 'ok';

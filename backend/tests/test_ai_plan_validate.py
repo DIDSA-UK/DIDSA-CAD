@@ -709,6 +709,46 @@ def test_fillet_step_reports_resolved_edges_keyed_by_local_id() -> None:
     assert results["f1"]["resolved_edges"] is None
 
 
+def test_shell_step_hollows_a_body_and_reports_resolved_faces_keyed_by_local_id() -> None:
+    """`ShellStep`'s own `_resolve_edges`-mirroring counterpart: a plan-local
+    `body_of` + world-axis `faces_to_remove` selector must resolve against
+    real OCCT topology and dry-run-validate the real `resolve_shell` the
+    same way a `chamfer` step already does for `resolve_chamfer` -
+    `resolved_faces` exists for the translator to reuse this dry run's own
+    resolution for real execution, the exact same reason `resolved_edges`
+    exists for Fillet/Chamfer (see that field's own doc comment)."""
+    part = _create_part()
+    steps = _rectangle_sketch_steps() + [
+        {
+            "local_id": "f1",
+            "kind": "extrude",
+            "sketch_feature_id": "sk1",
+            "extrude_type": "boss",
+            "start_distance": 0,
+            "end_distance": 10,
+        },
+        {
+            "local_id": "s1",
+            "kind": "shell",
+            "body_of": "f1",
+            "faces_to_remove": ["+z"],
+            "thickness": 2,
+        },
+    ]
+
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+
+    assert results["s1"]["ok"] is True, results["s1"]
+    resolved_faces = results["s1"]["resolved_faces"]
+    assert resolved_faces is not None
+    assert len(resolved_faces) == 1
+    assert resolved_faces[0]["body_id"] == "f1"
+    assert resolved_faces[0]["shape_type"] == "face"
+    # Every other (non-shell) step never carries this field.
+    assert results["f1"]["resolved_faces"] is None
+
+
 def test_fillet_step_rejects_an_omitted_edges_of() -> None:
     """Phase 14 (`docs/assembly-scope.md` §6 `[3]`): `EdgeSelector.of`
     became optional at the schema level (so the identical `EdgeSelector`

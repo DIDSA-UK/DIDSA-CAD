@@ -1999,6 +1999,16 @@ class AiPlanStepResultDto {
   /// through, so only `index` needs substituting at the point of use.
   final List<SubShapeRefDto?>? resolvedMateReferences;
 
+  /// Only present (and only meaningful) on a successful `shell` step - the
+  /// real Body faces its `faces_to_remove` world-axis selector resolved to,
+  /// with each [SubShapeRefDto.bodyId] holding the plan's own `body_of`
+  /// local_id (plus any `#N` multi-solid suffix), never a real Body id -
+  /// `PlanTranslator` substitutes the real id at the point of use, the same
+  /// [resolvedEdges] indirection reused for the same reason (no face-
+  /// selector heuristic is resolvable client-side either). See `StepResult.
+  /// resolved_faces`'s own doc comment in `ai_plan_schemas.py`.
+  final List<SubShapeRefDto>? resolvedFaces;
+
   AiPlanStepResultDto({
     required this.localId,
     required this.ok,
@@ -2007,6 +2017,7 @@ class AiPlanStepResultDto {
     this.resolvedEdges,
     this.holeCount,
     this.resolvedMateReferences,
+    this.resolvedFaces,
   });
 
   factory AiPlanStepResultDto.fromJson(Map<String, dynamic> json) => AiPlanStepResultDto(
@@ -2020,6 +2031,9 @@ class AiPlanStepResultDto {
         holeCount: json['hole_count'] as int?,
         resolvedMateReferences: (json['resolved_mate_references'] as List?)
             ?.map((e) => e == null ? null : SubShapeRefDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        resolvedFaces: (json['resolved_faces'] as List?)
+            ?.map((e) => SubShapeRefDto.fromJson(e as Map<String, dynamic>))
             .toList(),
       );
 }

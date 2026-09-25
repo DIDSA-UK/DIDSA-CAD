@@ -205,6 +205,96 @@ void main() {
     });
   });
 
+  group('PlanTranslator.execute - Shell', () {
+    test('a shell step resolves body_id and faces_to_remove to real ids and posts to shell-features', () async {
+      final paths = <String>[];
+      final mock = MockClient((request) async {
+        paths.add('${request.method} ${request.url.path}');
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'sk1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'f1', 'ok': true, 'warnings': [], 'error': null},
+              {
+                'local_id': 's1',
+                'ok': true,
+                'warnings': [],
+                'error': null,
+                // Deliberately keyed by the plan's own `body_of` local_id
+                // ("f1"), not a real backend id - see `StepResult.
+                // resolved_faces`'s own doc comment.
+                'resolved_faces': [
+                  {'body_id': 'f1', 'shape_type': 'face', 'index': 4},
+                ],
+              },
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/features/sketch') {
+          return jsonResponse({'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1'});
+        }
+        if (request.url.path == '/document/parts/part-1/extrude-features') {
+          return jsonResponse({
+            'type': 'extrude',
+            'id': 'feat-extrude1',
+            'locked': false,
+            'sketch_feature_id': 'feat-sk1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'target_body_ids': <String>[],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/shell-features') {
+          final body = decodeBody(request);
+          return jsonResponse({
+            'type': 'shell',
+            'id': 'feat-shell1',
+            'locked': false,
+            'body_id': body['body_id'],
+            'faces_to_remove': body['faces_to_remove'],
+            'thickness': body['thickness'],
+            'thickness_direction': body['thickness_direction'],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {
+            'local_id': 'f1',
+            'kind': 'extrude',
+            'sketch_feature_id': 'sk1',
+            'extrude_type': 'boss',
+            'start_distance': 0,
+            'end_distance': 10,
+          },
+          {
+            'local_id': 's1',
+            'kind': 'shell',
+            'body_of': 'f1',
+            'faces_to_remove': ['+z'],
+            'thickness': 2,
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(result.localIdToRealId['s1'], 'feat-shell1');
+      expect(result.createdFeatureIds, ['feat-sk1', 'feat-extrude1', 'feat-shell1']);
+      expect(paths, contains('POST /document/parts/part-1/shell-features'));
+    });
+  });
+
   group('PlanTranslator.execute - existing-Part editing (existing:<id> references)', () {
     test('a fillet targeting an existing Body (no new Feature-producing steps at all) resolves and posts the real id',
         () async {
