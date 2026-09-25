@@ -47,17 +47,16 @@ Client: `client/lib/viewport3d/part_screen.dart` (the ~23k-line
 (`project_root.dart`, `storage_service.dart`, `recent_project_store.dart`,
 `saf_storage_service.dart`).
 
-**Status: Phases 1-4 implemented** (zero-dialog Create Component with
+**Status: Phases 1-5 implemented** (zero-dialog Create Component with
 auto-naming/auto-pathing, §3.1; the assembly tree's Rename action,
 backend + client + all three `StorageService` platforms, §3.2; Save/Save
 As now split on Project-vs-not, §3.3; accurate dirty-state tracking
-replacing the unconditional exit warning, §3.4) **— Phase 3's Open/Open
-Project unification deliberately deferred** (a real feature-parity gap
-surfaced mid-implementation, see §3.3's own note). Phase 5 (Open picker
-convenience) not started; a new Phase 6 (Open unification, once the
-extras-restoration gap is resolved) was added to §5. `dart analyze` clean
-across `client/lib`/`client/test`; every touched widget
-test file passing; the full backend suite (2488 tests) passing.
+replacing the unconditional exit warning, §3.4; the Open-Project prompt's
+listFiles-backed picker, §3.5) **— Phase 3's Open/Open Project unification
+deliberately deferred** (a real feature-parity gap surfaced
+mid-implementation, see §3.3's own note; tracked as a new Phase 6). `dart
+analyze` clean across `client/lib`/`client/test`; the full `flutter test`
+suite (2286 tests) passing; the full backend suite (2488 tests) passing.
 
 ---
 
@@ -414,14 +413,20 @@ wanted, layered on top of an already-accurate dirty flag.
 
 ### 3.5 Project-files convenience (supports §3.3's Open, low priority)
 
-Unchanged from the first pass: a small list-based picker, backed by
-`StorageService.listFiles(root, extensionFilter: 'DIDSAprt')`
-(`storage_service.dart:91` — already implemented, currently unused by any
-call site), replacing the free-text "type the relative path" field in
-`showOpenProjectPathPromptDialog` (`relative_path_dialog.dart:104-140`)
-with a tappable list of files actually under the resolved root, falling
-back to free text for anything not listed. Pure UX polish; can land in any
-order, or be dropped, without affecting the rest of the plan.
+**Implemented.** `showOpenProjectPathPromptDialog` now fetches
+`StorageService.listFiles(root, extensionFilter: kNativeFileExtension)`
+once, before the dialog opens, and shows every match as a sorted, tappable
+row above the original free-text field (tapping a row resolves
+immediately, no extra "Open" press needed) — the text field stays as a
+fallback for anything not listed, or for typing a path from memory. A
+`listFiles` failure (an unreachable root) falls back to the text field
+alone with a short explanatory note rather than failing the whole dialog.
+The one caller, `_onOpenProjectPressed`, now passes `storageService`/`root`
+through to it. Caught one real bug while testing this: the original draft
+sorted the list returned by `listFiles` in place, which throws against a
+`const []`/otherwise-unmodifiable result — `StorageService`'s contract
+never promised a mutable list back, so this now copies into a fresh list
+first.
 
 ---
 
@@ -557,11 +562,22 @@ Save/Save As/Save All; Open deliberately not touched.**
   pre-existing skips) passing.
 
 **Phase 5 — §3.5: project-files convenience (listFiles-backed Open
-picker). Not started.**
-- New small panel using `StorageService.listFiles`.
-- Modify `showOpenProjectPathPromptDialog` to offer the list with
-  free-text fallback.
-- Lowest priority; pure polish.
+picker). Implemented.**
+- `showOpenProjectPathPromptDialog` (`relative_path_dialog.dart`) widened
+  to take `storageService`/`root`, fetch `listFiles` once before opening,
+  and render a tappable, sorted row per matching file above the original
+  text field - falling back to the text field alone (with a short note) on
+  a `listFiles` failure.
+- `_onOpenProjectPressed`'s own call site updated to pass them through.
+- Tests: new `relative_path_dialog_test.dart` (files listed and sorted,
+  tapping a row resolves it, typing still works, empty-folder message,
+  `listFiles`-failure fallback, Cancel) - a minimal `Builder`+`TextButton`
+  harness calling the dialog function directly, the same pattern
+  `component_context_menu_test.dart` already establishes for a standalone
+  dialog/sheet function, rather than routing through the real `PartScreen`
+  (whose own real-`dart:io` "Open Project… through the real screen" test
+  was already dropped as too flaky for this harness - see the Phase 16
+  test group's own doc comment).
 
 **Phase 6 (new, added during implementation) — unify Open/Open Project,
 once the extras-restoration gap is resolved. Not started.**
@@ -581,8 +597,8 @@ once the extras-restoration gap is resolved. Not started.**
 
 No phase requires a `SCHEMA_VERSION` bump or a data migration script —
 per §4, every file created under today's system keeps working before,
-during, and after this plan lands. Verification for Phases 1-4: `flutter
+during, and after this plan lands. Verification for Phases 1-5: `flutter
 analyze`/`dart analyze` clean across `client/lib` and `client/test`; the
-full `flutter test` suite (2281 tests, 14 pre-existing skips) passing, not
+full `flutter test` suite (2286 tests, 14 pre-existing skips) passing, not
 just the individually-touched files; the full backend suite
 (`backend/tests/`, 2488 tests) passing.

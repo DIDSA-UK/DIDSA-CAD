@@ -11486,7 +11486,7 @@ class _PartScreenState extends State<PartScreen> {
     if (!mounted) return;
     final root = await _ensureProjectRoot();
     if (root == null || !mounted) return;
-    final relativePath = await showOpenProjectPathPromptDialog(context);
+    final relativePath = await showOpenProjectPathPromptDialog(context, storageService: _storageService, root: root);
     if (relativePath == null || !mounted) return;
 
     OpenedAssembly? opened;
