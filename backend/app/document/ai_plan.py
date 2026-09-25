@@ -4,7 +4,7 @@ validation.md for the endpoint's own spec/rationale.
 
 Builds a **scratch copy** of the Part's Feature list and walks the plan's
 steps in order, calling the *existing* `resolve_X`/`resolve_X_from_bodies`
-functions (`app.document.fillet`/`chamfer`/`revolve`/`sweep`/`mirror`/
+functions (`app.document.fillet`/`chamfer`/`shell`/`revolve`/`sweep`/`mirror`/
 `pattern`/`create_plane`, plus `app.document.extrude`'s own lower-level
 `resolve_feature_tool_shape` for Extrude, which has no standalone
 `resolve_extrude` wrapper) against that scratch copy - the exact same
@@ -31,7 +31,9 @@ step, never a `sketch_rectangle`/`sketch_polygon`/`sketch_slot` step
 directly - the real `select_profiles` only accepts an anchor entity of
 that narrower set), a `fillet.edges.of`/`target_body_ids`/
 `source_body_ids` entry must resolve to a Body-producing step kind (never
-a `sketch`, `create_plane`, `fillet`, or `chamfer` step).
+a `sketch`, `create_plane`, `fillet`, `chamfer`, or `shell` step) - a
+`shell.body_of` entry follows the exact same rule (see `ShellStep`'s own
+docstring in `ai_plan_schemas.py`).
 
 Existing-Part editing (docs/ai-modelling/09-existing-part-editing.md): any
 field above that resolves a plan-local `local_id` may *also* hold a string
@@ -56,7 +58,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 
-from app.document.ai_plan_edges import resolve_edge_selector
+from app.document.ai_plan_edges import resolve_edge_selector, resolve_face_selector
 from app.document.ai_plan_schemas import (
     AddComponentStep,
     BooleanStep,
@@ -86,6 +88,7 @@ from app.document.ai_plan_schemas import (
     PlanStep,
     RevolveStep,
     ScaleBodyStep,
+    ShellStep,
     SketchArcStep,
     SketchCircleStep,
     SketchEllipseStep,
@@ -139,6 +142,7 @@ from app.document.models import (
     RevolveMode,
     RigidTransform,
     ScaleBodyFeature,
+    ShellFeature,
     SketchFeature,
     SubShapeType,
     SweepFeature,
@@ -149,6 +153,7 @@ from app.document.native_format import sketch_from_dict, sketch_to_dict
 from app.document.pattern import resolve_pattern
 from app.document.revolve import resolve_revolve
 from app.document.scale_body import resolve_scale_body
+from app.document.shell import resolve_shell
 from app.document.sweep import resolve_sweep
 from app.sketch.models import SketchEntityRef, SketchEntityType
 from app.sketch.profile import ProfileStatus, detect_profile
@@ -236,6 +241,8 @@ class _Resolved:
     # mate steps only, Phase 14 (`docs/assembly-scope.md` §6 `[3]`) - see
     # `StepResult.resolved_mate_references`'s own doc comment.
     resolved_mate_references: list[SubShapeRefSchema | None] | None = None
+    # shell steps only - see `StepResult.resolved_faces`'s own doc comment.
+    resolved_faces: list[SubShapeRefSchema] | None = None
 
 
 class _PlanValidator:
@@ -369,12 +376,14 @@ class _PlanValidator:
         resolved_edges = resolved.resolved_edges if resolved is not None else None
         hole_count = resolved.hole_count if resolved is not None else None
         resolved_mate_references = resolved.resolved_mate_references if resolved is not None else None
+        resolved_faces = resolved.resolved_faces if resolved is not None else None
         return StepResult(
             local_id=step.local_id,
             ok=True,
             resolved_edges=resolved_edges,
             hole_count=hole_count,
             resolved_mate_references=resolved_mate_references,
+            resolved_faces=resolved_faces,
         )
 
     def _lookup(self, local_id: str, expected_kinds: frozenset[str], field: str) -> _Resolved:
@@ -1347,6 +1356,56 @@ def _handle_chamfer(v: _PlanValidator, step: ChamferStep) -> None:
     v.resolved[step.local_id] = _Resolved(kind="chamfer", feature_id=feature.id, resolved_edges=resolved_edges)
 
 
+def _resolve_shell_faces(v: _PlanValidator, step: ShellStep) -> tuple[str, list, list[SubShapeRefSchema]]:
+    """`ShellStep`'s own `_resolve_edges` counterpart: resolves `body_of` to
+    a real Body (`v._lookup_body`/`v._resolve_body_shape` - the same "may be
+    `#N`-suffixed for a multi-solid Extrude result" resolution Fillet/
+    Chamfer's own `edges.of` already goes through), then each
+    `faces_to_remove` `CardinalDirection` entry to a real FACE `SubShapeRef`
+    on that Body via `app.document.ai_plan_edges.resolve_face_selector`.
+
+    Returns three things: the resolved real body_id (must be the exact same
+    `#N`-suffixed id every returned face ref itself carries, since
+    `ShellFeature.body_id` and `resolve_shell_from_bodies`'s own cross-body
+    check compare them directly - unlike Fillet/Chamfer, whose
+    `ChamferFeature`/`FilletFeature` have no separate `body_id` field at all,
+    Shell's own `faces_to_remove` needs one to name the Body being hollowed,
+    distinct from the faces being opened), the real face refs (for
+    `ShellFeature.faces_to_remove`), and their `StepResult.resolved_faces`
+    wire counterpart with `body_id` rewritten from this pass's own scratch
+    body id back to `body_of`'s plan local_id (plus any `#N` suffix) - the
+    exact same rewrite `_resolve_edges` already does for
+    `StepResult.resolved_edges`."""
+    target = v._lookup_body(step.body_of, "body_of")
+    bodies = compute_part_bodies(v.part, frozenset())
+    body_id, body_shape = v._resolve_body_shape(bodies, target.feature_id)
+    faces_to_remove = [resolve_face_selector(body_shape, body_id, direction) for direction in step.faces_to_remove]
+    suffix = body_id[len(target.feature_id) :]
+    resolved_faces = [
+        SubShapeRefSchema(body_id=f"{step.body_of}{suffix}", shape_type=ref.shape_type, index=ref.index)
+        for ref in faces_to_remove
+    ]
+    return body_id, faces_to_remove, resolved_faces
+
+
+def _handle_shell(v: _PlanValidator, step: ShellStep) -> None:
+    if step.thickness <= 0:
+        raise _StepError({"type": "invalid_step_payload", "message": "thickness must be greater than 0"})
+    if not step.faces_to_remove:
+        raise _StepError({"type": "invalid_step_payload", "message": "shell requires at least one faces_to_remove entry"})
+    body_id, faces_to_remove, resolved_faces = _resolve_shell_faces(v, step)
+    feature = ShellFeature(
+        id=str(uuid.uuid4()),
+        body_id=body_id,
+        faces_to_remove=faces_to_remove,
+        thickness=step.thickness,
+        thickness_direction=step.thickness_direction,
+    )
+    resolve_shell(v.part, feature)
+    v.part.add_feature(feature)
+    v.resolved[step.local_id] = _Resolved(kind="shell", feature_id=feature.id, resolved_faces=resolved_faces)
+
+
 # --- Pattern / Mirror / Create Plane -------------------------------------
 
 
@@ -1472,6 +1531,7 @@ _HANDLERS = {
     "sweep": _handle_sweep,
     "fillet": _handle_fillet,
     "chamfer": _handle_chamfer,
+    "shell": _handle_shell,
     "pattern": _handle_pattern,
     "mirror": _handle_mirror,
     "create_plane": _handle_create_plane,

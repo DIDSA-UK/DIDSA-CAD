@@ -176,6 +176,22 @@ class AssemblyTreePanel extends StatefulWidget {
   /// omitting it.
   final String rootLabel;
 
+  /// Feature 1 (tree multi-select): the Assembly Tree's counterpart to
+  /// `FeatureTreePanel.isMultiSelectMode` - true while a long-press-entered
+  /// bulk multi-select session is active. Only Occurrence (Component) rows
+  /// take part; while active, an Occurrence row tap/long-press toggles its
+  /// membership via [onMultiSelectToggle] instead of its normal behavior,
+  /// and Mate/Pattern rows plus each row's inline hide/colour/locate
+  /// buttons go inert so a stray tap can't act on a single item mid-session.
+  final bool isMultiSelectMode;
+
+  /// While [isMultiSelectMode], the selected Occurrence ids.
+  final Set<String> selectedMultiSelectIds;
+
+  /// [isMultiSelectMode]'s tap handler, called with the tapped Occurrence's
+  /// id. Unused (and may be left null) outside multi-select mode.
+  final void Function(String occurrenceId)? onMultiSelectToggle;
+
   const AssemblyTreePanel({
     super.key,
     required this.visible,
@@ -197,6 +213,9 @@ class AssemblyTreePanel extends StatefulWidget {
     this.focusedLabel,
     this.onExitFocus,
     this.rootLabel = 'Assembly',
+    this.isMultiSelectMode = false,
+    this.selectedMultiSelectIds = const {},
+    this.onMultiSelectToggle,
   });
 
   @override
@@ -289,6 +308,21 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                                   ),
                                 ),
                                 _buildParentPartRow(context),
+                                if (widget.isMultiSelectMode)
+                                  Container(
+                                    width: double.infinity,
+                                    color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                    child: Text(
+                                      'Tap components to select - ${widget.selectedMultiSelectIds.length} selected',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(
+                                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
                                 Expanded(child: _buildGroupedTree(context)),
                               ],
                             );
@@ -451,12 +485,14 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     // same "still visible, clearly flagged" treatment
     // `FeatureDto.hasLostReference` already gets elsewhere in this codebase.
     final unresolved = occurrence.resolvedPartId == null;
+    final multiSelectMode = widget.isMultiSelectMode;
+    final multiSelected = multiSelectMode && widget.selectedMultiSelectIds.contains(occurrence.id);
     return Opacity(
       opacity: occurrence.hidden ? 0.5 : 1.0,
       child: ListTile(
         dense: true,
         visualDensity: VisualDensity.compact,
-        selected: selected,
+        selected: multiSelectMode ? multiSelected : selected,
         leading: const Icon(Icons.view_in_ar_outlined, size: 24),
         title: Text(
           occurrenceDisplayName(widget.occurrences, index),
@@ -499,7 +535,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                  onPressed: widget.onLocateMissingFile == null
+                  onPressed: widget.onLocateMissingFile == null || multiSelectMode
                       ? null
                       : () => widget.onLocateMissingFile!(occurrence),
                 ),
@@ -512,7 +548,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
               if (occurrence.fixed) const Icon(Icons.push_pin, size: 18),
               // Bug report (assembly testing): the colour disc - see
               // [_buildColorDisc]'s own doc comment.
-              _buildColorDisc(context, occurrence),
+              _buildColorDisc(context, occurrence, enabled: !multiSelectMode),
               // Bug report (assembly testing): was a plain read-only
               // `Icons.visibility_off` icon, shown only while hidden - now an
               // always-visible toggle (mirrors `component_context_menu.dart`'s
@@ -529,15 +565,24 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                 visualDensity: VisualDensity.compact,
                 padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                onPressed: widget.onOccurrenceVisibilityToggle == null
+                onPressed: widget.onOccurrenceVisibilityToggle == null || multiSelectMode
                     ? null
                     : () => widget.onOccurrenceVisibilityToggle!(occurrence),
               ),
+              if (multiSelectMode)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Icon(multiSelected ? Icons.check_circle : Icons.radio_button_unchecked, size: 18),
+                ),
             ],
           ),
         ),
-        onTap: () => widget.onOccurrenceTap(occurrence),
-        onLongPress: () => widget.onOccurrenceLongPress(occurrence),
+        onTap: multiSelectMode
+            ? () => widget.onMultiSelectToggle?.call(occurrence.id)
+            : () => widget.onOccurrenceTap(occurrence),
+        onLongPress: multiSelectMode
+            ? () => widget.onMultiSelectToggle?.call(occurrence.id)
+            : () => widget.onOccurrenceLongPress(occurrence),
       ),
     );
   }
@@ -552,9 +597,9 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
   /// `showOccurrenceColourSheet` (kept out of this widget so it stays a
   /// plain data-plus-callbacks leaf, the same split every other row/section
   /// in this file already follows for its own tap handling).
-  Widget _buildColorDisc(BuildContext context, OccurrenceDto occurrence) {
+  Widget _buildColorDisc(BuildContext context, OccurrenceDto occurrence, {bool enabled = true}) {
     final hex = occurrence.color;
-    final onTap = widget.onOccurrenceColorTap == null ? null : () => widget.onOccurrenceColorTap!(occurrence);
+    final onTap = widget.onOccurrenceColorTap == null || !enabled ? null : () => widget.onOccurrenceColorTap!(occurrence);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4),
       child: InkWell(
@@ -606,8 +651,9 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           style: _rowTitleStyle,
         ),
         trailing: mate.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
-        onTap: widget.onMateTap == null ? null : () => widget.onMateTap!(mate),
-        onLongPress: widget.onMateLongPress == null ? null : () => widget.onMateLongPress!(mate),
+        onTap: widget.onMateTap == null || widget.isMultiSelectMode ? null : () => widget.onMateTap!(mate),
+        onLongPress:
+            widget.onMateLongPress == null || widget.isMultiSelectMode ? null : () => widget.onMateLongPress!(mate),
       ),
     );
   }
@@ -652,8 +698,10 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           style: _rowSubtitleStyle,
         ),
         trailing: pattern.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
-        onTap: widget.onPatternTap == null ? null : () => widget.onPatternTap!(pattern),
-        onLongPress: widget.onPatternLongPress == null ? null : () => widget.onPatternLongPress!(pattern),
+        onTap: widget.onPatternTap == null || widget.isMultiSelectMode ? null : () => widget.onPatternTap!(pattern),
+        onLongPress: widget.onPatternLongPress == null || widget.isMultiSelectMode
+            ? null
+            : () => widget.onPatternLongPress!(pattern),
       ),
     );
   }

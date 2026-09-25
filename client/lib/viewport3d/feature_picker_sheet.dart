@@ -52,6 +52,9 @@ enum FeaturePickerAction {
   moveBody,
   deleteFace,
   moveFace,
+  // Shell: body-first face-picking Direct Edit tool - opens the Shell panel
+  // straight away and the faces to open are picked from inside it.
+  shell,
 }
 
 /// Shows the fly-up bottom sheet listing every feature type the "Add" FAB's
@@ -280,6 +283,11 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                                 icon: 'assets/icons/feature/feature_move_face.svg',
                                 label: 'Move Face',
                                 action: FeaturePickerAction.moveFace,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_shell.svg',
+                                label: 'Shell',
+                                action: FeaturePickerAction.shell,
                               ),
                             ],
                           ),

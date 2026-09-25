@@ -57,7 +57,8 @@ Future<String> summarizeExistingPartForPrompt(SketchApiClient sketchApi, List<Fe
 String _referenceability(FeatureDto f) {
   switch (f.produces) {
     case 'body':
-      return 'Body - usable as target_body_ids / source_body_ids / tool_feature_id / a fillet-chamfer edges "of"';
+      return 'Body - usable as target_body_ids / source_body_ids / tool_feature_id / a fillet-chamfer edges "of" / '
+          'a shell "body_of"';
     case 'plane':
       return 'Plane - usable as a plane_feature_id';
     case 'sketch':
@@ -152,6 +153,8 @@ String _describe(FeatureDto f, Map<String, String> sketchGeometry) {
       return 'fillet r=${_fmt(f.radius)}mm on ${f.edgeRefs.length} edge(s)';
     case 'chamfer':
       return 'chamfer d=${_fmt(f.distance)}mm on ${f.edgeRefs.length} edge(s)';
+    case 'shell':
+      return 'shell t=${_fmt(f.thickness)}mm (${f.thicknessDirection}) opening ${f.facesToRemove.length} face(s)';
     case 'pattern':
       return 'pattern (${f.patternType ?? '?'})';
     case 'mirror':

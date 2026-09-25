@@ -420,6 +420,39 @@ void main() {
       expect(capturedBody.containsKey('target_body_ids'), isTrue);
       expect(capturedBody['target_body_ids'], <String>[]);
     });
+
+    test('updateExtrudeFeature sends explicit nulls for thickness/draft_angle only when asked',
+        () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'extrude',
+            'id': 'extrude-1',
+            'sketch_feature_id': 'sketch-1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'locked': false,
+            'draft_angle': 5.0,
+            'draft_outward': false,
+          }, status: 200);
+        }),
+      );
+
+      await client.updateExtrudeFeature('part-1', 'extrude-1', endDistance: 10.0);
+      expect(capturedBody.containsKey('thickness'), isFalse);
+      expect(capturedBody.containsKey('draft_angle'), isFalse);
+
+      final feature = await client.updateExtrudeFeature('part-1', 'extrude-1',
+          clearThickness: true, draftAngle: 5.0, clearDraftAngle: true, draftOutward: false);
+      expect(capturedBody.containsKey('thickness'), isTrue);
+      expect(capturedBody['thickness'], isNull);
+      expect(capturedBody['draft_angle'], 5.0);
+      expect(capturedBody['draft_outward'], isFalse);
+      expect(feature.draftAngle, 5.0);
+      expect(feature.draftOutward, isFalse);
+    });
   });
 
   group('SubShapeRefDto / SketchEntityRefDto round-trip', () {
@@ -829,6 +862,145 @@ void main() {
 
       expect(dto.edgeRefs, isEmpty);
       expect(dto.distance, isNull);
+    });
+  });
+
+  group('Shell: DocumentApiClient createShellFeature/updateShellFeature', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    Map<String, dynamic> shellJson({double thickness = 2.0, String direction = 'inward'}) => {
+          'type': 'shell',
+          'id': 'shell-1',
+          'locked': false,
+          'produces': 'body',
+          'body_id': 'body-1',
+          'faces_to_remove': [
+            {'body_id': 'body-1', 'shape_type': 'face', 'index': 5},
+          ],
+          'thickness': thickness,
+          'thickness_direction': direction,
+        };
+
+    test('createShellFeature posts to shell-features and parses the response', () async {
+      late http.Request captured;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          captured = request;
+          return jsonResponse(shellJson());
+        }),
+      );
+
+      final feature = await client.createShellFeature(
+        'part-1',
+        bodyId: 'body-1',
+        facesToRemove: const [SubShapeRefDto(bodyId: 'body-1', shapeType: 'face', index: 5)],
+        thickness: 2.0,
+        thicknessDirection: 'inward',
+      );
+
+      expect(captured.method, 'POST');
+      expect(captured.url.path, endsWith('/document/parts/part-1/shell-features'));
+      expect(jsonDecode(captured.body), {
+        'body_id': 'body-1',
+        'faces_to_remove': [
+          {'body_id': 'body-1', 'shape_type': 'face', 'index': 5},
+        ],
+        'thickness': 2.0,
+        'thickness_direction': 'inward',
+      });
+      expect(feature.type, 'shell');
+      expect(feature.bodyId, 'body-1');
+      expect(feature.facesToRemove.single.index, 5);
+      expect(feature.thickness, 2.0);
+      expect(feature.thicknessDirection, 'inward');
+    });
+
+    test('updateShellFeature only sends the fields supplied', () async {
+      late http.Request captured;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          captured = request;
+          return jsonResponse(shellJson(thickness: 3.0, direction: 'symmetric'), status: 200);
+        }),
+      );
+
+      await client.updateShellFeature('part-1', 'shell-1', thickness: 3.0, thicknessDirection: 'symmetric');
+
+      expect(captured.method, 'PATCH');
+      expect(captured.url.path, endsWith('/document/parts/part-1/shell-features/shell-1'));
+      expect(jsonDecode(captured.body), {'thickness': 3.0, 'thickness_direction': 'symmetric'});
+    });
+  });
+
+  group('Feature 3: chamfer edge_options (angle + flip)', () {
+    http.Response jsonResponse(Object body, {int status = 201}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    Map<String, dynamic> chamferJson({Map<String, dynamic>? edgeOptions}) => {
+          'type': 'chamfer',
+          'id': 'chamfer-1',
+          'locked': false,
+          'produces': 'body',
+          'edge_refs': [
+            {'body_id': 'body-1', 'shape_type': 'edge', 'index': 0},
+          ],
+          'distance': 1.0,
+          if (edgeOptions != null) 'edge_options': edgeOptions,
+        };
+
+    test('FeatureDto.fromJson parses string-keyed edge_options', () {
+      final dto = FeatureDto.fromJson(chamferJson(edgeOptions: {
+        '0': {
+          'face_ref': {'body_id': 'body-1', 'shape_type': 'face', 'index': 2},
+          'angle': 30.0,
+          'flip': true,
+        },
+      }));
+      final opts = dto.edgeOptions[0]!;
+      expect(opts.angle, 30.0);
+      expect(opts.flip, isTrue);
+      expect(opts.faceRef!.index, 2);
+    });
+
+    test('FeatureDto.fromJson defaults edgeOptions to empty', () {
+      expect(FeatureDto.fromJson(chamferJson()).edgeOptions, isEmpty);
+    });
+
+    test('createChamferFeature omits edge_options when empty and sends them when set', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return jsonResponse(chamferJson());
+        }),
+      );
+      const refs = [SubShapeRefDto(bodyId: 'body-1', shapeType: 'edge', index: 0)];
+
+      await client.createChamferFeature('part-1', edgeRefs: refs, distance: 1.0);
+      await client.createChamferFeature('part-1',
+          edgeRefs: refs,
+          distance: 1.0,
+          edgeOptions: const {0: ChamferEdgeOptionsDto(angle: 30.0, flip: true)});
+
+      expect(bodies[0].containsKey('edge_options'), isFalse);
+      expect(bodies[1]['edge_options'], {
+        '0': {'angle': 30.0, 'flip': true},
+      });
+    });
+
+    test('updateChamferFeature sends an empty edge_options map to clear', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse(chamferJson(), status: 200);
+        }),
+      );
+
+      await client.updateChamferFeature('part-1', 'chamfer-1', edgeOptions: const {});
+
+      expect(capturedBody, {'edge_options': <String, dynamic>{}});
     });
   });
 

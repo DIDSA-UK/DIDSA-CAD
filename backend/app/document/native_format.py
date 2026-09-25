@@ -27,6 +27,7 @@ from app.document.models import (
     BevelPairMemberSpec,
     BooleanFeature,
     BooleanOperation,
+    ChamferEdgeOptions,
     ChamferFeature,
     ComponentPattern,
     ComponentPatternAxis,
@@ -70,6 +71,7 @@ from app.document.models import (
     PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
+    PatternOrientationMode,
     PatternType,
     PlanarSurfaceFeature,
     PlanetaryGearFeature,
@@ -84,6 +86,7 @@ from app.document.models import (
     RigidTransform,
     RuledSurfaceFeature,
     ScaleBodyFeature,
+    ShellFeature,
     SketchFeature,
     SketchOrEdgeRef,
     SolidFromSurfacesFeature,
@@ -715,6 +718,23 @@ def _subshape_ref_from_dict(data: dict) -> SubShapeRef:
     )
 
 
+def _chamfer_edge_options_to_dict(opts: ChamferEdgeOptions) -> dict:
+    return {
+        "face_ref": _subshape_ref_to_dict(opts.face_ref) if opts.face_ref is not None else None,
+        "angle": opts.angle,
+        "flip": opts.flip,
+    }
+
+
+def _chamfer_edge_options_from_dict(data: dict) -> ChamferEdgeOptions:
+    face_ref = data.get("face_ref")
+    return ChamferEdgeOptions(
+        face_ref=_subshape_ref_from_dict(face_ref) if face_ref else None,
+        angle=data.get("angle"),
+        flip=bool(data.get("flip", False)),
+    )
+
+
 def _sketch_or_edge_ref_to_dict(ref: SketchOrEdgeRef) -> dict:
     """`SketchOrEdgeRef`'s native-export counterpart to `app.document.
     router._sketch_or_edge_ref_to_schema` - same flat-fields-plus-optional-
@@ -972,6 +992,8 @@ def _feature_to_dict(feature: Feature) -> dict:
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
             "thickness": feature.thickness,
             "thickness_direction": feature.thickness_direction.value,
+            "draft_angle": feature.draft_angle,
+            "draft_outward": feature.draft_outward,
         }
     if isinstance(feature, SurfaceFeature):
         return {
@@ -1075,6 +1097,11 @@ def _feature_to_dict(feature: Feature) -> dict:
             "id": feature.id,
             "edge_refs": [_subshape_ref_to_dict(r) for r in feature.edge_refs],
             "distance": feature.distance,
+            # Feature 3: JSON object keys must be strings - converted back
+            # to int on read. Absent in pre-Feature-3 files (read as {}).
+            "edge_options": {
+                str(i): _chamfer_edge_options_to_dict(opts) for i, opts in sorted(feature.edge_options.items())
+            },
         }
     if isinstance(feature, RevolveFeature):
         return {
@@ -1166,6 +1193,15 @@ def _feature_to_dict(feature: Feature) -> dict:
             "id": feature.id,
             "face_refs": [_subshape_ref_to_dict(r) for r in feature.face_refs],
         }
+    if isinstance(feature, ShellFeature):
+        return {
+            "type": "shell",
+            "id": feature.id,
+            "body_id": feature.body_id,
+            "faces_to_remove": [_subshape_ref_to_dict(r) for r in feature.faces_to_remove],
+            "thickness": feature.thickness,
+            "thickness_direction": feature.thickness_direction.value,
+        }
     if isinstance(feature, MoveFaceFeature):
         return {
             "type": "move_face",
@@ -1208,6 +1244,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "count_angular": feature.count_angular,
             "angle_total": feature.angle_total,
             "reverse_angular": feature.reverse_angular,
+            "orientation_mode": feature.orientation_mode.value,
             "skip_indices": list(feature.skip_indices),
             "merge": feature.merge.value,
             # Phase 8: mirrors MirrorFeature's own identical field above.
@@ -1344,6 +1381,8 @@ def _feature_from_dict(data: dict) -> Feature:
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
             thickness=data.get("thickness"),
             thickness_direction=ThicknessDirection(data.get("thickness_direction", ThicknessDirection.OUTWARD.value)),
+            draft_angle=data.get("draft_angle"),
+            draft_outward=data.get("draft_outward", True),
         )
     if feature_type == "surface":
         return SurfaceFeature(
@@ -1434,6 +1473,9 @@ def _feature_from_dict(data: dict) -> Feature:
             id=feature_id,
             edge_refs=[_subshape_ref_from_dict(r) for r in data.get("edge_refs", [])],
             distance=data.get("distance", 0.0),
+            edge_options={
+                int(i): _chamfer_edge_options_from_dict(opts) for i, opts in data.get("edge_options", {}).items()
+            },
         )
     if feature_type == "revolve":
         return RevolveFeature(
@@ -1518,6 +1560,14 @@ def _feature_from_dict(data: dict) -> Feature:
             id=feature_id,
             face_refs=[_subshape_ref_from_dict(r) for r in data.get("face_refs", [])],
         )
+    if feature_type == "shell":
+        return ShellFeature(
+            id=feature_id,
+            body_id=_require(data, "body_id"),
+            faces_to_remove=[_subshape_ref_from_dict(r) for r in data.get("faces_to_remove", [])],
+            thickness=data.get("thickness", 0.0),
+            thickness_direction=ThicknessDirection(data.get("thickness_direction", ThicknessDirection.OUTWARD.value)),
+        )
     if feature_type == "move_face":
         raw_delta = data.get("delta")
         return MoveFaceFeature(
@@ -1563,6 +1613,11 @@ def _feature_from_dict(data: dict) -> Feature:
             count_angular=data.get("count_angular", 1),
             angle_total=data.get("angle_total", 360.0),
             reverse_angular=data.get("reverse_angular", False),
+            # `orientation_mode` defaults to ROTATE_WITH_PATTERN (the only
+            # behavior that existed before this field) for older files.
+            orientation_mode=PatternOrientationMode(
+                data.get("orientation_mode", PatternOrientationMode.ROTATE_WITH_PATTERN.value)
+            ),
             # `skip_indices` (Phase 3) defaults to empty for any Pattern
             # persisted before this field existed (Phase 2/4).
             skip_indices=list(data.get("skip_indices", [])),

@@ -134,6 +134,13 @@ class PatternPanel extends StatefulWidget {
   final void Function(double angle)? onAngleTotalChanged;
   final void Function(bool reverse)? onReverseAngularChanged;
 
+  /// Circular only: how each instance is oriented as it orbits the axis
+  /// (see [PatternOrientationMode]). The selector is only shown when
+  /// [onOrientationModeChanged] is non-null, so callers that don't support
+  /// it (the assembly-level Component Pattern) simply omit it.
+  final PatternOrientationMode orientationMode;
+  final void Function(PatternOrientationMode mode)? onOrientationModeChanged;
+
   /// Pattern/Mirror scoping's Phase 5 (`docs/pattern-mirror-scope.md`
   /// §2.10/§4): `MergeMode.keepSeparate` (the default - every realized
   /// instance registers as its own Body) or `MergeMode.fuseIntoOne` (every
@@ -206,6 +213,8 @@ class PatternPanel extends StatefulWidget {
     this.onCountAngularChanged,
     this.onAngleTotalChanged,
     this.onReverseAngularChanged,
+    this.orientationMode = PatternOrientationMode.rotateWithPattern,
+    this.onOrientationModeChanged,
     required this.merge,
     required this.onMergeChanged,
     this.sourceFeatureIds = const [],
@@ -632,6 +641,31 @@ class _PatternPanelState extends State<PatternPanel> {
             ),
           ],
         ),
+        if (widget.onOrientationModeChanged != null) ...[
+          const SizedBox(height: 12),
+          Text('Orientation',
+              style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          const SizedBox(height: 6),
+          SegmentedButton<PatternOrientationMode>(
+            segments: const [
+              ButtonSegment(
+                  value: PatternOrientationMode.rotateWithPattern,
+                  label: Text('Rotate'),
+                  tooltip: 'Each copy rotates with the pattern'),
+              ButtonSegment(
+                  value: PatternOrientationMode.maintainOrientation,
+                  label: Text('Keep'),
+                  tooltip: 'Each copy keeps the original orientation (no spin)'),
+              ButtonSegment(
+                  value: PatternOrientationMode.radialToAxis,
+                  label: Text('Radial'),
+                  tooltip: 'Each copy faces the axis the same way the original does'),
+            ],
+            selected: {widget.orientationMode},
+            onSelectionChanged: (selection) =>
+                widget.onOrientationModeChanged!(selection.first),
+          ),
+        ],
         _skipInstancesHint(totalCount: _countAngular ?? 1),
       ],
     );

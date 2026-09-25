@@ -8,6 +8,12 @@ import 'resizable_tool_panel.dart';
 /// to [FilletPanel], substituting a distance field for the radius field
 /// (Chamfer has only the one construction method too, same as Fillet, so
 /// there is no per-mode branching to do here either).
+///
+/// Feature 3: an "Angle" checkbox (mirroring [ExtrudePanel]'s thin-wall
+/// gating) reveals an Angle field and a Flip toggle - a distance-angle
+/// chamfer, distance measured along the reference face and angle from it;
+/// Flip swaps which of each edge's two adjacent faces is the reference.
+/// v1 applies one angle/flip uniformly to every selected edge.
 class ChamferPanel extends StatefulWidget {
   /// 'Chamfer' when creating a brand-new Feature (default), 'Edit Chamfer'
   /// when [PartScreen] opened this to edit an already-existing one instead -
@@ -23,9 +29,26 @@ class ChamferPanel extends StatefulWidget {
 
   final double initialDistance;
 
+  /// Feature 3 (Chamfer angle + flip): the angle (degrees) this panel opens
+  /// with - null opens with the Angle toggle off (a plain symmetric
+  /// distance chamfer, the pre-Feature-3 behaviour).
+  final double? initialAngle;
+
+  /// Feature 3: whether the Flip toggle opens already on.
+  final bool initialFlip;
+
   /// Fired on every valid distance edit - same live-preview-drives-a-
   /// debounced-PATCH pattern [FilletPanel.onRadiusChanged] already uses.
   final void Function(double distance)? onDistanceChanged;
+
+  /// Feature 3: fired whenever the Angle toggle, Angle field or Flip toggle
+  /// changes to a *valid* state - `angle` is null when the Angle toggle is
+  /// off (symmetric chamfer), otherwise a value strictly inside (0, 180)
+  /// degrees (the backend's `_validate_chamfer_edge_options` range). Not
+  /// fired while the Angle field holds an invalid value (Confirm is
+  /// disabled instead). In v1 [PartScreen] applies the result uniformly to
+  /// every selected edge.
+  final void Function(double? angle, bool flip)? onAngleChanged;
 
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
@@ -35,7 +58,10 @@ class ChamferPanel extends StatefulWidget {
     this.title = 'Chamfer',
     this.tooltip,
     required this.initialDistance,
+    this.initialAngle,
+    this.initialFlip = false,
     this.onDistanceChanged,
+    this.onAngleChanged,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -54,12 +80,24 @@ class _ChamferPanelState extends State<ChamferPanel> {
   /// nothing valid to preview or confirm.
   double? _distance;
 
+  /// Feature 3: whether the Angle toggle is on - mirrors [ExtrudePanel]'s
+  /// `_isThin` gating (a checkbox that reveals extra fields).
+  late bool _useAngle;
+  late final TextEditingController _angleController;
+  late bool _flip;
+
+  static const double _defaultAngle = 45;
+
   @override
   void initState() {
     super.initState();
     _distanceController =
         TextEditingController(text: _formatDistance(widget.initialDistance));
     _distance = widget.initialDistance > 0 ? widget.initialDistance : null;
+    _useAngle = widget.initialAngle != null;
+    _angleController =
+        TextEditingController(text: _formatDistance(widget.initialAngle ?? _defaultAngle));
+    _flip = widget.initialFlip;
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits the distance field - onDistanceChanged
     // was only ever wired to that callback, never fired for the initial
@@ -74,6 +112,7 @@ class _ChamferPanelState extends State<ChamferPanel> {
   @override
   void dispose() {
     _distanceController.dispose();
+    _angleController.dispose();
     super.dispose();
   }
 
@@ -81,13 +120,40 @@ class _ChamferPanelState extends State<ChamferPanel> {
       ? value.toStringAsFixed(0)
       : value.toString();
 
-  bool get _canConfirm => _distance != null;
+  /// Feature 3: the Angle field's value when it parses and lies strictly
+  /// inside (0, 180) degrees, else null. Only meaningful while [_useAngle].
+  double? get _angle {
+    final value = double.tryParse(_angleController.text);
+    return (value != null && value > 0 && value < 180) ? value : null;
+  }
+
+  bool get _canConfirm => _distance != null && (!_useAngle || _angle != null);
 
   void _emitDistanceChange() {
     final value = double.tryParse(_distanceController.text);
     final distance = (value != null && value > 0) ? value : null;
     setState(() => _distance = distance);
     if (distance != null) widget.onDistanceChanged?.call(distance);
+  }
+
+  void _emitAngleChange() {
+    setState(() {});
+    if (!_useAngle) {
+      widget.onAngleChanged?.call(null, _flip);
+      return;
+    }
+    final angle = _angle;
+    if (angle != null) widget.onAngleChanged?.call(angle, _flip);
+  }
+
+  void _onAngleToggled(bool value) {
+    _useAngle = value;
+    _emitAngleChange();
+  }
+
+  void _onFlipToggled() {
+    _flip = !_flip;
+    _emitAngleChange();
   }
 
   @override
@@ -117,6 +183,49 @@ class _ChamferPanelState extends State<ChamferPanel> {
               fontSize: 12,
             ),
           ),
+          const SizedBox(height: 4),
+          CheckboxListTile(
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('Angle'),
+            value: _useAngle,
+            onChanged: (value) => _onAngleToggled(value ?? false),
+          ),
+          if (_useAngle) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('chamfer-angle-field'),
+                    controller: _angleController,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    decoration: const InputDecoration(labelText: 'Angle (°)'),
+                    onChanged: (_) => _emitAngleChange(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  key: const ValueKey('chamfer-flip-button'),
+                  tooltip: 'Flip reference face',
+                  isSelected: _flip,
+                  icon: const Icon(Icons.swap_horiz),
+                  selectedIcon: const Icon(Icons.swap_horiz),
+                  style: IconButton.styleFrom(
+                    backgroundColor: _flip ? Theme.of(context).colorScheme.secondaryContainer : null,
+                  ),
+                  onPressed: _onFlipToggled,
+                ),
+              ],
+            ),
+            if (_angle == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  'Enter an angle between 0 and 180',
+                  style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
+                ),
+              ),
+          ],
           const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,

@@ -543,6 +543,8 @@ sealed class AiPlanStep {
         return AiFilletStep.fromJson(json);
       case 'chamfer':
         return AiChamferStep.fromJson(json);
+      case 'shell':
+        return AiShellStep.fromJson(json);
       case 'pattern':
         return AiPatternStep.fromJson(json);
       case 'mirror':
@@ -1115,6 +1117,49 @@ class AiChamferStep extends AiPlanStep {
 
   @override
   Map<String, dynamic> toJson() => {'local_id': localId, 'kind': kind, 'edges': edges.toJson(), 'distance': distance};
+}
+
+/// `ShellStep` (`ai_plan_schemas.py`) - hollows the solid Body `bodyOf` into
+/// a thin-walled shell. No face-selector object analogous to `AiEdgeSelector`
+/// exists (see `ShellStep`'s own doc comment in `ai_plan_schemas.py`):
+/// `facesToRemove` reuses `AiCardinalDirection` directly - each entry names
+/// exactly one planar face of `bodyOf`'s own current shape, resolved
+/// server-side. `thicknessDirection` is a plain wire string ('outward'/
+/// 'inward'/'symmetric'), mirroring `DocumentApiClient.createShellFeature`'s
+/// own convention rather than a dedicated enum.
+class AiShellStep extends AiPlanStep {
+  final String bodyOf;
+  final List<AiCardinalDirection> facesToRemove;
+  final double thickness;
+  final String thicknessDirection;
+
+  const AiShellStep({
+    required super.localId,
+    required this.bodyOf,
+    required this.facesToRemove,
+    required this.thickness,
+    this.thicknessDirection = 'outward',
+  }) : super(kind: 'shell');
+
+  factory AiShellStep.fromJson(Map<String, dynamic> json) => AiShellStep(
+        localId: json['local_id'] as String,
+        bodyOf: json['body_of'] as String,
+        facesToRemove: [
+          for (final direction in json['faces_to_remove'] as List) AiCardinalDirection.fromWire(direction as String),
+        ],
+        thickness: _asDouble(json['thickness']),
+        thicknessDirection: json['thickness_direction'] as String? ?? 'outward',
+      );
+
+  @override
+  Map<String, dynamic> toJson() => {
+        'local_id': localId,
+        'kind': kind,
+        'body_of': bodyOf,
+        'faces_to_remove': [for (final direction in facesToRemove) direction.wireValue],
+        'thickness': thickness,
+        'thickness_direction': thicknessDirection,
+      };
 }
 
 class AiPatternStep extends AiPlanStep {

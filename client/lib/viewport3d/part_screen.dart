@@ -90,10 +90,12 @@ import 'revolve_surface_panel.dart';
 import 'move_body_panel.dart';
 import 'move_face_panel.dart';
 import 'move_rotate_component_panel.dart';
+import 'multi_select_action_bar.dart';
 import 'occurrence_colour_sheet.dart';
 import 'rollback.dart';
 import 'ruled_surface_panel.dart';
 import 'scale_body_panel.dart';
+import 'shell_panel.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
 import 'select_other_sheet.dart';
@@ -106,6 +108,7 @@ import 'sketch_orientation_indicator.dart';
 import 'split_panel.dart';
 import 'surface_panel.dart';
 import 'swept_surface_panel.dart';
+import 'tree_multi_select_controller.dart';
 import 'sweep_panel.dart';
 import 'svg_icon.dart';
 import 'scene_preferences.dart';
@@ -1862,6 +1865,7 @@ class _PartScreenState extends State<PartScreen> {
       !_moveBodyActive &&
       !_deleteFaceActive &&
       !_moveFaceActive &&
+      !_shellActive &&
       !_profilePickerActive &&
       !_pathPickerActive &&
       !_measureActive;
@@ -1900,6 +1904,7 @@ class _PartScreenState extends State<PartScreen> {
           !_moveBodyActive &&
           !_deleteFaceActive &&
           !_moveFaceActive &&
+          !_shellActive &&
           !_profilePickerActive &&
           !_pathPickerActive &&
           !_measureActive) ||
@@ -2019,6 +2024,7 @@ class _PartScreenState extends State<PartScreen> {
       _moveBodyActive ||
       _deleteFaceActive ||
       _moveFaceActive ||
+      _shellActive ||
       _moveRotateComponentActive ||
       _profilePickerActive ||
       _pathPickerActive ||
@@ -2047,6 +2053,35 @@ class _PartScreenState extends State<PartScreen> {
   /// would otherwise render at the same time as `ComponentSelectionToolbar`'s
   /// identically-labelled buttons.
   bool _componentContextMenuOpen = false;
+
+  /// Feature 1 (tree multi-select): the Build Tree's long-press bulk
+  /// multi-select session - its keys are [TreeMultiSelectKeys]-encoded
+  /// Feature/Body/Surface row keys. At most one of this and
+  /// [_assemblyMultiSelect] is ever active (see [_enterMultiSelect]).
+  final TreeMultiSelectController _buildMultiSelect = TreeMultiSelectController(TreeMultiSelectScope.buildTree);
+
+  /// Feature 1 (tree multi-select): the Assembly Tree's counterpart to
+  /// [_buildMultiSelect] - its keys are bare Occurrence ids.
+  final TreeMultiSelectController _assemblyMultiSelect =
+      TreeMultiSelectController(TreeMultiSelectScope.assemblyTree);
+
+  /// Whichever tree multi-select session is active, if any.
+  TreeMultiSelectController? get _activeMultiSelect => _buildMultiSelect.active
+      ? _buildMultiSelect
+      : _assemblyMultiSelect.active
+          ? _assemblyMultiSelect
+          : null;
+
+  /// True while a bulk Hide/Show/Delete from [MultiSelectActionBar] is in
+  /// flight - disables that bar's buttons so a second tap can't start an
+  /// overlapping batch.
+  bool _multiSelectBusy = false;
+
+  /// The Occurrence whose long-press started the current Assembly Tree
+  /// session - [_multiSelectMore]'s fallback when that row is no longer in
+  /// [_occurrences] (e.g. it's the currently-focused component, which the
+  /// tree lists only as its breadcrumb root, not as one of its own rows).
+  OccurrenceDto? _assemblyMultiSelectAnchor;
 
   /// Bug report ("if one body is entirely inside another body, it cannot be
   /// selected"): fired by [PartViewport.onSelectOtherRequested] once the
@@ -2552,6 +2587,18 @@ class _PartScreenState extends State<PartScreen> {
       );
       return;
     }
+    // Shell: face picking is restricted to the one Body being shelled - a
+    // face tap on any other Body (or on a bare Surface, which has no volume
+    // to hollow) is ignored outright rather than toggled, so the session
+    // can never drift into a `mixed_body_selection`. When no Body is fixed
+    // yet (guided "Add" entry with several solid Bodies and none selected),
+    // the first valid face tap fixes it for the rest of the session.
+    if (_shellActive && entity.kind == SelectionEntityKind.face) {
+      if (_bodyIsSurface(entity.bodyId)) return;
+      final shellBodyId = _currentShellBodyId();
+      if (shellBodyId != null && entity.bodyId != shellBodyId) return;
+      _shellBodyId ??= entity.bodyId;
+    }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
@@ -2570,6 +2617,7 @@ class _PartScreenState extends State<PartScreen> {
     // above already does.
     if (_deleteFaceActive) _scheduleDeleteFacePreview();
     if (_moveFaceActive) _scheduleMoveFacePreview();
+    if (_shellActive) _scheduleShellPreview();
   }
 
   /// Pattern/Mirror scoping Phase 1: [_toggleSelectedEntity]'s plane-like-kind
@@ -2898,6 +2946,8 @@ class _PartScreenState extends State<PartScreen> {
     List<SketchEntityRefDto> profileRefs,
     double? thickness,
     ThicknessDirection thicknessDirection,
+    double? draftAngle,
+    bool draftOutward,
   })? _extrudeEditSnapshot;
 
   /// Prompt G: which outer profile(s) of [_extrudeSketchFeature] to use -
@@ -2926,6 +2976,15 @@ class _PartScreenState extends State<PartScreen> {
   /// through [_ensureExtrudeFeatureExists] the same way [_extrudeThickness]
   /// is.
   ThicknessDirection _extrudeThicknessDirection = ThicknessDirection.outward;
+
+  /// Feature 5 (Extrude draft): `null` (default) is no draft - see
+  /// [ExtrudePanel.initialDraftAngle]'s own doc comment. Threaded through
+  /// [_ensureExtrudeFeatureExists] the same way [_extrudeThickness] is.
+  double? _extrudeDraftAngle;
+
+  /// Meaningful only when [_extrudeDraftAngle] is set - see
+  /// [ExtrudePanel.initialDraftOutward].
+  bool _extrudeDraftOutward = true;
 
   /// Debounces the panel's live-preview PATCH/POST + mesh refresh by 500ms
   /// after the last field change, per the brief - cancelled outright by
@@ -4551,6 +4610,78 @@ class _PartScreenState extends State<PartScreen> {
     plane: false,
   );
 
+  // --- Shell ------------------------------------------------------------------
+  // Hollows one solid Body, opening every picked face and giving every
+  // remaining face a uniform wall thickness (v1 - no per-face overrides).
+  // Body-first, like a typical CAD Shell tool: the session is started from a
+  // single selected solid Body (`contextActionsFor`'s Body-only branch) or
+  // the guided "Add > Direct Edit > Shell" entry, the panel opens with zero
+  // faces picked, and the faces to open are then tapped in the viewport
+  // while the panel is open (restricted to [_shellBodyId]'s own faces).
+  // Mirrors Delete Face's continuous face re-pick session shape (preview-
+  // overlay mesh, self-exclusion rollback, generic accumulate-toggle) plus
+  // Chamfer's debounced live-tunable numeric field.
+
+  /// True while a Shell session (create or B4 edit) is live - mirrors
+  /// [_deleteFaceActive].
+  bool _shellActive = false;
+
+  /// The Body this Shell session hollows - fixed for the whole session once
+  /// known. Set at entry when started from a Body selection (or an edit, or
+  /// a guided entry with an unambiguous Body), otherwise locked to the Body
+  /// of the first face picked (see [_toggleSelectedEntity]'s Shell guard).
+  /// Face taps on any other Body are ignored while it's set.
+  String? _shellBodyId;
+
+  /// The ShellFeature created (or, in edit mode, already existing) for the
+  /// panel session - mirrors [_previewDeleteFaceFeatureId].
+  String? _previewShellFeatureId;
+
+  /// B4: non-null while [ShellPanel] is editing an *already-existing*
+  /// ShellFeature - mirrors [_editingDeleteFaceFeatureId].
+  String? _editingShellFeatureId;
+
+  /// B4: the edited Feature's own stored values from just before editing
+  /// started - mirrors [_chamferEditSnapshot].
+  ({
+    String bodyId,
+    List<SubShapeRefDto> facesToRemove,
+    double thickness,
+    ThicknessDirection thicknessDirection,
+  })? _shellEditSnapshot;
+
+  /// [_selectedEntities]' value from just before the panel opened.
+  Set<SelectionEntityRef>? _entitiesBeforeShell;
+
+  /// The panel's live thickness/direction values - mirrors
+  /// [_chamferDistance].
+  double _shellThickness = 1.0;
+  ThicknessDirection _shellThicknessDirection = ThicknessDirection.outward;
+
+  Timer? _shellDebounce;
+
+  /// Mirrors [_deleteFacePreviewBodyId].
+  String? _shellPreviewBodyId;
+
+  /// Mirrors [_deleteFacePreviewMesh].
+  MeshDto? _shellPreviewMesh;
+
+  /// Locks [_selectionFilterOverrides] to faces only for the whole session -
+  /// mirrors [_deleteFaceSelectionFilter].
+  static const _shellSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
   // --- Direct Editing family, fourth entry: Delete Face ------------------------
   // V2 (multi-face, non-planar): whole-face *multi*-pick, ambient entry plus
   // a guided "Add" FAB entry (`_startDeleteFacePicker`), no live-tunable
@@ -5055,6 +5186,9 @@ class _PartScreenState extends State<PartScreen> {
   double _patternAngleTotal = 360.0;
   bool _patternReverseAngular = false;
 
+  /// Circular only - see [PatternPanel.orientationMode].
+  PatternOrientationMode _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
+
   /// Pattern/Mirror scoping's Phase 3: linear indices (Rectangular's own
   /// `i * count_2 + j`, or Circular's own angular-step `i` - whichever
   /// [_patternMode] implies) of instances suppressed rather than created -
@@ -5105,6 +5239,7 @@ class _PartScreenState extends State<PartScreen> {
     int countAngular,
     double angleTotal,
     bool reverseAngular,
+    PatternOrientationMode orientationMode,
     List<int> skipIndices,
     List<String> sourceFeatureIds,
     MergeMode merge,
@@ -5214,7 +5349,8 @@ class _PartScreenState extends State<PartScreen> {
 
   /// B4: the edited Feature's own stored values from just before editing
   /// started - mirrors [_filletEditSnapshot].
-  ({List<SubShapeRefDto> edgeRefs, double distance})? _chamferEditSnapshot;
+  ({List<SubShapeRefDto> edgeRefs, double distance, Map<int, ChamferEdgeOptionsDto> edgeOptions})?
+      _chamferEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - mirrors
   /// [_entitiesBeforeFillet].
@@ -5222,6 +5358,15 @@ class _PartScreenState extends State<PartScreen> {
 
   /// The panel's live distance field value - mirrors [_filletRadius].
   double _chamferDistance = 1.0;
+
+  /// Feature 3: the panel's live Angle value (degrees) - null while its
+  /// Angle toggle is off (plain symmetric chamfer). v1 applies it, with
+  /// [_chamferFlip], uniformly to every selected edge - see
+  /// [_currentChamferEdgeOptions].
+  double? _chamferAngle;
+
+  /// Feature 3: the panel's live Flip toggle.
+  bool _chamferFlip = false;
 
   Timer? _chamferDebounce;
 
@@ -5502,6 +5647,7 @@ class _PartScreenState extends State<PartScreen> {
     _ProfilePickerTarget target,
     List<Set<String>> loops,
   ) {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _profilePickerActive = true;
       _profilePickerTarget = target;
@@ -5739,6 +5885,7 @@ class _PartScreenState extends State<PartScreen> {
     List<SketchEntityRefDto> profileRefs, {
     _PathPickerTarget target = _PathPickerTarget.sweep,
   }) {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _pathPickerActive = true;
       _pathPickerTarget = target;
@@ -6396,6 +6543,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startRevolveSketchPicker] exactly, for the Sweep picker.
   void _startSweepSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _sweepSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -7094,6 +7242,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_startSweepSketchPicker], minus the eligibility refresh (see
   /// this block's own top comment for why every Sketch is pickable here).
   void _startLoftSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _loftSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -7229,6 +7378,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startLoftSketchPicker] exactly.
   void _startLoftSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _loftSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -7626,6 +7776,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startLoftSurfaceSketchPicker] exactly.
   void _startRuledSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _ruledSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -7879,6 +8030,7 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   void _startThickenSourcePicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _thickenSourcePickerActive = true;
       _featureTreeVisible = true;
@@ -8061,6 +8213,7 @@ class _PartScreenState extends State<PartScreen> {
   bool get _knitSurfaceActive => _knitSurfaceSurfaces.length >= 2;
 
   void _startKnitSurfacePicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _knitSurfacePickerActive = true;
       _featureTreeVisible = true;
@@ -8215,6 +8368,7 @@ class _PartScreenState extends State<PartScreen> {
   bool get _solidFromSurfacesActive => _solidFromSurfacesSurfaces.length >= 2;
 
   void _startSolidFromSurfacesPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _solidFromSurfacesPickerActive = true;
       _featureTreeVisible = true;
@@ -8435,6 +8589,7 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   void _startOffsetSurfaceSourcePicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _offsetSurfaceSourcePickerActive = true;
       _featureTreeVisible = true;
@@ -9931,6 +10086,7 @@ class _PartScreenState extends State<PartScreen> {
     int countAngular = 1,
     double angleTotal = 360.0,
     bool reverseAngular = false,
+    PatternOrientationMode orientationMode = PatternOrientationMode.rotateWithPattern,
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
     String? toolFeatureId,
@@ -9956,6 +10112,7 @@ class _PartScreenState extends State<PartScreen> {
         countAngular: countAngular,
         angleTotal: angleTotal,
         reverseAngular: reverseAngular,
+        orientationMode: orientationMode,
         skipIndices: skipIndices,
         merge: merge,
         toolFeatureId: toolFeatureId,
@@ -11211,6 +11368,8 @@ class _PartScreenState extends State<PartScreen> {
         _startDeleteFacePicker();
       case FeaturePickerAction.moveFace:
         _startMoveFacePicker();
+      case FeaturePickerAction.shell:
+        _startShellPicker();
     }
   }
 
@@ -11267,6 +11426,7 @@ class _PartScreenState extends State<PartScreen> {
   /// background so the tree can start dimming ineligible Sketches once that
   /// resolves.
   void _startSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _sketchPickerActive = true;
       _featureTreeVisible = true;
@@ -11351,6 +11511,7 @@ class _PartScreenState extends State<PartScreen> {
   /// immediately pickable for a Surface, so [_pickableSurfaceSketchIds] is
   /// just every current Sketch Feature's id, computed synchronously.
   void _startSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _surfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -11601,6 +11762,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startSketchPicker] exactly, for the Revolve picker.
   void _startRevolveSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _revolveSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -11831,6 +11993,11 @@ class _PartScreenState extends State<PartScreen> {
       // delete_face branch above exactly - rollback is ended by
       // _confirmMoveFace/_cancelMoveFace instead.
       final opened = await _openMoveFacePanelForEdit(feature);
+      if (!opened) await _endRollback();
+    } else if (feature.type == 'shell') {
+      // Shell: mirrors the delete_face branch above exactly - rollback is
+      // ended by _confirmShell/_cancelShell instead.
+      final opened = await _openShellPanelForEdit(feature);
       if (!opened) await _endRollback();
     } else if (feature.type == 'boolean') {
       // Boolean family, Subtract/Common: mirrors the merge branch just
@@ -12121,6 +12288,476 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  // --- Feature 1: tree multi-select ------------------------------------------
+  // Long-pressing a Build Tree (Body/Surface/Plane/Feature) or Assembly Tree
+  // (Occurrence) row enters a bulk multi-select session with that row
+  // selected; while active, row taps toggle membership instead of doing
+  // their normal thing, and [MultiSelectActionBar] (inside a
+  // [SelectionListDrawer]) offers Hide/Show, Delete and Cancel over the
+  // whole selection. Long-press used to open each row's single-item context
+  // menu directly - that menu is still one tap away via the bar's "More"
+  // button while exactly one row is selected (see [_multiSelectMore]), so
+  // none of its non-hide/delete actions (Extrude, Pattern, Assign Material,
+  // Make Focus, ...) became unreachable.
+
+  /// Concurrency cap for the per-item HTTP loops below - no bulk endpoints
+  /// exist server-side, so a bulk action is N single-item calls, sent at
+  /// most this many at a time.
+  static const int _multiSelectBatchSize = 8;
+
+  /// The single "leave every special tree/picker mode" switch - called on
+  /// entry to *any* such mode (every `_startXxxPicker`, the Component
+  /// Pattern panel's "+ Add source" picking toggle, and both tree
+  /// multi-select sessions), so at most one is ever active at a time.
+  /// Each picker's own `_cancelXxx` does the actual teardown (a no-op
+  /// guard skips inactive ones). Deliberately does *not* touch an open
+  /// tool panel's own internal picking steps (Mirror/Delete Body/etc.) -
+  /// those can only be cancelled through their panel's own async Cancel
+  /// path, and the trees that enter multi-select are hidden while any such
+  /// panel is open anyway (see [_featureTreePanelVisible]).
+  void _exitAllPickerAndSelectModes() {
+    _exitMultiSelect();
+    if (_sketchPickerActive) _cancelSketchPicker();
+    if (_surfaceSketchPickerActive) _cancelSurfaceSketchPicker();
+    if (_revolveSketchPickerActive) _cancelRevolveSketchPicker();
+    if (_sweepSketchPickerActive) _cancelSweepSketchPicker();
+    if (_loftSketchPickerActive) _cancelLoftSketchPicker();
+    if (_loftSurfaceSketchPickerActive) _cancelLoftSurfaceSketchPicker();
+    if (_ruledSurfaceSketchPickerActive) _cancelRuledSurfaceSketchPicker();
+    if (_planarSurfaceSketchPickerActive) _cancelPlanarSurfaceSketchPicker();
+    if (_revolveSurfaceSketchPickerActive) _cancelRevolveSurfaceSketchPicker();
+    if (_sweptSurfaceSketchPickerActive) _cancelSweptSurfaceSketchPicker();
+    if (_thickenSourcePickerActive) _cancelThickenSourcePicker();
+    if (_knitSurfacePickerActive) _cancelKnitSurfacePicker();
+    if (_solidFromSurfacesPickerActive) _cancelSolidFromSurfacesPicker();
+    if (_offsetSurfaceSourcePickerActive) _cancelOffsetSurfaceSourcePicker();
+    if (_sourceFeaturePickerTarget != null) _cancelSourceFeaturePicker();
+    if (_profilePickerActive) _cancelProfilePicker();
+    if (_pathPickerActive) _cancelPathPicker();
+    if (_componentPatternPickingSources) setState(() => _componentPatternPickingSources = false);
+  }
+
+  /// Ends whichever tree multi-select session is active (a no-op if none
+  /// is) - the action bar's Cancel, the tree's own close button, the back
+  /// gesture and a lens switch all lead here.
+  void _exitMultiSelect() {
+    final wasAssembly = _assemblyMultiSelect.active;
+    if (!_buildMultiSelect.active && !wasAssembly) return;
+    setState(() {
+      _buildMultiSelect.exit();
+      _assemblyMultiSelect.exit();
+      // The Assembly session mirrors its selection into [_selectedEntities]
+      // for viewport highlighting (see [_syncAssemblyMultiSelectHighlight])
+      // - drop that too rather than leaving a stale multi-highlight behind.
+      if (wasAssembly) _selectedEntities = {};
+    });
+  }
+
+  /// Starts [controller]'s session with [key] selected, after leaving every
+  /// other mode (including the *other* tree's session).
+  void _enterMultiSelect(TreeMultiSelectController controller, String key) {
+    if (_busy) return;
+    _exitAllPickerAndSelectModes();
+    setState(() {
+      controller.enter(key);
+      if (identical(controller, _assemblyMultiSelect)) _syncAssemblyMultiSelectHighlight();
+    });
+  }
+
+  /// Toggles [key] in [controller]'s session - ending it if that empties
+  /// the selection (see [TreeMultiSelectController.toggle]).
+  void _toggleMultiSelectMember(TreeMultiSelectController controller, String key) {
+    setState(() {
+      controller.toggle(key);
+      if (identical(controller, _assemblyMultiSelect)) {
+        if (controller.active) {
+          _syncAssemblyMultiSelectHighlight();
+        } else {
+          _selectedEntities = {};
+        }
+      }
+    });
+  }
+
+  /// Highlights every multi-selected Occurrence in the viewport - the same
+  /// `component`-kind [_selectedEntities] entries [_onOccurrenceTap] uses for
+  /// one - and clears the single-row selection, so
+  /// [ComponentSelectionToolbar]'s single-item actions never target one
+  /// arbitrary member of a bulk selection. Call inside `setState`.
+  void _syncAssemblyMultiSelectHighlight() {
+    _selectedOccurrenceId = null;
+    _selectedMateId = null;
+    _selectedEntities = {
+      for (final id in _assemblyMultiSelect.selectedIds)
+        SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: id),
+    };
+  }
+
+  /// The Feature a Build Tree multi-select key acts on - itself for a
+  /// Feature row, or (like [_onBodyLongPress]) the Feature that produced a
+  /// Body/Surface row, since Hide/Show and Delete are both Feature-scoped.
+  String? _featureIdForMultiSelectKey(String key) {
+    final featureId = TreeMultiSelectKeys.featureIdOf(key);
+    if (featureId != null) return featureId;
+    final shapeId = TreeMultiSelectKeys.bodyIdOf(key) ?? TreeMultiSelectKeys.surfaceIdOf(key);
+    return shapeId == null ? null : baseFeatureId(shapeId);
+  }
+
+  /// Every still-existing Feature id the Build Tree selection resolves to,
+  /// deduplicated (a Body and its own Feature, or two Bodies of one
+  /// Feature, collapse to one), in [_features]' own order.
+  List<String> get _buildMultiSelectFeatureIds {
+    final ids = {
+      for (final key in _buildMultiSelect.selectedIds) _featureIdForMultiSelectKey(key),
+    };
+    return [
+      for (final feature in _features)
+        if (ids.contains(feature.id)) feature.id,
+    ];
+  }
+
+  /// The selected Occurrences still present in [_occurrences].
+  List<OccurrenceDto> get _assemblyMultiSelectOccurrences => [
+        for (final occurrence in _occurrences)
+          if (_assemblyMultiSelect.contains(occurrence.id)) occurrence,
+      ];
+
+  /// Whether every member of the active selection is already hidden - see
+  /// [MultiSelectActionBar.allHidden].
+  bool get _multiSelectAllHidden {
+    if (_buildMultiSelect.active) {
+      final ids = _buildMultiSelectFeatureIds;
+      return ids.isNotEmpty && ids.every(_hiddenFeatureIds.contains);
+    }
+    final occurrences = _assemblyMultiSelectOccurrences;
+    return occurrences.isNotEmpty && occurrences.every((o) => o.hidden);
+  }
+
+  /// Runs [op] over [items] at most [_multiSelectBatchSize] at a time,
+  /// returning how many calls failed (never throws) - each item's failure
+  /// is independent, so one bad item never aborts the rest of the batch.
+  Future<int> _runInBatches<T>(List<T> items, Future<void> Function(T item) op) async {
+    var failures = 0;
+    for (var start = 0; start < items.length; start += _multiSelectBatchSize) {
+      final batch = items.sublist(start, math.min(start + _multiSelectBatchSize, items.length));
+      final results = await Future.wait(batch.map((item) async {
+        try {
+          await op(item);
+          return true;
+        } catch (_) {
+          return false;
+        }
+      }));
+      failures += results.where((ok) => !ok).length;
+    }
+    return failures;
+  }
+
+  /// Surfaces a partial bulk-action failure as "N of M succeeded".
+  void _reportBatchResult(String verb, int total, int failures) {
+    if (failures == 0 || !mounted) return;
+    _showSnack('$verb: ${total - failures} of $total succeeded');
+  }
+
+  /// The action bar's Hide/Show button: hides every member, or - when every
+  /// member is already hidden - shows every member. The session stays open
+  /// afterwards (so the same selection can be shown again or deleted).
+  Future<void> _multiSelectToggleVisibility() async {
+    if (_busy || _multiSelectBusy) return;
+    final hide = !_multiSelectAllHidden;
+    if (_buildMultiSelect.active) {
+      _buildMultiSelectSetHidden(hide);
+      await _runGuarded(_refreshMesh);
+    } else if (_assemblyMultiSelect.active) {
+      await _assemblyMultiSelectSetHidden(hide);
+    }
+  }
+
+  /// Bulk counterpart of [_toggleFeatureVisibility] - purely local
+  /// ([_hiddenFeatureIds] only, no HTTP call), applied to every selected
+  /// Feature in one `setState` so the caller refreshes the mesh just once.
+  void _buildMultiSelectSetHidden(bool hide) {
+    final featureIds = _buildMultiSelectFeatureIds;
+    setState(() {
+      for (final id in featureIds) {
+        if (hide) {
+          _hiddenFeatureIds.add(id);
+        } else {
+          _hiddenFeatureIds.remove(id);
+        }
+        _autoHiddenSketchFeatureIds.remove(id);
+      }
+      _recomputeVisibleSketchGeometries();
+      _recomputeCreatePlaneGeometries();
+    });
+  }
+
+  /// Bulk counterpart of [_setOccurrenceHidden] - one real PATCH per
+  /// Occurrence whose state actually changes, batched, then one tree/mesh
+  /// re-fetch for the lot.
+  Future<void> _assemblyMultiSelectSetHidden(bool hide) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    final targets = _assemblyMultiSelectOccurrences.where((o) => o.hidden != hide).toList();
+    if (targets.isEmpty) return;
+    var failures = 0;
+    setState(() => _multiSelectBusy = true);
+    await _runGuarded(() async {
+      failures = await _runInBatches<OccurrenceDto>(
+        targets,
+        (occurrence) => _api.updateOccurrenceHidden(focusPartId, occurrence.id, hide),
+      );
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+    if (!mounted) return;
+    setState(() {
+      _multiSelectBusy = false;
+      if (_assemblyMultiSelect.active) _syncAssemblyMultiSelectHighlight();
+    });
+    _reportBatchResult(hide ? 'Hide' : 'Show', targets.length, failures);
+  }
+
+  /// The action bar's Delete button.
+  Future<void> _multiSelectDelete() async {
+    if (_busy || _multiSelectBusy) return;
+    if (_buildMultiSelect.active) {
+      await _buildMultiSelectDelete();
+    } else if (_assemblyMultiSelect.active) {
+      await _assemblyMultiSelectDelete();
+    }
+  }
+
+  /// Bulk counterpart of [_cascadeDeleteFeature]: previews every selected
+  /// Feature's cascade concurrently, unions the dependents (deduplicated
+  /// against the selection itself and each other), confirms once, then
+  /// cascade-deletes. Always the cascade endpoint, same as
+  /// [_cascadeDeleteFeature] (which never falls back to the plain
+  /// single-Feature delete) - it's a strict superset that simply removes
+  /// nothing extra when a Feature has no dependents. The deletes run
+  /// sequentially, not batched: they all mutate the same Part, and one
+  /// cascade can remove a later selected Feature outright - each result's
+  /// `deletedFeatureIds` is used to skip ids that are already gone rather
+  /// than sending a delete that would 404.
+  Future<void> _buildMultiSelectDelete() async {
+    final part = _part;
+    if (part == null) return;
+    final primaryIds = _buildMultiSelectFeatureIds;
+    if (primaryIds.isEmpty) return;
+
+    List<List<String>> previews;
+    setState(() => _multiSelectBusy = true);
+    try {
+      previews = await Future.wait(primaryIds.map((id) => _api.previewCascadeDelete(part.id, id)));
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _multiSelectBusy = false;
+        _errorMessage = e.message;
+      });
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _multiSelectBusy = false);
+    final primarySet = primaryIds.toSet();
+    final dependentIds = {
+      for (final preview in previews) ...preview,
+    }.difference(primarySet);
+
+    String namesFor(Set<String> ids) => [
+          for (var i = 0; i < _features.length; i++)
+            if (ids.contains(_features[i].id)) featureDisplayName(_features, i),
+        ].join('\n');
+    final n = primaryIds.length;
+    final m = dependentIds.length;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(n == 1 ? 'Delete 1 feature?' : 'Delete $n features?'),
+        content: SingleChildScrollView(
+          child: Text(
+            '${m == 0 ? 'This will permanently delete:' : 'Deleting $n feature${n == 1 ? '' : 's'} will also remove '
+                '$m dependent feature${m == 1 ? '' : 's'}.'}\n\n'
+            '${namesFor(primarySet)}'
+            '${m == 0 ? '' : '\n\nDependent features:\n${namesFor(dependentIds)}'}',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade700),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(n + m == 1 ? 'Delete' : 'Delete all'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    var failures = 0;
+    var attempted = 0;
+    setState(() => _multiSelectBusy = true);
+    await _runGuarded(() async {
+      final deleted = <String>{};
+      for (final id in primaryIds) {
+        if (deleted.contains(id)) continue;
+        attempted++;
+        try {
+          final result = await _api.cascadeDeleteFeature(part.id, id);
+          deleted
+            ..add(id)
+            ..addAll(result.deletedFeatureIds);
+        } on ApiException {
+          failures++;
+        }
+      }
+      await _refreshAfterFeatureDelete();
+    });
+    if (!mounted) return;
+    setState(() => _multiSelectBusy = false);
+    _exitMultiSelect();
+    _reportBatchResult('Delete', attempted, failures);
+  }
+
+  /// Bulk counterpart of [_confirmDeleteOccurrence]: one "Delete N
+  /// components?" confirmation (naming how many Mates/ComponentPatterns
+  /// cascade server-side, from the already-loaded [_mates]/
+  /// [_componentPatterns] - no preview endpoint exists for Occurrences),
+  /// then one batched DELETE per Occurrence. Unlike the single-item path
+  /// this pushes no Undo entries: two selected Occurrences can share a
+  /// Mate, which per-Occurrence [_DeleteUndoEntry]s would each try to
+  /// re-create.
+  Future<void> _assemblyMultiSelectDelete() async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null) return;
+    final targets = _assemblyMultiSelectOccurrences;
+    if (targets.isEmpty) return;
+    final targetIds = {for (final o in targets) o.id};
+    final mateCount = _mates.where((m) => m.references.any((r) => targetIds.contains(r.occurrenceId))).length;
+    final patternCount =
+        _componentPatterns.where((p) => p.sourceOccurrenceIds.any(targetIds.contains)).length;
+    final n = targets.length;
+    final cascadeLines = [
+      if (mateCount > 0) '$mateCount mate${mateCount == 1 ? '' : 's'}',
+      if (patternCount > 0) '$patternCount pattern${patternCount == 1 ? '' : 's'}',
+    ];
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(n == 1 ? 'Delete 1 component?' : 'Delete $n components?'),
+        content: Text(
+          cascadeLines.isEmpty
+              ? 'This cannot be undone.'
+              : 'This will also delete ${cascadeLines.join(' and ')}. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    var failures = 0;
+    setState(() => _multiSelectBusy = true);
+    await _runGuarded(() async {
+      failures = await _runInBatches<OccurrenceDto>(
+        targets,
+        (occurrence) => _api.deleteOccurrence(focusPartId, occurrence.id),
+      );
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    });
+    if (!mounted) return;
+    setState(() {
+      _multiSelectBusy = false;
+      if (targetIds.contains(_selectedOccurrenceId)) _selectedOccurrenceId = null;
+      _selectedMateId = null;
+    });
+    _exitMultiSelect();
+    _reportBatchResult('Delete', n, failures);
+  }
+
+  /// The action bar's "More" button (exactly one row selected): ends the
+  /// session and opens that row's original single-item context menu - the
+  /// one long-press used to open directly.
+  Future<void> _multiSelectMore() async {
+    if (_buildMultiSelect.active && _buildMultiSelect.count == 1) {
+      final key = _buildMultiSelect.selectedIds.single;
+      _exitMultiSelect();
+      final featureId = TreeMultiSelectKeys.featureIdOf(key);
+      final bodyId = TreeMultiSelectKeys.bodyIdOf(key);
+      final surfaceId = TreeMultiSelectKeys.surfaceIdOf(key);
+      if (featureId != null) {
+        final feature = _featureById(featureId);
+        if (feature != null) await _onFeatureLongPress(feature);
+      } else if (bodyId != null) {
+        await _onBodyLongPress(bodyId);
+      } else if (surfaceId != null) {
+        await _onSurfaceLongPress(surfaceId);
+      }
+    } else if (_assemblyMultiSelect.active && _assemblyMultiSelect.count == 1) {
+      final id = _assemblyMultiSelect.selectedIds.single;
+      _exitMultiSelect();
+      final index = _occurrences.indexWhere((o) => o.id == id);
+      final anchor = _assemblyMultiSelectAnchor;
+      final occurrence = index != -1 ? _occurrences[index] : (anchor?.id == id ? anchor : null);
+      if (occurrence != null) await _onOccurrenceLongPress(occurrence);
+    }
+  }
+
+  /// The drawer's rows for the active session, in selection order.
+  List<SelectionListDrawerItem> _multiSelectDrawerItems() {
+    final controller = _activeMultiSelect;
+    if (controller == null) return const [];
+    final items = <SelectionListDrawerItem>[];
+    for (final key in controller.selectedIds) {
+      void remove() => _toggleMultiSelectMember(controller, key);
+      if (identical(controller, _assemblyMultiSelect)) {
+        final index = _occurrences.indexWhere((o) => o.id == key);
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const Icon(Icons.view_in_ar_outlined),
+          title: index == -1 ? 'Component' : occurrenceDisplayName(_occurrences, index),
+          onRemove: remove,
+        ));
+        continue;
+      }
+      final featureId = TreeMultiSelectKeys.featureIdOf(key);
+      final bodyId = TreeMultiSelectKeys.bodyIdOf(key);
+      final surfaceId = TreeMultiSelectKeys.surfaceIdOf(key);
+      if (featureId != null) {
+        final index = _features.indexWhere((f) => f.id == featureId);
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const SvgIcon('assets/icons/feature/feature_tree.svg'),
+          title: index == -1 ? 'Feature' : featureDisplayName(_features, index),
+          onRemove: remove,
+        ));
+      } else if (bodyId != null) {
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const SvgIcon('assets/icons/viewport/selection_body.svg'),
+          title: _bodyNames[bodyId] ?? 'Body',
+          onRemove: remove,
+        ));
+      } else if (surfaceId != null) {
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const SvgIcon('assets/icons/feature/feature_surface.svg'),
+          title: _surfaceNames[surfaceId] ?? 'Surface',
+          onRemove: remove,
+        ));
+      }
+    }
+    return items;
+  }
+
+  /// Feature 1 (tree multi-select): no longer the tree row's long-press
+  /// handler itself (long-press now enters multi-select - see
+  /// [_enterMultiSelect]); reached via [MultiSelectActionBar]'s "More"
+  /// button ([_multiSelectMore]) with exactly this one Feature selected.
+  ///
   /// A long-press on any Feature (locked or not) opens a context menu of
   /// actions for it, rather than triggering anything directly - the menu
   /// is what lets later stages add actions (rename, edit, ...) alongside
@@ -12256,6 +12893,8 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeEndDistance = 10.0;
       _extrudeThickness = null;
       _extrudeThicknessDirection = ThicknessDirection.outward;
+      _extrudeDraftAngle = null;
+      _extrudeDraftOutward = true;
       _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {};
@@ -12305,6 +12944,8 @@ class _PartScreenState extends State<PartScreen> {
     final profileRefs = feature.profileRefs;
     final thickness = feature.thickness;
     final thicknessDirection = ThicknessDirection.fromApiValue(feature.thicknessDirection);
+    final draftAngle = feature.draftAngle;
+    final draftOutward = feature.draftOutward;
 
     setState(() {
       _extrudeSketchFeature = sketchFeature;
@@ -12318,6 +12959,8 @@ class _PartScreenState extends State<PartScreen> {
         profileRefs: profileRefs,
         thickness: thickness,
         thicknessDirection: thicknessDirection,
+        draftAngle: draftAngle,
+        draftOutward: draftOutward,
       );
       _meshBeforeExtrude = _bodies;
       _extrudeType = type;
@@ -12325,6 +12968,8 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeEndDistance = end;
       _extrudeThickness = thickness;
       _extrudeThicknessDirection = thicknessDirection;
+      _extrudeDraftAngle = draftAngle;
+      _extrudeDraftOutward = draftOutward;
       _extrudeProfileRefs = profileRefs;
       _entitiesBeforeExtrude = _selectedEntities;
       _selectedEntities = {
@@ -12366,6 +13011,8 @@ class _PartScreenState extends State<PartScreen> {
     List<SketchEntityRefDto> profileRefs, [
     double? thickness,
     ThicknessDirection thicknessDirection = ThicknessDirection.outward,
+    double? draftAngle,
+    bool draftOutward = true,
   ]) async {
     final part = _part;
     final sketchFeature = _extrudeSketchFeature;
@@ -12383,6 +13030,8 @@ class _PartScreenState extends State<PartScreen> {
         profileRefs: profileRefs,
         thickness: thickness,
         thicknessDirection: thicknessDirection.apiValue,
+        draftAngle: draftAngle,
+        draftOutward: draftOutward,
       );
       _previewExtrudeFeatureId = created.id;
     } else {
@@ -12395,7 +13044,14 @@ class _PartScreenState extends State<PartScreen> {
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
         thicknessDirection: thicknessDirection.apiValue,
+        // Feature 5: always the panel's full current state - an explicit
+        // null turns thin-wall/draft off (they're mutually exclusive, so
+        // switching one on must clear the other in the same PATCH).
         thickness: thickness,
+        clearThickness: true,
+        draftAngle: draftAngle,
+        clearDraftAngle: true,
+        draftOutward: draftOutward,
       );
     }
     await _refreshMesh();
@@ -12415,12 +13071,14 @@ class _PartScreenState extends State<PartScreen> {
   /// [_confirmExtrude] always has them, even mid-debounce) and (re)starts
   /// the 500ms debounce before actually hitting the backend.
   void _onExtrudeValuesChanged(ExtrudeType type, double start, double end, double? thickness,
-      ThicknessDirection thicknessDirection) {
+      ThicknessDirection thicknessDirection, double? draftAngle, bool draftOutward) {
     _extrudeType = type;
     _extrudeStartDistance = start;
     _extrudeEndDistance = end;
     _extrudeThickness = thickness;
     _extrudeThicknessDirection = thicknessDirection;
+    _extrudeDraftAngle = draftAngle;
+    _extrudeDraftOutward = draftOutward;
     _scheduleExtrudePreview();
   }
 
@@ -12441,6 +13099,8 @@ class _PartScreenState extends State<PartScreen> {
             _extrudeProfileRefs,
             _extrudeThickness,
             _extrudeThicknessDirection,
+            _extrudeDraftAngle,
+            _extrudeDraftOutward,
           ));
     });
   }
@@ -12494,6 +13154,8 @@ class _PartScreenState extends State<PartScreen> {
         _extrudeProfileRefs,
         _extrudeThickness,
         _extrudeThicknessDirection,
+        _extrudeDraftAngle,
+        _extrudeDraftOutward,
       );
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -12527,6 +13189,8 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeProfileRefs = [];
       _extrudeThickness = null;
       _extrudeThicknessDirection = ThicknessDirection.outward;
+      _extrudeDraftAngle = null;
+      _extrudeDraftOutward = true;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -12579,6 +13243,8 @@ class _PartScreenState extends State<PartScreen> {
       _extrudeProfileRefs = [];
       _extrudeThickness = null;
       _extrudeThicknessDirection = ThicknessDirection.outward;
+      _extrudeDraftAngle = null;
+      _extrudeDraftOutward = true;
       _selectedEntities = _entitiesBeforeExtrude ?? {};
       _entitiesBeforeExtrude = null;
       _selectionFilterOverrides.pop();
@@ -12598,7 +13264,11 @@ class _PartScreenState extends State<PartScreen> {
             targetBodyIds: editSnapshot.targetBodyIds,
             profileRefs: editSnapshot.profileRefs,
             thickness: editSnapshot.thickness,
+            clearThickness: true,
             thicknessDirection: editSnapshot.thicknessDirection.apiValue,
+            draftAngle: editSnapshot.draftAngle,
+            clearDraftAngle: true,
+            draftOutward: editSnapshot.draftOutward,
           );
           await _refreshFeatures();
         });
@@ -12986,6 +13656,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_startRevolveSketchPicker] exactly, for the Planar Surface
   /// picker.
   void _startPlanarSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _planarSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -13240,6 +13911,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_startSurfaceSketchPicker] exactly.
   void _startRevolveSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _revolveSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -13554,6 +14226,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [_refreshPickableSweepSketchIds]-style refresh Sweep's own picker
   /// still needs.
   void _startSweptSurfaceSketchPicker() {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _sweptSurfaceSketchPickerActive = true;
       _featureTreeVisible = true;
@@ -14481,6 +15154,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Bodies/Planes/Features toggle, this session needs it open to pick
   /// from).
   void _startSourceFeaturePicker(_SourceFeaturePickerTarget target) {
+    _exitAllPickerAndSelectModes();
     setState(() {
       _sourceFeaturePickerTarget = target;
       _selectedSourceFeatureIds = {
@@ -16133,6 +16807,288 @@ class _PartScreenState extends State<PartScreen> {
     await _endRollback();
   }
 
+  // --- Shell ------------------------------------------------------------------
+  // See this file's own "Shell" state-field section header comment.
+
+  /// [SelectionContextPanel.onShell]'s callback - `contextActionsFor`
+  /// enables this button for exactly one solid Body, nothing else,
+  /// selected. That Body is fixed for the session; its faces to open are
+  /// then picked from inside the open panel. Mirrors [_onScaleBodyTapped].
+  void _onShellTapped() {
+    final bodies = _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).toList();
+    if (bodies.length != 1) return; // Defensive - contextActionsFor already guarantees this.
+    _openShellPanel(bodyId: bodies.single.bodyId);
+  }
+
+  /// [FeaturePickerAction.shell]'s guided "Add" FAB entry - opens
+  /// [ShellPanel] straight away with zero faces picked, mirroring
+  /// [_startDeleteFacePicker]. The Body is pre-fixed when it's unambiguous
+  /// (a single solid Body is already selected, or the Part has only one
+  /// solid Body); otherwise the first face tapped fixes it.
+  void _startShellPicker() {
+    final selectedBodies = _selectedEntities
+        .where((e) => e.kind == SelectionEntityKind.body && !_bodyIsSurface(e.bodyId))
+        .toList();
+    String? bodyId;
+    if (selectedBodies.length == 1 && _selectedEntities.length == 1) {
+      bodyId = selectedBodies.single.bodyId;
+    } else {
+      final solidBodyIds = {
+        for (final body in _bodies)
+          if (!body.isSurface) body.bodyId,
+      };
+      if (solidBodyIds.length == 1) bodyId = solidBodyIds.single;
+    }
+    _openShellPanel(bodyId: bodyId);
+  }
+
+  /// Opens [ShellPanel] with zero faces picked, against [bodyId] (null =
+  /// fixed by the first face tapped). Nothing is created here - the
+  /// backend requires at least one face to open (`_validate_shell_faces_to_
+  /// remove`), so [_ensureShellFeatureExists] no-ops until the first face
+  /// tap, and [ShellPanel]'s Confirm stays disabled until then too (mirrors
+  /// [_openDeleteFacePanel]'s own empty-[faceEntities] path).
+  void _openShellPanel({required String? bodyId}) {
+    if (_part == null) return;
+    setState(() {
+      _shellActive = true;
+      _shellBodyId = bodyId;
+      _entitiesBeforeShell = _selectedEntities;
+      _selectedEntities = {};
+      _shellThickness = 1.0;
+      _shellThicknessDirection = ThicknessDirection.outward;
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _selectionFilterOverrides.push(_shellSelectionFilter);
+    });
+  }
+
+  /// B4: opens [ShellPanel] to edit an *already-existing* ShellFeature -
+  /// mirrors [_openDeleteFacePanelForEdit].
+  Future<bool> _openShellPanelForEdit(FeatureDto feature) async {
+    final facesToRemove = feature.facesToRemove;
+    final bodyId = feature.bodyId;
+    if (facesToRemove.isEmpty || bodyId == null) return false;
+    final thickness = feature.thickness ?? 1.0;
+    final direction = ThicknessDirection.fromApiValue(feature.thicknessDirection);
+    setState(() {
+      _shellActive = true;
+      _shellBodyId = bodyId;
+      _editingShellFeatureId = feature.id;
+      _previewShellFeatureId = feature.id;
+      _shellThickness = thickness;
+      _shellThicknessDirection = direction;
+      _shellEditSnapshot = (
+        bodyId: bodyId,
+        facesToRemove: facesToRemove,
+        thickness: thickness,
+        thicknessDirection: direction,
+      );
+      _entitiesBeforeShell = _selectedEntities;
+      _selectedEntities = {
+        for (final ref in facesToRemove)
+          SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: ref.bodyId, id: ref.index),
+      };
+      _selectionMode = true;
+      _selectionFilterOverrides.push(_shellSelectionFilter);
+    });
+    await _beginRollback({feature.id});
+    return true;
+  }
+
+  /// [_selectedEntities]' faces while [_shellActive] - mirrors
+  /// [_currentDeleteFaceRefs].
+  List<SubShapeRefDto> _currentShellFaceRefs() => [
+        for (final entity in _selectedEntities)
+          if (entity.kind == SelectionEntityKind.face)
+            SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
+      ];
+
+  /// The Body the Shell hollows - [_shellBodyId] once fixed, otherwise the
+  /// Body of its first picked face (mirrors [_currentDeleteFaceBodyId]);
+  /// [_toggleSelectedEntity]'s Shell guard keeps every picked face on it,
+  /// and the backend enforces the same (`mixed_body_selection`).
+  String? _currentShellBodyId() {
+    final fixed = _shellBodyId;
+    if (fixed != null) return fixed;
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.face) return entity.bodyId;
+    }
+    return null;
+  }
+
+  /// [ShellPanel.onChanged] - mirrors [_onChamferDistanceChanged].
+  void _onShellParamsChanged(double thickness, ThicknessDirection direction) {
+    _shellThickness = thickness;
+    _shellThicknessDirection = direction;
+    _scheduleShellPreview();
+  }
+
+  /// Shared by every thickness/direction edit and every face pick/removal
+  /// ([_toggleSelectedEntity]'s generic accumulate-toggle) - mirrors
+  /// [_scheduleChamferPreview]'s debounce.
+  void _scheduleShellPreview() {
+    _shellDebounce?.cancel();
+    _shellDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(() => _ensureShellFeatureExists());
+    });
+  }
+
+  /// Serializes [_ensureShellFeatureExists] calls: [_openShellPanel]'s
+  /// eager create and [ShellPanel]'s own post-frame initial emit (debounced
+  /// by [_scheduleShellPreview]) can otherwise overlap - a slow OCCT shell
+  /// still in flight when the debounce fires would see no
+  /// [_previewShellFeatureId] yet and create a second, duplicate Feature.
+  Future<void> _shellEnsureChain = Future<void>.value();
+
+  /// Create-or-update against the current picks/thickness/direction -
+  /// mirrors [_ensureDeleteFaceFeatureExists]/[_ensureChamferFeatureExists]
+  /// (including the self-exclusion-on-create fix and the concurrent preview
+  /// mesh fetch). Skips the request entirely while no face is picked, or
+  /// once the session has already ended (a queued call landing after
+  /// Confirm/Cancel). Errors still propagate to the caller's [_runGuarded].
+  Future<void> _ensureShellFeatureExists() {
+    final next = _shellEnsureChain.then((_) => _ensureShellFeatureExistsNow());
+    _shellEnsureChain = next.catchError((Object _) {});
+    return next;
+  }
+
+  Future<void> _ensureShellFeatureExistsNow() async {
+    if (!_shellActive || !mounted) return;
+    final part = _part;
+    final facesToRemove = _currentShellFaceRefs();
+    final bodyId = _currentShellBodyId();
+    if (part == null || facesToRemove.isEmpty || bodyId == null) return;
+    final existingId = _previewShellFeatureId;
+    if (existingId == null) {
+      final feature = await _api.createShellFeature(
+        _focusPartId,
+        bodyId: bodyId,
+        facesToRemove: facesToRemove,
+        thickness: _shellThickness,
+        thicknessDirection: _shellThicknessDirection.apiValue,
+      );
+      _previewShellFeatureId = feature.id;
+      setState(() => _rollbackExcludedFeatureIds.add(feature.id));
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshShellPreviewMesh()]);
+    } else {
+      await _api.updateShellFeature(
+        _focusPartId,
+        existingId,
+        bodyId: bodyId,
+        facesToRemove: facesToRemove,
+        thickness: _shellThickness,
+        thicknessDirection: _shellThicknessDirection.apiValue,
+      );
+      await _refreshFeatures();
+      await Future.wait([_refreshMesh(), _refreshShellPreviewMesh()]);
+    }
+  }
+
+  /// Fetches the *actual* current effect of the in-progress Shell - mirrors
+  /// [_refreshDeleteFacePreviewMesh] exactly.
+  Future<void> _refreshShellPreviewMesh() async {
+    final part = _part;
+    final featureId = _previewShellFeatureId;
+    final bodyId = _currentShellBodyId();
+    if (part == null || featureId == null || bodyId == null) {
+      if (!mounted) return;
+      setState(() {
+        _shellPreviewBodyId = null;
+        _shellPreviewMesh = null;
+      });
+      return;
+    }
+    final response = await _api.getPartMesh(
+      _focusPartId,
+      hiddenFeatureIds: _hiddenFeatureIds.toList(),
+      rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.where((id) => id != featureId).toList(),
+      meshQuality: _meshQuality,
+    );
+    if (!mounted) return;
+    BodyMeshDto? match;
+    for (final body in response) {
+      if (body.bodyId == bodyId) {
+        match = body;
+        break;
+      }
+    }
+    setState(() {
+      _shellPreviewBodyId = bodyId;
+      _shellPreviewMesh = match?.mesh;
+    });
+  }
+
+  /// Keeps the just-created/edited ShellFeature - mirrors [_confirmChamfer].
+  Future<void> _confirmShell() async {
+    _shellDebounce?.cancel();
+    await _runGuarded(_refreshFeatures);
+    if (!mounted) return;
+    setState(() {
+      _featureTreeVisible = false;
+      _shellActive = false;
+      _shellBodyId = null;
+      _selectedEntities = _entitiesBeforeShell ?? {};
+      _entitiesBeforeShell = null;
+      _previewShellFeatureId = null;
+      _editingShellFeatureId = null;
+      _shellEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _shellPreviewBodyId = null;
+      _shellPreviewMesh = null;
+    });
+    await _endRollback();
+  }
+
+  /// Deletes the just-created preview ShellFeature (new-shell flow) or
+  /// PATCHes [_shellEditSnapshot]'s stashed original values back (edit
+  /// flow) - mirrors [_cancelChamfer].
+  Future<void> _cancelShell() async {
+    _shellDebounce?.cancel();
+    final part = _part;
+    final previewId = _previewShellFeatureId;
+    final wasEditing = _editingShellFeatureId != null;
+    final editSnapshot = _shellEditSnapshot;
+    setState(() {
+      _featureTreeVisible = false;
+      _shellActive = false;
+      _shellBodyId = null;
+      _selectedEntities = _entitiesBeforeShell ?? {};
+      _entitiesBeforeShell = null;
+      _previewShellFeatureId = null;
+      _editingShellFeatureId = null;
+      _shellEditSnapshot = null;
+      _selectionFilterOverrides.pop();
+      _shellPreviewBodyId = null;
+      _shellPreviewMesh = null;
+    });
+    if (part != null && previewId != null) {
+      if (wasEditing && editSnapshot != null) {
+        await _runGuarded(() async {
+          await _api.updateShellFeature(
+            _focusPartId,
+            previewId,
+            bodyId: editSnapshot.bodyId,
+            facesToRemove: editSnapshot.facesToRemove,
+            thickness: editSnapshot.thickness,
+            thicknessDirection: editSnapshot.thicknessDirection.apiValue,
+          );
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      } else {
+        await _runGuarded(() async {
+          await _api.deleteFeature(_focusPartId, previewId);
+          await _refreshFeatures();
+          await _refreshMesh();
+        });
+      }
+    }
+    await _endRollback();
+  }
+
   // --- Direct Editing family, fifth/last entry: Move Face ----------------------
   // See this file's own "Direct Editing family, fifth/last entry: Move Face"
   // state-field section header comment for the full reasoning.
@@ -17327,6 +18283,7 @@ class _PartScreenState extends State<PartScreen> {
     _patternCountAngular = 2;
     _patternAngleTotal = 360.0;
     _patternReverseAngular = false;
+    _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
     _patternSkipIndices = {};
     _patternMerge = toolFeatureId != null ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
     _previewPatternFeatureId = null;
@@ -17396,6 +18353,7 @@ class _PartScreenState extends State<PartScreen> {
         _patternCountAngular = feature.countAngular;
         _patternAngleTotal = feature.angleTotal;
         _patternReverseAngular = feature.reverseAngular;
+        _patternOrientationMode = PatternOrientationMode.fromApiValue(feature.orientationMode);
         _patternSkipIndices = feature.skipIndices.toSet();
         _patternMerge = merge;
         _patternLongPressSeedFeature = null;
@@ -17413,6 +18371,7 @@ class _PartScreenState extends State<PartScreen> {
           countAngular: feature.countAngular,
           angleTotal: feature.angleTotal,
           reverseAngular: feature.reverseAngular,
+          orientationMode: PatternOrientationMode.fromApiValue(feature.orientationMode),
           skipIndices: feature.skipIndices,
           sourceFeatureIds: sourceFeatureIds,
           merge: merge,
@@ -17470,6 +18429,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
       _patternSkipIndices = feature.skipIndices.toSet();
       _patternMerge = merge;
       _patternLongPressSeedFeature = null;
@@ -17487,6 +18447,7 @@ class _PartScreenState extends State<PartScreen> {
         countAngular: 1,
         angleTotal: 360.0,
         reverseAngular: false,
+        orientationMode: PatternOrientationMode.rotateWithPattern,
         skipIndices: feature.skipIndices,
         sourceFeatureIds: sourceFeatureIds,
         merge: merge,
@@ -17617,6 +18578,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
     });
   }
 
@@ -17680,6 +18642,11 @@ class _PartScreenState extends State<PartScreen> {
 
   void _onPatternReverseAngularChanged(bool reverse) {
     setState(() => _patternReverseAngular = reverse);
+    _schedulePatternPreview();
+  }
+
+  void _onPatternOrientationModeChanged(PatternOrientationMode mode) {
+    setState(() => _patternOrientationMode = mode);
     _schedulePatternPreview();
   }
 
@@ -18049,6 +19016,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: _patternCountAngular,
             angleTotal: _patternAngleTotal,
             reverseAngular: _patternReverseAngular,
+            orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
             toolFeatureId: _patternToolFeatureId,
@@ -18064,6 +19032,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: _patternCountAngular,
             angleTotal: _patternAngleTotal,
             reverseAngular: _patternReverseAngular,
+            orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
             toolFeatureId: _patternToolFeatureId,
@@ -18077,6 +19046,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: _patternCountAngular,
             angleTotal: _patternAngleTotal,
             reverseAngular: _patternReverseAngular,
+            orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
             toolFeatureId: _patternToolFeatureId,
@@ -18100,6 +19070,7 @@ class _PartScreenState extends State<PartScreen> {
           countAngular: _patternCountAngular,
           angleTotal: _patternAngleTotal,
           reverseAngular: _patternReverseAngular,
+          orientationMode: _patternOrientationMode,
           skipIndices: skipIndices,
           merge: _patternMerge,
           toolFeatureId: _patternToolFeatureId,
@@ -18282,6 +19253,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
       _patternSkipIndices = {};
       _patternMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforePattern ?? {};
@@ -18328,6 +19300,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
       _patternSkipIndices = {};
       _patternMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforePattern ?? {};
@@ -18363,6 +19336,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: editSnapshot.countAngular,
             angleTotal: editSnapshot.angleTotal,
             reverseAngular: editSnapshot.reverseAngular,
+            orientationMode: editSnapshot.orientationMode,
             skipIndices: editSnapshot.skipIndices,
             merge: editSnapshot.merge,
             toolFeatureId: editSnapshot.toolFeatureId,
@@ -18421,6 +19395,8 @@ class _PartScreenState extends State<PartScreen> {
       _entitiesBeforeChamfer = _selectedEntities;
       _selectedEntities = edgeEntities.toSet();
       _chamferDistance = 1.0;
+      _chamferAngle = null;
+      _chamferFlip = false;
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
@@ -18441,12 +19417,23 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_openFilletPanelForEdit] exactly.
   Future<void> _openChamferPanelForEdit(FeatureDto feature) async {
     final distance = feature.distance ?? 1.0;
+    // Feature 3: v1's panel edits one uniform angle/flip - seed it from the
+    // lowest-indexed edge that has an angle (every edge does, when the
+    // Feature was made by this panel).
+    final angledIndices = [
+      for (final e in feature.edgeOptions.entries)
+        if (e.value.angle != null) e.key
+    ]..sort();
+    final seed = angledIndices.isEmpty ? null : feature.edgeOptions[angledIndices.first];
     setState(() {
       _chamferActive = true;
       _editingChamferFeatureId = feature.id;
       _previewChamferFeatureId = feature.id;
       _chamferDistance = distance;
-      _chamferEditSnapshot = (edgeRefs: feature.edgeRefs, distance: distance);
+      _chamferAngle = seed?.angle;
+      _chamferFlip = seed?.flip ?? false;
+      _chamferEditSnapshot =
+          (edgeRefs: feature.edgeRefs, distance: distance, edgeOptions: feature.edgeOptions);
       _entitiesBeforeChamfer = _selectedEntities;
       _selectedEntities = {
         for (final ref in feature.edgeRefs)
@@ -18465,6 +19452,17 @@ class _PartScreenState extends State<PartScreen> {
             SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id),
       ];
 
+  /// Feature 3: the uniform v1 angle/flip applied to every one of
+  /// [edgeCount] edges - `{}` (plain symmetric chamfer) while the panel's
+  /// Angle toggle is off.
+  Map<int, ChamferEdgeOptionsDto> _currentChamferEdgeOptions(int edgeCount) {
+    final angle = _chamferAngle;
+    if (angle == null) return const {};
+    return {
+      for (var i = 0; i < edgeCount; i++) i: ChamferEdgeOptionsDto(angle: angle, flip: _chamferFlip),
+    };
+  }
+
   /// Mirrors [_currentFilletBodyId] exactly.
   String? _currentChamferBodyId() {
     for (final entity in _selectedEntities) {
@@ -18476,6 +19474,14 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_onFilletRadiusChanged] exactly.
   void _onChamferDistanceChanged(double distance) {
     _chamferDistance = distance;
+    _scheduleChamferPreview();
+  }
+
+  /// Feature 3: [ChamferPanel.onAngleChanged] - same debounced live-preview
+  /// path as [_onChamferDistanceChanged].
+  void _onChamferAngleChanged(double? angle, bool flip) {
+    _chamferAngle = angle;
+    _chamferFlip = flip;
     _scheduleChamferPreview();
   }
 
@@ -18491,19 +19497,24 @@ class _PartScreenState extends State<PartScreen> {
   /// self-exclusion-on-create fix and concurrent preview-mesh fetch - see
   /// that method's own doc comment (and `docs/live-preview-pattern.md`) for
   /// the full reasoning.
+  ///
+  /// Feature 3: also sends the panel's current uniform angle/flip as
+  /// `edge_options` (always on update - `{}` clears any previous angle).
   Future<void> _ensureChamferFeatureExists(double distance, List<SubShapeRefDto> edgeRefs) async {
     final part = _part;
     if (part == null || edgeRefs.isEmpty) return;
     final existingId = _previewChamferFeatureId;
+    final edgeOptions = _currentChamferEdgeOptions(edgeRefs.length);
     if (existingId == null) {
-      final feature =
-          await _api.createChamferFeature(_focusPartId, edgeRefs: edgeRefs, distance: distance);
+      final feature = await _api.createChamferFeature(_focusPartId,
+          edgeRefs: edgeRefs, distance: distance, edgeOptions: edgeOptions);
       _previewChamferFeatureId = feature.id;
       setState(() => _rollbackExcludedFeatureIds.add(feature.id));
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
     } else {
-      await _api.updateChamferFeature(_focusPartId, existingId, edgeRefs: edgeRefs, distance: distance);
+      await _api.updateChamferFeature(_focusPartId, existingId,
+          edgeRefs: edgeRefs, distance: distance, edgeOptions: edgeOptions);
       await _refreshFeatures();
       await Future.wait([_refreshMesh(), _refreshChamferPreviewMesh()]);
     }
@@ -18597,6 +19608,7 @@ class _PartScreenState extends State<PartScreen> {
             previewId,
             edgeRefs: editSnapshot.edgeRefs,
             distance: editSnapshot.distance,
+            edgeOptions: editSnapshot.edgeOptions,
           );
           await _refreshFeatures();
           await _refreshMesh();
@@ -18690,30 +19702,36 @@ class _PartScreenState extends State<PartScreen> {
 
     await _runGuarded(() async {
       await _api.cascadeDeleteFeature(part.id, feature.id);
-      // Re-fetch rather than trim local state, so the tree always reflects
-      // genuine backend state rather than an assumption about what the
-      // cascade just did.
-      await _refreshFeatures();
-      await _refreshSketchGeometries();
-      if (_selectedFeatureId != null && !_features.any((f) => f.id == _selectedFeatureId)) {
-        _selectedFeatureId = null;
-      }
-      _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
-      _autoHiddenSketchFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
-      // Bug-fix: deleting the ExtrudeFeature that consumed a Sketch (see
-      // _confirmExtrude's auto-hide) used to leave that Sketch stuck in
-      // _hiddenFeatureIds forever, since it never stopped existing - only
-      // stopped being locked - so the tree/viewport kept treating it as
-      // hidden even once it was editable again. The Sketch was only ever
-      // hidden because something depended on it; once the new last Feature
-      // is unlocked again, there's nothing left to make it redundant clutter.
-      if (_features.isNotEmpty && !_features.last.locked) {
-        _hiddenFeatureIds.remove(_features.last.id);
-        _autoHiddenSketchFeatureIds.remove(_features.last.id);
-      }
-      _recomputeVisibleSketchGeometries();
-      await _refreshMesh();
+      await _refreshAfterFeatureDelete();
     });
+  }
+
+  /// Everything [_cascadeDeleteFeature] (and its bulk counterpart,
+  /// [_buildMultiSelectDelete]) does after the delete call itself returns.
+  Future<void> _refreshAfterFeatureDelete() async {
+    // Re-fetch rather than trim local state, so the tree always reflects
+    // genuine backend state rather than an assumption about what the
+    // cascade just did.
+    await _refreshFeatures();
+    await _refreshSketchGeometries();
+    if (_selectedFeatureId != null && !_features.any((f) => f.id == _selectedFeatureId)) {
+      _selectedFeatureId = null;
+    }
+    _hiddenFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
+    _autoHiddenSketchFeatureIds.removeWhere((id) => !_features.any((f) => f.id == id));
+    // Bug-fix: deleting the ExtrudeFeature that consumed a Sketch (see
+    // _confirmExtrude's auto-hide) used to leave that Sketch stuck in
+    // _hiddenFeatureIds forever, since it never stopped existing - only
+    // stopped being locked - so the tree/viewport kept treating it as
+    // hidden even once it was editable again. The Sketch was only ever
+    // hidden because something depended on it; once the new last Feature
+    // is unlocked again, there's nothing left to make it redundant clutter.
+    if (_features.isNotEmpty && !_features.last.locked) {
+      _hiddenFeatureIds.remove(_features.last.id);
+      _autoHiddenSketchFeatureIds.remove(_features.last.id);
+    }
+    _recomputeVisibleSketchGeometries();
+    await _refreshMesh();
   }
 
   /// Stage 19b Item 1's dedicated FAB - toggles the Feature tree panel
@@ -18736,6 +19754,9 @@ class _PartScreenState extends State<PartScreen> {
   /// Assembly mode (see [_refreshAssemblyTree]'s own doc comment for why
   /// this isn't instead kept always-fresh in the background).
   void _toggleAssemblyLens() {
+    // Feature 1 (tree multi-select): a session belongs to one tree, and
+    // only the current lens's tree is ever mounted.
+    _exitMultiSelect();
     setState(() {
       _lens = _lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part;
     });
@@ -19447,7 +20468,11 @@ class _PartScreenState extends State<PartScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_confirmingSketchOrientation) {
+        if (_activeMultiSelect != null) {
+          // Feature 1 (tree multi-select): back cancels the session, same
+          // as the action bar's own Cancel.
+          _exitMultiSelect();
+        } else if (_confirmingSketchOrientation) {
           _cancelPendingOrientation();
         } else if (_sketchPickerActive) {
           _cancelSketchPicker();
@@ -19688,14 +20713,18 @@ class _PartScreenState extends State<PartScreen> {
                           ? _chamferPreviewBodyId
                           : _deleteFaceActive
                               ? _deleteFacePreviewBodyId
-                              : _moveFacePreviewBodyId,
+                              : _shellActive
+                                  ? _shellPreviewBodyId
+                                  : _moveFacePreviewBodyId,
                   previewOverlayMesh: _filletActive
                       ? _filletPreviewMesh
                       : _chamferActive
                           ? _chamferPreviewMesh
                           : _deleteFaceActive
                               ? _deleteFacePreviewMesh
-                              : _moveFacePreviewMesh,
+                              : _shellActive
+                                  ? _shellPreviewMesh
+                                  : _moveFacePreviewMesh,
                   // `docs/lod-strategy/01-design.md` SS5 chunk 5: [_effectiveCoarseOverlayMeshes]
                   // is [_coarseOverlayMeshes] as-is - genuinely-pending Bodies
                   // and pinned-Feature Bodies render identically, only their
@@ -19929,8 +20958,10 @@ class _PartScreenState extends State<PartScreen> {
                     !_moveBodyActive &&
                     !_deleteFaceActive &&
                     !_moveFaceActive &&
+                    !_shellActive &&
                     !_profilePickerActive &&
-                    !_pathPickerActive)
+                    !_pathPickerActive &&
+                    _activeMultiSelect == null)
                   Positioned.fill(
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
@@ -19953,6 +20984,7 @@ class _PartScreenState extends State<PartScreen> {
                         onMoveBody: _onMoveBodyTapped,
                         onDeleteFace: _onDeleteFaceTapped,
                         onMoveFace: _onMoveFaceTapped,
+                        onShell: _onShellTapped,
                         // Bug fix (on-device feedback: the breadcrumb bar
                         // used to float over the viewport as its own
                         // overlay, obscuring part of this same drawer no
@@ -19978,6 +21010,7 @@ class _PartScreenState extends State<PartScreen> {
                 // `MoveRotateComponentPanel` below, avoiding overlapping UI.
                 if (_lens == AssemblyLens.assembly &&
                     _selectedOccurrenceId != null &&
+                    !_assemblyMultiSelect.active &&
                     !_anyToolPanelOpen &&
                     !_anyFeatureOrSourcePickerSessionActive &&
                     !_mateActive &&
@@ -20023,12 +21056,23 @@ class _PartScreenState extends State<PartScreen> {
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
                     onFeatureTap: _onFeatureTap,
-                    onFeatureLongPress: _onFeatureLongPress,
+                    // Feature 1 (tree multi-select): long-press enters bulk
+                    // multi-select; the old per-row context menu is reached
+                    // via the action bar's "More" button instead (see
+                    // [_multiSelectMore]).
+                    onFeatureLongPress: (feature) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.feature(feature.id)),
+                    isMultiSelectMode: _buildMultiSelect.active,
+                    selectedMultiSelectIds: _buildMultiSelect.selectedIds,
+                    onMultiSelectToggle: (key) => _toggleMultiSelectMember(_buildMultiSelect, key),
                     pendingDetailFeatureIds: _pendingDetailFeatureIds,
                     pinnedCoarseFeatureIds: _pinnedCoarseFeatureIds,
                     onToggleCoarsePin: _toggleCoarsePin,
                     onClose: () {
-                      if (_sketchPickerActive) {
+                      if (_buildMultiSelect.active) {
+                        _exitMultiSelect();
+                        setState(() => _featureTreeVisible = false);
+                      } else if (_sketchPickerActive) {
                         _cancelSketchPicker();
                       } else if (_surfaceSketchPickerActive) {
                         _cancelSurfaceSketchPicker();
@@ -20192,7 +21236,8 @@ class _PartScreenState extends State<PartScreen> {
                     bodyIds: _computedBodyIds,
                     bodyNames: _bodyNames,
                     onBodyTap: _onBodyTap,
-                    onBodyLongPress: _onBodyLongPress,
+                    onBodyLongPress: (bodyId) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.body(bodyId)),
                     hiddenBodyIds: {
                       for (final body in _bodies)
                         if (body.hidden && !body.isSurface) body.bodyId,
@@ -20200,7 +21245,8 @@ class _PartScreenState extends State<PartScreen> {
                     surfaceIds: _computedSurfaceIds,
                     surfaceNames: _surfaceNames,
                     onSurfaceTap: _onSurfaceTap,
-                    onSurfaceLongPress: _onSurfaceLongPress,
+                    onSurfaceLongPress: (surfaceId) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.surface(surfaceId)),
                     hiddenSurfaceIds: {
                       for (final body in _bodies)
                         if (body.hidden && body.isSurface) body.bodyId,
@@ -20222,12 +21268,21 @@ class _PartScreenState extends State<PartScreen> {
                     patterns: _componentPatterns,
                     selectedOccurrenceId: _selectedOccurrenceId,
                     onOccurrenceTap: _onOccurrenceTap,
-                    onOccurrenceLongPress: _onOccurrenceLongPress,
+                    onOccurrenceLongPress: (occurrence) {
+                      _assemblyMultiSelectAnchor = occurrence;
+                      _enterMultiSelect(_assemblyMultiSelect, occurrence.id);
+                    },
+                    isMultiSelectMode: _assemblyMultiSelect.active,
+                    selectedMultiSelectIds: _assemblyMultiSelect.selectedIds,
+                    onMultiSelectToggle: (id) => _toggleMultiSelectMember(_assemblyMultiSelect, id),
                     onOccurrenceVisibilityToggle: (occurrence) =>
                         unawaited(_setOccurrenceHidden(occurrence, !occurrence.hidden)),
                     onOccurrenceColorTap: (occurrence) => unawaited(_onOccurrenceColorTap(occurrence)),
                     onLocateMissingFile: (occurrence) => unawaited(_onLocateMissingFilePressed(occurrence)),
-                    onClose: () => setState(() => _featureTreeVisible = false),
+                    onClose: () {
+                      _exitMultiSelect();
+                      setState(() => _featureTreeVisible = false);
+                    },
                     onMateTap: _onMateTap,
                     onMateLongPress: _onMateLongPress,
                     selectedMateId: _selectedMateId,
@@ -20243,6 +21298,32 @@ class _PartScreenState extends State<PartScreen> {
                     rootLabel: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
                   ),
                 ),
+                // Feature 1 (tree multi-select): replaces the Part-lens
+                // SelectionListDrawer (and, in Assembly lens,
+                // ComponentSelectionToolbar) above for the lifetime of a
+                // tree multi-select session - same drawer shell, listing the
+                // selected tree rows instead of mesh entities, with
+                // MultiSelectActionBar as its header. Stacked *above* both
+                // tree panels (unlike SelectionListDrawer) since the tree is
+                // always open during a session and would otherwise cover
+                // this drawer's left side.
+                if (_activeMultiSelect != null)
+                  Positioned.fill(
+                    child: SelectionListDrawer(
+                      selectedEntities: const {},
+                      onRemove: (_) {},
+                      items: _multiSelectDrawerItems(),
+                      header: MultiSelectActionBar(
+                        count: _activeMultiSelect!.count,
+                        allHidden: _multiSelectAllHidden,
+                        busy: _busy || _multiSelectBusy,
+                        onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
+                        onDelete: () => unawaited(_multiSelectDelete()),
+                        onCancel: _exitMultiSelect,
+                        onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
+                      ),
+                    ),
+                  ),
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,
@@ -20316,6 +21397,8 @@ class _PartScreenState extends State<PartScreen> {
                       initialEndDistance: _extrudeEndDistance,
                       initialThickness: _extrudeThickness,
                       initialThicknessDirection: _extrudeThicknessDirection,
+                      initialDraftAngle: _extrudeDraftAngle,
+                      initialDraftOutward: _extrudeDraftOutward,
                       targetBodyCount: _selectedEntities.length,
                       onChanged: _onExtrudeValuesChanged,
                       onConfirm: _confirmExtrude,
@@ -20443,8 +21526,10 @@ class _PartScreenState extends State<PartScreen> {
                       ],
                       onRemoveSource: _removeComponentPatternSource,
                       pickingMoreSources: _componentPatternPickingSources,
-                      onPickingMoreSourcesChanged: (picking) =>
-                          setState(() => _componentPatternPickingSources = picking),
+                      onPickingMoreSourcesChanged: (picking) {
+                        if (picking) _exitAllPickerAndSelectModes();
+                        setState(() => _componentPatternPickingSources = picking);
+                      },
                       direction: _componentPatternDirection,
                       onDirectionChanged: (preset) => setState(() => _componentPatternDirection = preset),
                       customDirection: _componentPatternCustomDirection,
@@ -20501,7 +21586,10 @@ class _PartScreenState extends State<PartScreen> {
                       title: _editingChamferFeatureId != null ? 'Edit Chamfer' : 'Chamfer',
                       tooltip: _previewChamferFeatureId == null ? 'Select edges (or a face) to chamfer' : null,
                       initialDistance: _chamferDistance,
+                      initialAngle: _chamferAngle,
+                      initialFlip: _chamferFlip,
                       onDistanceChanged: _onChamferDistanceChanged,
+                      onAngleChanged: _onChamferAngleChanged,
                       onConfirm: _confirmChamfer,
                       onCancel: _cancelChamfer,
                     ),
@@ -20652,6 +21740,24 @@ class _PartScreenState extends State<PartScreen> {
                       onCancel: _cancelDeleteFace,
                     ),
                   ),
+                // Shell: mirrors the Chamfer/Delete Face slots - the viewport
+                // does the live face picking, the panel owns the thickness/
+                // direction and reports the live face count.
+                if (_shellActive)
+                  Positioned.fill(
+                    key: const ValueKey('shell-panel-slot'),
+                    child: ShellPanel(
+                      key: ValueKey(_editingShellFeatureId ?? _previewShellFeatureId),
+                      title: _editingShellFeatureId != null ? 'Edit Shell' : 'Shell',
+                      tooltip: _currentShellFaceRefs().isEmpty ? 'Tap faces of the body to open' : null,
+                      initialThickness: _shellThickness,
+                      initialThicknessDirection: _shellThicknessDirection,
+                      faceCount: _currentShellFaceRefs().length,
+                      onChanged: _onShellParamsChanged,
+                      onConfirm: _confirmShell,
+                      onCancel: _cancelShell,
+                    ),
+                  ),
                 // Direct Editing family (fifth/last entry), V2: [MoveFacePanel]'s
                 // own `initState` postFrameCallback fires the first
                 // `onOffsetChanged` - mirrors [ScaleBodyPanel]'s slot shape,
@@ -20788,9 +21894,11 @@ class _PartScreenState extends State<PartScreen> {
                       initialCountAngular: _patternCountAngular,
                       initialAngleTotal: _patternAngleTotal,
                       reverseAngular: _patternReverseAngular,
+                      orientationMode: _patternOrientationMode,
                       onCountAngularChanged: _onPatternCountAngularChanged,
                       onAngleTotalChanged: _onPatternAngleTotalChanged,
                       onReverseAngularChanged: _onPatternReverseAngularChanged,
+                      onOrientationModeChanged: _onPatternOrientationModeChanged,
                       merge: _patternMerge,
                       onMergeChanged: _setPatternMerge,
                       sourceFeatureIds: _patternSourceFeatureIds,
@@ -21568,6 +22676,7 @@ class _PartScreenState extends State<PartScreen> {
                         _moveBodyActive ||
                         _deleteFaceActive ||
                         _moveFaceActive ||
+                        _shellActive ||
                         // Bug fix (on-device feedback: "the fab sits on top of
                         // the tool bar obscuring part of the measure tool
                         // bar"): MeasurementPanel is the same bottom-docked
@@ -21625,6 +22734,7 @@ class _PartScreenState extends State<PartScreen> {
                       !_moveBodyActive &&
                       !_deleteFaceActive &&
                       !_moveFaceActive &&
+                      !_shellActive &&
                       // Bug fix ("the 'new' FAB should not obscure the
                       // Move/Rotate toolbar"): same "hide the FAB outright"
                       // list every other bottom-docked ResizableToolPanel

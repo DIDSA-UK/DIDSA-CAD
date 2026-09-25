@@ -12,6 +12,7 @@ from app.document.models import (
     ImportSourceFormat,
     LoftMode,
     MergeMode,
+    PatternOrientationMode,
     PatternType,
     PlaneType,
     Produces,
@@ -197,6 +198,14 @@ class ExtrudeFeatureCreate(BaseModel):
     # Meaningful only when `thickness` is set - see `ThicknessDirection`'s
     # own doc comment.
     thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+    # Extrude draft (degrees, strictly inside (0, 90)): `None` (default) is
+    # the ordinary straight-walled prism. Mutually exclusive with
+    # `thickness` and single-profile only in v1 - see `app.document.router.
+    # _validate_draft_payload` and `ExtrudeFeature.draft_angle`.
+    draft_angle: float | None = None
+    # Meaningful only when `draft_angle` is set: True tapers outward (wider
+    # away from the Sketch plane), False inward.
+    draft_outward: bool = True
 
 
 class ExtrudeFeatureUpdate(BaseModel):
@@ -207,7 +216,15 @@ class ExtrudeFeatureUpdate(BaseModel):
     an explicit `[]` replaces them with an empty list (rejected for Cut,
     same as on create). Prompt G: `profile_refs` follows the identical
     omitted-vs-empty-list convention - omitted keeps the Feature's current
-    selection, an explicit `[]` reverts to "every outer profile"."""
+    selection, an explicit `[]` reverts to "every outer profile".
+
+    `thickness` and `draft_angle` distinguish omitted from an explicit
+    `null` (via pydantic's `model_fields_set` - see `app.document.router.
+    update_extrude_feature`): omitted keeps the Feature's current value, an
+    explicit `null` clears it (turns thin-wall/draft off). Needed since the
+    two are mutually exclusive - switching a preview from thin-wall to
+    draft must be able to clear `thickness` in the same PATCH that sets
+    `draft_angle`, and vice versa."""
 
     extrude_type: ExtrudeType | None = None
     start_distance: float | None = None
@@ -216,6 +233,8 @@ class ExtrudeFeatureUpdate(BaseModel):
     profile_refs: list[SketchEntityRefSchema] | None = None
     thickness: float | None = None
     thickness_direction: ThicknessDirection | None = None
+    draft_angle: float | None = None
+    draft_outward: bool | None = None
 
 
 class ExtrudeFeatureResponse(BaseModel):
@@ -230,6 +249,8 @@ class ExtrudeFeatureResponse(BaseModel):
     profile_refs: list[SketchEntityRefSchema] = []
     thickness: float | None = None
     thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+    draft_angle: float | None = None
+    draft_outward: bool = True
     # B1: see SketchFeatureResponse.produces above - always BODY for an
     # ExtrudeFeature today (Boss and Cut alike).
     produces: Produces
@@ -655,6 +676,17 @@ class FilletFeatureResponse(BaseModel):
     produces: Produces
 
 
+class ChamferEdgeOptionsSchema(BaseModel):
+    """Feature 3: wire counterpart to `app.document.models.
+    ChamferEdgeOptions` - see that dataclass for the semantics. `angle` is
+    in degrees, exclusive `(0, 180)` (checked by `app.document.router.
+    _validate_chamfer_edge_options`); `face_ref` must be a FACE."""
+
+    face_ref: SubShapeRefSchema | None = None
+    angle: float | None = None
+    flip: bool = False
+
+
 class ChamferFeatureCreate(BaseModel):
     """Prompt E: mirrors `FilletFeatureCreate` exactly, substituting
     `distance` for `radius` - see `app.document.router.
@@ -664,14 +696,22 @@ class ChamferFeatureCreate(BaseModel):
 
     edge_refs: list[SubShapeRefSchema] = []
     distance: float
+    # Feature 3: sparse per-edge angle/flip overrides, keyed by index into
+    # `edge_refs` (JSON object keys arrive as strings; pydantic coerces).
+    edge_options: dict[int, ChamferEdgeOptionsSchema] = {}
 
 
 class ChamferFeatureUpdate(BaseModel):
     """Partial update, same omitted-vs-current-value convention as
-    `FilletFeatureUpdate`."""
+    `FilletFeatureUpdate`. `edge_options`: `None` (omitted) keeps the
+    current value; `{}` clears every override. Note that replacing
+    `edge_refs` while omitting `edge_options` keeps the existing index-keyed
+    overrides, which the router then re-validates against the new edge
+    count."""
 
     edge_refs: list[SubShapeRefSchema] | None = None
     distance: float | None = None
+    edge_options: dict[int, ChamferEdgeOptionsSchema] | None = None
 
 
 class ChamferFeatureResponse(BaseModel):
@@ -679,6 +719,7 @@ class ChamferFeatureResponse(BaseModel):
     id: str
     edge_refs: list[SubShapeRefSchema] = []
     distance: float
+    edge_options: dict[int, ChamferEdgeOptionsSchema] = {}
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # ChamferFeature (it modifies, rather than creates, a Body).
@@ -1112,6 +1153,43 @@ class DeleteFaceFeatureResponse(BaseModel):
     produces: Produces
 
 
+class ShellFeatureCreate(BaseModel):
+    """Creates a `ShellFeature` - hollows the solid Body `body_id`, opening
+    every face named in `faces_to_remove` (1+ FACE refs, all on `body_id`)
+    and giving every remaining face a uniform wall `thickness` (> 0), grown
+    on the side named by `thickness_direction` (the same `ThicknessDirection`
+    thin-wall Extrude uses). See `app.document.router._validate_shell_faces_
+    to_remove`/`_validate_shell_thickness` for the payload-shape checks."""
+
+    body_id: str
+    faces_to_remove: list[SubShapeRefSchema] = []
+    thickness: float
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+
+
+class ShellFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `ChamferFeatureUpdate`."""
+
+    body_id: str | None = None
+    faces_to_remove: list[SubShapeRefSchema] | None = None
+    thickness: float | None = None
+    thickness_direction: ThicknessDirection | None = None
+
+
+class ShellFeatureResponse(BaseModel):
+    type: Literal["shell"] = "shell"
+    id: str
+    body_id: str
+    faces_to_remove: list[SubShapeRefSchema]
+    thickness: float
+    thickness_direction: ThicknessDirection
+    locked: bool
+    # B1: see SketchFeatureResponse.produces above - always BODY for a
+    # ShellFeature (it modifies, rather than creates, a Body).
+    produces: Produces
+
+
 class MoveFaceFeatureCreate(BaseModel):
     """Direct Editing family (fifth/last entry): creates a `MoveFaceFeature`
     moving every face named in `face_refs` (1+ entries, all belonging to
@@ -1342,6 +1420,7 @@ class PatternFeatureCreate(BaseModel):
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    orientation_mode: PatternOrientationMode = PatternOrientationMode.ROTATE_WITH_PATTERN
     skip_indices: list[int] = []
     merge: MergeMode = MergeMode.KEEP_SEPARATE
     # Phase 8 (`docs/pattern-mirror-scope.md` §2.11/§4): mirrors
@@ -1385,6 +1464,7 @@ class PatternFeatureUpdate(BaseModel):
     count_angular: int | None = None
     angle_total: float | None = None
     reverse_angular: bool | None = None
+    orientation_mode: PatternOrientationMode | None = None
     skip_indices: list[int] | None = None
     merge: MergeMode | None = None
     # Phase 8: mirrors `MirrorFeatureUpdate.tool_feature_id`'s own identical
@@ -1410,6 +1490,7 @@ class PatternFeatureResponse(BaseModel):
     count_angular: int
     angle_total: float
     reverse_angular: bool
+    orientation_mode: PatternOrientationMode = PatternOrientationMode.ROTATE_WITH_PATTERN
     skip_indices: list[int]
     merge: MergeMode
     tool_feature_id: str | None = None
@@ -2569,6 +2650,7 @@ FeatureResponse = Union[
     BooleanFeatureResponse,
     DeleteBodyFeatureResponse,
     DeleteFaceFeatureResponse,
+    ShellFeatureResponse,
     ScaleBodyFeatureResponse,
     MoveBodyFeatureResponse,
     MoveFaceFeatureResponse,

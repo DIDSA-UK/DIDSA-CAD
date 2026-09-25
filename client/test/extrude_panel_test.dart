@@ -21,7 +21,7 @@ void main() {
           body: ExtrudePanel(
             initialType: type,
             targetBodyCount: targetBodyCount,
-            onChanged: (_, __, ___, ____, _____) {},
+            onChanged: (_, __, ___, ____, _____, ______, _______) {},
             onConfirm: () {},
             onCancel: () {},
           ),
@@ -69,7 +69,7 @@ void main() {
             body: ExtrudePanel(
               initialType: ExtrudeType.boss,
               targetBodyCount: 0,
-              onChanged: (_, __, ___, ____, _____) {},
+              onChanged: (_, __, ___, ____, _____, ______, _______) {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -102,7 +102,7 @@ void main() {
               initialStartDistance: 10,
               initialEndDistance: 0, // end <= start: invalid depth.
               targetBodyCount: 5,
-              onChanged: (_, __, ___, ____, _____) {},
+              onChanged: (_, __, ___, ____, _____, ______, _______) {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -129,7 +129,7 @@ void main() {
               initialStartDistance: 0,
               initialEndDistance: 10,
               targetBodyCount: 0,
-              onChanged: (type, start, end, _, __) {
+              onChanged: (type, start, end, _, __, ___, ____) {
                 lastType = type;
                 lastStart = start;
                 lastEnd = end;
@@ -163,7 +163,7 @@ void main() {
               initialStartDistance: -2,
               initialEndDistance: 8,
               targetBodyCount: 0,
-              onChanged: (_, start, end, __, ___) {
+              onChanged: (_, start, end, __, ___, ____, _____) {
                 lastStart = start;
                 lastEnd = end;
               },
@@ -194,7 +194,7 @@ void main() {
           home: Scaffold(
             body: ExtrudePanel(
               targetBodyCount: 0,
-              onChanged: (_, __, ___, ____, _____) {},
+              onChanged: (_, __, ___, ____, _____, ______, _______) {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -215,7 +215,7 @@ void main() {
               initialStartDistance: 0,
               initialEndDistance: 10,
               targetBodyCount: 0,
-              onChanged: (_, __, ___, ____, _____) {},
+              onChanged: (_, __, ___, ____, _____, ______, _______) {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -223,6 +223,93 @@ void main() {
         ),
       );
       expect(find.text('Edit Extrude'), findsOneWidget);
+    });
+  });
+  group('ExtrudePanel draft (Feature 5)', () {
+    Future<List<(double?, bool)>> pumpPanel(
+      WidgetTester tester, {
+      double? initialThickness,
+      double? initialDraftAngle,
+      bool initialDraftOutward = true,
+    }) async {
+      final emitted = <(double?, bool)>[];
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: ExtrudePanel(
+              targetBodyCount: 0,
+              initialThickness: initialThickness,
+              initialDraftAngle: initialDraftAngle,
+              initialDraftOutward: initialDraftOutward,
+              onChanged: (_, __, ___, ____, _____, draftAngle, draftOutward) =>
+                  emitted.add((draftAngle, draftOutward)),
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      return emitted;
+    }
+
+    bool confirmEnabled(WidgetTester tester) =>
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed != null;
+
+    Future<void> tapDraftToggle(WidgetTester tester) async {
+      final toggle = find.byKey(const ValueKey('extrude-draft-toggle'));
+      await tester.ensureVisible(toggle);
+      await tester.tap(toggle);
+      await tester.pump();
+    }
+
+    testWidgets('off by default - no draft emitted, no angle field', (tester) async {
+      final emitted = await pumpPanel(tester);
+      expect(emitted.last.$1, isNull);
+      expect(find.byKey(const ValueKey('extrude-draft-angle-field')), findsNothing);
+    });
+
+    testWidgets('toggling Draft on emits the default angle, outward', (tester) async {
+      final emitted = await pumpPanel(tester);
+      await tapDraftToggle(tester);
+      expect(emitted.last, (5.0, true));
+      expect(find.byKey(const ValueKey('extrude-draft-angle-field')), findsOneWidget);
+      expect(confirmEnabled(tester), isTrue);
+    });
+
+    testWidgets('Inward segment emits draftOutward false', (tester) async {
+      final emitted = await pumpPanel(tester, initialDraftAngle: 3);
+      final inward = find.text('Inward');
+      await tester.ensureVisible(inward);
+      await tester.tap(inward);
+      await tester.pump();
+      expect(emitted.last, (3.0, false));
+    });
+
+    for (final invalid in ['0', '90', '120', 'abc']) {
+      testWidgets('angle "$invalid" disables Confirm', (tester) async {
+        await pumpPanel(tester, initialDraftAngle: 5);
+        final field = find.byKey(const ValueKey('extrude-draft-angle-field'));
+        await tester.ensureVisible(field);
+        await tester.enterText(field, invalid);
+        await tester.pump();
+        expect(confirmEnabled(tester), isFalse);
+        expect(find.text('Enter an angle between 0 and 90'), findsOneWidget);
+      });
+    }
+
+    testWidgets('Draft toggle is disabled while thin extrude is on', (tester) async {
+      await pumpPanel(tester, initialThickness: 1);
+      final tile = tester.widget<CheckboxListTile>(find.byKey(const ValueKey('extrude-draft-toggle')));
+      expect(tile.onChanged, isNull);
+      expect(find.text('Not available with thin extrude'), findsOneWidget);
+    });
+
+    testWidgets('Thin extrude toggle is disabled while draft is on', (tester) async {
+      await pumpPanel(tester, initialDraftAngle: 5);
+      final tile = tester.widget<CheckboxListTile>(find.widgetWithText(CheckboxListTile, 'Thin extrude'));
+      expect(tile.onChanged, isNull);
+      expect(find.text('Not available with draft'), findsOneWidget);
     });
   });
 }

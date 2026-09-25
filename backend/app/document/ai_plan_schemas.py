@@ -37,6 +37,7 @@ from app.document.models import (
     PlaneType,
     RevolveMode,
     SweepMode,
+    ThicknessDirection,
 )
 from app.document.schemas import ComponentPatternAxisSchema, PlaneRefSchema, PointRefSchema, SubShapeRefSchema
 from app.sketch.models import Plane
@@ -293,6 +294,34 @@ class ChamferStep(BaseModel):
     kind: Literal["chamfer"] = "chamfer"
     edges: EdgeSelector
     distance: float
+
+
+class ShellStep(BaseModel):
+    """Hollows the solid Body `body_of` into a thin-walled shell - the
+    plan-step counterpart to `ShellFeatureCreate` (`app.document.schemas`).
+    No face-selector object analogous to Fillet/Chamfer's `EdgeSelector`
+    exists (no plan ever needed to name a *face* before this step): rather
+    than inventing a full heuristic-selector schema for a single v1 use,
+    `faces_to_remove` reuses the same fixed-direction heuristic
+    `all_edges_of_face_at_position` already relies on internally
+    (`app.document.ai_plan_edges._find_face_for_direction`, resolved for
+    Shell by that module's `resolve_face_selector`) - each `CardinalDirection`
+    entry names exactly one planar face of `body_of`'s own current shape (the
+    one whose outward normal most closely aligns with that world axis), with
+    the same v1 "global axis, not Sketch/Body-local" limitation documented
+    there. `body_of` mirrors `EdgeSelector.of`: the local_id of an earlier
+    Body-producing step (never a `sketch`/`create_plane`/`fillet`/`chamfer`/
+    `shell` step - same `_BODY_PRODUCING_KINDS` restriction every other
+    body-producing reference in this schema already has, deliberately
+    excluding Shell's own sibling steps for the same "modifies a Body in
+    place" schema-ordering reason Fillet/Chamfer already are)."""
+
+    local_id: str
+    kind: Literal["shell"] = "shell"
+    body_of: str
+    faces_to_remove: list[CardinalDirection]
+    thickness: float
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
 
 
 class PatternDirectionStep(BaseModel):
@@ -682,6 +711,7 @@ PlanStep = Annotated[
         SweepStep,
         FilletStep,
         ChamferStep,
+        ShellStep,
         PatternStep,
         MirrorStep,
         CreatePlaneStep,
@@ -766,6 +796,15 @@ class StepResult(BaseModel):
     # directly - so the translator substitutes only `index`, not `body_id`,
     # at the point of use.
     resolved_mate_references: list[SubShapeRefSchema | None] | None = None
+    # Only present (and only meaningful) on a successful `shell` step - the
+    # real Body faces its plain `list[CardinalDirection]` face selector
+    # resolved to, the exact same "translator reuses this dry-run's own
+    # resolution, never re-derives it" reason `resolved_edges` exists for
+    # Fillet/Chamfer (Shell's faces need real OCCT topology to resolve too,
+    # just as unavailable client-side). Same `body_id`-is-the-plan's-own-
+    # `body_of`-local_id-(plus any `#N` suffix) indirection as
+    # `resolved_edges` - see that field's own doc comment for why.
+    resolved_faces: list[SubShapeRefSchema] | None = None
 
 
 class PlanValidateResponse(BaseModel):

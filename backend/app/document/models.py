@@ -201,6 +201,24 @@ class ExtrudeFeature(Feature):
     # before this field existed keeps its current wall side unchanged).
     thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
 
+    # Extrude draft: `None` (default) is the ordinary straight-walled prism,
+    # completely unchanged. Set (degrees, strictly inside (0, 90) - see
+    # `app.document.router._validate_draft_payload`), every lateral face of
+    # the prism is tapered by this angle via `BRepOffsetAPI_DraftAngle`
+    # (see `app.document.extrude._apply_draft`). The neutral plane - the
+    # one cross-section that stays exactly true to the sketched profile -
+    # is always the Sketch plane itself, never a separately picked face
+    # (standard CAD behavior for a draft built into the extrude itself).
+    # v1: mutually exclusive with `thickness` and restricted to a
+    # single-profile selection (both enforced by the router, the latter
+    # re-checked at resolve time for Sketch drift).
+    draft_angle: float | None = None
+
+    # Meaningful only when `draft_angle` is set: True (default) tapers the
+    # walls outward, so the solid gets wider moving away from the Sketch
+    # plane; False tapers them inward (narrower away from the plane).
+    draft_outward: bool = True
+
     @property
     def type(self) -> str:
         return "extrude"
@@ -536,13 +554,34 @@ class FilletFeature(Feature):
         return Produces.BODY
 
 
+@dataclass(frozen=True)
+class ChamferEdgeOptions:
+    """Feature 3 (Chamfer angle + flip): optional per-edge overrides for one
+    `ChamferFeature.edge_refs` entry, keyed by that entry's index in
+    `ChamferFeature.edge_options`. An edge with no entry (or an entry whose
+    `angle` is None) keeps the original symmetric distance-only chamfer.
+
+    With `angle` set the edge is chamfered via OCCT `BRepFilletAPI_
+    MakeChamfer.AddDA(distance, angle, edge, face)` - `distance` is measured
+    along the *reference face* and `angle` (degrees here; converted to
+    radians for OCCT, confirmed on-device) is measured from it. The
+    reference face is `face_ref` if given, else the lower-indexed of the
+    edge's two adjacent faces; `flip` swaps to the *other* adjacent face
+    (the standard CAD "flip chamfer direction")."""
+
+    face_ref: SubShapeRef | None = None
+    angle: float | None = None
+    flip: bool = False
+
+
 @dataclass
 class ChamferFeature(Feature):
     """Prompt E: bevels every edge named in `edge_refs` (all of which must
     belong to the same Body - see `app.document.chamfer._mixed_body_
     selection`) with one shared `distance`, via OCCT `BRepFilletAPI_
     MakeChamfer`. Same narrow v1 scope as `FilletFeature`: no per-edge
-    distances, no two-distance/angle chamfer variants - this prompt follows
+    distances (Feature 3 later added an optional per-edge distance-angle
+    variant via `edge_options` - see `ChamferEdgeOptions`) - this prompt follows
     Prompt D's design decisions exactly rather than re-deriving them (see
     that Feature's own docstring for the reasoning in full).
 
@@ -557,6 +596,10 @@ class ChamferFeature(Feature):
     id: str
     edge_refs: list[SubShapeRef] = field(default_factory=list)
     distance: float = 0.0
+    # Feature 3: sparse per-edge angle/flip overrides - key = index into
+    # `edge_refs`. Empty (the default, and every pre-Feature-3 document) =
+    # every edge gets the symmetric distance-only chamfer, unchanged.
+    edge_options: dict[int, ChamferEdgeOptions] = field(default_factory=dict)
 
     @property
     def type(self) -> str:
@@ -1213,6 +1256,30 @@ class PatternType(str, Enum):
     CIRCULAR = "circular"
 
 
+class PatternOrientationMode(str, Enum):
+    """How each Circular Pattern instance is oriented as it orbits the
+    axis - mirrors `ThicknessDirection`'s str-Enum pattern. Ignored for
+    Rectangular patterns (a pure translation never re-orients anything).
+
+    - `ROTATE_WITH_PATTERN` (the default - so every Pattern persisted
+      before this field existed round-trips unchanged): the whole seed is
+      rigidly rotated about the axis per instance
+      (`gp_Trsf.SetRotation`), position *and* local orientation together.
+    - `MAINTAIN_ORIENTATION`: only the seed's centroid orbits the axis;
+      each copy is a pure translation of the seed, so its local rotation
+      stays identical to the seed's (no spin).
+    - `RADIAL_TO_AXIS`: each copy keeps the same attitude relative to the
+      axis that the seed has (a body-local direction that points at the
+      axis on the seed points at the axis on every copy). This is
+      geometrically identical to `ROTATE_WITH_PATTERN` - see
+      `app.document.pattern._circular_instances` for why - and is kept as
+      its own value purely as a user-facing label."""
+
+    ROTATE_WITH_PATTERN = "rotate_with_pattern"
+    MAINTAIN_ORIENTATION = "maintain_orientation"
+    RADIAL_TO_AXIS = "radial_to_axis"
+
+
 @dataclass(frozen=True)
 class PatternAxisRef:
     """Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
@@ -1353,6 +1420,8 @@ class PatternFeature(Feature):
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    # Per-instance orientation - see `PatternOrientationMode`'s docstring.
+    orientation_mode: PatternOrientationMode = PatternOrientationMode.ROTATE_WITH_PATTERN
     # Phase 3 (both construction methods):
     skip_indices: list[int] = field(default_factory=list)
     # Phase 5 (§2.10): KEEP_SEPARATE (default) vs. FUSE_INTO_ONE.
@@ -2835,6 +2904,50 @@ class MoveFaceFeature(Feature):
     @property
     def type(self) -> str:
         return "move_face"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
+@dataclass
+class ShellFeature(Feature):
+    """Hollows the solid Body `body_id` into a thin-walled shell: every face
+    named in `faces_to_remove` (1+ entries, every one a FACE ref on
+    `body_id` itself - payload shape validated by `app.document.router.
+    _validate_shell_faces_to_remove`, same-Body check by `app.document.
+    shell._shell_mixed_body_selection`) is opened up, and every remaining
+    face becomes a wall of uniform `thickness` (> 0, `app.document.router.
+    _validate_shell_thickness`).
+
+    Built via `app.document.extrude._thin_wall_solid_for_direction` - the
+    exact same `BRepOffsetAPI_MakeThickSolid.MakeThickSolidByJoin` +
+    `ClosingFaces` primitive (`app.document.shell_ops.thicken_capped_solid_
+    to_solid`) the thin-wall Extrude path already relies on, so
+    `thickness_direction` reuses `ThicknessDirection` (and that helper's
+    OUTWARD/INWARD/SYMMETRIC handling) verbatim rather than inventing a
+    Shell-specific enum: OUTWARD grows each wall outside the Body's
+    original boundary, INWARD grows it inside (the Body's outer
+    dimensions are preserved), SYMMETRIC straddles it.
+
+    v1 scope: one uniform `thickness` for every wall - per-face thickness
+    overrides are an explicit future v2 (they need OCCT's variable-offset
+    shell API, not yet proven in this codebase). Modifies the shared
+    `body_id` in place (Fillet/Chamfer's "keep the same id" pattern)."""
+
+    id: str
+    body_id: str
+    faces_to_remove: list[SubShapeRef] = field(default_factory=list)  # every entry's shape_type must be FACE
+    thickness: float = 0.0
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+
+    @property
+    def type(self) -> str:
+        return "shell"
 
     @property
     def produces_solid_geometry(self) -> bool:

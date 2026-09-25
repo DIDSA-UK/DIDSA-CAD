@@ -128,6 +128,40 @@ class SubShapeRefDto {
   Map<String, dynamic> toJson() => {'body_id': bodyId, 'shape_type': shapeType, 'index': index};
 }
 
+/// Feature 3 (Chamfer angle + flip): the wire counterpart to the backend's
+/// `ChamferEdgeOptionsSchema` - one per-edge override on a Chamfer, keyed
+/// (in [FeatureDto.edgeOptions]) by index into [FeatureDto.edgeRefs].
+/// [angle] is in degrees (exclusive `(0, 180)`); null means the edge keeps
+/// the symmetric distance-only chamfer. [flip] swaps which of the edge's two
+/// adjacent faces the distance/angle is measured from. [faceRef] pins an
+/// explicit reference face (null = the backend's deterministic default).
+class ChamferEdgeOptionsDto {
+  final SubShapeRefDto? faceRef;
+  final double? angle;
+  final bool flip;
+
+  const ChamferEdgeOptionsDto({this.faceRef, this.angle, this.flip = false});
+
+  factory ChamferEdgeOptionsDto.fromJson(Map<String, dynamic> json) => ChamferEdgeOptionsDto(
+        faceRef: json['face_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['face_ref'] as Map<String, dynamic>),
+        angle: (json['angle'] as num?)?.toDouble(),
+        flip: json['flip'] as bool? ?? false,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (faceRef != null) 'face_ref': faceRef!.toJson(),
+        if (angle != null) 'angle': angle,
+        'flip': flip,
+      };
+}
+
+/// Feature 3: `{index: options}` -> the JSON object shape the backend
+/// expects (string keys).
+Map<String, dynamic> _chamferEdgeOptionsToJson(Map<int, ChamferEdgeOptionsDto> options) =>
+    {for (final e in options.entries) '${e.key}': e.value.toJson()};
+
 /// Assembly-testing bug fix: the wire counterpart to the backend's
 /// `MeasureEntityRefSchema` - `occurrenceId` (`""` for the currently-open
 /// Part's own root content, mirroring [MateEntityRefDto]'s identical
@@ -493,6 +527,29 @@ enum MergeMode {
       MergeMode.values.firstWhere((m) => m.apiValue == value, orElse: () => MergeMode.keepSeparate);
 }
 
+/// How each Circular Pattern instance is oriented as it orbits the axis -
+/// mirrors the backend's `PatternOrientationMode` string values exactly.
+/// [rotateWithPattern] (the default) rigidly rotates each copy with the
+/// pattern; [maintainOrientation] only moves each copy (no spin);
+/// [radialToAxis] keeps each copy facing the axis the way the seed does,
+/// which the backend computes with the same rigid rotation as
+/// [rotateWithPattern] (a label-only distinction - see the backend's
+/// `app.document.pattern._circular_instances`).
+enum PatternOrientationMode {
+  rotateWithPattern,
+  maintainOrientation,
+  radialToAxis;
+
+  String get apiValue => switch (this) {
+        PatternOrientationMode.rotateWithPattern => 'rotate_with_pattern',
+        PatternOrientationMode.maintainOrientation => 'maintain_orientation',
+        PatternOrientationMode.radialToAxis => 'radial_to_axis',
+      };
+
+  static PatternOrientationMode fromApiValue(String value) => PatternOrientationMode.values
+      .firstWhere((m) => m.apiValue == value, orElse: () => PatternOrientationMode.rotateWithPattern);
+}
+
 /// Boolean family, Subtract/Common: which OCCT boolean call a
 /// `"boolean"` Feature uses (the backend's `BooleanOperation`) - mirrors
 /// [MergeMode]/[PatternMode]'s own `apiValue`/`fromApiValue` str-enum
@@ -611,6 +668,11 @@ class FeatureDto {
   /// that actually differ between Fillet's and Chamfer's wire shape.
   final double? distance;
 
+  /// Feature 3: only meaningful on a `"chamfer"` Feature - sparse per-edge
+  /// angle/flip overrides keyed by index into [edgeRefs]. Empty for a plain
+  /// symmetric chamfer (and for every other Feature type).
+  final Map<int, ChamferEdgeOptionsDto> edgeOptions;
+
   /// Prompt F: only present on a `"revolve"` Feature - the Sketch Line
   /// reference the Profile is revolved around. Not required to belong to
   /// the same Sketch as [sketchFeatureId] (confirmed decision - see the
@@ -671,6 +733,16 @@ class FeatureDto {
   /// the backend's own default (and this feature's pre-existing behavior
   /// for a positive [thickness], before this field existed).
   final String thicknessDirection;
+
+  /// Feature 5: only present on an `"extrude"` Feature - the draft angle in
+  /// degrees (`ExtrudeFeature.draft_angle`; `null` is the ordinary
+  /// straight-walled prism). The neutral plane is always the sketch plane.
+  final double? draftAngle;
+
+  /// Meaningful only when [draftAngle] is set: `true` (default, matching
+  /// the backend's) tapers outward - wider away from the sketch plane -
+  /// `false` inward.
+  final bool draftOutward;
 
   /// Only present on a `"loft"` Feature - `true` when a thin Loft
   /// ([thickness] set) sources its sections as closed profiles (a hollow
@@ -752,6 +824,10 @@ class FeatureDto {
   final int countAngular;
   final double angleTotal;
   final bool reverseAngular;
+
+  /// Only present on a Circular `"pattern"` Feature: the backend's
+  /// `orientation_mode` string (see [PatternOrientationMode]).
+  final String orientationMode;
 
   /// Pattern/Mirror scoping's Phase 3 - only present on a `"pattern"`
   /// Feature: linear indices (Rectangular's own `i * count_2 + j`, or
@@ -915,6 +991,14 @@ class FeatureDto {
   /// key `face_refs`, hence this field's own distinct Dart name).
   final List<SubShapeRefDto> directEditFaceRefs;
 
+  /// Shell: only present on a `"shell"` Feature - the faces of [bodyId]
+  /// opened up by the Shell (the backend `ShellFeature.faces_to_remove`).
+  /// The Shell's own wall thickness/side reuse [thickness]/
+  /// [thicknessDirection] verbatim (identical wire keys, same "no separate
+  /// field needed" reasoning [radius]/[distance] already share), and its
+  /// target Body reuses [bodyId].
+  final List<SubShapeRefDto> facesToRemove;
+
   /// Direct Editing family, fifth entry - only present on a `"move_face"`
   /// Feature using its offset-along-normal mode - exactly one of this,
   /// [delta], or [directionRef]+[directionDistance] is set on any given
@@ -977,6 +1061,7 @@ class FeatureDto {
     this.edgeRefs = const [],
     this.radius,
     this.distance,
+    this.edgeOptions = const {},
     this.axisRef,
     this.angle,
     this.mode,
@@ -986,6 +1071,8 @@ class FeatureDto {
     this.ruled = false,
     this.thickness,
     this.thicknessDirection = 'outward',
+    this.draftAngle,
+    this.draftOutward = true,
     this.thinFromClosedProfile,
     this.guideCurveRefs = const [],
     this.hasLostReference = false,
@@ -1005,6 +1092,7 @@ class FeatureDto {
     this.countAngular = 1,
     this.angleTotal = 360.0,
     this.reverseAngular = false,
+    this.orientationMode = 'rotate_with_pattern',
     this.skipIndices = const [],
     this.merge = 'keep_separate',
     this.toolFeatureId,
@@ -1025,6 +1113,7 @@ class FeatureDto {
     this.rotationAxis,
     this.rotationAngleDegrees,
     this.directEditFaceRefs = const [],
+    this.facesToRemove = const [],
     this.offsetDistance,
     this.directionDistance,
     this.surfaceFeatureId,
@@ -1076,6 +1165,10 @@ class FeatureDto {
             const [],
         radius: (json['radius'] as num?)?.toDouble(),
         distance: (json['distance'] as num?)?.toDouble(),
+        edgeOptions: (json['edge_options'] as Map<String, dynamic>?)?.map(
+              (k, v) => MapEntry(int.parse(k), ChamferEdgeOptionsDto.fromJson(v as Map<String, dynamic>)),
+            ) ??
+            const {},
         axisRef: json['axis_ref'] == null
             ? null
             : SketchEntityRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>),
@@ -1096,6 +1189,8 @@ class FeatureDto {
         ruled: json['ruled'] as bool? ?? false,
         thickness: (json['thickness'] as num?)?.toDouble(),
         thicknessDirection: json['thickness_direction'] as String? ?? 'outward',
+        draftAngle: (json['draft_angle'] as num?)?.toDouble(),
+        draftOutward: json['draft_outward'] as bool? ?? true,
         thinFromClosedProfile: json['thin_from_closed_profile'] as bool?,
         guideCurveRefs: (json['guide_curve_refs'] as List?)
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
@@ -1126,6 +1221,7 @@ class FeatureDto {
         countAngular: json['count_angular'] as int? ?? 1,
         angleTotal: (json['angle_total'] as num?)?.toDouble() ?? 360.0,
         reverseAngular: json['reverse_angular'] as bool? ?? false,
+        orientationMode: json['orientation_mode'] as String? ?? 'rotate_with_pattern',
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
         merge: json['merge'] as String? ?? 'keep_separate',
         toolFeatureId: json['tool_feature_id'] as String?,
@@ -1172,6 +1268,10 @@ class FeatureDto {
                     .toList() ??
                 const []
             : const [],
+        facesToRemove: (json['faces_to_remove'] as List?)
+                ?.map((r) => SubShapeRefDto.fromJson(r as Map<String, dynamic>))
+                .toList() ??
+            const [],
         offsetDistance: (json['offset_distance'] as num?)?.toDouble(),
         directionDistance: (json['direction_distance'] as num?)?.toDouble(),
         surfaceFeatureId: json['surface_feature_id'] as String?,
@@ -1899,6 +1999,16 @@ class AiPlanStepResultDto {
   /// through, so only `index` needs substituting at the point of use.
   final List<SubShapeRefDto?>? resolvedMateReferences;
 
+  /// Only present (and only meaningful) on a successful `shell` step - the
+  /// real Body faces its `faces_to_remove` world-axis selector resolved to,
+  /// with each [SubShapeRefDto.bodyId] holding the plan's own `body_of`
+  /// local_id (plus any `#N` multi-solid suffix), never a real Body id -
+  /// `PlanTranslator` substitutes the real id at the point of use, the same
+  /// [resolvedEdges] indirection reused for the same reason (no face-
+  /// selector heuristic is resolvable client-side either). See `StepResult.
+  /// resolved_faces`'s own doc comment in `ai_plan_schemas.py`.
+  final List<SubShapeRefDto>? resolvedFaces;
+
   AiPlanStepResultDto({
     required this.localId,
     required this.ok,
@@ -1907,6 +2017,7 @@ class AiPlanStepResultDto {
     this.resolvedEdges,
     this.holeCount,
     this.resolvedMateReferences,
+    this.resolvedFaces,
   });
 
   factory AiPlanStepResultDto.fromJson(Map<String, dynamic> json) => AiPlanStepResultDto(
@@ -1920,6 +2031,9 @@ class AiPlanStepResultDto {
         holeCount: json['hole_count'] as int?,
         resolvedMateReferences: (json['resolved_mate_references'] as List?)
             ?.map((e) => e == null ? null : SubShapeRefDto.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        resolvedFaces: (json['resolved_faces'] as List?)
+            ?.map((e) => SubShapeRefDto.fromJson(e as Map<String, dynamic>))
             .toList(),
       );
 }
@@ -2612,6 +2726,8 @@ class DocumentApiClient {
     List<SketchEntityRefDto> profileRefs = const [],
     double? thickness,
     String? thicknessDirection,
+    double? draftAngle,
+    bool? draftOutward,
   }) =>
       _send(
         () => _httpClient.post(
@@ -2626,6 +2742,8 @@ class DocumentApiClient {
                 'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
                 if (thickness != null) 'thickness': thickness,
                 if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
+                if (draftAngle != null) 'draft_angle': draftAngle,
+                if (draftOutward != null) 'draft_outward': draftOutward,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2639,6 +2757,13 @@ class DocumentApiClient {
   /// others, so a live-preview re-solve that never touched target-body/
   /// profile picking doesn't accidentally clear it). Used for the
   /// live-preview debounced re-solve.
+  ///
+  /// Feature 5: [clearThickness]/[clearDraftAngle] send an explicit JSON
+  /// `null` for `thickness`/`draft_angle` when the matching value is null -
+  /// the backend treats an explicit null as "turn thin-wall/draft off"
+  /// (omitted still means "keep"), needed since the two are mutually
+  /// exclusive and switching from one to the other must clear the old one
+  /// in the same PATCH.
   Future<FeatureDto> updateExtrudeFeature(
     String partId,
     String featureId, {
@@ -2648,7 +2773,11 @@ class DocumentApiClient {
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
     double? thickness,
+    bool clearThickness = false,
     String? thicknessDirection,
+    double? draftAngle,
+    bool clearDraftAngle = false,
+    bool? draftOutward,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2661,8 +2790,10 @@ class DocumentApiClient {
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)
                   'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
-                if (thickness != null) 'thickness': thickness,
+                if (thickness != null || clearThickness) 'thickness': thickness,
                 if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
+                if (draftAngle != null || clearDraftAngle) 'draft_angle': draftAngle,
+                if (draftOutward != null) 'draft_outward': draftOutward,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -2817,10 +2948,15 @@ class DocumentApiClient {
   /// exactly, substituting [distance] for `radius` (`mixed_body_selection`/
   /// `chamfer_failed`/`missing_reference` on failure - see
   /// `app.document.router.create_chamfer_feature`).
+  ///
+  /// Feature 3: [edgeOptions] (index into [edgeRefs] -> per-edge angle/flip)
+  /// is only sent when non-empty, so a plain symmetric chamfer's payload is
+  /// unchanged.
   Future<FeatureDto> createChamferFeature(
     String partId, {
     required List<SubShapeRefDto> edgeRefs,
     required double distance,
+    Map<int, ChamferEdgeOptionsDto> edgeOptions = const {},
   }) =>
       _send(
         () => _httpClient.post(
@@ -2829,18 +2965,22 @@ class DocumentApiClient {
               body: jsonEncode({
                 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 'distance': distance,
+                if (edgeOptions.isNotEmpty) 'edge_options': _chamferEdgeOptionsToJson(edgeOptions),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Partial update for an existing ChamferFeature - mirrors
-  /// [updateFilletFeature] exactly.
+  /// [updateFilletFeature] exactly. Feature 3: [edgeOptions] follows the
+  /// same omitted-keeps-current convention - null leaves the Feature's
+  /// existing per-edge options alone, an empty map clears them.
   Future<FeatureDto> updateChamferFeature(
     String partId,
     String featureId, {
     List<SubShapeRefDto>? edgeRefs,
     double? distance,
+    Map<int, ChamferEdgeOptionsDto>? edgeOptions,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -2849,6 +2989,7 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (edgeRefs != null) 'edge_refs': edgeRefs.map((r) => r.toJson()).toList(),
                 if (distance != null) 'distance': distance,
+                if (edgeOptions != null) 'edge_options': _chamferEdgeOptionsToJson(edgeOptions),
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -3130,6 +3271,58 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Shell: creates a ShellFeature hollowing [bodyId], opening every face in
+  /// [facesToRemove] (1+, all on [bodyId]) and giving every remaining face
+  /// a uniform wall [thickness] (> 0) grown on the side named by
+  /// [thicknessDirection] (`'outward'`/`'inward'`/`'symmetric'`) - see the
+  /// backend's `app.document.router.create_shell_feature`
+  /// (`shell_failed`/`mixed_body_selection`/`missing_reference` on failure).
+  Future<FeatureDto> createShellFeature(
+    String partId, {
+    required String bodyId,
+    required List<SubShapeRefDto> facesToRemove,
+    required double thickness,
+    String thicknessDirection = 'outward',
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/shell-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'body_id': bodyId,
+                'faces_to_remove': facesToRemove.map((r) => r.toJson()).toList(),
+                'thickness': thickness,
+                'thickness_direction': thicknessDirection,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing ShellFeature - mirrors
+  /// [updateChamferFeature]'s omitted-keeps-current-value shape.
+  Future<FeatureDto> updateShellFeature(
+    String partId,
+    String featureId, {
+    String? bodyId,
+    List<SubShapeRefDto>? facesToRemove,
+    double? thickness,
+    String? thicknessDirection,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/shell-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (bodyId != null) 'body_id': bodyId,
+                if (facesToRemove != null)
+                  'faces_to_remove': facesToRemove.map((r) => r.toJson()).toList(),
+                if (thickness != null) 'thickness': thickness,
+                if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Direct Editing family (fifth/last entry), V2: creates a MoveFaceFeature
   /// moving every face in [faceRefs] via exactly one of [offsetDistance]
   /// (along each face's own outward normal, via `BRepOffset_MakeOffset` -
@@ -3358,6 +3551,7 @@ class DocumentApiClient {
     int countAngular = 1,
     double angleTotal = 360.0,
     bool reverseAngular = false,
+    PatternOrientationMode orientationMode = PatternOrientationMode.rotateWithPattern,
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
     // Pattern/Mirror scoping's Phase 8: mirrors [createMirrorFeature]'s own
@@ -3384,6 +3578,7 @@ class DocumentApiClient {
                 'count_angular': countAngular,
                 'angle_total': angleTotal,
                 'reverse_angular': reverseAngular,
+                'orientation_mode': orientationMode.apiValue,
                 'skip_indices': skipIndices,
                 'merge': merge.apiValue,
                 if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
@@ -3418,6 +3613,7 @@ class DocumentApiClient {
     int countAngular = 1,
     double angleTotal = 360.0,
     bool reverseAngular = false,
+    PatternOrientationMode orientationMode = PatternOrientationMode.rotateWithPattern,
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
     String? toolFeatureId,
@@ -3442,6 +3638,7 @@ class DocumentApiClient {
                 'count_angular': countAngular,
                 'angle_total': angleTotal,
                 'reverse_angular': reverseAngular,
+                'orientation_mode': orientationMode.apiValue,
                 'skip_indices': skipIndices,
                 'merge': merge.apiValue,
                 if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
@@ -3474,6 +3671,7 @@ class DocumentApiClient {
     int? countAngular,
     double? angleTotal,
     bool? reverseAngular,
+    PatternOrientationMode? orientationMode,
     List<int>? skipIndices,
     MergeMode? merge,
     String? toolFeatureId,
@@ -3497,6 +3695,7 @@ class DocumentApiClient {
                 if (countAngular != null) 'count_angular': countAngular,
                 if (angleTotal != null) 'angle_total': angleTotal,
                 if (reverseAngular != null) 'reverse_angular': reverseAngular,
+                if (orientationMode != null) 'orientation_mode': orientationMode.apiValue,
                 // Phase 3: `null` (omitted) leaves the Feature's current
                 // skip set untouched; `[]` explicitly un-skips every
                 // previously-skipped instance - see the backend's

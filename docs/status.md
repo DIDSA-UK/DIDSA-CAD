@@ -3428,3 +3428,33 @@ touched.
 **Docs**: `docs/ai-modelling/13-multi-part-assembly-overhaul.md`'s own new
 "Gap-closure pass" section and updated Appendix entries; `docs/assembly-scope.md`
 §2q; this entry (and the retroactive one above it).
+
+---
+
+## 2026-09-25 — STEP/OCCT Mesh Viewer support parked; native-vcpkg approach hits a structural dead end
+
+PR #251 added fully-offline STEP (CAD) file import to the Mesh Viewer via a native OCCT (OpenCascade) wrapper called through `dart:ffi`, built with vcpkg (`client/native/occt/`), and merged into `main`. The follow-up session (PR #252) chased a cascade of real CI failures in that native build - OCCT version drift breaking the link (vcpkg's default baseline had moved to 8.0.1, which renamed the toolkits this shim linked by their old 7.x names), vcpkg manifest mode never triggering because the manifest lived in a subdirectory, a shallow preinstalled vcpkg unable to resolve a pinned historical port commit - and eventually hit a genuine, permanent blocker.
+
+**Root cause, confirmed by reading the actual pinned port's `portfile.cmake`, not inferred**: vcpkg's `opencascade` port hardcodes
+
+```
+vcpkg_cmake_configure(
+    OPTIONS
+        ...
+        -DBUILD_MODULE_DETools=OFF
+        ...
+)
+```
+
+`BUILD_MODULE_DETools` is OCCT's own module flag for Data Exchange Tools - the module containing every STEP-reading toolkit this shim needed (`TKSTEP`, `TKSTEPBase`, `TKSTEPAttr`, `TKSTEP209`, `TKXDESTEP`). There is no vcpkg feature flag to turn it back on. This isn't tied to the 7.9.3 pin or to any one platform - it reproduced identically on Windows (link failure: unresolved `STEPCAFControl_Reader`) and, after a genuine ~1h from-source build, on Android too (same unresolved symbols). vcpkg's `opencascade` port simply cannot provide STEP import support as shipped, on any platform, at any version.
+
+That, combined with the general difficulty of self-maintaining a CAD kernel's cross-platform mobile build (a real, structural industry gap - production apps solve STEP import via server-side conversion or paid SDKs like HOOPS/CAD Exchanger, not a DIY on-device kernel), is why **the STEP feature is being parked entirely**, not just re-patched again.
+
+**Cleanup**: `client/native/occt/` (the whole directory), the STEP-specific Dart code (`step_bindings.dart`, `step_loader.dart`, and the STEP-only additions to `mesh_viewer_render.dart`/`mesh_viewer_screen.dart`/`mesh_viewer_preferences.dart`/`mesh_viewer_settings_screen.dart`), the STEP/OCCT build wiring in `client/windows/CMakeLists.txt`/`client/linux/CMakeLists.txt`/`client/android/app/build.gradle`, the `ffi` pub dependency (only ever used by the STEP bindings), the STEP/OCCT CI jobs in `.github/workflows/client-verify.yml`, and `client/test/mesh_viewer/step_body_visibility_test.dart` were all removed, restoring every touched file to its exact pre-#251 state (verified via a zero-diff check against the pre-merge commit). PR #252 (all STEP CI-fix work, nothing else) closed superseded, unmerged. PR #253 (an unrelated, wanted feature PR - Shell, chamfer/extrude/pattern improvements, AI-planning schema work, multi-select UI - that had branched from `main` after the STEP merge and inherited/merged in the STEP files) had its STEP/OCCT remnants stripped to match, with all of its own feature commits preserved intact.
+
+**Verification**: `flutter analyze` clean, full client suite 2226/2226 passed (down from 2240 pre-removal, i.e. exactly the STEP file's own 14 tests gone, zero other regressions).
+
+**If STEP import is ever revisited**, three real alternatives exist (none attempted here - this is a parking, not a fix):
+1. **vcpkg overlay port**: maintain a local overlay for `opencascade` that patches `BUILD_MODULE_DETools` back to `ON` in its own copy of the portfile, and point vcpkg at it (`--overlay-ports`). Keeps the existing vcpkg-based build shape; ongoing maintenance burden is tracking upstream port changes so the overlay doesn't drift out of sync.
+2. **Build OCCT directly**, bypassing vcpkg for this one dependency - configure and build OCCT's own upstream CMake project directly (as this session's own local verification runs already did, against a real system-installed OCCT 7.6.3), and vendor/manage that build the way `client/native/slvs/` already manages its own vendored solver. Full control over which modules build, at the cost of owning OCCT's own (large, slow, platform-specific) build system directly instead of delegating to vcpkg.
+3. **Backend-hybrid conversion**: reuse the backend's already-working `pythonocc-core` STEP pipeline (`backend/app/document/native_format.py` et al. already wrap OCCT server-side for the app's own native format) - upload a STEP file to the backend, convert/tessellate it there, and stream the resulting mesh back to the client the same way other backend-authored meshes already reach the Mesh Viewer. Loses the Mesh Viewer's current fully-offline property for STEP specifically (every other supported format - STL/OBJ/glTF/GLB - stays local), but needs no native mobile/desktop CAD kernel at all and reuses a pipeline this project already has working and tested.

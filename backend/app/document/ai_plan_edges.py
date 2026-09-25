@@ -234,6 +234,26 @@ def _resolve_provenance_selector(
     raise _no_matching_edges(body_id, selector)
 
 
+def resolve_face_selector(body: TopoDS_Shape, body_id: str, direction: CardinalDirection) -> SubShapeRef:
+    """The single FACE `SubShapeRef` (indexed the same undeduplicated 0-based
+    `topexp.MapShapes(body, TopAbs_FACE, ...)` scheme `resolve_subshape_
+    from_bodies` already reads a FACE ref with) a `shell` plan step's own
+    `faces_to_remove` entry names against `body`'s real current topology -
+    the exact same "which face has this outward normal" heuristic
+    `all_edges_of_face_at_position` already uses internally
+    (`_find_face_for_direction`), reused here to name the face itself
+    rather than its edges. Raises the same structured 422
+    `edge_selector_no_matching_face` `_find_face_for_direction` already
+    raises for "no planar face aligns with this direction" - reused as-is
+    rather than inventing a Shell-specific error shape for the same
+    underlying condition."""
+    face = _find_face_for_direction(body, body_id, direction.value)
+    face_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(body, TopAbs_FACE, face_map)
+    index = face_map.FindIndex(face)
+    return SubShapeRef(body_id=body_id, shape_type=SubShapeType.FACE, index=index - 1)
+
+
 def resolve_edge_selector(
     body: TopoDS_Shape,
     body_id: str,

@@ -108,6 +108,7 @@ from app.document.models import (
     BevelPairFeature,
     BevelPairMemberSpec,
     BooleanFeature,
+    ChamferEdgeOptions,
     ChamferFeature,
     ComponentPattern,
     ComponentPatternAxis,
@@ -167,6 +168,7 @@ from app.document.models import (
     RigidTransform,
     RuledSurfaceFeature,
     ScaleBodyFeature,
+    ShellFeature,
     SketchFeature,
     SketchOrEdgeRef,
     SolidFromSurfacesFeature,
@@ -187,6 +189,7 @@ from app.document.move_body import resolve_move_body
 from app.document.move_face import resolve_move_face
 from app.document.offset_surface import resolve_offset_surface
 from app.document.scale_body import resolve_scale_body
+from app.document.shell import resolve_shell
 from app.document.solid_from_surfaces import resolve_solid_from_surfaces
 from app.document.thicken import resolve_thicken
 from app.document.schemas import (
@@ -225,6 +228,7 @@ from app.document.schemas import (
     BooleanFeatureUpdate,
     CascadeDeletePreviewResponse,
     CascadeDeleteResponse,
+    ChamferEdgeOptionsSchema,
     ChamferFeatureCreate,
     ChamferFeatureResponse,
     ChamferFeatureUpdate,
@@ -254,6 +258,9 @@ from app.document.schemas import (
     ScaleBodyFeatureCreate,
     ScaleBodyFeatureResponse,
     ScaleBodyFeatureUpdate,
+    ShellFeatureCreate,
+    ShellFeatureResponse,
+    ShellFeatureUpdate,
     ExternalEdgeReferenceResponse,
     ExternalVertexReferenceCreate,
     ExtrudeFeatureCreate,
@@ -375,7 +382,7 @@ from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
 from app.session_context import bind_session_id
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
-from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
@@ -441,6 +448,32 @@ def _subshape_ref_to_domain(schema: SubShapeRefSchema) -> SubShapeRef:
 
 def _subshape_ref_to_schema(ref: SubShapeRef) -> SubShapeRefSchema:
     return SubShapeRefSchema(body_id=ref.body_id, shape_type=ref.shape_type, index=ref.index)
+
+
+def _chamfer_edge_options_to_domain(
+    options: dict[int, ChamferEdgeOptionsSchema],
+) -> dict[int, ChamferEdgeOptions]:
+    return {
+        i: ChamferEdgeOptions(
+            face_ref=_subshape_ref_to_domain(opts.face_ref) if opts.face_ref is not None else None,
+            angle=opts.angle,
+            flip=opts.flip,
+        )
+        for i, opts in options.items()
+    }
+
+
+def _chamfer_edge_options_to_schema(
+    options: dict[int, ChamferEdgeOptions],
+) -> dict[int, ChamferEdgeOptionsSchema]:
+    return {
+        i: ChamferEdgeOptionsSchema(
+            face_ref=_subshape_ref_to_schema(opts.face_ref) if opts.face_ref is not None else None,
+            angle=opts.angle,
+            flip=opts.flip,
+        )
+        for i, opts in sorted(options.items())
+    }
 
 
 def _measure_entity_ref_to_domain(schema: MeasureEntityRefSchema) -> MeasureEntityRef:
@@ -844,6 +877,8 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
             thickness=feature.thickness,
             thickness_direction=feature.thickness_direction,
+            draft_angle=feature.draft_angle,
+            draft_outward=feature.draft_outward,
             produces=feature.produces,
         )
     if isinstance(feature, SurfaceFeature):
@@ -938,6 +973,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             id=feature.id,
             edge_refs=[_subshape_ref_to_schema(ref) for ref in feature.edge_refs],
             distance=feature.distance,
+            edge_options=_chamfer_edge_options_to_schema(feature.edge_options),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -1030,6 +1066,16 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, ShellFeature):
+        return ShellFeatureResponse(
+            id=feature.id,
+            body_id=feature.body_id,
+            faces_to_remove=[_subshape_ref_to_schema(r) for r in feature.faces_to_remove],
+            thickness=feature.thickness,
+            thickness_direction=feature.thickness_direction,
+            locked=part.is_locked(feature.id),
+            produces=feature.produces,
+        )
     if isinstance(feature, MoveFaceFeature):
         return MoveFaceFeatureResponse(
             id=feature.id,
@@ -1073,6 +1119,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             count_angular=feature.count_angular,
             angle_total=feature.angle_total,
             reverse_angular=feature.reverse_angular,
+            orientation_mode=feature.orientation_mode,
             skip_indices=list(feature.skip_indices),
             merge=feature.merge,
             tool_feature_id=feature.tool_feature_id,
@@ -2387,7 +2434,7 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
     return feature
 
 
-def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[SketchEntityRef]) -> None:
+def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[SketchEntityRef]) -> list[Profile]:
     """Prompt G: eagerly validates `profile_refs` against `sketch_feature`'s
     *current* Profile detection, discarding the result - fails closed with
     `invalid_profile_ref` (see `app.document.extrude.select_profiles`)
@@ -2403,11 +2450,51 @@ def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[Ske
     `sketch_feature` resolves to a real, currently-extrudable SketchFeature -
     this re-runs `detect_profile` once more (cheap) rather than threading
     that call's own result through, keeping this a standalone, reusable
-    check for both Extrude's and Revolve's create/update endpoints."""
+    check for both Extrude's and Revolve's create/update endpoints.
+
+    Returns the selected profiles (discarded by every caller except
+    Extrude's draft check, `_validate_draft_payload`, which needs to know
+    how many outer profiles the Extrude will actually use)."""
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     result = detect_profile(sketch)
     candidates = [result.profile] if result.status == ProfileStatus.CLOSED_LOOP else result.loops
-    select_profiles(candidates, profile_refs)
+    return select_profiles(candidates, profile_refs)
+
+
+def _validate_draft_payload(draft_angle: float | None, thickness: float | None, profile_count: int) -> None:
+    """Extrude draft (v1): a no-op when `draft_angle` is None (no draft).
+    Otherwise:
+
+    - `draft_angle` must lie strictly inside (0, 90) degrees - 0 is "no
+      draft" (send `null` instead) and 90 would lay the walls flat onto the
+      Sketch plane, a degenerate taper. 400, the same plain numeric-field
+      shape as `_validate_thickness_nonzero`/Chamfer's own angle check.
+    - Mutually exclusive with thin-wall (`thickness`) - 422, mirroring
+      `_validate_tool_feature_payload`'s own "X is mutually exclusive with
+      Y" conflict shape. Rejected outright rather than letting either field
+      silently win, so a client can't fall into the "looks configured but
+      isn't" trap.
+    - Only a single outer profile (`profile_count`, from `_validate_
+      profile_refs`: the profiles `profile_refs` actually selects, or every
+      detected one when it's empty) - 422. A MultiProfile draft is left out
+      of v1's scope; `app.document.extrude._solid_for_extrude_feature`
+      re-checks this at resolve time in case the Sketch later drifts into
+      several loops."""
+    if draft_angle is None:
+        return
+    if not 0 < draft_angle < 90:
+        raise HTTPException(status_code=400, detail="draft_angle must be between 0 and 90 degrees (exclusive)")
+    if thickness is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="Extrude draft_angle is mutually exclusive with thickness (thin-wall extrude)",
+        )
+    if profile_count > 1:
+        raise HTTPException(
+            status_code=422,
+            detail="Extrude draft requires a single profile - this Extrude selects "
+            f"{profile_count} profiles",
+        )
 
 
 def _validate_surface_payload(
@@ -2633,6 +2720,51 @@ def _validate_chamfer_edge_refs(edge_refs: list[SubShapeRef]) -> None:
     for ref in edge_refs:
         if ref.shape_type != SubShapeType.EDGE:
             raise HTTPException(status_code=422, detail="edge_refs entries must have shape_type=EDGE")
+
+
+def _validate_chamfer_edge_options(edge_options: dict[int, ChamferEdgeOptions], edge_count: int) -> None:
+    """Feature 3: payload-shape checks for `ChamferFeature.edge_options` -
+    every key must index an existing `edge_refs` entry and every `face_ref`
+    must be a FACE (422, mirroring `_validate_chamfer_edge_refs`'s own
+    shape_type check); `angle`, when set, must lie strictly inside
+    `(0, 180)` degrees (400, `_validate_chamfer_distance`'s own plain-400
+    convention for a bare numeric-field check). Whether a `face_ref` is
+    actually adjacent to its edge is referential, so checked by
+    `app.document.chamfer.resolve_chamfer` instead."""
+    for index, opts in edge_options.items():
+        if not 0 <= index < edge_count:
+            raise HTTPException(
+                status_code=422,
+                detail=f"edge_options key {index} is not a valid edge_refs index",
+            )
+        if opts.face_ref is not None and opts.face_ref.shape_type != SubShapeType.FACE:
+            raise HTTPException(status_code=422, detail="edge_options face_ref must have shape_type=FACE")
+        if opts.angle is not None and not 0 < opts.angle < 180:
+            raise HTTPException(status_code=400, detail="angle must be between 0 and 180 degrees (exclusive)")
+
+
+def _validate_shell_thickness(thickness: float) -> None:
+    """Mirrors `_validate_chamfer_distance`'s plain-400 convention for a
+    bare numeric-field check - a Shell's wall `thickness` is a magnitude
+    (its side is chosen by `thickness_direction`, never by sign), so it
+    must be strictly positive."""
+    if thickness <= 0:
+        raise HTTPException(status_code=400, detail="thickness must be greater than 0")
+
+
+def _validate_shell_faces_to_remove(faces_to_remove: list[SubShapeRef]) -> None:
+    """Mirrors `_validate_chamfer_edge_refs` - payload-shape checks only
+    (at least one entry, every entry a FACE). Whether they resolve, and
+    whether they all belong to the Shell's own `body_id`, is checked by
+    `app.document.shell.resolve_shell` instead."""
+    if not faces_to_remove:
+        raise HTTPException(
+            status_code=422,
+            detail="ShellFeature requires at least one faces_to_remove entry",
+        )
+    for ref in faces_to_remove:
+        if ref.shape_type != SubShapeType.FACE:
+            raise HTTPException(status_code=422, detail="faces_to_remove entries must have shape_type=FACE")
 
 
 def _validate_revolve_angle(angle: float) -> None:
@@ -4178,8 +4310,9 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
     _validate_extrude_distances(payload.start_distance, payload.end_distance)
     _validate_target_body_ids(part, payload.extrude_type == ExtrudeType.CUT, payload.target_body_ids)
     profile_refs = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs]
-    _validate_profile_refs(sketch_feature, profile_refs)
+    selected_profiles = _validate_profile_refs(sketch_feature, profile_refs)
     _validate_thickness_nonzero(payload.thickness)
+    _validate_draft_payload(payload.draft_angle, payload.thickness, len(selected_profiles))
     feature = ExtrudeFeature(
         id=str(uuid.uuid4()),
         sketch_feature_id=payload.sketch_feature_id,
@@ -4190,6 +4323,8 @@ def create_extrude_feature(part_id: str, payload: ExtrudeFeatureCreate) -> Extru
         profile_refs=profile_refs,
         thickness=payload.thickness,
         thickness_direction=payload.thickness_direction,
+        draft_angle=payload.draft_angle,
+        draft_outward=payload.draft_outward,
     )
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -4237,12 +4372,18 @@ def update_extrude_feature(
         else feature.profile_refs
     )
     sketch_feature = _require_closed_sketch_feature(part, feature.sketch_feature_id)
-    _validate_profile_refs(sketch_feature, new_profile_refs)
-    new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
+    selected_profiles = _validate_profile_refs(sketch_feature, new_profile_refs)
+    # `thickness`/`draft_angle`: omitted keeps the current value, an
+    # explicit `null` clears it - see `ExtrudeFeatureUpdate`'s own docstring.
+    fields_set = payload.model_fields_set
+    new_thickness = payload.thickness if "thickness" in fields_set else feature.thickness
     _validate_thickness_nonzero(new_thickness)
     new_thickness_direction = (
         payload.thickness_direction if payload.thickness_direction is not None else feature.thickness_direction
     )
+    new_draft_angle = payload.draft_angle if "draft_angle" in fields_set else feature.draft_angle
+    new_draft_outward = payload.draft_outward if payload.draft_outward is not None else feature.draft_outward
+    _validate_draft_payload(new_draft_angle, new_thickness, len(selected_profiles))
 
     feature.extrude_type = new_extrude_type
     feature.start_distance = new_start
@@ -4251,6 +4392,8 @@ def update_extrude_feature(
     feature.profile_refs = new_profile_refs
     feature.thickness = new_thickness
     feature.thickness_direction = new_thickness_direction
+    feature.draft_angle = new_draft_angle
+    feature.draft_outward = new_draft_outward
     return _feature_response(part, feature)
 
 
@@ -5280,7 +5423,11 @@ def create_chamfer_feature(part_id: str, payload: ChamferFeatureCreate) -> Chamf
     edge_refs = [_subshape_ref_to_domain(ref) for ref in payload.edge_refs]
     _validate_chamfer_edge_refs(edge_refs)
     _validate_chamfer_distance(payload.distance)
-    feature = ChamferFeature(id=str(uuid.uuid4()), edge_refs=edge_refs, distance=payload.distance)
+    edge_options = _chamfer_edge_options_to_domain(payload.edge_options)
+    _validate_chamfer_edge_options(edge_options, len(edge_refs))
+    feature = ChamferFeature(
+        id=str(uuid.uuid4()), edge_refs=edge_refs, distance=payload.distance, edge_options=edge_options
+    )
     resolve_chamfer(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
     return _feature_response(part, feature)
@@ -5310,12 +5457,91 @@ def update_chamfer_feature(
     new_distance = payload.distance if payload.distance is not None else feature.distance
     _validate_chamfer_edge_refs(new_edge_refs)
     _validate_chamfer_distance(new_distance)
+    new_edge_options = (
+        _chamfer_edge_options_to_domain(payload.edge_options)
+        if payload.edge_options is not None
+        else feature.edge_options
+    )
+    _validate_chamfer_edge_options(new_edge_options, len(new_edge_refs))
 
-    candidate = ChamferFeature(id=feature.id, edge_refs=new_edge_refs, distance=new_distance)
+    candidate = ChamferFeature(
+        id=feature.id, edge_refs=new_edge_refs, distance=new_distance, edge_options=new_edge_options
+    )
     resolve_chamfer(part, candidate)  # raises on an unresolvable reference
 
     feature.edge_refs = candidate.edge_refs
     feature.distance = candidate.distance
+    feature.edge_options = candidate.edge_options
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/shell-features", response_model=ShellFeatureResponse, status_code=201
+)
+def create_shell_feature(part_id: str, payload: ShellFeatureCreate) -> ShellFeatureResponse:
+    """Mirrors `create_chamfer_feature` exactly - unlocked from the start,
+    fails closed (payload shape, then `resolve_shell`'s referential/
+    geometric check) before ever persisting an unresolvable Shell."""
+    part = get_part_or_404(part_id)
+    faces_to_remove = [_subshape_ref_to_domain(ref) for ref in payload.faces_to_remove]
+    _validate_shell_faces_to_remove(faces_to_remove)
+    _validate_shell_thickness(payload.thickness)
+    feature = ShellFeature(
+        id=str(uuid.uuid4()),
+        body_id=payload.body_id,
+        faces_to_remove=faces_to_remove,
+        thickness=payload.thickness,
+        thickness_direction=payload.thickness_direction,
+    )
+    resolve_shell(part, feature)  # raises on an unresolvable reference or failed shell
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_shell_feature_or_404(part: Part, feature_id: str) -> ShellFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, ShellFeature):
+        raise HTTPException(status_code=404, detail="Shell feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/shell-features/{feature_id}", response_model=ShellFeatureResponse)
+def update_shell_feature(
+    part_id: str, feature_id: str, payload: ShellFeatureUpdate
+) -> ShellFeatureResponse:
+    """Mirrors `update_chamfer_feature` exactly - same validate-before-
+    mutate discipline against a scratch Feature sharing the real one's id."""
+    part = get_part_or_404(part_id)
+    feature = _get_shell_feature_or_404(part, feature_id)
+
+    new_body_id = payload.body_id if payload.body_id is not None else feature.body_id
+    new_faces_to_remove = (
+        [_subshape_ref_to_domain(ref) for ref in payload.faces_to_remove]
+        if payload.faces_to_remove is not None
+        else feature.faces_to_remove
+    )
+    new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
+    new_thickness_direction = (
+        payload.thickness_direction
+        if payload.thickness_direction is not None
+        else feature.thickness_direction
+    )
+    _validate_shell_faces_to_remove(new_faces_to_remove)
+    _validate_shell_thickness(new_thickness)
+
+    candidate = ShellFeature(
+        id=feature.id,
+        body_id=new_body_id,
+        faces_to_remove=new_faces_to_remove,
+        thickness=new_thickness,
+        thickness_direction=new_thickness_direction,
+    )
+    resolve_shell(part, candidate)  # raises on an unresolvable reference or failed shell
+
+    feature.body_id = candidate.body_id
+    feature.faces_to_remove = candidate.faces_to_remove
+    feature.thickness = candidate.thickness
+    feature.thickness_direction = candidate.thickness_direction
     return _feature_response(part, feature)
 
 
@@ -7939,6 +8165,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         count_angular=payload.count_angular,
         angle_total=payload.angle_total,
         reverse_angular=payload.reverse_angular,
+        orientation_mode=payload.orientation_mode,
         skip_indices=list(payload.skip_indices),
         merge=payload.merge,
         tool_feature_id=payload.tool_feature_id,
@@ -8006,6 +8233,7 @@ def preview_pattern_feature_coarse(
         count_angular=payload.count_angular,
         angle_total=payload.angle_total,
         reverse_angular=payload.reverse_angular,
+        orientation_mode=payload.orientation_mode,
         skip_indices=list(payload.skip_indices),
         merge=payload.merge,
         tool_feature_id=payload.tool_feature_id,
@@ -8066,6 +8294,9 @@ def update_pattern_feature(
     new_reverse_angular = (
         payload.reverse_angular if payload.reverse_angular is not None else feature.reverse_angular
     )
+    new_orientation_mode = (
+        payload.orientation_mode if payload.orientation_mode is not None else feature.orientation_mode
+    )
     new_skip_indices = (
         list(payload.skip_indices) if payload.skip_indices is not None else feature.skip_indices
     )
@@ -8111,6 +8342,7 @@ def update_pattern_feature(
         count_angular=new_count_angular,
         angle_total=new_angle_total,
         reverse_angular=new_reverse_angular,
+        orientation_mode=new_orientation_mode,
         skip_indices=new_skip_indices,
         merge=new_merge,
         tool_feature_id=new_tool_feature_id,
@@ -8131,6 +8363,7 @@ def update_pattern_feature(
     feature.count_angular = candidate.count_angular
     feature.angle_total = candidate.angle_total
     feature.reverse_angular = candidate.reverse_angular
+    feature.orientation_mode = candidate.orientation_mode
     feature.skip_indices = candidate.skip_indices
     feature.merge = candidate.merge
     feature.tool_feature_id = candidate.tool_feature_id

@@ -117,6 +117,12 @@ class SelectionContextPanel extends StatelessWidget {
   /// *enabled* Move Face button - same gating/contract as [onDeleteFace].
   final VoidCallback? onMoveFace;
 
+  /// Shell: fired when the user taps an *enabled* Shell button (exactly one
+  /// solid Body selected, nothing else - that Body is the one hollowed, and
+  /// its faces to open are then picked from inside the Shell panel) - same
+  /// gating/contract as [onScaleBody].
+  final VoidCallback? onShell;
+
   /// [SelectionBreadcrumbBar.entity] - the one selected entity to show a
   /// breadcrumb row for, or `null` to hide it entirely (see that class's
   /// own doc comment for when [PartScreen] passes a real value). Independent
@@ -150,6 +156,7 @@ class SelectionContextPanel extends StatelessWidget {
     this.onMoveBody,
     this.onDeleteFace,
     this.onMoveFace,
+    this.onShell,
     this.breadcrumbEntity,
     this.onBreadcrumbSelect,
     this.onBreadcrumbPreview,
@@ -262,6 +269,8 @@ class SelectionContextPanel extends StatelessWidget {
         return action.enabled ? onDeleteFace : null;
       case 'Move Face':
         return action.enabled ? onMoveFace : null;
+      case 'Shell':
+        return action.enabled ? onShell : null;
       default:
         return null;
     }

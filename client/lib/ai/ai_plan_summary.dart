@@ -120,6 +120,10 @@ String _summarizeStep(AiGenerationPlan plan, AiPlanStep step) {
     case AiChamferStep():
       return 'Chamfer ${_selectorLabel(step.edges)} @${_fmt(step.distance)}mm';
 
+    case AiShellStep():
+      final faces = step.facesToRemove.map((d) => d.wireValue).join(', ');
+      return 'Shell $faces @${_fmt(step.thickness)}mm (${step.thicknessDirection})';
+
     case AiPatternStep():
       if (step.patternType == AiPatternType.circular) {
         return 'Pattern (circular) ${step.countAngular}× over ${_fmt(step.angleTotal)}°';

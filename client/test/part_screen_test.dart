@@ -1100,6 +1100,11 @@ void main() {
     await tester.longPress(find.text('Sketch 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Extrude'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
@@ -1213,6 +1218,11 @@ void main() {
     await tester.longPress(find.text('Sketch 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
     // Bug fix: a Sketch row's context menu now also offers "Extrude
     // Surface", pushing Delete further down - off the fixed 800x600 test
     // viewport - than it sat before.
@@ -1268,6 +1278,11 @@ void main() {
     // available on a locked Feature too, unlike a single delete. Opens the
     // context menu first; tap its Delete entry to reach the dialog.
     await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     // Bug fix: a Sketch row's context menu now also offers "Extrude
@@ -1513,6 +1528,11 @@ void main() {
       await tester.longPress(find.text('Sketch 1'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
 
       final surfaceTile = find.widgetWithText(ListTile, 'Extrude Surface');
       expect(surfaceTile, findsOneWidget);
@@ -1555,6 +1575,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -1612,6 +1637,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     await tester.longPress(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     // Boolean family, Subtract/Common: the context menu now offers two more
@@ -1958,6 +1988,11 @@ void main() {
     await tester.longPress(find.text('Extrude 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Pattern'), findsOneWidget);
 
     await tester.tap(find.text('Pattern'));
@@ -2008,6 +2043,11 @@ void main() {
     await tester.longPress(find.text('Sketch 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Pattern'), findsNothing);
   });
@@ -2049,6 +2089,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     // Phase 9: the old separate "Pattern into Target"/"Mirror into Target"
@@ -2132,6 +2177,11 @@ void main() {
     await tester.longPress(find.text('Extrude 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
 
     await tester.tap(find.text('Mirror'));
     await tester.pump();
@@ -2204,6 +2254,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -2759,6 +2814,11 @@ void main() {
     await tester.longPress(find.text('Sketch 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
 
     // Not yet hidden - the context menu's toggle entry must offer "Hide".
     expect(find.text('Hide'), findsOneWidget);
@@ -2773,6 +2833,11 @@ void main() {
     expect(tester.takeException(), isNull);
 
     await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -2826,6 +2891,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Hide'));
@@ -2964,6 +3034,11 @@ void main() {
       await tester.longPress(find.text('Sketch 1'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Extrude'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -3008,6 +3083,11 @@ void main() {
       await tester.longPress(find.text('Sketch 1'));
       // The closed-profile check is an awaited network round trip before
       // the menu even shows - pump past it rather than a single frame.
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -3067,6 +3147,11 @@ void main() {
       await tester.longPress(find.text('Sketch 1'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Extrude'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -3111,6 +3196,11 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Extrude'));
@@ -3163,6 +3253,11 @@ void main() {
       await tester.longPress(find.text('Sketch 1'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
 
       final extrudeTile = find.widgetWithText(ListTile, 'Extrude');
       expect(extrudeTile, findsOneWidget);
@@ -3202,6 +3297,11 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -3522,6 +3622,11 @@ void main() {
         await tester.longPress(find.text('Extrude 1'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
+        // Feature 1 (tree multi-select): long-press now enters multi-select;
+        // the row's own context menu is behind the action bar's "More".
+        await tester.tap(find.byTooltip('More actions'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
         // Boolean family, Subtract/Common: the context menu now offers two
         // more entries (Subtract/Common, alongside Merge) for any body-
         // producing Feature row - Delete sits low enough in the taller sheet
@@ -3597,6 +3702,11 @@ void main() {
         await tester.longPress(find.text('Extrude 1'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
+        // Feature 1 (tree multi-select): long-press now enters multi-select;
+        // the row's own context menu is behind the action bar's "More".
+        await tester.tap(find.byTooltip('More actions'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
         // Boolean family, Subtract/Common: mirrors the identical fix in the
         // test just above - Delete now sits outside the fixed 800x600 test
         // viewport once Subtract/Common join the context menu.
@@ -3651,6 +3761,11 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // Feature 1 (tree multi-select): long-press now enters multi-select;
+    // the row's own context menu is behind the action bar's "More".
+    await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     await tester.tap(find.text('Extrude'));
@@ -4153,6 +4268,11 @@ void main() {
       panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
 
       await tester.tap(find.text('Hide'));
       await tester.pump();
@@ -4174,6 +4294,11 @@ void main() {
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       expect(panel.occurrences.single.hidden, isTrue);
       panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -4198,6 +4323,11 @@ void main() {
       panel.onOccurrenceLongPress(target);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
 
       await tester.tap(find.text('Isolate'));
       await tester.pump();
@@ -4217,6 +4347,11 @@ void main() {
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
       panel.onOccurrenceLongPress(target);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -4240,6 +4375,11 @@ void main() {
       panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
 
       await tester.tap(find.text('Fix'));
       await tester.pump();
@@ -4256,6 +4396,11 @@ void main() {
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       expect(panel.occurrences.single.fixed, isTrue);
       panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -4276,6 +4421,11 @@ void main() {
       expect(refreshed.occurrences.single.fixed, isFalse);
 
       refreshed.onOccurrenceLongPress(refreshed.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       final reenabledTile = tester.widget<ListTile>(
@@ -4312,6 +4462,11 @@ void main() {
 
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -4374,6 +4529,11 @@ void main() {
       panel.onOccurrenceLongPress(occurrence);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
       expect(find.text('Make Focus'), findsOneWidget);
       await tester.tap(find.text('Make Focus'));
       await tester.pump();
@@ -4392,6 +4552,11 @@ void main() {
         orElse: () => occurrence,
       );
       refreshedPanel.onOccurrenceLongPress(sameOccurrence);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(find.text('Exit Focus'), findsOneWidget);
@@ -4504,6 +4669,11 @@ void main() {
       panel.onOccurrenceLongPress(target);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
 
       await tester.tap(find.text('Delete'));
       await tester.pump();
@@ -4532,6 +4702,11 @@ void main() {
       panel.onOccurrenceLongPress(target);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Delete'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -4555,6 +4730,11 @@ void main() {
 
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Delete'));
@@ -4637,6 +4817,11 @@ void main() {
       panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Make Focus'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -4661,6 +4846,11 @@ void main() {
         orElse: () => panel.occurrences.single,
       );
       refocusedPanel.onOccurrenceLongPress(sameOccurrence);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // Feature 1 (tree multi-select): long-press now enters multi-select;
+      // the row's own context menu is behind the action bar's "More".
+      await tester.tap(find.byTooltip('More actions'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Exit Focus'));
@@ -4722,6 +4912,11 @@ void main() {
         panel.onOccurrenceLongPress(panel.occurrences.single);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
+        // Feature 1 (tree multi-select): long-press now enters multi-select;
+        // the row's own context menu is behind the action bar's "More".
+        await tester.tap(find.byTooltip('More actions'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
         await tester.tap(find.text('Make Focus'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -4734,6 +4929,11 @@ void main() {
           orElse: () => panel.occurrences.single,
         );
         refocusedPanel.onOccurrenceLongPress(sameOccurrence);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        // Feature 1 (tree multi-select): long-press now enters multi-select;
+        // the row's own context menu is behind the action bar's "More".
+        await tester.tap(find.byTooltip('More actions'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
         await tester.tap(find.text('Exit Focus'));

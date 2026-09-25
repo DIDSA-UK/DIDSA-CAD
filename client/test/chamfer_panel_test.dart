@@ -116,6 +116,90 @@ void main() {
     });
   });
 
+  group('Feature 3: ChamferPanel angle + flip', () {
+    Future<void> pumpPanel(
+      WidgetTester tester, {
+      double? initialAngle,
+      bool initialFlip = false,
+      void Function(double?, bool)? onAngleChanged,
+    }) =>
+        tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: ChamferPanel(
+                initialDistance: 1.0,
+                initialAngle: initialAngle,
+                initialFlip: initialFlip,
+                onAngleChanged: onAngleChanged,
+                onConfirm: () {},
+                onCancel: () {},
+              ),
+            ),
+          ),
+        );
+
+    bool confirmIsEnabled(WidgetTester tester) =>
+        tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed != null;
+
+    testWidgets('the angle field and flip button are hidden until Angle is ticked', (tester) async {
+      (double?, bool)? last;
+      await pumpPanel(tester, onAngleChanged: (a, f) => last = (a, f));
+      expect(find.byKey(const ValueKey('chamfer-angle-field')), findsNothing);
+      expect(find.byKey(const ValueKey('chamfer-flip-button')), findsNothing);
+
+      await tester.tap(find.widgetWithText(CheckboxListTile, 'Angle'));
+      await tester.pump();
+
+      expect(find.byKey(const ValueKey('chamfer-angle-field')), findsOneWidget);
+      expect(find.byKey(const ValueKey('chamfer-flip-button')), findsOneWidget);
+      expect(last, (45.0, false));
+    });
+
+    testWidgets('an initial angle opens with the toggle on and the value filled in', (tester) async {
+      await pumpPanel(tester, initialAngle: 30.0, initialFlip: true);
+      expect(find.byKey(const ValueKey('chamfer-angle-field')), findsOneWidget);
+      expect(find.text('30'), findsOneWidget);
+      expect(
+        tester.widget<IconButton>(find.byKey(const ValueKey('chamfer-flip-button'))).isSelected,
+        isTrue,
+      );
+    });
+
+    testWidgets('flip toggles and reports the current angle', (tester) async {
+      (double?, bool)? last;
+      await pumpPanel(tester, initialAngle: 30.0, onAngleChanged: (a, f) => last = (a, f));
+      await tester.tap(find.byKey(const ValueKey('chamfer-flip-button')));
+      await tester.pump();
+      expect(last, (30.0, true));
+      await tester.tap(find.byKey(const ValueKey('chamfer-flip-button')));
+      await tester.pump();
+      expect(last, (30.0, false));
+    });
+
+    testWidgets('an out-of-range angle disables Confirm and is not reported', (tester) async {
+      (double?, bool)? last;
+      await pumpPanel(tester, initialAngle: 30.0, onAngleChanged: (a, f) => last = (a, f));
+      await tester.enterText(find.byKey(const ValueKey('chamfer-angle-field')), '180');
+      await tester.pump();
+      expect(confirmIsEnabled(tester), isFalse);
+      expect(last, isNull);
+
+      await tester.enterText(find.byKey(const ValueKey('chamfer-angle-field')), '60');
+      await tester.pump();
+      expect(confirmIsEnabled(tester), isTrue);
+      expect(last, (60.0, false));
+    });
+
+    testWidgets('unticking Angle reports a null angle (symmetric chamfer)', (tester) async {
+      (double?, bool)? last;
+      await pumpPanel(tester, initialAngle: 30.0, onAngleChanged: (a, f) => last = (a, f));
+      await tester.tap(find.widgetWithText(CheckboxListTile, 'Angle'));
+      await tester.pump();
+      expect(last?.$1, isNull);
+      expect(find.byKey(const ValueKey('chamfer-angle-field')), findsNothing);
+    });
+  });
+
   group('ChamferPanel title', () {
     testWidgets('defaults to "Chamfer"', (tester) async {
       await tester.pumpWidget(

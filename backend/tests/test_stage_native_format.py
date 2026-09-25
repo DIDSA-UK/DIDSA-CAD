@@ -19,6 +19,7 @@ module in one pytest session.
 import json
 
 from app.document.models import (
+    ChamferEdgeOptions,
     ChamferFeature,
     CreatePlaneFeature,
     Document,
@@ -119,8 +120,17 @@ def _build_document_with_every_feature_type(sketch: Sketch) -> Document:
 
     chamfer = ChamferFeature(
         id="feat-chamfer",
-        edge_refs=[SubShapeRef(body_id=extrude.id, shape_type=SubShapeType.EDGE, index=1)],
+        edge_refs=[
+            SubShapeRef(body_id=extrude.id, shape_type=SubShapeType.EDGE, index=1),
+            SubShapeRef(body_id=extrude.id, shape_type=SubShapeType.EDGE, index=2),
+        ],
         distance=0.75,
+        edge_options={
+            0: ChamferEdgeOptions(angle=30.0, flip=True),
+            1: ChamferEdgeOptions(
+                face_ref=SubShapeRef(body_id=extrude.id, shape_type=SubShapeType.FACE, index=3), angle=60.0
+            ),
+        },
     )
     part.add_feature(chamfer)
 
@@ -185,6 +195,23 @@ def _three_points_plane_feature(sketch: Sketch) -> CreatePlaneFeature:
     )
 
 
+def test_a_pre_feature_3_chamfer_without_edge_options_loads_with_an_empty_dict():
+    """Back-compat: documents saved before Chamfer angle/flip existed have
+    no `edge_options` key at all."""
+    from app.document.native_format import _feature_from_dict
+
+    feature = _feature_from_dict(
+        {
+            "type": "chamfer",
+            "id": "old-chamfer",
+            "edge_refs": [{"body_id": "b", "shape_type": "edge", "index": 0}],
+            "distance": 1.0,
+        }
+    )
+    assert isinstance(feature, ChamferFeature)
+    assert feature.edge_options == {}
+
+
 def test_round_trips_every_feature_type_through_real_json():
     sketch = _build_sketch()
     document = _build_document_with_every_feature_type(sketch)
@@ -233,6 +260,7 @@ def test_round_trips_every_feature_type_through_real_json():
     original_chamfer = original_by_id["feat-chamfer"]
     assert chamfer.edge_refs == original_chamfer.edge_refs
     assert chamfer.distance == original_chamfer.distance
+    assert chamfer.edge_options == original_chamfer.edge_options
 
     revolve = imported_by_id["feat-revolve"]
     original_revolve = original_by_id["feat-revolve"]

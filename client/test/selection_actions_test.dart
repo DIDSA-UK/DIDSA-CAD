@@ -40,7 +40,8 @@ void main() {
     test(
       'C2: exactly one face alone offers a real, enabled Create Plane (offset-from-face), plus '
       'on-device feedback\'s New Sketch on Face, Chamfer, and Fillet shortcuts, plus (Direct '
-      'Editing family) Delete Face and Move Face - both require solid only',
+      'Editing family) Delete Face and Move Face - all require solid only (Shell is body-first, '
+      'never offered for a face selection)',
       () {
         final actions = contextActionsFor({_face0});
         expect(actions, [
@@ -368,7 +369,17 @@ void main() {
         const SelectionContextAction('Delete Body', enabled: true),
         const SelectionContextAction('Scale', enabled: true),
         const SelectionContextAction('Move Body', enabled: true),
+        const SelectionContextAction('Shell', enabled: true),
       ]);
+    });
+
+    test('Shell (body-first): a lone Surface body offers Shell disabled, with a reason', () {
+      const body = SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'b1');
+      final actions = contextActionsFor({body}, isSolidBody: (bodyId) => false);
+      expect(
+        actions.last,
+        const SelectionContextAction('Shell', disabledReason: 'Only a solid body can be shelled'),
+      );
     });
 
     test(
@@ -394,6 +405,10 @@ void main() {
           const SelectionContextAction(
             'Move Body',
             disabledReason: 'Select exactly one body to move',
+          ),
+          const SelectionContextAction(
+            'Shell',
+            disabledReason: 'Select exactly one body to shell',
           ),
         ]);
       }
