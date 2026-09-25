@@ -263,12 +263,29 @@ jobs:
             core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
             core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
+      # Using the runner's preinstalled vcpkg ($env:VCPKG_INSTALLATION_ROOT)
+      # failed for real: "vcpkg install failed" with no further detail in
+      # the console log (the actual reason lands in a
+      # vcpkg-manifest-install.log file this job never surfaces) - but the
+      # symptom matches exactly what a local repro of this exact scenario
+      # produced: a shallow/limited-history vcpkg checkout can't `git
+      # read-tree` the specific commit vcpkg.json's pinned "overrides"
+      # needs ("failed to unpack tree object ... note: vcpkg was cloned as
+      # a shallow repository"). The preinstalled vcpkg on windows-latest is
+      # a runner-image snapshot, not something this workflow controls the
+      # git history of, so it can't be relied on to contain whatever
+      # commit a pinned port version happens to need. Clone and bootstrap a
+      # full vcpkg checkout here instead, exactly like the Linux/Android
+      # steps above already do (and which a local repro confirmed resolves
+      # opencascade[core,freetype]:x64-windows@7.9.3#1 correctly).
       - name: Build Windows (with STEP/OCCT support)
         env:
           DIDSA_ENABLE_OCCT: "1"
           VCPKG_TARGET_TRIPLET: x64-windows
           VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
         run: |
-          $env:CMAKE_TOOLCHAIN_FILE = "$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          git clone https://github.com/microsoft/vcpkg.git ../vcpkg
+          ../vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          $env:CMAKE_TOOLCHAIN_FILE = "$(Resolve-Path ../vcpkg/scripts/buildsystems/vcpkg.cmake)"
           flutter build windows --release
 
