@@ -1,3 +1,23 @@
+# STEP/OCCT (see the DIDSA_ENABLE_OCCT block near the bottom of this file):
+# `flutter build linux -- -DFOO=BAR` does NOT forward trailing args to the
+# underlying cmake configure - flutter's own arg parser treats them as
+# target-file arguments instead (confirmed by a real CI failure on the
+# Windows job, which hits the exact same flutter-tool code path: "Target
+# file \"-DDIDSA_ENABLE_OCCT=ON\" not found."). vcpkg's toolchain file must
+# also be set before the first project() call below to actually take effect
+# (it hooks compiler detection at that point) - so both the OCCT toggle and
+# the vcpkg toolchain/triplet are read from environment variables here,
+# before project(), rather than from -D command-line args. Set
+# DIDSA_ENABLE_OCCT=1, CMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/
+# vcpkg.cmake and VCPKG_TARGET_TRIPLET=x64-linux in the environment before
+# running `flutter build linux` (see .github/workflows/client-verify.yml).
+if(DEFINED ENV{DIDSA_ENABLE_OCCT} AND DEFINED ENV{CMAKE_TOOLCHAIN_FILE})
+  set(CMAKE_TOOLCHAIN_FILE "$ENV{CMAKE_TOOLCHAIN_FILE}" CACHE FILEPATH "Vcpkg toolchain file")
+endif()
+if(DEFINED ENV{VCPKG_TARGET_TRIPLET})
+  set(VCPKG_TARGET_TRIPLET "$ENV{VCPKG_TARGET_TRIPLET}" CACHE STRING "Vcpkg triplet")
+endif()
+
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
@@ -136,6 +156,9 @@ endif()
 # configured vcpkg toolchain (x64-linux triplet) isn't something a plain
 # `flutter build linux` has any reason to have set up.
 option(DIDSA_ENABLE_OCCT "Build the STEP/OCCT FFI shim (needs a configured vcpkg toolchain)" OFF)
+if(DEFINED ENV{DIDSA_ENABLE_OCCT} AND NOT DIDSA_ENABLE_OCCT)
+  set(DIDSA_ENABLE_OCCT ON)
+endif()
 if(DIDSA_ENABLE_OCCT)
   add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native/occt" "${CMAKE_CURRENT_BINARY_DIR}/didsa_occt")
   install(FILES $<TARGET_FILE:didsa_occt_ffi> DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)

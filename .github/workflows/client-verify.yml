@@ -124,25 +124,28 @@ jobs:
       # large, slow build (the underlying OCCT source tree itself, not a
       # prebuilt binary) - this may need a longer job timeout and/or vcpkg
       # binary caching to be practical in real CI, neither tuned here.
-      # Also unverified in this sandbox: whether `flutter build linux --
-      # -DFOO=BAR` actually forwards trailing arguments to the underlying
-      # `cmake` invocation on this Flutter version - if it doesn't, this
-      # step needs to fall back to running `cmake`/`cmake --build` directly
-      # against `linux/` instead of going through `flutter build linux` at
-      # all.
+      #
+      # `flutter build linux -- -DFOO=BAR` does NOT forward trailing args to
+      # the underlying cmake configure - confirmed by a real CI failure
+      # ("Target file \"-DDIDSA_ENABLE_OCCT=ON\" not found.") on the Windows
+      # job, which hits the same flutter-tool code path. client/linux/
+      # CMakeLists.txt instead reads DIDSA_ENABLE_OCCT/CMAKE_TOOLCHAIN_FILE/
+      # VCPKG_TARGET_TRIPLET from the environment (set before project(), so
+      # vcpkg's toolchain actually takes effect) - so this step exports them
+      # as env vars rather than passing `-- -D...` args.
       - name: Build Linux (with STEP/OCCT support)
         if: ${{ !cancelled() }}
         continue-on-error: true
+        env:
+          DIDSA_ENABLE_OCCT: "1"
+          VCPKG_TARGET_TRIPLET: x64-linux
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libgtk-3-dev
           git clone https://github.com/microsoft/vcpkg.git ../vcpkg
           ../vcpkg/bootstrap-vcpkg.sh
-          flutter build linux --release \
-            -- \
-            -DDIDSA_ENABLE_OCCT=ON \
-            -DCMAKE_TOOLCHAIN_FILE=$(pwd)/../vcpkg/scripts/buildsystems/vcpkg.cmake \
-            -DVCPKG_TARGET_TRIPLET=x64-linux
+          export CMAKE_TOOLCHAIN_FILE="$(pwd)/../vcpkg/scripts/buildsystems/vcpkg.cmake"
+          flutter build linux --release
 
       # arm64-android triplet support for vcpkg's own "opencascade" port is
       # unverified (see client/native/occt/CMakeLists.txt's own header
@@ -157,10 +160,11 @@ jobs:
         continue-on-error: true
         env:
           VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+          DIDSA_ENABLE_OCCT: "1"
         run: |
           git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
           "$VCPKG_ROOT/bootstrap-vcpkg.sh"
-          flutter build apk --debug -PdidsaEnableOcct=true
+          flutter build apk --debug
 
   windows-build:
     runs-on: windows-latest
@@ -182,15 +186,23 @@ jobs:
       # Windows is vcpkg's most mature target for the "opencascade" port
       # (see client/native/occt/CMakeLists.txt's own header comment) -
       # proven out first, ahead of the Android/iOS triplets. `vcpkg` ships
-      # preinstalled on GitHub's windows-latest runner image. Same
-      # unverified-in-this-sandbox caveat as the Linux job above applies to
-      # `flutter build windows --  -DFOO=BAR`'s own cmake-args passthrough.
+      # preinstalled on GitHub's windows-latest runner image.
+      #
+      # `flutter build windows -- -DFOO=BAR` does NOT forward trailing args
+      # to the underlying cmake configure - flutter's own arg parser treats
+      # them as target-file arguments instead. Confirmed by a real CI
+      # failure here: vcpkg successfully built opencascade (took ~1.7h),
+      # then the build failed with "Target file \"-DDIDSA_ENABLE_OCCT=ON\"
+      # not found." client/windows/CMakeLists.txt instead reads
+      # DIDSA_ENABLE_OCCT/CMAKE_TOOLCHAIN_FILE/VCPKG_TARGET_TRIPLET from the
+      # environment (set before project(), so vcpkg's toolchain actually
+      # takes effect) - so this step exports them as env vars instead.
       - name: Build Windows (with STEP/OCCT support)
+        env:
+          DIDSA_ENABLE_OCCT: "1"
+          VCPKG_TARGET_TRIPLET: x64-windows
         run: |
           vcpkg install opencascade --triplet x64-windows
-          flutter build windows --release `
-            -- `
-            -DDIDSA_ENABLE_OCCT=ON `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DVCPKG_TARGET_TRIPLET=x64-windows
+          $env:CMAKE_TOOLCHAIN_FILE = "$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          flutter build windows --release
 

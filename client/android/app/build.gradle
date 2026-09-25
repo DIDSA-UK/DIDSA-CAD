@@ -54,13 +54,19 @@ android {
     // build the moment this file merges, for everyone, including CI's own
     // existing (and currently working) debug-APK step.
     //
-    // Opt in explicitly with `-PdidsaEnableOcct=true` (see
-    // `.github/workflows/client-verify.yml`'s own STEP/Android job, which
-    // does exactly this and is marked `continue-on-error: true` for the
-    // same "arm64-android triplet support for the opencascade port is
-    // unverified" reason `client/native/occt/CMakeLists.txt`'s own header
-    // comment documents).
-    if (project.hasProperty("didsaEnableOcct")) {
+    // Opt in with the DIDSA_ENABLE_OCCT environment variable (not a
+    // `-PdidsaEnableOcct=true` project property: `flutter build apk` has no
+    // generic passthrough for arbitrary `-P` Gradle properties - only
+    // `--dart-define` - so a `-P...` flag on the flutter CLI would be
+    // misparsed the same way `flutter build windows -- -DFOO=BAR` was
+    // (confirmed by a real CI failure: "Target file ... not found."; that
+    // was cmake args via `--`, this is the Gradle-property equivalent of
+    // the same underlying problem). See `.github/workflows/
+    // client-verify.yml`'s own STEP/Android job, which sets this env var
+    // and is marked `continue-on-error: true` for the same "arm64-android
+    // triplet support for the opencascade port is unverified" reason
+    // `client/native/occt/CMakeLists.txt`'s own header comment documents.
+    if (System.getenv("DIDSA_ENABLE_OCCT") || project.hasProperty("didsaEnableOcct")) {
         def vcpkgRoot = System.getenv("VCPKG_ROOT")
         externalNativeBuild {
             cmake {
