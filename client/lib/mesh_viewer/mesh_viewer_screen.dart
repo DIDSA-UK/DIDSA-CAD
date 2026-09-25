@@ -10,6 +10,7 @@
 /// 15s timeout) in the first place.
 library;
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -32,6 +33,8 @@ import '../viewport3d/svg_icon.dart';
 import 'mesh_data.dart';
 import 'mesh_viewer_preferences.dart';
 import 'mesh_viewer_render.dart';
+import 'step_bindings.dart';
+import 'step_loader.dart';
 
 class MeshViewerScreen extends StatefulWidget {
   const MeshViewerScreen({super.key});
@@ -188,12 +191,43 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   bool _showFacets = true;
   bool _showWireframe = false;
 
-  static const _supportedExtensions = ['stl', 'obj', 'gltf', 'glb'];
+  /// Every non-STEP mesh format this viewer has always understood - STEP
+  /// support (see below) is additive, gated on whether the native OCCT
+  /// wrapper actually loaded on this build/device.
+  static const _baseSupportedExtensions = ['stl', 'obj', 'gltf', 'glb'];
+
+  /// Cached once at [initState] (a `DynamicLibrary.open` attempt - not free
+  /// to repeat on every rebuild) - see `step_loader.dart`'s own doc comment
+  /// on [loadOcctBindingsOrNull] for why this returns `null` rather than
+  /// throwing when native STEP support isn't available. `.step`/`.stp` only
+  /// ever appear in [_supportedExtensions] when this is non-null.
+  StepOcctBindings? _stepBindings;
+
+  List<String> get _supportedExtensions =>
+      _stepBindings == null ? _baseSupportedExtensions : [..._baseSupportedExtensions, 'step', 'stp'];
+
+  /// Non-null only for a loaded STEP file - the per-body hide/show/invert/
+  /// reset model (see `step_loader.dart`'s own doc comment on
+  /// [MultiBodyMesh]). `null` for every other format, and for a STEP file
+  /// this viewer's own `_MeshViewerViewport` uses to know whether to build
+  /// body-tagged (taggable/hideable) geometry at all.
+  MultiBodyMesh? _multiBodyMesh;
+
+  StreamSubscription<StepLoadEvent>? _stepLoadSubscription;
+  int _stepBodiesTotal = 0;
+  int _stepBodiesLoaded = 0;
 
   @override
   void initState() {
     super.initState();
+    _stepBindings = loadOcctBindingsOrNull();
     _loadScenePrefs();
+  }
+
+  @override
+  void dispose() {
+    _stepLoadSubscription?.cancel();
+    super.dispose();
   }
 
   /// Mirrors `PartScreen._loadViewPreferences`'s own "don't block the first
@@ -235,7 +269,15 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     if (rawMesh == null) return;
     final corrected = await _applyCorrectionsTo(rawMesh);
     if (!mounted || _rawMesh != rawMesh) return;
-    setState(() => _mesh = corrected);
+    setState(() {
+      _mesh = corrected;
+      // Up-axis/mirror correction preserves triangle order (a pure
+      // per-vertex transform - see applyUpAxis/applyMirror), so a STEP
+      // file's own per-body startTriangle/triangleCount ranges (computed
+      // once at load time) stay valid against the corrected mesh unchanged;
+      // only the mesh reference itself needs updating.
+      _multiBodyMesh?.mesh = corrected;
+    });
   }
 
   /// View menu's "Mirror" toggle - see `mesh_data.dart`'s own doc comment on
@@ -248,7 +290,10 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     if (rawMesh == null) return;
     final corrected = await _applyCorrectionsTo(rawMesh);
     if (!mounted || _rawMesh != rawMesh) return;
-    setState(() => _mesh = corrected);
+    setState(() {
+      _mesh = corrected;
+      _multiBodyMesh?.mesh = corrected;
+    });
   }
 
   /// Whether `_materials[index]` has its own base-color texture - a real
@@ -361,8 +406,25 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
       return;
     }
     final extension = (file.extension ?? '').toLowerCase();
+    final isStep = extension == 'step' || extension == 'stp';
     if (!_supportedExtensions.contains(extension)) {
-      setState(() => _error = 'Unsupported file type ".$extension" - pick an STL, OBJ, glTF, or GLB file.');
+      if (isStep) {
+        // Distinct from the generic "unsupported extension" message below -
+        // this is a *recognized* extension whose native support simply
+        // isn't available on this build/device (see `step_loader.dart`'s
+        // own `loadOcctBindingsOrNull` doc comment), not an actually
+        // unsupported format.
+        setState(() => _error =
+            'STEP files (.$extension) need native STEP support, which is not available on this build or '
+            'device - other formats (STL, OBJ, glTF, GLB) are unaffected.');
+      } else {
+        setState(() => _error = 'Unsupported file type ".$extension" - pick an STL, OBJ, glTF, or GLB file.');
+      }
+      return;
+    }
+
+    if (isStep) {
+      await _loadStepFile(path, file.name);
       return;
     }
 
@@ -371,6 +433,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
       _error = null;
       _rawMesh = null;
       _mesh = null;
+      _multiBodyMesh = null;
       _fileName = file.name;
     });
 
@@ -404,6 +467,189 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
         _error = 'Could not load "${file.name}": $error';
       });
     }
+  }
+
+  /// STEP counterpart of the STL/OBJ/glTF branch above - streams
+  /// [loadStepFile]'s events (see that function's own doc comment) rather
+  /// than awaiting one `compute()` call, so the viewport shows each body as
+  /// soon as it's tessellated instead of waiting for the whole assembly.
+  /// [StepLoadAccumulator] owns the running concatenation; every arriving
+  /// [StepLoadBodyMeshEvent] produces a brand-new [DecodedMesh] instance
+  /// (see that accumulator's own doc comment), which `_MeshViewerViewport`'s
+  /// existing "a different DecodedMesh instance -> rebuild geometry" check
+  /// (`didUpdateWidget`) already picks up with no extra plumbing needed - the
+  /// same mechanism the "Up axis"/"Mirror" toggles already rely on.
+  Future<void> _loadStepFile(String path, String fileName) async {
+    final bindings = _stepBindings;
+    if (bindings == null) {
+      setState(() => _error = 'STEP support is not available on this build/device.');
+      return;
+    }
+
+    setState(() {
+      _stage = _LoadStage.decoding;
+      _error = null;
+      _rawMesh = null;
+      _mesh = null;
+      _multiBodyMesh = null;
+      _materials = null;
+      _fileName = fileName;
+      _stepBodiesTotal = 0;
+      _stepBodiesLoaded = 0;
+    });
+
+    final accumulator = StepLoadAccumulator();
+    final completer = Completer<void>();
+
+    await _stepLoadSubscription?.cancel();
+    _stepLoadSubscription = loadStepFile(
+      path,
+      maxTriangles: MeshViewerPreferences.maxTriangles,
+      quality: MeshViewerPreferences.stepTessellationQuality,
+    ).listen(
+      (event) => _handleStepLoadEvent(event, accumulator, fileName, completer),
+      onError: (Object error) {
+        if (!mounted) return;
+        setState(() {
+          _stage = _LoadStage.idle;
+          _error = 'Could not load "$fileName": $error';
+        });
+        if (!completer.isCompleted) completer.complete();
+      },
+      onDone: () {
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
+
+    await completer.future;
+  }
+
+  Future<void> _handleStepLoadEvent(
+    StepLoadEvent event,
+    StepLoadAccumulator accumulator,
+    String fileName,
+    Completer<void> completer,
+  ) async {
+    switch (event) {
+      case StepLoadBodiesEvent():
+        accumulator.addBodies(event.bodies);
+        if (!mounted) return;
+        setState(() => _stepBodiesTotal = event.bodies.length);
+      case StepLoadBodyMeshEvent():
+        accumulator.addBodyMesh(event.bodyIndex, event.positions, event.normals);
+        final multi = accumulator.toMultiBodyMesh();
+        if (!mounted) return;
+        setState(() {
+          _stepBodiesLoaded++;
+          _rawMesh = multi.mesh;
+          _mesh = multi.mesh;
+          _multiBodyMesh = multi;
+        });
+        if (_materials == null) {
+          // Built once, off the first body that produces any geometry at
+          // all - a STEP body has no texture concept (unlike a glTF
+          // materialGroup), so this is always a single, flat-tint material
+          // shared by every body, same as the STL/OBJ case.
+          setState(() => _stage = _LoadStage.buildingMaterial);
+          final materials = await buildMeshViewerMaterials(
+            multi.mesh,
+            baseColourHex: _bodyColourHex,
+            roughness: _roughness,
+            emissiveIntensity: _emissiveIntensity,
+            fixedMetallic: ScenePreferences.fixedMetallic,
+          );
+          if (!mounted) return;
+          setState(() {
+            _materials = materials;
+            _stage = _LoadStage.ready;
+          });
+        }
+      case StepLoadErrorEvent():
+        if (!mounted) return;
+        setState(() => _error = _error == null ? event.message : '$_error\n${event.message}');
+      case StepLoadDoneEvent():
+        if (!mounted) return;
+        final multi = _multiBodyMesh;
+        if (multi == null || multi.mesh.triangleCount == 0) {
+          setState(() {
+            _stage = _LoadStage.idle;
+            _error ??= 'Could not load "$fileName": no usable geometry was produced.';
+          });
+        }
+        if (!completer.isCompleted) completer.complete();
+    }
+  }
+
+  /// "Invert visibility" button - flips every body's [MeshBody.visible]
+  /// flag. `_MeshViewerViewport` reconciles its own Scene Nodes against the
+  /// new flags on its next `didUpdateWidget` (see that widget's own
+  /// `_reconcileBodyNodes`) - no explicit Scene mutation needed here.
+  void _invertBodyVisibility() {
+    final multi = _multiBodyMesh;
+    if (multi == null) return;
+    setState(multi.invertVisibility);
+  }
+
+  /// "Reset visibility" button - see [_invertBodyVisibility]'s own doc
+  /// comment for why no explicit Scene mutation is needed here either.
+  void _resetBodyVisibility() {
+    final multi = _multiBodyMesh;
+    if (multi == null) return;
+    setState(multi.resetVisibility);
+  }
+
+  /// Tap-to-hide's own callback from `_MeshViewerViewport` (see that
+  /// widget's own ray-hit-testing doc comment) - hides the tapped body.
+  void _handleBodyTapped(int bodyId) {
+    final multi = _multiBodyMesh;
+    if (multi == null || bodyId < 0 || bodyId >= multi.bodies.length) return;
+    // MeshBody.id is always its own index into MultiBodyMesh.bodies (see
+    // step_loader.dart's StepLoadAccumulator) - a direct index is exact and
+    // avoids depending on package:collection just for firstOrNull.
+    final body = multi.bodies[bodyId];
+    setState(() => body.visible = false);
+  }
+
+  /// The body list/legend - a checkbox-per-body bottom sheet, a reasonable
+  /// complement to tap-to-hide for a body too small/hidden-behind-others to
+  /// reliably tap (see this feature's own plan doc). Uses a
+  /// [StatefulBuilder] so ticking a checkbox updates the sheet's own
+  /// checkmark immediately, alongside the real [MeshBody.visible] mutation
+  /// and the outer screen's `setState` that lets `_MeshViewerViewport`
+  /// reconcile its Scene.
+  void _showBodyListSheet() {
+    final multi = _multiBodyMesh;
+    if (multi == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            return SafeArea(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text('Bodies', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  for (final body in multi.bodies)
+                    CheckboxListTile(
+                      value: body.visible,
+                      title: Text(body.name),
+                      subtitle: Text('${body.triangleCount} triangles'),
+                      onChanged: (value) {
+                        setSheetState(() => body.visible = value ?? true);
+                        setState(() {});
+                      },
+                    ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   /// The mesh viewer's "Export" feature - saves the *decimated, corrected*
@@ -564,11 +810,21 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                 case 'mirror':
                   _onMirrorChanged(!_mirror);
                   break;
+                case 'invert-visibility':
+                  _invertBodyVisibility();
+                  break;
+                case 'reset-visibility':
+                  _resetBodyVisibility();
+                  break;
+                case 'body-list':
+                  _showBodyListSheet();
+                  break;
               }
             },
             itemBuilder: (context) {
               final mesh = _mesh;
               final wireframeAvailable = mesh != null && mesh.triangleCount <= kMaxWireframeTriangles;
+              final multiBodyMesh = _multiBodyMesh;
               return [
                 const PopupMenuItem(
                   value: 'scene',
@@ -615,6 +871,24 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                   checked: _mirror,
                   child: const Text('Mirror'),
                 ),
+                // Multi-body STEP hide/show controls - only shown at all
+                // once a STEP file with real bodies has loaded (a plain
+                // STL/OBJ/glTF has no body concept to invert/reset/list).
+                if (multiBodyMesh != null) ...[
+                  const PopupMenuDivider(),
+                  const PopupMenuItem(
+                    value: 'invert-visibility',
+                    child: ListTile(leading: Icon(Icons.flip_to_back), title: Text('Invert visibility')),
+                  ),
+                  const PopupMenuItem(
+                    value: 'reset-visibility',
+                    child: ListTile(leading: Icon(Icons.visibility), title: Text('Reset visibility')),
+                  ),
+                  const PopupMenuItem(
+                    value: 'body-list',
+                    child: ListTile(leading: Icon(Icons.list), title: Text('Body list…')),
+                  ),
+                ],
               ];
             },
           ),
@@ -654,13 +928,15 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
           ),
         );
       case _LoadStage.decoding:
-        return const Center(
+        return Center(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('Decoding mesh…'),
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(_stepBodiesTotal > 0
+                  ? 'Loading body $_stepBodiesLoaded of $_stepBodiesTotal…'
+                  : 'Decoding mesh…'),
             ],
           ),
         );
@@ -687,8 +963,19 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
                 lightIntensity: _lightIntensity,
                 showFacets: _showFacets,
                 showWireframe: _showWireframe && mesh.triangleCount <= kMaxWireframeTriangles,
+                bodies: _multiBodyMesh?.bodies,
+                onBodyTap: _handleBodyTapped,
               ),
             ),
+            if (_multiBodyMesh != null)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: _InfoBanner(
+                  text: '${_multiBodyMesh!.bodies.length} bodies '
+                      '(${_multiBodyMesh!.bodies.where((b) => b.visible).length} visible)',
+                ),
+              ),
             if (_originalTriangleCount != null && _originalTriangleCount != mesh.triangleCount)
               Positioned(
                 top: 8,
@@ -750,12 +1037,32 @@ class _MeshViewerViewport extends StatefulWidget {
   final bool showFacets;
   final bool showWireframe;
 
+  /// Non-null (and non-empty) only for a loaded multi-body STEP assembly -
+  /// see `step_loader.dart`'s own `MeshBody`/`MultiBodyMesh` doc comments.
+  /// `null`/empty for every other format, which keeps this widget's
+  /// existing whole-mesh rendering path (plain [buildMeshViewerNodes],
+  /// bulk [showFacets] toggling) completely unchanged - body-tagged
+  /// rendering ([buildBodyTaggedMeshViewerNodes]/[addBodyNodes]/
+  /// [removeBodyNodes]) only ever runs when this is populated.
+  final List<MeshBody>? bodies;
+
+  /// Tap-to-hide's own callback into the owning screen (which owns the
+  /// actual [MeshBody.visible] mutation and its own `setState`) - see
+  /// [_MeshViewerViewportState]'s own ray-hit-testing doc comment for why
+  /// the hit test itself lives here (this widget owns the camera/gesture
+  /// handling) while the visibility mutation lives one level up (the
+  /// screen owns the [MultiBodyMesh] model, shared with the body-list
+  /// sheet and the invert/reset buttons).
+  final void Function(int bodyId)? onBodyTap;
+
   const _MeshViewerViewport({
     required this.mesh,
     required this.materials,
     required this.lightIntensity,
     required this.showFacets,
     required this.showWireframe,
+    this.bodies,
+    this.onBodyTap,
   });
 
   @override
@@ -779,6 +1086,19 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
   bool _facesInScene = false;
   bool _wireframeInScene = false;
 
+  /// Per-body Node groups, keyed by [MeshBody.id] - only populated when
+  /// [widget.bodies] is non-null/non-empty (see [_buildFaceGeometry]).
+  /// Empty (and unused) for every other mesh format.
+  Map<int, List<Node>> _bodyNodesByBody = const {};
+
+  /// Whether each body's own Nodes are *currently* present in [_scene] -
+  /// the source of truth [_reconcileBodyNodes] diffs against, so toggling
+  /// a body's [MeshBody.visible] (tap-to-hide, invert, reset, the body-list
+  /// checkboxes - all mutate the same shared [MeshBody] instances the
+  /// owning screen holds) only ever adds/removes exactly the Nodes whose
+  /// desired membership actually changed, never a full rebuild.
+  final Map<int, bool> _bodyNodesInScene = {};
+
   @override
   void initState() {
     super.initState();
@@ -787,7 +1107,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
       setState(() {
         _scene = Scene();
         applySceneLighting(_scene!, widget.lightIntensity);
-        _faceNodes = buildMeshViewerNodes(widget.mesh, widget.materials);
+        _buildFaceGeometry();
         _syncFacetsAndWireframe();
         final bounds = _boundsOf(widget.mesh);
         _camera.setTarget(bounds.center);
@@ -799,17 +1119,51 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     });
   }
 
+  /// Builds [_faceNodes] (and, for a STEP file, [_bodyNodesByBody]) from
+  /// [widget.mesh]/[widget.materials]/[widget.bodies] - shared by
+  /// [initState] and [_rebuildGeometryForNewMesh] (a new [DecodedMesh]
+  /// instance arrives either from the "Up axis"/"Mirror" toggles, or - for
+  /// a streaming STEP load - every time another body's tessellation
+  /// completes, see `step_loader.dart`'s `StepLoadAccumulator`).
+  void _buildFaceGeometry() {
+    final bodies = widget.bodies;
+    if (bodies != null && bodies.isNotEmpty) {
+      _bodyNodesByBody = buildBodyTaggedMeshViewerNodes(
+        widget.mesh,
+        widget.materials.first,
+        [for (final b in bodies) (bodyId: b.id, startTriangle: b.startTriangle, triangleCount: b.triangleCount)],
+      );
+      _faceNodes = _bodyNodesByBody.values.expand((nodes) => nodes).toList();
+      _bodyNodesInScene.clear();
+    } else {
+      _bodyNodesByBody = const {};
+      _bodyNodesInScene.clear();
+      _faceNodes = buildMeshViewerNodes(widget.mesh, widget.materials);
+    }
+  }
+
   /// Adds/removes [_faceNodes]/[_wireframeNode] to/from [_scene] to match
-  /// [widget.showFacets]/[widget.showWireframe] - only touches the [Scene]
-  /// on an actual transition (tracked via [_facesInScene]/
-  /// [_wireframeInScene]), never re-adding an already-present [Node]. The
-  /// wireframe [Node] itself is built lazily, once, the first time it's
-  /// needed - a mesh the user never toggles wireframe on for never pays
-  /// [buildMeshViewerWireframeNode]'s cost at all.
+  /// [widget.showFacets]/[widget.showWireframe]. For a plain (non-STEP)
+  /// mesh, only touches the [Scene] on an actual transition (tracked via
+  /// [_facesInScene]/[_wireframeInScene]), never re-adding an
+  /// already-present [Node]. For a STEP file with real [widget.bodies],
+  /// delegates the "facets" half to [_reconcileBodyNodes] instead, so a
+  /// body already hidden (tap-to-hide/checkbox) doesn't reappear the moment
+  /// "Facets" is toggled back on. The wireframe [Node] itself is built
+  /// lazily, once, the first time it's needed - a mesh the user never
+  /// toggles wireframe on for never pays [buildMeshViewerWireframeNode]'s
+  /// cost at all. (Scope cut: the wireframe overlay always covers the
+  /// *whole* mesh regardless of per-body visibility - STEP assemblies
+  /// large enough to need hide/show are already well above
+  /// [kMaxWireframeTriangles] in practice, so this rarely matters; not
+  /// attempted here.)
   void _syncFacetsAndWireframe() {
     final scene = _scene;
     if (scene == null) return;
-    if (widget.showFacets != _facesInScene) {
+    final bodies = widget.bodies;
+    if (bodies != null && bodies.isNotEmpty) {
+      _reconcileBodyNodes();
+    } else if (widget.showFacets != _facesInScene) {
       for (final node in _faceNodes) {
         if (widget.showFacets) {
           scene.add(node);
@@ -830,6 +1184,34 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     }
   }
 
+  /// The real per-body add/remove reconciliation for a STEP file -
+  /// compares each [MeshBody]'s "should its own Nodes be in [_scene] right
+  /// now" (facets shown overall AND that specific body currently visible)
+  /// against [_bodyNodesInScene]'s last-known state, and only touches the
+  /// ones that actually changed - O(bodies), never a geometry rebuild, no
+  /// matter which single body's [MeshBody.visible] flag changed. This is
+  /// what makes tap-to-hide/invert/reset/the body-list checkboxes all O(1)
+  /// per body: none of them do anything more than mutate
+  /// [MeshBody.visible] and call `setState` on the owning screen, which
+  /// rebuilds this widget and lands back here via [didUpdateWidget].
+  void _reconcileBodyNodes() {
+    final scene = _scene;
+    final bodies = widget.bodies;
+    if (scene == null || bodies == null) return;
+    for (final body in bodies) {
+      final shouldBeInScene = widget.showFacets && body.visible;
+      final isInScene = _bodyNodesInScene[body.id] ?? false;
+      if (shouldBeInScene == isInScene) continue;
+      if (shouldBeInScene) {
+        addBodyNodes(scene, _bodyNodesByBody, body.id);
+      } else {
+        removeBodyNodes(scene, _bodyNodesByBody, body.id);
+      }
+      _bodyNodesInScene[body.id] = shouldBeInScene;
+    }
+    _facesInScene = widget.showFacets;
+  }
+
   @override
   void didUpdateWidget(covariant _MeshViewerViewport oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -837,17 +1219,27 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
       final scene = _scene;
       if (scene != null) setState(() => applySceneLighting(scene, widget.lightIntensity));
     }
-    if (widget.showFacets != oldWidget.showFacets || widget.showWireframe != oldWidget.showWireframe) {
-      setState(_syncFacetsAndWireframe);
-    }
     // A different DecodedMesh instance - the View menu's "Up axis" toggle
     // re-derived a new one from the same raw decode (see
-    // `mesh_viewer_screen.dart`'s own `_onUpAxisChanged`) - needs all-new
-    // geometry Nodes built from it; [widget.materials] stays as-is (a
-    // texture doesn't depend on vertex orientation), so this skips redoing
-    // that expensive step.
+    // `mesh_viewer_screen.dart`'s own `_onUpAxisChanged`), or - for a
+    // streaming STEP load - another body just finished tessellating (see
+    // `step_loader.dart`'s `StepLoadAccumulator`, which produces a fresh
+    // instance every time) - needs all-new geometry Nodes built from it;
+    // [widget.materials] stays as-is (a texture doesn't depend on vertex
+    // orientation), so this skips redoing that expensive step.
     if (_scene != null && !identical(widget.mesh, oldWidget.mesh)) {
       _rebuildGeometryForNewMesh();
+    } else if (widget.showFacets != oldWidget.showFacets || widget.showWireframe != oldWidget.showWireframe) {
+      setState(_syncFacetsAndWireframe);
+    } else if (widget.bodies != null) {
+      // Same mesh instance, same Facets/Wireframe toggles - but a body's
+      // own [MeshBody.visible] may have changed (tap-to-hide, invert,
+      // reset, or a body-list checkbox, all of which mutate the shared
+      // [MeshBody] instances and `setState` on the owning screen, which
+      // rebuilds this widget with the *same* `bodies` list reference).
+      // Cheap - O(bodies) - to check unconditionally rather than trying to
+      // detect "did anything actually change" up front.
+      setState(_reconcileBodyNodes);
     }
   }
 
@@ -864,7 +1256,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
       if (_wireframeInScene && wireframeNode != null) {
         scene.remove(wireframeNode);
       }
-      _faceNodes = buildMeshViewerNodes(widget.mesh, widget.materials);
+      _buildFaceGeometry();
       _wireframeNode = null;
       _facesInScene = false;
       _wireframeInScene = false;
@@ -888,12 +1280,42 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     return (center: (min + max) * 0.5, radius: (max - min).length * 0.5);
   }
 
+  /// Tap-to-hide's own "was this actually a tap, not a drag" tracking - the
+  /// pointer id currently being watched as a tap candidate (`null` once
+  /// disqualified: a second touch joined, or it moved further than
+  /// [_kTapMovementThreshold] total), the position it went down at, and the
+  /// summed distance it's moved since. A tap is only ever considered for a
+  /// single active pointer (touch *or* mouse - unlike [_activeTouches],
+  /// which only tracks touch for the existing orbit/pinch-pan gestures) -
+  /// existing orbit/pan/zoom handling below is completely unaffected either
+  /// way, since this is purely an observer over the same events, never
+  /// consuming or gating them.
+  int? _tapCandidatePointer;
+  Offset? _tapDownPosition;
+  double _tapMovement = 0;
+  Size _viewportSize = Size.zero;
+
+  static const double _kTapMovementThreshold = 8.0;
+
   void _handlePointerDown(PointerDownEvent event) {
+    _tapCandidatePointer = event.pointer;
+    _tapDownPosition = event.localPosition;
+    _tapMovement = 0;
     if (event.kind == PointerDeviceKind.mouse) return;
     _activeTouches[event.pointer] = event.localPosition;
   }
 
   void _handlePointerMove(PointerMoveEvent event) {
+    if (event.pointer == _tapCandidatePointer) {
+      _tapMovement += event.delta.distance;
+      // A mouse tap-to-hide only counts as a left-click drag, never a
+      // right-button pan or a second touch joining (pinch/pan) - matches
+      // the existing gesture split below (left button orbits, right pans).
+      final disqualified = _tapMovement > _kTapMovementThreshold ||
+          _activeTouches.length >= 2 ||
+          (event.kind == PointerDeviceKind.mouse && event.buttons & kPrimaryMouseButton == 0);
+      if (disqualified) _tapCandidatePointer = null;
+    }
     if (event.kind == PointerDeviceKind.mouse) {
       if (event.buttons & kPrimaryMouseButton != 0) {
         setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
@@ -913,6 +1335,110 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
 
   void _handlePointerEnd(PointerEvent event) {
     if (event.kind != PointerDeviceKind.mouse) _activeTouches.remove(event.pointer);
+    if (event is PointerUpEvent &&
+        event.pointer == _tapCandidatePointer &&
+        _tapMovement <= _kTapMovementThreshold) {
+      final downPosition = _tapDownPosition;
+      if (downPosition != null) _handleTap(downPosition);
+    }
+    _tapCandidatePointer = null;
+    _tapDownPosition = null;
+  }
+
+  /// Tap-to-hide: unprojects [screenPoint] into a world-space ray via the
+  /// existing [OrbitCamera] (reusing [OrbitCamera.cameraFor]'s own
+  /// [Camera.screenPointToRay] - the same ray-building call every other
+  /// screen-space hit-test in this app already uses, e.g.
+  /// `part_viewport.dart`'s section-drag hit-testing), then hands off to
+  /// [_hitTestBody]. A no-op when [widget.bodies] is null/empty (every
+  /// non-STEP format) or nothing was hit.
+  void _handleTap(Offset screenPoint) {
+    final bodies = widget.bodies;
+    if (bodies == null || bodies.isEmpty || _viewportSize == Size.zero) return;
+    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(screenPoint, _viewportSize);
+    final hitBodyId = _hitTestBody(ray, bodies, widget.mesh);
+    if (hitBodyId != null) widget.onBodyTap?.call(hitBodyId);
+  }
+
+  /// Broad-phase (ray-vs-AABB against every visible body's own
+  /// [MeshBody.bbox], sorted nearest-first) then narrow-phase (ray-vs-
+  /// triangle against only the nearest candidate body's own triangle
+  /// range, stopping at the first hit) - exactly the two-phase approach
+  /// the plan calls for: cheap broad-phase over the (typically small)
+  /// number of bodies, real per-triangle testing only against the single
+  /// most-likely body. An already-hidden body is never a candidate at all
+  /// (nothing to tap-to-hide further). Returns `null` on a total miss.
+  int? _hitTestBody(vm.Ray ray, List<MeshBody> bodies, DecodedMesh mesh) {
+    final candidates = <(double, MeshBody)>[];
+    for (final body in bodies) {
+      if (!body.visible) continue;
+      final distance = _rayAabbEntryDistance(ray, body.bbox.min, body.bbox.max);
+      if (distance != null) candidates.add((distance, body));
+    }
+    candidates.sort((a, b) => a.$1.compareTo(b.$1));
+
+    final positions = mesh.positions;
+    for (final (_, body) in candidates) {
+      final end = body.startTriangle + body.triangleCount;
+      for (var t = body.startTriangle; t < end; t++) {
+        final base = t * 9;
+        if (base + 8 >= positions.length) break;
+        final a = vm.Vector3(positions[base], positions[base + 1], positions[base + 2]);
+        final b = vm.Vector3(positions[base + 3], positions[base + 4], positions[base + 5]);
+        final c = vm.Vector3(positions[base + 6], positions[base + 7], positions[base + 8]);
+        if (_rayTriangleHits(ray.origin, ray.direction, a, b, c)) return body.id;
+      }
+    }
+    return null;
+  }
+
+  /// Standard slab-method ray-vs-AABB test - returns the ray parameter `t`
+  /// at which it enters the box (clamped to >= 0, i.e. "in front of the
+  /// camera"), or `null` on a miss.
+  double? _rayAabbEntryDistance(vm.Ray ray, vm.Vector3 min, vm.Vector3 max) {
+    var tMin = double.negativeInfinity;
+    var tMax = double.infinity;
+    for (var axis = 0; axis < 3; axis++) {
+      final origin = axis == 0 ? ray.origin.x : (axis == 1 ? ray.origin.y : ray.origin.z);
+      final direction = axis == 0 ? ray.direction.x : (axis == 1 ? ray.direction.y : ray.direction.z);
+      final lo = axis == 0 ? min.x : (axis == 1 ? min.y : min.z);
+      final hi = axis == 0 ? max.x : (axis == 1 ? max.y : max.z);
+      if (direction.abs() < 1e-12) {
+        if (origin < lo || origin > hi) return null;
+        continue;
+      }
+      var t1 = (lo - origin) / direction;
+      var t2 = (hi - origin) / direction;
+      if (t1 > t2) {
+        final tmp = t1;
+        t1 = t2;
+        t2 = tmp;
+      }
+      if (t1 > tMin) tMin = t1;
+      if (t2 < tMax) tMax = t2;
+      if (tMin > tMax) return null;
+    }
+    if (tMax < 0) return null;
+    return tMin < 0 ? 0 : tMin;
+  }
+
+  /// Möller-Trumbore ray-triangle intersection - `true` iff [ray origin,
+  /// direction] hits triangle (a, b, c) at a positive parameter.
+  bool _rayTriangleHits(vm.Vector3 origin, vm.Vector3 direction, vm.Vector3 a, vm.Vector3 b, vm.Vector3 c) {
+    final edge1 = b - a;
+    final edge2 = c - a;
+    final h = direction.cross(edge2);
+    final det = edge1.dot(h);
+    if (det.abs() < 1e-12) return false;
+    final invDet = 1 / det;
+    final s = origin - a;
+    final u = s.dot(h) * invDet;
+    if (u < 0 || u > 1) return false;
+    final q = s.cross(edge1);
+    final v = direction.dot(q) * invDet;
+    if (v < 0 || u + v > 1) return false;
+    final t = edge2.dot(q) * invDet;
+    return t > 1e-9;
   }
 
   void _handlePointerSignal(PointerSignalEvent event) {
@@ -950,6 +1476,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
+        _viewportSize = size;
         return Stack(
           children: [
             Listener(
