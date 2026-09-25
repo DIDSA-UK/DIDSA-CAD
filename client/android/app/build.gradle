@@ -37,6 +37,48 @@ android {
             signingConfig = signingConfigs.debug
         }
     }
+
+    // STEP support for the Mesh Viewer (client/lib/mesh_viewer/step_loader.dart) -
+    // builds the didsa_occt_ffi native shim (client/native/occt/CMakeLists.txt)
+    // via Gradle's own externalNativeBuild/NDK-cross-compile hook. This hook
+    // doesn't exist yet even for client/native/slvs/ (that library's own
+    // Android build is still a manual, out-of-Gradle NDK cross-compile - see
+    // that directory's own CMakeLists.txt header comment) - this is genuinely
+    // new automation, not a copy of an existing working example, so it's kept
+    // deliberately OFF by default: client/native/occt/CMakeLists.txt's own
+    // `find_package(OpenCASCADE CONFIG REQUIRED)` needs a configured vcpkg
+    // toolchain file (VCPKG_ROOT pointing at a bootstrapped vcpkg checkout,
+    // with the `arm64-android` triplet's `opencascade` port actually
+    // installed) that a plain `flutter build apk` has no reason to have set
+    // up - wiring this in unconditionally would break every normal Android
+    // build the moment this file merges, for everyone, including CI's own
+    // existing (and currently working) debug-APK step.
+    //
+    // Opt in explicitly with `-PdidsaEnableOcct=true` (see
+    // `.github/workflows/client-verify.yml`'s own STEP/Android job, which
+    // does exactly this and is marked `continue-on-error: true` for the
+    // same "arm64-android triplet support for the opencascade port is
+    // unverified" reason `client/native/occt/CMakeLists.txt`'s own header
+    // comment documents).
+    if (project.hasProperty("didsaEnableOcct")) {
+        def vcpkgRoot = System.getenv("VCPKG_ROOT")
+        externalNativeBuild {
+            cmake {
+                path "../../native/occt/CMakeLists.txt"
+                version "3.22.1"
+            }
+        }
+        defaultConfig {
+            externalNativeBuild {
+                cmake {
+                    arguments "-DCMAKE_TOOLCHAIN_FILE=${vcpkgRoot}/scripts/buildsystems/vcpkg.cmake",
+                              "-DVCPKG_TARGET_TRIPLET=arm64-android",
+                              "-DVCPKG_CHAINLOAD_TOOLCHAIN_FILE=${android.ndkDirectory}/build/cmake/android.toolchain.cmake"
+                    abiFilters "arm64-v8a"
+                }
+            }
+        }
+    }
 }
 
 flutter {

@@ -1,0 +1,13 @@
+name: occt_parity_harness
+description: >
+  Standalone (non-Flutter) Dart script that loads the host-built
+  didsa_occt_ffi shared library and prints body count/triangle counts/bbox
+  for a given STEP file path - a smoke test, not a full test suite. See
+  client/native/occt/CMakeLists.txt for how the library itself is built, and
+  client/lib/mesh_viewer/step_bindings.dart for the real app-side FFI
+  bindings this mirrors.
+publish_to: 'none'
+environment:
+  sdk: ^3.6.0
+dependencies:
+  ffi: ^2.1.3

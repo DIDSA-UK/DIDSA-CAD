@@ -48,6 +48,13 @@ dependencies:
   flutter_svg: ^2.0.17
   csv: ^6.0.0
 
+  # STEP support for the Mesh Viewer (client/lib/mesh_viewer/step_bindings.dart,
+  # step_loader.dart) - dart:ffi helpers (Utf8 <-> String conversion,
+  # malloc/free) for calling into the didsa_occt_ffi native shim
+  # (client/native/occt/). Same package client/native/slvs/'s own
+  # desktop_parity_harness already depends on for the identical purpose.
+  ffi: ^2.1.3
+
   # AI Modelling workstream 10 (image input, `docs/ai-modelling/10-image-
   # input.md`): downscales/compresses a picked hand-sketch/drawing photo to
   # roughly 1568px on its longest edge before base64-encoding it for a

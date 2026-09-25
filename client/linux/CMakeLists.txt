@@ -126,3 +126,17 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# STEP support for the Mesh Viewer (client/lib/mesh_viewer/step_loader.dart) -
+# same pattern as windows/CMakeLists.txt's own DIDSA_ENABLE_OCCT option (see
+# that file's own doc comment) - Linux is a headless CI-verification target
+# only for this app (see client/native/occt/CMakeLists.txt's own header
+# comment on triplet maturity), not a real end-user target, but should still
+# build when explicitly asked. Off by default for the same reason: a
+# configured vcpkg toolchain (x64-linux triplet) isn't something a plain
+# `flutter build linux` has any reason to have set up.
+option(DIDSA_ENABLE_OCCT "Build the STEP/OCCT FFI shim (needs a configured vcpkg toolchain)" OFF)
+if(DIDSA_ENABLE_OCCT)
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native/occt" "${CMAKE_CURRENT_BINARY_DIR}/didsa_occt")
+  install(FILES $<TARGET_FILE:didsa_occt_ffi> DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+endif()

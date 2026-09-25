@@ -106,3 +106,21 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# STEP support for the Mesh Viewer (client/lib/mesh_viewer/step_loader.dart) -
+# builds client/native/occt/'s own didsa_occt_ffi shim and installs it next
+# to the app's .exe, same "co-located native library" convention every other
+# Flutter-managed plugin DLL already uses on this platform (see
+# PLUGIN_BUNDLED_LIBRARIES above). Off by default (DIDSA_ENABLE_OCCT) -
+# client/native/occt/CMakeLists.txt's own find_package(OpenCASCADE CONFIG
+# REQUIRED) needs a configured vcpkg toolchain file that a plain `flutter
+# build windows` has no reason to have set up; enable explicitly
+# (-DDIDSA_ENABLE_OCCT=ON, alongside -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/
+# buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows) from a CI job
+# or a developer machine with vcpkg already set up - see
+# .github/workflows/client-verify.yml's own Windows job.
+option(DIDSA_ENABLE_OCCT "Build the STEP/OCCT FFI shim (needs a configured vcpkg toolchain)" OFF)
+if(DIDSA_ENABLE_OCCT)
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native/occt" "${CMAKE_CURRENT_BINARY_DIR}/didsa_occt")
+  install(FILES $<TARGET_FILE:didsa_occt_ffi> DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
+endif()
