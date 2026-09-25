@@ -493,6 +493,29 @@ enum MergeMode {
       MergeMode.values.firstWhere((m) => m.apiValue == value, orElse: () => MergeMode.keepSeparate);
 }
 
+/// How each Circular Pattern instance is oriented as it orbits the axis -
+/// mirrors the backend's `PatternOrientationMode` string values exactly.
+/// [rotateWithPattern] (the default) rigidly rotates each copy with the
+/// pattern; [maintainOrientation] only moves each copy (no spin);
+/// [radialToAxis] keeps each copy facing the axis the way the seed does,
+/// which the backend computes with the same rigid rotation as
+/// [rotateWithPattern] (a label-only distinction - see the backend's
+/// `app.document.pattern._circular_instances`).
+enum PatternOrientationMode {
+  rotateWithPattern,
+  maintainOrientation,
+  radialToAxis;
+
+  String get apiValue => switch (this) {
+        PatternOrientationMode.rotateWithPattern => 'rotate_with_pattern',
+        PatternOrientationMode.maintainOrientation => 'maintain_orientation',
+        PatternOrientationMode.radialToAxis => 'radial_to_axis',
+      };
+
+  static PatternOrientationMode fromApiValue(String value) => PatternOrientationMode.values
+      .firstWhere((m) => m.apiValue == value, orElse: () => PatternOrientationMode.rotateWithPattern);
+}
+
 /// Boolean family, Subtract/Common: which OCCT boolean call a
 /// `"boolean"` Feature uses (the backend's `BooleanOperation`) - mirrors
 /// [MergeMode]/[PatternMode]'s own `apiValue`/`fromApiValue` str-enum
@@ -752,6 +775,10 @@ class FeatureDto {
   final int countAngular;
   final double angleTotal;
   final bool reverseAngular;
+
+  /// Only present on a Circular `"pattern"` Feature: the backend's
+  /// `orientation_mode` string (see [PatternOrientationMode]).
+  final String orientationMode;
 
   /// Pattern/Mirror scoping's Phase 3 - only present on a `"pattern"`
   /// Feature: linear indices (Rectangular's own `i * count_2 + j`, or
@@ -1013,6 +1040,7 @@ class FeatureDto {
     this.countAngular = 1,
     this.angleTotal = 360.0,
     this.reverseAngular = false,
+    this.orientationMode = 'rotate_with_pattern',
     this.skipIndices = const [],
     this.merge = 'keep_separate',
     this.toolFeatureId,
@@ -1135,6 +1163,7 @@ class FeatureDto {
         countAngular: json['count_angular'] as int? ?? 1,
         angleTotal: (json['angle_total'] as num?)?.toDouble() ?? 360.0,
         reverseAngular: json['reverse_angular'] as bool? ?? false,
+        orientationMode: json['orientation_mode'] as String? ?? 'rotate_with_pattern',
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
         merge: json['merge'] as String? ?? 'keep_separate',
         toolFeatureId: json['tool_feature_id'] as String?,
@@ -3423,6 +3452,7 @@ class DocumentApiClient {
     int countAngular = 1,
     double angleTotal = 360.0,
     bool reverseAngular = false,
+    PatternOrientationMode orientationMode = PatternOrientationMode.rotateWithPattern,
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
     // Pattern/Mirror scoping's Phase 8: mirrors [createMirrorFeature]'s own
@@ -3449,6 +3479,7 @@ class DocumentApiClient {
                 'count_angular': countAngular,
                 'angle_total': angleTotal,
                 'reverse_angular': reverseAngular,
+                'orientation_mode': orientationMode.apiValue,
                 'skip_indices': skipIndices,
                 'merge': merge.apiValue,
                 if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
@@ -3483,6 +3514,7 @@ class DocumentApiClient {
     int countAngular = 1,
     double angleTotal = 360.0,
     bool reverseAngular = false,
+    PatternOrientationMode orientationMode = PatternOrientationMode.rotateWithPattern,
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
     String? toolFeatureId,
@@ -3507,6 +3539,7 @@ class DocumentApiClient {
                 'count_angular': countAngular,
                 'angle_total': angleTotal,
                 'reverse_angular': reverseAngular,
+                'orientation_mode': orientationMode.apiValue,
                 'skip_indices': skipIndices,
                 'merge': merge.apiValue,
                 if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
@@ -3539,6 +3572,7 @@ class DocumentApiClient {
     int? countAngular,
     double? angleTotal,
     bool? reverseAngular,
+    PatternOrientationMode? orientationMode,
     List<int>? skipIndices,
     MergeMode? merge,
     String? toolFeatureId,
@@ -3562,6 +3596,7 @@ class DocumentApiClient {
                 if (countAngular != null) 'count_angular': countAngular,
                 if (angleTotal != null) 'angle_total': angleTotal,
                 if (reverseAngular != null) 'reverse_angular': reverseAngular,
+                if (orientationMode != null) 'orientation_mode': orientationMode.apiValue,
                 // Phase 3: `null` (omitted) leaves the Feature's current
                 // skip set untouched; `[]` explicitly un-skips every
                 // previously-skipped instance - see the backend's

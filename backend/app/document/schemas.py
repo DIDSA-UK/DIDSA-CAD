@@ -12,6 +12,7 @@ from app.document.models import (
     ImportSourceFormat,
     LoftMode,
     MergeMode,
+    PatternOrientationMode,
     PatternType,
     PlaneType,
     Produces,
@@ -1379,6 +1380,7 @@ class PatternFeatureCreate(BaseModel):
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    orientation_mode: PatternOrientationMode = PatternOrientationMode.ROTATE_WITH_PATTERN
     skip_indices: list[int] = []
     merge: MergeMode = MergeMode.KEEP_SEPARATE
     # Phase 8 (`docs/pattern-mirror-scope.md` §2.11/§4): mirrors
@@ -1422,6 +1424,7 @@ class PatternFeatureUpdate(BaseModel):
     count_angular: int | None = None
     angle_total: float | None = None
     reverse_angular: bool | None = None
+    orientation_mode: PatternOrientationMode | None = None
     skip_indices: list[int] | None = None
     merge: MergeMode | None = None
     # Phase 8: mirrors `MirrorFeatureUpdate.tool_feature_id`'s own identical
@@ -1447,6 +1450,7 @@ class PatternFeatureResponse(BaseModel):
     count_angular: int
     angle_total: float
     reverse_angular: bool
+    orientation_mode: PatternOrientationMode = PatternOrientationMode.ROTATE_WITH_PATTERN
     skip_indices: list[int]
     merge: MergeMode
     tool_feature_id: str | None = None

@@ -1088,6 +1088,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             count_angular=feature.count_angular,
             angle_total=feature.angle_total,
             reverse_angular=feature.reverse_angular,
+            orientation_mode=feature.orientation_mode,
             skip_indices=list(feature.skip_indices),
             merge=feature.merge,
             tool_feature_id=feature.tool_feature_id,
@@ -8048,6 +8049,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         count_angular=payload.count_angular,
         angle_total=payload.angle_total,
         reverse_angular=payload.reverse_angular,
+        orientation_mode=payload.orientation_mode,
         skip_indices=list(payload.skip_indices),
         merge=payload.merge,
         tool_feature_id=payload.tool_feature_id,
@@ -8115,6 +8117,7 @@ def preview_pattern_feature_coarse(
         count_angular=payload.count_angular,
         angle_total=payload.angle_total,
         reverse_angular=payload.reverse_angular,
+        orientation_mode=payload.orientation_mode,
         skip_indices=list(payload.skip_indices),
         merge=payload.merge,
         tool_feature_id=payload.tool_feature_id,
@@ -8175,6 +8178,9 @@ def update_pattern_feature(
     new_reverse_angular = (
         payload.reverse_angular if payload.reverse_angular is not None else feature.reverse_angular
     )
+    new_orientation_mode = (
+        payload.orientation_mode if payload.orientation_mode is not None else feature.orientation_mode
+    )
     new_skip_indices = (
         list(payload.skip_indices) if payload.skip_indices is not None else feature.skip_indices
     )
@@ -8220,6 +8226,7 @@ def update_pattern_feature(
         count_angular=new_count_angular,
         angle_total=new_angle_total,
         reverse_angular=new_reverse_angular,
+        orientation_mode=new_orientation_mode,
         skip_indices=new_skip_indices,
         merge=new_merge,
         tool_feature_id=new_tool_feature_id,
@@ -8240,6 +8247,7 @@ def update_pattern_feature(
     feature.count_angular = candidate.count_angular
     feature.angle_total = candidate.angle_total
     feature.reverse_angular = candidate.reverse_angular
+    feature.orientation_mode = candidate.orientation_mode
     feature.skip_indices = candidate.skip_indices
     feature.merge = candidate.merge
     feature.tool_feature_id = candidate.tool_feature_id

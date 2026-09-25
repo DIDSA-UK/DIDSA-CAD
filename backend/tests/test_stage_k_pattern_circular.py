@@ -734,3 +734,258 @@ def test_cascade_deleting_the_sketch_owning_a_sketch_line_axis_takes_the_pattern
     response = client.delete(f"/document/parts/{part['id']}/features/{axis_sketch_feature_id}/cascade")
     assert response.status_code == 200
     assert pattern["id"] in response.json()["deleted_feature_ids"]
+
+
+# --- Orientation mode (`PatternOrientationMode`) ------------------------------
+#
+# Unit tests drive `_circular_instances` directly on an asymmetric L-shaped
+# solid (two fused boxes, offset from the axis) so every orientation
+# difference is geometrically detectable; `_axis_from_ref` is monkeypatched
+# to the world Z axis so no Part/axis reference has to be built.
+
+
+def _l_shaped_seed():
+    from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+    from OCC.Core.gp import gp_Pnt
+
+    # Long leg along +X (20 x 4 x 3) plus a short leg along +Y (4 x 10 x 3),
+    # sitting at x in [30, 50], y in [0, 10] - clearly not symmetric about
+    # either its own centroid or the axis.
+    long_leg = BRepPrimAPI_MakeBox(gp_Pnt(30.0, 0.0, 0.0), 20.0, 4.0, 3.0).Shape()
+    short_leg = BRepPrimAPI_MakeBox(gp_Pnt(30.0, 0.0, 0.0), 4.0, 10.0, 3.0).Shape()
+    fuse = BRepAlgoAPI_Fuse(long_leg, short_leg)
+    fuse.Build()
+    return fuse.Shape()
+
+
+def _vertex_set(shape) -> set[tuple[float, float, float]]:
+    from OCC.Core.BRep import BRep_Tool
+    from OCC.Core.TopAbs import TopAbs_VERTEX
+    from OCC.Core.TopExp import TopExp_Explorer
+    from OCC.Core.TopoDS import topods
+
+    points = set()
+    explorer = TopExp_Explorer(shape, TopAbs_VERTEX)
+    while explorer.More():
+        p = BRep_Tool.Pnt(topods.Vertex(explorer.Current()))
+        points.add((round(p.X(), 6) + 0.0, round(p.Y(), 6) + 0.0, round(p.Z(), 6) + 0.0))
+        explorer.Next()
+    return points
+
+
+def _centroid(shape) -> tuple[float, float, float]:
+    from OCC.Core.BRepGProp import brepgprop
+    from OCC.Core.GProp import GProp_GProps
+
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(shape, props)
+    c = props.CentreOfMass()
+    return c.X(), c.Y(), c.Z()
+
+
+def _rot_z(point: tuple[float, float, float], degrees: float) -> tuple[float, float, float]:
+    import math
+
+    a = math.radians(degrees)
+    x, y, z = point
+    return (x * math.cos(a) - y * math.sin(a), x * math.sin(a) + y * math.cos(a), z)
+
+
+def _rounded(points) -> set[tuple[float, float, float]]:
+    return {(round(x, 6) + 0.0, round(y, 6) + 0.0, round(z, 6) + 0.0) for x, y, z in points}
+
+
+def _circular_instances_for_mode(monkeypatch, mode, *, count: int = 4):
+    from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pnt
+
+    from app.document import pattern as pattern_module
+    from app.document.models import Part, PatternAxisRef, PatternFeature, PatternType
+
+    monkeypatch.setattr(
+        pattern_module, "_axis_from_ref", lambda *_args, **_kwargs: gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))
+    )
+    seed = _l_shaped_seed()
+    feature = PatternFeature(
+        id="pattern",
+        source_body_ids=["seed"],
+        pattern_type=PatternType.CIRCULAR,
+        axis=PatternAxisRef(),
+        count_angular=count,
+        orientation_mode=mode,
+    )
+    instances = pattern_module._circular_instances(
+        Part(id="part", name="Part"), {"seed": seed}, feature, seed, "seed", frozenset()
+    )
+    return seed, instances
+
+
+def test_orientation_mode_defaults_to_rotate_with_pattern():
+    from app.document.models import PatternFeature, PatternOrientationMode
+
+    assert PatternFeature(id="p", source_body_ids=[]).orientation_mode == PatternOrientationMode.ROTATE_WITH_PATTERN
+
+
+def test_rotate_with_pattern_rigidly_rotates_every_vertex_about_the_axis(monkeypatch):
+    from app.document.models import PatternOrientationMode
+
+    seed, instances = _circular_instances_for_mode(monkeypatch, PatternOrientationMode.ROTATE_WITH_PATTERN)
+    seed_vertices = _vertex_set(seed)
+    assert set(instances) == {1, 2, 3}
+    for i, shape in instances.items():
+        assert _vertex_set(shape) == _rounded(_rot_z(v, 90.0 * i) for v in seed_vertices)
+
+
+def test_maintain_orientation_translates_the_seed_so_only_its_centroid_orbits(monkeypatch):
+    from app.document.models import PatternOrientationMode
+
+    seed, instances = _circular_instances_for_mode(monkeypatch, PatternOrientationMode.MAINTAIN_ORIENTATION)
+    seed_vertices = _vertex_set(seed)
+    seed_centroid = _centroid(seed)
+    assert set(instances) == {1, 2, 3}
+    for i, shape in instances.items():
+        target = _rot_z(seed_centroid, 90.0 * i)
+        offset = tuple(t - s for t, s in zip(target, seed_centroid))
+        # Every vertex is the seed's own vertex shifted by one common offset
+        # - i.e. a pure translation, local orientation untouched.
+        expected = _rounded(tuple(v[k] + offset[k] for k in range(3)) for v in seed_vertices)
+        assert _vertex_set(shape) == expected
+        assert _rounded([_centroid(shape)]) == _rounded([target])
+
+
+def test_maintain_orientation_differs_from_rotate_with_pattern_on_an_asymmetric_seed(monkeypatch):
+    from app.document.models import PatternOrientationMode
+
+    _seed, rotated = _circular_instances_for_mode(monkeypatch, PatternOrientationMode.ROTATE_WITH_PATTERN)
+    _seed, maintained = _circular_instances_for_mode(monkeypatch, PatternOrientationMode.MAINTAIN_ORIENTATION)
+    for i in (1, 2, 3):
+        # Same centroid position, different vertex layout.
+        assert _rounded([_centroid(rotated[i])]) == _rounded([_centroid(maintained[i])])
+        assert _vertex_set(rotated[i]) != _vertex_set(maintained[i])
+
+
+def test_radial_to_axis_is_geometrically_identical_to_rotate_with_pattern(monkeypatch):
+    """`RADIAL_TO_AXIS` is a label-only alias of `ROTATE_WITH_PATTERN` - see
+    `_circular_instances`'s own docstring for the proof. Also checks the
+    property the name promises: the seed-local vector from the centroid to
+    its foot on the axis stays the centroid-to-axis vector on every copy."""
+    import math
+
+    from app.document.models import PatternOrientationMode
+
+    seed, rotated = _circular_instances_for_mode(monkeypatch, PatternOrientationMode.ROTATE_WITH_PATTERN)
+    _seed, radial = _circular_instances_for_mode(monkeypatch, PatternOrientationMode.RADIAL_TO_AXIS)
+    for i in (1, 2, 3):
+        assert _vertex_set(radial[i]) == _vertex_set(rotated[i])
+
+    # A seed-local reference point (the L's inner corner) keeps the same
+    # radial/tangential offset relative to its own copy's centroid.
+    def radial_tangential(shape, point):
+        cx, cy, _ = _centroid(shape)
+        radial = (-cx, -cy)
+        norm = math.hypot(*radial)
+        radial = (radial[0] / norm, radial[1] / norm)
+        tangential = (-radial[1], radial[0])
+        d = (point[0] - cx, point[1] - cy)
+        return round(d[0] * radial[0] + d[1] * radial[1], 6), round(d[0] * tangential[0] + d[1] * tangential[1], 6)
+
+    corner = (34.0, 4.0, 0.0)
+    seed_rt = radial_tangential(seed, corner)
+    for i in (1, 2, 3):
+        assert radial_tangential(radial[i], _rot_z(corner, 90.0 * i)) == seed_rt
+
+
+def _add_rectangle(sketch_id: str, x0: float, y0: float, width: float, height: float) -> None:
+    corners = [
+        _add_point(sketch_id, x, y)
+        for x, y in [(x0, y0), (x0 + width, y0), (x0 + width, y0 + height), (x0, y0 + height)]
+    ]
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        _add_line(sketch_id, a["id"], b["id"])
+
+
+def _rectangle_and_axis_part() -> tuple[dict, str, str, dict]:
+    """A 10 x 4 rectangle at x in [30, 40], y in [0, 4] plus a cylinder
+    whose circular edge supplies the world Z axis through the origin."""
+    part = _create_part()
+    cylinder_sketch = _create_circle_sketch_feature(part["id"], radius=20.0)
+    _create_extrude_feature(part["id"], cylinder_sketch["id"])
+    cylinder_body_id = _first_body_id(part["id"])
+    edge_index = _first_circular_edge_index(part["id"], cylinder_body_id)
+    rect_sketch = _create_sketch_feature(part["id"])
+    _add_rectangle(rect_sketch["sketch_id"], 30.0, 0.0, 10.0, 4.0)
+    _create_extrude_feature(part["id"], rect_sketch["id"])
+    rect_body_id = next(bid for bid in _body_ids(part["id"]) if bid != cylinder_body_id)
+    return part, cylinder_body_id, rect_body_id, _edge_axis(cylinder_body_id, edge_index)
+
+
+def _pattern_xy_extents(part_id: str, cylinder_body_id: str) -> set[tuple[float, float]]:
+    extents = set()
+    for bid in _body_ids(part_id):
+        if bid == cylinder_body_id:
+            continue
+        (x0, x1), (y0, y1) = _rounded_xy_ranges(part_id, bid)
+        extents.add((round(x1 - x0, 3), round(y1 - y0, 3)))
+    return extents
+
+
+def test_orientation_mode_round_trips_through_create_and_patch_and_changes_the_geometry():
+    part, cylinder_body_id, rect_body_id, axis = _rectangle_and_axis_part()
+    response = client.post(
+        f"/document/parts/{part['id']}/pattern-features",
+        json={"source_body_ids": [rect_body_id], "pattern_type": "circular", "axis": axis, "count_angular": 4},
+    )
+    assert response.status_code == 201
+    assert response.json()["orientation_mode"] == "rotate_with_pattern"
+    # Rotating a 10 x 4 rectangle by 90 degrees swaps its XY extents.
+    assert _pattern_xy_extents(part["id"], cylinder_body_id) == {(10.0, 4.0), (4.0, 10.0)}
+
+    feature_id = response.json()["id"]
+    response = client.patch(
+        f"/document/parts/{part['id']}/pattern-features/{feature_id}",
+        json={"orientation_mode": "maintain_orientation"},
+    )
+    assert response.status_code == 200
+    assert response.json()["orientation_mode"] == "maintain_orientation"
+    # Maintaining orientation keeps every copy 10 x 4.
+    assert _pattern_xy_extents(part["id"], cylinder_body_id) == {(10.0, 4.0)}
+
+    # Omitting the field on a later PATCH leaves it untouched.
+    response = client.patch(
+        f"/document/parts/{part['id']}/pattern-features/{feature_id}", json={"count_angular": 3}
+    )
+    assert response.status_code == 200
+    assert response.json()["orientation_mode"] == "maintain_orientation"
+
+
+def test_an_unknown_orientation_mode_is_rejected():
+    part, _cylinder_body_id, rect_body_id, axis = _rectangle_and_axis_part()
+    response = client.post(
+        f"/document/parts/{part['id']}/pattern-features",
+        json={
+            "source_body_ids": [rect_body_id],
+            "pattern_type": "circular",
+            "axis": axis,
+            "count_angular": 4,
+            "orientation_mode": "sideways",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_orientation_mode_round_trips_through_the_native_format():
+    from app.document.models import PatternFeature, PatternOrientationMode, PatternType
+    from app.document.native_format import _feature_from_dict, _feature_to_dict
+
+    feature = PatternFeature(
+        id="p",
+        source_body_ids=["b"],
+        pattern_type=PatternType.CIRCULAR,
+        orientation_mode=PatternOrientationMode.RADIAL_TO_AXIS,
+    )
+    data = _feature_to_dict(feature)
+    assert data["orientation_mode"] == "radial_to_axis"
+    assert _feature_from_dict(data).orientation_mode == PatternOrientationMode.RADIAL_TO_AXIS
+    # Files saved before the field existed load with the old behavior.
+    del data["orientation_mode"]
+    assert _feature_from_dict(data).orientation_mode == PatternOrientationMode.ROTATE_WITH_PATTERN

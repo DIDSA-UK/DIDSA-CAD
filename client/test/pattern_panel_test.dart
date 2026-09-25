@@ -41,6 +41,8 @@ void main() {
     void Function(int count)? onCountAngularChanged,
     void Function(double angle)? onAngleTotalChanged,
     void Function(bool reverse)? onReverseAngularChanged,
+    PatternOrientationMode orientationMode = PatternOrientationMode.rotateWithPattern,
+    void Function(PatternOrientationMode mode)? onOrientationModeChanged,
     MergeMode merge = MergeMode.keepSeparate,
     void Function(MergeMode merge)? onMergeChanged,
     List<String> sourceFeatureIds = const [],
@@ -86,6 +88,8 @@ void main() {
           onCountAngularChanged: onCountAngularChanged,
           onAngleTotalChanged: onAngleTotalChanged,
           onReverseAngularChanged: onReverseAngularChanged,
+          orientationMode: orientationMode,
+          onOrientationModeChanged: onOrientationModeChanged,
           merge: merge,
           onMergeChanged: onMergeChanged ?? (_) {},
           sourceFeatureIds: sourceFeatureIds,
@@ -392,6 +396,32 @@ void main() {
       );
       await tester.tap(find.byIcon(Icons.flip));
       expect(reversed, isTrue);
+    });
+
+    testWidgets('the orientation selector is hidden without onOrientationModeChanged', (tester) async {
+      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
+      expect(find.byType(SegmentedButton<PatternOrientationMode>), findsNothing);
+    });
+
+    testWidgets('the orientation selector is hidden in Rectangular mode', (tester) async {
+      await tester.pumpWidget(harness(hasDirection1: true, onOrientationModeChanged: (_) {}));
+      expect(find.byType(SegmentedButton<PatternOrientationMode>), findsNothing);
+    });
+
+    testWidgets('picking an orientation fires onOrientationModeChanged', (tester) async {
+      PatternOrientationMode? picked;
+      await tester.pumpWidget(
+        harness(mode: PatternMode.circular, hasAxis: true, onOrientationModeChanged: (m) => picked = m),
+      );
+      expect(find.byType(SegmentedButton<PatternOrientationMode>), findsOneWidget);
+      await tester.ensureVisible(find.text('Keep'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Keep'));
+      expect(picked, PatternOrientationMode.maintainOrientation);
+      await tester.ensureVisible(find.text('Radial'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Radial'));
+      expect(picked, PatternOrientationMode.radialToAxis);
     });
 
     testWidgets('there is no fixed-axis button in Circular mode', (tester) async {

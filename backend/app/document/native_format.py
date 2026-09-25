@@ -70,6 +70,7 @@ from app.document.models import (
     PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
+    PatternOrientationMode,
     PatternType,
     PlanarSurfaceFeature,
     PlanetaryGearFeature,
@@ -1218,6 +1219,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "count_angular": feature.count_angular,
             "angle_total": feature.angle_total,
             "reverse_angular": feature.reverse_angular,
+            "orientation_mode": feature.orientation_mode.value,
             "skip_indices": list(feature.skip_indices),
             "merge": feature.merge.value,
             # Phase 8: mirrors MirrorFeature's own identical field above.
@@ -1581,6 +1583,11 @@ def _feature_from_dict(data: dict) -> Feature:
             count_angular=data.get("count_angular", 1),
             angle_total=data.get("angle_total", 360.0),
             reverse_angular=data.get("reverse_angular", False),
+            # `orientation_mode` defaults to ROTATE_WITH_PATTERN (the only
+            # behavior that existed before this field) for older files.
+            orientation_mode=PatternOrientationMode(
+                data.get("orientation_mode", PatternOrientationMode.ROTATE_WITH_PATTERN.value)
+            ),
             # `skip_indices` (Phase 3) defaults to empty for any Pattern
             # persisted before this field existed (Phase 2/4).
             skip_indices=list(data.get("skip_indices", [])),

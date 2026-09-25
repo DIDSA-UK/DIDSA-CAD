@@ -5151,6 +5151,9 @@ class _PartScreenState extends State<PartScreen> {
   double _patternAngleTotal = 360.0;
   bool _patternReverseAngular = false;
 
+  /// Circular only - see [PatternPanel.orientationMode].
+  PatternOrientationMode _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
+
   /// Pattern/Mirror scoping's Phase 3: linear indices (Rectangular's own
   /// `i * count_2 + j`, or Circular's own angular-step `i` - whichever
   /// [_patternMode] implies) of instances suppressed rather than created -
@@ -5201,6 +5204,7 @@ class _PartScreenState extends State<PartScreen> {
     int countAngular,
     double angleTotal,
     bool reverseAngular,
+    PatternOrientationMode orientationMode,
     List<int> skipIndices,
     List<String> sourceFeatureIds,
     MergeMode merge,
@@ -10037,6 +10041,7 @@ class _PartScreenState extends State<PartScreen> {
     int countAngular = 1,
     double angleTotal = 360.0,
     bool reverseAngular = false,
+    PatternOrientationMode orientationMode = PatternOrientationMode.rotateWithPattern,
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
     String? toolFeatureId,
@@ -10062,6 +10067,7 @@ class _PartScreenState extends State<PartScreen> {
         countAngular: countAngular,
         angleTotal: angleTotal,
         reverseAngular: reverseAngular,
+        orientationMode: orientationMode,
         skipIndices: skipIndices,
         merge: merge,
         toolFeatureId: toolFeatureId,
@@ -18178,6 +18184,7 @@ class _PartScreenState extends State<PartScreen> {
     _patternCountAngular = 2;
     _patternAngleTotal = 360.0;
     _patternReverseAngular = false;
+    _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
     _patternSkipIndices = {};
     _patternMerge = toolFeatureId != null ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
     _previewPatternFeatureId = null;
@@ -18247,6 +18254,7 @@ class _PartScreenState extends State<PartScreen> {
         _patternCountAngular = feature.countAngular;
         _patternAngleTotal = feature.angleTotal;
         _patternReverseAngular = feature.reverseAngular;
+        _patternOrientationMode = PatternOrientationMode.fromApiValue(feature.orientationMode);
         _patternSkipIndices = feature.skipIndices.toSet();
         _patternMerge = merge;
         _patternLongPressSeedFeature = null;
@@ -18264,6 +18272,7 @@ class _PartScreenState extends State<PartScreen> {
           countAngular: feature.countAngular,
           angleTotal: feature.angleTotal,
           reverseAngular: feature.reverseAngular,
+          orientationMode: PatternOrientationMode.fromApiValue(feature.orientationMode),
           skipIndices: feature.skipIndices,
           sourceFeatureIds: sourceFeatureIds,
           merge: merge,
@@ -18321,6 +18330,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
       _patternSkipIndices = feature.skipIndices.toSet();
       _patternMerge = merge;
       _patternLongPressSeedFeature = null;
@@ -18338,6 +18348,7 @@ class _PartScreenState extends State<PartScreen> {
         countAngular: 1,
         angleTotal: 360.0,
         reverseAngular: false,
+        orientationMode: PatternOrientationMode.rotateWithPattern,
         skipIndices: feature.skipIndices,
         sourceFeatureIds: sourceFeatureIds,
         merge: merge,
@@ -18468,6 +18479,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
     });
   }
 
@@ -18531,6 +18543,11 @@ class _PartScreenState extends State<PartScreen> {
 
   void _onPatternReverseAngularChanged(bool reverse) {
     setState(() => _patternReverseAngular = reverse);
+    _schedulePatternPreview();
+  }
+
+  void _onPatternOrientationModeChanged(PatternOrientationMode mode) {
+    setState(() => _patternOrientationMode = mode);
     _schedulePatternPreview();
   }
 
@@ -18900,6 +18917,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: _patternCountAngular,
             angleTotal: _patternAngleTotal,
             reverseAngular: _patternReverseAngular,
+            orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
             toolFeatureId: _patternToolFeatureId,
@@ -18915,6 +18933,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: _patternCountAngular,
             angleTotal: _patternAngleTotal,
             reverseAngular: _patternReverseAngular,
+            orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
             toolFeatureId: _patternToolFeatureId,
@@ -18928,6 +18947,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: _patternCountAngular,
             angleTotal: _patternAngleTotal,
             reverseAngular: _patternReverseAngular,
+            orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
             toolFeatureId: _patternToolFeatureId,
@@ -18951,6 +18971,7 @@ class _PartScreenState extends State<PartScreen> {
           countAngular: _patternCountAngular,
           angleTotal: _patternAngleTotal,
           reverseAngular: _patternReverseAngular,
+          orientationMode: _patternOrientationMode,
           skipIndices: skipIndices,
           merge: _patternMerge,
           toolFeatureId: _patternToolFeatureId,
@@ -19133,6 +19154,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
       _patternSkipIndices = {};
       _patternMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforePattern ?? {};
@@ -19179,6 +19201,7 @@ class _PartScreenState extends State<PartScreen> {
       _patternCountAngular = 2;
       _patternAngleTotal = 360.0;
       _patternReverseAngular = false;
+      _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
       _patternSkipIndices = {};
       _patternMerge = MergeMode.keepSeparate;
       _selectedEntities = _entitiesBeforePattern ?? {};
@@ -19214,6 +19237,7 @@ class _PartScreenState extends State<PartScreen> {
             countAngular: editSnapshot.countAngular,
             angleTotal: editSnapshot.angleTotal,
             reverseAngular: editSnapshot.reverseAngular,
+            orientationMode: editSnapshot.orientationMode,
             skipIndices: editSnapshot.skipIndices,
             merge: editSnapshot.merge,
             toolFeatureId: editSnapshot.toolFeatureId,
@@ -21728,9 +21752,11 @@ class _PartScreenState extends State<PartScreen> {
                       initialCountAngular: _patternCountAngular,
                       initialAngleTotal: _patternAngleTotal,
                       reverseAngular: _patternReverseAngular,
+                      orientationMode: _patternOrientationMode,
                       onCountAngularChanged: _onPatternCountAngularChanged,
                       onAngleTotalChanged: _onPatternAngleTotalChanged,
                       onReverseAngularChanged: _onPatternReverseAngularChanged,
+                      onOrientationModeChanged: _onPatternOrientationModeChanged,
                       merge: _patternMerge,
                       onMergeChanged: _setPatternMerge,
                       sourceFeatureIds: _patternSourceFeatureIds,

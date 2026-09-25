@@ -23,8 +23,10 @@ from OCC.Core.BRep import BRep_Builder
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Cut, BRepAlgoAPI_Fuse
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line
-from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Trsf, gp_Vec
+from OCC.Core.GProp import GProp_GProps
+from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, topods
 
 from app.document.create_plane import resolve_sketch_basis
@@ -41,6 +43,7 @@ from app.document.models import (
     PatternAxisRef,
     PatternDirectionRef,
     PatternFeature,
+    PatternOrientationMode,
     PatternType,
     SketchFeature,
     SubShapeRef,
@@ -378,6 +381,20 @@ def _rectangular_instances(
     return instances
 
 
+def _shape_centroid(shape: TopoDS_Shape) -> gp_Pnt:
+    """Centre of mass of `shape`, used by `MAINTAIN_ORIENTATION` as the
+    point that orbits the axis. Volume properties for a solid; falls back
+    to surface, then linear, properties when the shape has no volume (a
+    Surface Body seed, or a wire-only tool) so the centroid is never the
+    meaningless origin a zero-mass `GProp_GProps` would report."""
+    for compute in (brepgprop.VolumeProperties, brepgprop.SurfaceProperties, brepgprop.LinearProperties):
+        props = GProp_GProps()
+        compute(shape, props)
+        if abs(props.Mass()) > 1e-12:
+            return props.CentreOfMass()
+    return gp_Pnt(0.0, 0.0, 0.0)
+
+
 def _circular_instances(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
@@ -394,11 +411,34 @@ def _circular_instances(
     `reverse_angular` flips the rotation direction. Index 0 (angle 0) is
     never a key in the returned dict, same convention as the Rectangular
     case - it is always the untouched seed Body. `skip_indices` (Phase 3)
-    is filtered out the same way `_rectangular_instances` does."""
+    is filtered out the same way `_rectangular_instances` does.
+
+    `orientation_mode` (`PatternOrientationMode`) picks the per-instance
+    transform:
+    - `ROTATE_WITH_PATTERN` / `RADIAL_TO_AXIS`: rigid rotation of the whole
+      seed about `axis` (`SetRotation`). These two are the *same* transform
+      on purpose. A rigid rotation R about an axis fixes every point on the
+      axis, so for a seed centroid c whose foot on the axis is p, the seed's
+      own "points at the axis" vector (p - c) maps to R(p - c) = R(p) - R(c)
+      = p - R(c) - exactly the "points at the axis" vector at the copy's new
+      centroid R(c) (and R(p) = p is still that centroid's foot, since R
+      preserves distances along the axis). Likewise the tangential and
+      axial directions map onto the copy's own tangential/axial directions.
+      So every body-local direction keeps its radial/tangential/axial
+      attitude at every instance - which is what "radial to axis" asks for.
+      `RADIAL_TO_AXIS` is therefore a label-only distinction for users who
+      think of it that way, not different geometry.
+    - `MAINTAIN_ORIENTATION`: only the seed's centroid is rotated about the
+      axis; the whole seed is then moved by a pure translation from the old
+      centroid to the rotated one, so every copy keeps the seed's exact
+      local orientation (no spin)."""
     axis = _axis_from_ref(part, bodies, feature.axis, excluded_feature_ids)
     step_radians = math.radians(feature.angle_total / feature.count_angular)
     if feature.reverse_angular:
         step_radians = -step_radians
+
+    maintain_orientation = feature.orientation_mode == PatternOrientationMode.MAINTAIN_ORIENTATION
+    centroid = _shape_centroid(source) if maintain_orientation else None
 
     skip_indices = set(feature.skip_indices)
     instances: dict[int, TopoDS_Shape] = {}
@@ -406,7 +446,11 @@ def _circular_instances(
         if i == 0 or i in skip_indices:
             continue
         trsf = gp_Trsf()
-        trsf.SetRotation(axis, step_radians * i)
+        if centroid is not None:
+            target = centroid.Rotated(axis, step_radians * i)
+            trsf.SetTranslation(gp_Vec(centroid, target))
+        else:
+            trsf.SetRotation(axis, step_radians * i)
         transform = BRepBuilderAPI_Transform(source, trsf, True)
         if not transform.IsDone():
             raise _pattern_failed(source_id)

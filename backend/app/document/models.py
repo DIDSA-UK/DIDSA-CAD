@@ -1213,6 +1213,30 @@ class PatternType(str, Enum):
     CIRCULAR = "circular"
 
 
+class PatternOrientationMode(str, Enum):
+    """How each Circular Pattern instance is oriented as it orbits the
+    axis - mirrors `ThicknessDirection`'s str-Enum pattern. Ignored for
+    Rectangular patterns (a pure translation never re-orients anything).
+
+    - `ROTATE_WITH_PATTERN` (the default - so every Pattern persisted
+      before this field existed round-trips unchanged): the whole seed is
+      rigidly rotated about the axis per instance
+      (`gp_Trsf.SetRotation`), position *and* local orientation together.
+    - `MAINTAIN_ORIENTATION`: only the seed's centroid orbits the axis;
+      each copy is a pure translation of the seed, so its local rotation
+      stays identical to the seed's (no spin).
+    - `RADIAL_TO_AXIS`: each copy keeps the same attitude relative to the
+      axis that the seed has (a body-local direction that points at the
+      axis on the seed points at the axis on every copy). This is
+      geometrically identical to `ROTATE_WITH_PATTERN` - see
+      `app.document.pattern._circular_instances` for why - and is kept as
+      its own value purely as a user-facing label."""
+
+    ROTATE_WITH_PATTERN = "rotate_with_pattern"
+    MAINTAIN_ORIENTATION = "maintain_orientation"
+    RADIAL_TO_AXIS = "radial_to_axis"
+
+
 @dataclass(frozen=True)
 class PatternAxisRef:
     """Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
@@ -1353,6 +1377,8 @@ class PatternFeature(Feature):
     count_angular: int = 1
     angle_total: float = 360.0
     reverse_angular: bool = False
+    # Per-instance orientation - see `PatternOrientationMode`'s docstring.
+    orientation_mode: PatternOrientationMode = PatternOrientationMode.ROTATE_WITH_PATTERN
     # Phase 3 (both construction methods):
     skip_indices: list[int] = field(default_factory=list)
     # Phase 5 (§2.10): KEEP_SEPARATE (default) vs. FUSE_INTO_ONE.
