@@ -117,9 +117,10 @@ class SelectionContextPanel extends StatelessWidget {
   /// *enabled* Move Face button - same gating/contract as [onDeleteFace].
   final VoidCallback? onMoveFace;
 
-  /// Shell: fired when the user taps an *enabled* Shell button (1+ faces of
-  /// one solid Body selected, nothing else - those faces become the Shell's
-  /// open faces) - same gating/contract as [onDeleteFace].
+  /// Shell: fired when the user taps an *enabled* Shell button (exactly one
+  /// solid Body selected, nothing else - that Body is the one hollowed, and
+  /// its faces to open are then picked from inside the Shell panel) - same
+  /// gating/contract as [onScaleBody].
   final VoidCallback? onShell;
 
   /// [SelectionBreadcrumbBar.entity] - the one selected entity to show a

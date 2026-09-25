@@ -2587,6 +2587,18 @@ class _PartScreenState extends State<PartScreen> {
       );
       return;
     }
+    // Shell: face picking is restricted to the one Body being shelled - a
+    // face tap on any other Body (or on a bare Surface, which has no volume
+    // to hollow) is ignored outright rather than toggled, so the session
+    // can never drift into a `mixed_body_selection`. When no Body is fixed
+    // yet (guided "Add" entry with several solid Bodies and none selected),
+    // the first valid face tap fixes it for the rest of the session.
+    if (_shellActive && entity.kind == SelectionEntityKind.face) {
+      if (_bodyIsSurface(entity.bodyId)) return;
+      final shellBodyId = _currentShellBodyId();
+      if (shellBodyId != null && entity.bodyId != shellBodyId) return;
+      _shellBodyId ??= entity.bodyId;
+    }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (!next.remove(entity)) next.add(entity);
@@ -4590,6 +4602,11 @@ class _PartScreenState extends State<PartScreen> {
   // --- Shell ------------------------------------------------------------------
   // Hollows one solid Body, opening every picked face and giving every
   // remaining face a uniform wall thickness (v1 - no per-face overrides).
+  // Body-first, like a typical CAD Shell tool: the session is started from a
+  // single selected solid Body (`contextActionsFor`'s Body-only branch) or
+  // the guided "Add > Direct Edit > Shell" entry, the panel opens with zero
+  // faces picked, and the faces to open are then tapped in the viewport
+  // while the panel is open (restricted to [_shellBodyId]'s own faces).
   // Mirrors Delete Face's continuous face re-pick session shape (preview-
   // overlay mesh, self-exclusion rollback, generic accumulate-toggle) plus
   // Chamfer's debounced live-tunable numeric field.
@@ -4597,6 +4614,13 @@ class _PartScreenState extends State<PartScreen> {
   /// True while a Shell session (create or B4 edit) is live - mirrors
   /// [_deleteFaceActive].
   bool _shellActive = false;
+
+  /// The Body this Shell session hollows - fixed for the whole session once
+  /// known. Set at entry when started from a Body selection (or an edit, or
+  /// a guided entry with an unambiguous Body), otherwise locked to the Body
+  /// of the first face picked (see [_toggleSelectedEntity]'s Shell guard).
+  /// Face taps on any other Body are ignored while it's set.
+  String? _shellBodyId;
 
   /// The ShellFeature created (or, in edit mode, already existing) for the
   /// panel session - mirrors [_previewDeleteFaceFeatureId].
@@ -11323,6 +11347,8 @@ class _PartScreenState extends State<PartScreen> {
         _startDeleteFacePicker();
       case FeaturePickerAction.moveFace:
         _startMoveFacePicker();
+      case FeaturePickerAction.shell:
+        _startShellPicker();
     }
   }
 
@@ -16731,26 +16757,50 @@ class _PartScreenState extends State<PartScreen> {
   // See this file's own "Shell" state-field section header comment.
 
   /// [SelectionContextPanel.onShell]'s callback - `contextActionsFor`
-  /// enables this button for one or more faces of the same solid Body,
-  /// nothing else, selected. Mirrors [_onDeleteFaceTapped].
+  /// enables this button for exactly one solid Body, nothing else,
+  /// selected. That Body is fixed for the session; its faces to open are
+  /// then picked from inside the open panel. Mirrors [_onScaleBodyTapped].
   void _onShellTapped() {
-    final faces = _selectedEntities.where((e) => e.kind == SelectionEntityKind.face).toList();
-    if (faces.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
-    _openShellPanel(faceEntities: faces);
+    final bodies = _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).toList();
+    if (bodies.length != 1) return; // Defensive - contextActionsFor already guarantees this.
+    _openShellPanel(bodyId: bodies.single.bodyId);
   }
 
-  /// Opens [ShellPanel] - mirrors [_openDeleteFacePanel]. The initial
-  /// create is driven by [ShellPanel]'s own post-frame [ShellPanel.onChanged]
-  /// emit (same as [ChamferPanel]'s), but is also attempted eagerly here so a
-  /// Shell that can't be built at all (e.g. `shell_failed`) closes the panel
-  /// back out rather than leaving it stuck open with nothing to edit.
-  Future<void> _openShellPanel({required List<SelectionEntityRef> faceEntities}) async {
-    final part = _part;
-    if (part == null) return;
+  /// [FeaturePickerAction.shell]'s guided "Add" FAB entry - opens
+  /// [ShellPanel] straight away with zero faces picked, mirroring
+  /// [_startDeleteFacePicker]. The Body is pre-fixed when it's unambiguous
+  /// (a single solid Body is already selected, or the Part has only one
+  /// solid Body); otherwise the first face tapped fixes it.
+  void _startShellPicker() {
+    final selectedBodies = _selectedEntities
+        .where((e) => e.kind == SelectionEntityKind.body && !_bodyIsSurface(e.bodyId))
+        .toList();
+    String? bodyId;
+    if (selectedBodies.length == 1 && _selectedEntities.length == 1) {
+      bodyId = selectedBodies.single.bodyId;
+    } else {
+      final solidBodyIds = {
+        for (final body in _bodies)
+          if (!body.isSurface) body.bodyId,
+      };
+      if (solidBodyIds.length == 1) bodyId = solidBodyIds.single;
+    }
+    _openShellPanel(bodyId: bodyId);
+  }
+
+  /// Opens [ShellPanel] with zero faces picked, against [bodyId] (null =
+  /// fixed by the first face tapped). Nothing is created here - the
+  /// backend requires at least one face to open (`_validate_shell_faces_to_
+  /// remove`), so [_ensureShellFeatureExists] no-ops until the first face
+  /// tap, and [ShellPanel]'s Confirm stays disabled until then too (mirrors
+  /// [_openDeleteFacePanel]'s own empty-[faceEntities] path).
+  void _openShellPanel({required String? bodyId}) {
+    if (_part == null) return;
     setState(() {
       _shellActive = true;
+      _shellBodyId = bodyId;
       _entitiesBeforeShell = _selectedEntities;
-      _selectedEntities = faceEntities.toSet();
+      _selectedEntities = {};
       _shellThickness = 1.0;
       _shellThicknessDirection = ThicknessDirection.outward;
       _selectionMode = true;
@@ -16758,17 +16808,6 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_shellSelectionFilter);
     });
-    if (faceEntities.isEmpty) return;
-    await _runGuarded(() => _ensureShellFeatureExists());
-    if (_previewShellFeatureId == null && mounted) {
-      _shellDebounce?.cancel();
-      setState(() {
-        _shellActive = false;
-        _selectedEntities = _entitiesBeforeShell ?? {};
-        _entitiesBeforeShell = null;
-        _selectionFilterOverrides.pop();
-      });
-    }
   }
 
   /// B4: opens [ShellPanel] to edit an *already-existing* ShellFeature -
@@ -16781,6 +16820,7 @@ class _PartScreenState extends State<PartScreen> {
     final direction = ThicknessDirection.fromApiValue(feature.thicknessDirection);
     setState(() {
       _shellActive = true;
+      _shellBodyId = bodyId;
       _editingShellFeatureId = feature.id;
       _previewShellFeatureId = feature.id;
       _shellThickness = thickness;
@@ -16811,10 +16851,13 @@ class _PartScreenState extends State<PartScreen> {
             SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id),
       ];
 
-  /// The Body the Shell hollows - the Body of its first picked face
-  /// (mirrors [_currentDeleteFaceBodyId]); every other picked face must
-  /// share it, which the backend enforces (`mixed_body_selection`).
+  /// The Body the Shell hollows - [_shellBodyId] once fixed, otherwise the
+  /// Body of its first picked face (mirrors [_currentDeleteFaceBodyId]);
+  /// [_toggleSelectedEntity]'s Shell guard keeps every picked face on it,
+  /// and the backend enforces the same (`mixed_body_selection`).
   String? _currentShellBodyId() {
+    final fixed = _shellBodyId;
+    if (fixed != null) return fixed;
     for (final entity in _selectedEntities) {
       if (entity.kind == SelectionEntityKind.face) return entity.bodyId;
     }
@@ -16932,6 +16975,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _shellActive = false;
+      _shellBodyId = null;
       _selectedEntities = _entitiesBeforeShell ?? {};
       _entitiesBeforeShell = null;
       _previewShellFeatureId = null;
@@ -16956,6 +17000,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       _shellActive = false;
+      _shellBodyId = null;
       _selectedEntities = _entitiesBeforeShell ?? {};
       _entitiesBeforeShell = null;
       _previewShellFeatureId = null;
@@ -21607,7 +21652,7 @@ class _PartScreenState extends State<PartScreen> {
                     child: ShellPanel(
                       key: ValueKey(_editingShellFeatureId ?? _previewShellFeatureId),
                       title: _editingShellFeatureId != null ? 'Edit Shell' : 'Shell',
-                      tooltip: _currentShellFaceRefs().isEmpty ? 'Select faces to open' : null,
+                      tooltip: _currentShellFaceRefs().isEmpty ? 'Tap faces of the body to open' : null,
                       initialThickness: _shellThickness,
                       initialThicknessDirection: _shellThicknessDirection,
                       faceCount: _currentShellFaceRefs().length,

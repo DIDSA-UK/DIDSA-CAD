@@ -34,7 +34,17 @@ void main() {
     expect(find.text('Opening 1 face'), findsOneWidget);
   });
 
-  testWidgets('no picked faces disables Confirm', (tester) async {
+  testWidgets(
+      'body-first session: opens with zero faces (Confirm disabled, pick hint shown), then the '
+      'live count follows faces picked in the viewport', (tester) async {
+    await tester.pumpWidget(host(faceCount: 0));
+    expect(confirmEnabled(tester), isFalse);
+    expect(find.text('Tap faces of the body to open them'), findsOneWidget);
+
+    await tester.pumpWidget(host(faceCount: 2));
+    expect(confirmEnabled(tester), isTrue);
+    expect(find.text('Opening 2 faces'), findsOneWidget);
+
     await tester.pumpWidget(host(faceCount: 0));
     expect(confirmEnabled(tester), isFalse);
   });

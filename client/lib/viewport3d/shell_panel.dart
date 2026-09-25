@@ -4,8 +4,10 @@ import 'extrude_panel.dart' show ThicknessDirection;
 import 'resizable_tool_panel.dart';
 
 /// The bottom-sheet-style panel [PartScreen] opens once Shell is chosen
-/// (one or more faces of the same solid Body selected - see
-/// `selection_actions.dart`'s `contextActionsFor`). Structurally mirrors
+/// (a single solid Body selected - see `selection_actions.dart`'s
+/// `contextActionsFor` - or the guided "Add > Direct Edit > Shell" entry).
+/// It opens with zero faces picked; the faces to open are then tapped in
+/// the viewport while it's open. Structurally mirrors
 /// [ChamferPanel] (one live-previewed numeric field plus Cancel/Confirm),
 /// substituting a wall Thickness field for Chamfer's Distance, plus the
 /// same Out/In/Middle [ThicknessDirection] [SegmentedButton] thin-wall
@@ -136,7 +138,7 @@ class _ShellPanelState extends State<ShellPanel> {
             _thickness == null
                 ? 'Enter a thickness greater than 0'
                 : faceCount == 0
-                    ? 'Tap one or more faces of the same body to open'
+                    ? 'Tap faces of the body to open them'
                     : 'Opening $faceCount ${faceCount == 1 ? 'face' : 'faces'}',
             style: TextStyle(
               color: _canConfirm

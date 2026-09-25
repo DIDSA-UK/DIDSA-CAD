@@ -172,6 +172,13 @@ List<SelectionContextAction> contextActionsFor(
           enabled: bodies.length == 1,
           disabledReason: bodies.length == 1 ? null : 'Select exactly one body to move',
         ),
+        // Shell: body-first, like a typical CAD Shell tool - the selected
+        // Body is fixed for the session and its faces to open are then
+        // picked from inside the open Shell panel (see `PartScreen.
+        // _onShellTapped`). Exactly one solid Body only: `MakeThickSolidByJoin`
+        // hollows one solid at a time, and a bare Surface has no volume to
+        // hollow - same disabled-with-reason idiom as Scale/Move Body.
+        _shellBodyAction(bodies, isSolidBody),
       ];
     }
     return const [];
@@ -305,8 +312,6 @@ List<SelectionContextAction> contextActionsFor(
         if (solid) const SelectionContextAction('Fillet', enabled: true),
         if (solid) const SelectionContextAction('Delete Face', enabled: true),
         if (solid) const SelectionContextAction('Move Face', enabled: true),
-        // Shell: the picked face becomes the Shell's one open face.
-        if (solid) const SelectionContextAction('Shell', enabled: true),
       ];
     }
     // On-device feedback (bug fix): a lone reference plane or existing
@@ -354,10 +359,6 @@ List<SelectionContextAction> contextActionsFor(
               : null;
       actions.add(SelectionContextAction('Delete Face', enabled: enabled, disabledReason: reason));
       actions.add(SelectionContextAction('Move Face', enabled: enabled, disabledReason: reason));
-      // Shell: every picked face becomes one of the Shell's open faces -
-      // same single-solid-Body constraint (`MakeThickSolidByJoin` hollows
-      // one solid at a time), same disabled-with-reason idiom.
-      actions.add(SelectionContextAction('Shell', enabled: enabled, disabledReason: reason));
     }
     if (actions.isNotEmpty) return actions;
   }
@@ -429,6 +430,28 @@ List<SelectionContextAction> contextActionsFor(
   }
   // hasFace (2+) || hasVertex, alone.
   return const [SelectionContextAction('Create Plane')];
+}
+
+/// Shell's body-selection entry: enabled for exactly one solid Body
+/// (never a bare Surface - see [FaceSolidityChecker]), disabled with a
+/// reason otherwise.
+SelectionContextAction _shellBodyAction(
+  List<SelectionEntityRef> bodies,
+  FaceSolidityChecker? isSolidBody,
+) {
+  if (bodies.length != 1) {
+    return const SelectionContextAction(
+      'Shell',
+      enabled: false,
+      disabledReason: 'Select exactly one body to shell',
+    );
+  }
+  final solid = isSolidBody?.call(bodies.single.bodyId) ?? true;
+  return SelectionContextAction(
+    'Shell',
+    enabled: solid,
+    disabledReason: solid ? null : 'Only a solid body can be shelled',
+  );
 }
 
 /// Prompt D/E: whether every entry in [edges] names the same Body -
