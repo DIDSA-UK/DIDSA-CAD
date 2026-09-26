@@ -894,6 +894,15 @@ def _single_solid_face_count(shape: TopoDS_Shape) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _is_unit_direction(vec, tol: float = 1e-6) -> bool:
+    """Whether `vec` (a `gp_Dir`, which is documented to always be unit
+    length) actually has unit magnitude - `_flank_fold_warning`'s own
+    boundary check against the confirmed OCCT 8.0.1 `GeomLProp_SLProps.
+    Normal()` regression (see that function's own docstring)."""
+    magnitude_sq = vec.X() ** 2 + vec.Y() ** 2 + vec.Z() ** 2
+    return abs(magnitude_sq - 1.0) < tol
+
+
 def _flank_fold_warning(face: TopoDS_Face, grid_size: int = _FOLD_GRID_SIZE) -> str | None:
     """A real fold/self-intersection detector for one flank surface -
     `10-bevel-gear.md`'s own §7/§8: `BRepCheck_Analyzer`/`IsDone()` are
@@ -929,7 +938,26 @@ def _flank_fold_warning(face: TopoDS_Face, grid_size: int = _FOLD_GRID_SIZE) -> 
             v = v1 + (v2 - v1) * j / (grid_size - 1)
             props = GeomLProp_SLProps(surface, u, v, 1, 1e-6)
             grid_points.append(props.Value())
-            grid_normals.append(props.Normal() if props.IsNormalDefined() else None)
+            normal = props.Normal() if props.IsNormalDefined() else None
+            if normal is not None and not _is_unit_direction(normal):
+                # Confirmed OCCT 8.0.1 regression (filed upstream against
+                # tpaviot/pythonocc-core): `IsNormalDefined()` can return
+                # `True` together with a `Normal()` whose components aren't
+                # actually unit-length (on-device: magnitude ~77 instead of
+                # 1.0, on a plain, unremarkable flank surface - hand-verified
+                # against the surface's own `D1U`x`D1V` that the *true*
+                # normal there is well-behaved, so this is OCCT returning a
+                # wrong value, not a real crease). A `gp_Dir` is documented
+                # to always be unit length, so a result that violates that
+                # invariant is treated exactly like `IsNormalDefined() ==
+                # False` - undefined, not trusted - rather than fed into the
+                # sign-flip comparison below where it would misfire as a
+                # spurious fold. Absent under pythonocc-core 7.9.3 with
+                # identical inputs (confirmed via a real A/B on this exact
+                # construction), so this only ever discards a bad OCCT
+                # result, never a genuine one.
+                normal = None
+            grid_normals.append(normal)
 
     # Point coincidence: only compare non-adjacent grid points (index
     # difference in EITHER the flattened i or j sense) - immediate
