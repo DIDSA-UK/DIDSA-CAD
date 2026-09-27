@@ -54,6 +54,7 @@ import 'chamfer_panel.dart';
 import 'create_plane_context_sheet.dart';
 import 'create_plane_geometry_3d.dart';
 import 'create_plane_panel.dart';
+import 'curve_panel.dart';
 import 'delete_body_panel.dart';
 import 'delete_face_panel.dart';
 import 'extrude_panel.dart';
@@ -63,6 +64,7 @@ import '../materials/part_properties_screen.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
+import 'fill_surface_panel.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
 import 'knit_surface_panel.dart';
@@ -11694,7 +11696,169 @@ class _PartScreenState extends State<PartScreen> {
         _startMoveFacePicker();
       case FeaturePickerAction.shell:
         _startShellPicker();
+      case FeaturePickerAction.helix:
+        await _startHelix();
+      case FeaturePickerAction.intersectionCurve:
+        await _startIntersectionCurve();
+      case FeaturePickerAction.fillSurface:
+        await _startFillSurface();
     }
+  }
+
+  /// The "Add" FAB's Helix entry - v1 client scope (see [CurvePanel]'s own
+  /// doc comment): no 3D-viewport axis picking, [CurvePanel] itself collects
+  /// every parameter (axis plane, radius, pitch, turns, handedness) via its
+  /// own form fields, so this just shows it in a modal sheet and creates the
+  /// CurveFeature once confirmed - unlike Sweep/Extrude/etc., there is no
+  /// preceding ambient-selection or picker-mode step at all.
+  Future<void> _startHelix() async {
+    var helixAxisPlane = 'XY';
+    var helixRadius = 5.0;
+    var helixPitch = 2.0;
+    var helixTurns = 3.0;
+    var helixRightHanded = true;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CurvePanel(
+        title: 'Create Helix',
+        onHelixChanged: ({
+          required String axisPlane,
+          required double radius,
+          required double pitch,
+          required double turns,
+          required bool rightHanded,
+        }) {
+          helixAxisPlane = axisPlane;
+          helixRadius = radius;
+          helixPitch = pitch;
+          helixTurns = turns;
+          helixRightHanded = rightHanded;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runGuarded(() async {
+      await _api.createCurveFeature(
+        _focusPartId,
+        curveType: 'helix',
+        axisRef: PlaneRefDto(fixedPlane: helixAxisPlane),
+        radius: helixRadius,
+        pitch: helixPitch,
+        turns: helixTurns,
+        rightHanded: helixRightHanded,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The "Add" FAB's Intersection Curve entry - mirrors [_startHelix]'s own
+  /// "no ambient selection, [CurvePanel] collects everything" shape; its two
+  /// Sketch pickers are dropdowns over every existing `"sketch"` Feature in
+  /// this Part (see [CurvePanel]'s own doc comment for why, not a 3D-
+  /// viewport tap).
+  Future<void> _startIntersectionCurve() async {
+    final sketchChoices = _features
+        .where((f) => f.type == 'sketch')
+        .map((f) => SketchFeatureChoice(
+              featureId: f.id,
+              label: featureDisplayName(_features, _features.indexOf(f)),
+            ))
+        .toList();
+    if (sketchChoices.length < 2) {
+      _showSnack('Need at least two sketches to intersect');
+      return;
+    }
+    String? pickedSketchFeatureIdA;
+    String? pickedSketchFeatureIdB;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CurvePanel(
+        title: 'Create Intersection Curve',
+        sketchFeatureChoices: sketchChoices,
+        onIntersectionChanged: ({required String sketchFeatureIdA, required String sketchFeatureIdB}) {
+          pickedSketchFeatureIdA = sketchFeatureIdA;
+          pickedSketchFeatureIdB = sketchFeatureIdB;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    final a = pickedSketchFeatureIdA, b = pickedSketchFeatureIdB;
+    if (confirmed != true || !mounted || a == null || b == null) return;
+    await _runGuarded(() async {
+      await _api.createCurveFeature(
+        _focusPartId,
+        curveType: 'intersection',
+        sketchFeatureIdA: a,
+        sketchFeatureIdB: b,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The kinds of already-selected entity [_startFillSurface] accepts as a
+  /// boundary curve - every Sketch entity kind [_pathEntityTypeString] also
+  /// handles (a Body edge or an existing Curve feature has no boundary-
+  /// picker UI yet - see `document_api_client.createFillSurfaceFeature`'s
+  /// own doc comment).
+  static const _fillSurfaceBoundaryKinds = {
+    SelectionEntityKind.sketchLine,
+    SelectionEntityKind.sketchArc,
+    SelectionEntityKind.sketchCircle,
+    SelectionEntityKind.sketchEllipse,
+    SelectionEntityKind.sketchSpline,
+  };
+
+  /// The "Add" FAB's Fill Surface entry - unlike Helix/Intersection Curve,
+  /// this reads its boundary curves from whatever is *already selected* in
+  /// the viewport at the moment this is invoked (the same "picks already
+  /// made before the panel opens" convention [CreatePlanePanel]'s own modes
+  /// use), rather than collecting them itself - Sketch lines/arcs/circles/
+  /// ellipses/splines are already tappable/multi-selectable today, so this
+  /// needs no new picker state machine of its own.
+  Future<void> _startFillSurface() async {
+    final boundaryRefs = <SketchEntityRefDto>[];
+    for (final entity in _selectedEntities) {
+      if (!_fillSurfaceBoundaryKinds.contains(entity.kind)) continue;
+      final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+      if (sketchId == null) continue;
+      boundaryRefs.add(SketchEntityRefDto(
+        sketchId: sketchId,
+        entityType: _pathEntityTypeString(entity.kind),
+        entityId: entity.sketchEntityId,
+      ));
+    }
+    if (boundaryRefs.length < 2 || boundaryRefs.length > 4) {
+      _showSnack('Select 2 to 4 sketch curves (lines/arcs/circles/ellipses/splines) to fill first');
+      return;
+    }
+    final choices = boundaryRefs
+        .map((r) => FillSurfaceBoundaryChoice(label: '${r.entityType} (${r.sketchId})', isCurveFeature: false))
+        .toList();
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => FillSurfacePanel(
+        selected: choices,
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runGuarded(() async {
+      await _api.createFillSurfaceFeature(_focusPartId, sketchBoundaryRefs: boundaryRefs);
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
   }
 
   /// C3/C4/C5: the "Add" FAB's Feature picker's "Plane" entry - clears the

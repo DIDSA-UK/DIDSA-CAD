@@ -324,7 +324,9 @@ def test_boss_sweep_along_a_path_spanning_two_different_sketches_succeeds():
     # app.document.models.SketchOrEdgeRef), which always echoes its own
     # `edge_ref` field (None for a Sketch-entity entry) alongside the
     # original flat sketch_id/entity_type/entity_id fields.
-    assert response.json()["path_refs"] == [{**ref, "edge_ref": None} for ref in path_refs]
+    assert response.json()["path_refs"] == [
+        {**ref, "edge_ref": None, "curve_feature_id": None} for ref in path_refs
+    ]
 
     mesh = _mesh(part["id"])
     assert len(mesh) == 1

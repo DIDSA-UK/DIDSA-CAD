@@ -894,6 +894,12 @@ class FeatureDto {
   /// [BooleanOperation] for the parsed Dart enum the panels themselves use.
   final String? operation;
 
+  /// Curve features: `"helix"` or `"intersection"` - only present on a
+  /// `"curve"` Feature (the backend's `CurveType`). Read for the feature-
+  /// tree label ([featureDisplayName]) so a Helix and an Intersection curve
+  /// don't both show up as an undifferentiated "Curve".
+  final String? curveType;
+
   /// Boolean family, Subtract/Common - only present on a `"boolean"`
   /// Feature: which Bodies (1+ ids, the backend's `BooleanFeature.tool_
   /// body_ids`) are folded into/against [targetBodyIds] (also 1+ entries
@@ -1100,6 +1106,7 @@ class FeatureDto {
     this.directionRef,
     this.bodyIds = const [],
     this.operation,
+    this.curveType,
     this.toolBodyIds = const [],
     this.consumeToolBodies = true,
     this.targetBodyId,
@@ -1231,6 +1238,7 @@ class FeatureDto {
             : PatternDirectionRefDto.fromJson(json['direction_ref'] as Map<String, dynamic>),
         bodyIds: (json['body_ids'] as List?)?.cast<String>() ?? const [],
         operation: json['operation'] as String?,
+        curveType: json['curve_type'] as String?,
         toolBodyIds: (json['tool_body_ids'] as List?)?.cast<String>() ?? const [],
         consumeToolBodies: json['consume_tool_bodies'] as bool? ?? true,
         targetBodyId: json['target_body_id'] as String?,
@@ -3782,6 +3790,16 @@ class DocumentApiClient {
   /// each possibly naming a different Sketch - confirmed decision, see the
   /// backend's `SweepFeature` docstring) - mirrors [createRevolveFeature]
   /// exactly, substituting [pathRefs] for [axisRef]/`angle`.
+  ///
+  /// Curve features: [pathCurveFeatureId], when set, sweeps along an
+  /// existing Curve feature (Helix/Intersection curve) instead - the
+  /// simpler "pick a curve from a list" entry point (`_helixSweepPanel`-
+  /// style flows in `part_screen.dart`), which needs no 3D-viewport path-
+  /// picking support for a Curve feature's own wire (not yet a selectable
+  /// entity kind - see `SelectionEntityKind`). Mutually exclusive with
+  /// [pathRefs] - when set, [pathRefs] is ignored and the backend's
+  /// `path_refs` becomes the single `{"curve_feature_id": ...}` entry the
+  /// backend's `SketchOrEdgeRef` already accepts.
   Future<FeatureDto> createSweepFeature(
     String partId, {
     required String sketchFeatureId,
@@ -3789,6 +3807,7 @@ class DocumentApiClient {
     required String mode,
     List<String> targetBodyIds = const [],
     List<SketchEntityRefDto> profileRefs = const [],
+    String? pathCurveFeatureId,
   }) =>
       _send(
         () => _httpClient.post(
@@ -3796,7 +3815,11 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 'sketch_feature_id': sketchFeatureId,
-                'path_refs': pathRefs.map((r) => r.toJson()).toList(),
+                'path_refs': pathCurveFeatureId != null
+                    ? [
+                        {'curve_feature_id': pathCurveFeatureId}
+                      ]
+                    : pathRefs.map((r) => r.toJson()).toList(),
                 'mode': mode,
                 'target_body_ids': targetBodyIds,
                 'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
@@ -3809,6 +3832,10 @@ class DocumentApiClient {
   /// [pathRefs]/[mode]/[targetBodyIds]/[profileRefs] may be supplied,
   /// mirroring [updateRevolveFeature]'s omitted-vs-current-value
   /// convention. Used for the live-preview debounced re-solve.
+  ///
+  /// [pathCurveFeatureId] mirrors [createSweepFeature]'s own - set it
+  /// (instead of [pathRefs]) to re-point this Sweep at a different Curve
+  /// feature.
   Future<FeatureDto> updateSweepFeature(
     String partId,
     String featureId, {
@@ -3816,13 +3843,19 @@ class DocumentApiClient {
     String? mode,
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
+    String? pathCurveFeatureId,
   }) =>
       _send(
         () => _httpClient.patch(
               _uri('/document/parts/$partId/sweep-features/$featureId'),
               headers: _headers,
               body: jsonEncode({
-                if (pathRefs != null) 'path_refs': pathRefs.map((r) => r.toJson()).toList(),
+                if (pathCurveFeatureId != null)
+                  'path_refs': [
+                    {'curve_feature_id': pathCurveFeatureId}
+                  ]
+                else if (pathRefs != null)
+                  'path_refs': pathRefs.map((r) => r.toJson()).toList(),
                 if (mode != null) 'mode': mode,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)
@@ -4356,6 +4389,10 @@ class DocumentApiClient {
     SubShapeRefDto? edgeRef,
     SubShapeRefDto? vertexRef,
     List<PointRefDto> pointRefs = const [],
+    // Curve features: `normal_to_curve_feature_at_parameter`'s own pair -
+    // a Curve feature id plus a 0-1 arc-length fraction along it.
+    String? curveFeatureId,
+    double? curveParameter,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4370,6 +4407,8 @@ class DocumentApiClient {
                 if (edgeRef != null) 'edge_ref': edgeRef.toJson(),
                 if (vertexRef != null) 'vertex_ref': vertexRef.toJson(),
                 if (pointRefs.isNotEmpty) 'point_refs': pointRefs.map((r) => r.toJson()).toList(),
+                if (curveFeatureId != null) 'curve_feature_id': curveFeatureId,
+                if (curveParameter != null) 'curve_parameter': curveParameter,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4388,6 +4427,8 @@ class DocumentApiClient {
     SubShapeRefDto? edgeRef,
     SubShapeRefDto? vertexRef,
     List<PointRefDto>? pointRefs,
+    String? curveFeatureId,
+    double? curveParameter,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4401,6 +4442,120 @@ class DocumentApiClient {
                 if (edgeRef != null) 'edge_ref': edgeRef.toJson(),
                 if (vertexRef != null) 'vertex_ref': vertexRef.toJson(),
                 if (pointRefs != null) 'point_refs': pointRefs.map((r) => r.toJson()).toList(),
+                if (curveFeatureId != null) 'curve_feature_id': curveFeatureId,
+                if (curveParameter != null) 'curve_parameter': curveParameter,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a CurveFeature - either a `"helix"` ([axisRef]/[radius]/[pitch]/
+  /// [turns]/[rightHanded]) or an `"intersection"` curve ([sketchFeatureIdA]/
+  /// [sketchFeatureIdB], each Sketch's whole closed profile or open chain -
+  /// see the backend `CurveFeature`'s own docstring for why `profile_refs_a`/
+  /// `_b` aren't exposed here yet: v1 only supports a Sketch with exactly
+  /// one profile/chain, so there is nothing to disambiguate).
+  Future<FeatureDto> createCurveFeature(
+    String partId, {
+    required String curveType,
+    PlaneRefDto? axisRef,
+    double? radius,
+    double? pitch,
+    double? turns,
+    bool rightHanded = true,
+    String? sketchFeatureIdA,
+    String? sketchFeatureIdB,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/curve-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'curve_type': curveType,
+                if (axisRef != null) 'axis_ref': axisRef.toJson(),
+                if (radius != null) 'radius': radius,
+                if (pitch != null) 'pitch': pitch,
+                if (turns != null) 'turns': turns,
+                'right_handed': rightHanded,
+                if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
+                if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing CurveFeature - `curve_type` itself is
+  /// never sent (see the backend's `CurveFeatureUpdate`).
+  Future<FeatureDto> updateCurveFeature(
+    String partId,
+    String featureId, {
+    PlaneRefDto? axisRef,
+    double? radius,
+    double? pitch,
+    double? turns,
+    bool? rightHanded,
+    String? sketchFeatureIdA,
+    String? sketchFeatureIdB,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/curve-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (axisRef != null) 'axis_ref': axisRef.toJson(),
+                if (radius != null) 'radius': radius,
+                if (pitch != null) 'pitch': pitch,
+                if (turns != null) 'turns': turns,
+                if (rightHanded != null) 'right_handed': rightHanded,
+                if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
+                if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a FillSurfaceFeature - a single surface filling the closed loop
+  /// formed by 2-4 boundary curves. v1 client scope: boundaries come from
+  /// already-selected Sketch entities ([sketchBoundaryRefs]) and/or existing
+  /// Curve features ([curveFeatureBoundaryIds]) picked from a list - a Body
+  /// edge boundary (the backend's own `edge_ref` case) has no picker UI yet.
+  Future<FeatureDto> createFillSurfaceFeature(
+    String partId, {
+    List<SketchEntityRefDto> sketchBoundaryRefs = const [],
+    List<String> curveFeatureBoundaryIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/fill-surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'boundary_refs': [
+                  ...sketchBoundaryRefs.map((r) => r.toJson()),
+                  ...curveFeatureBoundaryIds.map((id) => {'curve_feature_id': id}),
+                ],
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing FillSurfaceFeature - replaces the whole
+  /// boundary set (mirrors [createFillSurfaceFeature]'s own field shape).
+  Future<FeatureDto> updateFillSurfaceFeature(
+    String partId,
+    String featureId, {
+    List<SketchEntityRefDto>? sketchBoundaryRefs,
+    List<String>? curveFeatureBoundaryIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/fill-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sketchBoundaryRefs != null || curveFeatureBoundaryIds != null)
+                  'boundary_refs': [
+                    ...(sketchBoundaryRefs ?? const []).map((r) => r.toJson()),
+                    ...(curveFeatureBoundaryIds ?? const []).map((id) => {'curve_feature_id': id}),
+                  ],
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

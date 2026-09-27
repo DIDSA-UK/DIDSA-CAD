@@ -114,12 +114,15 @@ from app.document.models import (
     ComponentPatternAxis,
     ComponentPatternType,
     CreatePlaneFeature,
+    CurveFeature,
+    CurveType,
     DeleteBodyFeature,
     DeleteFaceFeature,
     Document,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
+    FillSurfaceFeature,
     FilletFeature,
     FixedAxis,
     GearChainFeature,
@@ -183,7 +186,9 @@ from app.document.models import (
     ThickenFeature,
 )
 from app.document.revolve import resolve_revolve
+from app.document.curve import resolve_curve
 from app.document.delete_face import resolve_delete_face
+from app.document.fill_surface import resolve_fill_surface
 from app.document.knit_surface import resolve_knit_surface
 from app.document.move_body import resolve_move_body
 from app.document.move_face import resolve_move_face
@@ -238,6 +243,9 @@ from app.document.schemas import (
     CreatePlaneFeatureCreate,
     CreatePlaneFeatureResponse,
     CreatePlaneFeatureUpdate,
+    CurveFeatureCreate,
+    CurveFeatureResponse,
+    CurveFeatureUpdate,
     DeleteBodyFeatureCreate,
     DeleteBodyFeatureResponse,
     DeleteBodyFeatureUpdate,
@@ -267,6 +275,9 @@ from app.document.schemas import (
     ExtrudeFeatureResponse,
     ExtrudeFeatureUpdate,
     FeatureResponse,
+    FillSurfaceFeatureCreate,
+    FillSurfaceFeatureResponse,
+    FillSurfaceFeatureUpdate,
     FilletFeatureCreate,
     FilletFeatureResponse,
     FilletFeatureUpdate,
@@ -656,6 +667,8 @@ def _sketch_or_edge_ref_to_domain(schema: SketchOrEdgeRefSchema) -> SketchOrEdge
     Neither-set (a malformed payload) becomes a `SketchOrEdgeRef` with
     both fields `None`, caught by `_validate_sketch_or_edge_refs` right
     after this runs at every call site - never reaches `resolve_path_wire`."""
+    if schema.curve_feature_id is not None:
+        return SketchOrEdgeRef(curve_feature_id=schema.curve_feature_id)
     if schema.edge_ref is not None:
         return SketchOrEdgeRef(edge_ref=_subshape_ref_to_domain(schema.edge_ref))
     if schema.sketch_id is not None and schema.entity_type is not None and schema.entity_id is not None:
@@ -668,6 +681,8 @@ def _sketch_or_edge_ref_to_domain(schema: SketchOrEdgeRefSchema) -> SketchOrEdge
 
 
 def _sketch_or_edge_ref_to_schema(ref: SketchOrEdgeRef) -> SketchOrEdgeRefSchema:
+    if ref.curve_feature_id is not None:
+        return SketchOrEdgeRefSchema(curve_feature_id=ref.curve_feature_id)
     if ref.edge_ref is not None:
         return SketchOrEdgeRefSchema(edge_ref=_subshape_ref_to_schema(ref.edge_ref))
     assert ref.sketch_entity_ref is not None
@@ -680,15 +695,22 @@ def _sketch_or_edge_ref_to_schema(ref: SketchOrEdgeRef) -> SketchOrEdgeRefSchema
 
 def _validate_sketch_or_edge_refs(refs: list[SketchOrEdgeRef]) -> None:
     """Payload-shape validation for a `list[SketchOrEdgeRef]` (Sweep/Swept-
-    Surface `path_refs`, Loft/Loft-Surface `guide_curve_refs`) - each entry
-    must set exactly one of `sketch_entity_ref`/`edge_ref`, mirroring
-    `PointRef`'s identical "exactly one of two" convention and its own
-    validation site (`_validate_create_plane_payload`)."""
+    Surface `path_refs`, Loft/Loft-Surface `guide_curve_refs`, Fill Surface
+    `boundary_refs`) - each entry must set exactly one of `sketch_entity_
+    ref`/`edge_ref`/`curve_feature_id`, mirroring `PointRef`'s identical
+    "exactly one of N" convention and its own validation site (`_validate_
+    create_plane_payload`)."""
     for index, ref in enumerate(refs):
-        if (ref.sketch_entity_ref is None) == (ref.edge_ref is None):
+        set_count = sum(
+            1 for value in (ref.sketch_entity_ref, ref.edge_ref, ref.curve_feature_id) if value is not None
+        )
+        if set_count != 1:
             raise HTTPException(
                 status_code=400,
-                detail=f"path_refs[{index}] must set exactly one of sketch_entity_ref or edge_ref",
+                detail=(
+                    f"path_refs[{index}] must set exactly one of "
+                    "sketch_entity_ref, edge_ref, or curve_feature_id"
+                ),
             )
 
 
@@ -815,10 +837,54 @@ def _create_plane_feature_response(part: Part, feature: CreatePlaneFeature) -> C
         edge_ref=_subshape_ref_to_schema(feature.edge_ref) if feature.edge_ref else None,
         vertex_ref=_subshape_ref_to_schema(feature.vertex_ref) if feature.vertex_ref else None,
         point_refs=[_point_ref_to_schema(ref) for ref in feature.point_refs],
+        curve_feature_id=feature.curve_feature_id,
+        curve_parameter=feature.curve_parameter,
         origin=origin,
         normal=normal,
         x_axis=x_axis,
         y_axis=y_axis,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+    )
+
+
+def _curve_feature_response(part: Part, feature: CurveFeature) -> CurveFeatureResponse:
+    """Mirrors `_create_plane_feature_response`'s own soft-fail-on-read
+    convention exactly: `length`/`closed` are resolved live on every read,
+    `None` (rather than a raised 500) if `feature` has since become
+    unresolvable (a Helix's `axis_ref` or an Intersection curve's own
+    Sketch was deleted out from under it) - real validation still happens
+    at create/update time (`_validate_curve_payload` plus an explicit
+    `resolve_curve` call)."""
+    try:
+        resolved = resolve_curve(part, feature, excluded_feature_ids_after(part, feature.id))
+        length, closed = resolved.length, resolved.closed
+    except HTTPException:
+        logger.warning("CurveFeature %s could not be resolved for its response", feature.id)
+        length, closed = None, None
+    return CurveFeatureResponse(
+        id=feature.id,
+        curve_type=feature.curve_type,
+        axis_ref=_plane_ref_to_schema(feature.axis_ref) if feature.axis_ref else None,
+        radius=feature.radius,
+        pitch=feature.pitch,
+        turns=feature.turns,
+        right_handed=feature.right_handed,
+        sketch_feature_id_a=feature.sketch_feature_id_a,
+        profile_refs_a=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs_a],
+        sketch_feature_id_b=feature.sketch_feature_id_b,
+        profile_refs_b=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs_b],
+        length=length,
+        closed=closed,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+    )
+
+
+def _fill_surface_feature_response(part: Part, feature: FillSurfaceFeature) -> FillSurfaceFeatureResponse:
+    return FillSurfaceFeatureResponse(
+        id=feature.id,
+        boundary_refs=[_sketch_or_edge_ref_to_schema(ref) for ref in feature.boundary_refs],
         locked=part.is_locked(feature.id),
         produces=feature.produces,
     )
@@ -960,6 +1026,10 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         )
     if isinstance(feature, CreatePlaneFeature):
         return _create_plane_feature_response(part, feature)
+    if isinstance(feature, CurveFeature):
+        return _curve_feature_response(part, feature)
+    if isinstance(feature, FillSurfaceFeature):
+        return _fill_surface_feature_response(part, feature)
     if isinstance(feature, FilletFeature):
         return FilletFeatureResponse(
             id=feature.id,
@@ -2787,6 +2857,8 @@ def _all_other_create_plane_fields_empty(
     edge_ref: SubShapeRef | None,
     vertex_ref: SubShapeRef | None,
     point_refs: list[PointRef],
+    curve_feature_id: str | None = None,
+    curve_parameter: float | None = None,
 ) -> bool:
     """C4: every `CreatePlaneFeature` field not named in `exclude` is empty
     (`None` for a single optional ref/`offset`, `[]` for a list) - the
@@ -2804,6 +2876,8 @@ def _all_other_create_plane_fields_empty(
         "edge_ref": edge_ref is None,
         "vertex_ref": vertex_ref is None,
         "point_refs": not point_refs,
+        "curve_feature_id": curve_feature_id is None,
+        "curve_parameter": curve_parameter is None,
     }
     return all(is_empty for name, is_empty in empty.items() if name not in exclude)
 
@@ -2975,6 +3049,8 @@ def _validate_create_plane_payload(
     edge_ref: SubShapeRef | None = None,
     vertex_ref: SubShapeRef | None = None,
     point_refs: list[PointRef] | None = None,
+    curve_feature_id: str | None = None,
+    curve_parameter: float | None = None,
 ) -> None:
     """C2/C3/C4/C5: enforces exactly one combination of fields is supplied,
     matching `plane_type` (see `app.document.schemas.CreatePlaneFeatureCreate`
@@ -3009,6 +3085,8 @@ def _validate_create_plane_payload(
             edge_ref=edge_ref,
             vertex_ref=vertex_ref,
             point_refs=point_refs,
+            curve_feature_id=curve_feature_id,
+            curve_parameter=curve_parameter,
         )
 
     if plane_type == PlaneType.OFFSET_FACE:
@@ -3050,6 +3128,23 @@ def _validate_create_plane_payload(
             raise HTTPException(status_code=422, detail="line_ref must have entity_type=ARC")
         if point_ref.entity_type != SketchEntityType.POINT:
             raise HTTPException(status_code=422, detail="point_ref must have entity_type=POINT")
+    elif plane_type == PlaneType.NORMAL_TO_CURVE_FEATURE_AT_PARAMETER:
+        if (
+            curve_feature_id is None
+            or curve_parameter is None
+            or not other_fields_empty({"curve_feature_id", "curve_parameter"})
+        ):
+            raise HTTPException(
+                status_code=422,
+                detail="NORMAL_TO_CURVE_FEATURE_AT_PARAMETER requires both curve_feature_id and "
+                "curve_parameter, and nothing else",
+            )
+        if not 0.0 <= curve_parameter <= 1.0:
+            raise HTTPException(status_code=422, detail="curve_parameter must be between 0 and 1")
+        if not isinstance(part.get_feature(curve_feature_id), CurveFeature):
+            raise HTTPException(
+                status_code=422, detail="curve_feature_id must name an existing CurveFeature in this Part"
+            )
     elif plane_type == PlaneType.NORMAL_TO_EDGE_THROUGH_VERTEX:
         if edge_ref is None or vertex_ref is None or not other_fields_empty({"edge_ref", "vertex_ref"}):
             raise HTTPException(
@@ -3101,6 +3196,69 @@ def _validate_create_plane_payload(
                     status_code=422,
                     detail="point_refs sketch_point_ref entries must have entity_type=POINT",
                 )
+
+
+def _validate_curve_payload(
+    part: Part,
+    curve_type: CurveType,
+    axis_ref: PlaneRef | None,
+    radius: float | None,
+    pitch: float | None,
+    turns: float | None,
+    sketch_feature_id_a: str | None,
+    sketch_feature_id_b: str | None,
+) -> None:
+    """Enforces exactly one combination of fields is supplied, matching
+    `curve_type` - same plain-string-422, "malformed combination of
+    fields" convention `_validate_create_plane_payload` uses. `profile_
+    refs_a`/`_b`/`right_handed` need no such check (they're either always
+    optional or always have a valid default), so they aren't passed here."""
+    if curve_type == CurveType.HELIX:
+        if axis_ref is None or radius is None or pitch is None or turns is None:
+            raise HTTPException(
+                status_code=422,
+                detail="HELIX requires axis_ref, radius, pitch, and turns",
+            )
+        if sketch_feature_id_a is not None or sketch_feature_id_b is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="HELIX must not set sketch_feature_id_a/sketch_feature_id_b",
+            )
+        _validate_plane_ref(part, axis_ref)
+        if radius <= 0.0:
+            raise HTTPException(status_code=422, detail="radius must be positive")
+        if pitch == 0.0:
+            raise HTTPException(status_code=422, detail="pitch must be non-zero")
+        if turns <= 0.0:
+            raise HTTPException(status_code=422, detail="turns must be positive")
+        return
+    assert curve_type == CurveType.INTERSECTION
+    if sketch_feature_id_a is None or sketch_feature_id_b is None:
+        raise HTTPException(
+            status_code=422,
+            detail="INTERSECTION requires sketch_feature_id_a and sketch_feature_id_b",
+        )
+    if axis_ref is not None or radius is not None or pitch is not None or turns is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="INTERSECTION must not set axis_ref/radius/pitch/turns",
+        )
+    if not isinstance(part.get_feature(sketch_feature_id_a), SketchFeature):
+        raise HTTPException(status_code=422, detail="sketch_feature_id_a must name an existing Sketch feature")
+    if not isinstance(part.get_feature(sketch_feature_id_b), SketchFeature):
+        raise HTTPException(status_code=422, detail="sketch_feature_id_b must name an existing Sketch feature")
+
+
+def _validate_fill_surface_payload(boundary_refs: list[SketchOrEdgeRef]) -> None:
+    """A Fill Surface needs at least 2 boundary curves (fewer can't bound a
+    surface at all) and at most 4 (`OCCT BRepOffsetAPI_MakeFilling`'s own
+    practical/v1 scope limit for this project - see `FillSurfaceFeature`'s
+    own docstring). Each entry's own shape (`sketch_entity_ref`/`edge_ref`/
+    `curve_feature_id`) is checked by `_validate_sketch_or_edge_refs`,
+    called separately at each call site, same split every other `list[
+    SketchOrEdgeRef]` field (`path_refs`, `guide_curve_refs`) already uses."""
+    if not 2 <= len(boundary_refs) <= 4:
+        raise HTTPException(status_code=422, detail="boundary_refs must have between 2 and 4 entries")
 
 
 def _validate_sketch_feature_payload(
@@ -5176,6 +5334,8 @@ def create_create_plane_feature(
         edge_ref,
         vertex_ref,
         point_refs,
+        payload.curve_feature_id,
+        payload.curve_parameter,
     )
     feature = CreatePlaneFeature(
         id=str(uuid.uuid4()),
@@ -5187,6 +5347,8 @@ def create_create_plane_feature(
         edge_ref=edge_ref,
         vertex_ref=vertex_ref,
         point_refs=point_refs,
+        curve_feature_id=payload.curve_feature_id,
+        curve_parameter=payload.curve_parameter,
     )
     resolve_create_plane(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
@@ -5247,6 +5409,12 @@ def update_create_plane_feature(
         if payload.point_refs is not None
         else feature.point_refs
     )
+    new_curve_feature_id = (
+        payload.curve_feature_id if payload.curve_feature_id is not None else feature.curve_feature_id
+    )
+    new_curve_parameter = (
+        payload.curve_parameter if payload.curve_parameter is not None else feature.curve_parameter
+    )
 
     _validate_create_plane_payload(
         part,
@@ -5258,6 +5426,8 @@ def update_create_plane_feature(
         new_edge_ref,
         new_vertex_ref,
         new_point_refs,
+        new_curve_feature_id,
+        new_curve_parameter,
     )
     candidate = CreatePlaneFeature(
         id=feature.id,
@@ -5269,6 +5439,8 @@ def update_create_plane_feature(
         edge_ref=new_edge_ref,
         vertex_ref=new_vertex_ref,
         point_refs=new_point_refs,
+        curve_feature_id=new_curve_feature_id,
+        curve_parameter=new_curve_parameter,
     )
     resolve_create_plane(part, candidate)  # raises on an unresolvable reference
 
@@ -5279,6 +5451,164 @@ def update_create_plane_feature(
     feature.edge_ref = candidate.edge_ref
     feature.vertex_ref = candidate.vertex_ref
     feature.point_refs = candidate.point_refs
+    feature.curve_feature_id = candidate.curve_feature_id
+    feature.curve_parameter = candidate.curve_parameter
+    return _feature_response(part, feature)
+
+
+@router.post("/parts/{part_id}/curve-features", response_model=CurveFeatureResponse, status_code=201)
+def create_curve_feature(part_id: str, payload: CurveFeatureCreate) -> CurveFeatureResponse:
+    """Creates a `CurveFeature` (Helix/Intersection curve) - same "validate
+    payload shape, then resolvability, before ever persisting" discipline
+    `create_create_plane_feature` uses."""
+    part = get_part_or_404(part_id)
+    axis_ref = _plane_ref_to_domain(payload.axis_ref) if payload.axis_ref else None
+    profile_refs_a = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs_a]
+    profile_refs_b = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs_b]
+    _validate_curve_payload(
+        part,
+        payload.curve_type,
+        axis_ref,
+        payload.radius,
+        payload.pitch,
+        payload.turns,
+        payload.sketch_feature_id_a,
+        payload.sketch_feature_id_b,
+    )
+    feature = CurveFeature(
+        id=str(uuid.uuid4()),
+        curve_type=payload.curve_type,
+        axis_ref=axis_ref,
+        radius=payload.radius,
+        pitch=payload.pitch,
+        turns=payload.turns,
+        right_handed=payload.right_handed,
+        sketch_feature_id_a=payload.sketch_feature_id_a,
+        profile_refs_a=profile_refs_a,
+        sketch_feature_id_b=payload.sketch_feature_id_b,
+        profile_refs_b=profile_refs_b,
+    )
+    resolve_curve(part, feature)  # raises on an unresolvable reference or failed construction
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_curve_feature_or_404(part: Part, feature_id: str) -> CurveFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, CurveFeature):
+        raise HTTPException(status_code=404, detail="Curve feature not found")
+    return feature
+
+
+@router.patch("/parts/{part_id}/curve-features/{feature_id}", response_model=CurveFeatureResponse)
+def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpdate) -> CurveFeatureResponse:
+    """Partial update - `curve_type` itself is never revised (delete+
+    recreate to switch, same convention `CreatePlaneFeatureUpdate` uses for
+    `plane_type`). Same validate-before-mutate discipline as `update_
+    create_plane_feature`."""
+    part = get_part_or_404(part_id)
+    feature = _get_curve_feature_or_404(part, feature_id)
+
+    new_axis_ref = _plane_ref_to_domain(payload.axis_ref) if payload.axis_ref is not None else feature.axis_ref
+    new_radius = payload.radius if payload.radius is not None else feature.radius
+    new_pitch = payload.pitch if payload.pitch is not None else feature.pitch
+    new_turns = payload.turns if payload.turns is not None else feature.turns
+    new_right_handed = payload.right_handed if payload.right_handed is not None else feature.right_handed
+    new_sketch_feature_id_a = (
+        payload.sketch_feature_id_a if payload.sketch_feature_id_a is not None else feature.sketch_feature_id_a
+    )
+    new_profile_refs_a = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs_a]
+        if payload.profile_refs_a is not None
+        else feature.profile_refs_a
+    )
+    new_sketch_feature_id_b = (
+        payload.sketch_feature_id_b if payload.sketch_feature_id_b is not None else feature.sketch_feature_id_b
+    )
+    new_profile_refs_b = (
+        [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs_b]
+        if payload.profile_refs_b is not None
+        else feature.profile_refs_b
+    )
+
+    _validate_curve_payload(
+        part,
+        feature.curve_type,
+        new_axis_ref,
+        new_radius,
+        new_pitch,
+        new_turns,
+        new_sketch_feature_id_a,
+        new_sketch_feature_id_b,
+    )
+    candidate = CurveFeature(
+        id=feature.id,
+        curve_type=feature.curve_type,
+        axis_ref=new_axis_ref,
+        radius=new_radius,
+        pitch=new_pitch,
+        turns=new_turns,
+        right_handed=new_right_handed,
+        sketch_feature_id_a=new_sketch_feature_id_a,
+        profile_refs_a=new_profile_refs_a,
+        sketch_feature_id_b=new_sketch_feature_id_b,
+        profile_refs_b=new_profile_refs_b,
+    )
+    resolve_curve(part, candidate)  # raises on an unresolvable reference or failed construction
+
+    feature.axis_ref = candidate.axis_ref
+    feature.radius = candidate.radius
+    feature.pitch = candidate.pitch
+    feature.turns = candidate.turns
+    feature.right_handed = candidate.right_handed
+    feature.sketch_feature_id_a = candidate.sketch_feature_id_a
+    feature.profile_refs_a = candidate.profile_refs_a
+    feature.sketch_feature_id_b = candidate.sketch_feature_id_b
+    feature.profile_refs_b = candidate.profile_refs_b
+    return _feature_response(part, feature)
+
+
+@router.post(
+    "/parts/{part_id}/fill-surface-features", response_model=FillSurfaceFeatureResponse, status_code=201
+)
+def create_fill_surface_feature(part_id: str, payload: FillSurfaceFeatureCreate) -> FillSurfaceFeatureResponse:
+    part = get_part_or_404(part_id)
+    boundary_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.boundary_refs]
+    _validate_fill_surface_payload(boundary_refs)
+    _validate_sketch_or_edge_refs(boundary_refs)
+    feature = FillSurfaceFeature(id=str(uuid.uuid4()), boundary_refs=boundary_refs)
+    resolve_fill_surface(part, feature)  # raises on an unresolvable reference or failed construction
+    part.add_feature(feature)
+    return _feature_response(part, feature)
+
+
+def _get_fill_surface_feature_or_404(part: Part, feature_id: str) -> FillSurfaceFeature:
+    feature = part.get_feature(feature_id)
+    if not isinstance(feature, FillSurfaceFeature):
+        raise HTTPException(status_code=404, detail="Fill Surface feature not found")
+    return feature
+
+
+@router.patch(
+    "/parts/{part_id}/fill-surface-features/{feature_id}", response_model=FillSurfaceFeatureResponse
+)
+def update_fill_surface_feature(
+    part_id: str, feature_id: str, payload: FillSurfaceFeatureUpdate
+) -> FillSurfaceFeatureResponse:
+    part = get_part_or_404(part_id)
+    feature = _get_fill_surface_feature_or_404(part, feature_id)
+
+    new_boundary_refs = (
+        [_sketch_or_edge_ref_to_domain(ref) for ref in payload.boundary_refs]
+        if payload.boundary_refs is not None
+        else feature.boundary_refs
+    )
+    _validate_fill_surface_payload(new_boundary_refs)
+    _validate_sketch_or_edge_refs(new_boundary_refs)
+    candidate = FillSurfaceFeature(id=feature.id, boundary_refs=new_boundary_refs)
+    resolve_fill_surface(part, candidate)  # raises on an unresolvable reference or failed construction
+
+    feature.boundary_refs = candidate.boundary_refs
     return _feature_response(part, feature)
 
 
@@ -8678,6 +9008,8 @@ def get_part_mesh(
                 # Build Tree - see resolve_feature_produces's own doc comment.
                 is_surface=owning_feature is not None
                 and resolve_feature_produces(owning_feature, part) == Produces.SURFACE,
+                is_curve=owning_feature is not None
+                and resolve_feature_produces(owning_feature, part) == Produces.CURVE,
             )
         )
     return responses
@@ -8715,6 +9047,8 @@ def _assembly_body_mesh_responses(part: Part, mesh_quality: MeshQuality) -> list
                 mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
                 is_surface=owning_feature is not None
                 and resolve_feature_produces(owning_feature, part) == Produces.SURFACE,
+                is_curve=owning_feature is not None
+                and resolve_feature_produces(owning_feature, part) == Produces.CURVE,
             )
         )
     return responses

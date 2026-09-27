@@ -38,6 +38,8 @@ accumulator - calling back into a fresh top-level `compute_part_bodies`
 there would recurse forever.
 """
 
+import math
+
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
@@ -573,6 +575,39 @@ def resolve_three_points_feature(
     return resolve_three_points_from_bodies(part, bodies, point_refs, excluded_feature_ids)
 
 
+def resolve_normal_to_curve_feature_at_parameter_from_bodies(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    curve_feature_id: str,
+    parameter: float,
+    excluded_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """`NORMAL_TO_CURVE_FEATURE_AT_PARAMETER`'s own resolver - a plane normal
+    to a Curve feature's (Helix/Intersection curve) own tangent at `parameter`
+    (a 0-1 arc-length fraction along it), through the point there. Unlike
+    `resolve_normal_to_arc_at_point` (pure-Python 2D circle math on a Sketch
+    Arc), this always resolves a real OCCT `TopoDS_Edge`/`Geom_Curve` (via
+    `app.document.curve.resolve_curve_feature_by_id`), so it lives here with
+    this module's other OCCT-based resolvers - same "no in-plane reference of
+    its own, use `arbitrary_perpendicular_basis`" treatment `resolve_normal_
+    to_edge_through_vertex_from_bodies` already gives a straight Body edge.
+
+    Function-local import of `app.document.curve` (not a module-level one):
+    that module itself imports `resolve_plane_ref`/`resolve_sketch_basis`
+    from here (for a Helix's own `axis_ref`/an Intersection curve's own
+    Sketch basis) - a module-level import here would be circular."""
+    from app.document.curve import point_and_tangent_at_fraction, resolve_curve_feature_by_id
+
+    resolved_curve = resolve_curve_feature_by_id(part, curve_feature_id, bodies, excluded_feature_ids)
+    point, tangent = point_and_tangent_at_fraction(resolved_curve.wire, resolved_curve.length, parameter)
+    normal = (tangent.X(), tangent.Y(), tangent.Z())
+    magnitude = math.sqrt(sum(component**2 for component in normal))
+    normal = tuple(component / magnitude for component in normal)
+    origin = (point.X(), point.Y(), point.Z())
+    x_axis, y_axis = arbitrary_perpendicular_basis(normal)
+    return ResolvedPlane(origin=origin, normal=normal, x_axis=x_axis, y_axis=y_axis)
+
+
 def resolve_create_plane_from_bodies(
     part: Part,
     feature: CreatePlaneFeature,
@@ -605,6 +640,11 @@ def resolve_create_plane_from_bodies(
     if feature.plane_type == PlaneType.THREE_POINTS:
         assert len(feature.point_refs) == 3
         return resolve_three_points_from_bodies(part, bodies, feature.point_refs, excluded_feature_ids)
+    if feature.plane_type == PlaneType.NORMAL_TO_CURVE_FEATURE_AT_PARAMETER:
+        assert feature.curve_feature_id is not None and feature.curve_parameter is not None
+        return resolve_normal_to_curve_feature_at_parameter_from_bodies(
+            part, bodies, feature.curve_feature_id, feature.curve_parameter, excluded_feature_ids
+        )
     assert feature.line_ref is not None and feature.point_ref is not None
     sketch = get_sketch_or_404(feature.line_ref.sketch_id)
     basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids)

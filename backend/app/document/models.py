@@ -18,6 +18,7 @@ class Produces(str, Enum):
     PLANE = "plane"
     SURFACE = "surface"
     SKETCH = "sketch"
+    CURVE = "curve"
     NONE = "none"
 
 
@@ -339,6 +340,19 @@ class PlaneType(str, Enum):
     PARALLEL_TO_FACE_THROUGH_VERTEX = "parallel_to_face_through_vertex"
     THREE_POINTS = "three_points"
     NORMAL_TO_CURVE_AT_POINT = "normal_to_curve_at_point"
+    # Curve features: an eighth method, `NORMAL_TO_CURVE_AT_POINT`'s
+    # CurveFeature-shaped sibling - normal to a Helix/Intersection curve's
+    # tangent at a point along it, given as an arc-length fraction rather
+    # than a Sketch Point (a Helix/Intersection curve has no 2D point of its
+    # own to reuse `point_ref` for). Kept as a new member rather than
+    # overloading `NORMAL_TO_CURVE_AT_POINT` because that case is pure-Python
+    # Sketch-Arc math (`app.document.plane_geometry.resolve_normal_to_arc_
+    # at_point`) with no OCCT curve involved, while this one always resolves
+    # a real OCCT `TopoDS_Edge` (`app.document.curve.resolve_curve_from_
+    # bodies`) - different fields (`curve_feature_id`/`curve_parameter`
+    # below), different resolver, same "plane normal to a curve at a point
+    # on it" idea.
+    NORMAL_TO_CURVE_FEATURE_AT_PARAMETER = "normal_to_curve_feature_at_parameter"
 
 
 @dataclass(frozen=True)
@@ -403,10 +417,20 @@ class SketchOrEdgeRef:
     bodies]` machinery `FilletFeature.edge_refs`/`PointRef.vertex_ref`
     already use - no new resolution primitive, just a new place one is
     accepted from. `sketch_entity_ref` is unchanged from every existing
-    caller's own prior plain-`SketchEntityRef` behaviour."""
+    caller's own prior plain-`SketchEntityRef` behaviour.
+
+    `curve_feature_id` (Curve features): names a `CurveFeature` in this Part
+    instead of a Sketch entity or a Body edge - exactly one of the three
+    fields is ever set now, same "never more than one, payload shape
+    validated by the router" convention widened rather than replaced. Lets
+    a Helix or Intersection curve be used as a whole path/boundary segment
+    anywhere this type was already accepted (Sweep/Swept-Surface `path_
+    refs`, Fill Surface `boundary_refs`) with no change to those features'
+    own resolution beyond the new dispatch case."""
 
     sketch_entity_ref: SketchEntityRef | None = None
     edge_ref: SubShapeRef | None = None
+    curve_feature_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -459,6 +483,9 @@ class CreatePlaneFeature(Feature):
     - `THREE_POINTS` (C4): the plane through three points, each a Body
       vertex or a Sketch Point (`point_refs` has exactly three entries -
       see `PointRef`).
+    - `NORMAL_TO_CURVE_FEATURE_AT_PARAMETER`: a Helix/Intersection curve's
+      tangent at a point along it, given as a 0-1 arc-length fraction
+      (`curve_feature_id`/`curve_parameter` set, `face_refs` empty).
     Produces no mesh/solid of its own, but (C3) can anchor a Sketch via
     `SketchFeature.plane_feature_id` - this is a pure reference object other
     Features (a Sketch, so far) can target.
@@ -507,6 +534,11 @@ class CreatePlaneFeature(Feature):
     edge_ref: SubShapeRef | None = None
     vertex_ref: SubShapeRef | None = None
     point_refs: list[PointRef] = field(default_factory=list)
+    # NORMAL_TO_CURVE_FEATURE_AT_PARAMETER: a CurveFeature (Helix/
+    # Intersection curve) plus a 0-1 arc-length fraction along it - see
+    # `PlaneType.NORMAL_TO_CURVE_FEATURE_AT_PARAMETER`'s own doc comment.
+    curve_feature_id: str | None = None
+    curve_parameter: float | None = None
 
     @property
     def type(self) -> str:
@@ -515,6 +547,71 @@ class CreatePlaneFeature(Feature):
     @property
     def produces(self) -> Produces:
         return Produces.PLANE
+
+
+class CurveType(str, Enum):
+    """Which curve-construction method a `CurveFeature` uses - mirrors
+    `PlaneType`'s own "one Feature class, many construction methods" str-Enum
+    pattern:
+    - `HELIX`: a constant-pitch helix around `axis_ref` (a `PlaneRef` - its
+      origin is the helix's start point, its normal the axis direction).
+    - `INTERSECTION`: the 3D curve where two Sketches' profiles, each
+      extruded along its own sketch plane's normal, intersect - the standard
+      "curve from two sketches" tool other CAD tools offer, useful whenever
+      neither sketch's plane already contains the curve you want (e.g. a
+      part-line between two non-coplanar profiles)."""
+
+    HELIX = "helix"
+    INTERSECTION = "intersection"
+
+
+@dataclass
+class CurveFeature(Feature):
+    """A 3D curve, fully determined by one of two construction methods,
+    never more than one at once - mirrors `CreatePlaneFeature`'s "one
+    dataclass, `router`-validated field combination per type" convention
+    rather than splitting into `HelixFeature`/`IntersectionCurveFeature`:
+    - `HELIX`: `axis_ref`/`radius`/`pitch`/`turns`/`right_handed` set.
+    - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`/
+      `sketch_feature_id_b`/`profile_refs_b` set - `profile_refs_a`/`_b`
+      pick which entities of each Sketch form the profile to extrude and
+      intersect, the same convention `SurfaceFeature.profile_refs`/
+      `SweptSurfaceFeature.profile_refs` already use.
+
+    Which combination of fields is populated, matching `curve_type`, is
+    enforced by the router at construction time
+    (`app.document.router._validate_curve_payload`), not by this dataclass
+    itself - same split `CreatePlaneFeature`/`ExtrudeFeature` already use.
+
+    Produces no solid/surface of its own, but is a valid reference wherever
+    a `SketchOrEdgeRef.curve_feature_id` is accepted (a Sweep/Swept-Surface
+    path, a Fill Surface boundary) and as the curve source for
+    `CreatePlaneFeature.plane_type == NORMAL_TO_CURVE_FEATURE_AT_PARAMETER`.
+    The actual OCCT resolution lives in `app.document.curve` (this module
+    stays OCCT-free, mirroring `ResolvedPlane`'s own "coordinates only"
+    convention - the resolved curve geometry itself, `ResolvedCurve`, lives
+    alongside its resolver in `app.document.curve` rather than here, since
+    it holds a real `TopoDS_Wire`, not plain tuples)."""
+
+    id: str
+    curve_type: CurveType
+    axis_ref: PlaneRef | None = None
+    radius: float | None = None
+    pitch: float | None = None
+    turns: float | None = None
+    right_handed: bool = True
+    sketch_feature_id_a: str | None = None
+    profile_refs_a: list[SketchEntityRef] = field(default_factory=list)
+    sketch_feature_id_b: str | None = None
+    profile_refs_b: list[SketchEntityRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "curve"
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.CURVE
 
 
 @dataclass
@@ -1230,6 +1327,45 @@ class SweptSurfaceFeature(Feature):
     @property
     def type(self) -> str:
         return "swept_surface"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return False
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.SURFACE
+
+
+@dataclass
+class FillSurfaceFeature(Feature):
+    """A single surface filling the closed loop formed by `boundary_refs`
+    (2-4 entries, each independently a Sketch entity, a Body edge, or a
+    Curve feature - see `SketchOrEdgeRef`) via OCCT `BRepOffsetAPI_
+    MakeFilling`. This is the "curve as a surface boundary" tool: unlike
+    `LoftSurfaceFeature` (which has no guide-curve concept and shapes a
+    surface between whole cross-section profiles), Fill Surface's inputs are
+    the boundary curves themselves, in any mix of sketch geometry, existing
+    Body edges, and Helix/Intersection curves - e.g. filling a surface
+    bounded by two intersection curves and two sketch lines.
+
+    Boundary entries must chain end-to-end into a single closed loop (same
+    endpoint-coincidence chaining `app.document.sweep.resolve_path_wire`
+    already does for Sweep/Swept-Surface paths - reused here, not
+    reimplemented) - a disconnected or open set of boundaries is rejected
+    at create/update time. No Boss/Cut, no `target_body_ids` - always a
+    brand-new, standalone Surface, same as `SurfaceFeature`.
+
+    Resolves eagerly at create/update time (see `app.document.fill_surface.
+    resolve_fill_surface`), same reasoning `PlanarSurfaceFeature`'s own
+    docstring gives for every other zero-history surface feature."""
+
+    id: str
+    boundary_refs: list[SketchOrEdgeRef] = field(default_factory=list)
+
+    @property
+    def type(self) -> str:
+        return "fill_surface"
 
     @property
     def produces_solid_geometry(self) -> bool:
@@ -3067,14 +3203,15 @@ class Part:
     @property
     def produces_displayable_geometry(self) -> bool:
         """True once any Feature in this Part's history yields a real,
-        tessellatable shape via `compute_part_bodies` - a solid Body or a
-        non-solid Surface alike (`Produces.BODY`/`Produces.SURFACE`; a
-        `PLANE`/`SKETCH`/`NONE` Feature never does). Distinct from
-        `produces_solid_geometry` above: this is what `get_part_mesh`
-        should gate its placeholder box on, so a Surface-only Part (no
-        Extrude/Revolve/etc.) still gets its real geometry rendered instead
-        of staying stuck on the placeholder."""
-        return any(f.produces in (Produces.BODY, Produces.SURFACE) for f in self.features)
+        tessellatable shape via `compute_part_bodies` - a solid Body, a
+        non-solid Surface, or a standalone Curve alike (`Produces.BODY`/
+        `Produces.SURFACE`/`Produces.CURVE`; a `PLANE`/`SKETCH`/`NONE`
+        Feature never does). Distinct from `produces_solid_geometry` above:
+        this is what `get_part_mesh` should gate its placeholder box on, so
+        a Surface-only or Curve-only Part (no Extrude/Revolve/etc.) still
+        gets its real geometry rendered instead of staying stuck on the
+        placeholder."""
+        return any(f.produces in (Produces.BODY, Produces.SURFACE, Produces.CURVE) for f in self.features)
 
     def is_locked(self, feature_id: str) -> bool:
         """True if `feature_id` is not the last Feature in the list (so it

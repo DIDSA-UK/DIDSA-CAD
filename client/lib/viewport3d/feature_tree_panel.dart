@@ -88,6 +88,12 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'planetary_gear' => 'Planetary Gear',
     'bevel_gear' => 'Bevel Gear',
     'bevel_pair' => 'Bevel Pair',
+    // Curve features: one shared Feature `type` ("curve") for both Helix
+    // and Intersection curve, dispatching on `feature.curveType` for the
+    // display label - same "shared type, per-value label" convention
+    // `'boolean'` above already uses for Subtract/Common.
+    'curve' => feature.curveType == 'intersection' ? 'Intersection Curve' : 'Helix',
+    'fill_surface' => 'Fill Surface',
     _ => 'Sketch',
   };
   final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
@@ -103,7 +109,10 @@ String featureDisplayName(List<FeatureDto> features, int index) {
 /// for any Feature since B4 - not just the last one) - this stays a plain
 /// negative check rather than an allow-list so it doesn't need updating for
 /// every future Feature type that keeps following that same pattern.
-bool _hasEditPanel(String type) => type != 'import';
+// Curve/Fill Surface features: no edit panel yet (v1 client scope is
+// create-only - see `part_screen.dart`'s own Curve/Fill Surface starters),
+// same "not every Feature type has one" treatment `'import'` already gets.
+bool _hasEditPanel(String type) => type != 'import' && type != 'curve' && type != 'fill_surface';
 
 /// Maps a Feature's `type` string to its tree-row glyph. `'sketch'` and
 /// `'create_plane'` reuse the same asset their own dedicated section already
@@ -184,6 +193,15 @@ String _featureTypeAsset(String type) => switch (type) {
       'bevel_gear' ||
       'bevel_pair' =>
         'assets/icons/feature/feature_gear.svg',
+      // Curve features: no dedicated glyph yet - reuses Sweep's own icon
+      // (a path-like curve is the closest existing silhouette), same "one
+      // shared/borrowed glyph until a dedicated one exists" precedent
+      // Revolve/Swept/Loft Surface already establish above.
+      'curve' => 'assets/icons/feature/feature_sweep.svg',
+      // Fill Surface: reuses the generic Surface glyph (`'surface'`'s own
+      // asset) - a filling surface has no more specific existing silhouette
+      // to borrow, and it genuinely is a Surface-producing tool.
+      'fill_surface' => 'assets/icons/feature/feature_surface.svg',
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
 

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'curve_panel.dart' show SketchFeatureChoice;
+
 /// Which of the three v1 plane-construction flows [CreatePlanePanel] is
 /// currently showing - decided by [PartScreen] from the selection that
 /// enabled the Create Plane button (see `selection_actions.dart`'s
@@ -23,6 +25,16 @@ enum CreatePlaneMode {
   parallelToFaceThroughVertex,
   threePoints,
   normalToArcAtPoint,
+
+  /// Curve features: an eighth flow, [normalToArcAtPoint]'s CurveFeature-
+  /// shaped sibling - normal to an existing Helix/Intersection curve's own
+  /// tangent at a point along it, given as a live 0-1 arc-length-fraction
+  /// slider (this panel's own field, like [offsetFace]'s numeric offset)
+  /// rather than a tapped Sketch Point - a Helix/Intersection curve has no
+  /// 2D point of its own to tap. Which curve feature is picked is a
+  /// dropdown built from this Part's existing Curve features, same "no 3D-
+  /// viewport picking yet" scope [CurvePanel]'s own Intersection mode has.
+  normalToCurveFeatureAtParameter,
 }
 
 /// The bottom-sheet-style panel [PartScreen] opens once Create Plane is
@@ -55,6 +67,19 @@ class CreatePlanePanel extends StatefulWidget {
   /// already uses.
   final void Function(double offset)? onOffsetChanged;
 
+  /// Only meaningful while [mode] is
+  /// [CreatePlaneMode.normalToCurveFeatureAtParameter] - this Part's
+  /// existing Curve features, for the curve-picker dropdown.
+  final List<SketchFeatureChoice> curveFeatureChoices;
+  final double initialCurveParameter;
+
+  /// Only meaningful (and only ever called) while [mode] is
+  /// [CreatePlaneMode.normalToCurveFeatureAtParameter] - fired on every
+  /// valid curve-feature-id-and-parameter combination, same live-preview
+  /// convention [onOffsetChanged] already uses.
+  final void Function({required String curveFeatureId, required double curveParameter})?
+      onCurveParameterChanged;
+
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -64,6 +89,9 @@ class CreatePlanePanel extends StatefulWidget {
     required this.mode,
     this.initialOffset = 0.0,
     this.onOffsetChanged,
+    this.curveFeatureChoices = const [],
+    this.initialCurveParameter = 0.5,
+    this.onCurveParameterChanged,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -81,11 +109,17 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
   /// [CreatePlaneMode.normalToLineAtPoint].
   double? _offset;
 
+  /// Only meaningful for [CreatePlaneMode.normalToCurveFeatureAtParameter] -
+  /// null until a curve is picked from [CreatePlanePanel.curveFeatureChoices].
+  String? _curveFeatureId;
+  double _curveParameter = 0.5;
+
   @override
   void initState() {
     super.initState();
     _offsetController = TextEditingController(text: _formatDistance(widget.initialOffset));
     _offset = widget.initialOffset;
+    _curveParameter = widget.initialCurveParameter;
   }
 
   @override
@@ -112,16 +146,28 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
       case CreatePlaneMode.threePoints:
         return 'Plane through the three selected points';
       case CreatePlaneMode.offsetFace:
-        throw StateError('offsetFace has its own numeric-field branch, not this description');
+      case CreatePlaneMode.normalToCurveFeatureAtParameter:
+        throw StateError('offsetFace/normalToCurveFeatureAtParameter have their own branch, not this description');
     }
   }
 
-  bool get _canConfirm => widget.mode != CreatePlaneMode.offsetFace || _offset != null;
+  bool get _canConfirm => switch (widget.mode) {
+        CreatePlaneMode.offsetFace => _offset != null,
+        CreatePlaneMode.normalToCurveFeatureAtParameter => _curveFeatureId != null,
+        _ => true,
+      };
 
   void _emitOffsetChange() {
     final value = double.tryParse(_offsetController.text);
     setState(() => _offset = value);
     if (value != null) widget.onOffsetChanged?.call(value);
+  }
+
+  void _emitCurveParameterChange() {
+    final curveFeatureId = _curveFeatureId;
+    if (curveFeatureId != null) {
+      widget.onCurveParameterChanged?.call(curveFeatureId: curveFeatureId, curveParameter: _curveParameter);
+    }
   }
 
   @override
@@ -158,6 +204,32 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
                       fontSize: 12,
                     ),
                   ),
+                ] else if (widget.mode == CreatePlaneMode.normalToCurveFeatureAtParameter) ...[
+                  DropdownButtonFormField<String>(
+                    initialValue: _curveFeatureId,
+                    decoration: const InputDecoration(labelText: 'Curve'),
+                    items: widget.curveFeatureChoices
+                        .map((c) => DropdownMenuItem(value: c.featureId, child: Text(c.label)))
+                        .toList(),
+                    onChanged: (value) {
+                      setState(() => _curveFeatureId = value);
+                      _emitCurveParameterChange();
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  Text('Position along curve: ${(_curveParameter * 100).round()}%'),
+                  Slider(
+                    value: _curveParameter,
+                    onChanged: (value) {
+                      setState(() => _curveParameter = value);
+                      _emitCurveParameterChange();
+                    },
+                  ),
+                  if (_curveFeatureId == null)
+                    Text(
+                      'Select a curve',
+                      style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
+                    ),
                 ] else
                   Text(
                     _descriptionFor(widget.mode),

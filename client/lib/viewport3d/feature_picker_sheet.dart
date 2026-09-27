@@ -34,6 +34,18 @@ enum FeaturePickerAction {
   chamfer,
   mirror,
   pattern,
+  // Curve features: a Helix or an Intersection curve, each its own guided
+  // flow (`part_screen.dart`'s own `_startHelix`/`_startIntersectionCurve`)
+  // opening [CurvePanel] pre-set to the matching [CurveMode] - grouped with
+  // "Sketch-based" since a Curve feature is a construction geometry source
+  // in the same family, not with "Reference" (Plane) or "Surfacing".
+  helix,
+  intersectionCurve,
+  // A Fill Surface (grouped with "Surfacing" - it produces a Surface, same
+  // as every other entry there) - opens [FillSurfacePanel] from whatever
+  // 2-4 boundary-capable entities (Sketch lines/arcs/circles/ellipses/
+  // splines, or existing Curve features) are already selected.
+  fillSurface,
   // Boolean family, first entry.
   merge,
   // Boolean family, Subtract/Common.
@@ -146,6 +158,16 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                                 label: 'Loft',
                                 action: FeaturePickerAction.loft,
                               ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_sweep.svg',
+                                label: 'Helix',
+                                action: FeaturePickerAction.helix,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_sweep.svg',
+                                label: 'Intersection Curve',
+                                action: FeaturePickerAction.intersectionCurve,
+                              ),
                             ],
                           ),
                           _FeatureSection(
@@ -217,6 +239,11 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                                 icon: 'assets/icons/feature/feature_offset_surface.svg',
                                 label: 'Offset Surface',
                                 action: FeaturePickerAction.offsetSurface,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_surface.svg',
+                                label: 'Fill Surface',
+                                action: FeaturePickerAction.fillSurface,
                               ),
                             ],
                           ),

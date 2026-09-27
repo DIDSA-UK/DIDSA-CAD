@@ -5,6 +5,7 @@ from pydantic import BaseModel, field_validator, model_validator
 from app.document.models import (
     BevelGearType,
     BooleanOperation,
+    CurveType,
     ExtrudeType,
     FixedAxis,
     GearChainMemberType,
@@ -545,12 +546,18 @@ class SketchOrEdgeRefSchema(BaseModel):
     existing test payload) keeps parsing identically, unchanged, with
     `edge_ref` left unset - this new field is purely additive. Exactly one
     of (`sketch_id`+`entity_type`+`entity_id` all set) or (`edge_ref` set)
-    is enforced by the router (`_validate_sketch_or_edge_refs`), not here."""
+    is enforced by the router (`_validate_sketch_or_edge_refs`), not here.
+
+    `curve_feature_id` (Curve features): names a `CurveFeature` in this Part
+    instead of a Sketch entity or a Body edge - exactly one of the three is
+    ever set now, same additive widening reasoning as `edge_ref`'s own
+    addition above."""
 
     sketch_id: str | None = None
     entity_type: SketchEntityType | None = None
     entity_id: str | None = None
     edge_ref: SubShapeRefSchema | None = None
+    curve_feature_id: str | None = None
 
 
 class PlaneRefSchema(BaseModel):
@@ -599,6 +606,10 @@ class CreatePlaneFeatureCreate(BaseModel):
     edge_ref: SubShapeRefSchema | None = None
     vertex_ref: SubShapeRefSchema | None = None
     point_refs: list[PointRefSchema] = []
+    # NORMAL_TO_CURVE_FEATURE_AT_PARAMETER: a CurveFeature id plus a 0-1
+    # arc-length fraction along it.
+    curve_feature_id: str | None = None
+    curve_parameter: float | None = None
 
 
 class CreatePlaneFeatureUpdate(BaseModel):
@@ -619,6 +630,8 @@ class CreatePlaneFeatureUpdate(BaseModel):
     edge_ref: SubShapeRefSchema | None = None
     vertex_ref: SubShapeRefSchema | None = None
     point_refs: list[PointRefSchema] | None = None
+    curve_feature_id: str | None = None
+    curve_parameter: float | None = None
 
 
 class CreatePlaneFeatureResponse(BaseModel):
@@ -634,6 +647,8 @@ class CreatePlaneFeatureResponse(BaseModel):
     edge_ref: SubShapeRefSchema | None = None
     vertex_ref: SubShapeRefSchema | None = None
     point_refs: list[PointRefSchema] = []
+    curve_feature_id: str | None = None
+    curve_parameter: float | None = None
     # Resolved world-space geometry (see app.document.models.ResolvedPlane)
     # for rendering - null when it can't currently be resolved (e.g. a
     # referenced Body/Sketch was deleted out from under it), rather than
@@ -650,6 +665,65 @@ class CreatePlaneFeatureResponse(BaseModel):
     # arbitrary in-plane orientation. Null exactly when origin/normal are.
     x_axis: tuple[float, float, float] | None = None
     y_axis: tuple[float, float, float] | None = None
+    locked: bool
+    produces: Produces
+
+
+class CurveFeatureCreate(BaseModel):
+    """Creates a `CurveFeature` - exactly one combination of fields should
+    be supplied, matching `curve_type`:
+    - `HELIX`: `axis_ref`, `radius`, `pitch`, `turns`, `right_handed`.
+    - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`,
+      `sketch_feature_id_b`/`profile_refs_b`.
+    See `app.document.router._validate_curve_payload` for the exact
+    combination check (not encoded here, mirroring `CreatePlaneFeatureCreate`'s
+    own per-`plane_type` split)."""
+
+    curve_type: CurveType
+    axis_ref: PlaneRefSchema | None = None
+    radius: float | None = None
+    pitch: float | None = None
+    turns: float | None = None
+    right_handed: bool = True
+    sketch_feature_id_a: str | None = None
+    profile_refs_a: list[SketchEntityRefSchema] = []
+    sketch_feature_id_b: str | None = None
+    profile_refs_b: list[SketchEntityRefSchema] = []
+
+
+class CurveFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as
+    `CreatePlaneFeatureUpdate` - `curve_type` itself is never changed by an
+    update."""
+
+    axis_ref: PlaneRefSchema | None = None
+    radius: float | None = None
+    pitch: float | None = None
+    turns: float | None = None
+    right_handed: bool | None = None
+    sketch_feature_id_a: str | None = None
+    profile_refs_a: list[SketchEntityRefSchema] | None = None
+    sketch_feature_id_b: str | None = None
+    profile_refs_b: list[SketchEntityRefSchema] | None = None
+
+
+class CurveFeatureResponse(BaseModel):
+    type: Literal["curve"] = "curve"
+    id: str
+    curve_type: CurveType
+    axis_ref: PlaneRefSchema | None = None
+    radius: float | None = None
+    pitch: float | None = None
+    turns: float | None = None
+    right_handed: bool = True
+    sketch_feature_id_a: str | None = None
+    profile_refs_a: list[SketchEntityRefSchema] = []
+    sketch_feature_id_b: str | None = None
+    profile_refs_b: list[SketchEntityRefSchema] = []
+    # Resolved for rendering - null when it can't currently be resolved,
+    # same soft-fail convention `CreatePlaneFeatureResponse.origin` uses.
+    length: float | None = None
+    closed: bool | None = None
     locked: bool
     produces: Produces
 
@@ -1389,6 +1463,30 @@ class SweptSurfaceFeatureResponse(BaseModel):
     profile_refs: list[SketchEntityRefSchema] = []
     locked: bool
     # B1: always SURFACE for a SweptSurfaceFeature.
+    produces: Produces
+
+
+class FillSurfaceFeatureCreate(BaseModel):
+    """Creates a `FillSurfaceFeature` - a single surface filling the
+    boundary curves named by `boundary_refs` (2-4 entries, each a Sketch
+    entity, a Body edge, or a Curve feature - see `SketchOrEdgeRefSchema`).
+    See `app.document.router._validate_fill_surface_payload` for the exact
+    count check (not encoded here, same "payload shape validated by the API
+    layer" split every other Feature uses)."""
+
+    boundary_refs: list[SketchOrEdgeRefSchema] = []
+
+
+class FillSurfaceFeatureUpdate(BaseModel):
+    boundary_refs: list[SketchOrEdgeRefSchema] | None = None
+
+
+class FillSurfaceFeatureResponse(BaseModel):
+    type: Literal["fill_surface"] = "fill_surface"
+    id: str
+    boundary_refs: list[SketchOrEdgeRefSchema] = []
+    locked: bool
+    # B1: always SURFACE for a FillSurfaceFeature.
     produces: Produces
 
 
@@ -2683,6 +2781,8 @@ FeatureResponse = Union[
     KnitSurfaceFeatureResponse,
     SolidFromSurfacesFeatureResponse,
     OffsetSurfaceFeatureResponse,
+    CurveFeatureResponse,
+    FillSurfaceFeatureResponse,
 ]
 """Pre-existing bug fix (found while verifying LOD Phase 2 chunk 3's own new
 `PlanetaryGearFeature` job-mode tests): `GearChainFeatureResponse`/`Planetary
@@ -2778,6 +2878,13 @@ class BodyMeshResponse(BaseModel):
     mesh: MeshVertexData
     hidden: bool = False
     is_surface: bool = False
+    # `is_curve` distinguishes a `CurveFeature`'s (Helix/Intersection curve)
+    # own edge-only shape from a real solid/surface within this same array,
+    # mirroring `is_surface`'s identical role - the client should always
+    # render it as a wireframe curve, never as a filled body/surface, and
+    # keep it out of both the Bodies and Surfaces Build Tree sections.
+    # `False` for every solid Body, Surface, and `source="placeholder"`.
+    is_curve: bool = False
 
 
 class SectionPlaneRequest(BaseModel):

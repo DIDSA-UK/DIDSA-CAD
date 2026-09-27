@@ -38,11 +38,14 @@ from app.document.models import (
     BooleanFeature,
     ChamferFeature,
     CreatePlaneFeature,
+    CurveFeature,
+    CurveType,
     DeleteBodyFeature,
     DeleteFaceFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
+    FillSurfaceFeature,
     FilletFeature,
     GearChainFeature,
     GearFeature,
@@ -387,11 +390,15 @@ def _sketch_or_edge_ref_dependency(part: Part, ref: SketchOrEdgeRef) -> str | No
     entity_ref`'s own owning SketchFeature (`sketch_feature_id_for_sketch`,
     unchanged from every pre-existing call site's own behaviour), or `ref.
     edge_ref`'s own owning Body Feature (`base_feature_id`, the same helper
-    every `target_body_ids` entry already resolves through) - whichever of
-    the two is set. Returns `None` (never raises) if it doesn't resolve,
-    same tolerance every other reference kind in this module already has."""
+    every `target_body_ids` entry already resolves through), or (Curve
+    features) `ref.curve_feature_id` directly - a Curve feature is itself a
+    node in this graph, so no further lookup is needed. Whichever of the
+    three is set. Returns `None` (never raises) if it doesn't resolve, same
+    tolerance every other reference kind in this module already has."""
     if ref.edge_ref is not None:
         return base_feature_id(ref.edge_ref.body_id)
+    if ref.curve_feature_id is not None:
+        return ref.curve_feature_id
     assert ref.sketch_entity_ref is not None
     return sketch_feature_id_for_sketch(part, ref.sketch_entity_ref.sketch_id)
 
@@ -544,6 +551,10 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             )
         elif isinstance(feature, CreatePlaneFeature):
             depends_on = _create_plane_dependencies(part, feature)
+        elif isinstance(feature, CurveFeature):
+            depends_on = _curve_dependencies(part, feature)
+        elif isinstance(feature, FillSurfaceFeature):
+            depends_on = _fill_surface_dependencies(part, feature)
         elif isinstance(feature, FilletFeature):
             depends_on = tuple({base_feature_id(ref.body_id) for ref in feature.edge_refs})
         elif isinstance(feature, ChamferFeature):
@@ -1039,10 +1050,42 @@ def _create_plane_dependencies(part: Part, feature: CreatePlaneFeature) -> tuple
                 if sketch_feature_id is not None:
                     deps.add(sketch_feature_id)
         return tuple(deps)
+    if feature.plane_type == PlaneType.NORMAL_TO_CURVE_FEATURE_AT_PARAMETER:
+        return (feature.curve_feature_id,) if feature.curve_feature_id is not None else ()
     if feature.line_ref is not None:
         sketch_feature_id = sketch_feature_id_for_sketch(part, feature.line_ref.sketch_id)
         return (sketch_feature_id,) if sketch_feature_id is not None else ()
     return ()
+
+
+def _curve_dependencies(part: Part, feature: CurveFeature) -> tuple[str, ...]:
+    """`build_feature_graph`'s `CurveFeature` dependency-edge logic:
+    - `HELIX`: whatever `axis_ref` depends on (`_plane_ref_dependency` -
+      already shared with `CreatePlaneFeature`'s own `face_refs`).
+    - `INTERSECTION`: the two SketchFeatures named directly by `sketch_
+      feature_id_a`/`_b` (already Feature ids, no further lookup needed -
+      same directness `SweepFeature.sketch_feature_id` has)."""
+    if feature.curve_type == CurveType.HELIX:
+        if feature.axis_ref is None:
+            return ()
+        dep = _plane_ref_dependency(feature.axis_ref)
+        return (dep,) if dep is not None else ()
+    deps = {feature.sketch_feature_id_a, feature.sketch_feature_id_b}
+    return tuple(dep for dep in deps if dep is not None)
+
+
+def _fill_surface_dependencies(part: Part, feature: FillSurfaceFeature) -> tuple[str, ...]:
+    """`build_feature_graph`'s `FillSurfaceFeature` dependency-edge logic -
+    whatever each `boundary_refs` entry depends on (`_sketch_or_edge_ref_
+    dependency`, already widened to cover the Curve-feature case), same
+    "one shared per-entry helper, deduplicated via a set" shape `_sweep_
+    dependencies`/`_swept_surface_dependencies` already use for `path_refs`."""
+    deps: set[str] = set()
+    for ref in feature.boundary_refs:
+        dep = _sketch_or_edge_ref_dependency(part, ref)
+        if dep is not None:
+            deps.add(dep)
+    return tuple(deps)
 
 
 def transitive_dependents(nodes: list[GraphNode], feature_id: str) -> set[str]:
