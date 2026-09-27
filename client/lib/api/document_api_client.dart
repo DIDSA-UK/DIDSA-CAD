@@ -306,6 +306,77 @@ class SketchEntityRefDto {
       };
 }
 
+/// Gap (a): the wire counterpart to the backend's `SketchOrEdgeRefSchema` -
+/// one segment of a Sweep/SweptSurface path, exactly one of a Sketch entity
+/// ([sketchId]/[entityType]/[entityId], the same flat shape
+/// [SketchEntityRefDto] already uses), a Body edge ([edgeRef]), or a Curve
+/// feature ([curveFeatureId]) - mirrors the backend's own additive
+/// widening (see that schema's own docstring) rather than a Dart union
+/// type, so `toJson`/`fromJson` are a direct one-for-one match of its wire
+/// shape. Superseded `createSweepFeature`/`updateSweepFeature`'s old
+/// `pathCurveFeatureId` bypass parameter (a whole-curve-only convenience
+/// that predates 3D-viewport curve-feature picking) - a Curve feature is
+/// now just one more [PathRefDto] in the general [FeatureDto.pathRefs]
+/// list, chainable with Sketch-entity/edge segments like any other.
+class PathRefDto {
+  final String? sketchId;
+  final String? entityType;
+  final String? entityId;
+  final SubShapeRefDto? edgeRef;
+  final String? curveFeatureId;
+
+  const PathRefDto._({this.sketchId, this.entityType, this.entityId, this.edgeRef, this.curveFeatureId});
+
+  factory PathRefDto.sketchEntity({
+    required String sketchId,
+    required String entityType,
+    required String entityId,
+  }) =>
+      PathRefDto._(sketchId: sketchId, entityType: entityType, entityId: entityId);
+
+  factory PathRefDto.edge(SubShapeRefDto edgeRef) => PathRefDto._(edgeRef: edgeRef);
+
+  factory PathRefDto.curveFeature(String curveFeatureId) => PathRefDto._(curveFeatureId: curveFeatureId);
+
+  factory PathRefDto.fromJson(Map<String, dynamic> json) => PathRefDto._(
+        sketchId: json['sketch_id'] as String?,
+        entityType: json['entity_type'] as String?,
+        entityId: json['entity_id'] as String?,
+        edgeRef: json['edge_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['edge_ref'] as Map<String, dynamic>),
+        curveFeatureId: json['curve_feature_id'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (sketchId != null) 'sketch_id': sketchId,
+        if (entityType != null) 'entity_type': entityType,
+        if (entityId != null) 'entity_id': entityId,
+        if (edgeRef != null) 'edge_ref': edgeRef!.toJson(),
+        if (curveFeatureId != null) 'curve_feature_id': curveFeatureId,
+      };
+
+  // [SubShapeRefDto] has no `==` of its own (plain data class, compared by
+  // field elsewhere in this codebase) - [edgeRef] is compared field-by-field
+  // here instead of relying on one, so two independently-constructed
+  // [PathRefDto]s naming the same edge (e.g. the same edge tapped twice)
+  // still compare equal.
+  @override
+  bool operator ==(Object other) =>
+      other is PathRefDto &&
+      other.sketchId == sketchId &&
+      other.entityType == entityType &&
+      other.entityId == entityId &&
+      other.edgeRef?.bodyId == edgeRef?.bodyId &&
+      other.edgeRef?.shapeType == edgeRef?.shapeType &&
+      other.edgeRef?.index == edgeRef?.index &&
+      other.curveFeatureId == curveFeatureId;
+
+  @override
+  int get hashCode =>
+      Object.hash(sketchId, entityType, entityId, edgeRef?.bodyId, edgeRef?.shapeType, edgeRef?.index, curveFeatureId);
+}
+
 /// The wire counterpart to the backend's `LoftSectionSchema` - one cross-
 /// section of a `"loft"` Feature: an existing SketchFeature's Profile
 /// ([sketchFeatureId]/[profileRefs], same shape [FeatureDto.profileRefs]
@@ -696,14 +767,15 @@ class FeatureDto {
   /// `SweepFeature.profile_refs` default.
   final List<SketchEntityRefDto> profileRefs;
 
-  /// Only present on a `"sweep"` Feature - the *ordered* list of Sketch Line
-  /// references the Profile is swept along, each possibly naming a
-  /// different Sketch (confirmed decision - see the backend's
-  /// `SweepFeature` docstring). Order matters (it is the path's own
-  /// traversal order); unlike [axisRef] this is a list, since a Sweep's
-  /// path can bend across multiple segments rather than being a single
-  /// straight reference.
-  final List<SketchEntityRefDto> pathRefs;
+  /// Only present on a `"sweep"`/`"swept_surface"` Feature - the *ordered*
+  /// list of path segments the Profile is swept along, each independently
+  /// naming a Sketch entity, a Body edge, or a Curve feature (confirmed
+  /// decision - see the backend's `SweepFeature` docstring, generalized by
+  /// gap (a) from the original Sketch-Line-only design to mixed segments).
+  /// Order matters (it is the path's own traversal order); unlike [axisRef]
+  /// this is a list, since a Sweep's path can bend across multiple segments
+  /// rather than being a single straight reference.
+  final List<PathRefDto> pathRefs;
 
   /// Only present on a `"loft"` Feature - the 2+ ordered cross-sections it
   /// lofts between (each its own [LoftSectionDto], the backend's
@@ -1186,7 +1258,7 @@ class FeatureDto {
                 .toList() ??
             const [],
         pathRefs: (json['path_refs'] as List?)
-                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                ?.map((r) => PathRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
             const [],
         sections: (json['sections'] as List?)
@@ -1400,12 +1472,23 @@ class BodyMeshDto {
   /// own docstring.
   final bool isSurface;
 
+  /// True for a `CurveFeature`'s own wire-only body (a Helix/Intersection
+  /// curve, registered under `body_id == <that CurveFeature's own Feature
+  /// id>`) - `mesh.edges` is populated, `mesh.vertices`/`triangleIndices`
+  /// are empty (no faces). Mirrors [isSurface]'s own role exactly: both
+  /// come back tagged `source: "computed"`, so this is what lets
+  /// [PartScreen] keep a Curve out of the Build Tree's Bodies/Surfaces
+  /// sections, listing it under its own Curves section instead. See
+  /// `app.document.schemas.BodyMeshResponse`'s own docstring.
+  final bool isCurve;
+
   BodyMeshDto({
     required this.bodyId,
     required this.source,
     required this.mesh,
     this.hidden = false,
     this.isSurface = false,
+    this.isCurve = false,
   });
 
   factory BodyMeshDto.fromJson(Map<String, dynamic> json) => BodyMeshDto(
@@ -1414,6 +1497,7 @@ class BodyMeshDto {
         mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
         hidden: json['hidden'] as bool? ?? false,
         isSurface: json['is_surface'] as bool? ?? false,
+        isCurve: json['is_curve'] as bool? ?? false,
       );
 }
 
@@ -3786,28 +3870,18 @@ class DocumentApiClient {
       );
 
   /// Creates a SweepFeature from an existing SketchFeature's closed Profile,
-  /// swept along [pathRefs] (an *ordered* list of Sketch Line references,
-  /// each possibly naming a different Sketch - confirmed decision, see the
-  /// backend's `SweepFeature` docstring) - mirrors [createRevolveFeature]
+  /// swept along [pathRefs] (an *ordered* list of path segments, each
+  /// independently naming a Sketch entity, a Body edge, or a Curve feature,
+  /// and each possibly naming a different Sketch - confirmed decision, see
+  /// the backend's `SweepFeature` docstring) - mirrors [createRevolveFeature]
   /// exactly, substituting [pathRefs] for [axisRef]/`angle`.
-  ///
-  /// Curve features: [pathCurveFeatureId], when set, sweeps along an
-  /// existing Curve feature (Helix/Intersection curve) instead - the
-  /// simpler "pick a curve from a list" entry point (`_helixSweepPanel`-
-  /// style flows in `part_screen.dart`), which needs no 3D-viewport path-
-  /// picking support for a Curve feature's own wire (not yet a selectable
-  /// entity kind - see `SelectionEntityKind`). Mutually exclusive with
-  /// [pathRefs] - when set, [pathRefs] is ignored and the backend's
-  /// `path_refs` becomes the single `{"curve_feature_id": ...}` entry the
-  /// backend's `SketchOrEdgeRef` already accepts.
   Future<FeatureDto> createSweepFeature(
     String partId, {
     required String sketchFeatureId,
-    required List<SketchEntityRefDto> pathRefs,
+    required List<PathRefDto> pathRefs,
     required String mode,
     List<String> targetBodyIds = const [],
     List<SketchEntityRefDto> profileRefs = const [],
-    String? pathCurveFeatureId,
   }) =>
       _send(
         () => _httpClient.post(
@@ -3815,11 +3889,7 @@ class DocumentApiClient {
               headers: _headers,
               body: jsonEncode({
                 'sketch_feature_id': sketchFeatureId,
-                'path_refs': pathCurveFeatureId != null
-                    ? [
-                        {'curve_feature_id': pathCurveFeatureId}
-                      ]
-                    : pathRefs.map((r) => r.toJson()).toList(),
+                'path_refs': pathRefs.map((r) => r.toJson()).toList(),
                 'mode': mode,
                 'target_body_ids': targetBodyIds,
                 'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
@@ -3832,30 +3902,20 @@ class DocumentApiClient {
   /// [pathRefs]/[mode]/[targetBodyIds]/[profileRefs] may be supplied,
   /// mirroring [updateRevolveFeature]'s omitted-vs-current-value
   /// convention. Used for the live-preview debounced re-solve.
-  ///
-  /// [pathCurveFeatureId] mirrors [createSweepFeature]'s own - set it
-  /// (instead of [pathRefs]) to re-point this Sweep at a different Curve
-  /// feature.
   Future<FeatureDto> updateSweepFeature(
     String partId,
     String featureId, {
-    List<SketchEntityRefDto>? pathRefs,
+    List<PathRefDto>? pathRefs,
     String? mode,
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
-    String? pathCurveFeatureId,
   }) =>
       _send(
         () => _httpClient.patch(
               _uri('/document/parts/$partId/sweep-features/$featureId'),
               headers: _headers,
               body: jsonEncode({
-                if (pathCurveFeatureId != null)
-                  'path_refs': [
-                    {'curve_feature_id': pathCurveFeatureId}
-                  ]
-                else if (pathRefs != null)
-                  'path_refs': pathRefs.map((r) => r.toJson()).toList(),
+                if (pathRefs != null) 'path_refs': pathRefs.map((r) => r.toJson()).toList(),
                 if (mode != null) 'mode': mode,
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)
@@ -4079,7 +4139,7 @@ class DocumentApiClient {
   Future<FeatureDto> createSweptSurfaceFeature(
     String partId, {
     required String sketchFeatureId,
-    required List<SketchEntityRefDto> pathRefs,
+    required List<PathRefDto> pathRefs,
     List<SketchEntityRefDto> profileRefs = const [],
   }) =>
       _send(
@@ -4101,7 +4161,7 @@ class DocumentApiClient {
   Future<FeatureDto> updateSweptSurfaceFeature(
     String partId,
     String featureId, {
-    List<SketchEntityRefDto>? pathRefs,
+    List<PathRefDto>? pathRefs,
     List<SketchEntityRefDto>? profileRefs,
   }) =>
       _send(

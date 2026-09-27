@@ -33,6 +33,16 @@ Map<String, String> surfaceDisplayNames(List<FeatureDto> features, List<String> 
   return _displayNames(features, surfaceIds, 'Surface');
 }
 
+/// [bodyDisplayNames]'s Curves-section counterpart - "Curve 1"/"Curve 2"...
+/// for a Part's currently-computed Curve features (Helix/Intersection
+/// curve, `BodyMeshDto.isCurve`). A Curve feature's own body id is always
+/// its own Feature id verbatim (never split into more than one body the way
+/// a Boss/Cut can be), so [baseFeatureId]/[_splitIndex] are no-ops here, but
+/// sharing [_displayNames] keeps the numbering scheme identical everywhere.
+Map<String, String> curveDisplayNames(List<FeatureDto> features, List<String> curveIds) {
+  return _displayNames(features, curveIds, 'Curve');
+}
+
 Map<String, String> _displayNames(List<FeatureDto> features, List<String> ids, String label) {
   final featureIndex = <String, int>{for (var i = 0; i < features.length; i++) features[i].id: i};
 

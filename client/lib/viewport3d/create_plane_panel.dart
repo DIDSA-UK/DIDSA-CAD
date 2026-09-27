@@ -71,6 +71,14 @@ class CreatePlanePanel extends StatefulWidget {
   /// [CreatePlaneMode.normalToCurveFeatureAtParameter] - this Part's
   /// existing Curve features, for the curve-picker dropdown.
   final List<SketchFeatureChoice> curveFeatureChoices;
+
+  /// Only meaningful while [mode] is [CreatePlaneMode.
+  /// normalToCurveFeatureAtParameter] - pre-selects this curve in the
+  /// dropdown (the one already tapped/selected in the viewport when
+  /// [PartScreen] opened this panel - see `PartScreen._onCreatePlaneTapped`),
+  /// so choosing a curve a second time isn't needed. `null` leaves the
+  /// dropdown unselected, same as before this field existed.
+  final String? initialCurveFeatureId;
   final double initialCurveParameter;
 
   /// Only meaningful (and only ever called) while [mode] is
@@ -90,6 +98,7 @@ class CreatePlanePanel extends StatefulWidget {
     this.initialOffset = 0.0,
     this.onOffsetChanged,
     this.curveFeatureChoices = const [],
+    this.initialCurveFeatureId,
     this.initialCurveParameter = 0.5,
     this.onCurveParameterChanged,
     required this.onConfirm,
@@ -119,6 +128,7 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
     super.initState();
     _offsetController = TextEditingController(text: _formatDistance(widget.initialOffset));
     _offset = widget.initialOffset;
+    _curveFeatureId = widget.initialCurveFeatureId;
     _curveParameter = widget.initialCurveParameter;
   }
 

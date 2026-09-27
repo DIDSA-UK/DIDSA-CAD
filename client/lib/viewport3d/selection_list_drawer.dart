@@ -222,6 +222,11 @@ class SelectionListDrawer extends StatelessWidget {
       // `select_other_sheet.dart`'s own Component icon.
       case SelectionEntityKind.component:
         return const Icon(Icons.view_in_ar_outlined);
+      // A Curve feature (Helix/Intersection curve) hit-tests via the same
+      // edge mechanism as an ordinary Body edge (see `hitTestBodies`'s own
+      // `body.isCurve` branch) - reuses that same edge icon.
+      case SelectionEntityKind.curveFeature:
+        return const SvgIcon('assets/icons/viewport/selection_edge.svg');
     }
   }
 
@@ -263,6 +268,8 @@ class SelectionListDrawer extends StatelessWidget {
         return 'Pattern/Mirror';
       case SelectionEntityKind.component:
         return 'Component';
+      case SelectionEntityKind.curveFeature:
+        return 'Curve';
     }
   }
 
@@ -281,6 +288,14 @@ class SelectionListDrawer extends StatelessWidget {
     if (entity.kind == SelectionEntityKind.body) {
       final id = entity.bodyId;
       return bodyNames[id] ?? 'Body ${id.length > 8 ? id.substring(0, 8) : id}';
+    }
+    // A Curve feature is picked as one whole unit (see its own doc comment,
+    // `bodyId` alone is its identity) - mirrors the `body` case immediately
+    // above exactly, just against [bodyNames]' own merged-in Curve names
+    // (see `PartScreen._selectionBodyNames`'s own doc comment).
+    if (entity.kind == SelectionEntityKind.curveFeature) {
+      final id = entity.bodyId;
+      return bodyNames[id] ?? 'Curve ${id.length > 8 ? id.substring(0, 8) : id}';
     }
     if (entity.kind == SelectionEntityKind.sketchPoint || entity.kind == SelectionEntityKind.sketchLine) {
       final id = entity.sketchEntityId;

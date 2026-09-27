@@ -14,10 +14,12 @@ abstract final class TreeMultiSelectKeys {
   static const String _featurePrefix = 'feature:';
   static const String _bodyPrefix = 'body:';
   static const String _surfacePrefix = 'surface:';
+  static const String _curvePrefix = 'curve:';
 
   static String feature(String featureId) => '$_featurePrefix$featureId';
   static String body(String bodyId) => '$_bodyPrefix$bodyId';
   static String surface(String surfaceId) => '$_surfacePrefix$surfaceId';
+  static String curve(String curveId) => '$_curvePrefix$curveId';
 
   /// The Feature id [key] names, or `null` if [key] isn't a Feature key.
   static String? featureIdOf(String key) =>
@@ -29,6 +31,9 @@ abstract final class TreeMultiSelectKeys {
   /// The Surface id [key] names, or `null` if [key] isn't a Surface key.
   static String? surfaceIdOf(String key) =>
       key.startsWith(_surfacePrefix) ? key.substring(_surfacePrefix.length) : null;
+
+  /// The Curve feature id [key] names, or `null` if [key] isn't a Curve key.
+  static String? curveIdOf(String key) => key.startsWith(_curvePrefix) ? key.substring(_curvePrefix.length) : null;
 }
 
 /// Plain-Dart state holder for a tree's long-press multi-select session -

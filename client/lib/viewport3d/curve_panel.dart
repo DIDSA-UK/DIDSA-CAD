@@ -48,6 +48,18 @@ class CurvePanel extends StatefulWidget {
   final void Function({required String sketchFeatureIdA, required String sketchFeatureIdB})?
       onIntersectionChanged;
 
+  /// When set, a Helix's axis is already determined by a plane/face already
+  /// selected in the viewport when this panel was opened (see
+  /// `PartScreen._startHelix`'s own doc comment) - shown as a read-only
+  /// "Axis: <label>" row instead of the fixed-plane dropdown, mirroring
+  /// [CreatePlanePanel]'s own "fully determined by refs, no input needed"
+  /// treatment for its own ambient-selection-driven modes. `null` (the
+  /// default) keeps the ordinary XY/XZ/YZ dropdown. Purely display text -
+  /// [onHelixChanged]'s own `axisPlane` argument is simply ignored by the
+  /// caller in this case (the caller already knows the real axis), so no
+  /// callback signature change is needed here.
+  final String? preSelectedAxisLabel;
+
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -57,6 +69,7 @@ class CurvePanel extends StatefulWidget {
     this.sketchFeatureChoices = const [],
     this.onHelixChanged,
     this.onIntersectionChanged,
+    this.preSelectedAxisLabel,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -176,20 +189,23 @@ class _CurvePanelState extends State<CurvePanel> {
   }
 
   List<Widget> _buildHelixFields() => [
-        DropdownButtonFormField<String>(
-          initialValue: _axisPlane,
-          decoration: const InputDecoration(labelText: 'Axis plane'),
-          items: const [
-            DropdownMenuItem(value: 'XY', child: Text('XY')),
-            DropdownMenuItem(value: 'XZ', child: Text('XZ')),
-            DropdownMenuItem(value: 'YZ', child: Text('YZ')),
-          ],
-          onChanged: (value) {
-            if (value == null) return;
-            setState(() => _axisPlane = value);
-            _emitHelixChange();
-          },
-        ),
+        if (widget.preSelectedAxisLabel != null)
+          Text('Axis: ${widget.preSelectedAxisLabel}')
+        else
+          DropdownButtonFormField<String>(
+            initialValue: _axisPlane,
+            decoration: const InputDecoration(labelText: 'Axis plane'),
+            items: const [
+              DropdownMenuItem(value: 'XY', child: Text('XY')),
+              DropdownMenuItem(value: 'XZ', child: Text('XZ')),
+              DropdownMenuItem(value: 'YZ', child: Text('YZ')),
+            ],
+            onChanged: (value) {
+              if (value == null) return;
+              setState(() => _axisPlane = value);
+              _emitHelixChange();
+            },
+          ),
         const SizedBox(height: 8),
         TextField(
           controller: _radiusController,
