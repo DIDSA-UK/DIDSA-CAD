@@ -208,6 +208,53 @@ def test_assembly_glb_node_transform_matches_instance():
     assert node["rotation"] == [0.0, 0.0, 0.7071067811865476, 0.7071067811865476]
 
 
+def test_assembly_glb_node_extras_carry_owner_and_occurrence_id():
+    meshes = {"part-a": _single_triangle_mesh()}
+    instances = [
+        # Root's own content: empty occurrence_id, per MeasureEntityRefSchema's own convention.
+        AssemblyGlbInstance(
+            part_id="part-a",
+            translation=(0.0, 0.0, 0.0),
+            rotation_quaternion=(1.0, 0.0, 0.0, 0.0),
+            owner_part_id="root-part",
+            occurrence_id="",
+        ),
+        # A placed Occurrence: both fields non-empty.
+        AssemblyGlbInstance(
+            part_id="part-a",
+            translation=(5.0, 0.0, 0.0),
+            rotation_quaternion=(1.0, 0.0, 0.0, 0.0),
+            owner_part_id="root-part",
+            occurrence_id="occ-1",
+        ),
+    ]
+    data = encode_assembly_glb(meshes, instances)
+    gltf, _bin_bytes = _parse_glb(data)
+    assert gltf["nodes"][0]["extras"] == {"owner_part_id": "root-part", "occurrence_id": ""}
+    assert gltf["nodes"][1]["extras"] == {"owner_part_id": "root-part", "occurrence_id": "occ-1"}
+
+
+def test_assembly_glb_primitive_extras_carry_face_and_body_ids_when_present():
+    mesh = _single_triangle_mesh()
+    mesh.face_ids = [3]  # one triangle -> one face id, dense per MeshData's own convention
+    mesh.body_ids = ["body-1"]  # which Body that face id is scoped to (MeshData.body_ids's own convention)
+    instances = [
+        AssemblyGlbInstance(part_id="part-a", translation=(0.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0))
+    ]
+    data = encode_assembly_glb({"part-a": mesh}, instances)
+    gltf, _bin_bytes = _parse_glb(data)
+    assert gltf["meshes"][0]["primitives"][0]["extras"] == {"face_ids": [3], "body_ids": ["body-1"]}
+
+
+def test_assembly_glb_primitive_has_no_extras_when_mesh_has_no_face_ids():
+    instances = [
+        AssemblyGlbInstance(part_id="part-a", translation=(0.0, 0.0, 0.0), rotation_quaternion=(1.0, 0.0, 0.0, 0.0))
+    ]
+    data = encode_assembly_glb({"part-a": _single_triangle_mesh()}, instances)
+    gltf, _bin_bytes = _parse_glb(data)
+    assert "extras" not in gltf["meshes"][0]["primitives"][0]
+
+
 def test_assembly_glb_reparses_with_the_existing_gltf_decoder():
     meshes = {"part-a": _single_triangle_mesh(), "part-b": _second_triangle_mesh()}
     instances = [

@@ -145,13 +145,28 @@ class AssemblyGlbInstance:
     glTF's own `(x, y, z, w)` node `rotation` order at encode time.
     `hidden` is carried through only so a caller can build the full instance
     list once and filter afterwards (`?include_hidden`); `encode_assembly_glb`
-    itself renders every instance it's given, filtering is the caller's job."""
+    itself renders every instance it's given, filtering is the caller's job.
+
+    Milestone 4 (VR assembly tools - mates/measurements need to name what was
+    picked): `owner_part_id`/`occurrence_id` identify this instance the same
+    way `MeasureEntityRefSchema.occurrence_id` already does - `occurrence_id`
+    empty means "this is `owner_part_id`'s own top-level content, not a
+    placed Occurrence" (root content, or a pattern-derived copy, which has no
+    Occurrence entry of its own to reference - see `ComponentPattern`'s own
+    docstring), non-empty names a real Occurrence on `owner_part_id` (a Mate
+    can only reference a *top-level* Occurrence of its own owning Part, so
+    this is always the immediate parent, not a multi-level path). Encoded as
+    glTF node `extras`, not `name` - Godot (and glTF generally) silently
+    uniquifies duplicate node *names*, which would corrupt an id reused by
+    two occurrences of the same part."""
 
     part_id: str
     translation: tuple[float, float, float]
     rotation_quaternion: tuple[float, float, float, float]
     color: str | None = None
     hidden: bool = False
+    owner_part_id: str = ""
+    occurrence_id: str = ""
 
 
 def _color_to_base_color_factor(color: str) -> list[float]:
@@ -247,6 +262,20 @@ def encode_assembly_glb(
                         {"pbrMetallicRoughness": {"baseColorFactor": _color_to_base_color_factor(instance.color)}}
                     )
                 primitive["material"] = material_index
+            # Milestone 4: `face_ids`/`body_ids` are dense, one entry per
+            # triangle - `(body_ids[i], face_ids[i])` is a real
+            # `SubShapeRef{body_id, shape_type: "face", index}` (see
+            # `MeshData.body_ids`'s own docstring for why `face_ids` stays
+            # un-offset across a multi-Body Part's merge while `body_ids`
+            # disambiguates which Body each one belongs to). Plain JSON
+            # `extras`, not a vertex attribute, so the VR client can read it
+            # straight off `GLTFState.json` with no custom
+            # `GLTFDocumentExtension` needed. Omitted for a mesh with no
+            # tessellated faces at all (only reachable if a Part somehow
+            # produced triangles with no Body behind them at all).
+            part_mesh = meshes_by_part_id[instance.part_id]
+            if part_mesh.face_ids:
+                primitive["extras"] = {"face_ids": list(part_mesh.face_ids), "body_ids": list(part_mesh.body_ids)}
             mesh_index = len(meshes)
             mesh_index_by_variant[variant_key] = mesh_index
             meshes.append({"primitives": [primitive]})
@@ -256,6 +285,10 @@ def encode_assembly_glb(
                 "mesh": mesh_index,
                 "translation": list(instance.translation),
                 "rotation": [qx, qy, qz, qw],
+                # Milestone 4: which Mate/Measure entity this node is - see
+                # AssemblyGlbInstance's own docstring for the empty-
+                # occurrence_id convention.
+                "extras": {"owner_part_id": instance.owner_part_id, "occurrence_id": instance.occurrence_id},
             }
         )
 
