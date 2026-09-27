@@ -273,6 +273,39 @@ def test_assembly_mesh_glb_respects_the_coarse_tier():
     assert len(coarse_gltf["nodes"]) == 1
 
 
+def test_assembly_mesh_glb_node_extras_name_the_real_occurrence():
+    mount = _make_box_part("Mount", size=20.0)
+    bolt = _make_box_part("Bolt", size=2.0)
+    _place_occurrence(mount, bolt, occurrence_id="occ-bolt-1", translation=[15.0, 0.0, 10.0])
+
+    data = _fetch_assembly_glb(mount["id"])
+    gltf, _bin_bytes = _parse_glb(data)
+
+    root_node = next(n for n in gltf["nodes"] if n["translation"] == [0.0, 0.0, 0.0])
+    bolt_node = next(n for n in gltf["nodes"] if n["translation"] == [15.0, 0.0, 10.0])
+
+    # Root's own content: a real owner (itself) but no Occurrence placed it.
+    assert root_node["extras"] == {"owner_part_id": mount["id"], "occurrence_id": ""}
+    # The placed bolt: owned by the mount, naming the real Occurrence id -
+    # exactly what POST /parts/{mount_id}/mates would need to reference it.
+    assert bolt_node["extras"] == {"owner_part_id": mount["id"], "occurrence_id": "occ-bolt-1"}
+
+
+def test_assembly_mesh_glb_primitive_extras_carry_face_and_body_ids():
+    part = _make_box_part("Solo Part")
+
+    data = _fetch_assembly_glb(part["id"])
+    gltf, _bin_bytes = _parse_glb(data)
+
+    extras = gltf["meshes"][0]["primitives"][0]["extras"]
+    triangle_count = gltf["accessors"][0]["count"] // 3
+    assert len(extras["face_ids"]) == triangle_count
+    assert len(extras["body_ids"]) == triangle_count
+    # A plain box Body has 6 faces, dense 0-based.
+    assert set(extras["face_ids"]) == {0, 1, 2, 3, 4, 5}
+    assert len(set(extras["body_ids"])) == 1  # one Body behind this Part
+
+
 def test_assembly_mesh_glb_respects_the_quality_param():
     part = _make_box_part("Solo Part")
 

@@ -123,6 +123,19 @@ class MeshData:
     # its own face-selection context menu on this instead of only finding
     # out via a rejected `non_planar_reference` request after the fact.
     face_is_planar: list[bool] = field(default_factory=list)
+    # Milestone 4 (VR assembly tools): stable per-triangle Body id, parallel
+    # to `triangles`/`face_ids` - only ever set by `app.document.router.
+    # _merged_body_mesh_data` when it flattens several Bodies' own MeshData
+    # into one (assembly-mesh.glb's per-Part geometry), never by
+    # `tessellate_shape` itself (which tessellates a single already-known
+    # shape with no body_id of its own to stamp). `face_ids` is left
+    # un-offset across that merge (still each Body's own dense 0-based
+    # `TopExp_Explorer` order) precisely so `(body_ids[i], face_ids[i])`
+    # reproduces a real `SubShapeRef{body_id, shape_type: FACE, index}` -
+    # offsetting it the way `triangles`' own vertex indices are offset would
+    # break that. `GET /parts/{id}/mesh`'s per-Body `BodyMeshResponse`s never
+    # need this - each response is already scoped to one Body.
+    body_ids: list[str] = field(default_factory=list)
 
 
 def synthesize_wireframe_edges_from_triangles(mesh: MeshData) -> tuple[list[float], list[int]]:

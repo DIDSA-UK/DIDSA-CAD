@@ -8882,6 +8882,8 @@ def _walk_assembly_glb_instances(
     geometry_by_part_id: dict[str, MeshData],
     instances: list[AssemblyGlbInstance],
     color: str | None = None,
+    owner_part_id: str = "",
+    occurrence_id: str = "",
 ) -> None:
     """`assembly-mesh.glb`'s own counterpart to `get_assembly_mesh`'s own
     `_walk` (identical traversal shape - resolved-`part_id`/suppressed/cycle
@@ -8892,7 +8894,13 @@ def _walk_assembly_glb_instances(
     translation + quaternion, `encode_assembly_glb`'s own input shape)
     instead of `AssemblyOccurrenceInstance`s, and memoizes each unique
     Part's own merged `MeshData` into `geometry_by_part_id` instead of a
-    `BodyMeshResponse` list."""
+    `BodyMeshResponse` list.
+
+    Milestone 4: `owner_part_id`/`occurrence_id` name *this* instance for
+    Mate/Measure purposes (see `AssemblyGlbInstance`'s own docstring) -
+    always the immediate parent `Part.id` and the real `Occurrence.id` that
+    placed it, one level up, never the deeper `occurrence_path` (that's only
+    ever used for pattern-derived instance-id strings, unrelated to this)."""
     if part.id not in geometry_by_part_id:
         geometry_by_part_id[part.id] = _assembly_glb_part_mesh_data(part, mesh_quality, tier)
 
@@ -8905,6 +8913,8 @@ def _walk_assembly_glb_instances(
             rotation_quaternion=quaternion,
             color=color,
             hidden=hidden,
+            owner_part_id=owner_part_id,
+            occurrence_id=occurrence_id,
         )
     )
 
@@ -8927,6 +8937,8 @@ def _walk_assembly_glb_instances(
             geometry_by_part_id,
             instances,
             color=occurrence.color,
+            owner_part_id=part.id,
+            occurrence_id=occurrence.id,
         )
     for pattern in part.component_patterns:
         if pattern.suppressed:
@@ -8952,6 +8964,8 @@ def _walk_assembly_glb_instances(
                     geometry_by_part_id,
                     instances,
                     color=source_occurrence.color,
+                    owner_part_id=part.id,
+                    occurrence_id="",  # pattern-derived copy: no Occurrence entry of its own to reference
                 )
 
 
@@ -8992,7 +9006,18 @@ def get_assembly_mesh_glb(
     geometry_by_part_id: dict[str, MeshData] = {}
     instances: list[AssemblyGlbInstance] = []
     _walk_assembly_glb_instances(
-        document, root_part, [], [], False, frozenset(), mesh_quality, tier, geometry_by_part_id, instances
+        document,
+        root_part,
+        [],
+        [],
+        False,
+        frozenset(),
+        mesh_quality,
+        tier,
+        geometry_by_part_id,
+        instances,
+        owner_part_id=root_part.id,
+        occurrence_id="",  # the root's own top-level content, not a placed Occurrence
     )
     visible_instances = instances if include_hidden else [instance for instance in instances if not instance.hidden]
 
@@ -9107,9 +9132,15 @@ def _merged_body_mesh_data(bodies: dict[str, object], mesh_quality: MeshQuality 
     `DEFAULT_MESH_QUALITY` for every existing caller (the single-Part export
     endpoints below, none of which take a `quality` param); `assembly-mesh.
     glb`'s own per-Part geometry lookup passes its own resolved `quality`
-    through instead."""
+    through instead.
+
+    Milestone 4: also stamps `merged.face_ids`/`merged.body_ids` (see
+    `MeshData.body_ids`'s own docstring for why `face_ids` is carried
+    through un-offset while `triangles`' vertex indices are not) so
+    `assembly-mesh.glb`'s per-triangle face picking works across a
+    multi-Body Part, not just a single-Body one."""
     merged = MeshData()
-    for shape in bodies.values():
+    for body_id, shape in bodies.items():
         body_mesh = tessellate_shape(shape, mesh_quality)
         offset = len(merged.vertices)
         merged.vertices.extend(body_mesh.vertices)
@@ -9117,6 +9148,8 @@ def _merged_body_mesh_data(bodies: dict[str, object], mesh_quality: MeshQuality 
         merged.triangles.extend(
             Triangle(a=t.a + offset, b=t.b + offset, c=t.c + offset) for t in body_mesh.triangles
         )
+        merged.face_ids.extend(body_mesh.face_ids)
+        merged.body_ids.extend([body_id] * len(body_mesh.triangles))
     return merged
 
 
