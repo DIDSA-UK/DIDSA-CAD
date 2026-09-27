@@ -36,7 +36,7 @@ from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakePipeShell
 from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pnt
 from OCC.Core.TColgp import TColgp_Array1OfPnt
-from OCC.Core.TopAbs import TopAbs_VERTEX
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Wire, topods
 
@@ -486,6 +486,67 @@ def _resolve_edge_path_segment(bodies_so_far: dict[str, TopoDS_Shape], edge_ref:
     return _PathSegment(start=None, end=None, edges=[edge], closed=True)
 
 
+def _resolve_curve_path_segment(
+    part: Part,
+    curve_feature_id: str,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> _PathSegment:
+    """Curve features: the `CurveFeature` (Helix/Intersection curve)
+    counterpart to `_resolve_edge_path_segment` - a `path_refs` entry whose
+    `SketchOrEdgeRef.curve_feature_id` is set instead of `sketch_entity_ref`/
+    `edge_ref`. `resolve_curve_feature_by_id` (function-local import, same
+    circularity reasoning `app.document.create_plane` already gives for its
+    own `app.document.curve` import - `curve.py` itself imports from this
+    module's sibling `app.document.extrude`/`create_plane`, so a module-
+    level import back here would risk a cycle depending on import order)
+    already produces a whole `TopoDS_Wire`, possibly multi-edge (an
+    Intersection curve chained from several `BRepAlgoAPI_Section` pieces) -
+    exploded into its own edges the same vertex-based way `_resolve_edge_
+    path_segment` explodes a single Body edge, so a multi-segment curve
+    feature chains into a larger path exactly like any other segment kind.
+
+    `plane_normal=None` always (never `fixed_binormal`) even for a `closed`
+    result - neither a Helix (never closed) nor a closed Intersection curve
+    is guaranteed planar the way a Sketch Circle/Ellipse is, so the default
+    Frenet trihedron is used, same tolerance `_resolve_edge_path_segment`
+    already has for an arbitrary closed Body edge."""
+    from app.document.curve import resolve_curve_feature_by_id
+
+    resolved = resolve_curve_feature_by_id(part, curve_feature_id, bodies_so_far, excluded_feature_ids)
+    explorer = TopExp_Explorer(resolved.wire, TopAbs_EDGE)
+    edges = []
+    while explorer.More():
+        edges.append(topods.Edge(explorer.Current()))
+        explorer.Next()
+    if resolved.closed:
+        return _PathSegment(start=None, end=None, edges=edges, closed=True)
+    explorer = TopExp_Explorer(resolved.wire, TopAbs_VERTEX)
+    vertices = []
+    while explorer.More():
+        vertices.append(topods.Vertex(explorer.Current()))
+        explorer.Next()
+    start = BRep_Tool.Pnt(vertices[0])
+    end = BRep_Tool.Pnt(vertices[-1])
+    return _PathSegment(start=start, end=end, edges=edges, closed=False)
+
+
+def _resolve_segment(
+    part: Part,
+    ref: SketchOrEdgeRef,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> _PathSegment:
+    """Dispatches one `SketchOrEdgeRef` to whichever of its three resolvers
+    applies - see `resolve_path_wire`'s own doc comment."""
+    if ref.curve_feature_id is not None:
+        return _resolve_curve_path_segment(part, ref.curve_feature_id, bodies_so_far, excluded_feature_ids)
+    if ref.edge_ref is not None:
+        return _resolve_edge_path_segment(bodies_so_far, ref.edge_ref)
+    assert ref.sketch_entity_ref is not None
+    return _resolve_path_segment(part, ref.sketch_entity_ref, bodies_so_far, excluded_feature_ids)
+
+
 def resolve_path_wire(
     part: Part,
     path_refs: list[SketchOrEdgeRef],
@@ -555,16 +616,13 @@ def resolve_path_wire(
     `resolve_sweep_from_bodies`.
 
     Each entry resolves via `_resolve_path_segment` (a Sketch entity,
-    `ref.sketch_entity_ref`) or `_resolve_edge_path_segment` (a Body edge,
-    `ref.edge_ref`) - see `SketchOrEdgeRef`'s own doc comment; the router's
-    payload-shape validation already guarantees exactly one is set per
-    entry, so this dispatches on whichever is, rather than re-checking."""
-    segments = [
-        _resolve_path_segment(part, ref.sketch_entity_ref, bodies_so_far, excluded_feature_ids)
-        if ref.sketch_entity_ref is not None
-        else _resolve_edge_path_segment(bodies_so_far, ref.edge_ref)
-        for ref in path_refs
-    ]
+    `ref.sketch_entity_ref`), `_resolve_edge_path_segment` (a Body edge,
+    `ref.edge_ref`), or (Curve features) `_resolve_curve_path_segment` (a
+    Curve feature, `ref.curve_feature_id`) - see `SketchOrEdgeRef`'s own doc
+    comment; the router's payload-shape validation already guarantees
+    exactly one is set per entry, so this dispatches on whichever is,
+    rather than re-checking."""
+    segments = [_resolve_segment(part, ref, bodies_so_far, excluded_feature_ids) for ref in path_refs]
 
     if len(segments) == 1 and segments[0].closed:
         wire_maker = BRepBuilderAPI_MakeWire()

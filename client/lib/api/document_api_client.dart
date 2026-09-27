@@ -306,6 +306,77 @@ class SketchEntityRefDto {
       };
 }
 
+/// Gap (a): the wire counterpart to the backend's `SketchOrEdgeRefSchema` -
+/// one segment of a Sweep/SweptSurface path, exactly one of a Sketch entity
+/// ([sketchId]/[entityType]/[entityId], the same flat shape
+/// [SketchEntityRefDto] already uses), a Body edge ([edgeRef]), or a Curve
+/// feature ([curveFeatureId]) - mirrors the backend's own additive
+/// widening (see that schema's own docstring) rather than a Dart union
+/// type, so `toJson`/`fromJson` are a direct one-for-one match of its wire
+/// shape. Superseded `createSweepFeature`/`updateSweepFeature`'s old
+/// `pathCurveFeatureId` bypass parameter (a whole-curve-only convenience
+/// that predates 3D-viewport curve-feature picking) - a Curve feature is
+/// now just one more [PathRefDto] in the general [FeatureDto.pathRefs]
+/// list, chainable with Sketch-entity/edge segments like any other.
+class PathRefDto {
+  final String? sketchId;
+  final String? entityType;
+  final String? entityId;
+  final SubShapeRefDto? edgeRef;
+  final String? curveFeatureId;
+
+  const PathRefDto._({this.sketchId, this.entityType, this.entityId, this.edgeRef, this.curveFeatureId});
+
+  factory PathRefDto.sketchEntity({
+    required String sketchId,
+    required String entityType,
+    required String entityId,
+  }) =>
+      PathRefDto._(sketchId: sketchId, entityType: entityType, entityId: entityId);
+
+  factory PathRefDto.edge(SubShapeRefDto edgeRef) => PathRefDto._(edgeRef: edgeRef);
+
+  factory PathRefDto.curveFeature(String curveFeatureId) => PathRefDto._(curveFeatureId: curveFeatureId);
+
+  factory PathRefDto.fromJson(Map<String, dynamic> json) => PathRefDto._(
+        sketchId: json['sketch_id'] as String?,
+        entityType: json['entity_type'] as String?,
+        entityId: json['entity_id'] as String?,
+        edgeRef: json['edge_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['edge_ref'] as Map<String, dynamic>),
+        curveFeatureId: json['curve_feature_id'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (sketchId != null) 'sketch_id': sketchId,
+        if (entityType != null) 'entity_type': entityType,
+        if (entityId != null) 'entity_id': entityId,
+        if (edgeRef != null) 'edge_ref': edgeRef!.toJson(),
+        if (curveFeatureId != null) 'curve_feature_id': curveFeatureId,
+      };
+
+  // [SubShapeRefDto] has no `==` of its own (plain data class, compared by
+  // field elsewhere in this codebase) - [edgeRef] is compared field-by-field
+  // here instead of relying on one, so two independently-constructed
+  // [PathRefDto]s naming the same edge (e.g. the same edge tapped twice)
+  // still compare equal.
+  @override
+  bool operator ==(Object other) =>
+      other is PathRefDto &&
+      other.sketchId == sketchId &&
+      other.entityType == entityType &&
+      other.entityId == entityId &&
+      other.edgeRef?.bodyId == edgeRef?.bodyId &&
+      other.edgeRef?.shapeType == edgeRef?.shapeType &&
+      other.edgeRef?.index == edgeRef?.index &&
+      other.curveFeatureId == curveFeatureId;
+
+  @override
+  int get hashCode =>
+      Object.hash(sketchId, entityType, entityId, edgeRef?.bodyId, edgeRef?.shapeType, edgeRef?.index, curveFeatureId);
+}
+
 /// The wire counterpart to the backend's `LoftSectionSchema` - one cross-
 /// section of a `"loft"` Feature: an existing SketchFeature's Profile
 /// ([sketchFeatureId]/[profileRefs], same shape [FeatureDto.profileRefs]
@@ -696,14 +767,15 @@ class FeatureDto {
   /// `SweepFeature.profile_refs` default.
   final List<SketchEntityRefDto> profileRefs;
 
-  /// Only present on a `"sweep"` Feature - the *ordered* list of Sketch Line
-  /// references the Profile is swept along, each possibly naming a
-  /// different Sketch (confirmed decision - see the backend's
-  /// `SweepFeature` docstring). Order matters (it is the path's own
-  /// traversal order); unlike [axisRef] this is a list, since a Sweep's
-  /// path can bend across multiple segments rather than being a single
-  /// straight reference.
-  final List<SketchEntityRefDto> pathRefs;
+  /// Only present on a `"sweep"`/`"swept_surface"` Feature - the *ordered*
+  /// list of path segments the Profile is swept along, each independently
+  /// naming a Sketch entity, a Body edge, or a Curve feature (confirmed
+  /// decision - see the backend's `SweepFeature` docstring, generalized by
+  /// gap (a) from the original Sketch-Line-only design to mixed segments).
+  /// Order matters (it is the path's own traversal order); unlike [axisRef]
+  /// this is a list, since a Sweep's path can bend across multiple segments
+  /// rather than being a single straight reference.
+  final List<PathRefDto> pathRefs;
 
   /// Only present on a `"loft"` Feature - the 2+ ordered cross-sections it
   /// lofts between (each its own [LoftSectionDto], the backend's
@@ -893,6 +965,12 @@ class FeatureDto {
   /// same raw-string convention [mode]/[patternType] already use - see
   /// [BooleanOperation] for the parsed Dart enum the panels themselves use.
   final String? operation;
+
+  /// Curve features: `"helix"` or `"intersection"` - only present on a
+  /// `"curve"` Feature (the backend's `CurveType`). Read for the feature-
+  /// tree label ([featureDisplayName]) so a Helix and an Intersection curve
+  /// don't both show up as an undifferentiated "Curve".
+  final String? curveType;
 
   /// Boolean family, Subtract/Common - only present on a `"boolean"`
   /// Feature: which Bodies (1+ ids, the backend's `BooleanFeature.tool_
@@ -1100,6 +1178,7 @@ class FeatureDto {
     this.directionRef,
     this.bodyIds = const [],
     this.operation,
+    this.curveType,
     this.toolBodyIds = const [],
     this.consumeToolBodies = true,
     this.targetBodyId,
@@ -1179,7 +1258,7 @@ class FeatureDto {
                 .toList() ??
             const [],
         pathRefs: (json['path_refs'] as List?)
-                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                ?.map((r) => PathRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
             const [],
         sections: (json['sections'] as List?)
@@ -1231,6 +1310,7 @@ class FeatureDto {
             : PatternDirectionRefDto.fromJson(json['direction_ref'] as Map<String, dynamic>),
         bodyIds: (json['body_ids'] as List?)?.cast<String>() ?? const [],
         operation: json['operation'] as String?,
+        curveType: json['curve_type'] as String?,
         toolBodyIds: (json['tool_body_ids'] as List?)?.cast<String>() ?? const [],
         consumeToolBodies: json['consume_tool_bodies'] as bool? ?? true,
         targetBodyId: json['target_body_id'] as String?,
@@ -1392,12 +1472,23 @@ class BodyMeshDto {
   /// own docstring.
   final bool isSurface;
 
+  /// True for a `CurveFeature`'s own wire-only body (a Helix/Intersection
+  /// curve, registered under `body_id == <that CurveFeature's own Feature
+  /// id>`) - `mesh.edges` is populated, `mesh.vertices`/`triangleIndices`
+  /// are empty (no faces). Mirrors [isSurface]'s own role exactly: both
+  /// come back tagged `source: "computed"`, so this is what lets
+  /// [PartScreen] keep a Curve out of the Build Tree's Bodies/Surfaces
+  /// sections, listing it under its own Curves section instead. See
+  /// `app.document.schemas.BodyMeshResponse`'s own docstring.
+  final bool isCurve;
+
   BodyMeshDto({
     required this.bodyId,
     required this.source,
     required this.mesh,
     this.hidden = false,
     this.isSurface = false,
+    this.isCurve = false,
   });
 
   factory BodyMeshDto.fromJson(Map<String, dynamic> json) => BodyMeshDto(
@@ -1406,6 +1497,7 @@ class BodyMeshDto {
         mesh: MeshDto.fromJson(json['mesh'] as Map<String, dynamic>),
         hidden: json['hidden'] as bool? ?? false,
         isSurface: json['is_surface'] as bool? ?? false,
+        isCurve: json['is_curve'] as bool? ?? false,
       );
 }
 
@@ -3778,14 +3870,15 @@ class DocumentApiClient {
       );
 
   /// Creates a SweepFeature from an existing SketchFeature's closed Profile,
-  /// swept along [pathRefs] (an *ordered* list of Sketch Line references,
-  /// each possibly naming a different Sketch - confirmed decision, see the
-  /// backend's `SweepFeature` docstring) - mirrors [createRevolveFeature]
+  /// swept along [pathRefs] (an *ordered* list of path segments, each
+  /// independently naming a Sketch entity, a Body edge, or a Curve feature,
+  /// and each possibly naming a different Sketch - confirmed decision, see
+  /// the backend's `SweepFeature` docstring) - mirrors [createRevolveFeature]
   /// exactly, substituting [pathRefs] for [axisRef]/`angle`.
   Future<FeatureDto> createSweepFeature(
     String partId, {
     required String sketchFeatureId,
-    required List<SketchEntityRefDto> pathRefs,
+    required List<PathRefDto> pathRefs,
     required String mode,
     List<String> targetBodyIds = const [],
     List<SketchEntityRefDto> profileRefs = const [],
@@ -3812,7 +3905,7 @@ class DocumentApiClient {
   Future<FeatureDto> updateSweepFeature(
     String partId,
     String featureId, {
-    List<SketchEntityRefDto>? pathRefs,
+    List<PathRefDto>? pathRefs,
     String? mode,
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
@@ -4046,7 +4139,7 @@ class DocumentApiClient {
   Future<FeatureDto> createSweptSurfaceFeature(
     String partId, {
     required String sketchFeatureId,
-    required List<SketchEntityRefDto> pathRefs,
+    required List<PathRefDto> pathRefs,
     List<SketchEntityRefDto> profileRefs = const [],
   }) =>
       _send(
@@ -4068,7 +4161,7 @@ class DocumentApiClient {
   Future<FeatureDto> updateSweptSurfaceFeature(
     String partId,
     String featureId, {
-    List<SketchEntityRefDto>? pathRefs,
+    List<PathRefDto>? pathRefs,
     List<SketchEntityRefDto>? profileRefs,
   }) =>
       _send(
@@ -4356,6 +4449,10 @@ class DocumentApiClient {
     SubShapeRefDto? edgeRef,
     SubShapeRefDto? vertexRef,
     List<PointRefDto> pointRefs = const [],
+    // Curve features: `normal_to_curve_feature_at_parameter`'s own pair -
+    // a Curve feature id plus a 0-1 arc-length fraction along it.
+    String? curveFeatureId,
+    double? curveParameter,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4370,6 +4467,8 @@ class DocumentApiClient {
                 if (edgeRef != null) 'edge_ref': edgeRef.toJson(),
                 if (vertexRef != null) 'vertex_ref': vertexRef.toJson(),
                 if (pointRefs.isNotEmpty) 'point_refs': pointRefs.map((r) => r.toJson()).toList(),
+                if (curveFeatureId != null) 'curve_feature_id': curveFeatureId,
+                if (curveParameter != null) 'curve_parameter': curveParameter,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4388,6 +4487,8 @@ class DocumentApiClient {
     SubShapeRefDto? edgeRef,
     SubShapeRefDto? vertexRef,
     List<PointRefDto>? pointRefs,
+    String? curveFeatureId,
+    double? curveParameter,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4401,6 +4502,120 @@ class DocumentApiClient {
                 if (edgeRef != null) 'edge_ref': edgeRef.toJson(),
                 if (vertexRef != null) 'vertex_ref': vertexRef.toJson(),
                 if (pointRefs != null) 'point_refs': pointRefs.map((r) => r.toJson()).toList(),
+                if (curveFeatureId != null) 'curve_feature_id': curveFeatureId,
+                if (curveParameter != null) 'curve_parameter': curveParameter,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a CurveFeature - either a `"helix"` ([axisRef]/[radius]/[pitch]/
+  /// [turns]/[rightHanded]) or an `"intersection"` curve ([sketchFeatureIdA]/
+  /// [sketchFeatureIdB], each Sketch's whole closed profile or open chain -
+  /// see the backend `CurveFeature`'s own docstring for why `profile_refs_a`/
+  /// `_b` aren't exposed here yet: v1 only supports a Sketch with exactly
+  /// one profile/chain, so there is nothing to disambiguate).
+  Future<FeatureDto> createCurveFeature(
+    String partId, {
+    required String curveType,
+    PlaneRefDto? axisRef,
+    double? radius,
+    double? pitch,
+    double? turns,
+    bool rightHanded = true,
+    String? sketchFeatureIdA,
+    String? sketchFeatureIdB,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/curve-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'curve_type': curveType,
+                if (axisRef != null) 'axis_ref': axisRef.toJson(),
+                if (radius != null) 'radius': radius,
+                if (pitch != null) 'pitch': pitch,
+                if (turns != null) 'turns': turns,
+                'right_handed': rightHanded,
+                if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
+                if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing CurveFeature - `curve_type` itself is
+  /// never sent (see the backend's `CurveFeatureUpdate`).
+  Future<FeatureDto> updateCurveFeature(
+    String partId,
+    String featureId, {
+    PlaneRefDto? axisRef,
+    double? radius,
+    double? pitch,
+    double? turns,
+    bool? rightHanded,
+    String? sketchFeatureIdA,
+    String? sketchFeatureIdB,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/curve-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (axisRef != null) 'axis_ref': axisRef.toJson(),
+                if (radius != null) 'radius': radius,
+                if (pitch != null) 'pitch': pitch,
+                if (turns != null) 'turns': turns,
+                if (rightHanded != null) 'right_handed': rightHanded,
+                if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
+                if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Creates a FillSurfaceFeature - a single surface filling the closed loop
+  /// formed by 2-4 boundary curves. v1 client scope: boundaries come from
+  /// already-selected Sketch entities ([sketchBoundaryRefs]) and/or existing
+  /// Curve features ([curveFeatureBoundaryIds]) picked from a list - a Body
+  /// edge boundary (the backend's own `edge_ref` case) has no picker UI yet.
+  Future<FeatureDto> createFillSurfaceFeature(
+    String partId, {
+    List<SketchEntityRefDto> sketchBoundaryRefs = const [],
+    List<String> curveFeatureBoundaryIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/fill-surface-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'boundary_refs': [
+                  ...sketchBoundaryRefs.map((r) => r.toJson()),
+                  ...curveFeatureBoundaryIds.map((id) => {'curve_feature_id': id}),
+                ],
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Partial update for an existing FillSurfaceFeature - replaces the whole
+  /// boundary set (mirrors [createFillSurfaceFeature]'s own field shape).
+  Future<FeatureDto> updateFillSurfaceFeature(
+    String partId,
+    String featureId, {
+    List<SketchEntityRefDto>? sketchBoundaryRefs,
+    List<String>? curveFeatureBoundaryIds,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/fill-surface-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                if (sketchBoundaryRefs != null || curveFeatureBoundaryIds != null)
+                  'boundary_refs': [
+                    ...(sketchBoundaryRefs ?? const []).map((r) => r.toJson()),
+                    ...(curveFeatureBoundaryIds ?? const []).map((id) => {'curve_feature_id': id}),
+                  ],
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

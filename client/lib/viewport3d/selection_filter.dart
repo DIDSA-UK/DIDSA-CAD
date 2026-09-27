@@ -102,6 +102,21 @@ class SelectionFilterState {
   /// considered by default" precedent for a kind that actually works.
   final bool component;
 
+  /// Gates `SelectionEntityKind.curveFeature` (a Helix/Intersection curve's
+  /// own whole displayed wire) - defaults `false`, mirroring
+  /// [sketchPatternMirrorInstance]'s own "most picking modes shouldn't
+  /// resolve this" precedent: every existing named `SelectionFilterState`
+  /// constant elsewhere in the app (Fillet's/Chamfer's/Mate's own edge-only
+  /// filters, etc.) is a `const` literal naming only the fields it actually
+  /// wants, so it picks up `false` here automatically and needs no changes
+  /// of its own to stay closed to curve-feature taps. [defaults] below
+  /// explicitly overrides this to `true`, so plain ambient Select mode (what
+  /// Fill Surface/Create Plane/Helix's own axis pick all rely on, having no
+  /// dedicated picker filter of their own) can resolve a curve tap; a picker
+  /// that specifically wants one (the Sweep/Swept-Surface path picker) sets
+  /// this `true` in its own filter explicitly.
+  final bool curveFeature;
+
   const SelectionFilterState({
     required this.vertex,
     required this.edge,
@@ -118,6 +133,7 @@ class SelectionFilterState {
     this.plane = true,
     this.sketchPatternMirrorInstance = false,
     this.component = true,
+    this.curveFeature = false,
   });
 
   /// Matches hit-testing's behaviour from before this filter framework
@@ -127,7 +143,8 @@ class SelectionFilterState {
   /// "always considered by default" precedent now that Sketch geometry is
   /// rendered and pickable in the 3D viewport (Prompt C1). `plane` also
   /// starts on for the same reason.
-  static const defaults = SelectionFilterState(vertex: true, edge: true, face: true, body: false);
+  static const defaults =
+      SelectionFilterState(vertex: true, edge: true, face: true, body: false, curveFeature: true);
 
   SelectionFilterState copyWith({
     bool? vertex,
@@ -145,6 +162,7 @@ class SelectionFilterState {
     bool? plane,
     bool? sketchPatternMirrorInstance,
     bool? component,
+    bool? curveFeature,
   }) {
     return SelectionFilterState(
       vertex: vertex ?? this.vertex,
@@ -162,6 +180,7 @@ class SelectionFilterState {
       plane: plane ?? this.plane,
       sketchPatternMirrorInstance: sketchPatternMirrorInstance ?? this.sketchPatternMirrorInstance,
       component: component ?? this.component,
+      curveFeature: curveFeature ?? this.curveFeature,
     );
   }
 
@@ -182,7 +201,8 @@ class SelectionFilterState {
       other.sketchText == sketchText &&
       other.plane == plane &&
       other.sketchPatternMirrorInstance == sketchPatternMirrorInstance &&
-      other.component == component;
+      other.component == component &&
+      other.curveFeature == curveFeature;
 
   @override
   int get hashCode => Object.hash(
@@ -202,6 +222,7 @@ class SelectionFilterState {
           plane,
           sketchPatternMirrorInstance,
           component,
+          curveFeature,
         ),
       );
 
@@ -212,5 +233,6 @@ class SelectionFilterState {
       'sketchArc: $sketchArc, sketchEllipse: $sketchEllipse, sketchEllipseArc: $sketchEllipseArc, '
       'sketchSpline: $sketchSpline, '
       'sketchText: $sketchText, plane: $plane, '
-      'sketchPatternMirrorInstance: $sketchPatternMirrorInstance, component: $component)';
+      'sketchPatternMirrorInstance: $sketchPatternMirrorInstance, component: $component, '
+      'curveFeature: $curveFeature)';
 }

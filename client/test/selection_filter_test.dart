@@ -61,7 +61,15 @@ void main() {
     test('every field can be set independently in one call', () {
       const state = SelectionFilterState.defaults;
       final next = state.copyWith(vertex: false, edge: false, face: false, body: true);
-      expect(next, const SelectionFilterState(vertex: false, edge: false, face: false, body: true));
+      // curveFeature must be spelled out explicitly here: `.defaults` sets it
+      // true (unlike the bare constructor's own false default - see that
+      // field's own doc comment), and copyWith above never touches it, so
+      // the expected literal has to match `.defaults`'s value, not fall
+      // back to the constructor's.
+      expect(
+        next,
+        const SelectionFilterState(vertex: false, edge: false, face: false, body: true, curveFeature: true),
+      );
     });
 
     test('C1: sketchPoint/sketchLine can be set independently, leaving the rest untouched', () {

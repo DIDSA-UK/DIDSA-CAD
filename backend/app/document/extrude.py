@@ -51,11 +51,13 @@ from app.document.models import (
     BevelPairFeature,
     BooleanFeature,
     ChamferFeature,
+    CurveFeature,
     DeleteBodyFeature,
     DeleteFaceFeature,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
+    FillSurfaceFeature,
     FilletFeature,
     GearChainFeature,
     GearFeature,
@@ -2169,6 +2171,41 @@ def _apply_feature_to_bodies_impl(
             logger.warning("Skipping SweptSurfaceFeature %s: could not be resolved", feature.id)
             return
         if shape is None:
+            return
+        bodies[feature.id] = shape
+        return
+
+    if isinstance(feature, CurveFeature):
+        # A Curve feature (Helix/Intersection curve) is not a Body or
+        # Surface, but is registered into `bodies` under its own Feature id
+        # anyway (mirrors SurfaceFeature's own registration above) so
+        # `get_part_mesh` can tessellate/display it standalone via the same
+        # pipeline, and so its individual edges become pickable via the
+        # ordinary `SubShapeRef`/`resolve_subshape_from_bodies` machinery,
+        # same as any other registered shape. Function-local import mirrors
+        # every other surface-family import just above (`app.document.curve`
+        # itself imports several names from this module at its own module
+        # level, so the reverse import must stay function-local).
+        from app.document.curve import resolve_curve_from_bodies
+
+        try:
+            resolved = resolve_curve_from_bodies(part, feature, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping CurveFeature %s: could not be resolved", feature.id)
+            return
+        bodies[feature.id] = resolved.wire
+        return
+
+    if isinstance(feature, FillSurfaceFeature):
+        # Mirrors SweptSurfaceFeature's own tolerance shape just above -
+        # a stale/edited-away boundary reference is skipped, not a hard
+        # failure of the whole `/mesh` request.
+        from app.document.fill_surface import resolve_fill_surface_from_bodies
+
+        try:
+            shape = resolve_fill_surface_from_bodies(feature, part, bodies, excluded_feature_ids)
+        except HTTPException:
+            logger.warning("Skipping FillSurfaceFeature %s: could not be resolved", feature.id)
             return
         bodies[feature.id] = shape
         return

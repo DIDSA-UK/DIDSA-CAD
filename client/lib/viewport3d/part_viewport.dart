@@ -4664,6 +4664,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   static int _hoverHitTier(HoverHit hit) => switch (hit.entity.kind) {
         SelectionEntityKind.vertex => 0,
         SelectionEntityKind.edge => 1,
+        // A curve-feature hit is produced via hitTestBodies'/hitTestAllCandidates'
+        // own `bestEdge` slot (see their shared `body.isCurve` branch), so it
+        // shares edge's own tier rather than falling into the coarser wildcard.
+        SelectionEntityKind.curveFeature => 1,
         SelectionEntityKind.component => 3,
         _ => 2,
       };
@@ -5870,6 +5874,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               edgeSegments.add((transform.transformed3(s.$1), transform.transformed3(s.$2)));
             }
           }
+        case SelectionEntityKind.curveFeature:
+          // A Curve feature is picked as one whole unit (see its own doc
+          // comment) - every edge of its own wire highlights, not just one
+          // by id, unlike the ordinary `edge` case just above.
+          final resolved = _bodyAndTransformFor(entity);
+          if (resolved != null) {
+            final (body, transform) = resolved;
+            for (final s in edgeSegmentsFromMesh(body.mesh)) {
+              edgeSegments.add((transform.transformed3(s.$1), transform.transformed3(s.$2)));
+            }
+          }
         case SelectionEntityKind.vertex:
           final resolved = _bodyAndTransformFor(entity);
           if (resolved != null) {
@@ -6135,6 +6150,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final (body, transform) = resolved;
         final segments = [
           for (final s in edgeSegmentsForId(body.mesh, entity.id))
+            (transform.transformed3(s.$1), transform.transformed3(s.$2)),
+        ];
+        if (segments.isEmpty) return null;
+        return buildMeshEdgesNode(
+          segments,
+          color: color,
+          width: kHighlightEdgeStrokeWidth,
+          alwaysOnTop: alwaysOnTop,
+        );
+      case SelectionEntityKind.curveFeature:
+        // A Curve feature is picked as one whole unit (see its own doc
+        // comment) - every edge of its own wire highlights via
+        // `edgeSegmentsFromMesh` (unfiltered by id), unlike the ordinary
+        // `edge` case above.
+        final resolved = _bodyAndTransformFor(entity);
+        if (resolved == null) return null;
+        final (body, transform) = resolved;
+        final segments = [
+          for (final s in edgeSegmentsFromMesh(body.mesh))
             (transform.transformed3(s.$1), transform.transformed3(s.$2)),
         ];
         if (segments.isEmpty) return null;

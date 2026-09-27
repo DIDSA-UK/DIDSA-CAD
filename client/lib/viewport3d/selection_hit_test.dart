@@ -112,6 +112,15 @@ enum SelectionEntityKind {
   /// whole identity" convention) - [id]/[bodyId]/every other field carries
   /// no meaning here.
   component,
+
+  /// A Curve feature's own displayed wire (Helix/Intersection curve),
+  /// hit-tested as one whole unit via [hitTestBodies]'s own `body.isCurve`
+  /// branch, not per individual edge segment - [SelectionEntityRef.bodyId]
+  /// (the CurveFeature's own Feature id, per `BodyMeshDto.isCurve`'s own
+  /// doc comment) alone is this kind's identity, mirroring [body]'s "bodyId
+  /// alone is the whole identity" convention above; [id] is always `0` and
+  /// carries no meaning, the same way it does for [body].
+  curveFeature,
 }
 
 /// Identifies one selectable mesh entity - a [SelectionEntityKind] plus the
@@ -1287,7 +1296,37 @@ HoverHit? hitTestBodies({
         bestVertex = taggedWithBody(hit, body.bodyId);
       }
     }
-    if (filter.edge) {
+    if (body.isCurve) {
+      // A Curve feature's own wire is hit-tested via the identical edge
+      // ray/pixel-distance math as an ordinary Body edge (its mesh has real
+      // `edges`/`edgeIds`) - only the resulting *tag* differs: the whole
+      // wire is one pick (`SelectionEntityKind.curveFeature`, `id: 0`),
+      // not a specific edge index, since every consumer (Sweep path, Fill
+      // Surface boundary, CreatePlane's curve source) wants the whole
+      // curve, not one of its segments. Gated by `filter.curveFeature`
+      // instead of `filter.edge`, so a picker that only wants ordinary Body
+      // edges (Fillet, Chamfer, etc.) stays closed to curve taps by simply
+      // never setting that field - see `SelectionFilterState.curveFeature`'s
+      // own doc comment.
+      if (filter.curveFeature) {
+        final hit = hitTestEdges(
+          ray,
+          viewportSize,
+          edgeSegmentsFromMesh(mesh),
+          mesh.edgeIds,
+          radiusPixels: radiusPixels,
+          orthographicHalfHeight: orthographicHalfHeight,
+          fovRadiansY: fovRadiansY,
+        );
+        if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+          bestEdge = HoverHit(
+            entity: SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: body.bodyId, id: 0),
+            rayT: hit.rayT,
+            pixelDistance: hit.pixelDistance,
+          );
+        }
+      }
+    } else if (filter.edge) {
       final hit = hitTestEdges(
         ray,
         viewportSize,
@@ -1654,7 +1693,30 @@ List<HoverHit> hitTestAllCandidates({
         bestVertex = taggedWithBody(hit, body.bodyId);
       }
     }
-    if (filter.edge) {
+    if (body.isCurve) {
+      // Mirrors `hitTestBodies`'s own identical `body.isCurve` branch (see
+      // its doc comment) - "Select Other" should offer a Curve feature's
+      // wire as one whole `curveFeature` candidate, not as a raw `edge`
+      // indistinguishable from a solid Body's own edge.
+      if (filter.curveFeature) {
+        final hit = hitTestEdges(
+          ray,
+          viewportSize,
+          edgeSegmentsFromMesh(mesh),
+          mesh.edgeIds,
+          radiusPixels: radiusPixels,
+          orthographicHalfHeight: orthographicHalfHeight,
+          fovRadiansY: fovRadiansY,
+        );
+        if (hit != null && (bestEdge == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestEdge.pixelDistance!, bestEdge.rayT))) {
+          bestEdge = HoverHit(
+            entity: SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: body.bodyId, id: 0),
+            rayT: hit.rayT,
+            pixelDistance: hit.pixelDistance,
+          );
+        }
+      }
+    } else if (filter.edge) {
       final hit = hitTestEdges(
         ray,
         viewportSize,

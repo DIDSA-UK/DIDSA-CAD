@@ -255,7 +255,9 @@ def test_swept_surface_feature_round_trips_through_native_export_import():
         # app.document.models.SketchOrEdgeRef), which always echoes its own
         # `edge_ref` field (None for a Sketch-entity entry) alongside the
         # original flat sketch_id/entity_type/entity_id fields.
-        assert round_tripped["path_refs"] == [{**ref, "edge_ref": None} for ref in path_refs]
+        assert round_tripped["path_refs"] == [
+            {**ref, "edge_ref": None, "curve_feature_id": None} for ref in path_refs
+        ]
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)

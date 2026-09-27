@@ -189,6 +189,19 @@ List<SelectionContextAction> contextActionsFor(
   final sketchArcs = selection.where((s) => s.kind == SelectionEntityKind.sketchArc).toList();
   final vertices = selection.where((s) => s.kind == SelectionEntityKind.vertex).toList();
 
+  // Curve features (gap c): a lone Curve feature (Helix/Intersection
+  // curve), nothing else - Create Plane normal to its own tangent at a
+  // point along it (see `CreatePlaneMode.normalToCurveFeatureAtParameter`'s
+  // own doc comment). Checked before every other bucket below, same
+  // precedence reasoning the single-plane-like/three-points checks use -
+  // none of those buckets can otherwise ever match a curveFeature-kind
+  // entity anyway, but this keeps the "exactly one kind, nothing else"
+  // combos grouped together up front.
+  final curveFeatures = selection.where((s) => s.kind == SelectionEntityKind.curveFeature).toList();
+  if (curveFeatures.length == 1 && selection.length == 1) {
+    return const [SelectionContextAction('Create Plane', enabled: true)];
+  }
+
   // C4: exactly three points total, nothing else - Three Points, mixing Body
   // Vertices and Sketch Points freely (any split between the two, including
   // all-vertex or all-sketch-point). Checked before the sketch-entity-only

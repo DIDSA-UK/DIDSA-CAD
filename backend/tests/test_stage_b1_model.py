@@ -42,8 +42,11 @@ def test_extrude_feature_produces_body_for_boss_and_cut():
     assert cut.produces == Produces.BODY
 
 
-def test_produces_enum_has_exactly_the_five_documented_values():
-    assert {p.value for p in Produces} == {"body", "plane", "surface", "sketch", "none"}
+def test_produces_enum_has_exactly_the_six_documented_values():
+    # Curve features: CURVE added alongside the original five (a Helix/
+    # Intersection curve's own `Produces` value - see app.document.models.
+    # CurveFeature).
+    assert {p.value for p in Produces} == {"body", "plane", "surface", "sketch", "curve", "none"}
 
 
 def test_subshape_type_enum_has_exactly_edge_face_vertex_and_body():

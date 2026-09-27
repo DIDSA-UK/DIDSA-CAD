@@ -33,12 +33,15 @@ from app.document.models import (
     ComponentPatternAxis,
     ComponentPatternType,
     CreatePlaneFeature,
+    CurveFeature,
+    CurveType,
     DeleteBodyFeature,
     DeleteFaceFeature,
     Document,
     ExtrudeFeature,
     ExtrudeType,
     Feature,
+    FillSurfaceFeature,
     FilletFeature,
     FixedAxis,
     GearChainFeature,
@@ -740,7 +743,15 @@ def _sketch_or_edge_ref_to_dict(ref: SketchOrEdgeRef) -> dict:
     router._sketch_or_edge_ref_to_schema` - same flat-fields-plus-optional-
     edge_ref shape as `SketchOrEdgeRefSchema` (see that class's own doc
     comment for why: so a native file exported before this field existed
-    keeps importing unchanged, with `edge_ref` simply absent)."""
+    keeps importing unchanged, with `edge_ref` simply absent).
+
+    Curve features: `curve_feature_id` is the third, additive case (a
+    Sweep/Swept-Surface path or Loft/Loft-Surface guide curve pointing at a
+    Helix/Intersection curve instead of a Sketch entity or Body edge) - same
+    "purely additive new key, absent on anything exported before it existed"
+    convention `edge_ref` itself already established."""
+    if ref.curve_feature_id is not None:
+        return {"curve_feature_id": ref.curve_feature_id}
     if ref.edge_ref is not None:
         return {"edge_ref": _subshape_ref_to_dict(ref.edge_ref)}
     assert ref.sketch_entity_ref is not None
@@ -748,6 +759,9 @@ def _sketch_or_edge_ref_to_dict(ref: SketchOrEdgeRef) -> dict:
 
 
 def _sketch_or_edge_ref_from_dict(data: dict) -> SketchOrEdgeRef:
+    curve_feature_id = data.get("curve_feature_id")
+    if curve_feature_id is not None:
+        return SketchOrEdgeRef(curve_feature_id=curve_feature_id)
     edge_ref = data.get("edge_ref")
     if edge_ref is not None:
         return SketchOrEdgeRef(edge_ref=_subshape_ref_from_dict(edge_ref))
@@ -1083,6 +1097,29 @@ def _feature_to_dict(feature: Feature) -> dict:
             "edge_ref": _subshape_ref_to_dict(feature.edge_ref) if feature.edge_ref else None,
             "vertex_ref": _subshape_ref_to_dict(feature.vertex_ref) if feature.vertex_ref else None,
             "point_refs": [_point_ref_to_dict(r) for r in feature.point_refs],
+            "curve_feature_id": feature.curve_feature_id,
+            "curve_parameter": feature.curve_parameter,
+        }
+    if isinstance(feature, CurveFeature):
+        return {
+            "type": "curve",
+            "id": feature.id,
+            "curve_type": feature.curve_type.value,
+            "axis_ref": _plane_ref_to_dict(feature.axis_ref) if feature.axis_ref else None,
+            "radius": feature.radius,
+            "pitch": feature.pitch,
+            "turns": feature.turns,
+            "right_handed": feature.right_handed,
+            "sketch_feature_id_a": feature.sketch_feature_id_a,
+            "profile_refs_a": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs_a],
+            "sketch_feature_id_b": feature.sketch_feature_id_b,
+            "profile_refs_b": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs_b],
+        }
+    if isinstance(feature, FillSurfaceFeature):
+        return {
+            "type": "fill_surface",
+            "id": feature.id,
+            "boundary_refs": [_sketch_or_edge_ref_to_dict(r) for r in feature.boundary_refs],
         }
     if isinstance(feature, FilletFeature):
         return {
@@ -1461,6 +1498,27 @@ def _feature_from_dict(data: dict) -> Feature:
             edge_ref=_subshape_ref_from_dict(data["edge_ref"]) if data.get("edge_ref") else None,
             vertex_ref=_subshape_ref_from_dict(data["vertex_ref"]) if data.get("vertex_ref") else None,
             point_refs=[_point_ref_from_dict(r) for r in data.get("point_refs", [])],
+            curve_feature_id=data.get("curve_feature_id"),
+            curve_parameter=data.get("curve_parameter"),
+        )
+    if feature_type == "curve":
+        return CurveFeature(
+            id=feature_id,
+            curve_type=CurveType(_require(data, "curve_type")),
+            axis_ref=_plane_ref_from_dict(data["axis_ref"]) if data.get("axis_ref") else None,
+            radius=data.get("radius"),
+            pitch=data.get("pitch"),
+            turns=data.get("turns"),
+            right_handed=data.get("right_handed", True),
+            sketch_feature_id_a=data.get("sketch_feature_id_a"),
+            profile_refs_a=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs_a", [])],
+            sketch_feature_id_b=data.get("sketch_feature_id_b"),
+            profile_refs_b=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs_b", [])],
+        )
+    if feature_type == "fill_surface":
+        return FillSurfaceFeature(
+            id=feature_id,
+            boundary_refs=[_sketch_or_edge_ref_from_dict(r) for r in data.get("boundary_refs", [])],
         )
     if feature_type == "fillet":
         return FilletFeature(

@@ -620,7 +620,15 @@ class PlanTranslator {
         final feature = await documentApi.createSweepFeature(
           partId,
           sketchFeatureId: _resolveId(step.sketchFeatureId, ids),
-          pathRefs: _entityRefs(plan, ids, sketchIds, step.pathRefs),
+          // Gap (a): an AI-authored plan only ever names Sketch entities for
+          // a Sweep path (no notion of a Body edge/Curve feature reference
+          // exists in the AI plan schema) - each one is widened into a
+          // [PathRefDto.sketchEntity] to match `createSweepFeature`'s own
+          // now-generalized `pathRefs` element type.
+          pathRefs: [
+            for (final r in _entityRefs(plan, ids, sketchIds, step.pathRefs))
+              PathRefDto.sketchEntity(sketchId: r.sketchId, entityType: r.entityType, entityId: r.entityId),
+          ],
           mode: step.mode.wireValue,
           targetBodyIds: [for (final t in step.targetBodyIds) _resolveId(t, ids)],
           profileRefs: _entityRefs(plan, ids, sketchIds, step.profileRefs),

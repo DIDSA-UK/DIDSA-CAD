@@ -88,6 +88,12 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     'planetary_gear' => 'Planetary Gear',
     'bevel_gear' => 'Bevel Gear',
     'bevel_pair' => 'Bevel Pair',
+    // Curve features: one shared Feature `type` ("curve") for both Helix
+    // and Intersection curve, dispatching on `feature.curveType` for the
+    // display label - same "shared type, per-value label" convention
+    // `'boolean'` above already uses for Subtract/Common.
+    'curve' => feature.curveType == 'intersection' ? 'Intersection Curve' : 'Helix',
+    'fill_surface' => 'Fill Surface',
     _ => 'Sketch',
   };
   final ordinal = features.take(index + 1).where((f) => f.type == feature.type).length;
@@ -103,7 +109,10 @@ String featureDisplayName(List<FeatureDto> features, int index) {
 /// for any Feature since B4 - not just the last one) - this stays a plain
 /// negative check rather than an allow-list so it doesn't need updating for
 /// every future Feature type that keeps following that same pattern.
-bool _hasEditPanel(String type) => type != 'import';
+// Curve/Fill Surface features: no edit panel yet (v1 client scope is
+// create-only - see `part_screen.dart`'s own Curve/Fill Surface starters),
+// same "not every Feature type has one" treatment `'import'` already gets.
+bool _hasEditPanel(String type) => type != 'import' && type != 'curve' && type != 'fill_surface';
 
 /// Maps a Feature's `type` string to its tree-row glyph. `'sketch'` and
 /// `'create_plane'` reuse the same asset their own dedicated section already
@@ -184,6 +193,15 @@ String _featureTypeAsset(String type) => switch (type) {
       'bevel_gear' ||
       'bevel_pair' =>
         'assets/icons/feature/feature_gear.svg',
+      // Curve features: no dedicated glyph yet - reuses Sweep's own icon
+      // (a path-like curve is the closest existing silhouette), same "one
+      // shared/borrowed glyph until a dedicated one exists" precedent
+      // Revolve/Swept/Loft Surface already establish above.
+      'curve' => 'assets/icons/feature/feature_sweep.svg',
+      // Fill Surface: reuses the generic Surface glyph (`'surface'`'s own
+      // asset) - a filling surface has no more specific existing silhouette
+      // to borrow, and it genuinely is a Surface-producing tool.
+      'fill_surface' => 'assets/icons/feature/feature_surface.svg',
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
 
@@ -311,6 +329,28 @@ class FeatureTreePanel extends StatefulWidget {
   /// Surface ids the backend tagged `hidden`. Mirrors [hiddenBodyIds].
   final Set<String> hiddenSurfaceIds;
 
+  /// The Part's currently-computed *Curve feature* ids (`GET /mesh`,
+  /// `source: "computed"` entries with `is_curve: true`) - mirrors
+  /// [surfaceIds] exactly, its own section rather than folded into Bodies
+  /// or Surfaces: a Curve feature (Helix/Intersection curve) is neither a
+  /// solid Body nor a face-bearing Surface, just a standalone wire.
+  final List<String> curveIds;
+
+  /// Stable "Curve 1"/"Curve 2"... display names for [curveIds] - see
+  /// `body_naming.dart`'s `curveDisplayNames`. Mirrors [surfaceNames].
+  final Map<String, String> curveNames;
+
+  /// Tapping a row in the Curves section - selects/highlights that Curve
+  /// feature's whole wire in the 3D viewport. Mirrors [onSurfaceTap].
+  final void Function(String curveId)? onCurveTap;
+
+  /// Long-pressing a Curves-section row - enters Build Tree multi-select
+  /// (see `PartScreen`'s own wiring). Mirrors [onSurfaceLongPress].
+  final void Function(String curveId)? onCurveLongPress;
+
+  /// Curve feature ids the backend tagged `hidden`. Mirrors [hiddenSurfaceIds].
+  final Set<String> hiddenCurveIds;
+
   /// Prompt D: true while the tree is acting as a Sketch picker for a
   /// pending Extrude (entered from the "Add" FAB's Feature > Extrude entry
   /// when no eligible Sketch is already selected) - shows the picker banner
@@ -431,6 +471,11 @@ class FeatureTreePanel extends StatefulWidget {
     this.surfaceIds = const [],
     this.surfaceNames = const {},
     this.hiddenSurfaceIds = const {},
+    this.curveIds = const [],
+    this.curveNames = const {},
+    this.onCurveTap,
+    this.onCurveLongPress,
+    this.hiddenCurveIds = const {},
     this.isSketchPickerMode = false,
     this.pickableSketchIds = const {},
     this.onSketchPicked,
@@ -661,6 +706,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         if (widget.bodyIds.isNotEmpty) _buildBodiesSection(context),
         if (widget.features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
         if (widget.surfaceIds.isNotEmpty) _buildSurfacesSection(context),
+        if (widget.curveIds.isNotEmpty) _buildCurvesSection(context),
         _buildFeaturesSection(context),
       ],
     );
@@ -828,6 +874,58 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
             : widget.onSurfaceLongPress == null
                 ? null
                 : () => widget.onSurfaceLongPress!(surfaceId),
+      ),
+    );
+  }
+
+  /// The Curves section - real produced Curve feature objects (Helix/
+  /// Intersection curve). Mirrors [_buildSurfacesSection] exactly: a Curve
+  /// feature is not a Body (no solid geometry) and not a Surface (no
+  /// faces), so it gets its own section rather than falling into either -
+  /// one row per [FeatureTreePanel.curveIds] entry, named via
+  /// [FeatureTreePanel.curveNames]. Omitted entirely when there are none yet,
+  /// starts collapsed.
+  Widget _buildCurvesSection(BuildContext context) {
+    final orderedIds = widget.curveNames.keys.where(widget.curveIds.contains).toList();
+    return ExpansionTile(
+      initiallyExpanded: false,
+      dense: true,
+      visualDensity: VisualDensity.compact,
+      leading: const SvgIcon('assets/icons/viewport/selection_edge.svg', size: 26),
+      title: const Text('Curves', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
+      children: [for (final curveId in orderedIds) _buildCurveTile(curveId)],
+    );
+  }
+
+  /// One Curve feature's row inside the Curves section - mirrors
+  /// [_buildSurfaceTile] exactly.
+  Widget _buildCurveTile(String curveId) {
+    final hidden = widget.hiddenCurveIds.contains(curveId);
+    final key = TreeMultiSelectKeys.curve(curveId);
+    return Opacity(
+      opacity: hidden ? 0.5 : 1.0,
+      child: ListTile(
+        dense: true,
+        visualDensity: VisualDensity.compact,
+        selected: _isMultiSelected(key),
+        leading: const SvgIcon('assets/icons/viewport/selection_edge.svg', size: 24),
+        title: Text(
+          widget.curveNames[curveId] ?? curveId,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: _rowTitleStyle,
+        ),
+        trailing: _simpleRowTrailing(hidden: hidden, key: key),
+        onTap: widget.isMultiSelectMode
+            ? () => widget.onMultiSelectToggle?.call(key)
+            : widget.onCurveTap == null
+                ? null
+                : () => widget.onCurveTap!(curveId),
+        onLongPress: widget.isMultiSelectMode
+            ? () => widget.onMultiSelectToggle?.call(key)
+            : widget.onCurveLongPress == null
+                ? null
+                : () => widget.onCurveLongPress!(curveId),
       ),
     );
   }

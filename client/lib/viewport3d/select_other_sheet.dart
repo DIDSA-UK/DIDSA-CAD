@@ -188,6 +188,11 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
       // same way here as it already does in the Assembly tree.
       case SelectionEntityKind.component:
         return const Icon(Icons.view_in_ar_outlined);
+      // A Curve feature (Helix/Intersection curve) hit-tests via the same
+      // edge mechanism as an ordinary Body edge (see `hitTestBodies`'s own
+      // `body.isCurve` branch) - reuses that same edge icon.
+      case SelectionEntityKind.curveFeature:
+        return const SvgIcon('assets/icons/viewport/selection_edge.svg');
     }
   }
 
@@ -224,6 +229,8 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
         return 'Pattern/Mirror';
       case SelectionEntityKind.component:
         return 'Component';
+      case SelectionEntityKind.curveFeature:
+        return 'Curve';
     }
   }
 
@@ -251,6 +258,14 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
         entity.kind == SelectionEntityKind.sketchText) {
       final id = entity.sketchEntityId;
       return '${_labelFor(entity.kind)} #${id.length > 8 ? id.substring(0, 8) : id}';
+    }
+    // A Curve feature is picked as one whole unit ([entity.id] is always 0
+    // and carries no meaning, same as [SelectionEntityKind.body]) - mirrors
+    // the `body` case above, falling back to a truncated id the same way
+    // if [widget.bodyNames] wasn't given the merged-in Curve names.
+    if (entity.kind == SelectionEntityKind.curveFeature) {
+      final id = entity.bodyId;
+      return widget.bodyNames[id] ?? 'Curve ${id.length > 8 ? id.substring(0, 8) : id}';
     }
     return '${_labelFor(entity.kind)} #${entity.id}';
   }

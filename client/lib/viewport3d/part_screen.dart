@@ -54,6 +54,7 @@ import 'chamfer_panel.dart';
 import 'create_plane_context_sheet.dart';
 import 'create_plane_geometry_3d.dart';
 import 'create_plane_panel.dart';
+import 'curve_panel.dart';
 import 'delete_body_panel.dart';
 import 'delete_face_panel.dart';
 import 'extrude_panel.dart';
@@ -63,6 +64,7 @@ import '../materials/part_properties_screen.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
+import 'fill_surface_panel.dart';
 import 'fillet_panel.dart';
 import 'import_format_dialog.dart';
 import 'knit_surface_panel.dart';
@@ -103,7 +105,7 @@ import 'shell_panel.dart';
 import 'selection_context_panel.dart';
 import 'selection_filter.dart';
 import 'select_other_sheet.dart';
-import 'selection_hit_test.dart' show HoverHit, SelectionEntityKind, SelectionEntityRef;
+import 'selection_hit_test.dart' show HoverHit, SelectionEntityKind, SelectionEntityRef, edgeSegmentsForId;
 import 'selection_list_drawer.dart';
 import 'section_panel.dart';
 import 'section_plane.dart';
@@ -896,9 +898,12 @@ class _PartScreenState extends State<PartScreen> {
   /// [_computedSurfaceIds]/[_surfaceNames] and the Build Tree's own
   /// Surfaces section, never here or in the Build Tree's Bodies section
   /// (see [_selectionBodyNames] for the one place a Surface's own name
-  /// still needs to reach [SelectionListDrawer]).
+  /// still needs to reach [SelectionListDrawer]). Also excludes a Curve
+  /// feature's own wire-only body (`BodyMeshDto.isCurve`) - see
+  /// [_computedCurveIds]'s own doc comment for why a Curve gets the
+  /// identical "its own section, never Bodies" treatment.
   List<String> get _computedBodyIds => _bodies
-      .where((b) => b.source == 'computed' && !b.isSurface)
+      .where((b) => b.source == 'computed' && !b.isSurface && !b.isCurve)
       .map((b) => b.bodyId)
       .toList();
 
@@ -908,6 +913,17 @@ class _PartScreenState extends State<PartScreen> {
       .where((b) => b.source == 'computed' && b.isSurface)
       .map((b) => b.bodyId)
       .toList();
+
+  /// [_computedBodyIds]'s Curves counterpart - every currently-computed
+  /// Curve feature (Helix/Intersection curve) id, hidden or not. A Curve
+  /// feature's own wire is registered in `/mesh` under its own Feature id,
+  /// same "one array entry per independently-tessellated body" convention
+  /// every solid Body/Surface already uses - it does not belong in
+  /// [_computedBodyIds] (it isn't a solid) or [_computedSurfaceIds] (it has
+  /// no faces at all), so it gets its own Build Tree section instead of
+  /// silently falling into either.
+  List<String> get _computedCurveIds =>
+      _bodies.where((b) => b.source == 'computed' && b.isCurve).map((b) => b.bodyId).toList();
 
   /// Boolean family, fourth/last entry: whether [bodyId] names an existing
   /// Surface (its own rendered, non-solid shell), not an ordinary solid
@@ -980,6 +996,18 @@ class _PartScreenState extends State<PartScreen> {
   /// scheme (see `body_naming.dart`'s `surfaceDisplayNames`).
   Map<String, String> get _surfaceNames => surfaceDisplayNames(_features, _computedSurfaceIds);
 
+  /// [_bodyNames]'s Curves-section counterpart - "Curve 1"/"Curve 2"...
+  /// display names for [_computedCurveIds].
+  Map<String, String> get _curveNames => curveDisplayNames(_features, _computedCurveIds);
+
+  /// [CreatePlanePanel.curveFeatureChoices]'s data source for
+  /// [CreatePlaneMode.normalToCurveFeatureAtParameter] - every currently-
+  /// computed Curve feature, labeled the same way the Build Tree's own
+  /// Curves section already displays them ([_curveNames]).
+  List<SketchFeatureChoice> get _curveFeatureChoices => _computedCurveIds
+      .map((id) => SketchFeatureChoice(featureId: id, label: _curveNames[id] ?? id))
+      .toList();
+
   /// Bug fix: [SelectionListDrawer.bodyNames] resolves a selected
   /// `SelectionEntityKind.body` entity's display name from this one map -
   /// a selected Surface (still tapped/highlighted via that same `body` kind,
@@ -987,8 +1015,12 @@ class _PartScreenState extends State<PartScreen> {
   /// falls through to [SelectionListDrawer]'s raw-id fallback and gets
   /// mislabeled "Body" plus a truncated id hash - [_bodyNames] alone (real
   /// solid Bodies only, since the Bug 1/2 fix) is no longer the complete
-  /// id-to-name map every `body`-kind selection can resolve against.
-  Map<String, String> get _selectionBodyNames => {..._bodyNames, ..._surfaceNames};
+  /// id-to-name map every `body`-kind selection can resolve against. Also
+  /// folds in [_curveNames] - a `SelectionEntityKind.curveFeature` entity's
+  /// own `bodyId` is looked up against this same merged map (see
+  /// `selection_list_drawer.dart`'s own `curveFeature` branch), for the
+  /// identical "a shared id-to-name map, not a raw id truncation" reason.
+  Map<String, String> get _selectionBodyNames => {..._bodyNames, ..._surfaceNames, ..._curveNames};
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
@@ -2119,7 +2151,7 @@ class _PartScreenState extends State<PartScreen> {
     await showSelectOtherSheet(
       context,
       candidates: candidates,
-      bodyNames: _bodyNames,
+      bodyNames: _selectionBodyNames,
       onSelect: _toggleSelectedEntity,
       onHighlight: (entity) => setState(() => _selectOtherHighlight = entity),
     );
@@ -2346,12 +2378,18 @@ class _PartScreenState extends State<PartScreen> {
     // own doc comment). Checked before the Revolve axis special-case below
     // for the same reason the profile-picker check above is - the two
     // modes are never active at the same time.
+    // Gap (a): a Body edge or an existing Curve feature's own wire is just
+    // as valid a path segment as a Sketch entity - routed into the same
+    // [_togglePathPick] dispatch (see that method's own generalized
+    // [PathRefDto]-building logic), not a separate parallel field.
     if (_pathPickerActive &&
         (entity.kind == SelectionEntityKind.sketchLine ||
             entity.kind == SelectionEntityKind.sketchArc ||
             entity.kind == SelectionEntityKind.sketchCircle ||
             entity.kind == SelectionEntityKind.sketchEllipse ||
-            entity.kind == SelectionEntityKind.sketchSpline)) {
+            entity.kind == SelectionEntityKind.sketchSpline ||
+            entity.kind == SelectionEntityKind.edge ||
+            entity.kind == SelectionEntityKind.curveFeature)) {
       _togglePathPick(entity);
       return;
     }
@@ -3140,6 +3178,17 @@ class _PartScreenState extends State<PartScreen> {
   /// [CreatePlaneMode.offsetFace] - the panel's live offset field value,
   /// debounced into a PATCH the same way [_extrudeStartDistance] etc. are.
   double _createPlaneOffset = 0.0;
+
+  /// [_createPlaneOffset]'s counterpart for [CreatePlaneMode.
+  /// normalToCurveFeatureAtParameter] - which Curve feature the plane is
+  /// normal to, and where (0-1 arc-length fraction) along it, both driven
+  /// live by [CreatePlanePanel]'s own dropdown/slider and debounced into a
+  /// PATCH the same way. [_createPlaneCurveFeatureId] starts out as
+  /// whichever Curve feature was already selected/tapped when the panel
+  /// opened (see [_openCreatePlanePanel]), but the panel's dropdown can
+  /// still change it to a different existing Curve feature.
+  String? _createPlaneCurveFeatureId;
+  double _createPlaneCurveParameter = 0.5;
 
   Timer? _createPlaneDebounce;
 
@@ -5887,7 +5936,11 @@ class _PartScreenState extends State<PartScreen> {
   /// this whole picker is built around; [_selectedEntities] is derived from
   /// it (see [_togglePathPick]), not the other way around, so the two can
   /// never drift out of sync.
-  List<SketchEntityRefDto> _pathPickerRefs = [];
+  ///
+  /// Gap (a): each entry is a [PathRefDto], not just a Sketch entity -
+  /// mixing sketch entities, Body edges, and Curve features in one ordered
+  /// chain (confirmed decision, see the backend's `SweepFeature` docstring).
+  List<PathRefDto> _pathPickerRefs = [];
 
   /// [_selectedEntities]' value from just before picking started - restored
   /// on confirm/cancel, same purpose every other picker's own
@@ -5895,22 +5948,27 @@ class _PartScreenState extends State<PartScreen> {
   Set<SelectionEntityRef>? _entitiesBeforePathPicker;
 
   /// Restricts the picker session to `sketchLine`/`sketchArc`/
-  /// `sketchCircle`/`sketchEllipse`/`sketchSpline` hits - Point is never a
-  /// valid path segment, and unlike the profile picker's own filter,
-  /// `body` stays off too - target-body picking only happens later, once
-  /// [SweepPanel] itself is open. Bug fix (see [_togglePathPick]'s own doc
-  /// comment): `sketchCircle` now joins `sketchArc`/`sketchEllipse`/
-  /// `sketchSpline` at its own `true` default (see [SelectionFilterState]'s
-  /// own doc comment) - Circle, like Ellipse, is always closed/standalone,
-  /// and was previously excluded here only because it wasn't yet asked
-  /// for, not because it couldn't work.
+  /// `sketchCircle`/`sketchEllipse`/`sketchSpline`/`edge`/`curveFeature`
+  /// hits - Point is never a valid path segment, and unlike the profile
+  /// picker's own filter, `body` stays off too - target-body picking only
+  /// happens later, once [SweepPanel] itself is open. Bug fix (see
+  /// [_togglePathPick]'s own doc comment): `sketchCircle` now joins
+  /// `sketchArc`/`sketchEllipse`/`sketchSpline` at its own `true` default
+  /// (see [SelectionFilterState]'s own doc comment) - Circle, like Ellipse,
+  /// is always closed/standalone, and was previously excluded here only
+  /// because it wasn't yet asked for, not because it couldn't work.
+  ///
+  /// Gap (a): `edge`/`curveFeature` now join the mix too - a Body edge or an
+  /// existing Curve feature's own wire is just as valid a path segment as a
+  /// Sketch entity (see [_togglePathPick]'s own generalized dispatch).
   static const _pathPickerSelectionFilter = SelectionFilterState(
     vertex: false,
-    edge: false,
+    edge: true,
     face: false,
     body: false,
     sketchPoint: false,
     sketchLine: true,
+    curveFeature: true,
     plane: false,
   );
 
@@ -6001,6 +6059,127 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// Gap (a): [_pathSegmentWorldEndpoints]'s Body-edge counterpart - the
+  /// first and last of [edgeRef]'s own [edgeSegmentsForId] polyline
+  /// segments (in tessellation order, same "first/last polyline point is
+  /// the real endpoint" convention the Arc/Spline cases above already use).
+  /// Null if [edgeRef]'s Body/edge id can no longer be resolved, or if it's
+  /// a closed edge (its own first and last points coincide - e.g. a full
+  /// circular edge) with no free endpoints to chain from - mirrors
+  /// [_pathSegmentWorldEndpoints]'s own "closed/standalone kind" contract.
+  (vm.Vector3, vm.Vector3)? _edgeWorldEndpoints(SubShapeRefDto edgeRef) {
+    MeshDto? mesh;
+    for (final body in _bodies) {
+      if (body.bodyId == edgeRef.bodyId) {
+        mesh = body.mesh;
+        break;
+      }
+    }
+    if (mesh == null) return null;
+    final segments = edgeSegmentsForId(mesh, edgeRef.index);
+    if (segments.isEmpty) return null;
+    final start = segments.first.$1;
+    final end = segments.last.$2;
+    if (_pathPointsCoincide(start, end)) return null;
+    return (start, end);
+  }
+
+  /// Gap (a): [_pathSegmentWorldEndpoints]'s Curve-feature counterpart - a
+  /// Curve feature's own wire may be made of several OCCT edges (e.g. an
+  /// Intersection curve chained from multiple section edges - see the
+  /// backend's `curve.py::_chain_section_edges_into_wire`), so this
+  /// assembles [curveFeatureBodyId]'s own body mesh edges into a chain by
+  /// endpoint coincidence (the same small-scale client-side pre-check
+  /// [_tracePathPoints] already does for a whole path) rather than reading
+  /// a single edge's own endpoints directly. Null if [curveFeatureBodyId]
+  /// can no longer be resolved, its own edges don't actually chain into one
+  /// connected wire (shouldn't happen for a real Curve feature, but stays
+  /// defensive), or - mirroring [_edgeWorldEndpoints]'s own closed-loop
+  /// case - the chain loops back on itself with no free endpoints, meaning
+  /// this Curve feature can only ever be picked standalone (see
+  /// [_pathRefIsStandaloneOnly]).
+  (vm.Vector3, vm.Vector3)? _curveFeatureWorldEndpoints(String curveFeatureBodyId) {
+    MeshDto? mesh;
+    for (final body in _bodies) {
+      if (body.bodyId == curveFeatureBodyId && body.isCurve) {
+        mesh = body.mesh;
+        break;
+      }
+    }
+    if (mesh == null) return null;
+    final edgeEndpoints = <int, (vm.Vector3, vm.Vector3)>{};
+    for (final id in mesh.edgeIds.toSet()) {
+      final segments = edgeSegmentsForId(mesh, id);
+      if (segments.isEmpty) return null;
+      edgeEndpoints[id] = (segments.first.$1, segments.last.$2);
+    }
+    if (edgeEndpoints.isEmpty) return null;
+    final remaining = Map<int, (vm.Vector3, vm.Vector3)>.from(edgeEndpoints);
+    var (chainStart, chainEnd) = remaining.remove(remaining.keys.first)!;
+    while (remaining.isNotEmpty) {
+      int? matchedId;
+      vm.Vector3? newStart;
+      vm.Vector3? newEnd;
+      for (final entry in remaining.entries) {
+        final (start, end) = entry.value;
+        if (_pathPointsCoincide(chainEnd, start)) {
+          matchedId = entry.key;
+          newStart = chainStart;
+          newEnd = end;
+        } else if (_pathPointsCoincide(chainEnd, end)) {
+          matchedId = entry.key;
+          newStart = chainStart;
+          newEnd = start;
+        } else if (_pathPointsCoincide(chainStart, start)) {
+          matchedId = entry.key;
+          newStart = end;
+          newEnd = chainEnd;
+        } else if (_pathPointsCoincide(chainStart, end)) {
+          matchedId = entry.key;
+          newStart = start;
+          newEnd = chainEnd;
+        }
+        if (matchedId != null) break;
+      }
+      if (matchedId == null) return null;
+      remaining.remove(matchedId);
+      chainStart = newStart!;
+      chainEnd = newEnd!;
+    }
+    if (_pathPointsCoincide(chainStart, chainEnd)) return null;
+    return (chainStart, chainEnd);
+  }
+
+  /// [_pathSegmentWorldEndpoints]'s union counterpart - resolves any
+  /// [PathRefDto]'s own world-space `(start, end)` pair regardless of which
+  /// of the three kinds it names (Sketch entity, Body edge, Curve feature).
+  /// Null under the exact same two circumstances every kind-specific
+  /// resolver above already documents: unresolvable data, or a closed/
+  /// standalone-only kind with no endpoints at all.
+  (vm.Vector3, vm.Vector3)? _pathRefWorldEndpoints(PathRefDto ref) {
+    final curveFeatureId = ref.curveFeatureId;
+    if (curveFeatureId != null) return _curveFeatureWorldEndpoints(curveFeatureId);
+    final edgeRef = ref.edgeRef;
+    if (edgeRef != null) return _edgeWorldEndpoints(edgeRef);
+    final sketchFeatureId = _sketchFeatureIdForSketchId(ref.sketchId!);
+    if (sketchFeatureId == null) return null;
+    return _pathSegmentWorldEndpoints(sketchFeatureId, ref.entityId!, ref.entityType!);
+  }
+
+  /// Whether [ref] is inherently closed with no free endpoints to chain
+  /// from - a standalone Sketch Circle/Ellipse (statically true by entity
+  /// type alone, see [_togglePathPick]'s own former `standaloneOnlyTypes`),
+  /// a closed Body edge, or a Curve feature whose own wire loops back on
+  /// itself (both determined geometrically via [_edgeWorldEndpoints]/
+  /// [_curveFeatureWorldEndpoints] returning null). Like Circle/Ellipse, a
+  /// closed ref of any kind can only ever be picked alone as a complete
+  /// path - see [_togglePathPick]'s own use of this.
+  bool _pathRefIsStandaloneOnly(PathRefDto ref) {
+    if (ref.curveFeatureId != null) return _curveFeatureWorldEndpoints(ref.curveFeatureId!) == null;
+    if (ref.edgeRef != null) return _edgeWorldEndpoints(ref.edgeRef!) == null;
+    return ref.entityType == 'circle' || ref.entityType == 'ellipse';
+  }
+
   /// [_togglePathPick]'s own backend-facing counterpart, mirroring
   /// [_profileEntityTypeString]'s identical shape for the profile picker -
   /// the exact lowercase string `SketchEntityType` (backend
@@ -6041,13 +6220,10 @@ class _PartScreenState extends State<PartScreen> {
   /// don't actually connect - shouldn't happen for anything
   /// [_togglePathPick] itself built, but stays defensive against stale data
   /// the same way [_profileLoopIndexFor] already does.
-  List<vm.Vector3>? _tracePathPoints(List<SketchEntityRefDto> refs) {
+  List<vm.Vector3>? _tracePathPoints(List<PathRefDto> refs) {
     final points = <vm.Vector3>[];
     for (final ref in refs) {
-      final sketchFeatureId = _sketchFeatureIdForSketchId(ref.sketchId);
-      final segment = sketchFeatureId == null
-          ? null
-          : _pathSegmentWorldEndpoints(sketchFeatureId, ref.entityId, ref.entityType);
+      final segment = _pathRefWorldEndpoints(ref);
       if (segment == null) return null;
       final (start, end) = segment;
       if (points.isEmpty) {
@@ -6083,6 +6259,26 @@ class _PartScreenState extends State<PartScreen> {
         _ => SelectionEntityKind.sketchLine,
       };
 
+  /// Gap (a): [_pathSelectionKindFor]'s union counterpart - rebuilds the
+  /// real [SelectionEntityRef] for any [PathRefDto], regardless of which of
+  /// the three kinds it names, for [_togglePathPick]'s own
+  /// [_selectedEntities] reconstruction.
+  SelectionEntityRef _selectionEntityForPathRef(PathRefDto ref) {
+    final curveFeatureId = ref.curveFeatureId;
+    if (curveFeatureId != null) {
+      return SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: curveFeatureId);
+    }
+    final edgeRef = ref.edgeRef;
+    if (edgeRef != null) {
+      return SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: edgeRef.bodyId, id: edgeRef.index);
+    }
+    return SelectionEntityRef(
+      kind: _pathSelectionKindFor(ref.entityType!),
+      sketchFeatureId: _sketchFeatureIdForSketchId(ref.sketchId!) ?? '',
+      sketchEntityId: ref.entityId!,
+    );
+  }
+
   /// [_toggleSelectedEntity]'s path-picker special-case - a Line/Arc/
   /// Ellipse/Spline tap while the path picker is open either extends
   /// [_pathPickerRefs] (starting a brand-new chain if none is picked yet,
@@ -6108,39 +6304,50 @@ class _PartScreenState extends State<PartScreen> {
   /// only path with anything else - the ordinary "tap the last pick again
   /// to undo it" path below still works for clearing a standalone Ellipse
   /// pick, since that check runs first.
-  void _togglePathPick(SelectionEntityRef lineEntity) {
-    final sketchId = _sketchIdForFeatureId(lineEntity.sketchFeatureId);
-    if (sketchId == null) return;
-    final entityType = _pathEntityTypeString(lineEntity.kind);
-    final ref = SketchEntityRefDto(sketchId: sketchId, entityType: entityType, entityId: lineEntity.sketchEntityId);
+  ///
+  /// Gap (a): [entity] may now also be a Body edge or an existing Curve
+  /// feature's own wire (see [_pathPickerSelectionFilter]'s own doc
+  /// comment) - [_pathRefIsStandaloneOnly] generalizes the former Circle/
+  /// Ellipse-only closed-loop check to cover a closed edge/Curve feature
+  /// too, and [_pathRefWorldEndpoints] generalizes chain-connectivity
+  /// resolution the same way.
+  void _togglePathPick(SelectionEntityRef entity) {
+    final PathRefDto ref;
+    if (entity.kind == SelectionEntityKind.curveFeature) {
+      ref = PathRefDto.curveFeature(entity.bodyId);
+    } else if (entity.kind == SelectionEntityKind.edge) {
+      ref = PathRefDto.edge(SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id));
+    } else {
+      final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+      if (sketchId == null) return;
+      ref = PathRefDto.sketchEntity(
+        sketchId: sketchId,
+        entityType: _pathEntityTypeString(entity.kind),
+        entityId: entity.sketchEntityId,
+      );
+    }
 
-    final isSameAsLast = _pathPickerRefs.isNotEmpty &&
-        _pathPickerRefs.last.sketchId == ref.sketchId &&
-        _pathPickerRefs.last.entityId == ref.entityId;
-    // Bug fix: Circle joins Ellipse as a standalone-only entity type - see
-    // [_pathPickerSelectionFilter]'s own doc comment.
-    const standaloneOnlyTypes = {'circle', 'ellipse'};
-    final currentIsStandaloneOnly =
-        _pathPickerRefs.length == 1 && standaloneOnlyTypes.contains(_pathPickerRefs.single.entityType);
+    final isSameAsLast = _pathPickerRefs.isNotEmpty && _pathPickerRefs.last == ref;
+    final currentIsStandaloneOnly = _pathPickerRefs.length == 1 && _pathRefIsStandaloneOnly(_pathPickerRefs.single);
     if (_pathPickerRefs.isNotEmpty &&
         !isSameAsLast &&
-        (standaloneOnlyTypes.contains(entityType) || currentIsStandaloneOnly)) {
-      _showSnack('A Circle or Ellipse path must stand alone - clear the current pick first');
+        (_pathRefIsStandaloneOnly(ref) || currentIsStandaloneOnly)) {
+      _showSnack(
+          'A Circle, Ellipse, closed Edge, or closed Curve feature must stand alone - clear the current pick first');
       return;
     }
 
-    List<SketchEntityRefDto> nextRefs;
+    List<PathRefDto> nextRefs;
     if (isSameAsLast) {
       nextRefs = _pathPickerRefs.sublist(0, _pathPickerRefs.length - 1);
-    } else if (_pathPickerRefs.any((r) => r.sketchId == ref.sketchId && r.entityId == ref.entityId)) {
+    } else if (_pathPickerRefs.contains(ref)) {
       _showSnack('That entity is already part of the path');
       return;
     } else if (_pathPickerRefs.isEmpty) {
       nextRefs = [ref];
     } else {
       final points = _tracePathPoints(_pathPickerRefs);
-      final segment =
-          _pathSegmentWorldEndpoints(lineEntity.sketchFeatureId, lineEntity.sketchEntityId, entityType);
+      final segment = _pathRefWorldEndpoints(ref);
       if (points == null || segment == null) return;
       final (start, end) = segment;
       // Checked against both ends of the chain built so far, not just its
@@ -6160,14 +6367,7 @@ class _PartScreenState extends State<PartScreen> {
 
     setState(() {
       _pathPickerRefs = nextRefs;
-      _selectedEntities = {
-        for (final r in nextRefs)
-          SelectionEntityRef(
-            kind: _pathSelectionKindFor(r.entityType),
-            sketchFeatureId: _sketchFeatureIdForSketchId(r.sketchId) ?? '',
-            sketchEntityId: r.entityId,
-          ),
-      };
+      _selectedEntities = {for (final r in nextRefs) _selectionEntityForPathRef(r)};
     });
   }
 
@@ -6176,12 +6376,12 @@ class _PartScreenState extends State<PartScreen> {
   /// Shared by [_pathPickerBannerText] (the live picker banner) and
   /// [SweepPanel]'s own `pathIsClosed` (via [_sweepPathIsClosed]) so the two
   /// never disagree about the same path.
-  bool _pathIsClosed(List<SketchEntityRefDto> refs) {
-    // A standalone Circle or Ellipse (see [_togglePathPick]'s own doc
-    // comment) is always closed, but has no endpoints for
-    // [_tracePathPoints] to trace - checked explicitly rather than falling
-    // through to it.
-    if (refs.length == 1 && (refs.single.entityType == 'circle' || refs.single.entityType == 'ellipse')) return true;
+  bool _pathIsClosed(List<PathRefDto> refs) {
+    // A standalone closed ref (Circle/Ellipse/closed edge/closed Curve
+    // feature - see [_togglePathPick]'s own doc comment) is always closed,
+    // but has no endpoints for [_tracePathPoints] to trace - checked
+    // explicitly rather than falling through to it.
+    if (refs.length == 1 && _pathRefIsStandaloneOnly(refs.single)) return true;
     final points = _tracePathPoints(refs);
     return points != null && points.length > 2 && _pathPointsCoincide(points.first, points.last);
   }
@@ -6193,7 +6393,9 @@ class _PartScreenState extends State<PartScreen> {
   /// The top banner's live status text - segment count plus open/closed,
   /// mirroring [SweepPanel]'s own path summary line.
   String _pathPickerBannerText() {
-    if (_pathPickerRefs.isEmpty) return 'Tap a line, arc, circle, ellipse or spline to start the path';
+    if (_pathPickerRefs.isEmpty) {
+      return 'Tap a line, arc, circle, ellipse, spline, edge, or curve feature to start the path';
+    }
     final isClosed = _pathIsClosed(_pathPickerRefs);
     final count = _pathPickerRefs.length;
     return '$count segment${count == 1 ? '' : 's'} picked'
@@ -6282,7 +6484,7 @@ class _PartScreenState extends State<PartScreen> {
   /// started - mirrors [_revolveEditSnapshot].
   ({
     SweepMode mode,
-    List<SketchEntityRefDto> pathRefs,
+    List<PathRefDto> pathRefs,
     List<String> targetBodyIds,
     List<SketchEntityRefDto> profileRefs,
   })? _sweepEditSnapshot;
@@ -6294,7 +6496,7 @@ class _PartScreenState extends State<PartScreen> {
   /// again for the rest of the create/edit session, mirroring
   /// [_extrudeProfileRefs]/[_revolveProfileRefs]'s own create-time-only
   /// picking precedent - just applied to the path instead of the profile.
-  List<SketchEntityRefDto> _sweepPathRefs = [];
+  List<PathRefDto> _sweepPathRefs = [];
 
   /// Mirrors [_revolveProfileRefs] exactly - which outer profile(s) of
   /// [_sweepSketchFeature] to use.
@@ -6336,7 +6538,7 @@ class _PartScreenState extends State<PartScreen> {
   /// live axis pick.
   void _openSweepPanel(
     FeatureDto sketchFeature,
-    List<SketchEntityRefDto> pathRefs, {
+    List<PathRefDto> pathRefs, {
     List<SketchEntityRefDto> profileRefs = const [],
   }) {
     setState(() {
@@ -6397,7 +6599,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [pathRefs] for a live axis pick.
   Future<void> _ensureSweepFeatureExists(
     SweepMode mode,
-    List<SketchEntityRefDto> pathRefs,
+    List<PathRefDto> pathRefs,
     List<String> targetBodyIds,
     List<SketchEntityRefDto> profileRefs,
   ) async {
@@ -11694,7 +11896,222 @@ class _PartScreenState extends State<PartScreen> {
         _startMoveFacePicker();
       case FeaturePickerAction.shell:
         _startShellPicker();
+      case FeaturePickerAction.helix:
+        await _startHelix();
+      case FeaturePickerAction.intersectionCurve:
+        await _startIntersectionCurve();
+      case FeaturePickerAction.fillSurface:
+        await _startFillSurface();
     }
+  }
+
+  /// The kinds [_startHelix] treats as "a plane-like axis is already
+  /// selected" - the exact same trio [_onCreatePlaneTapped]'s `offsetFace`
+  /// combo checks (a Body Face, a fixed reference plane, or an existing
+  /// Plane) - so [_planeRefDtoFor] (already built for that combo) converts
+  /// one directly, with no new conversion logic of its own.
+  static const _helixAxisKinds = {
+    SelectionEntityKind.face,
+    SelectionEntityKind.referencePlane,
+    SelectionEntityKind.createPlane,
+  };
+
+  /// A short, human-readable label for an already-selected plane-like
+  /// entity - purely cosmetic text for [CurvePanel]'s own read-only axis
+  /// row (see [_startHelix]), no existing helper in this file already
+  /// produces this exact "Face"/"XY plane"/"Plane 2" wording for all three
+  /// [_helixAxisKinds] uniformly.
+  String _describePlaneLikeEntity(SelectionEntityRef entity) {
+    if (entity.kind == SelectionEntityKind.referencePlane) {
+      return '${entity.referencePlaneKind?.name.toUpperCase() ?? ''} plane';
+    }
+    if (entity.kind == SelectionEntityKind.createPlane) {
+      final index = _features.indexWhere((f) => f.id == entity.planeFeatureId);
+      return index == -1 ? 'Plane' : featureDisplayName(_features, index);
+    }
+    return 'Selected face';
+  }
+
+  /// The "Add" FAB's Helix entry. [CurvePanel] itself collects every numeric
+  /// parameter (radius, pitch, turns, handedness) via its own form fields -
+  /// unlike Sweep/Extrude/etc. there is no dedicated picker-mode step. The
+  /// axis itself, though, prefers whatever plane-like entity ([_helixAxisKinds])
+  /// is already selected when this is invoked (the same "picks already made
+  /// before the panel opens" convention [CreatePlanePanel]'s own modes use -
+  /// see [_startFillSurface]'s identical reasoning), falling back to
+  /// [CurvePanel]'s own fixed-plane dropdown only when nothing eligible is
+  /// selected.
+  Future<void> _startHelix() async {
+    final planeLikes = _selectedEntities.where((e) => _helixAxisKinds.contains(e.kind)).toList();
+    final preSelectedAxisRef =
+        planeLikes.length == 1 && _selectedEntities.length == 1 ? _planeRefDtoFor(planeLikes.single) : null;
+    final preSelectedAxisLabel =
+        preSelectedAxisRef == null ? null : _describePlaneLikeEntity(planeLikes.single);
+
+    var helixAxisPlane = 'XY';
+    var helixRadius = 5.0;
+    var helixPitch = 2.0;
+    var helixTurns = 3.0;
+    var helixRightHanded = true;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CurvePanel(
+        title: 'Create Helix',
+        preSelectedAxisLabel: preSelectedAxisLabel,
+        onHelixChanged: ({
+          required String axisPlane,
+          required double radius,
+          required double pitch,
+          required double turns,
+          required bool rightHanded,
+        }) {
+          helixAxisPlane = axisPlane;
+          helixRadius = radius;
+          helixPitch = pitch;
+          helixTurns = turns;
+          helixRightHanded = rightHanded;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runGuarded(() async {
+      await _api.createCurveFeature(
+        _focusPartId,
+        curveType: 'helix',
+        axisRef: preSelectedAxisRef ?? PlaneRefDto(fixedPlane: helixAxisPlane),
+        radius: helixRadius,
+        pitch: helixPitch,
+        turns: helixTurns,
+        rightHanded: helixRightHanded,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The "Add" FAB's Intersection Curve entry - mirrors [_startHelix]'s own
+  /// "no ambient selection, [CurvePanel] collects everything" shape; its two
+  /// Sketch pickers are dropdowns over every existing `"sketch"` Feature in
+  /// this Part (see [CurvePanel]'s own doc comment for why, not a 3D-
+  /// viewport tap).
+  Future<void> _startIntersectionCurve() async {
+    final sketchChoices = _features
+        .where((f) => f.type == 'sketch')
+        .map((f) => SketchFeatureChoice(
+              featureId: f.id,
+              label: featureDisplayName(_features, _features.indexOf(f)),
+            ))
+        .toList();
+    if (sketchChoices.length < 2) {
+      _showSnack('Need at least two sketches to intersect');
+      return;
+    }
+    String? pickedSketchFeatureIdA;
+    String? pickedSketchFeatureIdB;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CurvePanel(
+        title: 'Create Intersection Curve',
+        sketchFeatureChoices: sketchChoices,
+        onIntersectionChanged: ({required String sketchFeatureIdA, required String sketchFeatureIdB}) {
+          pickedSketchFeatureIdA = sketchFeatureIdA;
+          pickedSketchFeatureIdB = sketchFeatureIdB;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    final a = pickedSketchFeatureIdA, b = pickedSketchFeatureIdB;
+    if (confirmed != true || !mounted || a == null || b == null) return;
+    await _runGuarded(() async {
+      await _api.createCurveFeature(
+        _focusPartId,
+        curveType: 'intersection',
+        sketchFeatureIdA: a,
+        sketchFeatureIdB: b,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The Sketch-entity kinds of already-selected entity [_startFillSurface]
+  /// accepts as a boundary curve - every kind [_pathEntityTypeString] also
+  /// handles. An already-selected `SelectionEntityKind.curveFeature` is
+  /// handled separately in [_startFillSurface] itself (it has no
+  /// `sketchFeatureId`/`sketchEntityId` to resolve through this set at all -
+  /// see `document_api_client.createFillSurfaceFeature`'s own
+  /// `curveFeatureBoundaryIds` parameter) - a Body edge still has no
+  /// boundary-picker UI.
+  static const _fillSurfaceBoundaryKinds = {
+    SelectionEntityKind.sketchLine,
+    SelectionEntityKind.sketchArc,
+    SelectionEntityKind.sketchCircle,
+    SelectionEntityKind.sketchEllipse,
+    SelectionEntityKind.sketchSpline,
+  };
+
+  /// The "Add" FAB's Fill Surface entry - unlike Helix/Intersection Curve,
+  /// this reads its boundary curves from whatever is *already selected* in
+  /// the viewport at the moment this is invoked (the same "picks already
+  /// made before the panel opens" convention [CreatePlanePanel]'s own modes
+  /// use), rather than collecting them itself - Sketch lines/arcs/circles/
+  /// ellipses/splines and existing Curve features are already tappable/
+  /// multi-selectable today, so this needs no new picker state machine of
+  /// its own.
+  Future<void> _startFillSurface() async {
+    final boundaryRefs = <SketchEntityRefDto>[];
+    final curveFeatureBoundaryIds = <String>[];
+    for (final entity in _selectedEntities) {
+      if (entity.kind == SelectionEntityKind.curveFeature) {
+        curveFeatureBoundaryIds.add(entity.bodyId);
+        continue;
+      }
+      if (!_fillSurfaceBoundaryKinds.contains(entity.kind)) continue;
+      final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+      if (sketchId == null) continue;
+      boundaryRefs.add(SketchEntityRefDto(
+        sketchId: sketchId,
+        entityType: _pathEntityTypeString(entity.kind),
+        entityId: entity.sketchEntityId,
+      ));
+    }
+    final total = boundaryRefs.length + curveFeatureBoundaryIds.length;
+    if (total < 2 || total > 4) {
+      _showSnack('Select 2 to 4 boundary curves (sketch curves and/or Curve features) to fill first');
+      return;
+    }
+    final choices = [
+      ...boundaryRefs.map((r) => FillSurfaceBoundaryChoice(label: '${r.entityType} (${r.sketchId})', isCurveFeature: false)),
+      ...curveFeatureBoundaryIds
+          .map((id) => FillSurfaceBoundaryChoice(label: _curveNames[id] ?? 'Curve feature ($id)', isCurveFeature: true)),
+    ];
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => FillSurfacePanel(
+        selected: choices,
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runGuarded(() async {
+      await _api.createFillSurfaceFeature(
+        _focusPartId,
+        sketchBoundaryRefs: boundaryRefs,
+        curveFeatureBoundaryIds: curveFeatureBoundaryIds,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
   }
 
   /// C3/C4/C5: the "Add" FAB's Feature picker's "Plane" entry - clears the
@@ -12573,6 +12990,32 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// The Curves section's own tap handler - selects/highlights a Curve
+  /// feature's whole displayed wire in the 3D viewport. Unlike
+  /// [_onSurfaceTap] (a Surface is tapped/highlighted via the ordinary
+  /// `body` kind), a Curve feature has its own dedicated
+  /// `SelectionEntityKind.curveFeature` (see that enum value's own doc
+  /// comment) - a curve is not a Body, so it is never picked as one.
+  void _onCurveTap(String curveId) {
+    _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: curveId));
+  }
+
+  /// [_onSurfaceLongPress]'s Curves-section counterpart, reached the same
+  /// way (via [_multiSelectMore]'s "More" button with exactly one Curve row
+  /// selected - long-press itself now enters multi-select, see
+  /// `feature_tree_panel.dart`'s own "no longer the tree row's long-press
+  /// handler itself" doc comment). Unlike [_onSurfaceLongPress]/
+  /// [_onBodyLongPress], this skips [showBodyContextMenu] entirely and
+  /// toggles Hide/Show directly - "Assign Material" has no meaning for a
+  /// Curve feature (it has no solid geometry to apply one to), so offering
+  /// that menu here would just be a dead/confusing option.
+  Future<void> _onCurveLongPress(String curveId) async {
+    if (_busy) return;
+    final feature = _featureById(baseFeatureId(curveId));
+    if (feature == null) return;
+    await _toggleFeatureVisibility(feature);
+  }
+
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
   /// brief's "camera animation when entering a sketch") before navigating to
   /// its 2D canvas - skips straight to navigation if the plane can't be
@@ -12723,7 +13166,9 @@ class _PartScreenState extends State<PartScreen> {
   String? _featureIdForMultiSelectKey(String key) {
     final featureId = TreeMultiSelectKeys.featureIdOf(key);
     if (featureId != null) return featureId;
-    final shapeId = TreeMultiSelectKeys.bodyIdOf(key) ?? TreeMultiSelectKeys.surfaceIdOf(key);
+    final shapeId = TreeMultiSelectKeys.bodyIdOf(key) ??
+        TreeMultiSelectKeys.surfaceIdOf(key) ??
+        TreeMultiSelectKeys.curveIdOf(key);
     return shapeId == null ? null : baseFeatureId(shapeId);
   }
 
@@ -13012,6 +13457,7 @@ class _PartScreenState extends State<PartScreen> {
       final featureId = TreeMultiSelectKeys.featureIdOf(key);
       final bodyId = TreeMultiSelectKeys.bodyIdOf(key);
       final surfaceId = TreeMultiSelectKeys.surfaceIdOf(key);
+      final curveId = TreeMultiSelectKeys.curveIdOf(key);
       if (featureId != null) {
         final feature = _featureById(featureId);
         if (feature != null) await _onFeatureLongPress(feature);
@@ -13019,6 +13465,8 @@ class _PartScreenState extends State<PartScreen> {
         await _onBodyLongPress(bodyId);
       } else if (surfaceId != null) {
         await _onSurfaceLongPress(surfaceId);
+      } else if (curveId != null) {
+        await _onCurveLongPress(curveId);
       }
     } else if (_assemblyMultiSelect.active && _assemblyMultiSelect.count == 1) {
       final id = _assemblyMultiSelect.selectedIds.single;
@@ -13050,6 +13498,7 @@ class _PartScreenState extends State<PartScreen> {
       final featureId = TreeMultiSelectKeys.featureIdOf(key);
       final bodyId = TreeMultiSelectKeys.bodyIdOf(key);
       final surfaceId = TreeMultiSelectKeys.surfaceIdOf(key);
+      final curveId = TreeMultiSelectKeys.curveIdOf(key);
       if (featureId != null) {
         final index = _features.indexWhere((f) => f.id == featureId);
         items.add(SelectionListDrawerItem(
@@ -13070,6 +13519,13 @@ class _PartScreenState extends State<PartScreen> {
           key: key,
           icon: const SvgIcon('assets/icons/feature/feature_surface.svg'),
           title: _surfaceNames[surfaceId] ?? 'Surface',
+          onRemove: remove,
+        ));
+      } else if (curveId != null) {
+        items.add(SelectionListDrawerItem(
+          key: key,
+          icon: const SvgIcon('assets/icons/viewport/selection_edge.svg'),
+          title: _curveNames[curveId] ?? 'Curve',
           onRemove: remove,
         ));
       }
@@ -14499,7 +14955,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// The path this session sweeps along, fixed once [SweptSurfacePanel]
   /// opens - mirrors [_sweepPathRefs].
-  List<SketchEntityRefDto> _sweptSurfacePathRefs = [];
+  List<PathRefDto> _sweptSurfacePathRefs = [];
 
   /// Mirrors [_sweepProfileRefs] exactly.
   List<SketchEntityRefDto> _sweptSurfaceProfileRefs = [];
@@ -14589,7 +15045,7 @@ class _PartScreenState extends State<PartScreen> {
   /// no field left to fill in - see this section's own header comment).
   void _openSweptSurfacePanel(
     FeatureDto sketchFeature,
-    List<SketchEntityRefDto> pathRefs, {
+    List<PathRefDto> pathRefs, {
     List<SketchEntityRefDto> profileRefs = const [],
   }) {
     setState(() {
@@ -14721,6 +15177,18 @@ class _PartScreenState extends State<PartScreen> {
     final referencePlanes = _selectedEntities.where((e) => e.kind == SelectionEntityKind.referencePlane);
     final createPlanes = _selectedEntities.where((e) => e.kind == SelectionEntityKind.createPlane);
     final planeLikes = [...faces, ...referencePlanes, ...createPlanes];
+    // Curve features: a lone Curve feature (Helix/Intersection curve) -
+    // Create Plane normal to its own tangent at a point along it (see
+    // `CreatePlaneMode.normalToCurveFeatureAtParameter`'s own doc comment).
+    final curveFeatures = _selectedEntities.where((e) => e.kind == SelectionEntityKind.curveFeature).toList();
+
+    if (curveFeatures.length == 1 && _selectedEntities.length == 1) {
+      _openCreatePlanePanel(
+        mode: CreatePlaneMode.normalToCurveFeatureAtParameter,
+        curveFeatureEntity: curveFeatures.single,
+      );
+      return;
+    }
 
     // C4: exactly three points total (any mix of Body Vertices and Sketch
     // Points) - checked first, same precedence `selection_actions.dart`'s
@@ -14899,7 +15367,10 @@ class _PartScreenState extends State<PartScreen> {
   /// only meaningful for [CreatePlaneMode.normalToEdgeThroughVertex]/
   /// [CreatePlaneMode.parallelToFaceThroughVertex]; [pointEntities] (exactly
   /// three, each a Vertex or a Sketch Point) only for [CreatePlaneMode.
-  /// threePoints].
+  /// threePoints]. [curveFeatureEntity] is only meaningful for
+  /// [CreatePlaneMode.normalToCurveFeatureAtParameter] - the tapped Curve
+  /// feature, seeded as [CreatePlanePanel]'s own initial dropdown choice
+  /// (see `create_plane_panel.dart`'s `initialCurveFeatureId`).
   Future<void> _openCreatePlanePanel({
     required CreatePlaneMode mode,
     List<SelectionEntityRef> faceEntities = const [],
@@ -14908,6 +15379,7 @@ class _PartScreenState extends State<PartScreen> {
     SelectionEntityRef? edgeEntity,
     SelectionEntityRef? vertexEntity,
     List<SelectionEntityRef> pointEntities = const [],
+    SelectionEntityRef? curveFeatureEntity,
   }) async {
     final part = _part;
     if (part == null) return;
@@ -14916,6 +15388,10 @@ class _PartScreenState extends State<PartScreen> {
       _entitiesBeforeCreatePlane = _selectedEntities;
       _selectedEntities = {};
       if (mode == CreatePlaneMode.offsetFace) _createPlaneOffset = 0.0;
+      if (mode == CreatePlaneMode.normalToCurveFeatureAtParameter) {
+        _createPlaneCurveFeatureId = curveFeatureEntity?.bodyId;
+        _createPlaneCurveParameter = 0.5;
+      }
     });
     await _runGuarded(() async {
       final FeatureDto feature;
@@ -14949,6 +15425,15 @@ class _PartScreenState extends State<PartScreen> {
           _focusPartId,
           planeType: 'three_points',
           pointRefs: pointRefs.cast<PointRefDto>(),
+        );
+      } else if (mode == CreatePlaneMode.normalToCurveFeatureAtParameter) {
+        final curveFeatureId = curveFeatureEntity?.bodyId ?? _createPlaneCurveFeatureId;
+        if (curveFeatureId == null) return; // Defensive - _onCreatePlaneTapped always supplies one.
+        feature = await _api.createCreatePlaneFeature(
+          _focusPartId,
+          planeType: 'normal_to_curve_feature_at_parameter',
+          curveFeatureId: curveFeatureId,
+          curveParameter: _createPlaneCurveParameter,
         );
       } else {
         // normalToLineAtPoint, or (on-device feedback: "allow 'point and
@@ -14999,6 +15484,17 @@ class _PartScreenState extends State<PartScreen> {
   /// including the "no zero-argument reconstruction" snapshot stash for
   /// [_cancelCreatePlane] to PATCH back verbatim.
   void _openCreatePlanePanelForEdit(FeatureDto feature) {
+    // Gap (c): [FeatureDto] has no [curveFeatureId]/[curveParameter]
+    // response fields yet (see `document_api_client.dart`'s own
+    // `createCreatePlaneFeature`/`updateCreatePlaneFeature` doc comments),
+    // so a `normal_to_curve_feature_at_parameter` Feature can't be
+    // reconstructed for editing - without this guard it would silently
+    // fall into the `normalToLineAtPoint` default below with null
+    // `lineRef`/`pointRef`. Refuse rather than open a broken panel.
+    if (feature.planeType == 'normal_to_curve_feature_at_parameter') {
+      _showSnack('Editing this type of plane is not supported yet');
+      return;
+    }
     final mode = switch (feature.planeType) {
       'offset_face' => CreatePlaneMode.offsetFace,
       'midplane' => CreatePlaneMode.midplane,
@@ -15039,11 +15535,39 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// [_onCreatePlaneOffsetChanged]'s counterpart for [CreatePlaneMode.
+  /// normalToCurveFeatureAtParameter] - fired on every dropdown/slider edit
+  /// in [CreatePlanePanel], same debounced-PATCH pattern.
+  void _onCreatePlaneCurveParameterChanged({required String curveFeatureId, required double curveParameter}) {
+    _createPlaneCurveFeatureId = curveFeatureId;
+    _createPlaneCurveParameter = curveParameter;
+    _createPlaneDebounce?.cancel();
+    _createPlaneDebounce = Timer(const Duration(milliseconds: 500), () {
+      _runGuarded(_ensureCreatePlaneCurveParameterUpdated);
+    });
+  }
+
   Future<void> _ensureCreatePlaneOffsetUpdated() async {
     final part = _part;
     final featureId = _previewCreatePlaneFeatureId;
     if (part == null || featureId == null) return;
     await _api.updateCreatePlaneFeature(_focusPartId, featureId, offset: _createPlaneOffset);
+    await _refreshFeatures();
+  }
+
+  /// [_ensureCreatePlaneOffsetUpdated]'s counterpart for [CreatePlaneMode.
+  /// normalToCurveFeatureAtParameter].
+  Future<void> _ensureCreatePlaneCurveParameterUpdated() async {
+    final part = _part;
+    final featureId = _previewCreatePlaneFeatureId;
+    final curveFeatureId = _createPlaneCurveFeatureId;
+    if (part == null || featureId == null || curveFeatureId == null) return;
+    await _api.updateCreatePlaneFeature(
+      _focusPartId,
+      featureId,
+      curveFeatureId: curveFeatureId,
+      curveParameter: _createPlaneCurveParameter,
+    );
     await _refreshFeatures();
   }
 
@@ -17159,7 +17683,7 @@ class _PartScreenState extends State<PartScreen> {
     } else {
       final solidBodyIds = {
         for (final body in _bodies)
-          if (!body.isSurface) body.bodyId,
+          if (!body.isSurface && !body.isCurve) body.bodyId,
       };
       if (solidBodyIds.length == 1) bodyId = solidBodyIds.single;
     }
@@ -21687,7 +22211,7 @@ class _PartScreenState extends State<PartScreen> {
                         _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.body(bodyId)),
                     hiddenBodyIds: {
                       for (final body in _bodies)
-                        if (body.hidden && !body.isSurface) body.bodyId,
+                        if (body.hidden && !body.isSurface && !body.isCurve) body.bodyId,
                     },
                     surfaceIds: _computedSurfaceIds,
                     surfaceNames: _surfaceNames,
@@ -21697,6 +22221,15 @@ class _PartScreenState extends State<PartScreen> {
                     hiddenSurfaceIds: {
                       for (final body in _bodies)
                         if (body.hidden && body.isSurface) body.bodyId,
+                    },
+                    curveIds: _computedCurveIds,
+                    curveNames: _curveNames,
+                    onCurveTap: _onCurveTap,
+                    onCurveLongPress: (curveId) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.curve(curveId)),
+                    hiddenCurveIds: {
+                      for (final body in _bodies)
+                        if (body.hidden && body.isCurve) body.bodyId,
                     },
                   ),
                 ),
@@ -21879,6 +22412,10 @@ class _PartScreenState extends State<PartScreen> {
                       mode: _createPlaneMode!,
                       initialOffset: _createPlaneOffset,
                       onOffsetChanged: _onCreatePlaneOffsetChanged,
+                      curveFeatureChoices: _curveFeatureChoices,
+                      initialCurveFeatureId: _createPlaneCurveFeatureId,
+                      initialCurveParameter: _createPlaneCurveParameter,
+                      onCurveParameterChanged: _onCreatePlaneCurveParameterChanged,
                       onConfirm: _confirmCreatePlane,
                       onCancel: _cancelCreatePlane,
                     ),
