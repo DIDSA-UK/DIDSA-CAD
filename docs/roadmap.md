@@ -522,6 +522,19 @@ roadmap entry" ask.
   "who can write which file" once composition is server-owned. Not
   implemented here - this entry is a placeholder marking the gap, per the
   recon sessions' own §5/§6 findings.
+  **Update, 2026-09-27**: the specific thing this gap was blocking - the VR
+  client having no way to open a second file or add a component to its
+  loaded assembly - is now closed by a narrower, storage-decision-free
+  route instead: `POST /parts/{root_part_id}/add-component`
+  (`backend/app/document/add_component.py`, `docs/status.md`'s 2026-09-27
+  entry), a backend port of `client/lib/assembly/add_component.dart`'s pure
+  merge that needs no filesystem access of its own (the caller already read
+  the file). Decisions #4/#6 are **not** superseded by this - it doesn't
+  resolve a path or touch storage, it just merges a payload the caller
+  already fetched into the live session. The actual shared-network-storage
+  scoping doc this entry calls for is still not written; this update only
+  narrows how urgent it is, since VR no longer needs it just to get a real
+  multi-Occurrence assembly to test Mates against.
 - **A sketch's origin point reportedly doesn't line up with the correct 3D
   viewport origin.** User report (2026-07-21), investigated the same day -
   every basis-resolution path audited (backend `basis_for_sketch`, client

@@ -99,6 +99,7 @@ from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_
 from app.document.mesh_data import MeshQuality, Triangle
 from app.document.mesh_export import AssemblyGlbInstance, encode_assembly_glb, encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
+from app.document.add_component import AddComponentError, merge_component_into_document
 from app.document.native_format import NativeFormatError, export_native, import_native
 from app.document.pattern import resolve_pattern, resolve_pattern_coarse
 from app.document.step_export import export_step
@@ -209,6 +210,8 @@ from app.document.schemas import (
     JobStatusResponse,
     BevelPairMemberSpecSchema,
     BevelPairMeshPreviewResult,
+    AddComponentRequest,
+    AddComponentResponse,
     AssemblyBodyGeometry,
     AssemblyMeshResponse,
     AssemblyOccurrenceInstance,
@@ -9437,6 +9440,47 @@ def import_native_document(payload: dict) -> NativeImportResponse:
     replace_document(document)
     replace_all_sketches(sketches)
     return NativeImportResponse(document_id=document.id, part_ids=list(document.parts.keys()))
+
+
+@router.post("/parts/{root_part_id}/add-component", response_model=AddComponentResponse)
+def add_component(root_part_id: str, payload: AddComponentRequest) -> AddComponentResponse:
+    """Adds one new Occurrence of `payload.component` (another native file's
+    own already-exported payload - the caller fetched it however it fetches
+    files, this backend never resolves a path itself) onto `root_part_id`,
+    *without* discarding the rest of the live session's Document the way
+    `POST /import/native` (a full replace) would. Backend port of the
+    Flutter client's own `add_component.dart::mergeComponentIntoDocument`
+    (`app.document.add_component`'s own docstring has the full rationale) -
+    built for the VR client, which has no `StorageService`/`ProjectRoot` of
+    its own to run that Dart code, and whose Mates tool otherwise has
+    nothing to test against beyond whatever single file loaded at startup
+    (`DIDSA-VR`'s `docs/status.md`, "Mates: blocked on a multi-body test
+    file and no in-VR open/add-parts path").
+
+    404s if `root_part_id` doesn't name a Part in the current session (same
+    convention as every other `/parts/{id}/...` endpoint); 422s for anything
+    `merge_component_into_document`/`import_native` reject (a schema-version
+    mismatch, a component file with no Parts, a self-reference, or malformed
+    native data) - the live session is never touched unless the merge and
+    the resulting re-import both succeed."""
+    get_part_or_404(root_part_id)
+    current_payload = export_native(get_document(), all_sketches())
+    occurrence_id = payload.occurrence_id or str(uuid.uuid4())
+    try:
+        merged_payload = merge_component_into_document(
+            current_payload=current_payload,
+            component_payload=payload.component,
+            root_part_id=root_part_id,
+            occurrence_id=occurrence_id,
+            external_ref=payload.external_ref,
+            name_override=payload.name_override,
+        )
+        document, sketches = import_native(merged_payload)
+    except (AddComponentError, NativeFormatError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    replace_document(document)
+    replace_all_sketches(sketches)
+    return AddComponentResponse(document_id=document.id, part_ids=list(document.parts.keys()), occurrence_id=occurrence_id)
 
 
 def _export_bodies_or_400(part: Part) -> dict[str, object]:
