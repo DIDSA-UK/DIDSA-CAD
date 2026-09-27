@@ -2978,6 +2978,42 @@ class NativeImportResponse(BaseModel):
     part_ids: list[str]
 
 
+class AddComponentRequest(BaseModel):
+    """`POST /document/parts/{root_part_id}/add-component`'s body:
+    `component` is another native file's own already-exported payload (the
+    same shape `GET /document/export/native` returns) - the caller is
+    responsible for getting that payload itself (reading a local file,
+    fetching it from wherever it lives); this backend has no filesystem
+    access of its own (`docs/assembly-scope.md` decision #6) and never
+    resolves anything by path itself. Mirrors the Flutter client's own
+    `mergeComponentIntoDocument` (`client/lib/assembly/add_component.dart`),
+    ported so a non-Flutter client (the VR client, which can't run that Dart
+    code) can add a component to its live session's assembly without a
+    full-replace `/import/native`.
+
+    `occurrence_id` is optional - a caller with no uuid generation of its
+    own convenient (the VR client) can leave it out and the endpoint mints
+    one. `external_ref`/`name_override` match `Occurrence`'s own fields of
+    the same name."""
+
+    component: dict
+    occurrence_id: str | None = None
+    external_ref: str | None = None
+    name_override: str | None = None
+
+
+class AddComponentResponse(BaseModel):
+    """What `POST /document/parts/{root_part_id}/add-component` hands back:
+    `NativeImportResponse`'s own "confirm what just happened" shape, plus the
+    new Occurrence's real id (whichever the caller supplied, or the one this
+    endpoint minted) - needed right away to address the newly-placed
+    component, e.g. for a first Mate."""
+
+    document_id: str
+    part_ids: list[str]
+    occurrence_id: str
+
+
 class CascadeDeleteResponse(BaseModel):
     """What got deleted by a cascade-delete: the target Feature and every
     Feature that actually transitively depends on it per the real

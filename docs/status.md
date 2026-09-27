@@ -3458,3 +3458,74 @@ That, combined with the general difficulty of self-maintaining a CAD kernel's cr
 1. **vcpkg overlay port**: maintain a local overlay for `opencascade` that patches `BUILD_MODULE_DETools` back to `ON` in its own copy of the portfile, and point vcpkg at it (`--overlay-ports`). Keeps the existing vcpkg-based build shape; ongoing maintenance burden is tracking upstream port changes so the overlay doesn't drift out of sync.
 2. **Build OCCT directly**, bypassing vcpkg for this one dependency - configure and build OCCT's own upstream CMake project directly (as this session's own local verification runs already did, against a real system-installed OCCT 7.6.3), and vendor/manage that build the way `client/native/slvs/` already manages its own vendored solver. Full control over which modules build, at the cost of owning OCCT's own (large, slow, platform-specific) build system directly instead of delegating to vcpkg.
 3. **Backend-hybrid conversion**: reuse the backend's already-working `pythonocc-core` STEP pipeline (`backend/app/document/native_format.py` et al. already wrap OCCT server-side for the app's own native format) - upload a STEP file to the backend, convert/tessellate it there, and stream the resulting mesh back to the client the same way other backend-authored meshes already reach the Mesh Viewer. Loses the Mesh Viewer's current fully-offline property for STEP specifically (every other supported format - STL/OBJ/glTF/GLB - stays local), but needs no native mobile/desktop CAD kernel at all and reuses a pipeline this project already has working and tested.
+
+---
+
+## 2026-09-27 — Backend `add-component` endpoint: closes DIDSA-VR's Mates-testing blocker without the bigger storage/composition project
+
+Continuing the VR/XR roadmap (`DIDSA-UK/DIDSA-VR`'s own `docs/status.md`,
+"Real-headset testing round 2"): Mates testing there was blocked on two
+things - (1) the on-device test assembly having no real Occurrences (two
+Bodies of one Part, not two placed instances), and (2) "there's no in-VR
+way to open a different native file at runtime, and no way to add parts to
+the currently-loaded assembly" - `POST /import/native` is a full replace,
+and the client has no `StorageService`/`AssemblyGraphComposer` of its own
+(it isn't Flutter) to do a client-side merge the way this repo's own
+`client/lib/assembly/add_component.dart` does.
+
+**Read before assuming the fix was the big one**: the vision brief's own
+open decision ("Storage: server-side composition over a mounted network
+share... still needs its own scoping doc superseding decisions 4 and 6 in
+`docs/assembly-scope.md`") is a separate, still-unscoped, genuinely bigger
+project - a mounted network share, path resolution, staleness policy. This
+session deliberately did **not** touch that. What actually unblocks Mates
+testing is much narrower: `add_component.dart::mergeComponentIntoDocument`
+is a *pure dict-transform* with no filesystem access of its own (the picked
+file is already read into memory by whatever client called it) - so it
+ports to the backend directly, giving every client (this one and DIDSA-VR)
+a same-session "add a component" endpoint that needs no storage-layer
+decision at all.
+
+**New**: `POST /document/parts/{root_part_id}/add-component`
+(`backend/app/document/add_component.py`'s new `merge_component_into_document`,
+wired in `router.py`) - a field-for-field port of `add_component.dart`'s own
+merge (same Part-id dedup, same sketch-merge bug fix, same "first Occurrence
+gets `fixed=true`" grounding rule), operating on the *live session's*
+Document (via `export_native`/`import_native`, the same pair `/import/native`
+already uses) rather than requiring a full-replace import. Request:
+`{"component": <another file's own export_native payload>, "occurrence_id"?,
+"external_ref"?, "name_override"?}` (`occurrence_id` omitted = backend mints
+a `uuid4`); response: `{"document_id", "part_ids", "occurrence_id"}`. 404 for
+an unknown `root_part_id`, 422 for a schema mismatch/empty file/self-reference.
+
+**Tests**: `backend/tests/test_add_component.py`, 6 new cases (first
+Occurrence fixed, second not, dedup by persisted Part id across two adds of
+the same file, an unrelated session Part survives untouched - the actual
+distinguishing behaviour vs. a full-replace import, self-reference/unknown-
+root/empty-file rejections). Full suite: **2517 passed** (up from 2511; 6
+new, 0 regressions), re-run to completion this session.
+
+**Client side (DIDSA-VR, not this repo)**: `main.gd` gained `open_native_file()`
+(a full-replace open of an arbitrary native file at runtime - the vision
+brief's "no in-VR way to open a different native file" gap, first half) and
+`add_component_file()` (calls this new endpoint, then re-fetches
+`assembly-mesh.glb` - the "no way to add parts" gap, second half), both
+wired into the wrist tablet's Files tab as a per-row "Open"/"Add" pair for
+`.didsa`/`.DIDSAprt` files. A new `tests/e2e_add_component.gd` there
+confirms the full round trip against this repo's own backend (started
+locally via the `didsa-backend` micromamba env - see that repo's own
+`docs/status.md` "How this has been worked on" for the exact commands):
+creates two bare Parts, opens one, adds the other, confirms via a fresh
+`GET .../occurrences` that the Occurrence is real, resolved correctly, and
+`fixed` - **SMOKE PASSED**. DIDSA-VR's own headless suite (`tests/run_all.sh`)
+re-run against the same local backend to confirm no regressions from the
+`main.gd`/`wrist_tablet.gd` changes.
+
+**What's still open**: the network-storage/server-side-composition project
+itself (`docs/roadmap.md`'s "Other open items") is untouched and still
+needs its own scoping doc - this session's endpoint is deliberately narrower
+and doesn't attempt path resolution, staleness, or any filesystem access.
+DIDSA-VR's own docs/status.md has the fuller before/after picture and the
+on-headset-unconfirmed caveats (this endpoint's headless/real-backend
+verification is solid; the wrist-tablet "Add" button's real-headset
+legibility isn't).
