@@ -104,6 +104,8 @@ The client and server talk over HTTPS with a single static API key (`X-API-Key` 
 
 Full technical detail lives in [`docs/project-brief.md`](docs/project-brief.md) (original architecture spec), [`docs/roadmap.md`](docs/roadmap.md) (open work), and [`docs/status.md`](docs/status.md) (complete build history).
 
+A separate, optional service, [`browser-relay/`](browser-relay/), lets the DIDSA-VR client (a sibling project, not part of this app) show a live web page or PDF as a floating panel in VR, by proxying to a headless-Chromium tab over the Chrome DevTools Protocol. It has no dependency on the CAD backend and isn't needed to run DIDSA Design Tools itself — see its own README for what it does and why it's a separate container.
+
 ## Built on
 
 DIDSA Design Tools stands on the shoulders of some excellent open-source projects:
