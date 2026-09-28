@@ -1,0 +1,49 @@
+# Deployment shape for the Raspberry Pi 5 (4GB) this project actually runs
+# on (see docs/vr-recon-*.md): the OCCT backend and the browser relay as
+# two separate containers on the same host, not one process split in two.
+# See browser-relay/README.md ("Why a separate container from the OCCT
+# backend") for the reasoning - short version: a misbehaving Chromium tab
+# should never be able to starve memory the geometry solver needs
+# mid-operation, and the two images have very different footprints (a
+# large Debian+Chromium base vs. a Python+OCCT one) with no reason to
+# force a rebuild of one when only the other changes.
+#
+# This is a template, not the real file: copy it to docker-compose.yml
+# (already gitignored here - see .gitignore's own comment - specifically
+# because that filename has historically been used to stash a real
+# CAD_API_KEY for local runs) and fill in real values, or just set
+# CAD_API_KEY and BROWSER_RELAY_API_KEY in the environment before running
+# `docker compose -f docker-compose.example.yml up`. A .env file next to
+# whichever copy you run from is the easiest way (docker compose loads it
+# automatically, and it's covered by the same .gitignore rule); see each
+# service's own README for what its key is for and why the two are
+# deliberately not the same value.
+
+services:
+  cad-backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - CAD_API_KEY=${CAD_API_KEY:?set CAD_API_KEY before starting}
+    restart: unless-stopped
+
+  browser-relay:
+    build: ./browser-relay
+    ports:
+      - "8100:8100"
+    environment:
+      - BROWSER_RELAY_API_KEY=${BROWSER_RELAY_API_KEY:?set BROWSER_RELAY_API_KEY before starting}
+      - BROWSER_RELAY_MAX_SESSIONS=${BROWSER_RELAY_MAX_SESSIONS:-2}
+    # Chromium needs more than the container-default shared-memory size to
+    # avoid crashing mid-render (the classic Docker+Chrome /dev/shm issue);
+    # the relay itself also passes --disable-dev-shm-usage to Chrome as a
+    # second, independent mitigation for the same problem, so this isn't
+    # the only thing standing between this container and that crash.
+    shm_size: "256mb"
+    # Caps this container's worst case separately from cad-backend's, on a
+    # 4GB host - the number here is a starting point for real measurement
+    # on the actual Pi, not a value derived from a load test.
+    mem_limit: "768m"
+    cpus: 1.0
+    restart: unless-stopped
