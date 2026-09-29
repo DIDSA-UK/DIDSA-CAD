@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 
 import '../assembly/relative_path.dart';
 import '../storage/project_root.dart';
-import '../storage/recent_project_store.dart';
 import '../storage/storage_service.dart';
 
 class _BrowseItem {
@@ -59,6 +58,17 @@ List<_BrowseItem> _getBrowseItems(List<String> allFiles, String currentFolder) {
       });
 }
 
+/// Runs the platform folder picker, returning `null` if the user cancelled.
+/// `pickOrCreateProjectRoot` persists the picked root itself and signals
+/// cancel by throwing [StorageException], never by returning null.
+Future<ProjectRoot?> _pickNewProjectRoot(StorageService storageService) async {
+  try {
+    return await storageService.pickOrCreateProjectRoot();
+  } on StorageException {
+    return null;
+  }
+}
+
 /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): the "where
 /// should this Part's own file live" prompt - fired from "Create
 /// Component…" (once, right after creating the new Part) and from "Save
@@ -78,7 +88,14 @@ Future<String?> showRelativePathPromptDialog(
   required StorageService storageService,
   required ProjectRoot root,
   bool skippable = false,
+  ValueChanged<ProjectRoot>? onRootChanged,
 }) async {
+  // [onRootChanged], when given, adds a "Change Folder" button: the picked
+  // root is reported to the caller (which must save relative to it) and used
+  // for this dialog's own collision check. Omitted by flows that write many
+  // files against one fixed root (Save All, AI orchestration), where
+  // switching root mid-flow would be unsafe.
+  var currentRoot = root;
   String value = initialValue;
   String? validationError = validateProjectRelativePath(value);
   bool checkingCollision = false;
@@ -87,7 +104,7 @@ Future<String?> showRelativePathPromptDialog(
   Future<void> checkCollision(void Function(void Function()) setDialogState) async {
     final path = withDefaultExtension(value);
     setDialogState(() => checkingCollision = true);
-    final existing = await storageService.resolve(root, path);
+    final existing = await storageService.resolve(currentRoot, path);
     setDialogState(() {
       checkingCollision = false;
       collisionWarning = existing != null;
@@ -145,18 +162,21 @@ Future<String?> showRelativePathPromptDialog(
             )
           else
             TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () async {
-              final newRoot = await storageService.pickOrCreateProjectRoot();
-              if (newRoot != null) {
-                await RecentProjectStore().save(persistedKey: newRoot.persistedKey, displayName: newRoot.displayName);
-                if (context.mounted) {
-                  Navigator.of(context).pop(null);
+          if (onRootChanged != null)
+            TextButton(
+              onPressed: () async {
+                final newRoot = await _pickNewProjectRoot(storageService);
+                if (newRoot == null) return;
+                currentRoot = newRoot;
+                onRootChanged(newRoot);
+                if (!context.mounted) return;
+                setDialogState(() => collisionWarning = false);
+                if (validationError == null) {
+                  unawaited(checkCollision(setDialogState));
                 }
-              }
-            },
-            child: const Text('Change Folder'),
-          ),
+              },
+              child: const Text('Change Folder'),
+            ),
           FilledButton(
             onPressed: validationError == null
                 ? () => Navigator.of(context).pop(withDefaultExtension(value))
@@ -191,19 +211,22 @@ Future<String?> showOpenProjectPathPromptDialog(
   BuildContext context, {
   required StorageService storageService,
   required ProjectRoot root,
+  ValueChanged<ProjectRoot>? onRootChanged,
 }) async {
-  List<String>? files;
-  try {
-    // `List.of` rather than sorting the returned list in place - nothing in
-    // `StorageService.listFiles`'s own contract guarantees the caller gets
-    // back a mutable list (a `const []` fallback, e.g., wouldn't survive an
-    // in-place `sort()`).
-    files = List<String>.of(await storageService.listFiles(root, extensionFilter: kNativeFileExtension))..sort();
-  } on StorageException {
-    files = null;
+  // Null when the root is unreachable. `List.of` because nothing in
+  // `StorageService.listFiles`'s own contract guarantees the caller gets
+  // back a mutable list (a `const []` fallback, e.g., wouldn't survive an
+  // in-place `sort()`).
+  Future<List<String>?> loadFiles(ProjectRoot forRoot) async {
+    try {
+      return List<String>.of(await storageService.listFiles(forRoot, extensionFilter: kNativeFileExtension))..sort();
+    } on StorageException {
+      return null;
+    }
   }
+
+  List<String>? files = await loadFiles(root);
   if (!context.mounted) return null;
-  final resolvedFiles = files;
 
   String value = '';
   String? validationError = validateProjectRelativePath(value);
@@ -213,6 +236,7 @@ Future<String?> showOpenProjectPathPromptDialog(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setDialogState) {
+        final resolvedFiles = files;
         final items = resolvedFiles == null ? null : _getBrowseItems(resolvedFiles, currentFolder);
 
         return AlertDialog(
@@ -307,18 +331,21 @@ Future<String?> showOpenProjectPathPromptDialog(
           ),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () async {
-              final newRoot = await storageService.pickOrCreateProjectRoot();
-              if (newRoot != null) {
-                await RecentProjectStore().save(persistedKey: newRoot.persistedKey, displayName: newRoot.displayName);
-                if (context.mounted) {
-                  Navigator.of(context).pop(null);
-                }
-              }
-            },
-            child: const Text('Change Folder'),
-          ),
+          if (onRootChanged != null)
+            TextButton(
+              onPressed: () async {
+                final newRoot = await _pickNewProjectRoot(storageService);
+                if (newRoot == null) return;
+                final newFiles = await loadFiles(newRoot);
+                onRootChanged(newRoot);
+                if (!context.mounted) return;
+                setDialogState(() {
+                  files = newFiles;
+                  currentFolder = '';
+                });
+              },
+              child: const Text('Change Folder'),
+            ),
           FilledButton(
             onPressed: validationError == null
                 ? () => Navigator.of(context).pop(withDefaultExtension(value))

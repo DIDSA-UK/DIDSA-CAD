@@ -9615,8 +9615,9 @@ class _PartScreenState extends State<PartScreen> {
   /// honest, safe outcome here, never a silent data loss.
   Future<void> _saveFocusedPartAs() async {
     final focusPartId = _focusStack?.current ?? _part?.id;
-    final root = _projectRoot;
-    if (focusPartId == null || root == null) return;
+    final initialRoot = _projectRoot;
+    if (focusPartId == null || initialRoot == null) return;
+    var root = initialRoot;
 
     var partName = 'part';
     await _runGuarded(() async {
@@ -9632,6 +9633,10 @@ class _PartScreenState extends State<PartScreen> {
       initialValue: currentPath ?? partName,
       storageService: _storageService,
       root: root,
+      onRootChanged: (newRoot) {
+        root = newRoot;
+        if (mounted) setState(() => _projectRoot = newRoot);
+      },
     );
     if (newPath == null || !mounted) return;
 
@@ -9779,9 +9784,20 @@ class _PartScreenState extends State<PartScreen> {
   /// [_openComposedProject] re-reads it as part of its own real graph
   /// walk, a small, acceptable duplication for a small JSON file.
   Future<void> _openViaProjectFolderPicker() async {
-    final root = await _ensureProjectRoot();
-    if (root == null || !mounted) return;
-    final relativePath = await showOpenProjectPathPromptDialog(context, storageService: _storageService, root: root);
+    final ensuredRoot = await _ensureProjectRoot();
+    if (ensuredRoot == null || !mounted) return;
+    // "Change Folder" inside the dialog can switch the root; the returned
+    // relative path is relative to whichever root was current at pick time.
+    var root = ensuredRoot;
+    final relativePath = await showOpenProjectPathPromptDialog(
+      context,
+      storageService: _storageService,
+      root: root,
+      onRootChanged: (newRoot) {
+        root = newRoot;
+        if (mounted) setState(() => _projectRoot = newRoot);
+      },
+    );
     if (relativePath == null || !mounted) return;
 
     Uint8List? bytes;

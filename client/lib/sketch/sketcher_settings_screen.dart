@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../ai/ai_provider_settings_screen.dart';
 import '../materials/materials_manager_screen.dart';
 import '../storage/recent_project_store.dart';
+import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
 import '../viewport3d/view_preferences.dart';
 
@@ -15,7 +16,10 @@ import '../viewport3d/view_preferences.dart';
 /// settings screen for now. Mirrors `mesh_viewer_settings_screen.dart`'s
 /// own shape exactly (load-on-init, a setter call per toggle change).
 class SketcherSettingsScreen extends StatefulWidget {
-  const SketcherSettingsScreen({super.key});
+  const SketcherSettingsScreen({super.key, this.storageService});
+
+  /// Overridable for tests; defaults to the platform's own [createStorageService].
+  final StorageService? storageService;
 
   @override
   State<SketcherSettingsScreen> createState() => _SketcherSettingsScreenState();
@@ -34,29 +38,32 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
 
   Future<void> _load() async {
     await ViewPreferences.load();
-    await _loadProjectRootDisplayName();
+    final displayName = await _readProjectRootDisplayName();
     if (!mounted) return;
     setState(() {
       _debugShowCameraOrientation = ViewPreferences.debugShowCameraOrientation;
+      _projectRootDisplayName = displayName;
       _loaded = true;
     });
   }
 
-  Future<void> _loadProjectRootDisplayName() async {
+  Future<String> _readProjectRootDisplayName() async {
     final last = await RecentProjectStore().last();
-    if (!mounted) return;
-    _projectRootDisplayName = last?.displayName ?? 'Not set';
+    return last?.displayName ?? 'Not set';
   }
 
   Future<void> _changeProjectFolder() async {
-    final newRoot = await createStorageService().pickOrCreateProjectRoot();
-    if (newRoot == null) return;
-
-    // Update the stored project root
-    await RecentProjectStore().save(persistedKey: newRoot.persistedKey, displayName: newRoot.displayName);
-    await _loadProjectRootDisplayName();
+    // `pickOrCreateProjectRoot` persists the new root itself (via
+    // `RecentProjectStore`) and throws `StorageException` - rather than
+    // returning null - when the user cancels the picker.
+    try {
+      await (widget.storageService ?? createStorageService()).pickOrCreateProjectRoot();
+    } on StorageException {
+      return;
+    }
+    final displayName = await _readProjectRootDisplayName();
     if (!mounted) return;
-    setState(() {});
+    setState(() => _projectRootDisplayName = displayName);
   }
 
   Future<void> _onDebugShowCameraOrientationChanged(bool value) async {
