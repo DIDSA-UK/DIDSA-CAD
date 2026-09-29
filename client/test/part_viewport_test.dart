@@ -4,6 +4,8 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
+import 'package:didsa_cad_client/viewport3d/render_mode.dart';
+import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 
 /// A small box-like mesh carrying real face/edge/topology-vertex ids, so
 /// hover/selection hit-testing in selection mode has something non-trivial
@@ -567,4 +569,157 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  group('assembly lens instances', () {
+    RigidTransformDto at(double x) =>
+        RigidTransformDto(translation: [x, 0, 0], rotationAxis: const [0, 0, 1], rotationAngleDegrees: 0);
+
+    final childGeometry = AssemblyBodyGeometryDto(
+      partId: 'child',
+      bodies: [BodyMeshDto(bodyId: 'child-body', source: 'computed', mesh: _boxMesh)],
+    );
+    // What the backend used to return for a geometry-less root.
+    final rootPlaceholderGeometry = AssemblyBodyGeometryDto(
+      partId: 'root',
+      bodies: [BodyMeshDto(bodyId: 'placeholder', source: 'placeholder', mesh: _boxMesh)],
+    );
+
+    /// Returns whether the GPU scene came up; tests skip themselves when it
+    /// did not (no real GPU backend in a headless sandbox), like the other
+    /// node-graph tests above.
+    Future<bool> pumpViewport(
+      WidgetTester tester,
+      GlobalKey<PartViewportState> key, {
+      ViewportRenderMode renderMode = ViewportRenderMode.shaded,
+      List<AssemblyOccurrenceInstanceDto>? instances,
+      List<AssemblyBodyGeometryDto>? geometry,
+      List<String> focusedPath = const [],
+      Set<SelectionEntityRef> selected = const {},
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 400,
+              height: 400,
+              child: PartViewport(
+                key: key,
+                bodies: const [],
+                selectedPlane: null,
+                onPlaneTap: (_) {},
+                onBackgroundTap: () {},
+                renderMode: renderMode,
+                assemblyGeometry: geometry ?? [childGeometry],
+                assemblyInstances: instances ??
+                    [AssemblyOccurrenceInstanceDto(occurrencePath: const ['occ-1'], partId: 'child', worldTransform: at(0))],
+                focusedOccurrencePath: focusedPath,
+                selectedEntities: selected,
+              ),
+            ),
+          ),
+        ),
+      );
+      final gpuReady = await _pumpUntil(
+        tester,
+        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        maxPumps: 300,
+      );
+      await tester.pump();
+      if (!gpuReady) markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+      return gpuReady;
+    }
+
+    testWidgets('wireframe: occurrence bodies get edges but no filled faces; shaded restores faces', (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      if (!await pumpViewport(tester, key, renderMode: ViewportRenderMode.shaded)) return;
+      expect(key.currentState!.debugAssemblyInstanceNodeKeys, {'occ-1/child-body'});
+      expect(key.currentState!.debugAssemblyInstanceEdgesNodeKeys, isEmpty);
+
+      await pumpViewport(tester, key, renderMode: ViewportRenderMode.wireframe);
+      expect(key.currentState!.debugAssemblyInstanceNodeKeys, isEmpty);
+      expect(key.currentState!.debugAssemblyInstanceEdgesNodeKeys, {'occ-1/child-body'});
+
+      await pumpViewport(tester, key, renderMode: ViewportRenderMode.shaded);
+      expect(key.currentState!.debugAssemblyInstanceNodeKeys, {'occ-1/child-body'});
+      expect(key.currentState!.debugAssemblyInstanceEdgesNodeKeys, isEmpty);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('a placeholder body is never rendered, even for the root instance shown while focused', (
+      tester,
+    ) async {
+      final key = GlobalKey<PartViewportState>();
+      if (!await pumpViewport(
+        tester,
+        key,
+        renderMode: ViewportRenderMode.shadedWithEdges,
+        focusedPath: const ['occ-1'],
+        geometry: [rootPlaceholderGeometry, childGeometry],
+        instances: [
+          AssemblyOccurrenceInstanceDto(occurrencePath: const [], partId: 'root', worldTransform: at(0)),
+          AssemblyOccurrenceInstanceDto(occurrencePath: const ['occ-1'], partId: 'child', worldTransform: at(0)),
+          AssemblyOccurrenceInstanceDto(occurrencePath: const ['occ-2'], partId: 'child', worldTransform: at(20)),
+        ],
+      )) {
+        return;
+      }
+
+      expect(key.currentState!.debugAssemblyInstanceNodeKeys, {'occ-2/child-body'});
+      expect(key.currentState!.debugAssemblyInstanceEdgesNodeKeys, {'occ-2/child-body'});
+      expect(tester.takeException(), isNull);
+    });
+
+    group('selected component highlight follows the component', () {
+      final selection = {const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1')};
+
+      testWidgets('is rebuilt when the selected instance moves, and left alone when an unrelated one does', (
+        tester,
+      ) async {
+        final key = GlobalKey<PartViewportState>();
+        AssemblyOccurrenceInstanceDto instance(String id, double x) =>
+            AssemblyOccurrenceInstanceDto(occurrencePath: [id], partId: 'child', worldTransform: at(x));
+
+        if (!await pumpViewport(tester, key, selected: selection, instances: [instance('occ-1', 0), instance('occ-2', 30)])) return;
+        final initial = key.currentState!.debugSelectedFacesNode;
+        expect(initial, isNotNull);
+
+        // An unrelated instance moving must not rebuild the highlight.
+        await pumpViewport(tester, key, selected: selection, instances: [instance('occ-1', 0), instance('occ-2', 50)]);
+        expect(identical(key.currentState!.debugSelectedFacesNode, initial), isTrue);
+
+        // The selected instance moving must.
+        await pumpViewport(tester, key, selected: selection, instances: [instance('occ-1', 25), instance('occ-2', 50)]);
+        final moved = key.currentState!.debugSelectedFacesNode;
+        expect(moved, isNotNull);
+        expect(identical(moved, initial), isFalse);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('is hidden during a gizmo drag and rebuilt at the final pose when it ends', (tester) async {
+        final key = GlobalKey<PartViewportState>();
+        AssemblyOccurrenceInstanceDto instance(double x) =>
+            AssemblyOccurrenceInstanceDto(occurrencePath: const ['occ-1'], partId: 'child', worldTransform: at(x));
+
+        if (!await pumpViewport(tester, key, selected: selection, instances: [instance(0)])) return;
+        final initial = key.currentState!.debugSelectedFacesNode;
+        expect(initial, isNotNull);
+
+        key.currentState!.debugForceComponentGizmoDrag(1);
+        await tester.pump();
+        expect(key.currentState!.debugSelectedFacesNode, isNull);
+
+        // Live drag updates keep the highlight hidden rather than rebuilding it.
+        await pumpViewport(tester, key, selected: selection, instances: [instance(10)]);
+        await pumpViewport(tester, key, selected: selection, instances: [instance(20)]);
+        expect(key.currentState!.debugSelectedFacesNode, isNull);
+
+        key.currentState!.debugEndComponentGizmoDrag();
+        await tester.pump();
+        final rebuilt = key.currentState!.debugSelectedFacesNode;
+        expect(rebuilt, isNotNull);
+        expect(identical(rebuilt, initial), isFalse);
+        expect(tester.takeException(), isNull);
+      });
+    });
+  });
 }

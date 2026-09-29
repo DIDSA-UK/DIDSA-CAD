@@ -234,6 +234,11 @@ def encode_assembly_glb(
 
     part_accessor_indices: dict[str, tuple[int, int]] = {}
     for part_id, mesh in meshes_by_part_id.items():
+        # A Part with no geometry at all (e.g. an assembly root that only
+        # holds Occurrences) gets no accessors - glTF forbids a zero-count
+        # accessor - and its instances become mesh-less transform nodes below.
+        if not mesh.vertices:
+            continue
         position_accessor = _append_vec3_accessor(mesh.vertices, with_bounds=True)
         normal_accessor = _append_vec3_accessor(mesh.normals, with_bounds=False)
         part_accessor_indices[part_id] = (position_accessor, normal_accessor)
@@ -245,6 +250,16 @@ def encode_assembly_glb(
     nodes: list[dict] = []
 
     for instance in instances:
+        if instance.part_id not in part_accessor_indices:
+            qw, qx, qy, qz = instance.rotation_quaternion
+            nodes.append(
+                {
+                    "translation": list(instance.translation),
+                    "rotation": [qx, qy, qz, qw],
+                    "extras": {"owner_part_id": instance.owner_part_id, "occurrence_id": instance.occurrence_id},
+                }
+            )
+            continue
         variant_key = (instance.part_id, instance.color)
         mesh_index = mesh_index_by_variant.get(variant_key)
         if mesh_index is None:
