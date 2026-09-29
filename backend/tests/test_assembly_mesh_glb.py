@@ -335,4 +335,6 @@ def test_assembly_mesh_glb_geometry_less_root_is_a_meshless_node_not_a_placehold
     assert all(accessor["count"] > 0 for accessor in gltf["accessors"])
     # The mesh-less root node still carries its Mate/Measure identity extras.
     root_node = next(n for n in gltf["nodes"] if "mesh" not in n)
-    assert root_node["extras"]["owner_part_id"] == ""
+    # The root instance is stamped with its own Part id as owner (see get_assembly_mesh_glb).
+    assert root_node["extras"]["owner_part_id"] == root["id"]
+    assert root_node["extras"]["occurrence_id"] == ""
