@@ -265,7 +265,7 @@ Future<String?> showOpenProjectPathPromptDialog(
                 else if (items!.isEmpty)
                   const Padding(
                     padding: EdgeInsets.only(bottom: 8),
-                    child: Text('No items in this folder.'),
+                    child: Text('No .DIDSAprt files found in this folder.'),
                   )
                 else
                   ConstrainedBox(
