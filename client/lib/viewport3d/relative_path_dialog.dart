@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../assembly/relative_path.dart';
 import '../storage/project_root.dart';
+import '../storage/recent_project_store.dart';
 import '../storage/storage_service.dart';
 
 /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): the "where
@@ -92,6 +93,18 @@ Future<String?> showRelativePathPromptDialog(
             )
           else
             TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () async {
+              final newRoot = await storageService.pickOrCreateProjectRoot();
+              if (newRoot != null) {
+                await RecentProjectStore.instance.setLastUsedProjectRoot(newRoot);
+                if (context.mounted) {
+                  Navigator.of(context).pop(null);
+                }
+              }
+            },
+            child: const Text('Change Folder'),
+          ),
           FilledButton(
             onPressed: validationError == null
                 ? () => Navigator.of(context).pop(withDefaultExtension(value))
@@ -205,6 +218,18 @@ Future<String?> showOpenProjectPathPromptDialog(
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(null), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () async {
+              final newRoot = await storageService.pickOrCreateProjectRoot();
+              if (newRoot != null) {
+                await RecentProjectStore.instance.setLastUsedProjectRoot(newRoot);
+                if (context.mounted) {
+                  Navigator.of(context).pop(null);
+                }
+              }
+            },
+            child: const Text('Change Folder'),
+          ),
           FilledButton(
             onPressed: validationError == null
                 ? () => Navigator.of(context).pop(withDefaultExtension(value))

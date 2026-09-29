@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../ai/ai_provider_settings_screen.dart';
 import '../materials/materials_manager_screen.dart';
+import '../storage/recent_project_store.dart';
+import '../storage/storage_service.dart';
 import '../viewport3d/view_preferences.dart';
 
 /// Reachable from the connection screen's own settings entry, attached to
@@ -22,6 +24,7 @@ class SketcherSettingsScreen extends StatefulWidget {
 class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
   bool _debugShowCameraOrientation = ViewPreferences.defaultDebugShowCameraOrientation;
   bool _loaded = false;
+  String _projectRootDisplayName = '';
 
   @override
   void initState() {
@@ -31,11 +34,32 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
 
   Future<void> _load() async {
     await ViewPreferences.load();
+    _loadProjectRootDisplayName();
     if (!mounted) return;
     setState(() {
       _debugShowCameraOrientation = ViewPreferences.debugShowCameraOrientation;
       _loaded = true;
     });
+  }
+
+  void _loadProjectRootDisplayName() {
+    final displayName = RecentProjectStore.instance.lastUsedProjectRootDisplayName;
+    if (displayName != null && displayName.isNotEmpty) {
+      _projectRootDisplayName = displayName;
+    } else {
+      _projectRootDisplayName = 'Not set';
+    }
+  }
+
+  Future<void> _changeProjectFolder() async {
+    final newRoot = await StorageService.instance.pickOrCreateProjectRoot();
+    if (newRoot == null) return;
+
+    // Update the stored project root
+    await RecentProjectStore.instance.setLastUsedProjectRoot(newRoot);
+    _loadProjectRootDisplayName();
+    if (!mounted) return;
+    setState(() {});
   }
 
   Future<void> _onDebugShowCameraOrientationChanged(bool value) async {
@@ -52,6 +76,22 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                Text('Project Folder', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  'The folder where your CAD projects and parts are stored. This '
+                  'is used by Save and Open dialogs to locate your files.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Current Folder'),
+                  subtitle: Text(_projectRootDisplayName),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _changeProjectFolder,
+                ),
+                const SizedBox(height: 24),
                 Text('Debug: camera orientation readout', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(
