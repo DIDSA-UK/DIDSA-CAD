@@ -222,11 +222,22 @@ class AssemblyTreePanel extends StatefulWidget {
   State<AssemblyTreePanel> createState() => _AssemblyTreePanelState();
 }
 
+/// Default width fraction of the Assembly Tree panel: 66% on portrait mobile
+/// (shorter side < 600 logical px and taller than wide) for readability,
+/// 40% everywhere else - matching `FeatureTreePanel`'s own default.
+double assemblyTreeDefaultWidthFraction(Size screenSize) {
+  final isPortraitMobile = screenSize.width < 600 && screenSize.height > screenSize.width;
+  return isPortraitMobile
+      ? _AssemblyTreePanelState._defaultWidthFractionPortraitMobile
+      : _AssemblyTreePanelState._defaultWidthFractionDesktop;
+}
+
 class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
   // Same width-fraction constants/behavior as `FeatureTreePanel` - a user who
   // has already learned to grab this panel's edge to resize it should find
   // the same affordance here, at the same default width.
-  static const double _defaultWidthFraction = 0.4;
+  static const double _defaultWidthFractionDesktop = 0.4;
+  static const double _defaultWidthFractionPortraitMobile = 0.66;
   static const double _minWidthFraction = 0.28;
   static const double _maxWidthFraction = 0.75;
 
@@ -234,14 +245,20 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
   static const TextStyle _rowSubtitleStyle = TextStyle(fontSize: 11);
   static const TextStyle _sectionTitleStyle = TextStyle(fontSize: 14, fontWeight: FontWeight.w600);
 
-  double _widthFraction = _defaultWidthFraction;
+  /// Set only once the user drags the panel's edge. Until then the width
+  /// follows the screen-size default (so rotating the device re-defaults it);
+  /// after that the user's own choice always wins.
+  double? _userWidthFraction;
+
+  double _effectiveWidthFraction(BuildContext context) =>
+      _userWidthFraction ?? assemblyTreeDefaultWidthFraction(MediaQuery.sizeOf(context));
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final totalWidth = constraints.maxWidth;
-        final panelWidth = (_widthFraction * totalWidth).clamp(
+        final panelWidth = (_effectiveWidthFraction(context) * totalWidth).clamp(
           _minWidthFraction * totalWidth,
           _maxWidthFraction * totalWidth,
         );
@@ -397,7 +414,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
         onHorizontalDragUpdate: (details) {
           if (totalWidth <= 0) return;
           setState(() {
-            _widthFraction = (_widthFraction + details.delta.dx / totalWidth).clamp(
+            _userWidthFraction = (_effectiveWidthFraction(context) + details.delta.dx / totalWidth).clamp(
               _minWidthFraction,
               _maxWidthFraction,
             );

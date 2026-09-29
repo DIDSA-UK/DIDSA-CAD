@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../ai/ai_provider_settings_screen.dart';
 import '../materials/materials_manager_screen.dart';
+import '../storage/recent_project_store.dart';
+import '../storage/storage_service.dart';
+import '../storage/storage_service_factory.dart';
 import '../viewport3d/view_preferences.dart';
 
 /// Reachable from the connection screen's own settings entry, attached to
@@ -13,7 +16,10 @@ import '../viewport3d/view_preferences.dart';
 /// settings screen for now. Mirrors `mesh_viewer_settings_screen.dart`'s
 /// own shape exactly (load-on-init, a setter call per toggle change).
 class SketcherSettingsScreen extends StatefulWidget {
-  const SketcherSettingsScreen({super.key});
+  const SketcherSettingsScreen({super.key, this.storageService});
+
+  /// Overridable for tests; defaults to the platform's own [createStorageService].
+  final StorageService? storageService;
 
   @override
   State<SketcherSettingsScreen> createState() => _SketcherSettingsScreenState();
@@ -22,6 +28,7 @@ class SketcherSettingsScreen extends StatefulWidget {
 class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
   bool _debugShowCameraOrientation = ViewPreferences.defaultDebugShowCameraOrientation;
   bool _loaded = false;
+  String _projectRootDisplayName = '';
 
   @override
   void initState() {
@@ -31,11 +38,32 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
 
   Future<void> _load() async {
     await ViewPreferences.load();
+    final displayName = await _readProjectRootDisplayName();
     if (!mounted) return;
     setState(() {
       _debugShowCameraOrientation = ViewPreferences.debugShowCameraOrientation;
+      _projectRootDisplayName = displayName;
       _loaded = true;
     });
+  }
+
+  Future<String> _readProjectRootDisplayName() async {
+    final last = await RecentProjectStore().last();
+    return last?.displayName ?? 'Not set';
+  }
+
+  Future<void> _changeProjectFolder() async {
+    // `pickOrCreateProjectRoot` persists the new root itself (via
+    // `RecentProjectStore`) and throws `StorageException` - rather than
+    // returning null - when the user cancels the picker.
+    try {
+      await (widget.storageService ?? createStorageService()).pickOrCreateProjectRoot();
+    } on StorageException {
+      return;
+    }
+    final displayName = await _readProjectRootDisplayName();
+    if (!mounted) return;
+    setState(() => _projectRootDisplayName = displayName);
   }
 
   Future<void> _onDebugShowCameraOrientationChanged(bool value) async {
@@ -52,6 +80,22 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
+                Text('Project Folder', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  'The folder where your CAD projects and parts are stored. This '
+                  'is used by Save and Open dialogs to locate your files.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Current Folder'),
+                  subtitle: Text(_projectRootDisplayName),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: _changeProjectFolder,
+                ),
+                const SizedBox(height: 24),
                 Text('Debug: camera orientation readout', style: Theme.of(context).textTheme.titleMedium),
                 const SizedBox(height: 4),
                 Text(

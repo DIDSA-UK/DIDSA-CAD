@@ -32,6 +32,7 @@ import '../assembly/native_file_shape.dart';
 import '../assembly/occurrence_visibility.dart';
 import '../assembly/relative_path.dart';
 import '../assembly/save_all.dart' show stampExternalRefs;
+import 'assembly_component_selection_drawer.dart';
 import 'component_context_menu.dart';
 import 'component_gizmo.dart';
 import 'component_selection_toolbar.dart';
@@ -9614,8 +9615,9 @@ class _PartScreenState extends State<PartScreen> {
   /// honest, safe outcome here, never a silent data loss.
   Future<void> _saveFocusedPartAs() async {
     final focusPartId = _focusStack?.current ?? _part?.id;
-    final root = _projectRoot;
-    if (focusPartId == null || root == null) return;
+    final initialRoot = _projectRoot;
+    if (focusPartId == null || initialRoot == null) return;
+    var root = initialRoot;
 
     var partName = 'part';
     await _runGuarded(() async {
@@ -9631,6 +9633,10 @@ class _PartScreenState extends State<PartScreen> {
       initialValue: currentPath ?? partName,
       storageService: _storageService,
       root: root,
+      onRootChanged: (newRoot) {
+        root = newRoot;
+        if (mounted) setState(() => _projectRoot = newRoot);
+      },
     );
     if (newPath == null || !mounted) return;
 
@@ -9778,9 +9784,20 @@ class _PartScreenState extends State<PartScreen> {
   /// [_openComposedProject] re-reads it as part of its own real graph
   /// walk, a small, acceptable duplication for a small JSON file.
   Future<void> _openViaProjectFolderPicker() async {
-    final root = await _ensureProjectRoot();
-    if (root == null || !mounted) return;
-    final relativePath = await showOpenProjectPathPromptDialog(context, storageService: _storageService, root: root);
+    final ensuredRoot = await _ensureProjectRoot();
+    if (ensuredRoot == null || !mounted) return;
+    // "Change Folder" inside the dialog can switch the root; the returned
+    // relative path is relative to whichever root was current at pick time.
+    var root = ensuredRoot;
+    final relativePath = await showOpenProjectPathPromptDialog(
+      context,
+      storageService: _storageService,
+      root: root,
+      onRootChanged: (newRoot) {
+        root = newRoot;
+        if (mounted) setState(() => _projectRoot = newRoot);
+      },
+    );
     if (relativePath == null || !mounted) return;
 
     Uint8List? bytes;
@@ -21976,9 +21993,10 @@ class _PartScreenState extends State<PartScreen> {
                 // Move/Fix-Float/Delete for a single selected Occurrence,
                 // gated the same "no other tool/picker session already owns
                 // the screen" way every other overlay in this Stack is.
-                // `!_anyToolPanelOpen` already covers `_moveRotateComponentActive`
-                // itself, so this toolbar auto-hides once Move opens
-                // `MoveRotateComponentPanel` below, avoiding overlapping UI.
+                // Assembly component selection drawer - the assembly equivalent
+                // of SelectionListDrawer for Part lens. Shows selected component
+                // details and action buttons in a draggable sheet. Auto-hides
+                // when other tool panels open or component is deselected.
                 if (_lens == AssemblyLens.assembly &&
                     _selectedOccurrenceId != null &&
                     !_assemblyMultiSelect.active &&
@@ -21993,18 +22011,15 @@ class _PartScreenState extends State<PartScreen> {
                       final index = _occurrences.indexWhere((o) => o.id == _selectedOccurrenceId);
                       if (index == -1) return const SizedBox.shrink();
                       final occurrence = _occurrences[index];
-                      return Align(
-                        alignment: Alignment.bottomCenter,
-                        child: ComponentSelectionToolbar(
-                          fixed: occurrence.fixed,
-                          onMove: () => setState(() {
-                            _selectionMode = false;
-                            _moveRotateComponentActive = true;
-                            _moveRotateComponentMode = MoveRotateComponentMode.move;
-                          }),
-                          onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
-                          onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
-                        ),
+                      return AssemblyComponentSelectionDrawer(
+                        selectedComponent: occurrence,
+                        onMove: () => setState(() {
+                          _selectionMode = false;
+                          _moveRotateComponentActive = true;
+                          _moveRotateComponentMode = MoveRotateComponentMode.move;
+                        }),
+                        onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
+                        onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
                       );
                     },
                   ),
