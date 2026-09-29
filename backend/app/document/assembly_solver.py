@@ -1219,7 +1219,24 @@ def _solve_occurrence_against(
     for mate, _driven_ref, driven_geometry, fixed_geometry in resolved:
         if mate.type == MateType.COINCIDENT and driven_geometry.plane is not None and fixed_geometry.plane is not None:
             target_direction = fixed_geometry.plane.normal if mate.flipped else tuple(-c for c in fixed_geometry.plane.normal)
-            seed_rotation_quaternion = _quaternion_aligning(driven_geometry.plane.normal, target_direction)
+            # Seed with the SMALLEST additional rotation that takes the driven
+            # normal - where it points under the Occurrence's CURRENT rotation -
+            # onto the target, composed onto that current rotation. Aligning the
+            # local normal straight to the target (this seed's original form)
+            # threw the current rotation away, including any spin about the
+            # mate's own normal: a face-to-face mate leaves that spin free
+            # (allow_rotation), yet every solve reset it, so a part mated to a
+            # face could never be turned about it (found in VR testing of live
+            # mate-constrained dragging). If the normal already opposes/matches
+            # the target the extra rotation is the identity and the seed IS the
+            # current rotation, so the spin survives; if it needs flipping, the
+            # flip is the minimal one.
+            current_rotation = _quaternion_from_axis_angle(
+                driven_occurrence.transform.rotation_axis, driven_occurrence.transform.rotation_angle_degrees
+            )
+            current_world_normal = _rotate_vector_by_quaternion(current_rotation, driven_geometry.plane.normal)
+            extra_rotation = _quaternion_aligning(current_world_normal, target_direction)
+            seed_rotation_quaternion = _quaternion_multiply(extra_rotation, current_rotation)
             break
     if seed_rotation_quaternion is None:
         # CONCENTRIC's own warm start (test report item 4, bolt-in-hole

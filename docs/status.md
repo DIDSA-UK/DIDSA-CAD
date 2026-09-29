@@ -3529,3 +3529,18 @@ DIDSA-VR's own docs/status.md has the fuller before/after picture and the
 on-headset-unconfirmed caveats (this endpoint's headless/real-backend
 verification is solid; the wrist-tablet "Add" button's real-headset
 legibility isn't).
+
+## 2026-09-29 — Mate solver: a face-to-face mate now keeps the occurrence's spin about the mate normal
+
+Found while making DIDSA-VR's enforced mates move parts live (see DIDSA-VR `docs/status.md`,
+"Mates round"): a plane-plane COINCIDENT mate leaves rotation about the shared normal free
+(`allow_rotation`), but `_solve_occurrence_against`'s warm-start seed was
+`_quaternion_aligning(local normal, target)` — built from the LOCAL normal alone, so it threw
+away the occurrence's current rotation, and every solve reset any spin about the mate axis
+(measured: a 30°/90° spin came back as 0°). The seed is now the minimal rotation taking the
+driven normal's CURRENT world direction onto the target, composed onto the current rotation:
+already-aligned poses keep their spin, wrong-way-facing ones still flip back by the minimal
+turn. New tests in `tests/test_assembly_solver.py` (`..._preserves_spin_about_the_mate_normal`,
+`..._from_a_wrongly_facing_pose_flips_it_back`); all 63 solver tests and all 157
+mate/assembly/occurrence tests pass. No API change. (The flat app's gizmo-drag-then-solve flow
+benefits too: rotating a mated part about its mate axis no longer snaps back.)

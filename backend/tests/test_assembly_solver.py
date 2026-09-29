@@ -418,6 +418,71 @@ def test_coincident_plane_to_plane_flipped_faces_the_planes_the_same_way():
     assert _vectors_close(world_normal, (0.0, 0.0, 1.0), tolerance=1e-3)
 
 
+def test_coincident_plane_to_plane_preserves_spin_about_the_mate_normal():
+    """A face-to-face mate leaves rotation about the shared normal free, so a
+    solve from an already-rotated pose must keep that spin rather than reset
+    it (VR testing of live mate-constrained dragging: the warm-start seed used
+    to be built from the LOCAL normal alone, discarding the occurrence's
+    current rotation, so a part mated to a face could never be turned about
+    it)."""
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    bracket = _make_box_part("Bracket", size=8.0, depth=4.0)
+    spin_degrees = 40.0
+    # Bracket already faces the right way (bottom normal (0,0,-1) opposes Base's top),
+    # spun 40 degrees about Z - the mate's own normal axis.
+    _place_occurrence(
+        base["id"], bracket["id"], translation=(3.0, 3.0, 50.0),
+        rotation_axis=(0.0, 0.0, 1.0), rotation_angle_degrees=spin_degrees,
+    )
+    base_top = _find_planar_face(base["id"], base["body_id"], (0.0, 0.0, 1.0))
+    bracket_bottom = _find_planar_face(bracket["id"], bracket["body_id"], (0.0, 0.0, -1.0))
+    _create_mate(
+        base["id"],
+        mate_type="coincident",
+        driven_ref={"subshape_ref": {"body_id": bracket["body_id"], "shape_type": "face", "index": bracket_bottom}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_top}},
+    )
+    transform = _rigid_transform_from_response(_solve(base["id"]))
+
+    world_normal = apply_transform_to_direction(transform, (0.0, 0.0, -1.0))
+    assert _vectors_close(world_normal, (0.0, 0.0, -1.0), tolerance=1e-3)
+    # The mate is satisfied AND the spin survived: the bracket's local +X still
+    # points 40 degrees round from world +X.
+    spun_x = apply_transform_to_direction(transform, (1.0, 0.0, 0.0))
+    expected = (math.cos(math.radians(spin_degrees)), math.sin(math.radians(spin_degrees)), 0.0)
+    assert _vectors_close(spun_x, expected, tolerance=1e-3)
+    # ...and the free in-plane translation was left where it was put, not reset.
+    world_point = apply_transform_to_point(transform, (0.0, 0.0, 0.0))
+    assert abs(world_point[0] - 3.0) < 1e-3 and abs(world_point[1] - 3.0) < 1e-3
+    assert abs(world_point[2] - 10.0) < _TOLERANCE
+
+
+def test_coincident_plane_to_plane_from_a_wrongly_facing_pose_flips_it_back():
+    """The other half of the seed: when the driven normal currently points the
+    WRONG way (co-facing) for a not-flipped mate, the solve must still turn it
+    round - the seed composes the minimal correcting rotation onto the current
+    one, it doesn't just keep the current rotation."""
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    bracket = _make_box_part("Bracket", size=8.0, depth=4.0)
+    # 180 degrees about X: the bracket's bottom normal now points +Z, co-facing Base's top.
+    _place_occurrence(
+        base["id"], bracket["id"], translation=(3.0, 3.0, 50.0),
+        rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=180.0,
+    )
+    base_top = _find_planar_face(base["id"], base["body_id"], (0.0, 0.0, 1.0))
+    bracket_bottom = _find_planar_face(bracket["id"], bracket["body_id"], (0.0, 0.0, -1.0))
+    _create_mate(
+        base["id"],
+        mate_type="coincident",
+        driven_ref={"subshape_ref": {"body_id": bracket["body_id"], "shape_type": "face", "index": bracket_bottom}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_top}},
+    )
+    transform = _rigid_transform_from_response(_solve(base["id"]))
+    world_normal = apply_transform_to_direction(transform, (0.0, 0.0, -1.0))
+    assert _vectors_close(world_normal, (0.0, 0.0, -1.0), tolerance=1e-3)
+    assert abs(apply_transform_to_point(transform, (0.0, 0.0, 0.0))[2] - 10.0) < _TOLERANCE
+
+
 def test_coincident_point_to_point_places_the_vertex_exactly():
     base = _make_box_part("Base", size=20.0, depth=10.0)
     pin = _make_box_part("Pin", size=2.0, depth=2.0)
