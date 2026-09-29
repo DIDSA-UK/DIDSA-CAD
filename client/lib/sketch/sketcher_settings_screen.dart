@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../ai/ai_provider_settings_screen.dart';
 import '../materials/materials_manager_screen.dart';
 import '../storage/recent_project_store.dart';
-import '../storage/storage_service.dart';
+import '../storage/storage_service_factory.dart';
 import '../viewport3d/view_preferences.dart';
 
 /// Reachable from the connection screen's own settings entry, attached to
@@ -34,7 +34,7 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
 
   Future<void> _load() async {
     await ViewPreferences.load();
-    _loadProjectRootDisplayName();
+    await _loadProjectRootDisplayName();
     if (!mounted) return;
     setState(() {
       _debugShowCameraOrientation = ViewPreferences.debugShowCameraOrientation;
@@ -42,22 +42,19 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
     });
   }
 
-  void _loadProjectRootDisplayName() {
-    final displayName = RecentProjectStore.instance.lastUsedProjectRootDisplayName;
-    if (displayName != null && displayName.isNotEmpty) {
-      _projectRootDisplayName = displayName;
-    } else {
-      _projectRootDisplayName = 'Not set';
-    }
+  Future<void> _loadProjectRootDisplayName() async {
+    final last = await RecentProjectStore().last();
+    if (!mounted) return;
+    _projectRootDisplayName = last?.displayName ?? 'Not set';
   }
 
   Future<void> _changeProjectFolder() async {
-    final newRoot = await StorageService.instance.pickOrCreateProjectRoot();
+    final newRoot = await createStorageService().pickOrCreateProjectRoot();
     if (newRoot == null) return;
 
     // Update the stored project root
-    await RecentProjectStore.instance.setLastUsedProjectRoot(newRoot);
-    _loadProjectRootDisplayName();
+    await RecentProjectStore().save(persistedKey: newRoot.persistedKey, displayName: newRoot.displayName);
+    await _loadProjectRootDisplayName();
     if (!mounted) return;
     setState(() {});
   }

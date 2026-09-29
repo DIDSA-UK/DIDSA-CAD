@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
-import '../assembly/assembly_tree_panel.dart';
+import 'assembly_tree_panel.dart';
 
 /// Assembly lens component selection drawer - the assembly equivalent of
 /// [SelectionListDrawer] for Part lens mesh entity selection. Shows the

@@ -149,7 +149,7 @@ Future<String?> showRelativePathPromptDialog(
             onPressed: () async {
               final newRoot = await storageService.pickOrCreateProjectRoot();
               if (newRoot != null) {
-                await RecentProjectStore.instance.setLastUsedProjectRoot(newRoot);
+                await RecentProjectStore().save(persistedKey: newRoot.persistedKey, displayName: newRoot.displayName);
                 if (context.mounted) {
                   Navigator.of(context).pop(null);
                 }
@@ -311,7 +311,7 @@ Future<String?> showOpenProjectPathPromptDialog(
             onPressed: () async {
               final newRoot = await storageService.pickOrCreateProjectRoot();
               if (newRoot != null) {
-                await RecentProjectStore.instance.setLastUsedProjectRoot(newRoot);
+                await RecentProjectStore().save(persistedKey: newRoot.persistedKey, displayName: newRoot.displayName);
                 if (context.mounted) {
                   Navigator.of(context).pop(null);
                 }
@@ -326,7 +326,8 @@ Future<String?> showOpenProjectPathPromptDialog(
             child: const Text('Open'),
           ),
         ],
-      ),
+      );
+      },
     ),
   );
 }
