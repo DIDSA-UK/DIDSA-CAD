@@ -3544,3 +3544,20 @@ turn. New tests in `tests/test_assembly_solver.py` (`..._preserves_spin_about_th
 `..._from_a_wrongly_facing_pose_flips_it_back`); all 63 solver tests and all 157
 mate/assembly/occurrence tests pass. No API change. (The flat app's gizmo-drag-then-solve flow
 benefits too: rotating a mated part about its mate axis no longer snaps back.)
+
+## 2026-09-29 — `POST .../occurrences/{oid}/mate-motion`: how a mated occurrence may move, in one round trip
+
+For DIDSA-VR's smooth mate-constrained dragging (its `docs/status.md`, "Round: smooth mated
+drag..."): the per-frame PATCH+solve pair made a dragged mated part move at network speed. The
+new endpoint solves an occurrence's Mates from a WANTED pose (`{"transform": ...}`, else its
+stored one) without storing anything, and returns the nearest mate-satisfying pose, the DOF
+count and `free_twists` — an orthonormal basis of the remaining free motion at that pose
+(`[dx,dy,dz,rx,ry,rz]`: translation added to the occurrence's translation, rotation vector in
+radians composed onto its rotation about its own origin, both in the owning Part's frame; the
+nullspace of the same Jacobian `_independent_dof` already ranks). A client projects a wanted
+motion onto the twists locally every frame and calls this only every ~150 ms to re-anchor.
+`MateSolveResult` gained `free_twists`; `solve_occurrence_from_guess()` is the new solver entry
+point (`_independent_dof` is now a thin wrapper over `_free_motion`). Grounded occurrence: 422
+like `/solve`; non-convergence: `converged: false` (no 4xx). Tests in
+`tests/test_assembly_solver.py` (`test_mate_motion_*`, 5); all 117 solver/assembly/occurrence tests
+in the touched suites pass.

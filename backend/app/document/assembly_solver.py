@@ -77,7 +77,7 @@ Known v1 scope limits (documented here, not silently assumed):
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 from fastapi import HTTPException
@@ -168,6 +168,15 @@ class MateSolveResult:
     converged: bool
     transform: RigidTransform
     dof: int
+    free_twists: tuple[tuple[float, float, float, float, float, float], ...] = ()
+    """An orthonormal basis of the mated occurrence's remaining FREE motion at
+    `transform` (`dof` vectors; all six unit vectors when there are no mates):
+    each `(dx, dy, dz, rx, ry, rz)` is a small move that leaves every mate
+    satisfied to first order, in the same coordinates `_independent_dof`
+    perturbs - `dx..dz` added to the occurrence's translation, `rx..rz` a
+    rotation vector (radians) composed onto its rotation about its own origin
+    in the owner's frame. A client can project a wanted motion onto this
+    subspace locally, every frame, with no round trip."""
 
 
 @dataclass
@@ -1076,6 +1085,13 @@ def _independent_dof(
     resolved: list[tuple[Mate, MateEntityRef, _ResolvedGeometry, _ResolvedGeometry]],
     solved_transform: RigidTransform,
 ) -> int:
+    return _free_motion(resolved, solved_transform)[0]
+
+
+def _free_motion(
+    resolved: list[tuple[Mate, MateEntityRef, _ResolvedGeometry, _ResolvedGeometry]],
+    solved_transform: RigidTransform,
+) -> tuple[int, tuple[tuple[float, float, float, float, float, float], ...]]:
     """Replaces `system.Dof` (`py_slvs`'s own naive params-minus-equations
     count, confirmed unpatchable - `py-slvs==1.0.6` is a precompiled,
     pinned third-party wheel with no vendored source in this repo, its
@@ -1097,8 +1113,9 @@ def _independent_dof(
     No applicable Mates (`resolved` empty) trivially returns 6 (every rigid-
     body DOF free), matching `_solve_occurrence_against`'s own pre-existing
     early return for that case."""
+    identity_basis = tuple(tuple(1.0 if i == j else 0.0 for j in range(6)) for i in range(6))
     if not resolved:
-        return 6
+        return 6, identity_basis
 
     def transform_for(delta: tuple[float, float, float, float, float, float]) -> RigidTransform:
         dtx, dty, dtz, rx, ry, rz = delta
@@ -1126,7 +1143,7 @@ def _independent_dof(
 
     baseline = residual_at((0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     if not baseline:
-        return 6
+        return 6, identity_basis
 
     jacobian = np.zeros((len(baseline), 6))
     for i in range(6):
@@ -1139,7 +1156,12 @@ def _independent_dof(
         jacobian[:, i] = [(p - m) / (2 * _DOF_JACOBIAN_STEP) for p, m in zip(plus, minus)]
 
     rank = int(np.linalg.matrix_rank(jacobian))
-    return max(0, 6 - rank)
+    # The nullspace of the Jacobian (the trailing right-singular vectors) IS the
+    # free motion: moving along any of them changes no mate's residual (to
+    # first order). Same rank as the DOF count by construction.
+    _u, _s, vt = np.linalg.svd(jacobian)
+    free = tuple(tuple(float(x) for x in row) for row in vt[rank:])
+    return max(0, 6 - rank), free
 
 
 def _applicable_mates(part: Part, driven_occurrence_id: str) -> list[tuple[Mate, MateEntityRef, MateEntityRef]]:
@@ -1191,7 +1213,12 @@ def _solve_occurrence_against(
     mate-satisfying placement rather than jumping to some other,
     arbitrarily-different valid solution."""
     if not applicable:
-        return MateSolveResult(converged=True, transform=driven_occurrence.transform, dof=6)
+        return MateSolveResult(
+            converged=True,
+            transform=driven_occurrence.transform,
+            dof=6,
+            free_twists=tuple(tuple(1.0 if i == j else 0.0 for j in range(6)) for i in range(6)),
+        )
 
     if driven_occurrence.part_id is None or driven_occurrence.part_id not in document.parts:
         raise _unresolved_mate_occurrence(driven_occurrence.id)
@@ -1329,9 +1356,9 @@ def _solve_occurrence_against(
     # Newton's method last reached, a meaningful point to report DOF
     # around, exactly like `system.Dof` itself was already read
     # unconditionally here before this fix).
-    dof = _independent_dof(resolved, transform)
+    dof, free_twists = _free_motion(resolved, transform)
 
-    return MateSolveResult(converged=converged, transform=transform, dof=dof)
+    return MateSolveResult(converged=converged, transform=transform, dof=dof, free_twists=free_twists)
 
 
 def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) -> MateSolveResult:
@@ -1343,6 +1370,23 @@ def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) 
     no transform of its own to solve for). See `_solve_occurrence_against`
     for the actual solve."""
     driven_occurrence = _find_occurrence(part, driven_occurrence_id)
+    applicable = _applicable_mates(part, driven_occurrence_id)
+    return _solve_occurrence_against(document, part, driven_occurrence, applicable)
+
+
+def solve_occurrence_from_guess(
+    document: Document, part: Part, driven_occurrence_id: str, guess: RigidTransform | None
+) -> MateSolveResult:
+    """Like `solve_occurrence`, but seeds the solve from `guess` (a pose the
+    client WANTS - e.g. wherever a hand has dragged a part) instead of the
+    occurrence's stored transform, and never stores anything: the result
+    carries the nearest mate-satisfying pose AND the remaining free motion
+    (`MateSolveResult.free_twists`), which is what lets a client move a mated
+    part smoothly on its own between occasional re-solves. `guess=None` solves
+    from the stored transform."""
+    driven_occurrence = _find_occurrence(part, driven_occurrence_id)
+    if guess is not None:
+        driven_occurrence = replace(driven_occurrence, transform=guess)
     applicable = _applicable_mates(part, driven_occurrence_id)
     return _solve_occurrence_against(document, part, driven_occurrence, applicable)
 
