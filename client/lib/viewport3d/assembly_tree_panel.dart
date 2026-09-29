@@ -222,11 +222,14 @@ class AssemblyTreePanel extends StatefulWidget {
   State<AssemblyTreePanel> createState() => _AssemblyTreePanelState();
 }
 
-class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
+class _AssemblyTreePanelState extends State<AssemblyTreePanel> with WidgetsBindingObserver {
   // Same width-fraction constants/behavior as `FeatureTreePanel` - a user who
   // has already learned to grab this panel's edge to resize it should find
   // the same affordance here, at the same default width.
-  static const double _defaultWidthFraction = 0.4;
+  // On portrait mobile (width < 600), use wider default (66%) for readability;
+  // otherwise use standard default (40%).
+  static const double _defaultWidthFractionDesktop = 0.4;
+  static const double _defaultWidthFractionPortraitMobile = 0.66;
   static const double _minWidthFraction = 0.28;
   static const double _maxWidthFraction = 0.75;
 
@@ -234,7 +237,37 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
   static const TextStyle _rowSubtitleStyle = TextStyle(fontSize: 11);
   static const TextStyle _sectionTitleStyle = TextStyle(fontSize: 14, fontWeight: FontWeight.w600);
 
-  double _widthFraction = _defaultWidthFraction;
+  late double _widthFraction;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initializeWidthFraction();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  void _initializeWidthFraction() {
+    final mediaQuery = MediaQueryData.fromView(WidgetsBinding.instance.window);
+    final isPortraitMobile = mediaQuery.orientation == Orientation.portrait &&
+        mediaQuery.size.width < 600;
+    setState(() {
+      _widthFraction = isPortraitMobile
+          ? _defaultWidthFractionPortraitMobile
+          : _defaultWidthFractionDesktop;
+    });
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    _initializeWidthFraction();
+  }
 
   @override
   Widget build(BuildContext context) {
