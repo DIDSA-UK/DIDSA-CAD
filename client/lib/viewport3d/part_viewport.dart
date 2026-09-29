@@ -22,6 +22,7 @@ import 'mesh_geometry.dart';
 import 'orbit_camera.dart';
 import 'orthographic_camera.dart';
 import 'reference_planes.dart';
+import 'assembly_instance_render.dart';
 import 'render_mode.dart';
 import 'scene_preferences.dart';
 import 'screen_projection.dart';
@@ -1184,6 +1185,28 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _componentGizmoDragPointerId = pointerId;
     _componentGizmoDragStartTransform = widget.selectedOccurrenceTransform ??
         RigidTransformDto(translation: const [0, 0, 0], rotationAxis: const [0, 0, 1], rotationAngleDegrees: 0);
+    // Like a real drag start: the dragged component's highlight is hidden.
+    setState(() {
+      _syncSelectedEntityNodes();
+      _syncHoverNode();
+    });
+  }
+
+  /// Test-only: ends a drag started by [debugForceComponentGizmoDrag] exactly
+  /// as a real pointer-up does (minus the [PartViewport.onComponentGizmoDragEnd]
+  /// callback).
+  @visibleForTesting
+  void debugEndComponentGizmoDrag() => setState(_clearComponentGizmoDragState);
+
+  /// Clears the component-gizmo drag fields and rebuilds what the drag
+  /// suppressed: the dragged component's highlight is rebuilt once here, at
+  /// its final pose, rather than every frame of the drag.
+  void _clearComponentGizmoDragState() {
+    _componentGizmoDragHandle = null;
+    _componentGizmoDragPointerId = null;
+    _syncComponentGizmoNode();
+    _syncSelectedEntityNodes();
+    _syncHoverNode();
   }
 
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5: test-only window into
@@ -1194,6 +1217,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// non-overlapping node set (see [debugTransientMeshNodeBodyIds]).
   @visibleForTesting
   Set<String> get debugMeshNodeBodyIds => _meshNodes.keys.toSet();
+
+  /// Test-only windows into the placed-instance render state (assembly lens):
+  /// the keys of each instance's filled-face / edge Nodes, and the currently
+  /// built selected-faces highlight Node (null when none is on screen) -
+  /// compared by identity to tell "rebuilt" from "left stale".
+  @visibleForTesting
+  Set<String> get debugAssemblyInstanceNodeKeys => _assemblyInstanceNodes.keys.toSet();
+  @visibleForTesting
+  Set<String> get debugAssemblyInstanceEdgesNodeKeys => _assemblyInstanceEdgesNodes.keys.toSet();
+  @visibleForTesting
+  Object? get debugSelectedFacesNode => _selectedFacesNode;
   @visibleForTesting
   Set<String> get debugTransientMeshNodeBodyIds => _transientMeshNodes.keys.toSet();
 
@@ -1893,7 +1927,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // applied inside this method's own per-instance-Body loop too now.
         widget.sectionPlanes != oldWidget.sectionPlanes ||
         widget.sectionPreviewMeshes != oldWidget.sectionPreviewMeshes ||
-        widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds) {
+        widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds ||
+        widget.renderMode != oldWidget.renderMode ||
+        widget.bodiesHidden != oldWidget.bodiesHidden) {
       setState(_syncAssemblyInstanceNodes);
     }
     // Test report item 3: [_syncMatePreviewNode]'s own three inputs - a
@@ -2089,6 +2125,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // clearing it here unconditionally would stomp that.
           if (!widget.selectionMode) _hoverHit = null;
         }
+        _syncHoverNode();
+      });
+    }
+    // Bug fix ("highlights stay at the original location after Move/Rotate"):
+    // a component highlight bakes its instance's world transform into
+    // world-space triangles, so it must be rebuilt whenever the selected/
+    // hovered occurrence's instance moves (or its geometry changes) - not
+    // only when the selection itself changes.
+    if (widget.selectedEntities == oldWidget.selectedEntities &&
+        (widget.assemblyGeometry != oldWidget.assemblyGeometry || _highlightedOccurrenceMoved(oldWidget))) {
+      setState(() {
+        _syncSelectedEntityNodes();
         _syncHoverNode();
       });
     }
@@ -2525,6 +2573,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
     }
     if (widget.assemblyInstances.isEmpty) return;
+    // Bug fix ("wireframe view doesn't apply to bodies of occurrences"):
+    // mirrors [_syncMeshNode]'s own gate - placed instances get no filled
+    // faces in wireframe (or while bodies are hidden); their edges are drawn
+    // by [_syncAssemblyInstanceEdgesNode] instead.
+    if (!assemblyInstanceFacesVisible(widget.renderMode, bodiesHidden: widget.bodiesHidden)) return;
     final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
       // Assembly support Phase 20 Stage 4 (`docs/assembly-scope.md` §6
@@ -2579,6 +2632,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
+          if (!isRenderableAssemblyBody(body)) continue;
           if (body.mesh.vertices.isEmpty) continue;
           final sectionKey = '$occurrenceKey/${body.bodyId}';
           var displayMesh = body.mesh;
@@ -2665,6 +2719,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final partGeometry in widget.assemblyGeometry) {
       if (partGeometry.partId != partId) continue;
       for (final body in partGeometry.bodies) {
+        if (!isRenderableAssemblyBody(body)) continue;
         if (body.mesh.vertices.isEmpty) continue;
         final node = buildAssemblyInstanceNode(
           body.mesh,
@@ -2696,6 +2751,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != preview.partId) continue;
         for (final body in partGeometry.bodies) {
+          if (!isRenderableAssemblyBody(body)) continue;
           if (body.mesh.vertices.isEmpty) continue;
           final node = buildAssemblyInstanceNode(
             body.mesh,
@@ -2745,6 +2801,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
+          if (!isRenderableAssemblyBody(body)) continue;
           var segments = [
             for (final s in edgeSegmentsFromMesh(body.mesh))
               (transform.transformed3(s.$1), transform.transformed3(s.$2)),
@@ -2887,6 +2944,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
+          if (!isRenderableAssemblyBody(body)) continue;
           for (final vertex in body.mesh.vertices) {
             final world = transform.transformed3(vm.Vector3(vertex[0], vertex[1], vertex[2]));
             min = min == null
@@ -3424,6 +3482,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _componentGizmoDragPerpAxis = perpAxis;
       _componentGizmoDragStartAngle = startAngle;
       _syncComponentGizmoNode();
+      _syncSelectedEntityNodes();
+      _syncHoverNode();
     });
     return true;
   }
@@ -4414,11 +4474,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _activeTouches.remove(event.pointer);
         if (_activeTouches.isEmpty) _hadMultiTouch = false;
       }
-      setState(() {
-        _componentGizmoDragHandle = null;
-        _componentGizmoDragPointerId = null;
-        _syncComponentGizmoNode();
-      });
+      setState(_clearComponentGizmoDragState);
       widget.onComponentGizmoDragEnd?.call();
       return;
     }
@@ -5678,6 +5734,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(_hoverNode!);
       _hoverNode = null;
     }
+    // Hidden during a component-gizmo drag - see [_syncSelectedEntityNodes].
+    if (_componentGizmoDragHandle != null) return;
     final overrideEntity = widget.highlightOverride;
     if (overrideEntity != null) {
       // Bug report ("Select Other"): a candidate the user explicitly picked
@@ -5719,6 +5777,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     return null;
   }
 
+  /// Occurrence keys (joined `occurrencePath`s) whose highlight is currently
+  /// on screen: every selected entity, the hover hit, and any forced
+  /// `highlightOverride`, restricted to placed-instance entities.
+  Set<String> _highlightedOccurrenceKeys() => {
+        for (final e in widget.selectedEntities)
+          if (e.occurrenceId.isNotEmpty) e.occurrenceId,
+        if (_hoverHit != null && _hoverHit!.entity.occurrenceId.isNotEmpty) _hoverHit!.entity.occurrenceId,
+        if (widget.highlightOverride != null && widget.highlightOverride!.occurrenceId.isNotEmpty)
+          widget.highlightOverride!.occurrenceId,
+      };
+
+  /// True when any currently-highlighted occurrence's placed instance has a
+  /// different world transform than in [oldWidget] - compared per instance
+  /// (value equality), not by list identity, because `PartScreen` hands over
+  /// a freshly built instance list on every rebuild.
+  bool _highlightedOccurrenceMoved(PartViewport oldWidget) {
+    final keys = _highlightedOccurrenceKeys();
+    if (keys.isEmpty) return false;
+    return occurrenceInstanceTransformsDiffer(keys, oldWidget.assemblyInstances, widget.assemblyInstances);
+  }
+
   /// Assembly support Phase 4: [_bodyFor]'s sibling for a whole-component
   /// selection - every triangle of every Body the Occurrence identified by
   /// [occurrenceKey] (a joined `occurrencePath`, matching
@@ -5738,6 +5817,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
+          if (!isRenderableAssemblyBody(body)) continue;
           for (final triangle in trianglesFromMesh(body.mesh)) {
             triangles.add((
               transform.transformed3(triangle.$1),
@@ -5782,6 +5862,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
+          if (!isRenderableAssemblyBody(body)) continue;
           if (body.bodyId == bodyId) return (body, transform);
         }
       }
@@ -5852,7 +5933,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final vertexPositionsActiveSketch = <vm.Vector3>[];
     bool isActiveSketchEntity(SelectionEntityRef entity) =>
         entity.sketchFeatureId.isNotEmpty && entity.sketchFeatureId == widget.activeSketchFeatureId;
+    // While a component-gizmo drag is in progress the dragged component's
+    // highlight is hidden rather than rebuilt every frame (a whole-component
+    // triangle list is costly); it is rebuilt once when the drag ends.
+    final draggingComponent = _componentGizmoDragHandle != null;
     for (final entity in widget.selectedEntities) {
+      if (draggingComponent && entity.occurrenceId.isNotEmpty) continue;
       switch (entity.kind) {
         // Bug fix (bug report: "on child parts, dynamic highlight is not
         // working on edges"): same [_bodyAndTransformFor] fix

@@ -9035,9 +9035,11 @@ def _assembly_body_mesh_responses(part: Part, mesh_quality: MeshQuality) -> list
     state when rendering, exactly as it already must for any Part it isn't
     the primary editing target of."""
     if not part.produces_displayable_geometry:
-        box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
-        mesh_data = tessellate_shape(box, mesh_quality)
-        return [BodyMeshResponse(body_id=_PLACEHOLDER_BODY_ID, source="placeholder", mesh=_mesh_vertex_data(mesh_data))]
+        # No placeholder box here (unlike `get_part_mesh`): in an assembly
+        # scene a geometry-less Part - typically the root assembly itself,
+        # always emitted as an `occurrence_path=[]` instance - must render
+        # as nothing, not a stray 10x10x10 cube at the origin.
+        return []
 
     bodies = compute_part_bodies(part, frozenset())
     responses = []
@@ -9192,8 +9194,8 @@ def _assembly_glb_part_mesh_data(part: Part, mesh_quality: MeshQuality, tier: Li
     glTF mesh per unique Part (per colour - see that function's own
     docstring), not one per Body."""
     if not part.produces_displayable_geometry:
-        box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
-        return _merged_body_mesh_data({_PLACEHOLDER_BODY_ID: box}, mesh_quality)
+        # Empty, not the placeholder box - see `_assembly_body_mesh_responses`.
+        return MeshData()
 
     if tier == "coarse":
         coarse_eligible = coarse_eligible_feature_ids(part)

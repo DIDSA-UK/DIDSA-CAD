@@ -315,3 +315,24 @@ def test_assembly_mesh_glb_respects_the_quality_param():
     fine_position_accessor = fine_gltf["accessors"][0]
     coarse_position_accessor = coarse_gltf["accessors"][0]
     assert fine_position_accessor["count"] >= coarse_position_accessor["count"]
+
+
+def test_assembly_mesh_glb_geometry_less_root_is_a_meshless_node_not_a_placeholder_cube():
+    """Bug fix: an assembly root with no Features of its own used to get the
+    10x10x10 placeholder cube as its own mesh (shown at the origin in VR).
+    It is now a mesh-less transform node, and no zero-count accessor is
+    emitted (glTF forbids one)."""
+    root = _create_part("Empty Assembly")
+    bolt = _make_box_part("Bolt", size=2.0)
+    _place_occurrence(root, bolt, occurrence_id="occ-bolt-1", translation=[5.0, 0.0, 0.0])
+
+    gltf, _bin_bytes = _parse_glb(_fetch_assembly_glb(root["id"]))
+
+    # Two nodes (root + bolt), but only the bolt has a mesh.
+    assert len(gltf["nodes"]) == 2
+    assert sum(1 for n in gltf["nodes"] if "mesh" in n) == 1
+    assert len(gltf["meshes"]) == 1
+    assert all(accessor["count"] > 0 for accessor in gltf["accessors"])
+    # The mesh-less root node still carries its Mate/Measure identity extras.
+    root_node = next(n for n in gltf["nodes"] if "mesh" not in n)
+    assert root_node["extras"]["owner_part_id"] == ""

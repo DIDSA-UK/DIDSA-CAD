@@ -315,3 +315,51 @@ def test_assembly_mesh_composes_transforms_down_a_nested_occurrence_chain():
     assert math.isclose(tx, 10.0, abs_tol=1e-4)
     assert math.isclose(ty, 1.0, abs_tol=1e-4)
     assert math.isclose(tz, 0.0, abs_tol=1e-4)
+
+
+def test_assembly_mesh_never_returns_the_placeholder_box_for_a_geometry_less_root():
+    """Bug fix: an assembly root that only holds Occurrences (no Features of
+    its own) used to contribute `get_part_mesh`'s 10x10x10 placeholder cube
+    as its own `occurrence_path: []` instance - rendered at the origin once a
+    child was focused, and always in the VR client."""
+    root = _create_part("Empty Assembly")
+    bolt = _make_box_part("Bolt", size=2.0)
+
+    root_export = _export_part(root["id"])
+    bolt_export = _export_part(bolt["id"])
+    root_part_dict = root_export["document"]["parts"][0]
+    root_part_dict["occurrences"] = [
+        {
+            "id": "occ-bolt-1",
+            "external_ref": "parts/bolt.didsa",
+            "resolved_part_id": bolt["id"],
+            "name_override": None,
+            "transform": {
+                "translation": [5.0, 0.0, 0.0],
+                "rotation_axis": [0.0, 0.0, 1.0],
+                "rotation_angle_degrees": 0.0,
+            },
+            "suppressed": False,
+            "hidden": False,
+        }
+    ]
+    root_part_dict["mates"] = []
+    payload = {
+        "schema_version": root_export["schema_version"],
+        "document": {
+            "id": "composed-doc-empty-root",
+            "root_part_id": root["id"],
+            "parts": [root_part_dict, bolt_export["document"]["parts"][0]],
+        },
+        "sketches": [*root_export["sketches"], *bolt_export["sketches"]],
+    }
+    assert client.post("/document/import/native", json=payload).status_code == 200
+
+    mesh = _assembly_mesh(root["id"])
+
+    geometry_by_part = {g["part_id"]: g["bodies"] for g in mesh["geometry"]}
+    assert geometry_by_part[root["id"]] == []
+    assert len(geometry_by_part[bolt["id"]]) == 1
+    assert all(b["source"] != "placeholder" for g in mesh["geometry"] for b in g["bodies"])
+    # The root is still listed as an instance (clients rely on it being present).
+    assert any(i["occurrence_path"] == [] and i["part_id"] == root["id"] for i in mesh["instances"])
