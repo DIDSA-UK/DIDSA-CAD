@@ -32,6 +32,7 @@ import '../assembly/native_file_shape.dart';
 import '../assembly/occurrence_visibility.dart';
 import '../assembly/relative_path.dart';
 import '../assembly/save_all.dart' show stampExternalRefs;
+import 'assembly_component_selection_drawer.dart';
 import 'component_context_menu.dart';
 import 'component_gizmo.dart';
 import 'component_selection_toolbar.dart';
@@ -21976,9 +21977,10 @@ class _PartScreenState extends State<PartScreen> {
                 // Move/Fix-Float/Delete for a single selected Occurrence,
                 // gated the same "no other tool/picker session already owns
                 // the screen" way every other overlay in this Stack is.
-                // `!_anyToolPanelOpen` already covers `_moveRotateComponentActive`
-                // itself, so this toolbar auto-hides once Move opens
-                // `MoveRotateComponentPanel` below, avoiding overlapping UI.
+                // Assembly component selection drawer - the assembly equivalent
+                // of SelectionListDrawer for Part lens. Shows selected component
+                // details and action buttons in a draggable sheet. Auto-hides
+                // when other tool panels open or component is deselected.
                 if (_lens == AssemblyLens.assembly &&
                     _selectedOccurrenceId != null &&
                     !_assemblyMultiSelect.active &&
@@ -21993,18 +21995,15 @@ class _PartScreenState extends State<PartScreen> {
                       final index = _occurrences.indexWhere((o) => o.id == _selectedOccurrenceId);
                       if (index == -1) return const SizedBox.shrink();
                       final occurrence = _occurrences[index];
-                      return Align(
-                        alignment: Alignment.bottomCenter,
-                        child: ComponentSelectionToolbar(
-                          fixed: occurrence.fixed,
-                          onMove: () => setState(() {
-                            _selectionMode = false;
-                            _moveRotateComponentActive = true;
-                            _moveRotateComponentMode = MoveRotateComponentMode.move;
-                          }),
-                          onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
-                          onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
-                        ),
+                      return AssemblyComponentSelectionDrawer(
+                        selectedComponent: occurrence,
+                        onMove: () => setState(() {
+                          _selectionMode = false;
+                          _moveRotateComponentActive = true;
+                          _moveRotateComponentMode = MoveRotateComponentMode.move;
+                        }),
+                        onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
+                        onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
                       );
                     },
                   ),
