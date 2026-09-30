@@ -17,6 +17,7 @@ import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
+import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
@@ -4627,8 +4628,10 @@ void main() {
       required List<Map<String, dynamic>> seedOccurrences,
       required List<Map<String, dynamic>> seedMates,
       required String target,
+      http.Response Function(Map<String, dynamic>, String)? handler,
     }) async {
-      final backend = _FakeDocumentBackend(seedOccurrences: seedOccurrences, seedMates: seedMates);
+      final backend = _FakeDocumentBackend(seedOccurrences: seedOccurrences, seedMates: seedMates)
+        ..mateMotionHandler = handler;
       final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
       final sketchBackend = _FakeSketchBackend();
       await tester.pumpWidget(
@@ -4742,6 +4745,126 @@ void main() {
       expect(shown['occ-1']!.translation, [0.0, 0.0, 0.0], reason: 'back at the pre-grab pose');
       expect(shown['occ-2']!.translation, [30.0, 0.0, 0.0]);
       expect(find.textContaining("Couldn't keep that move"), findsOneWidget);
+    });
+
+    /// A scripted anchor for occ-1 (+ occ-2): `basis` rows are over 12 columns (occ-1 then occ-2).
+    http.Response Function(Map<String, dynamic>, String) anchor({
+      required int dof,
+      required List<List<double>> basis,
+      bool grounded = true,
+      int mobility = 3,
+    }) {
+      return (body, grabbed) => http.Response(
+            jsonEncode({
+              'converged': true,
+              'dof': dof,
+              'grounded': grounded,
+              'members': [
+                {'occurrence_id': 'occ-1', 'transform': tf(0, 0, 0), 'mobility': mobility},
+                {'occurrence_id': 'occ-2', 'transform': tf(30, 0, 0), 'mobility': 1},
+              ],
+              'basis': basis,
+              'chart': {'kind': 'se3_owner_frame', 'lever_arm': 10.0},
+              'quality': {'residual_inf': 1e-12, 'sigma_gap': 1e4},
+              'diagnostics': {'solve_ms': 1.0},
+              'committed': false,
+            }),
+            200,
+          );
+    }
+
+    final slideXY = <List<double>>[
+      [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ];
+
+    testWidgets('S8: the gizmo shows what the mates allow - z locked, x/y free, plane handle, group DOF in the panels', (
+      tester,
+    ) async {
+      await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+        handler: anchor(dof: 2, basis: slideXY),
+      );
+      await settle(tester);
+      final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      final cues = viewport.componentGizmoCues!;
+      expect(cues[ComponentGizmoHandleKind.translateX]!.free, isTrue);
+      expect(cues[ComponentGizmoHandleKind.translateY]!.free, isTrue);
+      expect(cues[ComponentGizmoHandleKind.translateZ]!.locked, isTrue);
+      expect(cues[ComponentGizmoHandleKind.rotateX]!.locked, isTrue);
+      expect(cues.planeNormal!.z.abs(), closeTo(1, 1e-6), reason: 'in-plane handle for the free x/y plane');
+      expect(viewport.selectedOccurrenceTransform, isNotNull);
+      expect(find.byKey(const ValueKey('move-rotate-status')), findsOneWidget);
+      expect(tester.widget<Text>(find.byKey(const ValueKey('move-rotate-status'))).data, 'Group: 2 DOF');
+      expect(tester.widget<Text>(find.byKey(const ValueKey('assembly-motion-summary'))).data, 'Group: 2 DOF');
+    });
+
+    testWidgets('S8: 0 DOF hides the gizmo and says why; not grounded is stated', (tester) async {
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+        handler: anchor(dof: 0, basis: const [], mobility: 0),
+      );
+      await settle(tester);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.selectedOccurrenceTransform, isNull, reason: 'no gizmo for a component nothing can move');
+      expect(viewport.componentGizmoCues, isNull);
+      expect(tester.widget<Text>(find.byKey(const ValueKey('move-rotate-status'))).data, contains('Fully constrained'));
+      expect(backend.mateMotionRequests.length, 1, reason: 'one anchor for the selection, not one per rebuild');
+    });
+
+    testWidgets('S8: an ungrounded group says so', (tester) async {
+      await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+        handler: anchor(dof: 6, grounded: false, basis: [
+          for (var i = 0; i < 6; i++) [for (var j = 0; j < 12; j++) j == i ? 1.0 : 0.0],
+        ]),
+      );
+      await settle(tester);
+      expect(tester.widget<Text>(find.byKey(const ValueKey('assembly-motion-summary'))).data, 'Group: 6 DOF - not grounded');
+      final cues = tester.widget<PartViewport>(find.byType(PartViewport)).componentGizmoCues!;
+      expect(cues[ComponentGizmoHandleKind.translateZ]!.free, isTrue);
+      expect(cues.planeNormal, isNull);
+    });
+
+    testWidgets('S8: an unmated target fetches nothing and shows no cues; a failed fetch leaves every handle as usual', (
+      tester,
+    ) async {
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30), occ('occ-3', 60)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-3',
+        handler: anchor(dof: 0, basis: const [], mobility: 0),
+      );
+      await settle(tester);
+      expect(backend.mateMotionRequests, isEmpty);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.componentGizmoCues, isNull);
+      expect(viewport.selectedOccurrenceTransform, isNotNull);
+      expect(find.byKey(const ValueKey('move-rotate-status')), findsNothing);
+    });
+
+    testWidgets('S8: a converged:false anchor is never read as locked or free: no cues, gizmo unchanged', (tester) async {
+      await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+        handler: (body, id) => http.Response(jsonEncode({'converged': false, 'members': [], 'quality': {'residual_inf': 5.0}}), 200),
+      );
+      await settle(tester);
+      final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.componentGizmoCues, isNull);
+      expect(viewport.selectedOccurrenceTransform, isNotNull);
     });
 
     testWidgets('an unmated occurrence keeps the raw PATCH path: no mate-motion request at all', (tester) async {

@@ -29,7 +29,79 @@ import 'selection_hit_test.dart' show kSelectionHitRadiusPixels, kCameraVertical
 /// it about its own local axis - both drags then compose onto whatever
 /// placement was already there (see [composeTranslation]/[composeRotation]),
 /// never replacing it outright.
-enum ComponentGizmoHandleKind { translateX, translateY, translateZ, rotateX, rotateY, rotateZ }
+enum ComponentGizmoHandleKind { translateX, translateY, translateZ, rotateX, rotateY, rotateZ, translatePlane }
+
+/// Plan S8: what the mates allow for one handle (from `lib/motion/gizmo_freedom.dart`, mapped to world space).
+/// [fraction] is the free fraction 0..1; a rotate handle may carry a [pivot] point and unit [pivotAxis] (world) - the
+/// screw axis the part really turns about, onto which the ring is re-pivoted.
+class ComponentHandleCue {
+  final double fraction;
+  final vm.Vector3? pivot;
+  final vm.Vector3? pivotAxis;
+
+  const ComponentHandleCue(this.fraction, {this.pivot, this.pivotAxis});
+
+  bool get locked => fraction < kComponentHandleLockedBelow;
+  bool get free => fraction >= kComponentHandleFreeAtLeast;
+}
+
+/// Free fraction below which a handle is drawn grey/short and cannot be grabbed, and from which it is full strength.
+/// (Same numbers as `kHandleLockedBelow` / `kHandleFreeAtLeast` in `lib/motion/gizmo_freedom.dart`.)
+const double kComponentHandleLockedBelow = 0.05;
+const double kComponentHandleFreeAtLeast = 0.95;
+
+/// A locked handle's arrow is drawn this fraction of its normal length.
+const double kComponentLockedLengthFactor = 0.35;
+
+/// The mates' view of the whole gizmo: per-handle cues (absent = no information = drawn as usual) and, when exactly two
+/// pure translations are free, the world unit [planeNormal] of the in-plane handle.
+class ComponentGizmoCues {
+  final Map<ComponentGizmoHandleKind, ComponentHandleCue> handles;
+  final vm.Vector3? planeNormal;
+
+  const ComponentGizmoCues({this.handles = const {}, this.planeNormal});
+
+  ComponentHandleCue? operator [](ComponentGizmoHandleKind k) => handles[k];
+
+  bool isLocked(ComponentGizmoHandleKind k) => handles[k]?.locked ?? false;
+}
+
+/// Two unit vectors perpendicular to [n] and to each other.
+(vm.Vector3, vm.Vector3) perpendicularPair(vm.Vector3 n) {
+  final axis = n.normalized();
+  final helper = axis.x.abs() < 0.9 ? vm.Vector3(1, 0, 0) : vm.Vector3(0, 1, 0);
+  final a = axis.cross(helper).normalized();
+  final b = axis.cross(a).normalized();
+  return (a, b);
+}
+
+/// [point] turned by [angle] radians about the axis through [pivot] along [axis]: `pivot + R·(point − pivot)`. What a
+/// re-pivoted rotate ring does to the occurrence origin (the rotation itself composes via [composeRotation]).
+vm.Vector3 rotatePointAboutPivot(vm.Vector3 point, vm.Vector3 pivot, vm.Vector3 axis, double angle) =>
+    vm.Quaternion.axisAngle(axis.normalized(), angle).asRotationMatrix().transformed(point - pivot) + pivot;
+
+/// In-plane handle frame: `u` = the gizmo's x axis projected into the plane (y if x is ~normal), `v = n × u`.
+(vm.Vector3, vm.Vector3) componentGizmoPlaneFrame(ComponentGizmoBasis basis, vm.Vector3 normal) {
+  final n = normal.normalized();
+  var u = basis.xAxis - n * basis.xAxis.dot(n);
+  if (u.length2 < 1e-6) u = basis.yAxis - n * basis.yAxis.dot(n);
+  u = u.normalized();
+  return (u, n.cross(u).normalized());
+}
+
+/// The in-plane handle's square, in (u, v) coordinates as fractions of the arrow length.
+const double kComponentPlaneHandleNear = 0.2;
+const double kComponentPlaneHandleFar = 0.55;
+
+/// Where the ray meets the plane through [origin] with [normal] (ray parameter, point), or null when parallel/behind.
+(double, vm.Vector3)? rayPlaneHit(vm.Ray ray, vm.Vector3 origin, vm.Vector3 normal) {
+  final d = ray.direction.normalized();
+  final denom = d.dot(normal);
+  if (denom.abs() < 1e-9) return null;
+  final t = (origin - ray.origin).dot(normal) / denom;
+  if (t <= 0) return null;
+  return (t, ray.origin + d * t);
+}
 
 /// The Occurrence's own current local frame, in world space - [origin] is
 /// its world-space translation, [xAxis]/[yAxis]/[zAxis] its own current
@@ -68,6 +140,8 @@ class ComponentGizmoBasis {
         ComponentGizmoHandleKind.translateX || ComponentGizmoHandleKind.rotateX => xAxis,
         ComponentGizmoHandleKind.translateY || ComponentGizmoHandleKind.rotateY => yAxis,
         ComponentGizmoHandleKind.translateZ || ComponentGizmoHandleKind.rotateZ => zAxis,
+        // The in-plane handle has no single axis; its normal comes from [ComponentGizmoCues.planeNormal].
+        ComponentGizmoHandleKind.translatePlane => zAxis,
       };
 }
 
@@ -165,6 +239,7 @@ ComponentGizmoHit? hitTestComponentGizmo(
   double radiusPixels = kSelectionHitRadiusPixels,
   double fovRadiansY = kCameraVerticalFovRadians,
   double? targetBoundingRadius,
+  ComponentGizmoCues? cues,
 }) {
   final arrowLength = _componentGizmoArrowLength(targetBoundingRadius);
   final ringRadius = _componentGizmoRingRadius(targetBoundingRadius);
@@ -173,6 +248,7 @@ ComponentGizmoHit? hitTestComponentGizmo(
   double? bestPixelDistance;
 
   void consider(ComponentGizmoHandleKind kind, vm.Vector3 a, vm.Vector3 b) {
+    if (cues != null && cues.isLocked(kind)) return; // a blocked handle cannot be grabbed
     final closest = _closestRaySegmentDistance(ray, a, b);
     if (closest == null) return;
     final (rayT, worldDistance) = closest;
@@ -184,12 +260,25 @@ ComponentGizmoHit? hitTestComponentGizmo(
     }
   }
 
-  consider(ComponentGizmoHandleKind.translateX, basis.origin, basis.origin + basis.xAxis * arrowLength);
-  consider(ComponentGizmoHandleKind.translateY, basis.origin, basis.origin + basis.yAxis * arrowLength);
-  consider(ComponentGizmoHandleKind.translateZ, basis.origin, basis.origin + basis.zAxis * arrowLength);
+  double armLength(ComponentGizmoHandleKind kind) =>
+      arrowLength * ((cues?.isLocked(kind) ?? false) ? kComponentLockedLengthFactor : 1.0);
+
+  consider(ComponentGizmoHandleKind.translateX, basis.origin,
+      basis.origin + basis.xAxis * armLength(ComponentGizmoHandleKind.translateX));
+  consider(ComponentGizmoHandleKind.translateY, basis.origin,
+      basis.origin + basis.yAxis * armLength(ComponentGizmoHandleKind.translateY));
+  consider(ComponentGizmoHandleKind.translateZ, basis.origin,
+      basis.origin + basis.zAxis * armLength(ComponentGizmoHandleKind.translateZ));
 
   void considerRing(ComponentGizmoHandleKind kind, vm.Vector3 axisA, vm.Vector3 axisB) {
-    vm.Vector3 pointAt(double t) => basis.origin + (axisA * math.cos(t) + axisB * math.sin(t)) * ringRadius;
+    var center = basis.origin;
+    final pivot = cues?[kind]?.pivot;
+    final pivotAxis = cues?[kind]?.pivotAxis;
+    if (pivot != null && pivotAxis != null) {
+      center = pivot;
+      (axisA, axisB) = perpendicularPair(pivotAxis);
+    }
+    vm.Vector3 pointAt(double t) => center + (axisA * math.cos(t) + axisB * math.sin(t)) * ringRadius;
     var previous = pointAt(0);
     for (var i = 1; i <= kComponentGizmoRingSegments; i++) {
       final t = 2 * math.pi * i / kComponentGizmoRingSegments;
@@ -206,12 +295,29 @@ ComponentGizmoHit? hitTestComponentGizmo(
   considerRing(ComponentGizmoHandleKind.rotateY, basis.xAxis, basis.zAxis);
   considerRing(ComponentGizmoHandleKind.rotateZ, basis.xAxis, basis.yAxis);
 
+  // The in-plane handle only wins when no arrow/ring is under the pointer.
+  final normal = cues?.planeNormal;
+  if (best == null && normal != null) {
+    final hit = rayPlaneHit(ray, basis.origin, normal);
+    if (hit != null) {
+      final (u, v) = componentGizmoPlaneFrame(basis, normal);
+      final rel = hit.$2 - basis.origin;
+      final a = rel.dot(u) / arrowLength, b = rel.dot(v) / arrowLength;
+      const lo = kComponentPlaneHandleNear, hi = kComponentPlaneHandleFar;
+      if (a >= lo && a <= hi && b >= lo && b <= hi) {
+        best = ComponentGizmoHit(kind: ComponentGizmoHandleKind.translatePlane, rayT: hit.$1);
+      }
+    }
+  }
+
   return best;
 }
 
 final vm.Vector3 _componentGizmoColorX = vm.Vector3(0xE8 / 255, 0x36 / 255, 0x4A / 255);
 final vm.Vector3 _componentGizmoColorY = vm.Vector3(0x27 / 255, 0xAE / 255, 0x60 / 255);
 final vm.Vector3 _componentGizmoColorZ = vm.Vector3(0x3A / 255, 0x7B / 255, 0xD5 / 255);
+final vm.Vector3 _componentGizmoColorPlane = vm.Vector3(0xF1 / 255, 0xC4 / 255, 0x0F / 255);
+final vm.Vector3 _componentGizmoColorLocked = vm.Vector3(0.55, 0.55, 0.55);
 
 /// The color each handle renders/highlights with - same X=red/Y=green/
 /// Z=blue axis convention [sectionGizmoHandleColor] uses; a rotate handle
@@ -223,9 +329,20 @@ vm.Vector4 componentGizmoHandleColor(ComponentGizmoHandleKind kind, {bool highli
     ComponentGizmoHandleKind.translateX || ComponentGizmoHandleKind.rotateX => _componentGizmoColorX,
     ComponentGizmoHandleKind.translateY || ComponentGizmoHandleKind.rotateY => _componentGizmoColorY,
     ComponentGizmoHandleKind.translateZ || ComponentGizmoHandleKind.rotateZ => _componentGizmoColorZ,
+    ComponentGizmoHandleKind.translatePlane => _componentGizmoColorPlane,
   };
   final alpha = highlighted ? 1.0 : 0.85;
   return vm.Vector4(base.x, base.y, base.z, alpha);
+}
+
+/// [componentGizmoHandleColor] with the mates' cue applied: locked = grey and faint, partly free = dimmed.
+vm.Vector4 componentGizmoCueColor(ComponentGizmoHandleKind kind, ComponentHandleCue? cue, {bool highlighted = false}) {
+  if (cue == null || cue.free) return componentGizmoHandleColor(kind, highlighted: highlighted);
+  if (cue.locked) {
+    return vm.Vector4(_componentGizmoColorLocked.x, _componentGizmoColorLocked.y, _componentGizmoColorLocked.z, 0.5);
+  }
+  final base = componentGizmoHandleColor(kind, highlighted: highlighted);
+  return vm.Vector4(base.x, base.y, base.z, highlighted ? 0.75 : 0.45);
 }
 
 /// Builds the [Node] rendering [basis]'s own gizmo - mirrors
@@ -237,17 +354,20 @@ Node buildComponentGizmoNode(
   ComponentGizmoBasis basis, {
   ComponentGizmoHandleKind? highlightedHandle,
   double? targetBoundingRadius,
+  ComponentGizmoCues? cues,
 }) {
   final primitives = <MeshPrimitive>[];
   final arrowLength = _componentGizmoArrowLength(targetBoundingRadius);
   final ringRadius = _componentGizmoRingRadius(targetBoundingRadius);
 
   void addArrow(ComponentGizmoHandleKind kind, vm.Vector3 axis) {
-    final tip = basis.origin + axis * arrowLength;
+    final cue = cues?[kind];
+    final length = arrowLength * ((cue?.locked ?? false) ? kComponentLockedLengthFactor : 1.0);
+    final tip = basis.origin + axis * length;
     final highlighted = kind == highlightedHandle;
     final material = AlwaysOnTopMaterial()
       ..alphaMode = AlphaMode.blend
-      ..baseColorFactor = componentGizmoHandleColor(kind, highlighted: highlighted);
+      ..baseColorFactor = componentGizmoCueColor(kind, cue, highlighted: highlighted);
     primitives.add(MeshPrimitive(
       PolylineGeometry([basis.origin, tip], width: highlighted ? 5 : 3),
       material,
@@ -255,17 +375,25 @@ Node buildComponentGizmoNode(
   }
 
   void addRing(ComponentGizmoHandleKind kind, vm.Vector3 axisA, vm.Vector3 axisB) {
+    final cue = cues?[kind];
     final highlighted = kind == highlightedHandle;
+    var center = basis.origin;
+    if (cue?.pivot != null && cue?.pivotAxis != null) {
+      // Re-pivoted onto the screw axis the part really turns about.
+      center = cue!.pivot!;
+      (axisA, axisB) = perpendicularPair(cue.pivotAxis!);
+    }
+    final radius = ringRadius * ((cue?.locked ?? false) ? kComponentLockedLengthFactor : 1.0);
     final points = <vm.Vector3>[
       for (var i = 0; i <= kComponentGizmoRingSegments; i++)
-        basis.origin +
+        center +
             (axisA * math.cos(2 * math.pi * i / kComponentGizmoRingSegments) +
                     axisB * math.sin(2 * math.pi * i / kComponentGizmoRingSegments)) *
-                ringRadius,
+                radius,
     ];
     final material = AlwaysOnTopMaterial()
       ..alphaMode = AlphaMode.blend
-      ..baseColorFactor = componentGizmoHandleColor(kind, highlighted: highlighted);
+      ..baseColorFactor = componentGizmoCueColor(kind, cue, highlighted: highlighted);
     primitives.add(MeshPrimitive(PolylineGeometry(points, width: highlighted ? 4 : 2.5), material));
   }
 
@@ -275,6 +403,22 @@ Node buildComponentGizmoNode(
   addRing(ComponentGizmoHandleKind.rotateX, basis.yAxis, basis.zAxis);
   addRing(ComponentGizmoHandleKind.rotateY, basis.xAxis, basis.zAxis);
   addRing(ComponentGizmoHandleKind.rotateZ, basis.xAxis, basis.yAxis);
+
+  final normal = cues?.planeNormal;
+  if (normal != null) {
+    final (u, v) = componentGizmoPlaneFrame(basis, normal);
+    const lo = kComponentPlaneHandleNear, hi = kComponentPlaneHandleFar;
+    vm.Vector3 corner(double a, double b) => basis.origin + u * (a * arrowLength) + v * (b * arrowLength);
+    final highlighted = highlightedHandle == ComponentGizmoHandleKind.translatePlane;
+    final material = AlwaysOnTopMaterial()
+      ..alphaMode = AlphaMode.blend
+      ..baseColorFactor = componentGizmoHandleColor(ComponentGizmoHandleKind.translatePlane, highlighted: highlighted);
+    primitives.add(MeshPrimitive(
+      PolylineGeometry([corner(lo, lo), corner(hi, lo), corner(hi, hi), corner(lo, hi), corner(lo, lo)],
+          width: highlighted ? 5 : 3),
+      material,
+    ));
+  }
 
   return Node(name: 'component-gizmo', mesh: Mesh.primitives(primitives: primitives));
 }

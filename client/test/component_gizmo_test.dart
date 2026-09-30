@@ -191,4 +191,91 @@ void main() {
       expect(delta, isNull);
     });
   });
+
+  group('S8 cues: locked / partial handles, re-pivoted ring, in-plane handle', () {
+    final basis = ComponentGizmoBasis.fromMatrix(vm.Matrix4.identity());
+    const free = ComponentHandleCue(1.0);
+    const partial = ComponentHandleCue(0.4);
+    const locked = ComponentHandleCue(0.0);
+
+    test('a locked handle cannot be grabbed; free and partly free ones can', () {
+      final ray = vm.Ray.originDirection(vm.Vector3(0, 5, 4.2), vm.Vector3(0, -1, 0)); // clear of every ring
+      expect(hitTestComponentGizmo(ray, basis, viewportSize)?.kind, ComponentGizmoHandleKind.translateZ);
+      for (final cue in [free, partial]) {
+        final cues = ComponentGizmoCues(handles: {ComponentGizmoHandleKind.translateZ: cue});
+        expect(hitTestComponentGizmo(ray, basis, viewportSize, cues: cues)?.kind, ComponentGizmoHandleKind.translateZ);
+      }
+      final lockedCues = ComponentGizmoCues(handles: {ComponentGizmoHandleKind.translateZ: locked});
+      expect(hitTestComponentGizmo(ray, basis, viewportSize, cues: lockedCues), isNull);
+    });
+
+    test('a locked arrow is drawn short: the hit-test no longer reaches where the full arrow was', () {
+      // Free: hit at z = 4 on the arrow. Locked arrows are also un-grabbable, so check via the partial/free length only.
+      final far = vm.Ray.originDirection(vm.Vector3(0, 5, 4.0), vm.Vector3(0, -1, 0));
+      expect(hitTestComponentGizmo(far, basis, viewportSize)?.kind, ComponentGizmoHandleKind.translateZ);
+      expect(kComponentLockedLengthFactor, lessThan(1.0));
+    });
+
+    test('cue colours: free = axis colour, partial = dimmed, locked = grey and faint', () {
+      final f = componentGizmoCueColor(ComponentGizmoHandleKind.translateX, free);
+      final p = componentGizmoCueColor(ComponentGizmoHandleKind.translateX, partial);
+      final l = componentGizmoCueColor(ComponentGizmoHandleKind.translateX, locked);
+      expect(f, componentGizmoHandleColor(ComponentGizmoHandleKind.translateX));
+      expect(p.w, lessThan(f.w));
+      expect(p.x, f.x);
+      expect(l.x, l.y);
+      expect(l.y, l.z);
+      expect(l.w, lessThan(f.w));
+      expect(componentGizmoCueColor(ComponentGizmoHandleKind.translateX, null), f);
+    });
+
+    test('a re-pivoted ring is hit on the screw axis, not at the origin', () {
+      final cues = ComponentGizmoCues(handles: {
+        ComponentGizmoHandleKind.rotateZ: ComponentHandleCue(1.0, pivot: vm.Vector3(0, 0, 10), pivotAxis: vm.Vector3(0, 0, 1)),
+      });
+      final atPivot = vm.Ray.originDirection(vm.Vector3(kComponentGizmoRingRadius, -5, 10), vm.Vector3(0, 1, 0));
+      expect(hitTestComponentGizmo(atPivot, basis, viewportSize, cues: cues)?.kind, ComponentGizmoHandleKind.rotateZ);
+      expect(hitTestComponentGizmo(atPivot, basis, viewportSize), isNull, reason: 'without the cue there is no ring there');
+      final atOrigin = vm.Ray.originDirection(vm.Vector3(kComponentGizmoRingRadius * 0.7071, kComponentGizmoRingRadius * 0.7071, -5), vm.Vector3(0, 0, 1));
+      // the moved ring lies at z = 10, the ray along z still crosses it; the ring at the origin plane is gone
+      final atOriginPlane = vm.Ray.originDirection(vm.Vector3(kComponentGizmoRingRadius, -5, 0), vm.Vector3(0, 1, 0));
+      expect(hitTestComponentGizmo(atOriginPlane, basis, viewportSize, cues: cues)?.kind, isNot(ComponentGizmoHandleKind.rotateZ));
+      expect(hitTestComponentGizmo(atOrigin, basis, viewportSize, cues: cues), isNotNull);
+    });
+
+    test('in-plane handle: hit inside its square when no arrow/ring is nearer, absent without a plane normal', () {
+      final cues = ComponentGizmoCues(planeNormal: vm.Vector3(0, 0, 1));
+      final ray = vm.Ray.originDirection(vm.Vector3(2, 2, 5), vm.Vector3(0, 0, -1));
+      expect(hitTestComponentGizmo(ray, basis, viewportSize, cues: cues)?.kind, ComponentGizmoHandleKind.translatePlane);
+      expect(hitTestComponentGizmo(ray, basis, viewportSize), isNull);
+      final outside = vm.Ray.originDirection(vm.Vector3(0.3, 0.3, 5), vm.Vector3(0, 0, -1));
+      expect(hitTestComponentGizmo(outside, basis, viewportSize, cues: cues), isNull, reason: 'inside the near corner gap');
+    });
+
+    test('plane frame is orthonormal, in the plane, and follows the gizmo x axis', () {
+      final (u, v) = componentGizmoPlaneFrame(basis, vm.Vector3(0, 0, 1));
+      expect(u.dot(vm.Vector3(0, 0, 1)), closeTo(0, 1e-9));
+      expect(u.dot(v), closeTo(0, 1e-9));
+      expect(u, vm.Vector3(1, 0, 0));
+      expect(v, vm.Vector3(0, 1, 0));
+    });
+
+    test('rotatePointAboutPivot turns a point about an axis that does not pass through the origin', () {
+      final moved = rotatePointAboutPivot(vm.Vector3(0, 0, 0), vm.Vector3(0, 5, 0), vm.Vector3(0, 0, 1), 3.141592653589793 / 2);
+      expect(moved.x, closeTo(5, 1e-9));
+      expect(moved.y, closeTo(5, 1e-9));
+      expect(moved.z, closeTo(0, 1e-9));
+      expect(rotatePointAboutPivot(vm.Vector3(1, 2, 3), vm.Vector3(1, 2, 9), vm.Vector3(0, 0, 1), 1.0), vm.Vector3(1, 2, 3));
+    });
+
+    test('perpendicularPair is orthonormal for any axis', () {
+      for (final n in [vm.Vector3(0, 0, 1), vm.Vector3(1, 0, 0), vm.Vector3(1, 2, 3)]) {
+        final (a, b) = perpendicularPair(n);
+        expect(a.length, closeTo(1, 1e-6)); // vector_math is float32
+        expect(b.length, closeTo(1, 1e-6));
+        expect(a.dot(b), closeTo(0, 1e-6));
+        expect(a.dot(n.normalized()), closeTo(0, 1e-6));
+      }
+    });
+  });
 }

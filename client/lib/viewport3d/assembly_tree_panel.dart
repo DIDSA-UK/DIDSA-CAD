@@ -192,6 +192,10 @@ class AssemblyTreePanel extends StatefulWidget {
   /// id. Unused (and may be left null) outside multi-select mode.
   final void Function(String occurrenceId)? onMultiSelectToggle;
 
+  /// Plan S8: one line about the selected component's mate group ("Group: 5 DOF", "not grounded", why it can't
+  /// move) - shown under the parent row while the Move/Rotate gizmo is on a mated component. `null` = nothing to show.
+  final String? motionSummary;
+
   const AssemblyTreePanel({
     super.key,
     required this.visible,
@@ -216,6 +220,7 @@ class AssemblyTreePanel extends StatefulWidget {
     this.isMultiSelectMode = false,
     this.selectedMultiSelectIds = const {},
     this.onMultiSelectToggle,
+    this.motionSummary,
   });
 
   @override
@@ -325,6 +330,21 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                                   ),
                                 ),
                                 _buildParentPartRow(context),
+                                if (widget.motionSummary != null && widget.motionSummary!.isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
+                                    child: Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Text(
+                                        widget.motionSummary!,
+                                        key: const ValueKey('assembly-motion-summary'),
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
                                 if (widget.isMultiSelectMode)
                                   Container(
                                     width: double.infinity,
