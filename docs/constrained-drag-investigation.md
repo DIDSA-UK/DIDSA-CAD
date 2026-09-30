@@ -641,6 +641,7 @@ its retraction uses the same metric; the client must not use a different one.
 > [`constrained-drag-implementation-plan.md`](constrained-drag-implementation-plan.md), which changes contracts in place, does not merge the
 > single-occurrence `mate-motion` v0, and breaks the work into session-sized steps (S0–S13). The technical findings and the phase *ordering*
 > (group-aware backend first) stand.
+> Update: the single-occurrence `mate-motion` (CAD #264) and VR smooth-drag (VR #16) have since been merged to `main`; the plan treats them as the baseline to evolve.
 
 ### G.1 Phases (re-ordered after review: backend correctness first)
 

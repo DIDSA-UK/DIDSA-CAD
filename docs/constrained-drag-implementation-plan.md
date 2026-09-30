@@ -7,12 +7,16 @@ app (both owned by the same team), so there is no compatibility to preserve. Cha
 
 This file is the **tracker**: every session reads it first and updates its own row/checklist last.
 
+**Baseline (verified):** the single-occurrence `mate-motion` endpoint and the VR smooth-drag round are **already merged** —
+CAD `main` at `003254a` (PR #264), VR `main` at `8933f53` (PR #16). So "v0" is live on `main` and VR depends on its exact
+shape (`transform`, `dof`, `free_twists`).
+
 ## 1. What pre-release changes (delta from the investigation)
 
 | Investigation said | Now |
 |---|---|
 | Versioned `FreeMotion` (`schema: 2` opt-in, legacy v0/v1a shape, additive-only, echo `schema`) | **One contract, changed in place.** No `schema` field, no legacy request path, no dual meaning of `dof`. |
-| Merge `mate-motion` (v0) to `main` first, then evolve | **Do not merge v0.** The unmerged `mate-motion` branch is the seed for the group-aware endpoint; merge only the final shape. |
+| Merge `mate-motion` (v0) to `main` first, then evolve | **Done already** (CAD #264, VR #16). S3 changes the endpoint's semantics *in place*. Because the repos merge separately, S3 keeps the v0 fields (`transform`, `free_twists`, computed the old single-occurrence way) as **temporary aliases** so VR on `main` keeps working until S5 merges; S9 deletes them. This is the only compatibility shim in the plan. |
 | VR keeps a 404/405 fallback to PATCH+solve per round trip | **Delete it** (`_sync_with_solve`, `_motion_supported`). One code path to test. |
 | Phase 1a "group `dof`/`mobility` only, additive, so nothing breaks" as a separate release | Fold 1a–1c into one backend sequence (sessions S1–S3); intermediate states are never released, so no need to make each one compatible. |
 | Client capability discovery | Not needed. |
@@ -119,10 +123,10 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 
 ### S3 — Endpoint, commit, rewire (CAD backend, M)
 * **Read:** this file §3; `router.py` (`mate_motion`, `solve_for_occurrence`, `preview_mate_solve_endpoint`, `create_mate`, `update_mate`, `update_occurrence_transform`); `schemas.py`.
-* **Tasks:** implement §3 exactly (replacing the unmerged single-occurrence `mate-motion`); `commit:true` persists all moved members atomically (single store transaction); re-implement `solve_for_occurrence`,
+* **Tasks:** implement §3 exactly (replacing the merged single-occurrence `mate-motion`; keep its v0 fields as temporary aliases per §1); `commit:true` persists all moved members atomically (single store transaction); re-implement `solve_for_occurrence`,
   `preview-mate-solve` and the post-mate snap on the group solver; remove `System.Dof` use for assemblies; update `docs/backend-api-notes.md` (VR's copy of the API notes lives in the VR repo — list what to update there in the handoff).
 * **Tests:** HTTP tests for the whole contract incl. 422 fixed, `converged:false`, `commit` atomicity (all-or-nothing), `grounded:false`; the full existing assembly test modules stay green.
-* **Exit:** backend suite green; **merge to `main`** (this is the first merge of any `mate-motion` code). Handoff lists the exact JSON examples for the two clients.
+* **Exit:** backend suite green; VR at `main` (v0 client) still passes its e2e against this backend via the aliases; handoff lists the exact JSON examples for the two clients and the alias fields to delete in S9.
 
 ### S4 — Projector spec + golden vectors (CAD docs/tools, S–M)
 * **Tasks:** `docs/motion/projector-spec.md`: weighted Gram–Schmidt, projection, **screw exponential-map integration**, lever arm rule, re-anchor policy (150 ms cap + `max_step` + `sigma_gap`),
@@ -132,7 +136,7 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 
 ### S5 — VR adopts the contract (VR, M)  *(needs S3, S4; parallel with S6)*
 * **Read:** `scripts/mates_tool.gd` (`constrain_drag`, `project_motion`, `weighted_basis`, `_drag_loop`, `_sync_with_motion_model`, `persist_pose`), spec + vectors, contract §3.
-* **Tasks:** consume `members`/`basis`/`quality`; projector v2 in GDScript (screw integration, lever arm from mesh AABB radius, blend, acceptance test, rank-change hysteresis); persist via `commit:true` on release (one undo entry for all members); **delete** `_sync_with_solve` / `_motion_supported` legacy path; per-frame apply to *all* group members (followers move).
+* **Tasks:** consume `members`/`basis`/`quality`; projector v2 in GDScript (screw integration, lever arm from mesh AABB radius, blend, acceptance test, rank-change hysteresis); persist via `commit:true` on release (one undo entry for all members); **delete** `_sync_with_solve` / `_motion_supported` legacy path and stop reading the v0 alias fields; per-frame apply to *all* group members (followers move).
 * **Tests:** golden-vector unit test in Godot; `tests/e2e_mates_motion.gd` updated (real backend: requests per drag, group follow, commit atomicity, non-convergence hold); existing VR test suite green.
 * **Exit:** VR e2e green against S3 backend; note request counts per 60-frame drag.
 
@@ -152,7 +156,7 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 * **Exit:** owner walkthrough on the three reference mates (face, concentric offset axis, angle).
 
 ### S9 — Cleanup + docs (CAD + VR, S each)
-* Remove superseded code paths (old `solve` call sites that re-solved single occurrences, dead DTOs), fix the doc/code drift (`assembly-scope.md` "gizmo clamped by mates" now true; docstrings in `router.py` / `document_api_client.dart`), update `docs/status.md`/`roadmap.md`, update VR `docs/backend-api-notes.md`/`status.md`. Regenerate `investigation` numbers only if behaviour changed materially.
+* Remove the S3 **v0 alias fields** (`transform`, `free_twists`) once S5 has merged; remove superseded code paths (old `solve` call sites that re-solved single occurrences, dead DTOs), fix the doc/code drift (`assembly-scope.md` "gizmo clamped by mates" now true; docstrings in `router.py` / `document_api_client.dart`), update `docs/status.md`/`roadmap.md`, update VR `docs/backend-api-notes.md`/`status.md`. Regenerate `investigation` numbers only if behaviour changed materially.
 
 ### Optional sketch track (independent; schedule only if S0 says so)
 * **S10 — Measure & decide (CAD client, S):** add the §H timers/counters to the sketch drag path (Android + Windows), record numbers in the tracker; owner decides Windows local solver vs drag-map.
