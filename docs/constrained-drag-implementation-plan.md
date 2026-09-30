@@ -31,7 +31,7 @@ live constrained drag and gizmo freedom cues; sketch work is a separate, optiona
 Mitigation: a single contract-of-record (§3), golden vectors shared by both clients (S4), and an e2e test in each client
 repo that talks to the real backend (already the VR convention).
 
-## 2. Defaults that unblock sessions (owner may override before S1)
+## 2. Defaults that unblock sessions — **confirmed by default, 2026-09-30** (S0)
 
 1. **Followers follow.** Dragging `B` moves mated neighbours only as the mates *require* (measured: `D` follows, `C` stays). A user who wants a part
    to stay put marks it `fixed`.
@@ -41,7 +41,7 @@ repo that talks to the real backend (already the VR convention).
 4. **`ANGLE` mate from an aligned start** is fixed in-place in S2 by seeding (nudge off the singular orientation), not documented away.
 5. **Sketch** work (Windows local solver vs drag-map, mobility oracle) is *not* on the critical path; decide in S0 whether to schedule S10+ at all.
 
-## 3. Contract of record (implemented in S3; VR and Dart code to it)
+## 3. Contract of record (implemented in S3; VR and Dart code to it) — **confirmed by default, 2026-09-30** (S0)
 
 `POST /document/parts/{part_id}/occurrences/{occurrence_id}/mate-motion` — `occurrence_id` is the **grabbed** occurrence.
 
@@ -168,8 +168,8 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 
 | ID | Title | Repo | Depends | Status | Branch / PR | Handoff notes |
 |---|---|---|---|---|---|---|
-| S0 | Decisions + tracker | CAD | – | ☐ | | |
-| S1 | Group model core | CAD | S0 | ☐ | | |
+| S0 | Decisions + tracker | CAD | – | ☑ | (this PR) | Confirmed by default, 2026-09-30: §2 defaults as written (followers follow; ungrounded component = free rigid group, `grounded:false`; scope = mate-graph component within the focused part; `ANGLE` singular start is fixed in S2) and §3 as the contract of record. S10+ (sketch track) not scheduled. |
+| S1 | Group model core | CAD | S0 | ☑ | `ccr-e026bd6a-4ql2g8` / PR (see status.md 2026-09-30) | `backend/app/document/assembly_group.py` (+ `tests/test_assembly_group.py`, 11 tests, real OCCT + py-slvs env). API for S2/S3: `discover_component`, `build_group_model(document, part, grabbed_id, also_frozen=)` → `GroupModel` (`.residual(x, poses=)`, `.jacobian(poses=)`, `.member_ids`, `.base_transforms`), `analyze_group(document, part, grabbed_id, lever_arm=None)` → `GroupAnalysis` (`dof`, `rank`, `grounded`, `basis` (dof×6k rows), `mobility{id:int}`, `quality`), `apply_delta(transform, delta)`, `bounding_radius`. **Decisions:** members ordered grabbed-first then `part.occurrences` order (= basis column order); frozen = `fixed` + `""`, a frozen occurrence never joins components; `grounded` = some mate in the component touches a frozen ref (a mate to a fixed part counts even if DOF stays >0); rank = SVD of the lever-arm-weighted Jacobian with relative tol 1e-6·σ_max (rank was identical for tol 1e-9…1e-3 and lever 0.5…500 on B/C/D); `mobility` = rank of the member's block of the weighted basis (tol 1e-6); `sigma_min` = smallest retained σ, `sigma_gap` = σ_min / largest dropped σ (floored at eps·σ_max, so finite); both are `None` at rank 0 — S3 must serialise as null or pick a sentinel; `residual_inf` at stored poses is what flags conflicting mates (rank alone cannot: redundant and conflicting rows both leave rank unchanged); default lever arm = half-diagonal of the occurrence's local bbox (S3 may override). Mates are oriented like `_applicable_mates` (movable side = "driven" when the other side is frozen). The perturbation convention duplicates `_free_motion`'s closure (`apply_delta`) rather than refactoring it — no solve path touched. Errors: `GroupError` (unknown/frozen grabbed); unresolvable refs raise `assembly_solver`'s existing HTTPException. Suppressed *occurrences* are not special-cased (only suppressed mates are ignored). Scenes: B/C/D → group DOF 5, alone-DOF 0/1/1 (HTTP `mate-motion` and module with peers frozen agree), mobility 3 each; peg←B←C group 5, B+12 in nullspace only with C riding along; row of k boxes → DOF k+2. **Timing** (best of 5, this sandbox, box parts, lever given, includes geometry resolve): k=1: 0.8 ms (6 vars; model build 0.3); k=3: 6.2 ms (18 vars; build 1.1); k=8: 38 ms (48 vars, 15 mates; build 3.0) — cost is dominated by the 2·6k residual evaluations of the Jacobian and grows ~k²; 38 ms at k=8 is above the ~3.5 ms single-occurrence figure, so S2/S3 should not re-differentiate every frame (analytic/cached Jacobian or per-anchor only). Real-geometry (non-box) cost still unmeasured. |
 | S2 | Group solve / weighted retraction | CAD | S1 | ☐ | | |
 | S3 | Endpoint, commit, rewire | CAD | S2 | ☐ | | |
 | S4 | Projector spec + golden vectors | CAD | S2 | ☐ | | |
