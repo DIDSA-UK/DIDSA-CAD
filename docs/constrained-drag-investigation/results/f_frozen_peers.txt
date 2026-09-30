@@ -1,0 +1,12 @@
+only the three base-plate mates (each part on the plate):
+   occ-B: converged=True dof=3
+   occ-C: converged=True dof=3
+   occ-D: converged=True dof=3
++ B side-mated to C (B.+x face on C.-x face), C treated as frozen:
+   occ-B: converged=True dof=1
+   occ-C: converged=True dof=1
+   occ-D: converged=True dof=3
++ B side-mated to D (B.-y face on D.+y face):
+   occ-B: converged=True dof=0
+   occ-C: converged=True dof=1
+   occ-D: converged=True dof=1

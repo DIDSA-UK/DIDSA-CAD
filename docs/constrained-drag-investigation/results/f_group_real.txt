@@ -1,0 +1,16 @@
+== each occurrence solved alone against FROZEN peers (what the shipped mate-motion computes) ==
+   occ-B: dof = 0   (residual at rest 0.0e+00)
+   occ-C: dof = 1   (residual at rest 0.0e+00)
+   occ-D: dof = 1   (residual at rest 0.0e+00)
+== all three free, only the plate frozen (group model) ==
+   variables 18, residual rows 20, rank 13  ->  GROUP dof = 5   (residual at rest 0.0e+00)
+   occ-B: mobility (rank of its block of the group basis) = 3, largest translation-part singular value 0.71
+   occ-C: mobility (rank of its block of the group basis) = 3, largest translation-part singular value 1.00
+   occ-D: mobility (rank of its block of the group basis) = 3, largest translation-part singular value 1.00
+   all three translate together in x: residual of that motion in the null space = 7.1e-16
+   all three translate together in y: residual of that motion in the null space = 2.5e-09
+== drag B by +6 in y (B weight 1, followers ~0) ==
+   occ-B moves by (-0.00, 6.00, -0.00), rotates (0.000, 0.000, 0.000) rad
+   occ-C moves by (0.00, 0.00, -0.00), rotates (0.000, 0.000, 0.000) rad
+   occ-D moves by (0.00, 6.00, -0.00), rotates (0.000, 0.000, -0.000) rad
+   (B alone against frozen C, D would be blocked: DOF 0.)

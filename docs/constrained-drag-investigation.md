@@ -38,12 +38,21 @@ app improve on what it does today?
    screw-type freedoms), **lever arm = the part's bounding radius** instead of 100 mm,
    and a **weighted retraction on the backend** so the client and server agree on
    what "nearest" means (max frame step ≤ hand step, i.e. no pops).
-3. **It does NOT solve multi-body.** Measured: with `C` resting on `B` and `B`
-   concentric on a peg, dragging `B` along the peg is **blocked** (DOF 1: spin only)
-   because the solver drives one occurrence against *frozen* peers; `C` never
-   follows. A group model (variables = several occurrences, stacked Jacobian,
-   grabbed body weighted 1, followers ≈ 0) fixes it in a toy check (§A.5, §E.6) —
-   this needs a backend `driven_ids` extension, not just client work.
+3. **The one-occurrence-against-frozen-peers model is a correctness bug, and it comes
+   first (revised after review).** The solver treats every peer as frozen at its stored
+   pose, so each part's DOF is under-reported and its motion is blocked by parts that could
+   move with it. Measured on the real backend (`f_frozen_peers.py`, `f_group_real.py`): three
+   boxes resting on a plate, `B` side-mated to `C` and `D` — `mate-motion` reports
+   **`B: dof 0`, `C: 1`, `D: 1`** (a client would treat `B` as locked), whereas with all three
+   free and only the plate grounded the **group DOF is 5**, all three translate together in x or
+   y with zero residual, and a wish "drag `B` +6 y" gives `B +6, D +6, C 0` (`D` follows because
+   its mate to `B` demands it). Earlier chain (peg ← `B` ← `C`): `B` DOF 1 instead of 2, slide blocked.
+   This is not just a drag issue: it also makes `dof`, `solve`, the post-mate snap
+   (`_confirmMate`) and `preview-mate-solve` wrong in any assembly with more than one mated
+   free part. **Group solving (scope = the mate-graph component, frozen = only `fixed`
+   occurrences and the root part's own geometry) must land before the client rollout** (§G).
+   The group nullspace is computable today from the product's own `_mate_residual_vector`
+   (real residuals, in-process prototype); the group *solve* is new backend work.
 4. **2D sketch: the technique is mostly redundant where the local solver exists,
    and valuable where it doesn't.** Solving is in-process (py-slvs via FFI) **only on
    Android arm64** (prebuilt `.so`, manually built, `loadSlvsBindings()` only knows the
@@ -75,12 +84,13 @@ app improve on what it does today?
    need 3-param points and free-3D constraints — py-slvs supports both (the assembly
    solver already uses free-3D) and the probe route worked on toy 3D sketches — but
    nothing in the app models it.
-7. **Recommendation** (§G): (0) wire the missing post-drag solve + merge `mate-motion`;
-   (1) client projector upgrades (screw integration, adaptive lever arm, pop blending) in
-   *both* Dart and GDScript from one spec; (2) live constrained component drag in the flat
-   app with gizmo handles greyed by their measured freedom; (3) backend weighted
-   retraction + group (`driven_ids`) `mate-motion`; (4) sketch mobility oracle, and a
-   decision on shipping the local solver to Windows before building a sketch drag-map.
+7. **Recommendation** (§G, re-ordered after review): (1) **backend first** — merge `mate-motion`,
+   then make DOF/basis *group-aware* (correct DOF and mobility immediately), then group solve +
+   weighted retraction + atomic multi-occurrence commit, all behind a versioned `FreeMotion`
+   response; (2) **VR** adopts it first (already has the client) together with the projector fixes;
+   (3) **flat app** ports the projector to Dart, then live constrained drag and gizmo freedom cues
+   (the missing post-drag solve is only added *after* group solving, otherwise it would yank a part
+   back against frozen neighbours); (4) sketch work is a separate, optional consumer (§J).
 
 ---
 
@@ -182,7 +192,7 @@ directions dropped) with one request at grab time plus re-anchors; and the minim
 |---|---|
 | **Rotation gizmo** | Rings rotate about the occurrence *origin*; a mated freedom is often a screw about an axis *elsewhere* (concentric with an offset axis: free twist = slide + spin about the axis). Projecting a pure origin-rotation onto the free subspace works to first order but the true motion also translates. The gizmo pivot should move to the free axis (or the drag should be defined on the free twist, not the ring). |
 | **Large moves on curved manifolds** | First-order error grows with the step. Measured in §A.5. Fixable client-side (screw integration) + re-anchor. |
-| **Several mated occurrences dragging each other** | **Not fixable client-side.** The solver drives ONE occurrence against peers frozen at their stored transforms. Measured: peg ← `B` (concentric) ← `C` (face on `B`): `mate-motion(B, wish +12 along peg)` returns `dof = 1`, free twist = spin only, `B` stays at `z = 5`; `PATCH+solve` likewise; `C` never follows (`a_chain.py`). |
+| **Several mated occurrences dragging each other** | **Not fixable client-side; a backend correctness bug.** The solver drives ONE occurrence against peers frozen at their stored transforms. Measured: (a) peg ← `B` (concentric) ← `C` (face on `B`): `mate-motion(B, wish +12 along peg)` returns `dof = 1`, free twist = spin only, `B` stays at `z = 5`; `PATCH+solve` likewise; `C` never follows (`a_chain.py`). (b) **three parts on a plate, `B` side-mated to `C` and `D`: per-occurrence DOF `B 0 / C 1 / D 1`; group DOF with real residuals = 5** (`f_frozen_peers.py`, `f_group_real.py`). DOF 0 is reachable — a part whose neighbours could move with it reads as fully locked. |
 | **Angle mate from a singular start** | `ANGLE` never converged from an identity orientation (normals exactly (anti)parallel — derivative of cos(angle) is zero) for any of 30/60/90/150° (`a_angle_singular.py`); from a 45° tilt it converges (dof 5). `mate-motion` then returns `converged:false, dof:6, free_twists:[]` — a client must treat that as "keep the last model", not "6 free". |
 | **`flip`/branch** | For a face mate, `flip 179°` and `181°` about X both snap to the unflipped solution; a spin of 190° is kept (`a_extreme.py`). The seed fix (keep current rotation) works as intended. |
 | **Inequality/limit mates** | None exist (`MateType` = coincident, concentric, parallel, distance, angle; "limit" out of scope), so there is no active-set discontinuity today. |
@@ -480,13 +490,13 @@ Legend: **Solver?** what constrains the motion. **Where** local/remote. **Fit** 
 
 | Rank | Change | Benefit | Ease | Score | Why |
 |---|---|---|---|---|---|
-| 1 | **F1/F2: solve after gizmo/panel move** (merge `mate-motion`, PATCH the *solved* pose, or `solve` after PATCH) | 4 | 5 | **20** | Fixes a *correctness* gap (violating poses saved). One request; both endpoints exist. |
+| 1 | **F1/F2: solve after gizmo/panel move** (merge `mate-motion`, PATCH the *solved* pose, or `solve` after PATCH) — **sequence after the group solve** | 4 | 5 | **20** | Fixes a *correctness* gap (violating poses saved). One request; both endpoints exist — but against frozen peers it would snap a part such as `B` (DOF 0) back, so it ships with/after Phase 1. |
 | 2 | **Projector upgrades for both clients**: screw integration, lever arm = bounding radius, pop blending | 3 | 5 | **15** | Client-only, ~40 lines each; removes measured 5 mm / 2 mm artefacts on curved mates; benefits VR immediately. |
 | 3 | **F1 live constrained drag** (Dart projector, grab-time `mate-motion`, 150 ms re-anchor) | 5 | 3 | **15** | The real feature; needs the Dart projector and gizmo hooks. |
 | 4 | **F1 gizmo shows freedom** (grey/hide locked, plane handle, re-pivot on screw axis) | 3 | 4 | **12** | Free once the basis is on the client; large clarity gain. |
 | 5 | **F4 on Windows/iOS: drag-map or ship the local solver** | 4 | 2–3 | **8–12** | Only matters if those are used for sketching; shipping the Windows DLL (harness exists) gives exact local solving. |
 | 6 | **F4 mobility oracle** (cursor axis-lock, "can't move" cue, replaces the structural gate) | 3 | 3 | **9** | Measured disagreement with `dof_analysis.dart`; cheap for the grabbed point. |
-| 7 | **Multi-body group `mate-motion`** (`driven_ids`) + VR/Flat use | 4 | 2 | **8** | Removes the measured "blocked by frozen peer" failure; backend work. |
+| 0 (prerequisite) | **Group-aware DOF/basis, then group solve** (`FreeMotion` v1) | 5 | 2–3 | **gate, not scored** | DOF and every downstream cue/drag is *wrong* without it in any assembly with > 2 mated parts (measured `B` DOF 0 vs group 5). Ranks 1–4 below assume it or must be sequenced after it. |
 | 8 | Big-sketch component-restricted solve (F4) | 3 | 3 | **9** | Free 10–1000× on disjoint parts; independent of the motion model. |
 | 9 | F9 validity-interval query for panels | 2 | 2 | 4 | Different problem (OCCT, not a solver). |
 | 10 | 3D-sketch groundwork | 1 | 1 | 1 | Product-scope, not technique-limited. |
@@ -580,10 +590,25 @@ its retraction uses the same metric; the client must not use a different one.
 * **Branch flips.** The backend keeps the Newton seed = *wanted* (nearest-solution behaviour; already fixed for face mates: current spin
   kept), and reports `jump`; the client treats an anchor whose `config` is far from its own predicted pose as a rejected frame (generalising the local
   sketch guards: blow-up, arc chord-side, residual). Redundant tangent webs stay on closed-form models.
-* **Multi-body.** `subject.kind = "occurrence_group"`: variables = all listed occurrences, stacked Jacobian (peers outside the group stay frozen),
-  grabbed body weight 1, followers weight ε. Toy check (`e_group.py`): peg ← B ← C, group DOF = **5** (vs B-alone **1**); a "B +12 along the peg" wish
-  yields B +11.999 **and C +11.999** with C's in-plane/spin untouched. Needs the backend to expose group solving; the client projector is unchanged
+* **Multi-body (prerequisite; see §E.8).** `subject.kind = "occurrence_group"`: variables = every non-`fixed` occurrence in the mate-graph component,
+  stacked Jacobian, grabbed body weight 1, followers weight ε. Toy check (`e_group.py`): peg ← B ← C, group DOF **5** vs B-alone **1**, "B +12 along the peg" gives
+  B +11.999 **and C +11.999**. **Real-residual check** (`f_group_real.py`, product's own `_mate_residual_vector`, in-process): plate + B, C, D → per-occurrence DOF
+  0 / 1 / 1 (matches the shipped endpoint over HTTP), **group DOF 5**, every body mobility 3, "B +6 y" → `B +6, D +6, C 0`. The client projector is unchanged
   (chart = product of `se3` charts).
+
+### E.8 Group-solve semantics (the prerequisite)
+
+| Question | Proposal |
+|---|---|
+| Scope | The connected component of the mate graph (per focused part; nested sub-assemblies stay out of scope as today) that contains the grabbed occurrence. |
+| Frozen | Only `fixed` (grounded) occurrences and the focused part's own geometry (`occurrence_id == ""`). Everything else is a variable. |
+| DOF | `6·k − rank(J)` over the stacked residuals of **all** non-suppressed mates in the component (same rank machinery as `_independent_dof`). An assembly with nothing grounded has the 6 rigid-body DOF of the whole group — say so in the UI rather than "0". |
+| What the UI shows | Group DOF **and** per-body *mobility* (rank of each body's 6-row block of the basis): "this part can move (with neighbours following)", "this part is pinned relative to X". |
+| Drag | Grabbed body weight 1 (rotation via lever arm `L`), followers weight ≈ 0, so mated neighbours follow only as the mates *require* (measured: `D` follows, `C` stays). Peers the user does not want to move are simply `fixed`. |
+| Solve | Phase 1a: nullspace/DOF/mobility from Jacobians only (no new solver). Phase 1b: group retraction (weighted Gauss–Newton over the same residuals, seeded from the wish), verified by residual; py-slvs stays for single-occurrence warm starts and the existing endpoints until parity is proven (its seeds encode hard-won fixes: spin-preserving coincident seed, concentric warm start; a residual-only Gauss–Newton inherits `ANGLE`'s singular-start failure). |
+| Persist | One **atomic multi-occurrence commit** (`POST …/occurrences/transforms` or PATCH with a list): all moved occurrences saved together, one undo entry (today undo restores one occurrence's previous pose). |
+| Existing endpoints | `solve_for_occurrence`, `preview-mate-solve` and `_confirmMate`'s snap have the same frozen-peer flaw and should call the group solver too (a new mate on `B` currently yanks `B` against a stale `C`). |
+| Cost | `6·k` residual evaluations ×2 per Jacobian; limit to the component; measured single-occurrence `mate-motion` ≈ 3.5 ms for k = 1 on boxes — group cost on real geometry is **unmeasured**. |
 
 ### E.7 Where each tool plugs in
 
@@ -611,26 +636,38 @@ its retraction uses the same metric; the client must not use a different one.
 
 ## G. Ranked recommendation and phased plan
 
-**Phase 0 — close the gap (≈ days).**
-1. Merge the CAD `mate-motion` branch (`ccr-5fcefc91-t2tc6f`; backend tests 33 pass here) to `main` (it is *not* on `main`).
-2. Flat app: after `_onComponentGizmoDragEnd` and `_applyGizmoWorldTransform`, when the occurrence has mates, call `mate-motion` with the wanted pose and PATCH the **solved** pose
-   (or PATCH + `solve`), guard `converged:false` (keep raw + tell the user), keep undo. Add a regression test that a mated occurrence's stored pose satisfies its mate after a drag.
-3. Add the per-frame **request counters** (flat + VR) and the on-device timers in §H so the owner can measure.
+### G.1 Phases (re-ordered after review: backend correctness first)
 
-**Phase 1 — accuracy + live drag (≈ 1–2 weeks).**
-4. Projector v2 in Dart and GDScript from the §E.3 spec: screw integration, `L` = bounding radius, blended re-anchors, anchor acceptance test. Unit tests port the numpy cases in `prototypes/geo.py`.
-5. Flat app live constrained drag: fetch basis at grab, project every frame (`_gizmoLiveTransform = project(...)`), 150 ms re-anchor; gizmo handles greyed by free fraction, re-pivot on the screw axis.
-6. Backend: weighted retraction (`weights.lever_arm`) using `_mate_residual_vector`; `quality` block (`residual_inf`, `sigma_*`, `max_step`).
+**Phase 0 — land what exists (days).**
+1. Merge the CAD `mate-motion` branch (`ccr-5fcefc91-t2tc6f`; 33 backend tests pass here) to `main` (it is *not* on `main`); merge the VR smooth-drag commit (`c56dd3b`) with it.
+2. Add the request counters / on-device timers of §H (flat + VR).
+3. *Do not* yet add "solve after gizmo drag" to the flat app: with frozen peers it would snap `B` back against stale neighbours (measured DOF 0). It moves to Phase 3.
 
-**Phase 2 — multi-body (≈ 2–3 weeks).** `driven_ids` group `mate-motion`; VR and flat use it; decide follower weighting; tests for chains and for "grounded peer in the group".
+**Phase 1 — group-aware backend (≈ 2–3 weeks) — the prerequisite.**
+- **1a (days):** `mate-motion`/`solve` responses gain group-aware `dof` and per-body `mobility` computed from the stacked Jacobian of the component (prototype exists, real residuals). Fixes the misleading DOF 0 immediately; no client change needed to *stop lying*, VR/flat can start using `mobility`.
+- **1b:** group retraction (weighted, residual-verified) so the anchor pose and basis are for the group; `schema: 2` response carries `group_ids`, per-member `config`, group `basis`, `quality`. Legacy request (no `schema`) keeps today's exact fields → old clients unaffected.
+- **1c:** atomic multi-occurrence commit endpoint; `solve` / `preview-mate-solve` / post-mate snap moved to the group solver.
+- **Exit test:** the B/C/D scene: group DOF 5, B mobility 3, "B +6 y" moves B and D only; chain peg←B←C slides; a `fixed` peer is never moved; non-convergence is reported, never `dof 6, basis []`.
 
-**Phase 3 — sketch (independent decision).**
-7. Decide **ship the local solver on Windows** (DLL harness exists) vs build a drag-map. If Windows sketching is a real workflow, the DLL gives exact local drag and makes the drag-map unnecessary; the drag-map is only worthwhile for iOS-without-FFI or huge sketches.
-8. **Component-restricted local solve** (free win, independent).
-9. **Mobility oracle** for the grabbed point (2 probe solves at grab or a backend `/sketches/{id}/mobility`); axis-lock cursor; replace `isPointFullyPinned` structural gate with the measurement; keep `dof_analysis.dart` as instant advisory.
-10. Guard the fallback path with the same three frame guards (blow-up / chord-side / residual) and stop `_solveDuringDrag` from applying unguarded frames.
+**Phase 2 — VR (≈ 1 week after 1b).** VR already has the client, the fallback and the tests: upgrade to the §E.3 projector (screw integration, `L` = bounding radius, blended re-anchors, acceptance test), consume `schema: 2` group responses, persist all moved occurrences via the atomic commit. Gate by response `schema` (falls back to v1 behaviour on older backends).
 
-**Phase 4 (optional).** Scalar chart for feature parameters (validity intervals); 3D sketch groundwork.
+**Phase 3 — flat app (≈ 2–3 weeks).** Dart port of the projector from the same spec/test vectors (`prototypes/geo.py` cases); live constrained component drag; gizmo handles greyed by measured freedom and re-pivot on the screw axis; **then** post-release solve/commit via the group endpoint; undo = one group entry; optional direct body drag.
+
+**Phase 4 — sketch (independent, optional).** Decide ship-local-solver-on-Windows vs drag-map; component-restricted local solve; mobility oracle; guard the network fallback with the same frame guards. Does not depend on Phases 1–3.
+
+**Phase 5 (deferred).** Scalar chart for feature parameters; 3D-sketch groundwork — only if a concrete consumer appears (§J).
+
+### G.2 `FreeMotion` rollout matrix (contract versions × components)
+
+| Version | Backend | VR | Flat app | Compatibility rule |
+|---|---|---|---|---|
+| **v0** (today, on the branch) | `POST …/mate-motion` single occurrence: `converged, transform, dof, free_twists` | uses it, per-round-trip fallback if 404/405 | not used | baseline; **frozen-peer semantics** |
+| **v1a** | same fields; `dof` becomes group DOF; adds `mobility` | ignores extras (must not break) | – | additive fields only; legacy `dof` meaning documented as changed |
+| **v1b (`schema: 2`)** | request opt-in `{schema: 2}`; response `group_ids`, `configs`, `basis`, `quality`, `chart` | opts in after Phase 2 | opts in at first release | no `schema` ⇒ v0/v1a shape, untouched; unknown `schema` ⇒ highest supported, client checks `schema` echo |
+| **v1c** | `POST …/occurrences/transforms` (atomic); group-aware `solve`/`preview-mate-solve` | persists via it | persists via it | old single PATCH stays |
+| **v2 (optional)** | `subject.kind = sketch_points` (mobility, drag-map), same envelope | – | sketch consumer, only if chosen in Phase 4 | separate `subject.kind`; never required by assemblies |
+
+Client-side capability discovery: presence/echo of `schema` in the first response (no separate endpoint needed); 404/405 ⇒ legacy loop. Each step is independently releasable and reversible (flag on the client, unchanged legacy path on the server).
 
 ### Risks
 
@@ -641,7 +678,9 @@ its retraction uses the same metric; the client must not use a different one.
 | Rank changes / singular poses (measured: `ANGLE` aligned start, extended arm) | `sigma_gap` in response, hysteresis, halve re-anchor interval |
 | Redundant tangent webs give wrong roots while `converged` (measured Slot) | keep closed-form drags; guard responses (`‖Δ‖/ε`, residual, continuity); do not offer a probe-based basis for those shapes |
 | Backend/client version skew | `schema` field + 404/405 fallback (VR already tested) |
-| Group solve scope creep | ship single-occurrence first; group behind `driven_ids` |
+| Group solve scope creep / cost on real assemblies | Phase 1a (Jacobian-only) ships first; component-restricted; measure `mate-motion` p95 on a real document before 1b |
+| Group Gauss–Newton inherits singular-start failures (`ANGLE`) and loses py-slvs' seeds | keep py-slvs for warm starts until parity tests pass; residual-verify every group answer |
+| Changed meaning of `dof` (per-occurrence → group) surprises clients | additive `mobility`; document; VR/flat only ever displayed it in errors |
 | On-device performance unknown (Dart/FFI system rebuild per frame; big sketches) | measure first (§H); restrict solves to the component |
 | GPL/licensing for shipping the solver on more platforms | separate legal question — already flagged in `docs/sketcher-spikes-ffi-and-plane-sketch.md` (iOS especially) |
 | Flat-app behavioural change: pose no longer equals gizmo pose | show raw ghost or "blocked" cue; keep an explicit "unconstrained move" escape hatch |
@@ -665,7 +704,7 @@ its retraction uses the same metric; the client must not use a different one.
 
 1. **Is "gizmo clamped by mates" still a requirement?** (It is in the original brief and `assembly-scope.md:7`, documented as implemented, but never wired.) Should a user be able to *deliberately* break a mate by dragging (Fusion-style "drag to unmate") or should mated parts always be constrained?
 2. **Flat-app UX:** live constrained drag (part follows the projected pose, raw ghost optional), or "move freely, snap on release"? Direct body drag (like VR) in addition to the gizmo?
-3. **Multi-body priority:** do real assemblies you care about chain mates (B on A, C on B)? That decides whether the group solve is Phase 2 or later.
+3. **Follower policy:** when the user drags `B` and `D` is mated to it, should `D` follow (measured behaviour of the group model: yes, only as the mates require) or should the drag stop at `D`? Should an assembly with **no** grounded part move as a whole (6 rigid DOF) or force the user to fix one?
 4. **Windows/iOS sketching:** is sketching on Windows/iOS a real workflow? If yes, ship the local solver there before building a sketch drag-map. Is iOS licensing/FFI still blocked?
 5. **Sketch mobility:** are you willing to make a *measured* mobility the drag gate (replacing `isPointFullyPinned`'s structural guess), given that black-box probing is unreliable on redundant tangent webs (Slot/Polygon chains)?
 6. **Weights:** accept `L` = bounding radius (and a `weights` field in the API) or keep a fixed lever arm per client?
@@ -675,9 +714,22 @@ its retraction uses the same metric; the client must not use a different one.
 
 ---
 
+## J. Is this a genuine optimisation, a simplification, a standardisation? (honest assessment)
+
+| Lens | Verdict | Evidence / reasoning |
+|---|---|---|
+| **Optimisation** | **Yes, but only where the solve is remote; and it is mostly perceptual, not throughput.** | Assemblies: 120–240 requests per 2 s drag → 1–14 (§A.5), with no frozen frames after the first round trip. Sketch backend fallback: 115 requests → a few. Server work per drag falls ~10–20×; client work rises trivially (a `d × n` projection). **Not** an optimisation where the solver is already in-process (Android sketch): there a first-order model is strictly *less* accurate than solving each frame and saves nothing. The "smooth at high RTT" benefit is simulated on real solves; the VR notes report it on a headset, I did not feel it. |
+| **Simplification** | **Not by itself — it adds layers** (contract, chart/integrator, anchoring policy, a projector in two languages). **Two parts do simplify:** (1) the group solve removes the "driven occurrence vs frozen peers" concept — no more `_drivableOccurrenceId` side-picking, "second-picked preferred", separate `preview-mate-solve`/`solve`/`mate-motion` variants — one model of an assembly; (2) a single rank-based `dof` replaces `System.Dof` + provisional floors + overrides (backend) and stops the structural union-find from acting as a drag gate. | Per-occurrence DOF is wrong today (B 0 vs 5). For sketches with a local solver it is net *added* complexity — do not do it there. |
+| **Standardisation** | **Yes for assemblies across VR and the flat app; no as a universal tool-set abstraction.** | Today VR has a GDScript projector, the flat app has none, and they would drift. One response schema + one projector *spec* with golden test vectors (`prototypes/geo.py` cases) standardises the two clients — but they remain two implementations (GDScript / Dart), so the standard is a spec + vectors, not shared code. Beyond assemblies, most tools have no constraint to learn (§D: section plane, feature panels, gear, camera, windows), and sketches share only the small linear-algebra core (weighted tangent projection) with assemblies, not a chart or a backend path. |
+
+**Net recommendation.** Treat it as three separable decisions:
+1. **Group-aware assembly solving + `mobility` + versioned `FreeMotion` response — do it.** It is primarily a *correctness* fix that the optimisation rides on; it also simplifies the assembly model.
+2. **Shared projector spec for VR + flat app — do it**, because the two clients otherwise diverge; ship the accuracy fixes (screw integration, `L` = bounding radius) with it.
+3. **Sketch and every other tool — opt-in per consumer, not a mandate.** §E's generic `subject.kind` list (`sketch_points`, `sketch_points_3d`, `scalar`) is a design *sketch* showing the envelope could carry them; I would not build the generic endpoint speculatively. Narrow the first implementation to `occurrence` / `occurrence_group` and add a `subject.kind` only when a consumer with a measured problem (e.g. Windows sketching without the local solver) exists.
+
 ## Appendix — files, numbers, reproduction
 
 * **Prototypes:** `docs/constrained-drag-investigation/prototypes/` — see its `README.md`. `run_all.sh` re-runs every experiment into `../results/`.
-* **Key result files:** `results/a1_current_flow.txt` (A.1), `a_latency.txt`, `a_strategies.txt` + `a_strategies2.txt` (A.5 i/ii), `a_screw.txt` + `e_weighted_retraction.txt` (A.5 iii), `a_gizmo.txt` (A.4), `a_chain.txt` (multi-body), `a_extreme.txt`, `a_angle_singular.txt`, `b_probe2.txt` + `b_compare.txt` (B.4), `b_scale.txt`/`b_scale2.txt` (cost), `b_http_drag.txt` + `b_anchor_fail.txt` (B.1), `b_slot.txt` (wrong roots), `c_sketch3d.txt` (C), `e_group.txt`.
+* **Key result files:** `results/a1_current_flow.txt` (A.1), `a_latency.txt`, `a_strategies.txt` + `a_strategies2.txt` (A.5 i/ii), `a_screw.txt` + `e_weighted_retraction.txt` (A.5 iii), `a_gizmo.txt` (A.4), `a_chain.txt` (multi-body), `a_extreme.txt`, `a_angle_singular.txt`, `b_probe2.txt` + `b_compare.txt` (B.4), `b_scale.txt`/`b_scale2.txt` (cost), `b_http_drag.txt` + `b_anchor_fail.txt` (B.1), `b_slot.txt` (wrong roots), `c_sketch3d.txt` (C), `e_group.txt`, `f_frozen_peers.txt` + `f_group_real.txt` (frozen-peer DOF vs group DOF, real backend / real residuals).
 * **Environment:** Python 3.11.16, py-slvs 1.0.6, pythonocc-core 7.9.3, numpy 2.4.6, Dart 3.14 (dev) for `dof_analysis.dart`; backend from `ccr-5fcefc91-t2tc6f` (commit `159c0f8`), started with `CAD_API_KEY=testkey uvicorn app.main:app --port 8000`.
 * **Reference commits/branches read:** CAD `main` `93d5ca3`; CAD `origin/ccr-5fcefc91-t2tc6f` `159c0f8` (adds `_free_motion`, `solve_occurrence_from_guess`, `/mate-motion`, spin-preserving seed); VR `origin/ccr-5fcefc91-t2tc6f` `c56dd3b` (adds `project_motion`, `weighted_basis`, `_sync_with_motion_model`; **not** on VR `main` `4630b07`).

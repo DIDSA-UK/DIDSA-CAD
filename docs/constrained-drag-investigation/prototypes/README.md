@@ -42,6 +42,8 @@ dart pub get && dart run bin/dof.dart ../sketches_export.json > ../dart_dof.json
 | `c_sketch3d.py` | C | probe route on toy true-3D sketches (3 params/point, free-3D constraints) |
 | `e_weighted_retraction.py` | A.5 (iii) / E | weighted Gauss–Newton retraction (toy concentric residuals) removes re-anchor pops |
 | `e_group.py` | A.3 / E.6 | toy multi-body group nullspace + weighted projection |
+| `f_frozen_peers.py` | A.3 / §0.3 | real backend: three parts on a plate, `B` side-mated to `C` and `D` — per-occurrence `dof` falls to **0** |
+| `f_group_real.py` | E.6 / E.8 | **in-process** (TestClient) with the product's own `_mate_residual_vector`: group DOF **5** vs per-occurrence 0/1/1, mobility, "drag B +6 y" → B and D move, C stays. Needs `BACKEND=<backend dir>` and `CAD_API_KEY` unset |
 
 Everything that talks to the backend uses the **real** running server. Anything marked *toy* in the report uses
-hand-written residuals instead (`e_weighted_retraction.py`, `e_group.py`, `c_sketch3d.py`).
+hand-written residuals instead (`e_weighted_retraction.py`, `e_group.py`, `c_sketch3d.py`); `f_group_real.py` uses the product's real residual function instead.
