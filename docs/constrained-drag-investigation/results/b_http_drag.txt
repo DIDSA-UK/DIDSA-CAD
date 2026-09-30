@@ -1,0 +1,15 @@
+== two-link arm (L1=30, L2=25): drag the end point P2 through the sketch API's backend-fallback stream
+  sweep 20deg->160deg at r=45 (always reachable), 1.5 s
+    anchor honoured? in 0 of 12 solves the dragged point ended >1e-3 from the raw cursor (anchor silently dropped by the no-anchor retry); worst gap 0.0 units
+    requests 115  (PATCH 90, POST solve 12, GET points 13); solves not converged: 0/12
+    the un-dragged link joint P1 (what the solve reflows) moved at most 6.58 units between two reflow updates (mean 6.34); 12 reflows in 1.5 s = 8.0 Hz
+    per-request latency on localhost: mean 1.6 ms p95 1.8 ms
+    after final PATCH+drag-end solve state (P2 raw = last cursor (-42.3, 15.4)): {'1bb796be-1bc7-48bf-8b46-3ad0f4eade66': (-29.5, -5.2), 'f257bfff-0f14-405a-a766-cf80235f0eb0': (-42.3, 15.4)}
+    drag-end solve anchored at P2: converged -> P2 lands at (-42.3, 15.4) P1 (-29.4, -6.0)
+  radial excursion 45 -> 75 (unreachable) -> 45, 1.5 s
+    anchor honoured? in 10 of 12 solves the dragged point ended >1e-3 from the raw cursor (anchor silently dropped by the no-anchor retry); worst gap 18.0 units
+    requests 115  (PATCH 90, POST solve 12, GET points 13); solves not converged: 0/12
+    the un-dragged link joint P1 (what the solve reflows) moved at most 13.55 units between two reflow updates (mean 2.51); 12 reflows in 1.5 s = 8.0 Hz
+    per-request latency on localhost: mean 1.7 ms p95 2.1 ms
+    after final PATCH+drag-end solve state (P2 raw = last cursor (np.float64(28.9), np.float64(34.5))): {'250caf61-46c6-45cf-a1fc-ebd0e092fc33': (19.3, 23.0), '33b28659-3c21-43be-9c96-63f6c1c9571a': (28.9, 34.5)}
+    drag-end solve anchored at P2: converged -> P2 lands at (35.4, 42.1) P1 (19.3, 23.0)

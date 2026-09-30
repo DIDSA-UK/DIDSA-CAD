@@ -1,0 +1,9 @@
+sketch                           py-slvs    probe expected | per-point: probe mobility (0 pinned/1 line/2 free)  vs  Dart structural verdict
+rect_partial(w fixed, h free)         1        1        1 | 4/5 points agree; disagreements: pt1: probe rank 0 vs Dart 'free/under'
+rect_full                             0        0        0 | 5/5 points agree; disagreements: none
+rect_floating                         4        4        4 | 5/5 points agree; disagreements: none
+two_link_arm                          2        2        2 | 2/2 points agree; disagreements: none
+hexagon(provisional)                  4        4        4 | 7/7 points agree; disagreements: none
+slot                                  1        5        5 | 6/6 points agree; disagreements: none
+redundant_parallel                    0       1*        1 | 2/5 points agree; disagreements: pt2: probe rank 1 vs Dart 'fully', pt3: probe rank 1 vs Dart 'fully', pt4: probe rank 1 vs Dart 'fully'
+conflict_2_widths                     0      10*      n/a | 0/5 points agree; disagreements: pt0: probe rank 2 vs Dart 'fully', pt1: probe rank 2 vs Dart 'fully', pt2: probe rank 2 vs Dart 'fully', pt3: probe rank 2 vs Dart 'fully', pt4: probe rank 2 vs Dart 'fully'

@@ -1,0 +1,7 @@
+connected staircase chains (H/V on every segment, every 3rd dimensioned):
+segments     points  solve(ms)   anchored(ms)
+10               11       0.10           0.10   converged=True dof=6
+40               41       0.41           0.39   converged=True dof=26
+100             101       1.34           1.32   converged=True dof=66
+200             201       4.55           4.52   converged=True dof=133
+400             401      21.61          21.83   converged=True dof=266

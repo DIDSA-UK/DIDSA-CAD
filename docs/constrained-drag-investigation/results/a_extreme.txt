@@ -1,0 +1,7 @@
+face mate, extreme wishes -> nearest solution
+  tilt 60deg about X (not free)    -> t=[ 3.  3. 10.] rot=0.0 deg about [0. 0. 1.] dof=3
+  flip 179deg about X              -> t=[ 3.  3. 10.] rot=0.0 deg about [0. 0. 1.] dof=3
+  flip 181deg (=-179) about X      -> t=[ 3.  3. 10.] rot=0.0 deg about [0. 0. 1.] dof=3
+  upside down + far                -> t=[ 300. -200.   10.] rot=180.0 deg about [ 0. -0. -1.] dof=3
+  spin 170 about Z                 -> t=[ 3.  3. 10.] rot=170.0 deg about [0. 0. 1.] dof=3
+  spin 190 about Z                 -> t=[ 3.  3. 10.] rot=190.0 deg about [0. 0. 1.] dof=3

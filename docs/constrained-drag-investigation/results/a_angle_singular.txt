@@ -1,0 +1,6 @@
+start tilt   0 deg about X, angle mate  30 deg -> converged=False dof=6
+start tilt   0 deg about X, angle mate  60 deg -> converged=False dof=6
+start tilt   0 deg about X, angle mate  90 deg -> converged=False dof=6
+start tilt   0 deg about X, angle mate 150 deg -> converged=False dof=6
+start tilt  45 deg about X, angle mate  60 deg -> converged=True dof=5
+start tilt  45 deg about X, angle mate  30 deg -> converged=True dof=5

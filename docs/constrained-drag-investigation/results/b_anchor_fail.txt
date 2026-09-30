@@ -1,0 +1,5 @@
+P1 stale (19.3,23.0) P2 raw (28.9,34.5) [r=45, reachable] converged=True code=0  dragged point moved 9.99  -> P1=(19.3,23.0) P2=(35.3,42.2)
+P1 stale, P2 raw (35,41) [r=53.9, near full reach]   converged=True code=0  dragged point moved 0.00  -> P1=(15.0,26.0) P2=(35.0,41.0)
+P1 stale, P2 raw (40,48) [r=62.5, out of reach]      converged=True code=0  dragged point moved 7.48  -> P1=(19.2,23.0) P2=(35.2,42.2)
+P1 well-placed (25,16.5), P2 raw (28.9,34.5)         converged=True code=0  dragged point moved 0.00  -> P1=(28.5,9.5) P2=(28.9,34.5)
+P1 on x axis (30,0), P2 raw (28.9,34.5)              converged=True code=0  dragged point moved 0.00  -> P1=(28.5,9.5) P2=(28.9,34.5)

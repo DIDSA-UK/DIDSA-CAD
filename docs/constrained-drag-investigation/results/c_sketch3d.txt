@@ -1,0 +1,4 @@
+3D arm (2 links, 6 free coords): solve code 0 py-slvs Dof 4 probe rank 4 (expected 4: P1 on a sphere 2, P2 on a sphere about P1 2) ; 0.050 ms/solve
+   P1: reachable-motion subspace dimension 2  (singular values [1.   0.98 0.  ])  -> drag plane = the tangent plane
+   P2: reachable-motion subspace dimension 3  (singular values [1.   1.   0.18])  -> drag on a 2D tangent surface: choose the camera-facing plane projected onto it
+3D triangle pinned to plane z=0 by point-in-plane (rigid, origin fixed): solve code 0 py-slvs Dof 1 probe rank 1 (expected 1: rotation about the fixed origin within the plane)

@@ -1,0 +1,56 @@
+
+=== face ===
+rtt=  0 flat_today         req=  0  VIOLATION mean 1.84mm/1.94deg max 5.58mm/5.45deg | max frame step 1.05mm/1.01deg
+rtt=  0 mate_motion_loop   req=120  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 0.45mm/0.76deg
+rtt=  0 local_anchor_once  req=  1  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 0.45mm/0.76deg
+rtt=  0 local_projection   req= 14  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 0.45mm/0.76deg
+rtt=150 mate_motion_loop   req= 12  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 4.51mm/7.51deg
+rtt=150 local_anchor_once  req=  1  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 0.72mm/1.20deg
+rtt=150 local_projection   req= 12  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 0.72mm/1.20deg
+weighting sweep (rtt~0, re-anchor every 9 frames): L -> mean distance to solver's nearest pose, max violation
+  L=     1  err 0.00mm/0.00deg   viol_max 0.000mm/0.000deg
+  L=    10  err 0.00mm/0.00deg   viol_max 0.000mm/0.000deg
+  L=   100  err 0.00mm/0.00deg   viol_max 0.000mm/0.000deg
+  L=  1000  err 0.00mm/0.00deg   viol_max 0.000mm/0.000deg
+
+=== concentric offset-axis, 90deg spin wish ===
+rtt=  0 flat_today         req=  0  VIOLATION mean 11.26mm/1.49deg max 21.21mm/4.23deg | max frame step 0.81mm/1.25deg
+rtt=  0 mate_motion_loop   req=120  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 0.37mm/1.26deg
+rtt=  0 local_anchor_once  req=  1  VIOLATION mean 6.29mm/0.00deg max 16.57mm/0.00deg | max frame step 0.36mm/1.15deg
+rtt=  0 local_projection   req= 14  VIOLATION mean 2.40mm/0.00deg max 5.32mm/0.00deg | max frame step 2.14mm/1.15deg
+rtt=150 mate_motion_loop   req= 12  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 3.41mm/11.17deg
+rtt=150 local_anchor_once  req=  1  VIOLATION mean 6.29mm/0.00deg max 16.57mm/0.00deg | max frame step 0.55mm/1.74deg
+rtt=150 local_projection   req= 12  VIOLATION mean 3.11mm/0.00deg max 7.41mm/0.00deg | max frame step 2.70mm/1.74deg
+weighting sweep (rtt~0, re-anchor every 9 frames): L -> mean distance to solver's nearest pose, max violation
+  L=     1  err 4.34mm/16.59deg   viol_max 4.043mm/0.000deg
+  L=    10  err 1.71mm/6.55deg   viol_max 0.642mm/0.000deg
+  L=   100  err 6.90mm/26.37deg   viol_max 5.119mm/0.000deg
+  L=  1000  err 7.15mm/27.32deg   viol_max 5.433mm/0.000deg
+
+=== concentric offset-axis, 30deg spin wish ===
+rtt=  0 flat_today         req=  0  VIOLATION mean 4.41mm/1.53deg max 7.84mm/4.27deg | max frame step 0.81mm/0.65deg
+rtt=  0 mate_motion_loop   req=120  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 0.34mm/1.10deg
+rtt=  0 local_anchor_once  req=  1  VIOLATION mean 0.73mm/0.00deg max 1.95mm/0.00deg | max frame step 0.22mm/0.41deg
+rtt=  0 local_projection   req= 14  VIOLATION mean 0.63mm/0.00deg max 1.56mm/0.00deg | max frame step 0.72mm/0.41deg
+rtt=150 mate_motion_loop   req= 12  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 2.79mm/7.91deg
+rtt=150 local_anchor_once  req=  1  VIOLATION mean 0.73mm/0.00deg max 1.95mm/0.00deg | max frame step 0.34mm/0.57deg
+rtt=150 local_projection   req= 12  VIOLATION mean 0.66mm/0.00deg max 1.76mm/0.00deg | max frame step 0.80mm/0.57deg
+weighting sweep (rtt~0, re-anchor every 9 frames): L -> mean distance to solver's nearest pose, max violation
+  L=     1  err 0.55mm/2.10deg   viol_max 0.227mm/0.000deg
+  L=    10  err 0.85mm/3.23deg   viol_max 0.405mm/0.000deg
+  L=   100  err 3.52mm/13.45deg   viol_max 1.531mm/0.000deg
+  L=  1000  err 3.61mm/13.78deg   viol_max 1.603mm/0.000deg
+
+=== angle 60 (cone), 35deg about Y + 50deg about Z ===
+rtt=  0 flat_today         req=  0  VIOLATION mean 0.00mm/4.35deg max 0.00mm/8.97deg | max frame step 0.24mm/0.99deg
+rtt=  0 mate_motion_loop   req=120  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 0.24mm/0.74deg
+rtt=  0 local_anchor_once  req=  1  VIOLATION mean 0.00mm/3.28deg max 0.00mm/8.68deg | max frame step 0.24mm/0.77deg
+rtt=  0 local_projection   req= 14  VIOLATION mean 0.00mm/0.02deg max 0.00mm/0.11deg | max frame step 0.24mm/0.87deg
+rtt=150 mate_motion_loop   req= 12  VIOLATION mean 0.00mm/0.00deg max 0.00mm/0.00deg | max frame step 2.34mm/7.39deg
+rtt=150 local_anchor_once  req=  1  VIOLATION mean 0.00mm/3.28deg max 0.00mm/8.68deg | max frame step 0.37mm/1.22deg
+rtt=150 local_projection   req= 12  VIOLATION mean 0.00mm/0.16deg max 0.00mm/0.46deg | max frame step 0.37mm/1.22deg
+weighting sweep (rtt~0, re-anchor every 9 frames): L -> mean distance to solver's nearest pose, max violation
+  L=     1  err 0.00mm/0.05deg   viol_max 0.000mm/0.084deg
+  L=    10  err 0.00mm/0.05deg   viol_max 0.000mm/0.084deg
+  L=   100  err 0.00mm/0.05deg   viol_max 0.000mm/0.084deg
+  L=  1000  err 0.00mm/0.05deg   viol_max 0.000mm/0.084deg

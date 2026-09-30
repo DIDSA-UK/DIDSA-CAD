@@ -1,0 +1,15 @@
+face               PATCH transform            n=60 mean 2.0  p50 2.0  p95 2.4  max 2.5 ms
+face               PATCH+POST /solve (pair)   n=60 mean 5.3  p50 5.2  p95 6.3  max 6.8 ms
+face               POST /mate-motion          n=60 mean 3.7  p50 3.6  p95 4.5  max 4.7 ms
+face               GET /occurrences           n=60 mean 1.6  p50 1.6  p95 2.0  max 2.0 ms
+face               GET /assembly-mesh         n=60 mean 8.4  p50 8.2  p95 10.0  max 12.1 ms
+concentric_offset  PATCH transform            n=60 mean 2.1  p50 2.1  p95 2.6  max 2.6 ms
+concentric_offset  PATCH+POST /solve (pair)   n=60 mean 5.7  p50 5.6  p95 6.6  max 6.8 ms
+concentric_offset  POST /mate-motion          n=60 mean 3.5  p50 3.5  p95 3.8  max 4.2 ms
+concentric_offset  GET /occurrences           n=60 mean 1.7  p50 1.7  p95 2.0  max 2.2 ms
+concentric_offset  GET /assembly-mesh         n=60 mean 11.4  p50 11.0  p95 13.8  max 15.2 ms
+angle              PATCH transform            n=60 mean 1.9  p50 1.9  p95 2.2  max 2.2 ms
+angle              PATCH+POST /solve (pair)   n=60 mean 5.8  p50 5.6  p95 6.8  max 7.4 ms
+angle              POST /mate-motion          n=60 mean 3.8  p50 3.8  p95 4.3  max 4.4 ms
+angle              GET /occurrences           n=60 mean 1.7  p50 1.7  p95 2.0  max 2.2 ms
+angle              GET /assembly-mesh         n=60 mean 8.2  p50 8.1  p95 9.5  max 11.0 ms

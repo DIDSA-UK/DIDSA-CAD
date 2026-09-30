@@ -1,0 +1,20 @@
+
+=== concentric offset axis, 90deg spin wish: additive (VR today) vs screw-exponential projection; re-anchor every 9 frames (~150ms)
+  L=  10 additive re-anchor=150ms  violation mean 0.145mm/0.000deg  max 0.642mm/0.000deg   max step 0.69mm
+  L=  10 additive re-anchor=never  violation mean 0.672mm/0.000deg  max 1.741mm/0.000deg   max step 0.46mm
+  L=  10 screw    re-anchor=150ms  violation mean 0.000mm/0.000deg  max 0.000mm/0.000deg   max step 0.59mm
+  L=  10 screw    re-anchor=never  violation mean 0.000mm/0.000deg  max 0.000mm/0.000deg   max step 0.46mm
+  L= 100 additive re-anchor=150ms  violation mean 2.329mm/0.000deg  max 5.119mm/0.000deg   max step 2.10mm
+  L= 100 additive re-anchor=never  violation mean 6.288mm/0.000deg  max 16.570mm/0.000deg   max step 0.36mm
+  L= 100 screw    re-anchor=150ms  violation mean 0.000mm/0.000deg  max 0.000mm/0.000deg   max step 0.35mm
+  L= 100 screw    re-anchor=never  violation mean 0.000mm/0.000deg  max 0.001mm/0.000deg   max step 0.36mm
+
+=== angle cone: additive (VR today) vs screw-exponential projection; re-anchor every 9 frames (~150ms)
+  L=  10 additive re-anchor=150ms  violation mean 0.000mm/0.017deg  max 0.000mm/0.084deg   max step 0.24mm
+  L=  10 additive re-anchor=never  violation mean 0.000mm/3.276deg  max 0.000mm/8.684deg   max step 0.24mm
+  L=  10 screw    re-anchor=150ms  violation mean 0.000mm/0.017deg  max 0.000mm/0.084deg   max step 0.36mm
+  L=  10 screw    re-anchor=never  violation mean 0.000mm/3.276deg  max 0.000mm/8.684deg   max step 0.25mm
+  L= 100 additive re-anchor=150ms  violation mean 0.000mm/0.017deg  max 0.000mm/0.084deg   max step 0.24mm
+  L= 100 additive re-anchor=never  violation mean 0.000mm/3.276deg  max 0.000mm/8.684deg   max step 0.24mm
+  L= 100 screw    re-anchor=150ms  violation mean 0.000mm/0.017deg  max 0.000mm/0.084deg   max step 0.36mm
+  L= 100 screw    re-anchor=never  violation mean 0.000mm/3.276deg  max 0.000mm/8.684deg   max step 0.25mm

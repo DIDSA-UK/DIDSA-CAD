@@ -1,0 +1,8 @@
+rect_partial(w fixed, h free)    backend dof=1 converged=True code=0  n_points=6 n_constraints=7
+rect_full                        backend dof=0 converged=True code=0  n_points=6 n_constraints=8
+rect_floating                    backend dof=4 converged=True code=0  n_points=6 n_constraints=5
+two_link_arm                     backend dof=2 converged=True code=0  n_points=3 n_constraints=2
+hexagon(provisional)             backend dof=4 converged=True code=0  n_points=8 n_constraints=11
+slot                             backend dof=1 converged=True code=5  n_points=7 n_constraints=11
+redundant_parallel               backend dof=0 converged=False code=5  n_points=6 n_constraints=8
+conflict_2_widths                backend dof=0 converged=False code=1  n_points=6 n_constraints=8
