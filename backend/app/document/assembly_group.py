@@ -1,5 +1,6 @@
-"""Constrained drag, session S1 (`docs/constrained-drag-implementation-plan.md`):
-the GROUP model - pure functions, no HTTP, no `py_slvs`.
+"""Constrained drag, sessions S1-S2 (`docs/constrained-drag-implementation-plan.md`):
+the GROUP model and its solve - pure functions, no HTTP, no direct `py_slvs` use (only the
+single-occurrence fallback seed calls `assembly_solver.solve_occurrence_from_guess`).
 
 `assembly_solver._free_motion` analyses ONE occurrence against frozen peers,
 so a part whose neighbour is itself movable reports DOF 0 and cannot be
@@ -21,13 +22,14 @@ instead:
   `System.Dof`), `grounded`, a lever-arm-weighted orthonormal nullspace
   `basis`, per-member `mobility` and conditioning `quality`.
 
-Nothing here solves or stores anything; S2 builds the solve on `GroupModel`.
+`solve_group` (S2, bottom of this file) is the weighted Gauss-Newton retraction built on
+`GroupModel`; nothing here stores anything.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from OCC.Core.Bnd import Bnd_Box
@@ -35,16 +37,22 @@ from OCC.Core.BRepBndLib import brepbndlib
 
 from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
+    _axis_perpendicular,
+    _cross,
+    _dot,
     _mate_residual_vector,
+    _normalize,
     _place_in_world,
     _quaternion_from_axis_angle,
     _quaternion_multiply,
     _resolve_local_geometry,
     _ResolvedGeometry,
     _target_part_and_transform,
+    _vec_sub,
+    solve_occurrence_from_guess,
 )
 from app.document.extrude import compute_part_bodies
-from app.document.models import Document, Mate, Part, RigidTransform
+from app.document.models import Document, Mate, MateType, Part, RigidTransform
 
 _JACOBIAN_STEP = 1e-6  # same step as `assembly_solver._DOF_JACOBIAN_STEP`
 _DEFAULT_RANK_RTOL = 1e-6  # singular values <= rtol * sigma_max count as zero
@@ -214,6 +222,11 @@ def build_group_model(
         # the other side is frozen (the residual is only sign-asymmetric).
         if first.occurrence_id not in members and second.occurrence_id in members:
             first, second = second, first
+        if mate.type == MateType.ANGLE and mate.flipped and mate.value is not None:
+            # `_mate_residual_vector` ignores `flipped`; py-slvs' `addAngle`
+            # uses it as the supplement toggle, so solve for 180 - value.
+            t = abs(mate.value) % 360.0
+            mate = replace(mate, value=180.0 - min(t, 360.0 - t))
         sides.append((mate, side(first), side(second)))
 
     model = GroupModel(
@@ -330,3 +343,256 @@ def analyze_group(
     if lever_arm is None:
         lever_arm = bounding_radius(document, part, grabbed_id)
     return analyze_model(model, lever_arm, rank_rtol)
+
+
+# ---- group solve: weighted retraction (S2) -----------------------------------
+
+_SOLVE_TOL = 1e-7  # residual_inf at or below this = converged
+_MAX_ITERATIONS = 60
+_MAX_ROTATION_STEP = 0.6  # rad per Gauss-Newton step (any member) before scaling down
+_FOLLOWER_WEIGHT = 1e-4  # follower metric = this x the grabbed metric (follower cost ~ 0)
+_PINV_RCOND = 1e-9
+
+
+@dataclass
+class GroupSolveQuality:
+    residual_inf: float
+    jump: float | None  # weighted distance (grabbed block) between the solved pose and the first-order prediction
+    iterations: int
+    seeded_by: str  # "gauss-newton" | "slvs-fallback"
+
+
+@dataclass
+class GroupSolveResult:
+    converged: bool
+    poses: dict[str, RigidTransform]  # every member; best effort when not converged
+    analysis: GroupAnalysis | None  # at the solved poses; None when not converged (clients must not read "no basis" as "free")
+    quality: GroupSolveQuality
+
+    @property
+    def dof(self) -> int | None:
+        return None if self.analysis is None else self.analysis.dof
+
+
+def _rotvec_between(new: RigidTransform, old: RigidTransform) -> np.ndarray:
+    """Rotation vector (rad) `w` with `exp(w) * R_old = R_new` - the chart `apply_delta` uses."""
+    q = _quaternion_multiply(
+        _quaternion_from_axis_angle(new.rotation_axis, new.rotation_angle_degrees),
+        _quaternion_from_axis_angle(old.rotation_axis, -old.rotation_angle_degrees),
+    )
+    if q[0] < 0.0:
+        q = tuple(-c for c in q)
+    sin_half = math.sqrt(q[1] ** 2 + q[2] ** 2 + q[3] ** 2)
+    if sin_half < 1e-15:
+        return np.zeros(3)
+    angle = 2.0 * math.atan2(sin_half, q[0])
+    return np.array(q[1:]) / sin_half * angle
+
+
+def pose_delta(new: RigidTransform, old: RigidTransform) -> np.ndarray:
+    """`[dx dy dz rx ry rz]` taking `old` to `new` (inverse of `apply_delta`)."""
+    return np.concatenate([np.array(new.translation) - np.array(old.translation), _rotvec_between(new, old)])
+
+
+def _rotate_member(poses: dict[str, RigidTransform], oid: str, rotvec) -> None:
+    poses[oid] = apply_delta(poses[oid], (0.0, 0.0, 0.0, *rotvec))
+
+
+def _translate_member(poses: dict[str, RigidTransform], oid: str, vector) -> None:
+    poses[oid] = apply_delta(poses[oid], (*vector, 0.0, 0.0, 0.0))
+
+
+def _minimal_rotvec(source, target) -> np.ndarray:
+    """Rotation vector of the minimal rotation taking unit `source` onto unit `target`."""
+    a, b = np.array(_normalize(tuple(source))), np.array(_normalize(tuple(target)))
+    axis = np.cross(a, b)
+    norm = float(np.linalg.norm(axis))
+    angle = math.atan2(norm, float(a @ b))
+    if norm < 1e-12:
+        if a @ b > 0:
+            return np.zeros(3)
+        axis, norm = np.array(_axis_perpendicular(tuple(a))), 1.0
+    return axis / norm * angle
+
+
+def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
+    """Move members off the states plain Gauss-Newton on `_mate_residual_vector`
+    cannot leave: the residuals are sign-agnostic (`flipped` is invisible to
+    them) or have a zero gradient there. Only these cases are touched - anywhere
+    else the retraction itself keeps the nearest solution:
+
+    * COINCIDENT plane-plane not facing the right way -> minimal rotation onto the
+      flipped/unflipped target (the same seed the py-slvs path uses);
+    * ANGLE at a (anti)aligned start (gradient of the dot product vanishes) ->
+      rotate onto the target angle about an axis perpendicular to the fixed one
+      (this is the S2 fix for the singular start);
+    * DISTANCE closer than a quarter of its value to zero separation (the
+      squared residual has zero gradient at 0) -> slide out along the
+      separation direction to exactly the target (the nearest solution anyway).
+    The mover is always the mate's first side (`build_group_model` orients it)."""
+    for mate, first, second in model.sides:
+        placed = {oid: poses[oid] for oid in model.member_ids}
+        d, f = model._world(first, placed), model._world(second, placed)
+        mover = first.occurrence_id
+        if mate.type == MateType.COINCIDENT and d.plane is not None and f.plane is not None:
+            target = f.plane.normal if mate.flipped else tuple(-c for c in f.plane.normal)
+            # Frozen partner: align fully (minimal rotation = the nearest orientation, the same
+            # seed py-slvs gets). Member partner: only undo a wrong-way facing.
+            if second.occurrence_id not in poses or _dot(_normalize(d.plane.normal), _normalize(target)) < 0.0:
+                _rotate_member(poses, mover, _minimal_rotvec(d.plane.normal, target))
+        elif mate.type == MateType.ANGLE and d.direction is not None and f.direction is not None and mate.value is not None:
+            nd, nf = _normalize(d.direction), _normalize(f.direction)
+            dot = _dot(nd, nf)
+            if abs(dot) > 1.0 - 5e-7:
+                t = abs(mate.value) % 360.0
+                t = math.radians(min(t, 360.0 - t))
+                axis = np.array(_axis_perpendicular(nf))
+                _rotate_member(poses, mover, axis * (t if dot > 0 else math.pi - t))
+        elif mate.type == MateType.DISTANCE and mate.value:
+            target = abs(mate.value)
+            state = _distance_state(d, f)
+            if state is not None and abs(state[0]) < 0.25 * target:
+                current, direction, kind = state
+                sign = -1.0 if kind == "signed" and current < 0.0 else 1.0
+                _translate_member(poses, mover, np.array(direction) * (sign * target - current))
+
+
+def _distance_state(d: _ResolvedGeometry, f: _ResolvedGeometry):
+    """`(separation, unit direction the mover slides along to increase it, kind)` for
+    the geometry pairs a DISTANCE mate accepts, mirroring `_mate_residual_vector`'s branches."""
+    if d.plane is not None and f.plane is not None:
+        n = _normalize(f.plane.normal)
+        return _dot(_vec_sub(d.plane.origin, f.plane.origin), n), n, "signed"
+    if d.plane is not None and f.point is not None:
+        n = _normalize(d.plane.normal)
+        return _dot(_vec_sub(f.point, d.plane.origin), n), tuple(-c for c in n), "signed"
+    if f.plane is not None and d.point is not None:
+        n = _normalize(f.plane.normal)
+        return _dot(_vec_sub(d.point, f.plane.origin), n), n, "signed"
+    if d.axis_origin is not None and d.direction is not None and f.axis_origin is not None and f.direction is not None:
+        axis = _normalize(f.direction)
+        offset = _vec_sub(d.axis_origin, f.axis_origin)
+        radial = tuple(o - _dot(offset, axis) * a for o, a in zip(offset, axis))
+        length = math.sqrt(_dot(radial, radial))
+        direction = _axis_perpendicular(axis) if length < 1e-12 else tuple(c / length for c in radial)
+        return length, direction, "unsigned"
+    if d.point is not None and f.point is not None:
+        offset = _vec_sub(d.point, f.point)
+        length = math.sqrt(_dot(offset, offset))
+        direction = (1.0, 0.0, 0.0) if length < 1e-12 else tuple(c / length for c in offset)
+        return length, direction, "unsigned"
+    return None
+
+
+def _solve_weights(model: GroupModel, grabbed_id: str, lever_arm: float) -> np.ndarray:
+    base = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
+    return np.concatenate([base if oid == grabbed_id else base * _FOLLOWER_WEIGHT for oid in model.member_ids])
+
+
+def _retract(model: GroupModel, poses: dict[str, RigidTransform], weights: np.ndarray) -> tuple[dict, float, int]:
+    """Weighted minimum-norm Gauss-Newton from `poses` onto `residual == 0`:
+    `dx = -W^-1 pinv(J W^-1) r` (the least step in the metric `W`), with a
+    rotation-step cap and residual-decrease backtracking. Returns `(poses, residual_inf, iterations)`."""
+    ids = model.member_ids
+    n = len(ids)
+
+    def resid(p):
+        return model.residual(None, p)
+
+    r = resid(poses)
+    iterations = 0
+    while r.size and float(np.max(np.abs(r))) > _SOLVE_TOL and iterations < _MAX_ITERATIONS:
+        iterations += 1
+        jac = model.jacobian(poses)
+        dx = -(np.linalg.pinv(jac / weights, rcond=_PINV_RCOND) @ r) / weights
+        rot = np.array([np.linalg.norm(dx[6 * i + 3 : 6 * i + 6]) for i in range(n)])
+        if rot.max() > _MAX_ROTATION_STEP:
+            dx *= _MAX_ROTATION_STEP / rot.max()
+        alpha, norm0 = 1.0, float(np.linalg.norm(r))
+        for _ in range(12):
+            trial = {oid: apply_delta(poses[oid], alpha * dx[6 * i : 6 * i + 6]) for i, oid in enumerate(ids)}
+            r_trial = resid(trial)
+            if float(np.linalg.norm(r_trial)) < norm0:
+                poses, r = trial, r_trial
+                break
+            alpha *= 0.5
+        else:
+            break  # no decrease along the step: stalled (conflicting / unreachable)
+    return poses, float(np.max(np.abs(r))) if r.size else 0.0, iterations
+
+
+def solve_group(
+    document: Document,
+    part: Part,
+    grabbed_id: str,
+    wanted_pose: RigidTransform | None = None,
+    lever_arm: float | None = None,
+    also_frozen: frozenset[str] = frozenset(),
+) -> GroupSolveResult:
+    """Nearest mate-satisfying configuration of the whole group to the wish:
+    the grabbed member seeded at `wanted_pose` (`None` = its stored pose), the
+    others at their stored poses; weighted Gauss-Newton on the stacked mate
+    residuals in the metric `diag(1,1,1,L,L,L)` per member with follower
+    weights ~ 0 (`_FOLLOWER_WEIGHT`), so mated neighbours move only as the
+    mates require. Verified by `residual_inf`, never by a solver code.
+    Nothing is stored. Not converged -> `analysis is None` (no basis).
+
+    A single-member group that Gauss-Newton fails on is retried from the
+    py-slvs single-occurrence solution (`solve_occurrence_from_guess`) as a
+    seed - py-slvs is a fallback seed only, never the verifier."""
+    model = build_group_model(document, part, grabbed_id, also_frozen)
+    if lever_arm is None:
+        lever_arm = bounding_radius(document, part, grabbed_id)
+    weights = _solve_weights(model, grabbed_id, lever_arm)
+    stored = dict(model.base_transforms)
+
+    seed = dict(stored)
+    if wanted_pose is not None:
+        seed[grabbed_id] = wanted_pose
+    _seed_poses(model, seed)
+    poses, residual_inf, iterations = _retract(model, seed, weights)
+    seeded_by = "gauss-newton"
+
+    if residual_inf > _SOLVE_TOL and len(model.member_ids) == 1:
+        guess = wanted_pose if wanted_pose is not None else stored[grabbed_id]
+        fallback = solve_occurrence_from_guess(document, part, grabbed_id, guess)
+        if fallback.converged:
+            poses, residual_inf, more = _retract(model, {grabbed_id: fallback.transform}, weights)
+            iterations += more
+            seeded_by = "slvs-fallback"
+
+    converged = residual_inf <= _SOLVE_TOL
+    analysis, jump = None, None
+    if converged:
+        solved = replace(model, base_transforms=dict(poses))
+        analysis = analyze_model(solved, lever_arm)
+        jump = _jump(model, stored, poses, seed_wish=wanted_pose, grabbed_id=grabbed_id, lever_arm=lever_arm)
+    return GroupSolveResult(
+        converged=converged,
+        poses=poses,
+        analysis=analysis,
+        quality=GroupSolveQuality(residual_inf=residual_inf, jump=jump, iterations=iterations, seeded_by=seeded_by),
+    )
+
+
+def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_arm: float) -> float:
+    """Distance (grabbed block, metric diag(1,1,1,L,L,L)) between where the solve landed and
+    where a client projecting the wish onto the STORED pose's free-motion basis would have put
+    the grabbed member - how far the first-order model was off (curved mates), i.e. the pop a
+    re-anchor would cause."""
+    ids = model.member_ids
+    at_rest = replace(model, base_transforms=dict(stored))
+    analysis = analyze_model(at_rest, lever_arm)
+    w = _solve_weights(model, grabbed_id, lever_arm)
+    want = np.zeros(6 * len(ids))
+    if seed_wish is not None:
+        want[:6] = pose_delta(seed_wish, stored[grabbed_id])
+    predicted = np.zeros_like(want)
+    if analysis.basis.size:
+        nb = analysis.basis  # rows; solve min |W (N^T c - want)| over c
+        a = (nb * w) @ (nb * w).T
+        c = np.linalg.solve(a + 1e-12 * np.eye(len(a)), (nb * w) @ (want * w))
+        predicted = nb.T @ c
+    actual = np.concatenate([pose_delta(solved[oid], stored[oid]) for oid in ids])
+    g = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
+    return float(np.linalg.norm((actual[:6] - predicted[:6]) * g))
