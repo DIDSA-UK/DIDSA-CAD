@@ -81,16 +81,27 @@ Rules: nothing stored unless `commit`; a `fixed` grabbed occurrence → 422 (as 
   If the toolchain is missing (recorded in earlier sessions), say so and list what was verified only by reading.
 * Prototypes to port from: `docs/constrained-drag-investigation/prototypes/` (`f_group_real.py` group model, `geo.py` projector, `e_weighted_retraction.py`, `a_screw.py`).
 
-## 5. Dependency graph
+## 5. Dependency graph and work order
 
 ```
 S0 decisions ─► S1 group core ─► S2 group solve ─► S3 endpoint + commit ─┬─► S5 VR adopts
-                     │                 │                                 ├─► S7 flat live drag ─► S8 flat cues ─► S9 cleanup
-                     └────────► S4 projector spec + golden vectors ──────┴─► S6 Dart projector ─┘
-Optional, independent:  S10 sketch measurements/decisions ─► S11 …
+                     │                 │                                 ├─► S7 flat live drag ─► S8 flat cues
+                     └────────► S4 projector spec + golden vectors ──────┴─► S6 Dart projector ─┘        │
+                                                                                                         ▼
+                                          F1 gate (decision) ─► [F1a design ─► F1b implement, only if the gate says so] ─► S9 cleanup (+F2)
+Optional, independent:  S10 sketch measurements/decisions ─► S11 …      (F3: watch item throughout)
 ```
 
-S5 and S6 can run in parallel once S3 and S4 are merged. S7 needs S3 and S6.
+S5 and S6 ran in parallel once S3 and S4 were merged (both merged). **From here the work is strictly linear** (one session at a time, in this order):
+
+1. **S7** flat live constrained drag (needs S3, S6).
+2. **S8** gizmo cues + DOF display (needs S7). Its exit is the owner walkthrough on the three reference mates (face, offset-axis concentric, angle).
+3. **F1 gate** (a decision, not a session): read S7's drag counters (anchor rejects, `max_step`/distance re-anchors, frame steps) and how curved-mate drags felt in the S8 walkthrough. Smooth enough → drop or park F1. Rough → F1a.
+4. **F1a** design/prototype session (no production code), then **F1b** implementation. Only if the gate says so.
+5. **S9** cleanup + docs, including F2. Last, so it sees the final backend/spec shape and deletes superseded code in one pass (F2 redefines `jump`/`max_step`, which F1 may also touch; alias removal can wait, VR no longer reads the aliases).
+6. **F3** is a watch item the whole way; it gets a session only if a drag or bug report triggers it.
+
+The sketch track (S10–S13) stays unscheduled (S0).
 
 ## 6. Sessions
 
@@ -149,7 +160,7 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 * **Read:** investigation §A.0, §A.3; `part_viewport.dart` (`_tryBeginComponentGizmoDrag`, `_updateComponentGizmoDrag`), `part_screen.dart` (`_onComponentGizmoDragUpdate/End`, `_gizmoLiveTransform`, `_applyGizmoWorldTransform`, `_refreshAssembly*`), `component_gizmo.dart`.
 * **Tasks:** at grab: `mate-motion` (anchor); each pointer-move: wanted pose from the gizmo math → projector → live pose for the grabbed **and follower** occurrences (render all); scheduler re-anchors; release: `commit:true`, replace the raw PATCH + 4 refresh calls with the response (+ one refresh), undo = one group entry (extend `_TransformUndoEntry`); typed Move/Rotate panel Apply → same endpoint; `converged:false` → hold pose + throttled "can't follow that move"; `dof == 0`/`mobility == 0` → gizmo says why.
 * **Tests:** widget/unit tests with a fake API; regression: after a drag the stored pose of a mated occurrence satisfies its mate; unmated occurrences behave exactly as before (no extra requests).
-* **Follow-ups:** read "Open follow-ups" (F1, F3) below; record the counters that decide F1.
+* **Follow-ups:** read "Open follow-ups" (F1, F3) below; record the counters that decide the F1 gate (§5).
 * **Exit:** on a device or emulator the owner can drag a face-mated part in-plane and be blocked off-plane; request counters show ≈ 1 + 1/150 ms + 1.
 
 ### S8 — Flat app gizmo cues + DOF display (CAD client, M)  *(needs S7)*
@@ -179,15 +190,18 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 | S6 | Dart projector | CAD | S4 | ☑ | `ccr-de7668e3-4japt0` / PR (see status.md 2026-09-30, S5+S6) | `client/lib/motion/`: `se3.dart` (`Pose`, `poseDelta`, `applyDelta`, `screwExp`, `rotvecFromRot` atan2), `weighted_basis.dart`, `free_motion_projector.dart` (`FreeMotionProjector.fromAnchor(refs, basis, lever)`, `.project(wish)`, `.travel`), `motion_blender.dart`, `anchor_acceptance.dart` (`acceptAnchor`), `reanchor_scheduler.dart` (`needsReanchor` + `ReanchorScheduler(clock)`: `check/onRequestSent/onAccepted/onMiss/invalidate/takeCue`), `dof_hysteresis.dart`, `motion_counters.dart`, `mate_motion_bridge.dart` (DTO↔pose, `projectorFromMateMotion` → null = hold). `MateMotionDto` (+ request/member/chart/quality/diagnostics; nullable per the S3 note; alias fields not parsed) and `DocumentApiClient.mateMotion(partId, occId, {transform, leverArm, commit})`. Tests (`flutter test`, run, Flutter 3.47.5 stable): `motion_golden_vectors_test` every kind 1e-9 (reads `docs/motion/vectors.json` from the repo root), scheduler with fake clock, DTO round-trip (converged, converged:false, rank 0), SE(3); `flutter analyze` clean (whole client). No UI change. **Vectors changed (real defects, generate.py regenerated, `--check` passes):** the swing `nearest_anchors` came from a ternary search that moved by up to 1e-7 rad under one floating-point op (hypot vs sqrt) so no port could match 1e-9 — now bisection on the derivative, stored as data `nearest_anchor_theta_deg`; `constants.gram_schmidt_drop_absolute` was rounded to 0.0 (now 1e-12). Only case `swing-offset-axis-90deg` and the constants changed (values shift ~1e-7); VR copied the new file. **Spec defect found and FIXED in this PR (chart mismatch):** S4 built the wish with the additive chart but integrated with the screw, so a wish already on the free manifold was not reproduced when it both slid across and turned about an axis (22.4 mm for 150 mm + 0.3 rad; 2.1 mm for 12 mm + 0.3 rad; 23 mm on a flat face; 2.9 mm on the off-axis pin's orbit) and could trip the acceptance test. Fix: the wish is now `screw_log(ref_0, wanted)`, the exact inverse of `screw_exp` (spec §4/§5/§13.3); 15 vector cases added/changed (`screw_log` ×9, six on-manifold `project` cases; `flat-combined`, `flat-inplane-L100`, `tilted-face` and the swing case changed values; 76 cases now), both ports updated and green. **Measured cost:** wishes OFF the manifold get slightly less smooth on the off-axis swing (frame step 0.33 → 0.52 weighted mm with nearest anchors, 0.89 → 1.11 with real backend anchors; blended 0.37 → 0.47; hand 0.34) because the backend retraction is nearest in the additive chart. **Not done (option):** a Gauss–Newton refinement to the additive-metric nearest point gave 0.28 on both anchor sets (and would remove the S4 anchor-overshoot pop) but diverges on large wishes without damping — needs a guarded design before it is specified. **Backend follow-up (not done):** `quality.jump`/`max_step` still use the additive chart (telemetry / conservative guard). Near π the axis-from-(R+I)/2 rule has O(π−θ) error inside the 1e-3 band (unchanged). For S7: compose hysteresis + blender as in VR `mates_tool.gd` (`peek` old, `onAnchor`, `peek` new, `blender.onAnchor`; on hysteresis adoption blend from prior poses); call `Counters.recordFrame/timeFrame` per frame; hold on null projector; an own-projection of the GRABBED pose is what `acceptAnchor` needs. |
 | S7 | Flat live constrained drag | CAD | S3, S6 | ☐ | | |
 | S8 | Flat gizmo cues + DOF display | CAD | S7 | ☐ | | |
-| S9 | Cleanup + docs | CAD, VR | S5, S8 | ☐ | | |
+| F1-gate | Decide whether F1 is needed | – | S7, S8 | ☐ | | Decision after S8: S7 counters + S8 walkthrough on concentric/angle mates. Record the numbers and the call here. |
+| F1a | Nearest-point refinement: design/prototype (conditional) | CAD | F1-gate | ☐ | | No production code. Guard/damping options for the Gauss–Newton refinement (unguarded it diverges on large wishes, spec §13.3), tested on the vector scenes + random wishes; decide client vs backend retraction vs both; proposed spec text, candidate vectors, go/no-go with numbers. |
+| F1b | Nearest-point refinement: implement (conditional) | CAD, VR, backend | F1a | ☐ | | Spec + vectors + Dart + GDScript ports (+ backend retraction if F1a chose it). Re-run S5/S7 e2e and counters. |
+| S9 | Cleanup + docs (incl. F2) | CAD, VR | S5, S8, (F1b if run) | ☐ | | Remove v0 aliases (`transform`/`free_twists`) and dead code; F2: backend `jump`/`max_step` in the screw chart + re-pin tests; doc/code drift (`assembly-scope.md`, docstrings); status/roadmap; VR docs. |
 | S10–S13 | Sketch track (optional) | CAD | S0 | ☐ | | |
 
-### Open follow-ups from S5/S6 (each needs an owner; none blocks S7)
+### Open follow-ups from S5/S6 (owners and order: see §5; none blocks S7)
 
 | # | Item | Effect | Owner / when |
 |---|---|---|---|
-| F1 | **Nearest-point refinement** of the client projection (guarded, damped Gauss–Newton to the additive-metric nearest point) and/or the S4 "sequential nearest-point retraction" on the backend. Prototype: swing frame step 0.52 → 0.28 weighted mm, anchor-overshoot pop gone; unguarded it diverges on large wishes (spec §13.3). | Smoothness on curved mates for wishes the mate cannot satisfy. Flat faces, pins and free groups are already exact. | New session **after S7**, only if S7's counters (anchor rejects, `max_step` re-anchors, frame steps) show curved-mate roughness. Needs a spec change + vectors + both ports. |
-| F2 | Backend `quality.jump` / `max_step` still computed in the additive chart (`assembly_group._jump`); should use `screw_log` and compare screw-applied poses. | `jump` is telemetry; `max_step` is a conservative guard (angle cone only). Second-order. | **S9** (already touches the backend). Update spec §6/§7 wording and the tests that pin `jump` (e.g. ≈ 6.6 on the swing scene). |
+| F1 | **Nearest-point refinement** of the client projection (guarded, damped Gauss–Newton to the additive-metric nearest point) and/or the S4 "sequential nearest-point retraction" on the backend. Prototype: swing frame step 0.52 → 0.28 weighted mm, anchor-overshoot pop gone; unguarded it diverges on large wishes (spec §13.3). | Smoothness on curved mates for wishes the mate cannot satisfy. Flat faces, pins and free groups are already exact. | **F1-gate after S8**, then F1a (design) → F1b (implement) only if the gate says so. Needs a spec change + vectors + both ports. |
+| F2 | Backend `quality.jump` / `max_step` still computed in the additive chart (`assembly_group._jump`); should use `screw_log` and compare screw-applied poses. | `jump` is telemetry; `max_step` is a conservative guard (angle cone only). Second-order. | **S9** (last in the order, after F1, so it is done once). Update spec §6/§7 wording and the tests that pin `jump` (e.g. ≈ 6.6 on the swing scene). |
 | F3 | Near π the axis-from-(R+I)/2 rule has O(π−θ) error inside the 1e-3 band (spec §5). | Only a wish rotated ~180° from the current anchor; per-frame wishes are measured from a recent anchor, so not expected in a drag. | **Watch item**: fix (both ports + vectors) only if S7/S8 counters or a bug report show it. |
 
 ## 8. Prompt template for each session
