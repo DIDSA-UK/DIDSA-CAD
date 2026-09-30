@@ -48,6 +48,7 @@ from app.document.assembly_solver import (
     _resolve_local_geometry,
     _ResolvedGeometry,
     _target_part_and_transform,
+    _unsupported_mate_geometry,
     _vec_sub,
     solve_occurrence_from_guess,
 )
@@ -98,10 +99,14 @@ def _live_mates(part: Part) -> list[Mate]:
     return [m for m in part.mates if not m.suppressed and len(m.references) == 2]
 
 
-def discover_component(part: Part, grabbed_id: str, also_frozen: frozenset[str] = frozenset()) -> GroupComponent:
+def discover_component(
+    part: Part, grabbed_id: str, also_frozen: frozenset[str] = frozenset(), extra_mates: tuple[Mate, ...] = ()
+) -> GroupComponent:
     """The mate-graph component containing `grabbed_id`. `also_frozen` adds
     extra frozen ids (freezing every peer reproduces the single-occurrence
-    analysis of `_free_motion`, used as the parity check)."""
+    analysis of `_free_motion`, used as the parity check). `extra_mates` are
+    hypothetical mates (never in `part.mates`) joined to the graph - the
+    New-Mate ghost preview."""
     by_id = {o.id: o for o in part.occurrences}
     frozen = {o.id for o in part.occurrences if o.fixed} | {""} | set(also_frozen)
     if grabbed_id not in by_id:
@@ -109,7 +114,7 @@ def discover_component(part: Part, grabbed_id: str, also_frozen: frozenset[str] 
     if grabbed_id in frozen:
         raise GroupError(f"occurrence {grabbed_id!r} is frozen (fixed)")
 
-    mates = _live_mates(part)
+    mates = [*_live_mates(part), *(m for m in extra_mates if len(m.references) == 2)]
     adjacency: dict[str, set[str]] = {}
     for mate in mates:
         a, b = mate.references[0].occurrence_id, mate.references[1].occurrence_id
@@ -197,13 +202,17 @@ class GroupModel:
 
 
 def build_group_model(
-    document: Document, part: Part, grabbed_id: str, also_frozen: frozenset[str] = frozenset()
+    document: Document,
+    part: Part,
+    grabbed_id: str,
+    also_frozen: frozenset[str] = frozenset(),
+    extra_mates: tuple[Mate, ...] = (),
 ) -> GroupModel:
     """Discover the component and resolve every mate's geometry once (local
     frames; poses are applied per evaluation). May raise the HTTPException
     `assembly_solver` raises for an unresolvable occurrence / unsupported
     geometry - callers at the HTTP layer already handle that shape."""
-    component = discover_component(part, grabbed_id, also_frozen)
+    component = discover_component(part, grabbed_id, also_frozen, extra_mates)
     occurrences = {o.id: o for o in part.occurrences}
     members = set(component.member_ids)
     bodies_cache: dict[str, dict] = {}
@@ -235,6 +244,13 @@ def build_group_model(
         sides=sides,
     )
     model._index = {oid: i for i, oid in enumerate(component.member_ids)}
+    # A mate whose two geometries can't form its residual (e.g. CONCENTRIC on two planar
+    # faces) would silently contribute nothing; reject it like the py-slvs path always did.
+    placed = dict(model.base_transforms)
+    for mate, a, b in model.sides:
+        if not _mate_residual_vector(mate, model._world(a, placed), model._world(b, placed)):
+            ref = mate.references[0]
+            raise _unsupported_mate_geometry(ref, "a compatible point, plane or axis on each side")
     return model
 
 
@@ -528,6 +544,8 @@ def solve_group(
     wanted_pose: RigidTransform | None = None,
     lever_arm: float | None = None,
     also_frozen: frozenset[str] = frozenset(),
+    extra_mates: tuple[Mate, ...] = (),
+    with_jump: bool = True,
 ) -> GroupSolveResult:
     """Nearest mate-satisfying configuration of the whole group to the wish:
     the grabbed member seeded at `wanted_pose` (`None` = its stored pose), the
@@ -540,7 +558,7 @@ def solve_group(
     A single-member group that Gauss-Newton fails on is retried from the
     py-slvs single-occurrence solution (`solve_occurrence_from_guess`) as a
     seed - py-slvs is a fallback seed only, never the verifier."""
-    model = build_group_model(document, part, grabbed_id, also_frozen)
+    model = build_group_model(document, part, grabbed_id, also_frozen, extra_mates)
     if lever_arm is None:
         lever_arm = bounding_radius(document, part, grabbed_id)
     weights = _solve_weights(model, grabbed_id, lever_arm)
@@ -566,7 +584,7 @@ def solve_group(
     if converged:
         solved = replace(model, base_transforms=dict(poses))
         analysis = analyze_model(solved, lever_arm)
-        jump = _jump(model, stored, poses, seed_wish=wanted_pose, grabbed_id=grabbed_id, lever_arm=lever_arm)
+        jump = None if not with_jump else _jump(model, stored, poses, seed_wish=wanted_pose, grabbed_id=grabbed_id, lever_arm=lever_arm)
     return GroupSolveResult(
         converged=converged,
         poses=poses,
