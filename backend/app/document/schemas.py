@@ -1,6 +1,6 @@
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.document.models import (
     BevelGearType,
@@ -3326,26 +3326,64 @@ class MateUpdate(BaseModel):
 
 
 class MateMotionRequest(BaseModel):
-    """`POST .../occurrences/{occurrence_id}/mate-motion`'s body: the pose the
-    client wants (e.g. where a hand has dragged the part). Omitted/null solves
-    from the occurrence's stored transform."""
+    """`POST .../occurrences/{occurrence_id}/mate-motion`'s body
+    (`docs/constrained-drag-implementation-plan.md` §3). `occurrence_id` is the
+    GRABBED occurrence; `transform` is the pose wanted for it (null = its
+    stored pose); `lever_arm` (mm) is the rotation weight of the retraction
+    metric (default: the grabbed occurrence's bounding radius); `commit`
+    persists the solved group atomically."""
 
     transform: RigidTransformResponse | None = None
+    lever_arm: float | None = Field(default=None, gt=0)
+    commit: bool = False
+
+
+class MateMotionMember(BaseModel):
+    occurrence_id: str
+    transform: RigidTransformResponse
+    mobility: int
+
+
+class MateMotionChart(BaseModel):
+    kind: Literal["se3_owner_frame"] = "se3_owner_frame"
+    lever_arm: float
+
+
+class MateMotionQuality(BaseModel):
+    residual_inf: float
+    sigma_min: float | None = None  # null at rank 0
+    sigma_gap: float | None = None  # null at rank 0
+    max_step: float | None = None  # not computed yet (S4 defines the rule)
+    jump: float | None = None
+
+
+class MateMotionDiagnostics(BaseModel):
+    solve_ms: float
 
 
 class MateMotionResponse(BaseModel):
-    """Where the occurrence should be to satisfy its mates nearest `transform`
-    (`converged`/`transform`, never stored), how many degrees of freedom its
-    mates leave (`dof`), and an orthonormal basis of that free motion
-    (`free_twists`, `dof` entries of `[dx, dy, dz, rx, ry, rz]`: translation
-    added to the occurrence's translation, rotation vector in radians composed
-    onto its rotation about its own origin, both in the owning Part's frame).
-    A client projects a wanted motion onto those twists locally each frame and
-    only re-asks occasionally to correct curvature drift."""
+    """The nearest mate-satisfying configuration of the grabbed occurrence's whole
+    mate-graph component (never stored unless `commit`), and its free motion.
+    `dof` is the GROUP dof (`6k - rank(J)`); `members` order defines the column order
+    of `basis` (rows: orthonormal in the lever-arm metric, `[dx dy dz rx ry rz]` per
+    member). `converged: false` carries NO basis, dof or members - clients must not
+    read that as "all free".
+
+    `transform` and `free_twists` are the v0 single-occurrence fields (grabbed
+    occurrence solved against frozen peers), kept ONLY so DIDSA-VR on `main` keeps
+    working until it adopts this contract (plan S5); S9 deletes them."""
 
     converged: bool
+    dof: int | None = None
+    grounded: bool | None = None
+    members: list[MateMotionMember] = []
+    basis: list[list[float]] | None = None
+    chart: MateMotionChart | None = None
+    quality: MateMotionQuality | None = None
+    diagnostics: MateMotionDiagnostics | None = None
+    committed: bool = False
+    # v0 aliases (delete in S9)
     transform: RigidTransformResponse | None = None
-    dof: int = 6
     free_twists: list[list[float]] = []
 
 

@@ -2,6 +2,7 @@ import base64
 import binascii
 import logging
 import math
+import time
 import uuid
 from typing import Literal
 
@@ -12,13 +13,8 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances
-from app.document.assembly_solver import (
-    MateSolveResult,
-    _quaternion_from_axis_angle,
-    preview_mate_solve,
-    solve_occurrence_from_guess,
-    solve_occurrence,
-)
+from app.document.assembly_group import GroupSolveResult, solve_group
+from app.document.assembly_solver import _quaternion_from_axis_angle, solve_occurrence_from_guess
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -225,6 +221,10 @@ from app.document.schemas import (
     MateCreate,
     MateEntityRefResponse,
     MateResponse,
+    MateMotionChart,
+    MateMotionDiagnostics,
+    MateMotionMember,
+    MateMotionQuality,
     MateMotionRequest,
     MateMotionResponse,
     MateSolvePreviewResponse,
@@ -4045,50 +4045,44 @@ def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
     return Response(status_code=204)
 
 
-def _mate_solve_did_not_converge(occurrence_id: str, result: MateSolveResult) -> HTTPException:
+def _mate_solve_did_not_converge(occurrence_id: str, result: GroupSolveResult) -> HTTPException:
     return HTTPException(
         status_code=422,
         detail={"type": "mate_solve_did_not_converge", "occurrence_id": occurrence_id, "dof": result.dof},
     )
 
 
+def _commit_group(part: Part, result: GroupSolveResult) -> None:
+    """Persist every solved member's pose together. All poses were computed (and
+    verified by residual) before this runs and each store is a plain attribute
+    assignment, so a group is written entirely or - on `converged: false`, which
+    never reaches here - not at all."""
+    by_id = {o.id: o for o in part.occurrences}
+    for occurrence_id, pose in result.poses.items():
+        by_id[occurrence_id].transform = pose
+
+
 @router.post("/parts/{part_id}/occurrences/{occurrence_id}/solve", response_model=OccurrenceResponse)
 def solve_for_occurrence(part_id: str, occurrence_id: str) -> OccurrenceResponse:
-    """Phase 6 (`docs/assembly-scope.md` §3): solves every Mate referencing
-    `occurrence_id` against its fixed peers (`app.document.assembly_solver.
-    solve_occurrence`) and, if it converges, overwrites `occurrence.
-    transform` with the result and returns it - otherwise leaves the
-    Occurrence's own current transform untouched and reports 422, never a
-    garbage partial result.
+    """Snaps `occurrence_id` (and, only as its mates require, the occurrences
+    mated to it) onto the nearest mate-satisfying configuration
+    (`assembly_group.solve_group`, the whole mate-graph component - no longer the
+    occurrence alone against frozen peers) and stores it. Non-convergence: 422
+    `mate_solve_did_not_converge`, nothing stored. A `fixed` occurrence 422s
+    (`occurrence_is_fixed`) - its transform is locked.
 
-    A deliberately separate, explicit endpoint rather than folded into
-    `update_occurrence_transform`'s own PATCH - the gizmo's own drag-end
-    PATCH always sends the user's raw dragged transform first (so a drag on
-    an *unmated* Occurrence behaves exactly as it always has, no surprise
-    new behavior baked into an existing endpoint), and the client calls
-    this immediately afterward *only* when that Occurrence actually has
-    Mates - giving the "move/rotate triad gizmo clamped by mates" behavior
-    from the original brief: the raw drag position becomes the solve's own
-    initial guess (`solve_occurrence`'s own docstring), so the result snaps
-    to the *nearest* mate-satisfying placement rather than some other,
-    arbitrarily different valid one. The same call is also made right after
-    `create_mate` for the newly-mated Occurrence, so a freshly-authored
-    Mate visibly snaps its target into place immediately, matching real
-    CAD mate-authoring UX.
-
-    Assembly testing bug fix: rejects with the same structured 422
-    (`_occurrence_is_fixed`) `update_occurrence_transform` now does, for the
-    same reason - a `fixed` Occurrence's own `transform` is locked, so it can
-    never be the *driven* side of a Mate solve either, only ever referenced
-    as an already-fixed peer for solving some other Occurrence."""
+    Kept as the gizmo's post-drag / post-`create_mate` snap: the raw dragged pose
+    is already stored on the occurrence, so the solve's wish is its stored pose.
+    The response is the driven occurrence; followers that moved are visible on
+    the next fetch."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     if occurrence.fixed:
         raise _occurrence_is_fixed(occurrence_id)
-    result = solve_occurrence(get_document(), part, occurrence_id)
+    result = solve_group(get_document(), part, occurrence_id, None, with_jump=False)
     if not result.converged:
         raise _mate_solve_did_not_converge(occurrence_id, result)
-    occurrence.transform = result.transform
+    _commit_group(part, result)
     return _occurrence_response(occurrence)
 
 
@@ -4102,37 +4096,75 @@ def _rigid_transform_response(transform: RigidTransform) -> RigidTransformRespon
 
 @router.post("/parts/{part_id}/occurrences/{occurrence_id}/mate-motion", response_model=MateMotionResponse)
 def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) -> MateMotionResponse:
-    """How a mated occurrence may move, in ONE round trip: solves its Mates
-    from the wanted pose `payload.transform` (else from its stored transform)
-    WITHOUT storing anything, and returns the nearest mate-satisfying pose plus
-    the free-motion basis at that pose (`MateMotionResponse`). Built for VR
-    dragging: the client projects the hand's motion onto `free_twists` locally
-    every frame (smooth, no network in the loop) and calls this only every
-    so often to re-anchor, instead of a PATCH+solve pair per frame. Mate-less
-    occurrences return the wanted pose with all six DOF free. A grounded
-    (`fixed`) occurrence 422s exactly like `solve_for_occurrence`. A solve that
-    doesn't converge reports `converged: false` (no 4xx: mid-drag that just
-    means "keep the last good pose")."""
+    """Constrained drag (`docs/constrained-drag-implementation-plan.md` §3):
+    `occurrence_id` is the GRABBED occurrence. Solves its whole mate-graph
+    component (`assembly_group.solve_group`) from the wanted pose
+    `payload.transform` (else its stored one) and returns the nearest
+    mate-satisfying pose of every member, the GROUP dof, per-member mobility and
+    an orthonormal free-motion `basis` (`MateMotionResponse`). Stores nothing
+    unless `payload.commit` (then every member is written together, one
+    transaction). A `fixed` grabbed occurrence 422s like `solve_for_occurrence`;
+    non-convergence is `converged: false` with NO basis (not a 4xx), and a
+    `commit` with `converged: false` stores nothing.
+
+    `transform`/`free_twists` in the response are the v0 single-occurrence
+    aliases VR on `main` still reads (S9 deletes them)."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     if occurrence.fixed:
         raise _occurrence_is_fixed(occurrence_id)
-    guess = None
+    wanted = None
     if payload.transform is not None:
         _validate_occurrence_transform_payload(payload.transform.rotation_axis, payload.transform.rotation_angle_degrees)
-        guess = RigidTransform(
+        wanted = RigidTransform(
             translation=tuple(payload.transform.translation),
             rotation_axis=tuple(payload.transform.rotation_axis),
             rotation_angle_degrees=payload.transform.rotation_angle_degrees,
         )
-    result = solve_occurrence_from_guess(get_document(), part, occurrence_id, guess)
-    if not result.converged:
-        return MateMotionResponse(converged=False, dof=result.dof)
+    document = get_document()
+    started = time.perf_counter()
+    result = solve_group(document, part, occurrence_id, wanted, payload.lever_arm)
+    solve_ms = (time.perf_counter() - started) * 1000.0
+    # v0 aliases: the old single-occurrence answer, computed the old way.
+    legacy = solve_occurrence_from_guess(document, part, occurrence_id, wanted)
+    alias = {}
+    if legacy.converged:
+        alias = {
+            "transform": _rigid_transform_response(legacy.transform),
+            "free_twists": [list(t) for t in legacy.free_twists],
+        }
+    if not result.converged or result.analysis is None:
+        return MateMotionResponse(
+            converged=False,
+            quality=MateMotionQuality(residual_inf=result.quality.residual_inf),
+            diagnostics=MateMotionDiagnostics(solve_ms=solve_ms),
+            **alias,
+        )
+    analysis = result.analysis
+    if payload.commit:
+        _commit_group(part, result)
+    quality = result.quality
     return MateMotionResponse(
         converged=True,
-        transform=_rigid_transform_response(result.transform),
-        dof=result.dof,
-        free_twists=[list(t) for t in result.free_twists],
+        dof=analysis.dof,
+        grounded=analysis.grounded,
+        members=[
+            MateMotionMember(
+                occurrence_id=oid, transform=_rigid_transform_response(result.poses[oid]), mobility=analysis.mobility[oid]
+            )
+            for oid in analysis.member_ids
+        ],
+        basis=[[float(x) for x in row] for row in analysis.basis],
+        chart=MateMotionChart(lever_arm=analysis.lever_arm),
+        quality=MateMotionQuality(
+            residual_inf=quality.residual_inf,
+            sigma_min=analysis.quality.sigma_min,
+            sigma_gap=analysis.quality.sigma_gap,
+            jump=quality.jump,
+        ),
+        diagnostics=MateMotionDiagnostics(solve_ms=solve_ms),
+        committed=payload.commit,
+        **alias,
     )
 
 
@@ -4179,12 +4211,12 @@ def preview_mate_solve_endpoint(
             flipped=payload.flipped,
             allow_rotation=payload.allow_rotation,
         )
-        result = preview_mate_solve(get_document(), part, occurrence_id, extra_mate)
+        result = solve_group(get_document(), part, occurrence_id, None, extra_mates=(extra_mate,), with_jump=False)
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)
     if not result.converged:
         return MateSolvePreviewResponse(converged=False, transform=None)
-    return MateSolvePreviewResponse(converged=True, transform=_rigid_transform_response(result.transform))
+    return MateSolvePreviewResponse(converged=True, transform=_rigid_transform_response(result.poses[occurrence_id]))
 
 
 @router.post(
