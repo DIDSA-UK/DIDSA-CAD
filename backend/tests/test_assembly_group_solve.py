@@ -342,3 +342,50 @@ def test_max_step_reaches_the_http_response():
     assert response.json()["quality"]["max_step"] is not None and response.json()["quality"]["max_step"] > 0
     flat = client.post(f"/document/parts/{root}/occurrences/{occ.id}/mate-motion", json={"transform": None, "lever_arm": _L})
     assert flat.json()["quality"]["max_step"] is None
+
+
+# ---- floating bolt + plate (nothing fixed): large rigid-group wishes ---------------------------------
+
+
+def _floating_bolt_scene():
+    """A plate with a through hole and a bolt standing in it, BOTH floating occurrences of an empty root
+    (nothing fixed): concentric (bolt shank / hole) + coincident (bolt end face on the plate top). Group dof 7:
+    the rigid-body motions plus the bolt's spin."""
+    from tests.test_assembly_solver import _add_point, _create_part
+    plate = _make_box_part("HolePlate", size=60.0, depth=10.0)
+    sf = client.post(f"/document/parts/{plate['id']}/features/sketch", json={"plane": "XY"}).json()
+    center = _add_point(sf["sketch_id"], 30.0, 30.0)
+    assert client.post(f"/sketch/sketches/{sf['sketch_id']}/circles", json={"center_point_id": center["id"], "radius": 5.0, "angle": 0.0}).status_code == 201
+    cut = client.post(f"/document/parts/{plate['id']}/extrude-features", json={
+        "sketch_feature_id": sf["id"], "extrude_type": "cut", "start_distance": 0.0, "end_distance": 10.0, "target_body_ids": [plate["body_id"]]})
+    assert cut.status_code == 201, cut.text
+    bolt = _make_cylinder_part("Bolt", radius=4.0, depth=20.0)
+    root = _compose(_create_part("BoltAssembly"), [("occ-plate", plate, (0, 0, 0)), ("occ-bolt", bolt, (30, 30, 10))])
+    _mate(root, "concentric", "occ-bolt", _cyl(bolt), "occ-plate", _cyl(plate))
+    _mate(root, "coincident", "occ-bolt", _face(bolt, (0, 0, -1)), "occ-plate", _face(plate, (0, 0, 1)))
+    return root
+
+
+def test_floating_bolt_turned_by_large_angles_about_x_and_y_follows_the_wish():
+    """Regression (owner report): with nothing fixed, turning a bolt mated to a plate worked for a while and then
+    'cannot follow that move'. Plain Gauss-Newton from 'followers where they are' failed at a quarter turn about x/y and
+    returned a pose with the bolt pulled back towards where it was for 120 deg and more; the solve now seeds the
+    followers at the screw prediction, so the bolt lands (within a fraction of a degree) at the wish."""
+    root = _floating_bolt_scene()
+    document = get_document()
+    part = document.parts[root]
+    analysis0 = solve_group(document, part, "occ-bolt", None, lever_arm=20.0)
+    assert analysis0.converged and analysis0.analysis.dof == 7 and analysis0.analysis.grounded is False
+    stored = next(o for o in part.occurrences if o.id == "occ-bolt").transform
+    for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+        for degrees in (10, 30, 60, 90, 120, 150, 180):
+            wish = apply_delta(stored, (0, 0, 0, *(np.array(axis, float) * math.radians(degrees))))
+            result = solve_group(document, part, "occ-bolt", wish, lever_arm=20.0)
+            assert result.converged and result.quality.residual_inf < _TOL, (axis, degrees, result.quality)
+            off = math.degrees(float(np.linalg.norm(pose_delta(result.poses["occ-bolt"], wish)[3:])))
+            assert off < 0.05, (axis, degrees, off)  # the bolt sits at the wish, not dragged back
+            assert float(np.linalg.norm(pose_delta(result.poses["occ-bolt"], wish)[:3])) < 1e-6
+            moved = float(np.linalg.norm(pose_delta(result.poses["occ-plate"], next(o for o in part.occurrences if o.id == "occ-plate").transform)))
+            if axis != (0, 0, 1):
+                assert moved > 1.0, (axis, degrees)  # the plate rode along
+

@@ -501,12 +501,18 @@ def _distance_state(d: _ResolvedGeometry, f: _ResolvedGeometry):
     return None
 
 
+def _metric(lever_arm: float) -> np.ndarray:
+    return np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
+
+
 def _solve_weights(model: GroupModel, grabbed_id: str, lever_arm: float) -> np.ndarray:
     base = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
     return np.concatenate([base if oid == grabbed_id else base * _FOLLOWER_WEIGHT for oid in model.member_ids])
 
 
-def _retract(model: GroupModel, poses: dict[str, RigidTransform], weights: np.ndarray) -> tuple[dict, float, int]:
+def _retract(
+    model: GroupModel, poses: dict[str, RigidTransform], weights: np.ndarray, max_iterations: int = _MAX_ITERATIONS
+) -> tuple[dict, float, int]:
     """Weighted minimum-norm Gauss-Newton from `poses` onto `residual == 0`:
     `dx = -W^-1 pinv(J W^-1) r` (the least step in the metric `W`), with a
     rotation-step cap and residual-decrease backtracking. Returns `(poses, residual_inf, iterations)`."""
@@ -518,7 +524,7 @@ def _retract(model: GroupModel, poses: dict[str, RigidTransform], weights: np.nd
 
     r = resid(poses)
     iterations = 0
-    while r.size and float(np.max(np.abs(r))) > _SOLVE_TOL and iterations < _MAX_ITERATIONS:
+    while r.size and float(np.max(np.abs(r))) > _SOLVE_TOL and iterations < max_iterations:
         iterations += 1
         jac = model.jacobian(poses)
         dx = -(np.linalg.pinv(jac / weights, rcond=_PINV_RCOND) @ r) / weights
@@ -536,6 +542,45 @@ def _retract(model: GroupModel, poses: dict[str, RigidTransform], weights: np.nd
         else:
             break  # no decrease along the step: stalled (conflicting / unreachable)
     return poses, float(np.max(np.abs(r))) if r.size else 0.0, iterations
+
+
+def _predicted_seed(
+    model: GroupModel,
+    stored: dict[str, RigidTransform],
+    wanted: RigidTransform,
+    grabbed_id: str,
+    lever_arm: float,
+    analysis: GroupAnalysis,
+) -> tuple[dict[str, RigidTransform], bool] | None:
+    """Seed poses for `solve_group`'s retry: the grabbed member at the wish, every other member at the screw
+    integration of the wish projected (follower-weighted) onto the free motion of the STORED pose. `None` when
+    the stored pose has no free motion to project onto."""
+    ids = model.member_ids
+    if not analysis.basis.size:
+        return None
+    want = np.zeros(6 * len(ids))
+    want[:6] = pose_delta(wanted, stored[grabbed_id])
+    nb = analysis.basis
+    # The grabbed member must land on the wish (weight 1e6) and, among the free motions that do that, the
+    # followers should move least (unit weight: the free-motion space has directions - e.g. a bolt's spin - that
+    # only move followers, and the retraction's tiny follower weight would leave them arbitrary).
+    base = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
+    sw = np.concatenate([base * (1e6 if oid == grabbed_id else 1.0) for oid in ids])
+    a = (nb * sw) @ (nb * sw).T
+    c = np.linalg.solve(a + 1e-12 * np.eye(len(a)), (nb * sw) @ (want * sw))
+    twist = nb.T @ c
+    g = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
+    # The wish is (to first order) a free motion of the group: the grabbed block of the projection IS the wish.
+    on_manifold = float(np.linalg.norm((twist[:6] - want[:6]) * g)) < 1e-4 * (1.0 + float(np.linalg.norm(want[:6] * g)))
+    seed: dict[str, RigidTransform] = {}
+    for i, oid in enumerate(ids):
+        if oid == grabbed_id:
+            seed[oid] = wanted
+            continue
+        blk = twist[6 * i : 6 * i + 6].copy()
+        blk[:3] = _screw_translation_delta(np.array(stored[oid].translation), blk[:3], blk[3:])
+        seed[oid] = apply_delta(stored[oid], blk)
+    return seed, on_manifold
 
 
 def solve_group(
@@ -568,6 +613,7 @@ def solve_group(
     seed = dict(stored)
     if wanted_pose is not None:
         seed[grabbed_id] = wanted_pose
+    at_rest: GroupAnalysis | None = None
     _seed_poses(model, seed)
     poses, residual_inf, iterations = _retract(model, seed, weights)
     seeded_by = "gauss-newton"
@@ -580,13 +626,45 @@ def solve_group(
             iterations += more
             seeded_by = "slvs-fallback"
 
+    if wanted_pose is not None and len(model.member_ids) > 1:
+        reached = residual_inf <= _SOLVE_TOL and float(np.linalg.norm(pose_delta(poses[grabbed_id], wanted_pose) * _metric(lever_arm))) <= 1e-6
+        if not reached:
+            # Followers must ride along with the grabbed member (a floating bolt + plate turned a quarter turn):
+            # Gauss-Newton from "followers where they are" can stall, or settle far from the nearest solution
+            # with the grabbed member pulled back towards its old pose although the wish is a free motion of the
+            # group. Retry from the client's own prediction - the wish projected onto the stored pose's free motion,
+            # integrated as a screw - then, if the wish is reachable, pin the grabbed member at it and let only the
+            # followers correct. Adopted only if it converges and lands nearer the wish.
+            at_rest = analyze_model(replace(model, base_transforms=dict(stored)), lever_arm)
+            predicted = _predicted_seed(model, stored, wanted_pose, grabbed_id, lever_arm, at_rest)
+            if predicted is not None:
+                seed_poses, on_manifold = predicted
+                _seed_poses(model, seed_poses)
+                cand, cand_residual, more = _retract(model, seed_poses, weights)
+                iterations += more
+                if cand_residual <= _SOLVE_TOL and on_manifold:
+                    pinned = dict(cand)
+                    pinned[grabbed_id] = wanted_pose
+                    heavy = weights.copy()
+                    heavy[:6] *= 1e3
+                    polished, polished_residual, more = _retract(model, pinned, heavy, max_iterations=20)
+                    iterations += more
+                    if polished_residual <= _SOLVE_TOL:
+                        cand, cand_residual = polished, polished_residual
+                if cand_residual <= _SOLVE_TOL:
+                    old = float("inf") if residual_inf > _SOLVE_TOL else float(np.linalg.norm(pose_delta(poses[grabbed_id], wanted_pose) * _metric(lever_arm)))
+                    new = float(np.linalg.norm(pose_delta(cand[grabbed_id], wanted_pose) * _metric(lever_arm)))
+                    if new < old:
+                        poses, residual_inf = cand, cand_residual
+                        seeded_by = "predicted-seed"
+
     converged = residual_inf <= _SOLVE_TOL
     analysis, jump, max_step = None, None, None
     if converged:
         solved = replace(model, base_transforms=dict(poses))
         analysis = analyze_model(solved, lever_arm)
         if with_jump:
-            jump, max_step = _jump(model, stored, poses, seed_wish=wanted_pose, grabbed_id=grabbed_id, lever_arm=lever_arm)
+            jump, max_step = _jump(model, stored, poses, seed_wish=wanted_pose, grabbed_id=grabbed_id, lever_arm=lever_arm, at_rest_analysis=at_rest)
     return GroupSolveResult(
         converged=converged,
         poses=poses,
@@ -621,14 +699,13 @@ def _screw_translation_delta(t: np.ndarray, v: np.ndarray, w: np.ndarray) -> np.
     return (e - np.eye(3)) @ t + vm @ (v - np.cross(w, t))
 
 
-def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_arm: float) -> tuple[float, float | None]:
+def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_arm: float, at_rest_analysis: GroupAnalysis | None = None) -> tuple[float, float | None]:
     """`(jump, max_step)`. `jump`: distance (grabbed block, metric diag(1,1,1,L,L,L)) between where
     the solve landed and where a client projecting the wish onto the STORED pose's free-motion basis
     would have put the grabbed member (additive prediction) - how far the first-order model was off
     (curved mates), i.e. the pop a re-anchor would cause. `max_step`: see the rule above."""
     ids = model.member_ids
-    at_rest = replace(model, base_transforms=dict(stored))
-    analysis = analyze_model(at_rest, lever_arm)
+    analysis = at_rest_analysis or analyze_model(replace(model, base_transforms=dict(stored)), lever_arm)
     w = _solve_weights(model, grabbed_id, lever_arm)
     want = np.zeros(6 * len(ids))
     if seed_wish is not None:

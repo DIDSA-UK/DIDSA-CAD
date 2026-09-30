@@ -17,6 +17,7 @@ import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
@@ -4865,6 +4866,56 @@ void main() {
       final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
       expect(viewport.componentGizmoCues, isNull);
       expect(viewport.selectedOccurrenceTransform, isNotNull);
+    });
+
+    testWidgets('deselecting a component (empty-space tap) closes its context drawer; Move/Rotate keeps its target', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+      )..mateMotionHandler = anchor(dof: 2, basis: slideXY);
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      // Plain selection (a tap on the tree row): the component's context drawer shows.
+      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onOccurrenceTap(panel.occurrences.firstWhere((o) => o.id == 'occ-1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byType(AssemblyComponentSelectionDrawer), findsOneWidget);
+
+      // An empty-space tap deselects it and the drawer goes away.
+      tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byType(AssemblyComponentSelectionDrawer), findsNothing);
+      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.selectedOccurrenceId, isNull);
+    });
+
+    testWidgets('an empty-space tap does not pull the target out from under an open Move/Rotate gizmo', (tester) async {
+      await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+        handler: anchor(dof: 2, basis: slideXY),
+      );
+      await settle(tester);
+      tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+      await tester.pump();
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedOccurrenceTransform, isNotNull);
     });
 
     testWidgets('an unmated occurrence keeps the raw PATCH path: no mate-motion request at all', (tester) async {

@@ -1,9 +1,11 @@
+import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
+import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart' show kCameraVerticalFovRadians;
 
 void main() {
   const viewportSize = Size(800, 600);
@@ -249,7 +251,8 @@ void main() {
       expect(hitTestComponentGizmo(ray, basis, viewportSize, cues: cues)?.kind, ComponentGizmoHandleKind.translatePlane);
       expect(hitTestComponentGizmo(ray, basis, viewportSize), isNull);
       final outside = vm.Ray.originDirection(vm.Vector3(0.3, 0.3, 5), vm.Vector3(0, 0, -1));
-      expect(hitTestComponentGizmo(outside, basis, viewportSize, cues: cues), isNull, reason: 'inside the near corner gap');
+      expect(hitTestComponentGizmo(outside, basis, viewportSize, cues: cues)?.kind, isNot(ComponentGizmoHandleKind.translatePlane),
+          reason: 'inside the near corner gap');
     });
 
     test('plane frame is orthonormal, in the plane, and follows the gizmo x axis', () {
@@ -278,4 +281,23 @@ void main() {
       }
     });
   });
+
+  group('grab radius', () {
+    final basis = ComponentGizmoBasis.fromMatrix(vm.Matrix4.identity());
+
+    test('the gizmo grab radius is wider than a plain selection pick', () {
+      expect(kComponentGizmoHitRadiusPixels, greaterThan(2 * 12.5 - 1));
+    });
+
+    test('a ray ~20 px beside the translateZ arrow (a miss at the old 12.5 px radius) still grabs it', () {
+      // Ray along -y at x offset d from the z arrow, z = 4.2 (clear of every ring), camera-free: world units per pixel at
+      // the ray's depth come from the default fov and the 600 px viewport height.
+      const depth = 5.0;
+      final unitsPerPixel = 2 * depth * math.tan(kCameraVerticalFovRadians / 2) / viewportSize.height;
+      final ray = vm.Ray.originDirection(vm.Vector3(20 * unitsPerPixel, 5, 4.2), vm.Vector3(0, -1, 0));
+      expect(hitTestComponentGizmo(ray, basis, viewportSize)?.kind, ComponentGizmoHandleKind.translateZ);
+      expect(hitTestComponentGizmo(ray, basis, viewportSize, radiusPixels: 12.5), isNull);
+    });
+  });
 }
+

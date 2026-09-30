@@ -2907,6 +2907,15 @@ class _PartScreenState extends State<PartScreen> {
               if (_patternAxisEntity != null) _patternAxisEntity!,
             }
           : {};
+      // Assembly lens: an empty-space tap also deselects the component, which closes its context drawer (the
+      // drawer is keyed on [_selectedOccurrenceId], not on [_selectedEntities]). Left alone while a tool owns the
+      // selection (Move/Rotate gizmo, Mate, pattern source picking).
+      if (_lens == AssemblyLens.assembly &&
+          !_moveRotateComponentActive &&
+          !_mateActive &&
+          !_componentPatternPickingSources) {
+        _selectedOccurrenceId = null;
+      }
     });
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
