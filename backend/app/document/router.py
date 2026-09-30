@@ -4160,6 +4160,7 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
             residual_inf=quality.residual_inf,
             sigma_min=analysis.quality.sigma_min,
             sigma_gap=analysis.quality.sigma_gap,
+            max_step=quality.max_step,
             jump=quality.jump,
         ),
         diagnostics=MateMotionDiagnostics(solve_ms=solve_ms),

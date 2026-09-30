@@ -3353,7 +3353,7 @@ class MateMotionQuality(BaseModel):
     residual_inf: float
     sigma_min: float | None = None  # null at rank 0
     sigma_gap: float | None = None  # null at rank 0
-    max_step: float | None = None  # not computed yet (S4 defines the rule)
+    max_step: float | None = None  # weighted mm the first-order screw model is trusted for; null = no curvature seen (docs/motion/projector-spec.md)
     jump: float | None = None
 
 
