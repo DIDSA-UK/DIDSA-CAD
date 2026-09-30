@@ -41,6 +41,9 @@ import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
 import '../gear/gear_chain_design_screen.dart';
 import '../gear/gear_design_screen.dart';
+import '../motion/constrained_drag_session.dart';
+import '../motion/mate_motion_bridge.dart';
+import '../motion/se3.dart' show weightedDist;
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import '../storage/project_root.dart';
@@ -486,10 +489,15 @@ sealed class _AssemblyUndoEntry {
 /// gizmo drag or [MoveRotateComponentPanel] Apply, reversed by PATCHing
 /// [previousTransform] straight back onto [occurrenceId].
 class _TransformUndoEntry extends _AssemblyUndoEntry {
-  const _TransformUndoEntry(this.occurrenceId, this.previousTransform);
+  const _TransformUndoEntry(this.occurrenceId, this.previousTransform, {this.followers = const {}});
 
   final String occurrenceId;
   final RigidTransformDto previousTransform;
+
+  /// Constrained drag (`docs/constrained-drag-implementation-plan.md` S7): every OTHER member the
+  /// `mate-motion` commit moved, with its pre-drag pose - reversed in the same undo step as the grabbed
+  /// occurrence. Empty for a plain (unmated) move.
+  final Map<String, RigidTransformDto> followers;
 }
 
 /// An Occurrence delete's own cascade, captured in full right before the
@@ -615,6 +623,23 @@ class _PartScreenState extends State<PartScreen> {
   /// drag-end all agree on the exact same number with no intermediate
   /// snap-back while the PATCH/refetch is still in flight.
   RigidTransformDto? _gizmoLiveTransform;
+
+  /// Constrained drag (S7): the live controller of the gizmo drag in progress, `null` for a plain drag (an
+  /// occurrence with no active mate behaves exactly as before: no `mate-motion` request, raw PATCH on release).
+  ConstrainedDragSession? _dragSession;
+  Timer? _dragPump;
+
+  /// Focus-local transforms of every occurrence at grab time: the pre-grab poses a failed commit restores (by
+  /// simply dropping the live overrides) and the undo entry's "before" values.
+  Map<String, RigidTransformDto> _dragPreGrab = const {};
+
+  /// The hand's latest wished pose of the grabbed occurrence (world space, before projection).
+  RigidTransformDto? _dragWishWorld;
+
+  /// World-space live poses of the FOLLOWER occurrences during a constrained drag (the grabbed one is
+  /// [_gizmoLiveTransform]); folded into [_displayAssemblyInstances].
+  Map<String, RigidTransformDto> _followerLiveWorld = const {};
+  final Stopwatch _dragClock = Stopwatch()..start();
 
   /// Assembly support Phase 5: local, session-only undo for component-
   /// transform edits ("local component-transform undo built in this phase,
@@ -875,7 +900,16 @@ class _PartScreenState extends State<PartScreen> {
     if (liveTransform == null || targetOccurrence == null) return overlaid;
     final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
     final targetPath = [...focusedPath, targetOccurrence.id];
-    return overrideInstanceTransform(overlaid, targetOccurrencePath: targetPath, transform: liveTransform);
+    var out = overrideInstanceTransform(overlaid, targetOccurrencePath: targetPath, transform: liveTransform);
+    // Constrained drag: the mated followers move with the grabbed occurrence (render all of them).
+    for (final entry in _followerLiveWorld.entries) {
+      out = overrideInstanceTransform(
+        out,
+        targetOccurrencePath: [...focusedPath, entry.key],
+        transform: entry.value,
+      );
+    }
+    return out;
   }
 
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
@@ -10048,6 +10082,7 @@ class _PartScreenState extends State<PartScreen> {
     _sectionPreviewDebounce?.cancel();
     _busyOverlayTimer?.cancel();
     _jobPollTimer?.cancel();
+    _dragPump?.cancel();
     if (widget.documentApi == null) {
       _api.close();
     }
@@ -10249,7 +10284,190 @@ class _PartScreenState extends State<PartScreen> {
   /// [PartViewport] callback already follows (mirrors
   /// [_onSectionGizmoDragUpdate]'s identical role for the section gizmo).
   void _onComponentGizmoDragUpdate(RigidTransformDto liveTransform) {
-    setState(() => _gizmoLiveTransform = liveTransform);
+    final session = _dragSession;
+    if (session == null) {
+      setState(() => _gizmoLiveTransform = liveTransform);
+      return;
+    }
+    // Constrained drag: `liveTransform` is the WISH; the session projects it onto what the mates allow.
+    _dragWishWorld = liveTransform;
+    final frame = session.update(poseOfDto(_localOfWorld(liveTransform)));
+    // No model yet (the grab anchor is on its way): nothing moves, everything stays at its pre-grab pose.
+    if (frame != null) _applyDragFrame(session, frame);
+  }
+
+  /// Whether [occurrenceId] takes part in at least one active mate of the focused Part (the only case that
+  /// goes through `mate-motion`; everything else keeps the raw PATCH path).
+  bool _isMated(String occurrenceId) => _mates.any(
+        (m) => !m.suppressed && m.references.any((r) => r.occurrenceId == occurrenceId),
+      );
+
+  RigidTransformDto _localOfWorld(RigidTransformDto world) {
+    final parent = _gizmoParentInstance;
+    return parent == null ? world : localRigidTransformRelativeTo(parent.worldTransform, world);
+  }
+
+  RigidTransformDto _worldOfLocal(RigidTransformDto local) {
+    final parent = _gizmoParentInstance;
+    return parent == null ? local : composeRigidTransforms(parent.worldTransform, local);
+  }
+
+  MateMotionCall get _mateMotionCall => _api.mateMotion;
+
+  ConstrainedDragSession _newDragSession(OccurrenceDto occurrence, String focusPartId, {void Function(String)? onCue}) =>
+      ConstrainedDragSession(
+        call: _mateMotionCall,
+        partId: focusPartId,
+        grabbedId: occurrence.id,
+        leverArm: _gizmoTargetBoundingRadius ?? 0,
+        nowMs: () => _dragClock.elapsedMicroseconds / 1000.0,
+        onCue: onCue,
+      );
+
+  /// [PartViewport.onComponentGizmoDragStart]: a handle was grabbed. A mated occurrence starts a
+  /// [ConstrainedDragSession] (the grab anchor goes out now); an unmated one does nothing here.
+  void _onComponentGizmoDragStart() {
+    _abortConstrainedDrag();
+    final occurrence = _gizmoTargetOccurrence;
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (occurrence == null || focusPartId == null || !_isMated(occurrence.id)) return;
+    _dragPreGrab = {for (final o in _occurrences) o.id: o.transform};
+    _dragWishWorld = null;
+    final session = _newDragSession(occurrence, focusPartId, onCue: (message) {
+      if (mounted) _showSnack(message);
+    });
+    _dragSession = session;
+    _dragPump = Timer.periodic(const Duration(milliseconds: 50), (_) => _pumpConstrainedDrag(session));
+    unawaited(session.begin().then((_) {
+      if (!mounted || !identical(_dragSession, session)) return;
+      final notice = constrainedDragNotice(session.anchor);
+      if (notice != null) _showSnack(notice);
+    }));
+  }
+
+  /// Idle-pointer tick: keeps the retry / re-anchor cadence going and shows a resumed hold without a pointer move.
+  void _pumpConstrainedDrag(ConstrainedDragSession session) {
+    if (!mounted || !identical(_dragSession, session)) return;
+    if (_gizmoTargetOccurrence?.id != session.grabbedId) {
+      _abortConstrainedDrag(); // the selection went away mid-drag
+      setState(() {
+        _gizmoLiveTransform = null;
+        _followerLiveWorld = const {};
+      });
+      return;
+    }
+    final frame = session.poll();
+    if (frame != null) _applyDragFrame(session, frame);
+  }
+
+  void _abortConstrainedDrag() {
+    _dragPump?.cancel();
+    _dragPump = null;
+    _dragSession = null;
+  }
+
+  void _applyDragFrame(ConstrainedDragSession session, DragFrame frame) {
+    final world = <String, RigidTransformDto>{
+      for (var i = 0; i < frame.ids.length; i++) frame.ids[i]: _worldOfLocal(dtoOfPose(frame.poses[i])),
+    };
+    setState(() {
+      _gizmoLiveTransform = world[session.grabbedId];
+      _followerLiveWorld = {
+        for (final e in world.entries)
+          if (e.key != session.grabbedId) e.key: e.value,
+      };
+    });
+  }
+
+  /// Stores a successful `commit:true` answer: every member takes the stored pose in [_occurrences], ONE undo
+  /// entry covers them all. Returns nothing to refetch for the tree (mates/patterns are untouched by a move).
+  void _applyConstrainedCommit(OccurrenceDto grabbed, DragCommit commit) {
+    final followersPrev = <String, RigidTransformDto>{};
+    final updated = <OccurrenceDto>[];
+    for (final o in _occurrences) {
+      final stored = commit.poses[o.id];
+      if (stored == null) {
+        updated.add(o);
+        continue;
+      }
+      final before = _dragPreGrab[o.id] ?? o.transform;
+      final after = dtoOfPose(stored);
+      if (o.id != grabbed.id && weightedDist(poseOfDto(before), poseOfDto(after), 1.0) > 1e-9) {
+        followersPrev[o.id] = before;
+      }
+      updated.add(OccurrenceDto(
+        id: o.id,
+        externalRef: o.externalRef,
+        resolvedPartId: o.resolvedPartId,
+        nameOverride: o.nameOverride,
+        transform: after,
+        suppressed: o.suppressed,
+        hidden: o.hidden,
+        fixed: o.fixed,
+        color: o.color,
+      ));
+    }
+    if (mounted) setState(() => _occurrences = updated);
+    _componentTransformUndoStack.add(
+      _TransformUndoEntry(grabbed.id, _dragPreGrab[grabbed.id] ?? grabbed.transform, followers: followersPrev),
+    );
+  }
+
+  /// Release of a constrained drag: ONE `commit:true` with the release-time wish (spec §12). Success sets every
+  /// member from the response, one undo entry, one mesh refresh. `converged:false` / error: nothing was stored -
+  /// the live overrides are dropped, which shows every member at its pre-grab pose, and the user is told.
+  Future<void> _endConstrainedDrag(ConstrainedDragSession session) async {
+    _dragPump?.cancel();
+    _dragPump = null;
+    if (identical(_dragSession, session)) _dragSession = null;
+    final wishWorld = _dragWishWorld;
+    OccurrenceDto? grabbed;
+    for (final o in _occurrences) {
+      if (o.id == session.grabbedId) grabbed = o;
+    }
+    final liveWorld = _gizmoLiveTransform;
+    if (wishWorld != null && grabbed != null) {
+      final grabbedOccurrence = grabbed;
+      await _runGuarded(() async {
+        final commit = await session.finish(wish: poseOfDto(_localOfWorld(wishWorld)));
+        debugPrint('[PartScreen] ${session.counters.logLine()}');
+        if (commit.committed) {
+          _applyConstrainedCommit(grabbedOccurrence, commit);
+          await _refreshAssemblyMesh();
+        } else if (mounted) {
+          _showSnack("Couldn't keep that move - nothing was changed. ${commit.message ?? ''}".trim());
+        }
+      });
+    }
+    // Only clear what is still this drag's own (see the plain path's doc comment).
+    if (mounted && identical(_gizmoLiveTransform, liveWorld)) {
+      setState(() {
+        _gizmoLiveTransform = null;
+        _followerLiveWorld = const {};
+      });
+    }
+  }
+
+  /// The typed Move/Rotate Apply of a MATED occurrence: the same endpoint as a drag release, with the typed wish.
+  Future<void> _applyConstrainedWorldTransform(
+    OccurrenceDto occurrence,
+    String focusPartId,
+    RigidTransformDto newWorldTransform,
+  ) async {
+    _dragPreGrab = {for (final o in _occurrences) o.id: o.transform};
+    final session = _newDragSession(occurrence, focusPartId);
+    await _runGuarded(() async {
+      final commit = await session.finish(wish: poseOfDto(_localOfWorld(newWorldTransform)));
+      debugPrint('[PartScreen] ${session.counters.logLine()}');
+      if (commit.committed) {
+        _applyConstrainedCommit(occurrence, commit);
+        await _refreshAssemblyMesh();
+        final notice = constrainedDragNotice(commit.response);
+        if (notice != null && mounted) _showSnack(notice);
+      } else if (mounted) {
+        _showSnack("Can't follow that move - the mates don't allow it. Nothing was changed.");
+      }
+    });
   }
 
   /// [PartViewport.onComponentGizmoDragEnd] - PATCHes [_gizmoLiveTransform]
@@ -10294,6 +10512,11 @@ class _PartScreenState extends State<PartScreen> {
   /// before this phase) means world and local already coincide, so the live
   /// value is PATCHed as-is.
   Future<void> _onComponentGizmoDragEnd() async {
+    final session = _dragSession;
+    if (session != null) {
+      await _endConstrainedDrag(session);
+      return;
+    }
     final occurrence = _gizmoTargetOccurrence;
     final liveWorldTransform = _gizmoLiveTransform;
     final focusPartId = _focusStack?.current ?? _part?.id;
@@ -10331,9 +10554,12 @@ class _PartScreenState extends State<PartScreen> {
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
     switch (entry) {
-      case _TransformUndoEntry(:final occurrenceId, :final previousTransform):
+      case _TransformUndoEntry(:final occurrenceId, :final previousTransform, :final followers):
         await _runGuarded(() async {
           await _api.updateOccurrenceTransform(focusPartId, occurrenceId, previousTransform);
+          for (final f in followers.entries) {
+            await _api.updateOccurrenceTransform(focusPartId, f.key, f.value);
+          }
           await _refreshAssemblyTree();
           await _refreshAssemblyMesh();
         });
@@ -10388,6 +10614,10 @@ class _PartScreenState extends State<PartScreen> {
     final occurrence = _gizmoTargetOccurrence;
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (occurrence == null || focusPartId == null) return;
+    if (_isMated(occurrence.id)) {
+      await _applyConstrainedWorldTransform(occurrence, focusPartId, newWorldTransform);
+      return;
+    }
     final previousTransform = occurrence.transform;
     final parentInstance = _gizmoParentInstance;
     final finalTransform = parentInstance == null
@@ -21610,6 +21840,7 @@ class _PartScreenState extends State<PartScreen> {
                   // On-device feedback ("the gizmo is the wrong size"): see
                   // [_gizmoTargetBoundingRadius]'s own doc comment.
                   selectedOccurrenceBoundingRadius: _gizmoTargetBoundingRadius,
+                  onComponentGizmoDragStart: _onComponentGizmoDragStart,
                   onComponentGizmoDragUpdate: _onComponentGizmoDragUpdate,
                   onComponentGizmoDragEnd: () => unawaited(_onComponentGizmoDragEnd()),
                   // Fixed (§5 appendix item 4): was just `_focusStack.current`

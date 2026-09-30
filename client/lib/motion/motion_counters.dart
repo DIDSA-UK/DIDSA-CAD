@@ -14,6 +14,13 @@ class MotionCounters {
   int projectionMicrosMax = 0;
   int holds = 0;
 
+  /// Re-anchor requests by the scheduler's reason (`time`, `time_near_singular`, `distance`); the grab
+  /// anchor and the release commit are counted in [requests]/[commitRequests] only.
+  final Map<String, int> reanchorsByReason = <String, int>{};
+
+  /// Largest per-frame step of the SHOWN grabbed pose (weighted mm, `[1,1,1,L,L,L]` metric): the F1-gate smoothness number.
+  double maxShownStep = 0;
+
   int get anchorsRejectedTotal => anchorsRejected.values.fold(0, (a, b) => a + b);
 
   double get projectionMicrosMean => frames == 0 ? 0 : projectionMicrosTotal / frames;
@@ -33,6 +40,12 @@ class MotionCounters {
   void recordRejected(String reason) => anchorsRejected[reason] = (anchorsRejected[reason] ?? 0) + 1;
 
   void recordHold() => holds++;
+
+  void recordReanchor(String reason) => reanchorsByReason[reason] = (reanchorsByReason[reason] ?? 0) + 1;
+
+  void recordShownStep(double step) {
+    if (step > maxShownStep) maxShownStep = step;
+  }
 
   /// One projected frame that took [elapsed].
   void recordFrame(Duration elapsed) {
@@ -54,7 +67,19 @@ class MotionCounters {
   void reset() {
     requests = commitRequests = responses = transportErrors = anchorsAccepted = 0;
     anchorsRejected.clear();
+    reanchorsByReason.clear();
     frames = projectionMicrosTotal = projectionMicrosMax = holds = 0;
+    maxShownStep = 0;
+  }
+
+  /// One line for the release-time debug log (the F1 gate's evidence).
+  String logLine() {
+    String map(Map<String, int> m) =>
+        m.isEmpty ? '-' : (m.entries.map((e) => '${e.key}:${e.value}').toList()..sort()).join(',');
+    return 'constrained drag: requests=$requests (commit $commitRequests, transport errors $transportErrors) '
+        'anchors accepted=$anchorsAccepted rejected=${map(anchorsRejected)} holds=$holds frames=$frames '
+        'projection_us mean=${projectionMicrosMean.toStringAsFixed(1)} max=$projectionMicrosMax '
+        'reanchors=${map(reanchorsByReason)} max_shown_step=${maxShownStep.toStringAsFixed(3)}';
   }
 
   Map<String, Object> toJson() => <String, Object>{
@@ -68,5 +93,7 @@ class MotionCounters {
         'projection_us_mean': projectionMicrosMean,
         'projection_us_max': projectionMicrosMax,
         'holds': holds,
+        'reanchors_by_reason': Map<String, int>.of(reanchorsByReason),
+        'max_shown_step': maxShownStep,
       };
 }

@@ -86,6 +86,12 @@ class _FakeDocumentBackend {
   /// `name_override`/`transform`/`suppressed`/`hidden`).
   final List<Map<String, dynamic>> occurrences;
 
+  /// Constrained drag (S7): every `mate-motion` request body (plus its grabbed occurrence id under
+  /// `_occurrence_id`), the number of raw occurrence PATCHes that carried a `transform`, and the scripted answer.
+  final List<Map<String, dynamic>> mateMotionRequests = [];
+  int transformPatchCount = 0;
+  http.Response Function(Map<String, dynamic> body, String occurrenceId)? mateMotionHandler;
+
   /// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): [occurrences]'
   /// own siblings, needed for real end-to-end coverage of the cascade-
   /// delete warning and its Undo - previously this fake's own `GET .../
@@ -659,7 +665,10 @@ class _FakeDocumentBackend {
       final occurrenceId = occurrencePatchMatch.group(1);
       final occurrence = occurrences.firstWhere((o) => o['id'] == occurrenceId, orElse: () => const {});
       if (occurrence.isEmpty) return http.Response('not found: occurrence', 404);
-      if (body.containsKey('transform')) occurrence['transform'] = body['transform'];
+      if (body.containsKey('transform')) {
+        occurrence['transform'] = body['transform'];
+        transformPatchCount++;
+      }
       if (body.containsKey('hidden')) occurrence['hidden'] = body['hidden'];
       if (body.containsKey('fixed')) occurrence['fixed'] = body['fixed'];
       if (body.containsKey('color')) occurrence['color'] = (body['color'] as String).isEmpty ? null : body['color'];
@@ -693,6 +702,15 @@ class _FakeDocumentBackend {
       };
       occurrences.add(restored);
       return _json(restored, 201);
+    }
+    final mateMotionMatch =
+        RegExp(r'^/document/parts/part-1/occurrences/([^/]+)/mate-motion$').firstMatch(path);
+    if (mateMotionMatch != null && method == 'POST') {
+      final handler = mateMotionHandler;
+      if (handler == null) return http.Response('no mate-motion handler', 500);
+      final id = mateMotionMatch.group(1)!;
+      mateMotionRequests.add({...body, '_occurrence_id': id});
+      return handler(body, id);
     }
     final occurrenceDeleteMatch =
         RegExp(r'^/document/parts/part-1/occurrences/([^/]+)$').firstMatch(path);
@@ -4520,6 +4538,230 @@ void main() {
       await tester.pump();
 
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isFalse);
+    });
+  });
+
+  // Constrained drag (plan S7): a gizmo drag of a MATED occurrence goes through `mate-motion` (grab anchor, live
+  // group poses, ONE commit on release, one undo entry for every member); an unmated one keeps the raw PATCH.
+  group('Constrained drag S7: gizmo drag of a mated occurrence', () {
+    Map<String, dynamic> occ(String id, double x) => {
+          'id': id,
+          'external_ref': 'parts/$id.didsa',
+          'resolved_part_id': '$id-part',
+          'name_override': null,
+          'transform': {
+            'translation': [x, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'suppressed': false,
+          'hidden': false,
+          'fixed': false,
+        };
+
+    Map<String, dynamic> mateBetween(String a, String b) => {
+          'id': 'mate-1',
+          'type': 'coincident',
+          'references': [
+            {'occurrence_id': a},
+            {'occurrence_id': b},
+          ],
+          'value': null,
+          'flipped': false,
+          'suppressed': false,
+          'allow_rotation': true,
+        };
+
+    Map<String, dynamic> tf(double x, double y, double z) => {
+          'translation': [x, y, z],
+          'rotation_axis': [0.0, 0.0, 1.0],
+          'rotation_angle_degrees': 0.0,
+        };
+
+    /// Flat-face group {occ-1 (grabbed), occ-2 (rides along in x)}; `commit` stores unless [failCommit].
+    http.Response Function(Map<String, dynamic>, String) flatGroup(_FakeDocumentBackend b, {bool failCommit = false}) {
+      return (body, grabbed) {
+        final wish = (body['transform'] as Map<String, dynamic>?)?['translation'] as List? ??
+            ((b.occurrences.firstWhere((o) => o['id'] == grabbed)['transform'] as Map)['translation'] as List);
+        final o1 = b.occurrences.firstWhere((o) => o['id'] == 'occ-1');
+        final o2 = b.occurrences.firstWhere((o) => o['id'] == 'occ-2');
+        final x1 = (o1['transform']['translation'] as List)[0] as num;
+        final x2 = (o2['transform']['translation'] as List)[0] as num;
+        final nx = (wish[0] as num).toDouble(), ny = (wish[1] as num).toDouble();
+        final commit = body['commit'] == true;
+        if (commit && failCommit) {
+          return http.Response(jsonEncode({'converged': false, 'members': [], 'quality': {'residual_inf': 5.0}}), 200);
+        }
+        final dx = nx - x1;
+        final m1 = tf(nx, ny, 0), m2 = tf(x2 + dx, 0, 0);
+        if (commit) {
+          o1['transform'] = m1;
+          o2['transform'] = m2;
+        }
+        final r = 1 / 1.4142135623730951;
+        return http.Response(
+          jsonEncode({
+            'converged': true,
+            'dof': 3,
+            'grounded': true,
+            'members': [
+              {'occurrence_id': 'occ-1', 'transform': m1, 'mobility': 3},
+              {'occurrence_id': 'occ-2', 'transform': m2, 'mobility': 1},
+            ],
+            'basis': [
+              [r, 0, 0, 0, 0, 0, r, 0, 0, 0, 0, 0],
+              [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            ],
+            'chart': {'kind': 'se3_owner_frame', 'lever_arm': 10.0},
+            'quality': {'residual_inf': 1e-12, 'sigma_gap': 1e4},
+            'diagnostics': {'solve_ms': 1.0},
+            'committed': commit,
+          }),
+          200,
+        );
+      };
+    }
+
+    Future<_FakeDocumentBackend> openWithGizmo(
+      WidgetTester tester, {
+      required List<Map<String, dynamic>> seedOccurrences,
+      required List<Map<String, dynamic>> seedMates,
+      required String target,
+    }) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: seedOccurrences, seedMates: seedMates);
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onOccurrenceLongPress(panel.occurrences.firstWhere((o) => o.id == target));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byTooltip('More actions'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Move/Rotate'));
+      await tester.pump();
+      return backend;
+    }
+
+    RigidTransformDto wish(double x, double y, double z) =>
+        RigidTransformDto(translation: [x, y, z], rotationAxis: const [0, 0, 1], rotationAngleDegrees: 0);
+
+    Future<void> settle(WidgetTester tester) async {
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+    }
+
+    testWidgets('grab anchors, every member is drawn live, release sends ONE commit, ONE undo entry reverses all', (
+      tester,
+    ) async {
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+      );
+      backend.mateMotionHandler = flatGroup(backend);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.selectedOccurrenceTransform, isNotNull, reason: 'the gizmo is on');
+
+      viewport.onComponentGizmoDragStart!();
+      await settle(tester);
+      expect(backend.mateMotionRequests.length, 1);
+      expect(backend.mateMotionRequests.first['transform'], isNull, reason: 'grab anchor asks for the stored pose');
+      expect(backend.mateMotionRequests.first['commit'], false);
+
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragUpdate!(wish(4, 6, 9)); // 9 off-plane is blocked
+      await tester.pump();
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      final live = {for (final i in viewport.assemblyInstances) i.occurrencePath.last: i.worldTransform};
+      expect(live['occ-1']!.translation[0], closeTo(4, 1e-3));
+      expect(live['occ-1']!.translation[1], closeTo(6, 1e-3));
+      expect(live['occ-1']!.translation[2], closeTo(0, 1e-6), reason: 'off-plane motion blocked');
+      expect(live['occ-2']!.translation[0], closeTo(34, 1e-3), reason: 'the follower is drawn moving too');
+      expect(backend.transformPatchCount, 0, reason: 'no raw PATCH while dragging');
+
+      viewport.onComponentGizmoDragEnd!();
+      await settle(tester);
+      expect(backend.transformPatchCount, 0, reason: 'release is the mate-motion commit, not the raw PATCH');
+      final commits = backend.mateMotionRequests.where((r) => r['commit'] == true).toList();
+      expect(commits.length, 1);
+      expect((commits.single['transform'] as Map)['translation'], [4.0, 6.0, 9.0], reason: 'the release-time WISH');
+      expect((backend.occurrences[0]['transform'] as Map)['translation'], [4.0, 6.0, 0.0]);
+      expect((backend.occurrences[1]['transform'] as Map)['translation'], [34.0, 0.0, 0.0]);
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.occurrences.firstWhere((o) => o.id == 'occ-2').transform.translation[0], closeTo(34, 1e-9));
+      expect(find.byTooltip('Undo move'), findsOneWidget);
+
+      // One undo reverses the grabbed occurrence AND the follower.
+      await tester.tap(find.byTooltip('Undo move'));
+      await settle(tester);
+      expect((backend.occurrences[0]['transform'] as Map)['translation'], [0.0, 0.0, 0.0]);
+      expect((backend.occurrences[1]['transform'] as Map)['translation'], [30.0, 0.0, 0.0]);
+      expect(backend.transformPatchCount, 2);
+      expect(find.byTooltip('Undo move'), findsNothing, reason: 'exactly one entry was pushed');
+    });
+
+    testWidgets('a commit that does not converge stores nothing, restores every member and pushes no undo entry', (
+      tester,
+    ) async {
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+      );
+      backend.mateMotionHandler = flatGroup(backend, failCommit: true);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragStart!();
+      await settle(tester);
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragUpdate!(wish(4, 6, 0));
+      await tester.pump();
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragEnd!();
+      await settle(tester);
+      expect((backend.occurrences[0]['transform'] as Map)['translation'], [0.0, 0.0, 0.0]);
+      expect((backend.occurrences[1]['transform'] as Map)['translation'], [30.0, 0.0, 0.0]);
+      expect(find.byTooltip('Undo move'), findsNothing);
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      final shown = {for (final i in viewport.assemblyInstances) i.occurrencePath.last: i.worldTransform};
+      expect(shown['occ-1']!.translation, [0.0, 0.0, 0.0], reason: 'back at the pre-grab pose');
+      expect(shown['occ-2']!.translation, [30.0, 0.0, 0.0]);
+      expect(find.textContaining("Couldn't keep that move"), findsOneWidget);
+    });
+
+    testWidgets('an unmated occurrence keeps the raw PATCH path: no mate-motion request at all', (tester) async {
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30), occ('occ-3', 60)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-3',
+      );
+      backend.mateMotionHandler = flatGroup(backend);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragStart!();
+      viewport.onComponentGizmoDragUpdate!(wish(61, 2, 3));
+      await tester.pump();
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragEnd!();
+      await settle(tester);
+      expect(backend.mateMotionRequests, isEmpty);
+      expect(backend.transformPatchCount, 1);
+      expect((backend.occurrences[2]['transform'] as Map)['translation'], [61.0, 2.0, 3.0]);
     });
   });
 

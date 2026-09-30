@@ -20,7 +20,10 @@ class HysteresisFrame {
   /// `none` or `adopted` (candidate adopted this frame).
   final String event;
 
-  const HysteresisFrame(this.poses, this.gain, this.event);
+  /// What the OLD directions showed this frame; only set when [event] is `adopted` (the caller blends from it).
+  final List<Pose>? prevPoses;
+
+  const HysteresisFrame(this.poses, this.gain, this.event, [this.prevPoses]);
 }
 
 /// Holds the active model and an optional candidate with MORE free directions.
@@ -57,12 +60,17 @@ class DofHysteresis {
     return HysteresisAnchorEvent.candidate;
   }
 
+  /// The active model's projection of [wanted] WITHOUT advancing the candidate counter (used to blend at an anchor).
+  List<Pose> peek(Pose wanted, {MotionIntegrator integrator = MotionIntegrator.screw}) =>
+      _active!.project(wanted, integrator: integrator);
+
   /// One frame: project [wanted] with the active model, advancing the candidate counter.
   HysteresisFrame frame(Pose wanted, {MotionIntegrator integrator = MotionIntegrator.screw}) {
     var cur = _active!;
     final want = cur.wishVector(wanted);
     var gain = 0.0;
     var event = 'none';
+    List<Pose>? prev;
     final cand = _cand;
     if (cand != null) {
       final full = projectOntoRows(cand, cur.scale, want);
@@ -71,6 +79,7 @@ class DofHysteresis {
       gain = weightedNorm(cur.scale, diff);
       _count = gain > kHysteresisGainMin ? _count + 1 : 0;
       if (_count >= kHysteresisGainFrames) {
+        prev = cur.project(wanted, integrator: integrator);
         cur = cur.withRows(cand);
         _active = cur;
         _cand = null;
@@ -78,6 +87,6 @@ class DofHysteresis {
         event = 'adopted';
       }
     }
-    return HysteresisFrame(cur.project(wanted, integrator: integrator), gain, event);
+    return HysteresisFrame(cur.project(wanted, integrator: integrator), gain, event, prev);
   }
 }

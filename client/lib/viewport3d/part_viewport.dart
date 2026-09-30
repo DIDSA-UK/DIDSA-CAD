@@ -200,6 +200,10 @@ class PartViewport extends StatefulWidget {
   /// widget never mutates its own input props.
   final void Function(RigidTransformDto liveTransform)? onComponentGizmoDragUpdate;
 
+  /// Fired once when a gizmo handle is grabbed (before the first [onComponentGizmoDragUpdate]) - lets
+  /// [PartScreen] start a constrained drag (`mate-motion` anchor) for a mated occurrence.
+  final VoidCallback? onComponentGizmoDragStart;
+
   /// Fired once when a gizmo drag ends (pointer up/cancel) - mirrors
   /// [onSectionGizmoDragEnd]'s identical "notify only, the caller already
   /// has the latest value from the last [onComponentGizmoDragUpdate] call"
@@ -1036,6 +1040,7 @@ class PartViewport extends StatefulWidget {
     this.selectedOccurrenceTransform,
     this.selectedOccurrenceBoundingRadius,
     this.onComponentGizmoDragUpdate,
+    this.onComponentGizmoDragStart,
     this.onComponentGizmoDragEnd,
     this.bodiesHidden = false,
     required this.selectedPlane,
@@ -3485,6 +3490,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _syncSelectedEntityNodes();
       _syncHoverNode();
     });
+    widget.onComponentGizmoDragStart?.call();
     return true;
   }
 
