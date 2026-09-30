@@ -1,0 +1,5 @@
+sketch                   points   coords    solve(ms) anch.solve(ms) drag-map (2 probes) full nullspace (2N probes)
+grid 1x1 rects                6       10         0.05           0.05              0.7 ms 2 ms (rank 4)
+grid 3x3 rects               46       90         0.37           0.35              4.6 ms 118 ms (rank 36)
+grid 5x5 rects              126      250         1.79           1.85             15.5 ms 1173 ms (rank 100)
+grid 10x10 rects            501     1000        54.01          53.17            264.2 ms ~68482 ms (extrap. from 40 cols)

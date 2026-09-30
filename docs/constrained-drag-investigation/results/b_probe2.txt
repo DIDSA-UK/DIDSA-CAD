@@ -1,0 +1,32 @@
+epsilon sweep - is the recovered rank stable?
+  rect_partial(w fixed, h free) backend dof 1
+      eps=0.1: rank=1 (sv gap 1.342|0.000, idem-err 1.4e-14, fails 0)
+      eps=0.01: rank=1 (sv gap 1.342|0.000, idem-err 3.3e-13, fails 0)
+      eps=0.001: rank=1 (sv gap 1.342|0.000, idem-err 1.2e-12, fails 0)
+      eps=0.0001: rank=1 (sv gap 1.342|0.000, idem-err 2.3e-12, fails 0)
+  two_link_arm backend dof 2
+      eps=0.1: rank=2 (sv gap 0.996|0.003, idem-err 3.6e-03, fails 0)
+      eps=0.01: rank=2 (sv gap 1.000|0.000, idem-err 3.6e-04, fails 0)
+      eps=0.001: rank=2 (sv gap 1.000|0.000, idem-err 3.6e-05, fails 0)
+      eps=0.0001: rank=2 (sv gap 1.000|0.000, idem-err 3.6e-06, fails 0)
+  hexagon(provisional) backend dof 4
+      eps=0.1: rank=4 (sv gap 0.998|0.000, idem-err 1.8e-03, fails 0)
+      eps=0.01: rank=4 (sv gap 1.000|0.000, idem-err 1.8e-04, fails 0)
+      eps=0.001: rank=4 (sv gap 1.000|0.000, idem-err 2.3e-05, fails 0)
+      eps=0.0001: rank=4 (sv gap 1.000|0.000, idem-err 6.1e-06, fails 0)
+  slot backend dof 1
+      eps=0.1: rank=5 (sv gap 0.794|0.004, idem-err 7.4e+01, fails 0)
+      eps=0.01: rank=5 (sv gap 0.790|0.025, idem-err 5.0e+00, fails 0)
+      eps=0.001: rank=5 (sv gap 0.830|0.214, idem-err 1.1e+04, fails 0)
+      eps=0.0001: rank=7 (sv gap 0.699|0.433, idem-err 7.1e+01, fails 0)
+  rect_floating backend dof 4
+      eps=0.1: rank=4 (sv gap 1.291|0.000, idem-err 1.7e-14, fails 0)
+      eps=0.01: rank=4 (sv gap 1.291|0.000, idem-err 1.2e-13, fails 0)
+      eps=0.001: rank=4 (sv gap 1.291|0.000, idem-err 1.4e-12, fails 0)
+      eps=0.0001: rank=4 (sv gap 1.291|0.000, idem-err 2.4e-11, fails 0)
+
+per-point mobility from the basis (rank of the point's 2xd block):
+  rect_partial(w fixed, h free)    dof=1 pinned=2 line-only=3 free=0 | drag target: rank 1 dir (0.000,-1.000)
+  two_link_arm                     dof=2 pinned=0 line-only=1 free=1 | drag target: rank 2
+  rect_floating                    dof=4 pinned=0 line-only=0 free=5 | drag target: rank 2
+  hexagon(provisional)             dof=4 pinned=0 line-only=0 free=7 | drag target: rank 2

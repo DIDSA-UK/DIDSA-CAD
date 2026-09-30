@@ -1,0 +1,4 @@
+residual at rest: 0.0
+group DOF (12 vars - rank 7) = 5   [B: slide + spin (2), C on B: 2 in-plane + spin (3) = 5]
+group projection of 'B +12 along z':  B moves [ 0.     0.    11.999]  C follows [ 0.     0.    11.999] (C in-plane / spin untouched: [0. 0.])
+B alone against a frozen C: DOF 1 -> free directions (B):  [[np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(0.0), np.float64(1.0)]]

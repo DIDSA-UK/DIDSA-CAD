@@ -1,0 +1,5 @@
+offset-axis concentric, 90deg spin wish; re-anchor every 9 frames (~150 ms) with a WEIGHTED backend retraction (toy backend)
+  L=  10 additive  violation mean 0.232mm max 1.037mm | max frame step 0.91mm (wish step max 0.81)
+  L=  10 screw     violation mean 0.000mm max 0.000mm | max frame step 0.70mm (wish step max 0.81)
+  L= 100 additive  violation mean 0.033mm max 0.178mm | max frame step 0.41mm (wish step max 0.81)
+  L= 100 screw     violation mean 0.000mm max 0.000mm | max frame step 0.36mm (wish step max 0.81)

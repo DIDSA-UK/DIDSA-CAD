@@ -1,0 +1,24 @@
+
+face-to-face coincident: dof=3  pose t=[ 3.  3. 10.]
+   move X  free fraction  1.00
+   move Y  free fraction  1.00
+   move Z  free fraction  0.00
+   rot X   free fraction  0.00
+   rot Y   free fraction  0.00
+   rot Z   free fraction  1.00
+
+concentric (offset axis): dof=2  pose t=[-15.   0.  30.]
+   move X  free fraction  0.00
+   move Y  free fraction  0.15
+   move Z  free fraction  1.00
+   rot X   free fraction  0.00
+   rot Y   free fraction  0.00
+   rot Z   free fraction  0.99
+
+angle 60deg: dof=5  pose t=[ 5.  5. 60.]
+   move X  free fraction  1.00
+   move Y  free fraction  1.00
+   move Z  free fraction  1.00
+   rot X   free fraction  0.00
+   rot Y   free fraction  1.00
+   rot Z   free fraction  1.00

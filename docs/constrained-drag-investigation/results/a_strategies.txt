@@ -1,0 +1,92 @@
+
+=== face (3 DOF, flat) ===
+frames: 120 non-converged: 0 dof: [3]
+
+=== concentric, offset axis (2 DOF, curved) ===
+frames: 120 non-converged: 0 dof: [2]
+
+=== angle 60deg (5 DOF, curved cone) ===
+frames: 120 non-converged: 0 dof: [5]
+{
+ "face": {
+  "wish_step_mm_max": 1.0524063382736553,
+  "wish_step_deg_max": 1.0090736383589973,
+  "truth_step_mm_max": 0.4544705552540164,
+  "truth_step_deg_max": 0.7568422219274717,
+  "wish_to_truth_final_mm": 1.4210854715202004e-13,
+  "wish_to_truth_final_deg": 0.0,
+  "wish_to_truth_max_mm": 5.575259731175514,
+  "wish_to_truth_max_deg": 5.453407187944088
+ },
+ "concentric": {
+  "wish_step_mm_max": 0.8132977310512097,
+  "wish_step_deg_max": 1.245519394476112,
+  "truth_step_mm_max": 0.3698911672718043,
+  "truth_step_deg_max": 1.2593364275863375,
+  "wish_to_truth_final_mm": 12.285608781626443,
+  "wish_to_truth_final_deg": 41.650592192269556,
+  "wish_to_truth_max_mm": 12.285608781626443,
+  "wish_to_truth_max_deg": 42.00358781614859
+ },
+ "angle": {
+  "wish_step_mm_max": 0.2358131919672423,
+  "wish_step_deg_max": 0.9916426119060485,
+  "truth_step_mm_max": 0.2358131919672423,
+  "truth_step_deg_max": 0.7449436431723329,
+  "wish_to_truth_final_mm": 0.0,
+  "wish_to_truth_final_deg": 8.683502374511752,
+  "wish_to_truth_max_mm": 0.0,
+  "wish_to_truth_max_deg": 8.974828755602346
+ }
+}
+face (3 DOF, flat)                     rtt=  0 flat_today         req=  0 first=0 err=1.84mm/1.94deg (max 5.58/5.45) step_max=1.05mm/1.01deg stalled=0
+face (3 DOF, flat)                     rtt=  0 patch_solve_loop   req=240 first=1 err=0.30mm/0.50deg (max 0.45/0.76) step_max=0.45mm/0.76deg stalled=1
+face (3 DOF, flat)                     rtt=  0 mate_motion_loop   req=120 first=1 err=0.30mm/0.50deg (max 0.45/0.76) step_max=0.45mm/0.76deg stalled=1
+face (3 DOF, flat)                     rtt=  0 local_anchor_once  req=  1 first=1 err=0.00mm/0.01deg (max 0.00/0.03) step_max=0.45mm/0.76deg stalled=0
+face (3 DOF, flat)                     rtt=  0 local_projection   req= 14 first=1 err=0.00mm/0.00deg (max 0.00/0.00) step_max=0.45mm/0.76deg stalled=0
+face (3 DOF, flat)                     rtt= 50 patch_solve_loop   req= 36 first=7 err=2.99mm/4.97deg (max 5.87/9.79) step_max=3.18mm/5.29deg stalled=103
+face (3 DOF, flat)                     rtt= 50 mate_motion_loop   req= 30 first=4 err=1.65mm/2.75deg (max 3.18/5.29) step_max=1.82mm/3.03deg stalled=91
+face (3 DOF, flat)                     rtt= 50 local_anchor_once  req=  1 first=4 err=0.00mm/0.01deg (max 0.07/0.11) step_max=0.45mm/0.76deg stalled=3
+face (3 DOF, flat)                     rtt= 50 local_projection   req= 14 first=4 err=0.00mm/0.00deg (max 0.07/0.11) step_max=0.45mm/0.76deg stalled=3
+face (3 DOF, flat)                     rtt=150 patch_solve_loop   req= 14 first=19 err=7.96mm/13.25deg (max 16.23/27.03) step_max=8.44mm/14.07deg stalled=114
+face (3 DOF, flat)                     rtt=150 mate_motion_loop   req= 12 first=10 err=4.31mm/7.17deg (max 8.56/14.26) step_max=4.51mm/7.51deg stalled=109
+face (3 DOF, flat)                     rtt=150 local_anchor_once  req=  1 first=10 err=0.02mm/0.03deg (max 0.59/0.98) step_max=0.72mm/1.20deg stalled=9
+face (3 DOF, flat)                     rtt=150 local_projection   req= 12 first=10 err=0.02mm/0.03deg (max 0.59/0.98) step_max=0.72mm/1.20deg stalled=9
+face (3 DOF, flat)                     rtt=400 patch_solve_loop   req=  6 first=49 err=15.59mm/25.94deg (max 32.81/54.61) step_max=13.31mm/22.16deg stalled=118
+face (3 DOF, flat)                     rtt=400 mate_motion_loop   req=  5 first=25 err=10.16mm/16.90deg (max 20.38/33.95) step_max=11.17mm/18.60deg stalled=116
+face (3 DOF, flat)                     rtt=400 local_anchor_once  req=  1 first=25 err=0.28mm/0.47deg (max 3.81/6.34) step_max=4.11mm/6.83deg stalled=24
+face (3 DOF, flat)                     rtt=400 local_projection   req=  5 first=25 err=0.28mm/0.47deg (max 3.81/6.34) step_max=4.11mm/6.83deg stalled=24
+concentric, offset axis (2 DOF, curved) rtt=  0 flat_today         req=  0 first=0 err=5.19mm/27.41deg (max 12.29/42.00) step_max=0.81mm/1.25deg stalled=0
+concentric, offset axis (2 DOF, curved) rtt=  0 patch_solve_loop   req=240 first=1 err=0.18mm/0.46deg (max 0.37/1.26) step_max=0.37mm/1.26deg stalled=1
+concentric, offset axis (2 DOF, curved) rtt=  0 mate_motion_loop   req=120 first=1 err=0.18mm/0.46deg (max 0.37/1.26) step_max=0.37mm/1.26deg stalled=1
+concentric, offset axis (2 DOF, curved) rtt=  0 local_anchor_once  req=  1 first=1 err=7.44mm/26.34deg (max 12.86/40.12) step_max=0.36mm/1.15deg stalled=0
+concentric, offset axis (2 DOF, curved) rtt=  0 local_projection   req= 14 first=1 err=6.90mm/26.37deg (max 10.52/40.17) step_max=2.14mm/1.15deg stalled=0
+concentric, offset axis (2 DOF, curved) rtt= 50 patch_solve_loop   req= 36 first=7 err=1.76mm/4.36deg (max 4.48/14.83) step_max=2.52mm/8.54deg stalled=103
+concentric, offset axis (2 DOF, curved) rtt= 50 mate_motion_loop   req= 30 first=4 err=0.98mm/2.48deg (max 2.54/8.62) step_max=1.47mm/4.95deg stalled=91
+concentric, offset axis (2 DOF, curved) rtt= 50 local_anchor_once  req=  1 first=4 err=7.44mm/26.34deg (max 12.86/40.12) step_max=0.36mm/1.15deg stalled=3
+concentric, offset axis (2 DOF, curved) rtt= 50 local_projection   req= 14 first=4 err=6.90mm/26.36deg (max 10.52/40.17) step_max=2.28mm/1.15deg stalled=3
+concentric, offset axis (2 DOF, curved) rtt=150 patch_solve_loop   req= 14 first=19 err=4.47mm/10.47deg (max 9.99/30.06) step_max=5.39mm/17.48deg stalled=114
+concentric, offset axis (2 DOF, curved) rtt=150 mate_motion_loop   req= 12 first=10 err=2.50mm/6.12deg (max 6.19/20.47) step_max=3.41mm/11.17deg stalled=109
+concentric, offset axis (2 DOF, curved) rtt=150 local_anchor_once  req=  1 first=10 err=7.44mm/26.30deg (max 12.86/40.12) step_max=0.55mm/1.74deg stalled=9
+concentric, offset axis (2 DOF, curved) rtt=150 local_projection   req= 12 first=10 err=6.91mm/26.32deg (max 10.52/40.15) step_max=2.70mm/1.74deg stalled=9
+concentric, offset axis (2 DOF, curved) rtt=400 patch_solve_loop   req=  6 first=49 err=8.06mm/17.10deg (max 17.20/44.37) step_max=5.63mm/3.98deg stalled=118
+concentric, offset axis (2 DOF, curved) rtt=400 mate_motion_loop   req=  5 first=25 err=5.64mm/12.83deg (max 12.54/37.06) step_max=6.35mm/16.61deg stalled=116
+concentric, offset axis (2 DOF, curved) rtt=400 local_anchor_once  req=  1 first=25 err=7.38mm/25.74deg (max 12.86/40.12) step_max=3.14mm/10.09deg stalled=24
+concentric, offset axis (2 DOF, curved) rtt=400 local_projection   req=  5 first=25 err=7.00mm/25.74deg (max 11.46/40.12) step_max=5.20mm/10.09deg stalled=24
+angle 60deg (5 DOF, curved cone)       rtt=  0 flat_today         req=  0 first=0 err=0.00mm/4.35deg (max 0.00/8.97) step_max=0.24mm/0.99deg stalled=0
+angle 60deg (5 DOF, curved cone)       rtt=  0 patch_solve_loop   req=240 first=1 err=0.16mm/0.50deg (max 0.24/0.74) step_max=0.24mm/0.74deg stalled=1
+angle 60deg (5 DOF, curved cone)       rtt=  0 mate_motion_loop   req=120 first=1 err=0.16mm/0.50deg (max 0.24/0.74) step_max=0.24mm/0.74deg stalled=1
+angle 60deg (5 DOF, curved cone)       rtt=  0 local_anchor_once  req=  1 first=1 err=0.00mm/3.31deg (max 0.00/8.68) step_max=0.24mm/0.77deg stalled=0
+angle 60deg (5 DOF, curved cone)       rtt=  0 local_projection   req= 14 first=1 err=0.00mm/0.07deg (max 0.00/0.29) step_max=0.24mm/0.87deg stalled=0
+angle 60deg (5 DOF, curved cone)       rtt= 50 patch_solve_loop   req= 36 first=7 err=1.55mm/4.93deg (max 3.05/9.46) step_max=1.65mm/5.19deg stalled=103
+angle 60deg (5 DOF, curved cone)       rtt= 50 mate_motion_loop   req= 30 first=4 err=0.86mm/2.72deg (max 1.65/5.18) step_max=0.94mm/2.97deg stalled=91
+angle 60deg (5 DOF, curved cone)       rtt= 50 local_anchor_once  req=  1 first=4 err=0.00mm/3.31deg (max 0.04/8.68) step_max=0.24mm/0.77deg stalled=3
+angle 60deg (5 DOF, curved cone)       rtt= 50 local_projection   req= 14 first=4 err=0.00mm/0.12deg (max 0.04/0.41) step_max=0.24mm/0.87deg stalled=3
+angle 60deg (5 DOF, curved cone)       rtt=150 patch_solve_loop   req= 14 first=19 err=4.13mm/13.19deg (max 8.42/25.81) step_max=4.38mm/13.72deg stalled=114
+angle 60deg (5 DOF, curved cone)       rtt=150 mate_motion_loop   req= 12 first=10 err=2.24mm/7.11deg (max 4.44/13.63) step_max=2.34mm/7.39deg stalled=109
+angle 60deg (5 DOF, curved cone)       rtt=150 local_anchor_once  req=  1 first=10 err=0.01mm/3.34deg (max 0.30/8.68) step_max=0.37mm/1.22deg stalled=9
+angle 60deg (5 DOF, curved cone)       rtt=150 local_projection   req= 12 first=10 err=0.01mm/0.28deg (max 0.30/0.99) step_max=0.37mm/1.22deg stalled=9
+angle 60deg (5 DOF, curved cone)       rtt=400 patch_solve_loop   req=  6 first=49 err=8.09mm/25.73deg (max 17.03/54.43) step_max=6.90mm/22.98deg stalled=118
+angle 60deg (5 DOF, curved cone)       rtt=400 mate_motion_loop   req=  5 first=25 err=5.27mm/16.80deg (max 10.58/33.08) step_max=5.79mm/17.02deg stalled=116
+angle 60deg (5 DOF, curved cone)       rtt=400 local_anchor_once  req=  1 first=25 err=0.15mm/3.77deg (max 1.98/8.68) step_max=2.13mm/6.95deg stalled=24
+angle 60deg (5 DOF, curved cone)       rtt=400 local_projection   req=  5 first=25 err=0.15mm/1.50deg (max 1.98/6.41) step_max=2.13mm/6.95deg stalled=24

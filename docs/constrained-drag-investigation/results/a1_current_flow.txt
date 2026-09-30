@@ -1,0 +1,11 @@
+stored after mate create (no solve yet): [3.0, 3.0, 50.0]
+after explicit /solve  (what _confirmMate does): [3.0, 3.0, 10.000000000000142]
+
+Drag-end sequence (PATCH + 3 list GETs + assembly-mesh): 5 requests, 16.3 ms total; mesh payload 4710 bytes
+  PATCH /document/parts/<part>/occurrences/occ-driven                             1.9 ms
+  GET   /document/parts/<part>/occurrences                                        1.8 ms
+  GET   /document/parts/<part>/mates                                              1.9 ms
+  GET   /document/parts/<part>/component-patterns                                 1.6 ms
+  GET   /document/parts/<part>/assembly-mesh                                      9.0 ms
+STORED transform after release: [3.0, 3.0, 40.0] <- mate demands z=10; nothing re-solved
+mate-motion(from stored) says nearest satisfying pose is: [3.0, 3.0, 10.0]
