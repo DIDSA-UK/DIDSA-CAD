@@ -2,7 +2,7 @@
 // `DIDSA_LIVE_MANIFEST` names a JSON manifest written by a script that built one scene and serves the backend on
 // 127.0.0.1:8000:  {"root": <part id>, "grabbed": <occurrence id>, "key": <api key>}
 // `DIDSA_LIVE_PATH` = comma-separated simulated hand paths. The flat app's gizmo handle is single-axis, so the
-// realistic ones are flat_x | flat_spin | swing_z | angle_x | angle_y | angle_z; flat_combined | swing_slide_turn mix a slide with a turn
+// realistic ones are flat_x | flat_spin | swing_z | swing_pivot | angle_x | angle_y | angle_z; flat_combined | swing_slide_turn mix a slide with a turn
 // (not reachable from one handle; kept because they expose the additive-chart `max_step`, plan F2).
 //
 // Not part of the normal suite (no backend in CI). It prints the drag's counters - the F1-gate numbers
@@ -19,6 +19,7 @@ import 'package:http/http.dart' as http;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/motion/constrained_drag_session.dart';
+import 'package:didsa_cad_client/motion/gizmo_freedom.dart';
 import 'package:didsa_cad_client/motion/mate_motion_bridge.dart';
 import 'package:didsa_cad_client/motion/se3.dart';
 
@@ -67,12 +68,26 @@ void main() {
     print('live[$path] grab anchor: dof=${session.anchor!.dof} grounded=${session.anchor!.grounded} '
         'members=${session.memberIds} lever=$L');
 
+    final freedom = gizmoFreedomFromAnchor(session.anchor!);
+    // ignore: avoid_print
+    print('live[$path] freedom: translate=${freedom!.translate.map((h) => h.fraction.toStringAsFixed(3)).toList()} '
+        'rotate=${freedom.rotate.map((h) => h.fraction.toStringAsFixed(3)).toList()} '
+        'pivots=${freedom.rotate.map((h) => h.pivot?.map((v) => v.toStringAsFixed(3)).toList()).toList()} '
+        'plane=${freedom.planeNormal?.map((v) => v.toStringAsFixed(3)).toList()} summary="${freedom.summary}"');
     const frames = 60;
+    var maxOff = 0.0;
     Pose wishAt(int f) {
       final s = f / frames;
       switch (path) {
         case 'swing_z': // rotate handle about the occurrence's own z axis (through its origin, 15 mm off the pin axis)
           return applyDelta(base, <double>[0, 0, 0, 0, 0, math.pi / 2 * s]);
+        case 'swing_pivot': // S8: the re-pivoted ring - turn about the screw axis the freedom reports (on the manifold)
+          final rot = freedom.rotate[2];
+          final q = rot.pivot!, ax = rot.pivotAxis!;
+          final turn = rotAxisAngle(ax, 90.0 * s);
+          final rel = <double>[base.t[0] - q[0], base.t[1] - q[1], base.t[2] - q[2]];
+          final moved = turn.mulVec(rel);
+          return Pose(<double>[q[0] + moved[0], q[1] + moved[1], q[2] + moved[2]], turn * base.r);
         case 'swing_slide_turn': // the prototype's swing: slide 15 along the pin's axis while turning 90 deg
           return applyDelta(base, <double>[0, 0, 15.0 * s, 0, 0, math.pi / 2 * s]);
         case 'angle_x': // rotate handle about x, 40 deg
@@ -97,6 +112,7 @@ void main() {
       if (prevHand != null) handMax = math.max(handMax, weightedDist(w, prevHand, L));
       prevHand = w;
       final fr = session.update(w);
+      if (fr != null) maxOff = math.max(maxOff, weightedDist(fr.poses[0], w, L));
       if ((Platform.environment['DIDSA_LIVE_DEBUG'] ?? '').isNotEmpty && f % 15 == 0 && fr != null) {
         // ignore: avoid_print
         print('  frame $f wish t=${w.t.map((v) => v.toStringAsFixed(2))} shown t=${fr.poses[0].t.map((v) => v.toStringAsFixed(2))} '
@@ -104,6 +120,9 @@ void main() {
       }
       await Future<void>.delayed(const Duration(milliseconds: 16));
     }
+    if (path == 'swing_pivot') expect(maxOff, lessThan(1e-3), reason: 'a wish on the screw axis stays on the manifold');
+    // ignore: avoid_print
+    print('live[$path] max |shown - wish| = ${maxOff.toStringAsExponential(2)}');
     final commit = await session.finish(wish: wishAt(frames));
     expect(commit.committed, isTrue, reason: commit.message);
     // ignore: avoid_print

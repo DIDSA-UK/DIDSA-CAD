@@ -42,6 +42,7 @@ import '../gear/bevel_design_screen.dart';
 import '../gear/gear_chain_design_screen.dart';
 import '../gear/gear_design_screen.dart';
 import '../motion/constrained_drag_session.dart';
+import '../motion/gizmo_freedom.dart';
 import '../motion/mate_motion_bridge.dart';
 import '../motion/se3.dart' show weightedDist;
 import '../sketch/sketch_controller.dart';
@@ -639,6 +640,15 @@ class _PartScreenState extends State<PartScreen> {
   /// World-space live poses of the FOLLOWER occurrences during a constrained drag (the grabbed one is
   /// [_gizmoLiveTransform]); folded into [_displayAssemblyInstances].
   Map<String, RigidTransformDto> _followerLiveWorld = const {};
+
+  /// Plan S8: what the mates allow for the gizmo target's handles, from a `mate-motion` anchor fetched when the gizmo
+  /// is shown for a mated occurrence (focus-local frame). [_gizmoFreedomKey] says which occurrence / stored pose /
+  /// mate set it was fetched for; a mismatch refetches (see [_activeFreedom]). `null` = unmated or unknown.
+  GizmoFreedom? _gizmoFreedom;
+  String? _gizmoFreedomKey;
+  ComponentGizmoCues? _gizmoCuesCache;
+  GizmoFreedom? _gizmoCuesCacheFreedom;
+  RigidTransformDto? _gizmoCuesCacheParent;
   final Stopwatch _dragClock = Stopwatch()..start();
 
   /// Assembly support Phase 5: local, session-only undo for component-
@@ -789,7 +799,79 @@ class _PartScreenState extends State<PartScreen> {
   /// otherwise [_gizmoTargetWorldTransform] itself (`null` propagates
   /// straight through when there's no gizmo target at all, correctly hiding
   /// the gizmo).
-  RigidTransformDto? get _gizmoDisplayTransform => _gizmoLiveTransform ?? _gizmoTargetWorldTransform;
+  RigidTransformDto? get _gizmoDisplayTransform {
+    // Nothing can move this component (0 DOF / locked by its mates): no gizmo, the panel says why.
+    if (_activeFreedom?.immobile ?? false) return null;
+    return _gizmoLiveTransform ?? _gizmoTargetWorldTransform;
+  }
+
+  /// The freedom for the current gizmo target, (re)fetching when the target, its stored pose or the mates changed.
+  /// Kept during a drag (nothing refetches mid-gesture). Fetching is fire-and-forget; until it lands, no cues.
+  GizmoFreedom? get _activeFreedom {
+    final occurrence = _gizmoTargetOccurrence;
+    if (occurrence == null || !_isMated(occurrence.id)) return null;
+    if (_dragSession != null) return _gizmoFreedom;
+    final key = '${occurrence.id}|${jsonEncode(occurrence.transform.toJson())}|'
+        '${_mates.map((m) => '${m.id}:${m.suppressed}:${m.flipped}:${m.value}').join(',')}';
+    if (key != _gizmoFreedomKey) {
+      _gizmoFreedomKey = key;
+      _gizmoFreedom = null;
+      scheduleMicrotask(() => unawaited(_fetchGizmoFreedom(occurrence, key)));
+    }
+    return _gizmoFreedom;
+  }
+
+  Future<void> _fetchGizmoFreedom(OccurrenceDto occurrence, String key) async {
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null || !mounted) return;
+    try {
+      final answer = await _api.mateMotion(focusPartId, occurrence.id, leverArm: _gizmoTargetBoundingRadius);
+      if (!mounted || _gizmoFreedomKey != key) return;
+      setState(() => _gizmoFreedom = gizmoFreedomFromAnchor(answer));
+    } on ApiException {
+      // No cues: every handle is drawn as usual (a failed answer is never read as "locked" nor as "free").
+    }
+  }
+
+  /// [_activeFreedom] in world space for [PartViewport.componentGizmoCues]; cached so an unchanged freedom hands the
+  /// viewport the identical object (it rebuilds the gizmo Node whenever this changes).
+  ComponentGizmoCues? get _gizmoCues {
+    final f = _activeFreedom;
+    if (f == null || f.immobile) return null;
+    final parent = _gizmoParentInstance?.worldTransform;
+    if (identical(_gizmoCuesCacheFreedom, f) && _gizmoCuesCacheParent == parent) return _gizmoCuesCache;
+    final m = parent == null ? vm.Matrix4.identity() : matrix4FromRigidTransform(parent);
+    vm.Vector3 point(List<double> p) => m.transformed3(vm.Vector3(p[0], p[1], p[2]));
+    vm.Vector3 dir(List<double> d) => (m.getRotation() * vm.Vector3(d[0], d[1], d[2])).normalized();
+    ComponentHandleCue cue(HandleFreedom h) => ComponentHandleCue(
+          h.fraction,
+          pivot: h.pivot == null ? null : point(h.pivot!),
+          pivotAxis: h.pivotAxis == null ? null : dir(h.pivotAxis!),
+        );
+    final cues = ComponentGizmoCues(
+      handles: {
+        ComponentGizmoHandleKind.translateX: cue(f.translate[0]),
+        ComponentGizmoHandleKind.translateY: cue(f.translate[1]),
+        ComponentGizmoHandleKind.translateZ: cue(f.translate[2]),
+        ComponentGizmoHandleKind.rotateX: cue(f.rotate[0]),
+        ComponentGizmoHandleKind.rotateY: cue(f.rotate[1]),
+        ComponentGizmoHandleKind.rotateZ: cue(f.rotate[2]),
+      },
+      planeNormal: f.planeNormal == null ? null : dir(f.planeNormal!),
+    );
+    _gizmoCuesCache = cues;
+    _gizmoCuesCacheFreedom = f;
+    _gizmoCuesCacheParent = parent;
+    return cues;
+  }
+
+  /// The one-line mate summary for the assembly panel / Move-Rotate panel ("Group: 5 DOF - not grounded", or why
+  /// nothing can move); `null` for an unmated target or before the anchor landed.
+  String? get _motionStatusText {
+    final f = _activeFreedom;
+    if (f == null) return null;
+    return <String>[f.summary, if (f.reason != null) f.reason!].where((t) => t.isNotEmpty).join('. ');
+  }
 
   /// On-device feedback ("the gizmo is the wrong size"): memoizes
   /// [_gizmoTargetBoundingRadius] by Occurrence id, keyed separately from
@@ -21840,6 +21922,7 @@ class _PartScreenState extends State<PartScreen> {
                   // On-device feedback ("the gizmo is the wrong size"): see
                   // [_gizmoTargetBoundingRadius]'s own doc comment.
                   selectedOccurrenceBoundingRadius: _gizmoTargetBoundingRadius,
+                  componentGizmoCues: _gizmoCues,
                   onComponentGizmoDragStart: _onComponentGizmoDragStart,
                   onComponentGizmoDragUpdate: _onComponentGizmoDragUpdate,
                   onComponentGizmoDragEnd: () => unawaited(_onComponentGizmoDragEnd()),
@@ -22488,6 +22571,7 @@ class _PartScreenState extends State<PartScreen> {
                 if (_lens == AssemblyLens.assembly)
                 Positioned.fill(
                   child: AssemblyTreePanel(
+                    motionSummary: _motionStatusText,
                     visible: _featureTreePanelVisible,
                     occurrences: _displayOccurrences,
                     mates: _mates,
@@ -22953,6 +23037,7 @@ class _PartScreenState extends State<PartScreen> {
                       onApplyMove: (dx, dy, dz) => unawaited(_applyMoveRotateComponentMove(dx, dy, dz)),
                       onApplyRotate: (dx, dy, dz) => unawaited(_applyMoveRotateComponentRotate(dx, dy, dz)),
                       onDone: _closeMoveRotateComponentPanel,
+                      statusText: _motionStatusText,
                     ),
                   ),
                 // Direct Editing family (fourth entry), V2: [DeleteFacePanel]

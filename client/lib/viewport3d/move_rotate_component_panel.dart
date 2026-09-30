@@ -42,6 +42,10 @@ class MoveRotateComponentPanel extends StatefulWidget {
 
   final VoidCallback onDone;
 
+  /// Plan S8: what the mates say about the selected component (group DOF, "not grounded", or why the gizmo is
+  /// hidden because nothing can move it). `null` = unmated / not known yet.
+  final String? statusText;
+
   const MoveRotateComponentPanel({
     super.key,
     this.title = 'Move / Rotate',
@@ -50,6 +54,7 @@ class MoveRotateComponentPanel extends StatefulWidget {
     required this.onApplyMove,
     required this.onApplyRotate,
     required this.onDone,
+    this.statusText,
   });
 
   @override
@@ -161,6 +166,14 @@ class _MoveRotateComponentPanelState extends State<MoveRotateComponentPanel> {
                 : 'Rotates the component about its own local X/Y/Z axes (degrees)',
             style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
+          if (widget.statusText != null && widget.statusText!.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              widget.statusText!,
+              key: const ValueKey('move-rotate-status'),
+              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.tertiary),
+            ),
+          ],
           const SizedBox(height: 8),
           Row(
             children: [

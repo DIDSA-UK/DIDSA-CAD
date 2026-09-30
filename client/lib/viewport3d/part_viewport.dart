@@ -190,6 +190,11 @@ class PartViewport extends StatefulWidget {
   /// see [ComponentGizmoBasis]'s own file's sizing doc comments.
   final double? selectedOccurrenceBoundingRadius;
 
+  /// Plan S8: what the mates allow for each handle of the Move/Rotate gizmo (locked/partial handles are drawn grey/
+  /// dim/short and locked ones cannot be grabbed, a rotate ring may be re-pivoted onto the screw axis, an in-plane
+  /// handle appears when two translations are free). `null` = no information: every handle as usual.
+  final ComponentGizmoCues? componentGizmoCues;
+
   /// Fired on every pointer-move while a gizmo handle is being dragged,
   /// with the full resulting [RigidTransformDto] already composed
   /// ([composeTranslation]/[composeRotation]) - mirrors
@@ -1039,6 +1044,7 @@ class PartViewport extends StatefulWidget {
     this.componentPatternPreviewInstances = const [],
     this.selectedOccurrenceTransform,
     this.selectedOccurrenceBoundingRadius,
+    this.componentGizmoCues,
     this.onComponentGizmoDragUpdate,
     this.onComponentGizmoDragStart,
     this.onComponentGizmoDragEnd,
@@ -1484,6 +1490,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   vm.Vector3? _componentGizmoDragRefAxis;
   vm.Vector3? _componentGizmoDragPerpAxis;
   double? _componentGizmoDragStartAngle;
+  // S8: a re-pivoted rotate ring turns about the screw axis through this point; the in-plane handle's plane.
+  vm.Vector3? _componentGizmoDragPivot;
+  vm.Vector3? _componentGizmoDragPlaneNormal;
+  vm.Vector3? _componentGizmoDragStartPlanePoint;
 
   /// P8/P9: unlike [_planeNodes]/[_sketchNodes]/[_createPlaneNodes], never
   /// more than one of each at a time - there's only ever one active Sketch
@@ -1982,7 +1992,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // while the previous one's transform happened to match (e.g. two
         // Occurrences placed at the same identity transform) would leave
         // the old, wrong-sized gizmo Node in place.
-        widget.selectedOccurrenceBoundingRadius != oldWidget.selectedOccurrenceBoundingRadius) {
+        widget.selectedOccurrenceBoundingRadius != oldWidget.selectedOccurrenceBoundingRadius ||
+        widget.componentGizmoCues != oldWidget.componentGizmoCues) {
       setState(_syncComponentGizmoNode);
     }
     if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
@@ -3442,12 +3453,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _viewportSize,
       fovRadiansY: _camera.fovRadiansY,
       targetBoundingRadius: widget.selectedOccurrenceBoundingRadius,
+      cues: widget.componentGizmoCues,
     );
     if (hit == null) return false;
 
     vm.Vector3? axis;
     vm.Vector3? rotationAxis, refAxis, perpAxis;
+    vm.Vector3? pivot, planeNormal, planeStart;
     double? startAngle;
+    final cues = widget.componentGizmoCues;
+    // Re-pivoted ring: the rotation axis and measuring centre come from the mates' screw axis, not the gizmo's own.
+    void repivot(ComponentGizmoHandleKind kind) {
+      final cue = cues?[kind];
+      if (cue?.pivot == null || cue?.pivotAxis == null) return;
+      pivot = cue!.pivot;
+      final ra = cue.pivotAxis!.normalized();
+      final (ref, perp) = perpendicularPair(ra);
+      rotationAxis = ra;
+      refAxis = ref;
+      perpAxis = perp;
+      startAngle = angleOnRotationPlane(ray, pivot!, ra, ref, perp);
+    }
     switch (hit.kind) {
       case ComponentGizmoHandleKind.translateX:
         axis = basis.xAxis;
@@ -3459,17 +3485,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         rotationAxis = basis.xAxis;
         refAxis = basis.yAxis;
         perpAxis = basis.zAxis;
-        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis, refAxis, perpAxis);
+        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis!, refAxis!, perpAxis!);
+        repivot(hit.kind);
       case ComponentGizmoHandleKind.rotateY:
         rotationAxis = basis.yAxis;
         refAxis = basis.zAxis;
         perpAxis = basis.xAxis;
-        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis, refAxis, perpAxis);
+        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis!, refAxis!, perpAxis!);
+        repivot(hit.kind);
       case ComponentGizmoHandleKind.rotateZ:
         rotationAxis = basis.zAxis;
         refAxis = basis.xAxis;
         perpAxis = basis.yAxis;
-        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis, refAxis, perpAxis);
+        startAngle = angleOnRotationPlane(ray, basis.origin, rotationAxis!, refAxis!, perpAxis!);
+        repivot(hit.kind);
+      case ComponentGizmoHandleKind.translatePlane:
+        planeNormal = cues?.planeNormal?.normalized();
+        final planeHit = planeNormal == null ? null : rayPlaneHit(ray, basis.origin, planeNormal);
+        if (planeHit == null) return false; // edge-on: no well-defined point to measure from
+        planeStart = planeHit.$2;
     }
     // Same degenerate-look-down-the-axis abandon [_tryBeginSectionGizmoDrag]
     // already uses - no well-defined start angle to measure a delta from.
@@ -3486,6 +3520,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _componentGizmoDragRefAxis = refAxis;
       _componentGizmoDragPerpAxis = perpAxis;
       _componentGizmoDragStartAngle = startAngle;
+      _componentGizmoDragPivot = pivot;
+      _componentGizmoDragPlaneNormal = planeNormal;
+      _componentGizmoDragStartPlanePoint = planeStart;
       _syncComponentGizmoNode();
       _syncSelectedEntityNodes();
       _syncHoverNode();
@@ -3538,7 +3575,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final perpAxis = _componentGizmoDragPerpAxis;
         final startAngle = _componentGizmoDragStartAngle;
         if (rotationAxis == null || refAxis == null || perpAxis == null || startAngle == null) return;
-        final currentAngle = angleOnRotationPlane(ray, startOrigin, rotationAxis, refAxis, perpAxis);
+        final pivot = _componentGizmoDragPivot;
+        final currentAngle = angleOnRotationPlane(ray, pivot ?? startOrigin, rotationAxis, refAxis, perpAxis);
         if (currentAngle == null) return; // Momentarily looking edge-on - hold the last good value.
         final (newAxis, newAngleDegrees) = composeRotation(
           currentAxis: vm.Vector3(
@@ -3550,10 +3588,32 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           deltaAxis: rotationAxis,
           deltaAngleRadians: currentAngle - startAngle,
         );
+        var translation = startTransform.translation;
+        if (pivot != null) {
+          // Turning about an axis through `pivot` also moves the origin: t' = pivot + R(Δ)·(t0 − pivot).
+          final t0 = vm.Vector3(translation[0], translation[1], translation[2]);
+          final moved = rotatePointAboutPivot(t0, pivot, rotationAxis, currentAngle - startAngle);
+          translation = [moved.x, moved.y, moved.z];
+        }
         widget.onComponentGizmoDragUpdate?.call(RigidTransformDto(
-          translation: startTransform.translation,
+          translation: translation,
           rotationAxis: [newAxis.x, newAxis.y, newAxis.z],
           rotationAngleDegrees: newAngleDegrees,
+        ));
+      case ComponentGizmoHandleKind.translatePlane:
+        final normal = _componentGizmoDragPlaneNormal;
+        final planeStart = _componentGizmoDragStartPlanePoint;
+        if (normal == null || planeStart == null) return;
+        final planeHit = rayPlaneHit(ray, startOrigin, normal);
+        if (planeHit == null) return; // edge-on this frame: hold the last value
+        final newTranslation = composeTranslation(
+          vm.Vector3(startTransform.translation[0], startTransform.translation[1], startTransform.translation[2]),
+          planeHit.$2 - planeStart,
+        );
+        widget.onComponentGizmoDragUpdate?.call(RigidTransformDto(
+          translation: [newTranslation.x, newTranslation.y, newTranslation.z],
+          rotationAxis: startTransform.rotationAxis,
+          rotationAngleDegrees: startTransform.rotationAngleDegrees,
         ));
     }
   }
@@ -3576,6 +3636,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       basis,
       highlightedHandle: _componentGizmoDragHandle,
       targetBoundingRadius: widget.selectedOccurrenceBoundingRadius,
+      cues: widget.componentGizmoCues,
     );
     scene.add(node);
     _componentGizmoNode = node;
