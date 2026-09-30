@@ -16,6 +16,7 @@ from app.document.assembly_solver import (
     MateSolveResult,
     _quaternion_from_axis_angle,
     preview_mate_solve,
+    solve_occurrence_from_guess,
     solve_occurrence,
 )
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
@@ -224,6 +225,8 @@ from app.document.schemas import (
     MateCreate,
     MateEntityRefResponse,
     MateResponse,
+    MateMotionRequest,
+    MateMotionResponse,
     MateSolvePreviewResponse,
     MateUpdate,
     OccurrenceCreate,
@@ -4094,6 +4097,42 @@ def _rigid_transform_response(transform: RigidTransform) -> RigidTransformRespon
         translation=transform.translation,
         rotation_axis=transform.rotation_axis,
         rotation_angle_degrees=transform.rotation_angle_degrees,
+    )
+
+
+@router.post("/parts/{part_id}/occurrences/{occurrence_id}/mate-motion", response_model=MateMotionResponse)
+def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) -> MateMotionResponse:
+    """How a mated occurrence may move, in ONE round trip: solves its Mates
+    from the wanted pose `payload.transform` (else from its stored transform)
+    WITHOUT storing anything, and returns the nearest mate-satisfying pose plus
+    the free-motion basis at that pose (`MateMotionResponse`). Built for VR
+    dragging: the client projects the hand's motion onto `free_twists` locally
+    every frame (smooth, no network in the loop) and calls this only every
+    so often to re-anchor, instead of a PATCH+solve pair per frame. Mate-less
+    occurrences return the wanted pose with all six DOF free. A grounded
+    (`fixed`) occurrence 422s exactly like `solve_for_occurrence`. A solve that
+    doesn't converge reports `converged: false` (no 4xx: mid-drag that just
+    means "keep the last good pose")."""
+    part = get_part_or_404(part_id)
+    occurrence = _get_occurrence_or_404(part, occurrence_id)
+    if occurrence.fixed:
+        raise _occurrence_is_fixed(occurrence_id)
+    guess = None
+    if payload.transform is not None:
+        _validate_occurrence_transform_payload(payload.transform.rotation_axis, payload.transform.rotation_angle_degrees)
+        guess = RigidTransform(
+            translation=tuple(payload.transform.translation),
+            rotation_axis=tuple(payload.transform.rotation_axis),
+            rotation_angle_degrees=payload.transform.rotation_angle_degrees,
+        )
+    result = solve_occurrence_from_guess(get_document(), part, occurrence_id, guess)
+    if not result.converged:
+        return MateMotionResponse(converged=False, dof=result.dof)
+    return MateMotionResponse(
+        converged=True,
+        transform=_rigid_transform_response(result.transform),
+        dof=result.dof,
+        free_twists=[list(t) for t in result.free_twists],
     )
 
 

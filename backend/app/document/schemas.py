@@ -3325,6 +3325,30 @@ class MateUpdate(BaseModel):
     allow_rotation: bool | None = None
 
 
+class MateMotionRequest(BaseModel):
+    """`POST .../occurrences/{occurrence_id}/mate-motion`'s body: the pose the
+    client wants (e.g. where a hand has dragged the part). Omitted/null solves
+    from the occurrence's stored transform."""
+
+    transform: RigidTransformResponse | None = None
+
+
+class MateMotionResponse(BaseModel):
+    """Where the occurrence should be to satisfy its mates nearest `transform`
+    (`converged`/`transform`, never stored), how many degrees of freedom its
+    mates leave (`dof`), and an orthonormal basis of that free motion
+    (`free_twists`, `dof` entries of `[dx, dy, dz, rx, ry, rz]`: translation
+    added to the occurrence's translation, rotation vector in radians composed
+    onto its rotation about its own origin, both in the owning Part's frame).
+    A client projects a wanted motion onto those twists locally each frame and
+    only re-asks occasionally to correct curvature drift."""
+
+    converged: bool
+    transform: RigidTransformResponse | None = None
+    dof: int = 6
+    free_twists: list[list[float]] = []
+
+
 class MateSolvePreviewResponse(BaseModel):
     """Test report item 3 (New Mate ghost preview): `POST /parts/{part_id}/
     occurrences/{occurrence_id}/preview-mate-solve`'s response - a dry-run
