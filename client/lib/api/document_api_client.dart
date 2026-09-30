@@ -1807,6 +1807,187 @@ class MateSolvePreviewDto {
       );
 }
 
+/// Request body of `POST /document/parts/{part_id}/occurrences/{occurrence_id}/mate-motion`
+/// (`docs/constrained-drag-implementation-plan.md` §3; the occurrence in the
+/// path is the GRABBED one).
+class MateMotionRequestDto {
+  /// Wanted pose of the grabbed occurrence; `null` = its stored pose (the grab-time anchor).
+  final RigidTransformDto? transform;
+
+  /// Lever arm in mm; `null` lets the backend use the occurrence's bounding radius.
+  final double? leverArm;
+
+  /// `true` also persists the solved group atomically (one undo unit). Only on release.
+  final bool commit;
+
+  const MateMotionRequestDto({this.transform, this.leverArm, this.commit = false});
+
+  Map<String, dynamic> toJson() => {
+        'transform': transform?.toJson(),
+        if (leverArm != null) 'lever_arm': leverArm,
+        'commit': commit,
+      };
+}
+
+/// One group member in a [MateMotionDto]: its nearest satisfying pose and its mobility.
+class MateMotionMemberDto {
+  final String occurrenceId;
+  final RigidTransformDto transform;
+
+  /// Rank of this member's 6-row block of the basis.
+  final int mobility;
+
+  const MateMotionMemberDto({required this.occurrenceId, required this.transform, required this.mobility});
+
+  factory MateMotionMemberDto.fromJson(Map<String, dynamic> json) => MateMotionMemberDto(
+        occurrenceId: json['occurrence_id'] as String,
+        transform: RigidTransformDto.fromJson(json['transform'] as Map<String, dynamic>),
+        mobility: (json['mobility'] as num).toInt(),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'occurrence_id': occurrenceId,
+        'transform': transform.toJson(),
+        'mobility': mobility,
+      };
+}
+
+/// `chart` of a [MateMotionDto]: the twist convention and the lever arm the backend used.
+class MateMotionChartDto {
+  /// `se3_owner_frame` (the backend's `apply_delta`).
+  final String kind;
+
+  /// `L` in mm - the projector must always use this echoed value.
+  final double leverArm;
+
+  const MateMotionChartDto({required this.kind, required this.leverArm});
+
+  factory MateMotionChartDto.fromJson(Map<String, dynamic> json) => MateMotionChartDto(
+        kind: json['kind'] as String,
+        leverArm: (json['lever_arm'] as num).toDouble(),
+      );
+
+  Map<String, dynamic> toJson() => {'kind': kind, 'lever_arm': leverArm};
+}
+
+/// `quality` of a [MateMotionDto]. Everything but the residual is nullable
+/// (rank 0 has no sigmas; `max_step` is null on flat mates / orbits; a
+/// non-converged answer carries only the residual).
+class MateMotionQualityDto {
+  final double? residualInf;
+  final double? sigmaMin;
+  final double? sigmaGap;
+  final double? maxStep;
+
+  /// Backend telemetry only - acceptance uses the client-measured jump.
+  final double? jump;
+
+  const MateMotionQualityDto({this.residualInf, this.sigmaMin, this.sigmaGap, this.maxStep, this.jump});
+
+  static double? _n(Object? v) => (v as num?)?.toDouble();
+
+  factory MateMotionQualityDto.fromJson(Map<String, dynamic> json) => MateMotionQualityDto(
+        residualInf: _n(json['residual_inf']),
+        sigmaMin: _n(json['sigma_min']),
+        sigmaGap: _n(json['sigma_gap']),
+        maxStep: _n(json['max_step']),
+        jump: _n(json['jump']),
+      );
+
+  Map<String, dynamic> toJson() => {
+        'residual_inf': residualInf,
+        'sigma_min': sigmaMin,
+        'sigma_gap': sigmaGap,
+        'max_step': maxStep,
+        'jump': jump,
+      };
+}
+
+class MateMotionDiagnosticsDto {
+  final double? solveMs;
+
+  const MateMotionDiagnosticsDto({this.solveMs});
+
+  factory MateMotionDiagnosticsDto.fromJson(Map<String, dynamic> json) =>
+      MateMotionDiagnosticsDto(solveMs: (json['solve_ms'] as num?)?.toDouble());
+
+  Map<String, dynamic> toJson() => {'solve_ms': solveMs};
+}
+
+/// Response of the `mate-motion` endpoint (contract §3).
+///
+/// `converged: false` carries NO basis / dof / members / chart: clients must
+/// read that as "hold", never as "all free". The v0 alias fields
+/// (`transform`, `free_twists`) that the backend still echoes until S9 are
+/// deliberately NOT parsed.
+class MateMotionDto {
+  final bool converged;
+
+  /// GROUP dof (`6k − rank(J)`); null when not converged.
+  final int? dof;
+
+  /// `false` ⇒ no fixed occurrence / no link to the focused part's geometry; null when not converged.
+  final bool? grounded;
+
+  /// Grabbed member first; the order is the column order of [basis]. Empty when not converged.
+  final List<MateMotionMemberDto> members;
+
+  /// `dof` rows × `6·members` floats; null when not converged.
+  final List<List<double>>? basis;
+
+  final MateMotionChartDto? chart;
+  final MateMotionQualityDto quality;
+  final MateMotionDiagnosticsDto diagnostics;
+
+  /// `true` only when the request had `commit: true` and the group was stored.
+  final bool committed;
+
+  const MateMotionDto({
+    required this.converged,
+    this.dof,
+    this.grounded,
+    this.members = const [],
+    this.basis,
+    this.chart,
+    this.quality = const MateMotionQualityDto(),
+    this.diagnostics = const MateMotionDiagnosticsDto(),
+    this.committed = false,
+  });
+
+  factory MateMotionDto.fromJson(Map<String, dynamic> json) => MateMotionDto(
+        converged: json['converged'] as bool,
+        dof: (json['dof'] as num?)?.toInt(),
+        grounded: json['grounded'] as bool?,
+        members: ((json['members'] as List?) ?? const [])
+            .map((m) => MateMotionMemberDto.fromJson(m as Map<String, dynamic>))
+            .toList(),
+        basis: (json['basis'] as List?)
+            ?.map((row) => (row as List).map((v) => (v as num).toDouble()).toList())
+            .toList(),
+        chart: json['chart'] == null ? null : MateMotionChartDto.fromJson(json['chart'] as Map<String, dynamic>),
+        quality: json['quality'] == null
+            ? const MateMotionQualityDto()
+            : MateMotionQualityDto.fromJson(json['quality'] as Map<String, dynamic>),
+        diagnostics: json['diagnostics'] == null
+            ? const MateMotionDiagnosticsDto()
+            : MateMotionDiagnosticsDto.fromJson(json['diagnostics'] as Map<String, dynamic>),
+        committed: json['committed'] as bool? ?? false,
+      );
+
+  /// Contract fields only (no v0 aliases).
+  Map<String, dynamic> toJson() => {
+        'converged': converged,
+        'dof': dof,
+        'grounded': grounded,
+        'members': members.map((m) => m.toJson()).toList(),
+        'basis': basis,
+        'chart': chart?.toJson(),
+        'quality': quality.toJson(),
+        'diagnostics': diagnostics.toJson(),
+        'committed': committed,
+      };
+}
+
 /// `GET /document/parts/{part_id}/assembly-mesh`'s full response - see
 /// `DocumentApiClient.getAssemblyMesh`'s own doc comment for when to call
 /// this and what it requires.
@@ -5061,6 +5242,33 @@ class DocumentApiClient {
               }),
             ),
         (body) => MateSolvePreviewDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// `POST /document/parts/{part_id}/occurrences/{occurrence_id}/mate-motion`
+  /// (`docs/constrained-drag-implementation-plan.md` §3): solves the GROUPED
+  /// motion of [occurrenceId] (the grabbed occurrence) and its mated followers
+  /// and returns the pose/basis anchor the free-motion projector runs on.
+  /// [transform] is the wanted pose of the grabbed occurrence (`null` = its
+  /// stored pose); [leverArm] in mm (`null` = the backend's bounding radius);
+  /// [commit] `true` also persists every moved member atomically, release only.
+  /// A non-converged answer is a normal 200 with `converged: false` (no
+  /// basis) - NOT an exception; a fixed grabbed occurrence is a 422.
+  Future<MateMotionDto> mateMotion(
+    String partId,
+    String occurrenceId, {
+    RigidTransformDto? transform,
+    double? leverArm,
+    bool commit = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/occurrences/$occurrenceId/mate-motion'),
+              headers: _headers,
+              body: jsonEncode(
+                MateMotionRequestDto(transform: transform, leverArm: leverArm, commit: commit).toJson(),
+              ),
+            ),
+        (body) => MateMotionDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Phase 7 (`docs/assembly-scope.md` §3 item 7): `GET /document/parts/

@@ -131,6 +131,27 @@ def screw_exp(base: Pose, d) -> Pose:
     return Pose(e @ base.t + vm @ (v - np.cross(w, base.t)), e @ base.r)
 
 
+def _v_inverse(w):
+    """V(w)^-1 = I - K/2 + c K^2, c = (1 - th sin th / (2 (1 - cos th))) / th^2 (series below th < 1e-2:
+    1/12 + th^2/720 + th^4/30240; the closed form cancels below that)."""
+    th = float(np.linalg.norm(w))
+    k = skew(w)
+    if th < 1e-2:
+        c = 1.0 / 12.0 + th * th / 720.0 + th**4 / 30240.0
+    else:
+        c = (1.0 - th * math.sin(th) / (2.0 * (1.0 - math.cos(th)))) / (th * th)
+    return np.eye(3) - 0.5 * k + c * (k @ k)
+
+
+def screw_log(base: Pose, target: Pose):
+    """The twist d = [v, w] with screw_exp(base, d) == target: the exact inverse of `screw_exp` (Lie-group
+    log of the relative motion, in the same origin-velocity convention as the basis rows).
+        w = rotvec(R_T R_B^T);  u = V(w)^-1 (t_T - exp(w) t_B);  v = u + w x t_B."""
+    w = rotvec_from_rot(target.r @ base.r.T)
+    u = _v_inverse(w) @ (target.t - rot_from_rotvec(w) @ base.t)
+    return np.concatenate([u + np.cross(w, base.t), w])
+
+
 # ---- weighted Gram-Schmidt / projection --------------------------------------------------------------
 def member_scale(k, lever, grabbed=0, follower=FOLLOWER_WEIGHT):
     """Per-coordinate metric scale s (length 6k): <a,b> = sum (s a)(s b)."""
@@ -165,9 +186,12 @@ def project_delta(rows_orthonormal, s, want):
     return a
 
 
-def wish_vector(refs, wanted: Pose, k):
+def wish_vector(refs, wanted: Pose, k, chart="screw"):
+    """Wish in twist coordinates, grabbed block only. `screw` (normative, spec section 4): `screw_log`, the
+    exact inverse of the integrator, so a wish that lies on the free manifold is reproduced exactly.
+    `additive` = the v0 chart `[t_w - t_ref, rotvec]` (informational, pairs with the additive integrator)."""
     want = np.zeros(6 * k)
-    want[:6] = pose_delta(wanted, refs[0])
+    want[:6] = screw_log(refs[0], wanted) if chart == "screw" else pose_delta(wanted, refs[0])
     return want
 
 
@@ -175,7 +199,7 @@ def project(refs, rows, wanted: Pose, lever, integrator="screw", follower=FOLLOW
     k = len(refs)
     s = member_scale(k, lever, 0, follower)
     u = weighted_gram_schmidt(rows, s)
-    d = project_delta(u, s, wish_vector(refs, wanted, k))
+    d = project_delta(u, s, wish_vector(refs, wanted, k, "screw" if integrator == "screw" else "additive"))
     if integrator == "screw":
         return [screw_exp(refs[m], d[6 * m : 6 * m + 6]) for m in range(k)]
     return [apply_delta(refs[m], d[6 * m : 6 * m + 6]) for m in range(k)]
@@ -640,36 +664,84 @@ def build():
     acc("acc-first-anchor", "No model yet: no jump test", True, 1e-10, P((99, 99, 99)), has_own=False)
     acc("acc-boundary-ok", "Jump just under 1.0*L", True, 1e-10, P((10, 10, 9.99), (0, 0, 1), 20.0))
 
+    # 9b. screw log + exactness of the projection for wishes that lie ON the free manifold (spec section 4) -------------
+    def log_case(cid, description, base, target):
+        inp = {"base": pose_in(base.t, *axis_angle_of(base.r)), "target": pose_in(target.t, *axis_angle_of(target.r))}
+
+        def fn(i):
+            b, t = Pose.from_json(i["base"]), Pose.from_json(i["target"])
+            d = screw_log(b, t)
+            return {"twist": [float(x) for x in d], "roundtrip": screw_exp(b, d).out()}
+
+        case("screw_log", cid, description, inp, fn)
+
+    lb = P((12.0, -7.0, 30.0), (0.3, -0.5, 0.8), 25.0)
+    log_case("log-pure-translation", "No rotation: twist = plain displacement, w = 0", lb, Pose(lb.t + np.array([5.0, -3.0, 2.0]), lb.r))
+    log_case("log-pure-spin-own-origin", "Spin about the occurrence's own origin: v = 0 exactly", lb, Pose(lb.t, rot_from_rotvec([0.0, 0.0, D(60)]) @ lb.r))
+    log_case("log-tiny-angle", "1e-7 rad + slide: small-angle series of V^-1", lb, wish_from(lb, (1.0, 2.0, 3.0), (1e-7, -2e-7, 1e-7)))
+    log_case("log-series-edge-below", "th just below the 1e-2 series switch", lb, wish_from(lb, (4.0, 0, -2.0), (0.004, 0.006, 0.0062)))
+    log_case("log-series-edge-above", "th just above the 1e-2 series switch (closed form)", lb, wish_from(lb, (4.0, 0, -2.0), (0.006, 0.0066, 0.0062)))
+    log_case("log-slide-and-spin-150mm", "150 mm slide + 0.3 rad spin about z (the spec finding: 22.4 mm off with the v0 chart)", P((10.0, 20.0, 30.0)), wish_from(P((10.0, 20.0, 30.0)), (150.0, 0, 0), (0, 0, 0.3)))
+    log_case("log-xy-axes-1rad", "1 rad about a tilted axis with x and y components", lb, wish_from(lb, (20.0, -10.0, 5.0), (0.6, -0.5, 0.4)))
+    log_case("log-large-2p5rad", "Large rotation, 2.5 rad", lb, wish_from(lb, (-30.0, 10.0, 8.0), (1.5, 1.2, -1.6)))
+    log_case("log-near-pi", "pi - 0.002 rad: largest V^-1 condition in range", lb, wish_from(lb, (10.0, 0.0, 0.0), (0.0, 0.0, math.pi - 0.002)))
+
+    # wishes that ARE on the manifold must come back exactly (old v0 chart: up to tens of mm off)
+    fb = P((10.0, 20.0, 5.0), (0, 0, 1), 30.0)
+    project_case("project", "flat-slide-spin-on-manifold", "In-plane slide 150 x 40 mm + 0.3 rad spin: the wish IS on the face manifold, so it is reproduced exactly",
+                 [fb], flat_face_rows(), wish_from(fb, (150.0, 40.0, 0), (0, 0, 0.3)), L)
+    project_case("project", "flat-slide-spin-fast-L40", "Fast gesture, 500 mm + 1.5 rad, with L = 40: exact again",
+                 [fb], flat_face_rows(), wish_from(fb, (400.0, 300.0, 0), (0, 0, 1.5)), 40.0)
+    f6 = [np.eye(6)[i] for i in range(6)]
+    project_case("project", "free6-slide-spin", "All six directions free (ungrounded single part): slide 150 mm + spin 0.3 rad is reproduced exactly",
+                 [P((10.0, 20.0, 30.0))], f6, wish_from(P((10.0, 20.0, 30.0)), (150.0, 0, 0), (0, 0, 0.3)), L)
+    project_case("project", "free6-big-mixed", "All six free, large mixed wish (x/y/z rotation components + translation): exact",
+                 [lb], f6, wish_from(lb, (20.0, -10.0, 5.0), (0.6, -0.5, 0.4)), L)
+    cp = conc_pose(0.0, 30.0)
+    project_case("project", "conc-orbit-target-lift-spin", "Target ON the off-axis pin's orbit (8 mm lift + 70 deg swing): reproduced exactly; the v0 chart was 2.9 mm off",
+                 [cp], conc_rows(cp), conc_pose(70.0, 38.0), L)
+    group_refs = [P(BCD_T[n]) for n in "BCD"]
+    project_case("project", "bcd-B-slide-spin-on-manifold", "Group: B slides in-plane 6 mm and spins 0.2 rad about its own origin: B follows exactly, C and D as the mates require",
+                 group_refs, bcd_rows("BCD", L), wish_from(group_refs[0], (6.0, 4.0, 0), (0, 0, 0.2)), L, extra={"members": list("BCD")})
+
     # 10. swing sequence (offset-axis concentric, 90 deg / 15 mm over 63 frames, re-anchor every 9) ------------------
     frames, every = 63, 9
     base = conc_pose(0.0, 30.0)
     hand = [wish_from(base, (0, 0, 15.0 * f / frames), (0, 0, D(90) * f / frames)) for f in range(frames + 1)]
 
-    def anchor_at(wish: Pose, lever=L) -> Pose:
-        """Analytic stand-in for the backend retraction: the manifold point nearest to the wish in the metric
-        diag(1,1,1,L,L,L) (z is free and orthogonal; theta by ternary search on [0, wish spin], deterministic)."""
+    def nearest_theta_deg(wish: Pose, lever=L) -> float:
+        """Spin angle (deg) of the manifold point nearest to the wish in the metric diag(1,1,1,L,L,L) (z is free and
+        orthogonal). Bisection on the derivative g(th) = CX (wy cos th - wx sin th) + L^2 (th - phi): well-conditioned
+        (error ~ eps / slope), unlike a ternary search on the cost, whose minimiser moved by up to 1e-7 rad when one
+        floating-point op changed (hypot vs sqrt). The result is stored in the vectors as data
+        (`nearest_anchor_theta_deg`), so ports never recompute it."""
         phi = rotvec_from_rot(wish.r)[2]
 
-        def cost(th):
-            return (float(np.hypot(-CX * math.cos(th) - wish.t[0], -CX * math.sin(th) - wish.t[1])) ** 2
-                    + (lever * (th - phi)) ** 2)
+        def grad(th):
+            return CX * (wish.t[1] * math.cos(th) - wish.t[0] * math.sin(th)) + lever * lever * (th - phi)
 
         lo, hi = min(0.0, phi), max(0.0, phi)
+        if phi == 0.0:
+            return 0.0
+        assert grad(lo) * grad(hi) <= 0.0, "nearest-anchor bracket has no sign change"
         for _ in range(200):
-            m1, m2 = lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0
-            if cost(m1) < cost(m2):
-                hi = m2
+            mid = (lo + hi) / 2.0
+            if grad(lo) * grad(mid) <= 0.0:
+                hi = mid
             else:
-                lo = m1
-        return conc_pose(math.degrees((lo + hi) / 2.0), wish.t[2])
+                lo = mid
+        return math.degrees((lo + hi) / 2.0)
+
+    nearest_theta = [0.0] + [nearest_theta_deg(hand[f]) for f in range(every, frames + 1, every)]
 
     # Anchor spin angles (deg) the REAL backend returned for this hand path (solve_group @ main 76f7699 + S4, L = 10,
     # the persisted previous anchor as the stored pose, one anchor per 9 frames, frame 0 = the settled pose).
     # Captured by running backend/tests (scene `_offset_pin_scene`), NOT recomputed here. They overshoot the true
-    # nearest point (analytic anchors below: 3.96, 11.9, 28.5 deg at frames 9, 27, 63; backend: 4.08, 14.9, 51.0).
+    # nearest point (analytic anchors: see `nearest_anchor_theta_deg`, 3.96, 11.9, 28.5 deg at frames 9, 27, 63; backend: 4.08, 14.9, 51.0).
     backend_theta = [0.0, 4.078784558, 8.858851956, 14.883502354, 22.451526709, 31.056886352, 40.043343104, 51.032455339]
     inp = {"lever_arm": L, "frames": frames, "reanchor_every": every, "tau_frames": TAU_FRAMES,
-           "hand": [rf(h) for h in hand], "backend_anchor_theta_deg": backend_theta}
+           "hand": [rf(h) for h in hand], "nearest_anchor_theta_deg": nearest_theta,
+           "backend_anchor_theta_deg": backend_theta}
 
     def run_sequence(i, anchor_of):
         hnd = [Pose.from_json(h) for h in i["hand"]]
@@ -713,7 +785,7 @@ def build():
         return out
 
     def nearest_anchor(i):
-        return lambda f, w: (conc_pose(0.0, 30.0) if f == 0 else anchor_at(w, i["lever_arm"]))
+        return lambda f, w: conc_pose(i["nearest_anchor_theta_deg"][f // i["reanchor_every"]], w.t[2])
 
     def backend_anchor(i):
         return lambda f, w: conc_pose(i["backend_anchor_theta_deg"][f // i["reanchor_every"]], w.t[2])
@@ -748,8 +820,30 @@ def self_check():
         assert np.abs(got.t - exact.t).max() < 1e-9 and np.abs(got.r - exact.r).max() < 1e-12, "screw_exp is not exact"
 
 
+def self_check_log():
+    """screw_log is the exact inverse of screw_exp, and a wish on the manifold is reproduced exactly."""
+    rng = np.random.default_rng(54321)
+    for _ in range(300):
+        base = Pose(rng.normal(size=3) * 50, rot_from_rotvec(rng.normal(size=3)))
+        w = rng.normal(size=3)
+        w = w / np.linalg.norm(w) * rng.choice([1e-7, 1e-4, 5e-3, 2e-2, 0.5, 2.0, 3.0])
+        target = Pose(base.t + rng.normal(size=3) * 30, rot_from_rotvec(w) @ base.r)
+        back = screw_exp(base, screw_log(base, target))
+        assert np.abs(back.t - target.t).max() < 1e-9 and np.abs(back.r - target.r).max() < 1e-12, "screw_log is not the inverse of screw_exp"
+    # on-manifold exactness with a full-rank basis and with a one-parameter group orbit
+    ref = Pose((10.0, 20.0, 30.0), np.eye(3))
+    wish = wish_from(ref, (150.0, 0, 0), (0, 0, 0.3))
+    got = project([ref], [np.eye(6)[i] for i in range(6)], wish, 10.0)[0]
+    assert np.abs(got.t - wish.t).max() < 1e-9, "full-rank projection must reproduce the wish"
+    c0 = conc_pose(0.0, 30.0)
+    target = conc_pose(70.0, 38.0)
+    got = project([c0], conc_rows(c0), target, 10.0)[0]
+    assert np.abs(got.t - target.t).max() < 1e-9 and np.abs(got.r - target.r).max() < 1e-12, "orbit target must be reproduced"
+
+
 def main():
     self_check()
+    self_check_log()
     build()
     doc = {
         "version": 1,
@@ -769,7 +863,9 @@ def main():
         },
         "cases": CASES,
     }
-    text = json.dumps(clean(doc), indent=1) + "\n"
+    cleaned = clean(doc)
+    cleaned["constants"] = doc["constants"]  # exact: `clean` would round gram_schmidt_drop_absolute (1e-12) to 0.0
+    text = json.dumps(cleaned, indent=1) + "\n"
     if "--check" in sys.argv:
         sys.exit(0 if OUT.exists() and OUT.read_text() == text else 1)
     OUT.parent.mkdir(parents=True, exist_ok=True)

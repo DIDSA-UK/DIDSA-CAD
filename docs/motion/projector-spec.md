@@ -30,8 +30,10 @@ exactly but takes ≥ 1 round trip, so it only *anchors* the projector (a fresh 
 * **Chart `se3_owner_frame` (= the backend's `apply_delta`)**: a twist `d = [v, w]` per member; `v` is the *displacement of the
   occurrence origin* (added to `t`), `w` a rotation vector in radians composed on the *left*: `R' = exp(w)·R`, i.e. rotation about the
   occurrence origin in world axes.
-  * `log(ref, P) = [t_P − t_ref, rotvec(R_P · R_refᵀ)]` (`pose_delta(P, ref)`);
-  * `apply_delta(ref, d) = (t_ref + v, exp(w)·R_ref)`.
+  * `pose_delta(P, ref) = [t_P − t_ref, rotvec(R_P · R_refᵀ)]` and `apply_delta(ref, d) = (t_ref + v, exp(w)·R_ref)` are the
+    backend's additive chart (basis, `quality`, blend offsets and `travel` live in it);
+  * the projector's wish and integrator use the **screw pair** `screw_log` / `screw_exp` (§4–§5), which are exact inverses.
+    Mixing the two charts (additive log, screw exp) was the S4 defect, see §13.3.
 * **Metric.** For a stacked vector over `k` members the inner product is `⟨a,b⟩ = Σ (s_j a_j)(s_j b_j)` with per-member scale
   `s = [1,1,1,L,L,L]` for the grabbed member and `FOLLOWER_WEIGHT · [1,1,1,L,L,L]` for followers, `FOLLOWER_WEIGHT = 1e-4`
   (the backend's `_FOLLOWER_WEIGHT`; **it is part of the contract, not sent on the wire**). One radian costs as much as `L` mm.
@@ -58,13 +60,15 @@ does not change the projection. Do it once per accepted anchor, not per frame.
 ## 4. Projection (per frame, no network)
 
 ```
-want            = zeros(6k);  want[0:6] = log(ref_0, W)          # grabbed block only
+want            = zeros(6k);  want[0:6] = screw_log(ref_0, W)    # grabbed block only, §5
 c_i             = ⟨u_i, want⟩
 d               = Σ c_i u_i                                       # 6k twist, followers included
 pose_m          = screw_exp(ref_m, d[6m : 6m+6])                  # every member, §5
 ```
 
-This is the weighted least-squares fit of the wish onto the free subspace; blocked components (off-plane, tilt about a locked
+This is the weighted least-squares fit of the wish onto the free subspace, **in the coordinates of the integrator** (`screw_log` in,
+`screw_exp` out), so a wish that already lies on the free manifold comes back unchanged: a slide + spin on a face, any pose of a
+6-dof group, a point on a concentric pin's orbit; blocked components (off-plane, tilt about a locked
 axis) vanish, and followers ride along exactly as the mates demand (B/C/D: B +4 x ⇒ C +4 x; B +6 y ⇒ B, D +6, C 0).
 If `m = 0` (rank-0 group: `dof = 0`) the result is `ref` — the part cannot move.
 
@@ -85,6 +89,20 @@ t' = E · t + V · (v − w × t)
 (`v − w × t` is the twist's world-frame translational part.) Exact for group orbits (flat face slide + spin, hinge, concentric
 about **any** axis), still second-order wrong on non-orbit manifolds (the `ANGLE` cone about anything but the world axis) — those
 are covered by `max_step` and re-anchoring (§6, §8).
+
+### Screw log (the exact inverse of the exponential above)
+
+```
+w = rotvec(R_T · R_Bᵀ)                                  # B = ref pose, T = wished pose
+u = V(w)⁻¹ · (t_T − exp(w) · t_B)                       # spatial translational part
+v = u + w × t_B                                         # back to origin-velocity convention: screw_exp(B, [v, w]) == T
+V⁻¹ = I − K/2 + c·K²,   c = (1 − th·sin th / (2(1 − cos th))) / th²      # series below th < 1e-2: 1/12 + th²/720 + th⁴/30240
+```
+
+`[v, w]` is in the same convention as the `basis` rows (origin velocity + rotation vector), so projecting it onto them and integrating with
+`screw_exp` is one consistent Lie-group step (Lynch & Park, *Modern Robotics*, `MatrixLog6`/`MatrixExp6`; the same log → project → exp pattern
+as Newton-Raphson IK). For a pure translation `v` is the displacement; for a pure spin about the occurrence origin `v = 0`; a slide parallel to the axis is
+unchanged; only a slide *across* the rotation axis differs from the additive chart, by ~½·|v|·|w| (22.4 mm for 150 mm + 0.3 rad).
 
 `rotvec(R)` must be `atan2(|a|, (tr R − 1)/2)` with `a = (R − Rᵀ)_axial / 2` (the prototype's `acos` loses ~1e-8 rad at small
 angles and breaks the 1e-9 vectors), scaled by `θ/sin θ` (series `1 + θ²/6` below 1e-4), and near π (`π − θ < 1e-3`) take the
@@ -206,9 +224,18 @@ extrapolation past a hold.
    linearised wish lands near the true nearest (~28°). Consequence: at a re-anchor the model jumps toward the overshoot (that is the
    4.06 anchor step and `quality.jump` up to 6.6). Handled here by screw + blend + acceptance; a solver-side fix (sequential
    nearest-point retraction) is a **S2 follow-up**, not done. Vectors: `swing-offset-axis-90deg`, `nearest_anchors` vs. `backend_anchors`.
-3. **The prototype's `geo._skew` has a wrong third row** (`[-w0, w1, 0]` instead of `[-w1, w0, 0]`): `geo._V`, hence `project_motion_screw`'s translation, is wrong for any twist with an x or y rotation component (the investigation's z-axis scenes were unaffected; the cone/tilted cases are not). The vectors use the correct skew and `generate.py` asserts screw exactness about arbitrary axes; with `_skew` patched the prototype agrees with all 21 single-member `project` vectors to 5e-13. `acos` → `atan2` rotation vector (§5); follower-weighted GS (§3); hysteresis/blend/scheduler/acceptance are specified as
+3. **Chart mismatch in S4 (fixed in this revision).** S4 built the wish with the additive chart (`[t_W − t_ref, rotvec]`) but integrated with the
+   screw, so a wish that lay ON the free manifold was not reproduced whenever it both slid across and turned about an axis: 2.1 mm (12 mm + 0.3 rad), 22.4 mm
+   (150 mm + 0.3 rad), 48.6 mm (100 mm + 1 rad), 23 mm on a flat face, 2.9 mm on the off-axis pin's orbit. The anchor (the wish itself) then sat that far from the client's
+   projection, so the acceptance test could reject an honest anchor (`jump > L`). The wish now uses `screw_log` (§5). Cost, measured: on wishes that are *off* the manifold
+   the two charts measure distance differently, and the backend's retraction is nearest in the additive chart, so on the off-axis swing scene the per-frame step rose
+   from 0.33 to 0.52 weighted mm (nearest anchors; hand 0.34) and from 0.89 to 1.11 (real backend anchors); blended 0.29 → 0.35 and 0.37 → 0.47. Synthetic random
+   off-manifold wishes (≤ 0.3 rad, ≤ 40 mm) land within ±10 % of each other's distance to the nearest point, better on the angle cone. A Gauss–Newton refinement to the true
+   additive-metric nearest point brought the swing steps to 0.28 (both anchor sets) but diverged on large wishes without damping, so it is NOT specified; see the plan's S6 row.
+   `quality.jump` / `max_step` on the backend are still computed in the additive chart (telemetry / a conservative guard; second-order difference).
+4. **The prototype's `geo._skew` has a wrong third row** (`[-w0, w1, 0]` instead of `[-w1, w0, 0]`): `geo._V`, hence `project_motion_screw`'s translation, is wrong for any twist with an x or y rotation component (the investigation's z-axis scenes were unaffected; the cone/tilted cases are not). The vectors use the correct skew and `generate.py` asserts screw exactness about arbitrary axes; with `_skew` patched the prototype agrees with all 21 single-member `project` vectors to 5e-13. `acos` → `atan2` rotation vector (§5); follower-weighted GS (§3); hysteresis/blend/scheduler/acceptance are specified as
    state machines with vectors (the investigation had one-liners).
-4. **Uncalibrated constants**: `SIGMA_GAP_LOW`, `GAIN_MIN`, `JUMP_REJECT_FACTOR`, `TOL` — first guesses, tune with S6/S7 instrumentation.
+5. **Uncalibrated constants**: `SIGMA_GAP_LOW`, `GAIN_MIN`, `JUMP_REJECT_FACTOR`, `TOL` — first guesses, tune with S6/S7 instrumentation.
 
 ## 14. Constants
 
@@ -219,14 +246,15 @@ All are also in `vectors.json → constants`.
 ## 15. Golden vectors
 
 `tools/motion_vectors/generate.py` (numpy only) writes `docs/motion/vectors.json`; `--check` verifies the committed file byte for
-byte (identical across the two numpy 2.4.6 builds tried; rounding to 10 decimals absorbs ~1e-12 BLAS noise, far below the 1e-9 tolerance). 61 cases; each has `id`, `kind`, `input`, `expected`; every float is rounded to 10 decimals and every input is rounded
+byte (identical across the two numpy 2.4.6 builds tried; rounding to 10 decimals absorbs ~1e-12 BLAS noise, far below the 1e-9 tolerance). 76 cases; each has `id`, `kind`, `input`, `expected`; every float is rounded to 10 decimals and every input is rounded
 *before* the expectation is computed, so a client that reads the JSON reproduces `expected` from `input` alone (tolerance 1e-9,
 poses compared as matrices).
 
 | kind | n | checks |
 |---|---|---|
 | `gram_schmidt` | 6 | §3: weighting, dependent/zero/near-dependent rows, follower coordinates |
-| `project` | 29 | §4–5: flat face (6 + L100 + tilted plane), offset-axis concentric incl. the 90° wish and L = 100 (8), angle cone (5), group B/C/D grabbing B, D, C (8). `additive_members` is informational (v0 integrator), not normative |
+| `project` | 35 | §4–5: flat face (6 + L100 + tilted plane), offset-axis concentric incl. the 90° wish and L = 100 (8), angle cone (5), group B/C/D grabbing B, D, C (8), and six wishes that lie ON the free manifold and must come back exactly (flat slide + spin ×2, all-six-free ×2, off-axis pin orbit, group slide + spin). `additive_members` is informational (v0 chart + integrator), not normative |
+| `screw_log` | 9 | §5: the twist and the `screw_exp` round trip — pure slide, pure spin, tiny angle, both sides of the 1e-2 series switch, the 22.4 mm case, tilted axes, 2.5 rad, π − 0.002 |
 | `hysteresis` | 4 | §10: rise adopted at frame 3, flicker reset, drop immediate, equal-dof refresh |
 | `blend`, `blend_anchor` | 4 + 1 | §9: decay of translation/rotation offsets, moving projection, followers, continuity at an anchor |
 | `scheduler` | 8 | §8 |
