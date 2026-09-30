@@ -418,6 +418,196 @@ def test_coincident_plane_to_plane_flipped_faces_the_planes_the_same_way():
     assert _vectors_close(world_normal, (0.0, 0.0, 1.0), tolerance=1e-3)
 
 
+def test_coincident_plane_to_plane_preserves_spin_about_the_mate_normal():
+    """A face-to-face mate leaves rotation about the shared normal free, so a
+    solve from an already-rotated pose must keep that spin rather than reset
+    it (VR testing of live mate-constrained dragging: the warm-start seed used
+    to be built from the LOCAL normal alone, discarding the occurrence's
+    current rotation, so a part mated to a face could never be turned about
+    it)."""
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    bracket = _make_box_part("Bracket", size=8.0, depth=4.0)
+    spin_degrees = 40.0
+    # Bracket already faces the right way (bottom normal (0,0,-1) opposes Base's top),
+    # spun 40 degrees about Z - the mate's own normal axis.
+    _place_occurrence(
+        base["id"], bracket["id"], translation=(3.0, 3.0, 50.0),
+        rotation_axis=(0.0, 0.0, 1.0), rotation_angle_degrees=spin_degrees,
+    )
+    base_top = _find_planar_face(base["id"], base["body_id"], (0.0, 0.0, 1.0))
+    bracket_bottom = _find_planar_face(bracket["id"], bracket["body_id"], (0.0, 0.0, -1.0))
+    _create_mate(
+        base["id"],
+        mate_type="coincident",
+        driven_ref={"subshape_ref": {"body_id": bracket["body_id"], "shape_type": "face", "index": bracket_bottom}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_top}},
+    )
+    transform = _rigid_transform_from_response(_solve(base["id"]))
+
+    world_normal = apply_transform_to_direction(transform, (0.0, 0.0, -1.0))
+    assert _vectors_close(world_normal, (0.0, 0.0, -1.0), tolerance=1e-3)
+    # The mate is satisfied AND the spin survived: the bracket's local +X still
+    # points 40 degrees round from world +X.
+    spun_x = apply_transform_to_direction(transform, (1.0, 0.0, 0.0))
+    expected = (math.cos(math.radians(spin_degrees)), math.sin(math.radians(spin_degrees)), 0.0)
+    assert _vectors_close(spun_x, expected, tolerance=1e-3)
+    # ...and the free in-plane translation was left where it was put, not reset.
+    world_point = apply_transform_to_point(transform, (0.0, 0.0, 0.0))
+    assert abs(world_point[0] - 3.0) < 1e-3 and abs(world_point[1] - 3.0) < 1e-3
+    assert abs(world_point[2] - 10.0) < _TOLERANCE
+
+
+def test_coincident_plane_to_plane_from_a_wrongly_facing_pose_flips_it_back():
+    """The other half of the seed: when the driven normal currently points the
+    WRONG way (co-facing) for a not-flipped mate, the solve must still turn it
+    round - the seed composes the minimal correcting rotation onto the current
+    one, it doesn't just keep the current rotation."""
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    bracket = _make_box_part("Bracket", size=8.0, depth=4.0)
+    # 180 degrees about X: the bracket's bottom normal now points +Z, co-facing Base's top.
+    _place_occurrence(
+        base["id"], bracket["id"], translation=(3.0, 3.0, 50.0),
+        rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=180.0,
+    )
+    base_top = _find_planar_face(base["id"], base["body_id"], (0.0, 0.0, 1.0))
+    bracket_bottom = _find_planar_face(bracket["id"], bracket["body_id"], (0.0, 0.0, -1.0))
+    _create_mate(
+        base["id"],
+        mate_type="coincident",
+        driven_ref={"subshape_ref": {"body_id": bracket["body_id"], "shape_type": "face", "index": bracket_bottom}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_top}},
+    )
+    transform = _rigid_transform_from_response(_solve(base["id"]))
+    world_normal = apply_transform_to_direction(transform, (0.0, 0.0, -1.0))
+    assert _vectors_close(world_normal, (0.0, 0.0, -1.0), tolerance=1e-3)
+    assert abs(apply_transform_to_point(transform, (0.0, 0.0, 0.0))[2] - 10.0) < _TOLERANCE
+
+
+# --- MATE MOTION (one round trip: nearest pose + free-motion basis) ---------
+
+
+def _mate_motion(root_part_id: str, transform: dict | None, occurrence_id: str = "occ-driven") -> dict:
+    response = client.post(
+        f"/document/parts/{root_part_id}/occurrences/{occurrence_id}/mate-motion", json={"transform": transform}
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _apply_twist(transform, twist, scale: float):
+    """`transform` moved by `scale` * `twist` in the coordinates the solver's
+    own DOF Jacobian uses: translation += (dx, dy, dz); rotation composed
+    on the left by the rotation vector (rx, ry, rz)."""
+    from app.document.assembly_solver import (
+        _axis_angle_from_quaternion,
+        _quaternion_from_axis_angle,
+        _quaternion_multiply,
+    )
+    from app.document.models import RigidTransform
+
+    dx, dy, dz, rx, ry, rz = (scale * c for c in twist)
+    angle = math.sqrt(rx * rx + ry * ry + rz * rz)
+    delta = (1.0, 0.0, 0.0, 0.0) if angle < 1e-12 else _quaternion_from_axis_angle((rx / angle, ry / angle, rz / angle), math.degrees(angle))
+    base = _quaternion_from_axis_angle(transform.rotation_axis, transform.rotation_angle_degrees)
+    axis, degrees = _axis_angle_from_quaternion(_quaternion_multiply(delta, base))
+    translation = (transform.translation[0] + dx, transform.translation[1] + dy, transform.translation[2] + dz)
+    return RigidTransform(translation=translation, rotation_axis=axis, rotation_angle_degrees=degrees)
+
+
+def _make_face_mated_bracket():
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    bracket = _make_box_part("Bracket", size=8.0, depth=4.0)
+    _place_occurrence(base["id"], bracket["id"], translation=(3.0, 3.0, 50.0))
+    base_top = _find_planar_face(base["id"], base["body_id"], (0.0, 0.0, 1.0))
+    bracket_bottom = _find_planar_face(bracket["id"], bracket["body_id"], (0.0, 0.0, -1.0))
+    _create_mate(
+        base["id"],
+        mate_type="coincident",
+        driven_ref={"subshape_ref": {"body_id": bracket["body_id"], "shape_type": "face", "index": bracket_bottom}},
+        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_top}},
+    )
+    return base, bracket
+
+
+def test_mate_motion_reports_three_free_directions_for_a_face_to_face_mate():
+    """A coincident plane-plane mate leaves 3 DOF (two in-plane translations and
+    the spin about the normal); the response must say so and give a basis of
+    exactly that free motion."""
+    base, _bracket = _make_face_mated_bracket()
+    result = _mate_motion(base["id"], None)
+    assert result["converged"] is True
+    assert result["dof"] == 3
+    assert len(result["free_twists"]) == 3
+    # Orthonormal basis.
+    twists = result["free_twists"]
+    for i, a in enumerate(twists):
+        for j, b in enumerate(twists):
+            dot = sum(x * y for x, y in zip(a, b))
+            assert abs(dot - (1.0 if i == j else 0.0)) < 1e-6
+
+
+def test_mate_motion_free_twists_really_keep_the_mate_satisfied_and_forbidden_ones_dont():
+    base, _bracket = _make_face_mated_bracket()
+    result = _mate_motion(base["id"], None)
+    solved = _rigid_transform_from_response({"transform": result["transform"]})
+
+    def plane_height_and_normal(transform):
+        point = apply_transform_to_point(transform, (0.0, 0.0, 0.0)) # the bracket's bottom face lies in its local z=0 plane
+        normal = apply_transform_to_direction(transform, (0.0, 0.0, -1.0))
+        return point[2], normal
+
+    z0, n0 = plane_height_and_normal(solved)
+    assert abs(z0 - 10.0) < _TOLERANCE
+    # Every free twist, moved along a little, leaves the bracket's bottom face on
+    # Base's top plane and pointing the same way (to first order).
+    for twist in result["free_twists"]:
+        moved = _apply_twist(solved, twist, 1e-4)
+        z, normal = plane_height_and_normal(moved)
+        assert abs(z - z0) < 1e-6, twist
+        assert _vectors_close(normal, n0, tolerance=1e-6), twist
+    # ...whereas lifting straight off the plane or tipping over is NOT in the
+    # free subspace: it can't be built from the twists.
+    import numpy as np
+
+    basis = np.array(result["free_twists"])
+    for forbidden in ((0, 0, 1, 0, 0, 0), (0, 0, 0, 1, 0, 0), (0, 0, 0, 0, 1, 0)):
+        v = np.array(forbidden, dtype=float)
+        assert np.linalg.norm(v - basis.T @ (basis @ v)) > 0.5, forbidden
+
+
+def test_mate_motion_solves_from_the_wanted_pose_keeps_free_directions_and_stores_nothing():
+    base, _bracket = _make_face_mated_bracket()
+    wanted = {"translation": [9.0, -4.0, 33.0], "rotation_axis": [0.0, 0.0, 1.0], "rotation_angle_degrees": 25.0}
+    result = _mate_motion(base["id"], wanted)
+    solved = _rigid_transform_from_response({"transform": result["transform"]})
+    assert result["converged"] is True
+    # On Base's top plane, in-plane position and spin left where they were wanted.
+    assert abs(solved.translation[2] - 10.0) < _TOLERANCE
+    assert abs(solved.translation[0] - 9.0) < 1e-3 and abs(solved.translation[1] - (-4.0)) < 1e-3
+    spun_x = apply_transform_to_direction(solved, (1.0, 0.0, 0.0))
+    assert _vectors_close(spun_x, (math.cos(math.radians(25.0)), math.sin(math.radians(25.0)), 0.0), tolerance=1e-3)
+    # Nothing stored: the occurrence still has the pose _place_occurrence gave it.
+    stored = client.get(f"/document/parts/{base['id']}/occurrences").json()[0]["transform"]
+    assert stored["translation"] == [3.0, 3.0, 50.0]
+
+
+def test_mate_motion_with_no_mates_is_all_six_free():
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    bracket = _make_box_part("Bracket", size=8.0, depth=4.0)
+    _place_occurrence(base["id"], bracket["id"], translation=(3.0, 3.0, 50.0))
+    result = _mate_motion(base["id"], {"translation": [1.0, 2.0, 3.0], "rotation_axis": [0.0, 0.0, 1.0], "rotation_angle_degrees": 0.0})
+    assert result["converged"] is True and result["dof"] == 6 and len(result["free_twists"]) == 6
+    assert result["transform"]["translation"] == [1.0, 2.0, 3.0]
+
+
+def test_mate_motion_rejects_a_grounded_occurrence():
+    base, _bracket = _make_face_mated_bracket()
+    client.patch(f"/document/parts/{base['id']}/occurrences/occ-driven", json={"fixed": True})
+    response = client.post(f"/document/parts/{base['id']}/occurrences/occ-driven/mate-motion", json={"transform": None})
+    assert response.status_code == 422
+    assert response.json()["detail"]["type"] == "occurrence_is_fixed"
+
+
 def test_coincident_point_to_point_places_the_vertex_exactly():
     base = _make_box_part("Base", size=20.0, depth=10.0)
     pin = _make_box_part("Pin", size=2.0, depth=2.0)
