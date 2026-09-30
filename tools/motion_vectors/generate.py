@@ -645,31 +645,39 @@ def build():
     base = conc_pose(0.0, 30.0)
     hand = [wish_from(base, (0, 0, 15.0 * f / frames), (0, 0, D(90) * f / frames)) for f in range(frames + 1)]
 
-    def anchor_at(wish: Pose, lever=L) -> Pose:
-        """Analytic stand-in for the backend retraction: the manifold point nearest to the wish in the metric
-        diag(1,1,1,L,L,L) (z is free and orthogonal; theta by ternary search on [0, wish spin], deterministic)."""
+    def nearest_theta_deg(wish: Pose, lever=L) -> float:
+        """Spin angle (deg) of the manifold point nearest to the wish in the metric diag(1,1,1,L,L,L) (z is free and
+        orthogonal). Bisection on the derivative g(th) = CX (wy cos th - wx sin th) + L^2 (th - phi): well-conditioned
+        (error ~ eps / slope), unlike a ternary search on the cost, whose minimiser moved by up to 1e-7 rad when one
+        floating-point op changed (hypot vs sqrt). The result is stored in the vectors as data
+        (`nearest_anchor_theta_deg`), so ports never recompute it."""
         phi = rotvec_from_rot(wish.r)[2]
 
-        def cost(th):
-            return (float(np.hypot(-CX * math.cos(th) - wish.t[0], -CX * math.sin(th) - wish.t[1])) ** 2
-                    + (lever * (th - phi)) ** 2)
+        def grad(th):
+            return CX * (wish.t[1] * math.cos(th) - wish.t[0] * math.sin(th)) + lever * lever * (th - phi)
 
         lo, hi = min(0.0, phi), max(0.0, phi)
+        if phi == 0.0:
+            return 0.0
+        assert grad(lo) * grad(hi) <= 0.0, "nearest-anchor bracket has no sign change"
         for _ in range(200):
-            m1, m2 = lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0
-            if cost(m1) < cost(m2):
-                hi = m2
+            mid = (lo + hi) / 2.0
+            if grad(lo) * grad(mid) <= 0.0:
+                hi = mid
             else:
-                lo = m1
-        return conc_pose(math.degrees((lo + hi) / 2.0), wish.t[2])
+                lo = mid
+        return math.degrees((lo + hi) / 2.0)
+
+    nearest_theta = [0.0] + [nearest_theta_deg(hand[f]) for f in range(every, frames + 1, every)]
 
     # Anchor spin angles (deg) the REAL backend returned for this hand path (solve_group @ main 76f7699 + S4, L = 10,
     # the persisted previous anchor as the stored pose, one anchor per 9 frames, frame 0 = the settled pose).
     # Captured by running backend/tests (scene `_offset_pin_scene`), NOT recomputed here. They overshoot the true
-    # nearest point (analytic anchors below: 3.96, 11.9, 28.5 deg at frames 9, 27, 63; backend: 4.08, 14.9, 51.0).
+    # nearest point (analytic anchors: see `nearest_anchor_theta_deg`, 3.96, 11.9, 28.5 deg at frames 9, 27, 63; backend: 4.08, 14.9, 51.0).
     backend_theta = [0.0, 4.078784558, 8.858851956, 14.883502354, 22.451526709, 31.056886352, 40.043343104, 51.032455339]
     inp = {"lever_arm": L, "frames": frames, "reanchor_every": every, "tau_frames": TAU_FRAMES,
-           "hand": [rf(h) for h in hand], "backend_anchor_theta_deg": backend_theta}
+           "hand": [rf(h) for h in hand], "nearest_anchor_theta_deg": nearest_theta,
+           "backend_anchor_theta_deg": backend_theta}
 
     def run_sequence(i, anchor_of):
         hnd = [Pose.from_json(h) for h in i["hand"]]
@@ -713,7 +721,7 @@ def build():
         return out
 
     def nearest_anchor(i):
-        return lambda f, w: (conc_pose(0.0, 30.0) if f == 0 else anchor_at(w, i["lever_arm"]))
+        return lambda f, w: conc_pose(i["nearest_anchor_theta_deg"][f // i["reanchor_every"]], w.t[2])
 
     def backend_anchor(i):
         return lambda f, w: conc_pose(i["backend_anchor_theta_deg"][f // i["reanchor_every"]], w.t[2])
@@ -769,7 +777,9 @@ def main():
         },
         "cases": CASES,
     }
-    text = json.dumps(clean(doc), indent=1) + "\n"
+    cleaned = clean(doc)
+    cleaned["constants"] = doc["constants"]  # exact: `clean` would round gram_schmidt_drop_absolute (1e-12) to 0.0
+    text = json.dumps(cleaned, indent=1) + "\n"
     if "--check" in sys.argv:
         sys.exit(0 if OUT.exists() and OUT.read_text() == text else 1)
     OUT.parent.mkdir(parents=True, exist_ok=True)
