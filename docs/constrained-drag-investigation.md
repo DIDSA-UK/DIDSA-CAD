@@ -636,6 +636,12 @@ its retraction uses the same metric; the client must not use a different one.
 
 ## G. Ranked recommendation and phased plan
 
+> **Amendment (pre-release).** The software is pre-release with only the flat and VR apps as consumers, so the versioning/compatibility
+> material in §G.2 (the `schema` opt-in, legacy v0/v1a shape, additive-only rule, 404/405 fallback) is **superseded** by
+> [`constrained-drag-implementation-plan.md`](constrained-drag-implementation-plan.md), which changes contracts in place, does not merge the
+> single-occurrence `mate-motion` v0, and breaks the work into session-sized steps (S0–S13). The technical findings and the phase *ordering*
+> (group-aware backend first) stand.
+
 ### G.1 Phases (re-ordered after review: backend correctness first)
 
 **Phase 0 — land what exists (days).**
@@ -657,7 +663,7 @@ its retraction uses the same metric; the client must not use a different one.
 
 **Phase 5 (deferred).** Scalar chart for feature parameters; 3D-sketch groundwork — only if a concrete consumer appears (§J).
 
-### G.2 `FreeMotion` rollout matrix (contract versions × components)
+### G.2 `FreeMotion` rollout matrix (contract versions × components) — *superseded, see amendment above*
 
 | Version | Backend | VR | Flat app | Compatibility rule |
 |---|---|---|---|---|
