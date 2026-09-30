@@ -149,6 +149,7 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 * **Read:** investigation §A.0, §A.3; `part_viewport.dart` (`_tryBeginComponentGizmoDrag`, `_updateComponentGizmoDrag`), `part_screen.dart` (`_onComponentGizmoDragUpdate/End`, `_gizmoLiveTransform`, `_applyGizmoWorldTransform`, `_refreshAssembly*`), `component_gizmo.dart`.
 * **Tasks:** at grab: `mate-motion` (anchor); each pointer-move: wanted pose from the gizmo math → projector → live pose for the grabbed **and follower** occurrences (render all); scheduler re-anchors; release: `commit:true`, replace the raw PATCH + 4 refresh calls with the response (+ one refresh), undo = one group entry (extend `_TransformUndoEntry`); typed Move/Rotate panel Apply → same endpoint; `converged:false` → hold pose + throttled "can't follow that move"; `dof == 0`/`mobility == 0` → gizmo says why.
 * **Tests:** widget/unit tests with a fake API; regression: after a drag the stored pose of a mated occurrence satisfies its mate; unmated occurrences behave exactly as before (no extra requests).
+* **Follow-ups:** read "Open follow-ups" (F1, F3) below; record the counters that decide F1.
 * **Exit:** on a device or emulator the owner can drag a face-mated part in-plane and be blocked off-plane; request counters show ≈ 1 + 1/150 ms + 1.
 
 ### S8 — Flat app gizmo cues + DOF display (CAD client, M)  *(needs S7)*
@@ -156,6 +157,7 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 * **Exit:** owner walkthrough on the three reference mates (face, concentric offset axis, angle).
 
 ### S9 — Cleanup + docs (CAD + VR, S each)
+* Also close F2 (backend `jump`/`max_step` in the screw chart, see "Open follow-ups").
 * Remove the S3 **v0 alias fields** (`transform`, `free_twists`) once S5 has merged; remove superseded code paths (old `solve` call sites that re-solved single occurrences, dead DTOs), fix the doc/code drift (`assembly-scope.md` "gizmo clamped by mates" now true; docstrings in `router.py` / `document_api_client.dart`), update `docs/status.md`/`roadmap.md`, update VR `docs/backend-api-notes.md`/`status.md`. Regenerate `investigation` numbers only if behaviour changed materially.
 
 ### Optional sketch track (independent; schedule only if S0 says so)
@@ -179,6 +181,14 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 | S8 | Flat gizmo cues + DOF display | CAD | S7 | ☐ | | |
 | S9 | Cleanup + docs | CAD, VR | S5, S8 | ☐ | | |
 | S10–S13 | Sketch track (optional) | CAD | S0 | ☐ | | |
+
+### Open follow-ups from S5/S6 (each needs an owner; none blocks S7)
+
+| # | Item | Effect | Owner / when |
+|---|---|---|---|
+| F1 | **Nearest-point refinement** of the client projection (guarded, damped Gauss–Newton to the additive-metric nearest point) and/or the S4 "sequential nearest-point retraction" on the backend. Prototype: swing frame step 0.52 → 0.28 weighted mm, anchor-overshoot pop gone; unguarded it diverges on large wishes (spec §13.3). | Smoothness on curved mates for wishes the mate cannot satisfy. Flat faces, pins and free groups are already exact. | New session **after S7**, only if S7's counters (anchor rejects, `max_step` re-anchors, frame steps) show curved-mate roughness. Needs a spec change + vectors + both ports. |
+| F2 | Backend `quality.jump` / `max_step` still computed in the additive chart (`assembly_group._jump`); should use `screw_log` and compare screw-applied poses. | `jump` is telemetry; `max_step` is a conservative guard (angle cone only). Second-order. | **S9** (already touches the backend). Update spec §6/§7 wording and the tests that pin `jump` (e.g. ≈ 6.6 on the swing scene). |
+| F3 | Near π the axis-from-(R+I)/2 rule has O(π−θ) error inside the 1e-3 band (spec §5). | Only a wish rotated ~180° from the current anchor; per-frame wishes are measured from a recent anchor, so not expected in a drag. | **Watch item**: fix (both ports + vectors) only if S7/S8 counters or a bug report show it. |
 
 ## 8. Prompt template for each session
 
