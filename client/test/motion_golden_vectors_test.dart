@@ -165,7 +165,7 @@ void main() {
   group('vectors file', () {
     test('every kind in the file has a runner in this test', () {
       const handled = {
-        'gram_schmidt', 'project', 'hysteresis', 'blend', 'blend_anchor', 'scheduler', 'accept_anchor', 'swing_sequence',
+        'gram_schmidt', 'project', 'screw_log', 'hysteresis', 'blend', 'blend_anchor', 'scheduler', 'accept_anchor', 'swing_sequence',
       };
       final kinds = (_doc['cases'] as List).map((c) => (c as Map)['kind'] as String).toSet();
       expect(kinds.difference(handled), isEmpty, reason: 'new vector kind without a Dart runner');
@@ -231,6 +231,29 @@ void main() {
         final add = p.project(_poseIn(i['wanted']), integrator: MotionIntegrator.additive);
         for (var m = 0; m < want.length; m++) {
           _expectPose(add[m], (e['additive_members'] as List)[m], '$id additive member $m');
+        }
+      }
+    });
+  });
+
+  group('screw_log', () {
+    test('all cases: twist, and screwExp(base, twist) lands on the target', () {
+      final cs = cases('screw_log');
+      expect(cs, isNotEmpty);
+      for (final c in cs) {
+        final i = c['input'] as Map<String, dynamic>;
+        final base = _poseIn(i['base']);
+        final target = _poseIn(i['target']);
+        final d = screwLog(base, target);
+        final e = c['expected'] as Map<String, dynamic>;
+        final want = _dl(e['twist']);
+        for (var k = 0; k < 6; k++) {
+          _expectNum(d[k], want[k], '${c['id']} twist[$k]');
+        }
+        _expectPose(screwExp(base, d), e['roundtrip'], '${c['id']} roundtrip');
+        // and the roundtrip really is the target (not merely what the generator computed)
+        for (var k = 0; k < 3; k++) {
+          expect((screwExp(base, d).t[k] - target.t[k]).abs(), lessThan(1e-8), reason: '${c['id']} lands on target t[$k]');
         }
       }
     });

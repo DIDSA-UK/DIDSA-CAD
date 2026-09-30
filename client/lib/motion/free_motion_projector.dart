@@ -51,10 +51,12 @@ class FreeMotionProjector {
   /// Number of free directions after re-orthonormalisation; 0 = the group cannot move.
   int get dim => rows.length;
 
-  /// The wish vector: `log(ref_0, wanted)` in the grabbed block, zero elsewhere (followers have no wish).
-  List<double> wishVector(Pose wanted) {
+  /// The wish vector: the grabbed block is `screwLog(ref_0, wanted)` (spec §4: the exact inverse of the screw
+  /// integrator, so a wish that lies on the free manifold is reproduced exactly); zero elsewhere (followers
+  /// have no wish). [MotionIntegrator.additive] pairs with the v0 chart `poseDelta` (informational only).
+  List<double> wishVector(Pose wanted, {MotionIntegrator integrator = MotionIntegrator.screw}) {
     final want = List<double>.filled(6 * members, 0);
-    final d = poseDelta(wanted, refs[0]);
+    final d = integrator == MotionIntegrator.screw ? screwLog(refs[0], wanted) : poseDelta(wanted, refs[0]);
     for (var i = 0; i < 6; i++) {
       want[i] = d[i];
     }
@@ -62,11 +64,12 @@ class FreeMotionProjector {
   }
 
   /// The projected 6k twist (followers included).
-  List<double> projectTwist(Pose wanted) => projectOntoRows(rows, scale, wishVector(wanted));
+  List<double> projectTwist(Pose wanted, {MotionIntegrator integrator = MotionIntegrator.screw}) =>
+      projectOntoRows(rows, scale, wishVector(wanted, integrator: integrator));
 
   /// Poses for every member at the wished grabbed pose. `dim == 0` returns [refs].
   List<Pose> project(Pose wanted, {MotionIntegrator integrator = MotionIntegrator.screw}) =>
-      integrate(projectTwist(wanted), integrator: integrator);
+      integrate(projectTwist(wanted, integrator: integrator), integrator: integrator);
 
   /// Integrates an already-projected twist from the reference poses.
   List<Pose> integrate(List<double> d, {MotionIntegrator integrator = MotionIntegrator.screw}) => <Pose>[

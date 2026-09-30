@@ -13,6 +13,9 @@ import 'dart:math' as math;
 /// Taylor series so nothing divides by ~0 (spec §5).
 const double kSeriesSwitch = 1e-4;
 
+/// Below this angle (rad) [screwLog]'s `V⁻¹` coefficient uses its Taylor series.
+const double kLogSeriesSwitch = 1e-2;
+
 /// Within this of π the rotation-vector axis is taken from `(R + I)/2`.
 const double kNearPi = 1e-3;
 
@@ -182,6 +185,31 @@ Pose screwExp(Pose base, List<double> d, [int offset = 0]) {
   final et = e.mulVec(base.t);
   final vt = vm.mulVec(<double>[v[0] - wxt[0], v[1] - wxt[1], v[2] - wxt[2]]);
   return Pose(<double>[et[0] + vt[0], et[1] + vt[1], et[2] + vt[2]], e * base.r);
+}
+
+/// `V(w)⁻¹ = I − K/2 + c·K²`, `c = (1 − θ sinθ / (2(1 − cosθ))) / θ²` (series below θ < 1e-2, where the
+/// closed form cancels: `1/12 + θ²/720 + θ⁴/30240`). Inverse of the `V` in [screwExp].
+Mat3 _vInverse(List<double> w) {
+  final th = norm3(w);
+  final k = skew(w);
+  final double c;
+  if (th < kLogSeriesSwitch) {
+    c = 1.0 / 12.0 + th * th / 720.0 + th * th * th * th / 30240.0;
+  } else {
+    c = (1.0 - th * math.sin(th) / (2.0 * (1.0 - math.cos(th)))) / (th * th);
+  }
+  return Mat3.identity() + k.scaled(-0.5) + (k * k).scaled(c);
+}
+
+/// The twist `d = [v, w]` with `screwExp(base, d) == target` - the exact inverse of [screwExp] (spec §4):
+/// `w = rotvec(R_T·R_Bᵀ)`, `u = V(w)⁻¹ (t_T − exp(w)·t_B)`, `v = u + w × t_B`.
+List<double> screwLog(Pose base, Pose target) {
+  final w = rotvecFromRot(target.r * base.r.transposed);
+  final e = rotFromRotvec(w);
+  final et = e.mulVec(base.t);
+  final u = _vInverse(w).mulVec(<double>[target.t[0] - et[0], target.t[1] - et[1], target.t[2] - et[2]]);
+  final wxt = cross3(w, base.t);
+  return <double>[u[0] + wxt[0], u[1] + wxt[1], u[2] + wxt[2], w[0], w[1], w[2]];
 }
 
 /// `‖[1,1,1,L,L,L] ∘ log(a, b)‖` - the weighted distance between two poses (spec §7, §6 `travel`).
