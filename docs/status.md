@@ -3561,3 +3561,7 @@ point (`_independent_dof` is now a thin wrapper over `_free_motion`). Grounded o
 like `/solve`; non-convergence: `converged: false` (no 4xx). Tests in
 `tests/test_assembly_solver.py` (`test_mate_motion_*`, 5); all 117 solver/assembly/occurrence tests
 in the touched suites pass.
+
+## 2026-09-30 — Constrained-drag investigation + multi-session rollout plan (docs only)
+
+No product code changed. `docs/constrained-drag-investigation.md` (evidence, measurements, prototypes under `docs/constrained-drag-investigation/`) and `docs/constrained-drag-implementation-plan.md` (contract of record, session briefs S0–S13, tracker) are the entry points for rolling the "learn the allowed motion once, apply locally, re-anchor" technique out across the assembly tools. Headline findings: the flat app never re-solves mates after a gizmo drag; the solver drives one occurrence against *frozen* peers so per-part DOF is under-reported (measured B = 0 vs group DOF 5); group-aware solving is therefore the prerequisite (S1–S3), then VR (S5) and the flat app (S6–S8). Baseline at time of writing: CAD `main` 003254a, VR `main` 8933f53. Each rollout session must tick its row in the plan's tracker and add its own dated entry here.
