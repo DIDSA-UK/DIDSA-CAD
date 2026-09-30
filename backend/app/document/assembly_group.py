@@ -376,6 +376,7 @@ class GroupSolveQuality:
     jump: float | None  # weighted distance (grabbed block) between the solved pose and the first-order prediction
     iterations: int
     seeded_by: str  # "gauss-newton" | "slvs-fallback"
+    max_step: float | None = None  # weighted mm the first-order (screw) model may be trusted from here; None = no curvature seen
 
 
 @dataclass
@@ -580,24 +581,51 @@ def solve_group(
             seeded_by = "slvs-fallback"
 
     converged = residual_inf <= _SOLVE_TOL
-    analysis, jump = None, None
+    analysis, jump, max_step = None, None, None
     if converged:
         solved = replace(model, base_transforms=dict(poses))
         analysis = analyze_model(solved, lever_arm)
-        jump = None if not with_jump else _jump(model, stored, poses, seed_wish=wanted_pose, grabbed_id=grabbed_id, lever_arm=lever_arm)
+        if with_jump:
+            jump, max_step = _jump(model, stored, poses, seed_wish=wanted_pose, grabbed_id=grabbed_id, lever_arm=lever_arm)
     return GroupSolveResult(
         converged=converged,
         poses=poses,
         analysis=analysis,
-        quality=GroupSolveQuality(residual_inf=residual_inf, jump=jump, iterations=iterations, seeded_by=seeded_by),
+        quality=GroupSolveQuality(residual_inf=residual_inf, jump=jump, iterations=iterations, seeded_by=seeded_by, max_step=max_step),
     )
 
 
-def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_arm: float) -> float:
-    """Distance (grabbed block, metric diag(1,1,1,L,L,L)) between where the solve landed and
-    where a client projecting the wish onto the STORED pose's free-motion basis would have put
-    the grabbed member - how far the first-order model was off (curved mates), i.e. the pop a
-    re-anchor would cause."""
+# max_step rule (docs/motion/projector-spec.md section 6). The client integrates the free motion as a
+# constant SCREW per member; `max_step` is how far that first-order motion can be trusted to stay on
+# the mate manifold. Probe: apply the client's own prediction (screw of the basis-projected wish, from
+# the STORED pose) and evaluate the mate residual there; residual / sigma_min bounds the distance e (weighted
+# mm) it leaves the manifold. e grows as d^2 (d = weighted length of the predicted step), so the step whose
+# error stays within _MAX_STEP_TOL is sqrt(tol / e) * d. Independent of where the solver lands (the
+# Gauss-Newton retraction is not always the nearest point; that shows up in `jump`, not here).
+# Exact screw freedoms (flat mates, concentric about any axis) give e = 0 -> None.
+_MAX_STEP_TOL = 0.25  # weighted mm of first-order error the display blend can hide
+_MAX_STEP_MIN_D = 1e-3  # below this the wish tells nothing about curvature
+_MAX_STEP_MIN_E = 1e-4  # below this the residual is finite-difference noise: flat, no limit
+
+
+def _screw_translation_delta(t: np.ndarray, v: np.ndarray, w: np.ndarray) -> np.ndarray:
+    """`t_new - t` when the twist (origin velocity `v`, rotation vector `w`) is integrated as a
+    constant spatial screw: `t_new = E t + V (v - w x t)`, `E = exp(w)`, `V = I + (1-cos)/th^2 K + (th-sin)/th^3 K^2`."""
+    th = float(np.linalg.norm(w))
+    k = np.array([[0.0, -w[2], w[1]], [w[2], 0.0, -w[0]], [-w[1], w[0], 0.0]])
+    if th < 1e-9:
+        e, vm = np.eye(3) + k, np.eye(3) + 0.5 * k
+    else:
+        e = np.eye(3) + math.sin(th) / th * k + (1 - math.cos(th)) / th**2 * k @ k
+        vm = np.eye(3) + (1 - math.cos(th)) / th**2 * k + (th - math.sin(th)) / th**3 * k @ k
+    return (e - np.eye(3)) @ t + vm @ (v - np.cross(w, t))
+
+
+def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_arm: float) -> tuple[float, float | None]:
+    """`(jump, max_step)`. `jump`: distance (grabbed block, metric diag(1,1,1,L,L,L)) between where
+    the solve landed and where a client projecting the wish onto the STORED pose's free-motion basis
+    would have put the grabbed member (additive prediction) - how far the first-order model was off
+    (curved mates), i.e. the pop a re-anchor would cause. `max_step`: see the rule above."""
     ids = model.member_ids
     at_rest = replace(model, base_transforms=dict(stored))
     analysis = analyze_model(at_rest, lever_arm)
@@ -613,4 +641,19 @@ def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_a
         predicted = nb.T @ c
     actual = np.concatenate([pose_delta(solved[oid], stored[oid]) for oid in ids])
     g = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
-    return float(np.linalg.norm((actual[:6] - predicted[:6]) * g))
+    jump = float(np.linalg.norm((actual[:6] - predicted[:6]) * g))
+
+    max_step = None
+    sigma_min = analysis.quality.sigma_min
+    d = float(np.linalg.norm(predicted[:6] * g))
+    if sigma_min and d >= _MAX_STEP_MIN_D:
+        probe = {}
+        for i, oid in enumerate(ids):
+            blk = predicted[6 * i : 6 * i + 6].copy()
+            blk[:3] = _screw_translation_delta(np.array(stored[oid].translation), blk[:3], blk[3:])
+            probe[oid] = apply_delta(stored[oid], blk)
+        r = model.residual(None, {**stored, **probe})
+        e = float(np.linalg.norm(r)) / sigma_min
+        if e >= _MAX_STEP_MIN_E:
+            max_step = d * math.sqrt(_MAX_STEP_TOL / e)
+    return jump, max_step

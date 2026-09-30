@@ -287,3 +287,58 @@ def test_offset_axis_concentric_90_degree_wish_anchor_steps_are_smaller_than_py_
               % (max(hand_steps), max(group_steps), max(slvs_steps) if slvs_steps else float("nan")))
     assert slvs_steps and max(group_steps) <= max(slvs_steps) + 1e-6, (group_steps, slvs_steps)
     assert max(group_steps) <= 1.5 * max(hand_steps), (group_steps, hand_steps)
+
+
+# ---- quality.max_step (projector spec section 6) --------------------------------
+
+
+def _max_steps(root, wishes):
+    document = get_document()
+    part = document.parts[root]
+    occ = part.occurrences[0]
+    settled = solve_group(document, part, occ.id, None, lever_arm=_L)
+    occ.transform = settled.poses[occ.id]
+    out = []
+    for delta in wishes:
+        r = solve_group(document, part, occ.id, apply_delta(occ.transform, delta), lever_arm=_L)
+        assert r.converged
+        out.append(r.quality.max_step)
+    return out
+
+
+def test_max_step_is_null_where_the_screw_projection_is_exact():
+    """Flat mates and concentric about ANY axis (also the off-axis pin) are screw orbits: no curvature to guard."""
+    root, _plate, _parts = _plate_bcd()
+    stored = get_document().parts[root].occurrences[0].transform
+    flat = solve_group(get_document(), get_document().parts[root], "occ-B", apply_delta(stored, (0.0, 6.0, 0.0, 0, 0, 0)), lever_arm=10.0)
+    assert flat.converged and flat.quality.max_step is None
+    swing = _max_steps(_offset_pin_scene(), [(0, 0, 0, 0, 0, 0), (0, 0, 15.0, 0, 0, math.radians(90))])
+    # wish == stored (no step) -> None; the 90 degree swing: the screw is exact, only finite-difference noise
+    # remains, so the trusted distance is null or far beyond the ~11 weighted mm the wish travels
+    assert swing[0] is None and (swing[1] is None or swing[1] > 50.0), swing
+
+
+def test_max_step_is_finite_on_the_angle_cone_and_independent_of_the_wish_length(capsys):
+    root = _plate_scene("angle", start=((5, 5, 60), (1, 0, 0), 45.0), value=60.0)
+    small, large, about_axis = _max_steps(root, [(0, 0, 0, 0.0, 0.05, 0.0), (0, 0, 0, 0.0, 0.5, 0.0), (0, 0, 0, 0.0, 0.0, 0.5)])
+    with capsys.disabled():
+        print("\nmax_step angle cone (weighted mm): small wish %s | large wish %s" % (small, large))
+    assert small is not None and large is not None and 0.0 < large
+    assert about_axis is None  # rotation about the cone's world axis is an exact orbit
+    assert abs(small - large) < 0.1 * large  # a curvature property: error ~ d^2, so the trusted distance does not depend on the wish length
+
+
+def test_max_step_reaches_the_http_response():
+    root = _plate_scene("angle", start=((5, 5, 60), (1, 0, 0), 45.0), value=60.0)
+    document = get_document()
+    occ = document.parts[root].occurrences[0]
+    settled = solve_group(document, document.parts[root], occ.id, None, lever_arm=_L)
+    occ.transform = settled.poses[occ.id]
+    wish = apply_delta(occ.transform, (0.0, 0.0, 0.0, 0.0, 0.5, 0.0))
+    body = {"transform": {"translation": list(wish.translation), "rotation_axis": list(wish.rotation_axis),
+                          "rotation_angle_degrees": wish.rotation_angle_degrees}, "lever_arm": _L}
+    response = client.post(f"/document/parts/{root}/occurrences/{occ.id}/mate-motion", json=body)
+    assert response.status_code == 200, response.text
+    assert response.json()["quality"]["max_step"] is not None and response.json()["quality"]["max_step"] > 0
+    flat = client.post(f"/document/parts/{root}/occurrences/{occ.id}/mate-motion", json={"transform": None, "lever_arm": _L})
+    assert flat.json()["quality"]["max_step"] is None
