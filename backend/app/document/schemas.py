@@ -3392,6 +3392,11 @@ class MateMotionResponse(BaseModel):
     quality: MateMotionQuality | None = None
     diagnostics: MateMotionDiagnostics | None = None
     committed: bool = False
+    # Resolved mate geometry for the client's local nearest-point retraction (docs/motion/projector-spec.md section 4b): `version`,
+    # `members` (occurrence ids, the basis order) and `mates` (type, value, allow_rotation, sides a/b with `member` index or -1 +
+    # optional `frozen` {r, t} + local point / axis_origin / direction / perp / plane {origin, normal}). Null = not available
+    # (not converged, or a mate the client cannot evaluate): the client keeps projecting.
+    constraint_model: dict[str, Any] | None = None
     # v0 aliases (delete in S9)
     transform: RigidTransformResponse | None = None
     free_twists: list[list[float]] = []

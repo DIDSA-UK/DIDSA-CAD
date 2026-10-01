@@ -23,6 +23,7 @@ import '../api/sketch_api_client.dart' show ApiException;
 import 'anchor_acceptance.dart';
 import 'dof_hysteresis.dart';
 import 'free_motion_projector.dart';
+import 'local_retraction.dart';
 import 'mate_motion_bridge.dart';
 import 'motion_blender.dart';
 import 'motion_counters.dart';
@@ -79,12 +80,17 @@ class ConstrainedDragSession {
   /// floating multi-part groups: follower jerk 40.7 -> 0.07 weighted mm/frame (`tools/motion_smoothness/`).
   final bool useReference;
 
+  /// Local nearest-point retraction (spec §4b, default on): when the anchor carries a `constraint_model`, every frame is
+  /// solved onto the mate manifold locally and the projection is only the fallback. Off = the projector alone (S7 behaviour).
+  final bool useLocalRetraction;
+
   /// Instrumentation for the F1 gate; owned by the session (read it after [finish]).
   final MotionCounters counters;
 
   final DofHysteresis _hyst = DofHysteresis();
   final ReanchorScheduler _sched;
   MotionBlender _blender = MotionBlender(1);
+  LocalRetractor? _local;
 
   /// Sent on every request until the first accepted anchor, afterwards the echoed `chart.lever_arm`. 0 = unknown (omitted).
   double _lever;
@@ -111,6 +117,7 @@ class ConstrainedDragSession {
     this.onCue,
     MotionCounters? counters,
     this.useReference = true,
+    this.useLocalRetraction = true,
   })  : _call = call,
         _lever = leverArm,
         _nowMs = nowMs,
@@ -164,6 +171,11 @@ class ConstrainedDragSession {
       final frame = _hyst.frame(wish);
       final prev = frame.prevPoses;
       if (frame.event == 'adopted' && prev != null) _blender.onAnchor(prev, frame.poses);
+      final local = frame.event == 'adopted' ? null : _localFrame(wish, frame.poses);
+      if (local != null) {
+        _blender.reset(); // already on the manifold and continuous with the last frame: nothing to blend
+        return local;
+      }
       return _blender.shown(frame.poses);
     });
     if (!_holding) {
@@ -173,6 +185,22 @@ class ConstrainedDragSession {
     }
     _prevShownGrabbed = poses[0];
     return DragFrame(ids, poses, held: _holding);
+  }
+
+  /// One local retraction frame (spec §4b): from the previous DISPLAYED poses towards the hand (grabbed) / the previous
+  /// displayed poses (followers: least, continuous motion). `null` = not available or rejected: draw the projection.
+  List<Pose>? _localFrame(Pose wish, List<Pose> projected) {
+    final local = _local;
+    if (local == null) return null;
+    final start = _shown ?? _hyst.active!.refs;
+    final result = local.frame(
+      poses: start,
+      wishes: <Pose>[wish, ...start.skip(1)],
+      fallback: projected,
+      lever: _lever,
+    );
+    counters.recordLocal(accepted: result.accepted, residualInf: result.residualInf);
+    return result.accepted ? result.poses : null;
   }
 
   void _maybeRequest() {
@@ -260,6 +288,7 @@ class ConstrainedDragSession {
       _held = null;
       _shown = null;
       _prevShownGrabbed = null;
+      _local = null;
     } else {
       final List<Pose> old = _holding ? _held! : _hyst.peek(wish!);
       if (_holding) _blender.reset();
@@ -270,6 +299,8 @@ class ConstrainedDragSession {
     }
     _lever = model.lever;
     _anchor = r;
+    final local = useLocalRetraction ? LocalRetractor.tryParse(r.constraintModel) : null;
+    _local = local != null && _sameIds(local.memberIds, ids) ? local : null;
     _sched.onAccepted(maxStep: r.quality.maxStep, sigmaGap: r.quality.sigmaGap);
     counters.recordAccepted();
     _dirty = true;

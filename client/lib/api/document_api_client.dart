@@ -1949,6 +1949,10 @@ class MateMotionDto {
   /// `true` only when the request had `commit: true` and the group was stored.
   final bool committed;
 
+  /// The resolved mate geometry for the local nearest-point retraction (`docs/motion/projector-spec.md` §4b), kept as the
+  /// raw JSON map (`LocalRetractor.tryParse` reads it); null when the backend sent none.
+  final Map<String, dynamic>? constraintModel;
+
   const MateMotionDto({
     required this.converged,
     this.dof,
@@ -1959,6 +1963,7 @@ class MateMotionDto {
     this.quality = const MateMotionQualityDto(),
     this.diagnostics = const MateMotionDiagnosticsDto(),
     this.committed = false,
+    this.constraintModel,
   });
 
   factory MateMotionDto.fromJson(Map<String, dynamic> json) => MateMotionDto(
@@ -1979,6 +1984,7 @@ class MateMotionDto {
             ? const MateMotionDiagnosticsDto()
             : MateMotionDiagnosticsDto.fromJson(json['diagnostics'] as Map<String, dynamic>),
         committed: json['committed'] as bool? ?? false,
+        constraintModel: json['constraint_model'] as Map<String, dynamic>?,
       );
 
   /// Contract fields only (no v0 aliases).
@@ -1992,6 +1998,7 @@ class MateMotionDto {
         'quality': quality.toJson(),
         'diagnostics': diagnostics.toJson(),
         'committed': committed,
+        if (constraintModel != null) 'constraint_model': constraintModel,
       };
 }
 

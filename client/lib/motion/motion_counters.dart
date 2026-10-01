@@ -14,6 +14,14 @@ class MotionCounters {
   int projectionMicrosMax = 0;
   int holds = 0;
 
+  /// Frames drawn from the local nearest-point retraction / frames where it was available but its answer was rejected
+  /// (not converged, or too far from the projection) and the projection was drawn instead (spec §4b.1).
+  int localAccepted = 0;
+  int localFallbacks = 0;
+
+  /// Largest mate residual of any frame DRAWN from the local retraction (mm-ish; 1e-6 is the acceptance bar).
+  double localResidualMax = 0;
+
   /// Re-anchor requests by the scheduler's reason (`time`, `time_near_singular`, `distance`); the grab
   /// anchor and the release commit are counted in [requests]/[commitRequests] only.
   final Map<String, int> reanchorsByReason = <String, int>{};
@@ -40,6 +48,15 @@ class MotionCounters {
   void recordRejected(String reason) => anchorsRejected[reason] = (anchorsRejected[reason] ?? 0) + 1;
 
   void recordHold() => holds++;
+
+  void recordLocal({required bool accepted, required double residualInf}) {
+    if (accepted) {
+      localAccepted++;
+      if (residualInf > localResidualMax) localResidualMax = residualInf;
+    } else {
+      localFallbacks++;
+    }
+  }
 
   void recordReanchor(String reason) => reanchorsByReason[reason] = (reanchorsByReason[reason] ?? 0) + 1;
 
@@ -69,6 +86,8 @@ class MotionCounters {
     anchorsRejected.clear();
     reanchorsByReason.clear();
     frames = projectionMicrosTotal = projectionMicrosMax = holds = 0;
+    localAccepted = localFallbacks = 0;
+    localResidualMax = 0;
     maxShownStep = 0;
   }
 
@@ -79,7 +98,8 @@ class MotionCounters {
     return 'constrained drag: requests=$requests (commit $commitRequests, transport errors $transportErrors) '
         'anchors accepted=$anchorsAccepted rejected=${map(anchorsRejected)} holds=$holds frames=$frames '
         'projection_us mean=${projectionMicrosMean.toStringAsFixed(1)} max=$projectionMicrosMax '
-        'reanchors=${map(reanchorsByReason)} max_shown_step=${maxShownStep.toStringAsFixed(3)}';
+        'reanchors=${map(reanchorsByReason)} max_shown_step=${maxShownStep.toStringAsFixed(3)} '
+        'local=$localAccepted/${localAccepted + localFallbacks} (fallbacks $localFallbacks, max residual ${localResidualMax.toStringAsExponential(1)})';
   }
 
   Map<String, Object> toJson() => <String, Object>{
@@ -95,5 +115,8 @@ class MotionCounters {
         'holds': holds,
         'reanchors_by_reason': Map<String, int>.of(reanchorsByReason),
         'max_shown_step': maxShownStep,
+        'local_accepted': localAccepted,
+        'local_fallbacks': localFallbacks,
+        'local_residual_max': localResidualMax,
       };
 }
