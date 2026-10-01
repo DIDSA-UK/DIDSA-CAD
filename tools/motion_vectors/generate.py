@@ -50,7 +50,7 @@ LOCAL_TRUST = 6.0           # weighted mm of wished displacement per iteration
 LOCAL_ROT_CAP = 0.6         # rad per iteration, any member
 LOCAL_LAM_ABS = 1e-9
 LOCAL_ACCEPT_RESIDUAL = 1e-6
-LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x L of the fallback (projector) grabbed pose
+LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
 
 
 # ---- rotation / pose math ---------------------------------------------------------------------------
@@ -495,7 +495,8 @@ def local_frame(i):
     got = local_retract(model, poses, wishes, w)
     res = local_residual_inf(model, got)
     dist = weighted_dist(got[0], fallback[0], lever)
-    accepted = res <= LOCAL_ACCEPT_RESIDUAL and dist <= LOCAL_ACCEPT_DISTANCE * lever
+    wish_step = weighted_dist(wishes[0], poses[0], lever)  # how far the hand is from the pose the frame starts at
+    accepted = res <= LOCAL_ACCEPT_RESIDUAL and dist <= LOCAL_ACCEPT_DISTANCE * max(lever, wish_step)
     shown = got if accepted else fallback
     return {
         "accepted": bool(accepted),

@@ -154,7 +154,7 @@ grabbed pose of an *on-manifold* wish is ~1e-4 of the followers' travel short of
 A linear solve of size `rows` (≤ 32): any stable solver (Cholesky with the damping above, or Gaussian elimination with partial pivoting) reproduces the vectors to 1e-9.
 
 **4b.1 Acceptance ("never worse than the projection").** Use the local result for the frame only if `residual_inf ≤ ACCEPT_RESIDUAL` **and** the weighted distance (§7's
-`weighted_dist`) between its grabbed pose and the projector's grabbed pose for the same wish is `≤ ACCEPT_DISTANCE · L`; otherwise show the projector's poses and count a
+`weighted_dist`) between its grabbed pose and the projector's grabbed pose for the same wish is `≤ ACCEPT_DISTANCE · max(L, d_wish)`, `d_wish` = the weighted distance (§7) of the hand's wish from the frame's start pose (a far wish may legitimately sit far from the linearised projection - on a curved mate the projection is the one that is off); otherwise show the projector's poses and count a
 `local_fallback`. The result then goes through the blender of §9 like any projection; the anchor test of §7 is unchanged (it measures the anchor against the DISPLAYED pose's
 projection, and a healthy local model makes `jump` ≈ 0).
 
@@ -299,7 +299,7 @@ extrapolation past a hold.
 `FOLLOWER_WEIGHT 1e-4` · GS drop `1e-6` relative / `1e-12` absolute · `τ = 2` frames · `residual_tol 1e-6` · `jump_reject 1.0·L` ·
 re-anchor `150 ms` (`75 ms` if `sigma_gap < 100`) · hysteresis `gain 0.05`, `3` frames · series switch `1e-4` rad · `max_step` `TOL 0.25`.
 Local retraction (§4b): `LOCAL_FOLLOWER 1e-2` · `ITERS 3` · `POLISH 1` · `TRUST 6.0` weighted mm · `ROT_CAP 0.6` rad · `LAM_ABS 1e-9` · `ACCEPT_RESIDUAL 1e-6` ·
-`ACCEPT_DISTANCE 0.5·L` · `LOCAL_MAX_MEMBERS` 8 (Dart) / 3 (GDScript).
+`ACCEPT_DISTANCE 0.5·max(L, d_wish)` · `LOCAL_MAX_MEMBERS` 8 (Dart) / 3 (GDScript).
 All are also in `vectors.json → constants`.
 
 ## 15. Golden vectors

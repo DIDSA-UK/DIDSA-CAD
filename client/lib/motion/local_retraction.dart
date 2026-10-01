@@ -26,7 +26,8 @@ const double kLocalRotationCap = 0.6;
 const double kLocalLambdaAbs = 1e-9;
 const double kLocalAcceptResidual = 1e-6;
 
-/// The local answer is used only within this × `L` (weighted) of the projector's grabbed pose.
+/// The local answer is used only within this × `max(L, distance of the hand from the frame's start pose)` (weighted) of the
+/// projector's grabbed pose: on a curved mate the projector is the one that is off by a fraction of a far wish.
 const double kLocalAcceptDistance = 0.5;
 
 /// Bigger groups / systems stay on the projection (cost grows ~ rows³).
@@ -434,7 +435,7 @@ class LocalRetractor {
 
   /// One frame: retract from [poses] (the previous displayed poses) towards [wishes] (grabbed: the hand; followers:
   /// their previous displayed poses) in the local metric, accept only a converged result within
-  /// `kLocalAcceptDistance · lever` of the projector's grabbed pose ([fallback] = the projector's poses for the same wish).
+  /// `kLocalAcceptDistance · max(lever, wish distance)` of the projector's grabbed pose ([fallback] = the projector's poses for the same wish).
   LocalFrameResult frame({
     required List<Pose> poses,
     required List<Pose> wishes,
@@ -445,7 +446,8 @@ class LocalRetractor {
     final got = retract(poses, wishes, w);
     final res = residualInf(got);
     final dist = weightedDist(got[0], fallback[0], lever);
-    final ok = res <= kLocalAcceptResidual && dist <= kLocalAcceptDistance * lever;
+    final wishStep = weightedDist(wishes[0], poses[0], lever);
+    final ok = res <= kLocalAcceptResidual && dist <= kLocalAcceptDistance * math.max(lever, wishStep);
     return LocalFrameResult(
       accepted: ok,
       poses: ok ? got : fallback,

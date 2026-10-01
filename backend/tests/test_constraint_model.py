@@ -18,6 +18,7 @@ from app.document.constraint_model import (
     apply_delta as apply_pose,
     export_constraint_model,
     rigid_to_pose,
+    rotvec_from_rot,
     sqp_nearest,
     weights,
     wish_cost,
@@ -222,7 +223,8 @@ def test_backend_retraction_reproduces_the_golden_vectors():
             assert abs(residual_inf(cm, got) - exp["residual_inf"]) < 1e-9, case["id"]
         else:
             assert residual_inf(cm, got) > ACCEPT_RESIDUAL, case["id"]
-        accepted = residual_inf(cm, got) <= ACCEPT_RESIDUAL and exp["fallback_distance"] <= c["local_accept_distance"] * inp["lever_arm"]
+        wish_step = float(np.linalg.norm(np.concatenate([wishes[0][1] - poses[0][1], rotvec_from_rot(wishes[0][0] @ poses[0][0].T) * inp["lever_arm"]])))
+        accepted = residual_inf(cm, got) <= ACCEPT_RESIDUAL and exp["fallback_distance"] <= c["local_accept_distance"] * max(inp["lever_arm"], wish_step)
         assert accepted == exp["accepted"], case["id"]
 
 
