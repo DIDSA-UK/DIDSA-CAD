@@ -151,14 +151,14 @@ follower: its previous displayed pose, so followers move least and continuously)
 then `POLISH` times: `dx = −W⁻¹ Aᵀ (A Aᵀ + LAM_ABS·I)⁻¹ r` (no wish), same cap, skipped if `max|r| < 1e-12`. `exp(w)` is Rodrigues (the series below `|w| = 1e-9`).
 The follower weight here is `LOCAL_FOLLOWER = 1e-2`, **not** the contract's 1e-4: `1e-4` squares to 1e8 in `A Aᵀ` and drowns in rounding; the cost is that the
 grabbed pose of an *on-manifold* wish is ~1e-4 of the followers' travel short of the wish, which the projector (metric of §2) does not have - use the projection for an on-manifold wish if exact reproduction matters (the backend anchor does, §4b.3).
-A linear solve of size `rows` (≤ 32): any stable solver (Cholesky with the damping above, or Gaussian elimination with partial pivoting) reproduces the vectors to 1e-9.
+A linear solve of size `rows` (≤ 64): any stable solver (Cholesky with the damping above, or Gaussian elimination with partial pivoting) reproduces the vectors to 1e-9.
 
 **4b.1 Acceptance ("never worse than the projection").** Use the local result for the frame only if `residual_inf ≤ ACCEPT_RESIDUAL` **and** the weighted distance (§7's
 `weighted_dist`) between its grabbed pose and the projector's grabbed pose for the same wish is `≤ ACCEPT_DISTANCE · max(L, d_wish)`, `d_wish` = the weighted distance (§7) of the hand's wish from the frame's start pose (a far wish may legitimately sit far from the linearised projection - on a curved mate the projection is the one that is off); otherwise show the projector's poses and count a
 `local_fallback`. The result then goes through the blender of §9 like any projection; the anchor test of §7 is unchanged (it measures the anchor against the DISPLAYED pose's
 projection, and a healthy local model makes `jump` ≈ 0).
 
-**4b.2 When not to run it.** No `constraint_model`, `members > LOCAL_MAX_MEMBERS` (Dart 8, GDScript 3) or more than 32 residual rows, a rank/dof change pending (§10: re-anchor
+**4b.2 When not to run it.** No `constraint_model`, `members > LOCAL_MAX_MEMBERS` (Dart 8, GDScript 3) or more than 64 residual rows, a rank/dof change pending (§10: re-anchor
 first), `converged: false`/hold (§11). Singular seeds (an angle mate at 0°/180°, a flipped coincident plane, a rank change) are the backend's job: the local retraction never tries to leave such a point.
 
 **4b.3 Backend.** `solve_group` runs the same algorithm (12 iterations + 3 polish steps, current poses = `reference`/stored poses as the followers' wishes) after the Gauss–Newton retraction

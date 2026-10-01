@@ -17,6 +17,7 @@ from app.document.constraint_model import (
     ConstraintModel,
     apply_delta as apply_pose,
     export_constraint_model,
+    residual_inf,
     rigid_to_pose,
     rotvec_from_rot,
     sqp_nearest,
@@ -59,7 +60,42 @@ def _build_bcd():
     return root, "occ-B"
 
 
-_BUILDERS = {"bolt": _build_bolt, "hinge": _build_hinge, "swing": _build_swing, "angle": _build_angle, "bcd": _build_bcd}
+def _build_rotated_fixed_plate():
+    """The bolt scene with the plate turned 30 deg about a skew axis, carried there (bolt re-seated by the solve) and then FIXED:
+    the group's mates see a frozen, non-identity pose (`frozen` r/t of the wire format)."""
+    root, roles = ms.bolt_scene()
+    document = get_document()
+    part = document.parts[root]
+    plate = next(o for o in part.occurrences if o.id == roles["base"])
+    plate.transform = apply_delta(plate.transform, (12.0, -7.0, 3.0, *(np.array([1.0, 1.0, 0.0]) / math.sqrt(2) * math.radians(30))))
+    settled = solve_group(document, part, roles["mover"], None, lever_arm=10.0)
+    assert settled.converged
+    for occ in part.occurrences:
+        occ.transform = settled.poses[occ.id]
+    ms.fix(root, roles["base"])
+    return root, roles["mover"]
+
+
+def _build_distance():
+    root = _plate_scene("distance", start=((5.0, 5.0, 60.0), (0, 0, 1), 0.0), value=7.0)
+    return root, _first_occurrence(root)
+
+
+def _build_parallel():
+    root = _plate_scene("parallel", start=((5.0, 5.0, 60.0), (1, 0, 0), 30.0), driven_normal=(0, 0, 1), fixed_normal=(0, 0, 1))
+    return root, _first_occurrence(root)
+
+
+_BUILDERS = {
+    "bolt": _build_bolt,
+    "hinge": _build_hinge,
+    "swing": _build_swing,
+    "angle": _build_angle,
+    "bcd": _build_bcd,
+    "rotated_fixed_plate": _build_rotated_fixed_plate,
+    "distance": _build_distance,
+    "parallel": _build_parallel,
+}
 
 
 def _scenes():
@@ -201,7 +237,7 @@ def test_backend_retraction_reproduces_the_golden_vectors():
     same file): same poses after the 3 + 1 iterations, same residual, same accept/reject by the section 4b guard."""
     from pathlib import Path
 
-    from app.document.constraint_model import ACCEPT_RESIDUAL, residual_inf
+    from app.document.constraint_model import ACCEPT_RESIDUAL
 
     vectors = Path(__file__).resolve().parents[2] / "docs" / "motion" / "vectors.json"
     if not vectors.exists():  # the backend CI image holds backend/ only; the client suite and `generate.py --check` pin the file there
@@ -269,3 +305,51 @@ def test_solve_group_latency_with_the_nearest_point_stage(capsys):
     with capsys.disabled():
         print("\nSOLVE_GROUP LATENCY (best of 5, ms):", ", ".join(f"k={k}: {t:.1f} ({how})" for k, t, how in rows))
     assert rows[-1][1] < 400.0, rows
+
+
+def test_one_frame_convergence_at_realistic_hand_steps_on_every_scene_family():
+    """F1c.5: from the solved pose, a wish a realistic hand step away (<= 3 mm, <= 0.05 rad) is retracted onto the mates within
+    1e-6 by the client's 3 + 1 iterations - on every scene family, including a fixed part that sits at a non-identity pose
+    (frozen r/t on the wire), distance and parallel mates, and floating groups."""
+    rng = np.random.default_rng(11)
+    for name, root, grabbed in _scenes():
+        document = get_document()
+        part = document.parts[root]
+        settled = solve_group(document, part, grabbed, None, lever_arm=10.0)
+        assert settled.converged, name
+        for oid, pose in settled.poses.items():
+            next(o for o in part.occurrences if o.id == oid).transform = pose
+        model = build_group_model(document, part, grabbed)
+        cm = ConstraintModel(export_constraint_model(model))
+        ids = list(model.member_ids)
+        start = [rigid_to_pose(model.base_transforms[o]) for o in ids]
+        w = weights(len(ids), 10.0)
+        ok = 0
+        draws = 20
+        for _ in range(draws):
+            d = np.concatenate([rng.normal(size=3), rng.normal(size=3) * 0.02]) * np.array([2, 2, 2, 1, 1, 1])
+            wishes = [apply_pose(start[0], d)] + start[1:]
+            got = sqp_nearest(cm, start, wishes, w)
+            ok += residual_inf(cm, got) <= 1e-6
+        assert ok >= draws * 0.95, (name, ok)
+
+
+def test_a_zero_degree_angle_mate_is_degenerate_but_never_blows_up():
+    """ANGLE 0 deg: the cosine residual's gradient vanishes ON the manifold (a double root). The local solve must stay finite
+    (the client then falls back to the projection if it does not converge; the backend's seed handles the start)."""
+    root = _plate_scene("angle", start=((5.0, 5.0, 60.0), (1, 0, 0), 20.0), value=0.0)
+    grabbed = _first_occurrence(root)
+    document = get_document()
+    part = document.parts[root]
+    settled = solve_group(document, part, grabbed, None, lever_arm=10.0)
+    assert settled.converged  # the backend handles the singular start
+    for oid, pose in settled.poses.items():
+        next(o for o in part.occurrences if o.id == oid).transform = pose
+    model = build_group_model(document, part, grabbed)
+    cm = ConstraintModel(export_constraint_model(model))
+    start = [rigid_to_pose(model.base_transforms[o]) for o in model.member_ids]
+    for tilt in (0.0, 0.01, 0.2):
+        wish = [apply_pose(start[0], np.array([0, 0, 0, tilt, 0, 0]))]
+        got = sqp_nearest(cm, start, wish, weights(1, 10.0))
+        assert all(np.all(np.isfinite(p[0])) and np.all(np.isfinite(p[1])) for p in got), tilt
+        assert max(abs(p[1] - start[0][1]).max() for p in got) < 50.0, tilt

@@ -165,7 +165,7 @@ void main() {
 // JIT in debug mode, a release/AOT build is several times faster.
 void localBenchmark() {
   final doc = jsonDecode(File(_vectorsPath).readAsStringSync()) as Map<String, dynamic>;
-  for (final id in const ['local-bolt-pull-off-and-spin', 'local-floating-bolt-slide-and-spin']) {
+  for (final id in const ['local-bolt-pull-off-and-spin', 'local-floating-bolt-slide-and-spin', 'local-row5-slide-spin', 'local-row8-slide-spin']) {
     test('cost per local frame: $id', () {
       final c = (doc['cases'] as List).cast<Map<String, dynamic>>().firstWhere((x) => x['id'] == id);
       final inp = c['input'] as Map<String, dynamic>;

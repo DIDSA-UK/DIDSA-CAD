@@ -32,7 +32,7 @@ const double kLocalAcceptDistance = 0.5;
 
 /// Bigger groups / systems stay on the projection (cost grows ~ rows³).
 const int kLocalMaxMembers = 8;
-const int kLocalMaxRows = 32;
+const int kLocalMaxRows = 64;
 const int kLocalModelVersion = 1;
 
 const Set<String> _types = <String>{'coincident', 'concentric', 'parallel', 'angle', 'distance'};

@@ -1103,6 +1103,27 @@ def build():
     local_case("local-guard-distance", "The local answer converges but lies more than 0.5 L from the fallback (a far projector output): rejected, fallback shown",
                bolt_fixed, [bolt_start], [moved(bolt_start, (6, -3, 0))], 10.0, fallback=[moved(bolt_start, (6, -3, 0))])
 
+    # k = 5 / 8 boxes in a row on a fixed plate (each: bottom coincident with the plate top, +x face coincident with the next box's -x face):
+    # 4 residual rows per mate -> 40 / 60 rows. The group cannot be solved by the old 32-row limit (kLocalMaxRows is now 64).
+    def row_model(k):
+        mates = []
+        for i in range(k):
+            mates.append(mate("coincident", plane_side(i, (4, 4, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1))))
+        for i in range(k - 1):
+            mates.append(mate("coincident", plane_side(i, (8, 4, 2), (1, 0, 0)), plane_side(i + 1, (0, 4, 2), (-1, 0, 0))))
+        return {"version": 1, "members": [f"box{i}" for i in range(k)], "mates": mates}
+
+    def row_poses(k):
+        return [P((5.0 + 8.0 * i, 20.0, 10.0)) for i in range(k)]
+
+    for k in (5, 8):
+        ps = row_poses(k)
+        local_case(f"local-row{k}-slide-spin", f"{k} boxes in a row on a plate, faces mated (group dof 3: slide x, y, spin z as one rigid row): the first box is slid 3 mm and turned 2 deg - "
+                   "the whole row must follow, 4 residual rows per mate (%d rows)" % (4 * (2 * k - 1)),
+                   row_model(k), ps, [turned(moved(ps[0], (3, 0, 0)), 2)] + ps[1:], 10.0)
+        local_case(f"local-row{k}-lift-and-slide", f"{k}-box row: the first box is lifted 2 mm off the plate and slid 3 mm - the lift is blocked, the slide drags the row",
+                   row_model(k), ps, [moved(ps[0], (3, 0, 2))] + ps[1:], 10.0)
+
 
 def self_check():
     """Properties the vectors rely on (the prototype's `_skew` had a wrong third row, which made its screw translation

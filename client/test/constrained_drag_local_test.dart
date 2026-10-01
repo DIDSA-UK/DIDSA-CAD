@@ -35,7 +35,10 @@ Pose _onPin(double theta, double z) {
 }
 
 class _Pin {
-  _Pin({this.sendModel = true});
+  _Pin({this.sendModel = true, this.riseAfterCalls});
+
+  /// After this many calls the answer's basis gains a direction (a dof rise: the hysteresis adopts it after 3 frames of real gain).
+  final int? riseAfterCalls;
 
   final bool sendModel;
   Pose stored = _onPin(0, 30);
@@ -71,7 +74,7 @@ class _Pin {
       dof: 2,
       grounded: true,
       members: <MateMotionMemberDto>[MateMotionMemberDto(occurrenceId: 'pin', transform: dtoOfPose(at), mobility: 2)],
-      basis: <List<double>>[spin, slide],
+      basis: <List<double>>[spin, slide, if (riseAfterCalls != null && calls > riseAfterCalls!) <double>[1, 0, 0, 0, 0, 0]],
       chart: const MateMotionChartDto(kind: 'se3_owner_frame', leverArm: _lever),
       quality: const MateMotionQualityDto(residualInf: 1e-12, sigmaGap: 1e4),
       committed: commit,
@@ -161,6 +164,30 @@ void main() {
   });
 
   wallTests();
+
+  test('a dof rise (hysteresis adopts a new direction) mid-drag: the adoption frame is drawn from the projector, nothing breaks', () async {
+    final api = _Pin(riseAfterCalls: 3);
+    final clock = _Clock();
+    final s = ConstrainedDragSession(call: api.call, partId: 'root', grabbedId: 'pin', leverArm: _lever, nowMs: clock.call);
+    await s.begin();
+    final start = _onPin(0, 30);
+    var frames = 0;
+    for (var f = 1; f <= 120; f++) {
+      clock.now += 1000 / 60;
+      // the hand also slides along x, which only the NEW direction can follow
+      final fr = s.update(applyDelta(start, <double>[f * 0.2, 0, 0, 0, 0, 0.4 * f / 120]));
+      if (fr != null) {
+        frames++;
+        for (final p in fr.poses) {
+          expect(p.t.every((v) => v.isFinite), isTrue);
+        }
+      }
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(frames, greaterThan(100));
+    expect(s.counters.localAccepted, greaterThan(20));
+    expect(s.counters.anchorsAccepted, greaterThan(3));
+  });
 
   test('the commit still sends the release wish and reports the stored poses (unchanged by the local solve)', () async {
     final api = _Pin();
