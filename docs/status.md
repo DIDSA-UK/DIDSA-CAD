@@ -3629,3 +3629,7 @@ Owner said go on F1a's recommendation. **Backend:** `app/document/constraint_mod
 ## 2026-10-01 - Constrained drag F1c (follow-ups to F1b, same PR): steps 1-5
 
 F1c.1 anchors are measured against the LOCAL answer (hinge circle path: 2 rejected anchors + hold -> 0, grabbed jerk 2.74 -> 0.23); F1c.2 blocked-wall `jump` rejections are not misses (180 deg flick vs fixed part: 12-23 rejected + hold -> 0); F1c.3 `GroupModel.jacobian` is analytic (k=8 solve 224 -> 46 ms with the nearest-point stage, k=3 35 -> 15 ms); F1c.4 `include_constraint_model` request flag, the session asks once per drag; F1c.5 coverage (row limit 32 -> 64 rows, k=8 rows in vectors, rotated fixed plate, distance/parallel, 0 deg angle, dof rise). Plan rows F1c.6-F1c.9 follow.
+
+## 2026-10-01 - Constrained drag F1c: wrap-up
+
+F1b + F1c.1-F1c.7 are merged (PR #274). Follow-up docs: smoothness study F1c addendum (real-backend sweep after the follow-ups: hinge circle path 0 rejected / 0 holds / error 12.8 -> 0.03, wall flicks 0 rejected), AOT local-frame timings (0.07 ms k=1-2, 0.9 ms k=5, 3.0 ms k=8), backend `solve_group` k=8 46 ms. Full suites on the merged code: backend 2583 passed, client 2458 passed (28 env-gated skips). **Not done:** a gizmo drag in the headless GUI harness with the new code (the release build starts, connects and renders the scene; the click script did not reach the Move panel), a device run, the VR GDScript port (headset benchmark, k <= 3), S9 cleanup + F2.
