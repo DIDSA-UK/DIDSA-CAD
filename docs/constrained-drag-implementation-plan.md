@@ -197,6 +197,15 @@ Legend — **Repo**: CAD = `DIDSA-UK/DIDSA-CAD`, VR = `DIDSA-UK/DIDSA-VR`. Size:
 | F1-gate | Decide whether F1 is needed | – | S7, S8 | ☐ | | Decision after S8: S7 counters + S8 walkthrough on concentric/angle mates. Record the numbers and the call here. |
 | F1a | Nearest-point refinement: design/prototype (conditional) | CAD | F1-gate | ☑ 2026-10-01 | `docs/constrained-drag-f1a-design.md` (go recommended; owner decides F1b) | No production code. Guard/damping options for the Gauss–Newton refinement (unguarded it diverges on large wishes, spec §13.3), tested on the vector scenes + random wishes; decide client vs backend retraction vs both; proposed spec text, candidate vectors, go/no-go with numbers. |
 | F1b | Nearest-point refinement: implement (conditional) | CAD, VR, backend | F1a | ☑ CAD + backend 2026-10-01; VR ☐ (GDScript port waits for a headset benchmark, k ≤ 3) | `ccr-1c1ca211-n8p12s` / PR (see status.md 2026-10-01, F1b) | Spec + vectors + Dart + GDScript ports (+ backend retraction if F1a chose it). Re-run S5/S7 e2e and counters. |
+| F1c.1 | Anchor acceptance measured against the LOCAL answer | CAD | F1b | ☐ | | Gap 2: spec says "displayed pose", code compares with the projector; expected to remove the circle path's 2 rejected anchors + hold. Live smoothness re-run. |
+| F1c.2 | Wall noise: a `jump` rejection is not a miss when the projection says blocked | CAD | F1c.1 | ☐ | | Gap 3: 180 deg flick against a fully fixed part gives 12-23 rejected anchors + "can't follow" cue. |
+| F1c.3 | Backend latency of the nearest-point stage | backend | F1b | ☐ | | Gap 7: measure k = 1..8; analytic Jacobian in the stage instead of 36 central-difference columns if it matters; budget well under 150 ms. |
+| F1c.4 | `constraint_model` once per drag | backend, CAD | F1c.3 | ☐ | | Gap 11: optional request flag; the geometry is static during a drag. |
+| F1c.5 | Coverage: k > 3, > 3 mates, mate to a moving outside part, singular seeds, rank change | backend, CAD | F1b | ☐ | | Gaps 5, 6: scenes + tests on both sides; fix what they find. |
+| F1c.6 | Large hitches: adaptive iterations / catch-up | CAD | F1c.5 | ☐ | | Gap 1: measure in numpy first; spec + vectors only if it pays. |
+| F1c.7 | CI keeps backend and vectors in step | backend, tools | F1b | ☐ | | Gap 12: `generate.py` also writes a backend-visible copy of the `local_retract` cases, `--check` covers it, the backend test stops skipping. |
+| F1c.8 | AOT timing + headless GUI re-run | CAD | F1c.1-6 | ☐ | | Gap 8: `dart compile exe` benchmark; GUI harness drive of a curved-mate drag. |
+| F1c.9 | Wrap-up: status, PR text, what is left (VR port, S9/F2) | – | all | ☐ | | |
 | S9 | Cleanup + docs (incl. F2) | CAD, VR | S5, S8, (F1b if run) | ☐ | | Remove v0 aliases (`transform`/`free_twists`) and dead code; F2: backend `jump`/`max_step` in the screw chart + re-pin tests; doc/code drift (`assembly-scope.md`, docstrings); status/roadmap; VR docs. |
 | S10–S13 | Sketch track (optional) | CAD | S0 | ☐ | | |
 
