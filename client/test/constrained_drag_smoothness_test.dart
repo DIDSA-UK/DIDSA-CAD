@@ -105,6 +105,7 @@ void main() {
         leverArm: 10.0,
         nowMs: () => clock.elapsedMicroseconds / 1000.0,
         useReference: (Platform.environment['DIDSA_SMOOTH_REFERENCE'] ?? '').isNotEmpty,
+        useLocalRetraction: (Platform.environment['DIDSA_SMOOTH_LOCAL'] ?? '1') != '0', // F1b: DIDSA_SMOOTH_LOCAL=0 = projector only
       );
       await session.begin();
       expect(session.hasModel, isTrue, reason: 'grab anchor: ${session.counters.toJson()}');
@@ -165,7 +166,7 @@ void main() {
 
       final c = session.counters;
       final row = <String, Object?>{
-        'scene': m['scene'], 'variant': m['variant'], 'ref': session.useReference, 'path': path, 'members': ids.length, 'dof': dof, 'grounded': grounded,
+        'scene': m['scene'], 'variant': m['variant'], 'ref': session.useReference, 'local': session.useLocalRetraction, 'local_accepted': session.counters.localAccepted, 'local_fallbacks': session.counters.localFallbacks, 'path': path, 'members': ids.length, 'dof': dof, 'grounded': grounded,
         'requests': c.requests, 'rejected': c.anchorsRejectedTotal, 'holds': c.holds,
         'hand_step_max': double.parse(handMax.toStringAsFixed(3)),
         'step_g_max': double.parse((stepG.isEmpty ? 0.0 : stepG.reduce(math.max)).toStringAsFixed(3)),

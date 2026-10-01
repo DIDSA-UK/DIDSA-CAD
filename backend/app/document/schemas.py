@@ -3346,6 +3346,9 @@ class MateMotionRequest(BaseModel):
     # consecutive anchors of one drag are measured from each other and the freedoms nothing pins down (a follower's
     # spin, a bolt's slide) do not jump back to the grab-time values. Null = the stored poses (the old behaviour).
     reference: list[MateMotionReferencePose] | None = None
+    # The resolved mate geometry (`constraint_model` in the response) is static during a drag: a client that already holds it
+    # for this group asks for it once and sends false afterwards.
+    include_constraint_model: bool = True
 
 
 class MateMotionMember(BaseModel):
@@ -3392,6 +3395,11 @@ class MateMotionResponse(BaseModel):
     quality: MateMotionQuality | None = None
     diagnostics: MateMotionDiagnostics | None = None
     committed: bool = False
+    # Resolved mate geometry for the client's local nearest-point retraction (docs/motion/projector-spec.md section 4b): `version`,
+    # `members` (occurrence ids, the basis order) and `mates` (type, value, allow_rotation, sides a/b with `member` index or -1 +
+    # optional `frozen` {r, t} + local point / axis_origin / direction / perp / plane {origin, normal}). Null = not available
+    # (not converged, or a mate the client cannot evaluate): the client keeps projecting.
+    constraint_model: dict[str, Any] | None = None
     # v0 aliases (delete in S9)
     transform: RigidTransformResponse | None = None
     free_twists: list[list[float]] = []

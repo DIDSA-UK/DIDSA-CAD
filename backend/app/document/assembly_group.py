@@ -52,6 +52,17 @@ from app.document.assembly_solver import (
     _vec_sub,
     solve_occurrence_from_guess,
 )
+from app.document.constraint_model import (
+    ConstraintModel,
+    export_constraint_model,
+    log_delta,
+    pose_to_rigid,
+    residual_inf as _model_residual_inf,
+    rigid_to_pose,
+    sqp_nearest,
+    weights as _local_weights,
+    wish_cost,
+)
 from app.document.extrude import compute_part_bodies
 from app.document.models import Document, Mate, MateType, Part, RigidTransform
 
@@ -162,6 +173,7 @@ class GroupModel:
     base_transforms: dict[str, RigidTransform]  # stored pose of every member
     sides: list[tuple[Mate, _Side, _Side]]  # (mate, first, second) - see `_orient`
     _index: dict[str, int] = field(default_factory=dict)
+    _spec: dict | bool | None = field(default=None, repr=False)  # cached constraint model (False = not exportable)
 
     @property
     def member_ids(self) -> tuple[str, ...]:
@@ -190,6 +202,19 @@ class GroupModel:
         return side.geometry if transform is None else _place_in_world(side.geometry, transform)
 
     def jacobian(self, poses: dict[str, RigidTransform] | None = None, step: float = _JACOBIAN_STEP) -> np.ndarray:
+        """Jacobian (rows = residuals, `6k` columns), analytic from the exported constraint model (forward mode, exact;
+        ~10x cheaper than differences at k = 8). Falls back to central differences if the model cannot be exported or the
+        caller asks for a specific `step`."""
+        if step == _JACOBIAN_STEP:
+            if self._spec is None:
+                self._spec = export_constraint_model(self) or False
+            if self._spec:
+                base = self.base_transforms if poses is None else poses
+                placed = [rigid_to_pose(base[oid]) for oid in self.member_ids]
+                return ConstraintModel(self._spec).residual(placed)[1]
+        return self._jacobian_differences(poses, step)
+
+    def _jacobian_differences(self, poses: dict[str, RigidTransform] | None, step: float) -> np.ndarray:
         """Central-difference Jacobian (rows = residuals, `6k` columns)."""
         n = self.n_vars
         rows = len(self.residual(None, poses))
@@ -385,6 +410,7 @@ class GroupSolveResult:
     poses: dict[str, RigidTransform]  # every member; best effort when not converged
     analysis: GroupAnalysis | None  # at the solved poses; None when not converged (clients must not read "no basis" as "free")
     quality: GroupSolveQuality
+    constraint_model: dict | None = None  # resolved mate geometry for the client's local retraction (spec section 4b); None when not converged
 
     @property
     def dof(self) -> int | None:
@@ -663,6 +689,12 @@ def solve_group(
                         seeded_by = "predicted-seed"
 
     converged = residual_inf <= _SOLVE_TOL
+    constraint_model = export_constraint_model(model) if converged else None
+    if converged and wanted_pose is not None and constraint_model is not None:
+        refined = _nearest_point_stage(model, constraint_model, poses, stored, wanted_pose, grabbed_id, lever_arm)
+        if refined is not None:
+            poses = refined
+            seeded_by += "+nearest"
     analysis, jump, max_step = None, None, None
     if converged:
         solved = replace(model, base_transforms=dict(poses))
@@ -674,7 +706,55 @@ def solve_group(
         poses=poses,
         analysis=analysis,
         quality=GroupSolveQuality(residual_inf=residual_inf, jump=jump, iterations=iterations, seeded_by=seeded_by, max_step=max_step),
+        constraint_model=constraint_model,
     )
+
+
+_NEAREST_ITERATIONS = 12  # the backend is not on the per-frame path: plenty to settle
+_NEAREST_POLISH = 3
+_NEAREST_MIN_GAIN = 1e-9  # adopt only a strictly nearer answer (never worse than the plain retraction)
+
+
+def _nearest_point_stage(
+    model: GroupModel,
+    spec: dict,
+    poses: dict[str, RigidTransform],
+    stored: dict[str, RigidTransform],
+    wanted: RigidTransform,
+    grabbed_id: str,
+    lever_arm: float,
+) -> dict[str, RigidTransform] | None:
+    """Spec section 4b on the backend: refine a converged answer to the weighted-nearest mate-satisfying point
+    (the plain Gauss-Newton retraction lands on SOME solution, 1-14 weighted mm farther from the wish on curved
+    mates). The grabbed member's wish is `wanted`, every follower's is its current (stored / reference) pose, so followers
+    move least; the metric is the local one (follower weight 1e-2, see the spec). Returns the new poses, or `None` when
+    the refinement did not converge or is not nearer (the caller keeps its own answer)."""
+    ids = list(model.member_ids)
+    cm = ConstraintModel(spec)
+    w = _local_weights(len(ids), lever_arm, grabbed=ids.index(grabbed_id))
+    start = [rigid_to_pose(poses[oid]) for oid in ids]
+    wishes = [rigid_to_pose(wanted if oid == grabbed_id else stored[oid]) for oid in ids]
+    cand = sqp_nearest(cm, start, wishes, w, iters=_NEAREST_ITERATIONS, polish=_NEAREST_POLISH)
+    if _model_residual_inf(cm, cand) > _SOLVE_TOL:
+        return None
+    gi = ids.index(grabbed_id)
+    metric = _metric(lever_arm)
+    wished = float(np.linalg.norm(log_delta(rigid_to_pose(stored[grabbed_id]), wishes[gi]) * metric))
+    off = float(np.linalg.norm(log_delta(cand[gi], wishes[gi]) * metric))
+    if off <= 1e-3 * (1.0 + wished):
+        # The wish is (all but) reachable. The local follower weight (1e-2 against the contract's 1e-4) leaves the grabbed
+        # member 1e-4 of the followers' travel short of it: pin it exactly and let only the followers settle, the contract
+        # metric (the grabbed answer of an on-manifold wish IS the wish).
+        pinned = {oid: pose_to_rigid(cand[i]) for i, oid in enumerate(ids)}
+        pinned[grabbed_id] = wanted
+        heavy = _solve_weights(model, grabbed_id, lever_arm)
+        heavy[6 * gi : 6 * gi + 6] *= 1e3
+        settled, settled_residual, _ = _retract(model, pinned, heavy, max_iterations=20)
+        if settled_residual <= _SOLVE_TOL:
+            cand = [rigid_to_pose(settled[oid]) for oid in ids]
+    if wish_cost(cand, wishes, w) >= wish_cost(start, wishes, w) - _NEAREST_MIN_GAIN:
+        return None
+    return {oid: pose_to_rigid(cand[i]) for i, oid in enumerate(ids)}
 
 
 # max_step rule (docs/motion/projector-spec.md section 6). The client integrates the free motion as a

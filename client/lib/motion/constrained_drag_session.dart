@@ -23,6 +23,7 @@ import '../api/sketch_api_client.dart' show ApiException;
 import 'anchor_acceptance.dart';
 import 'dof_hysteresis.dart';
 import 'free_motion_projector.dart';
+import 'local_retraction.dart';
 import 'mate_motion_bridge.dart';
 import 'motion_blender.dart';
 import 'motion_counters.dart';
@@ -37,6 +38,7 @@ typedef MateMotionCall = Future<MateMotionDto> Function(
   double? leverArm,
   bool commit,
   List<MateMotionMemberDto>? reference,
+  bool includeConstraintModel,
 });
 
 /// Poses to draw for one frame, [ids] and [poses] in member order (grabbed first).
@@ -65,6 +67,9 @@ class DragCommit {
   const DragCommit({required this.committed, this.poses = const <String, Pose>{}, this.response, this.message});
 }
 
+/// A jump-rejected anchor is a "blocked wall" (not a miss) when the model's answer moved less than this fraction of the hand's distance.
+const double kWallStayFraction = 0.05;
+
 class ConstrainedDragSession {
   final MateMotionCall _call;
   final String partId;
@@ -79,12 +84,17 @@ class ConstrainedDragSession {
   /// floating multi-part groups: follower jerk 40.7 -> 0.07 weighted mm/frame (`tools/motion_smoothness/`).
   final bool useReference;
 
+  /// Local nearest-point retraction (spec §4b, default on): when the anchor carries a `constraint_model`, every frame is
+  /// solved onto the mate manifold locally and the projection is only the fallback. Off = the projector alone (S7 behaviour).
+  final bool useLocalRetraction;
+
   /// Instrumentation for the F1 gate; owned by the session (read it after [finish]).
   final MotionCounters counters;
 
   final DofHysteresis _hyst = DofHysteresis();
   final ReanchorScheduler _sched;
   MotionBlender _blender = MotionBlender(1);
+  LocalRetractor? _local;
 
   /// Sent on every request until the first accepted anchor, afterwards the echoed `chart.lever_arm`. 0 = unknown (omitted).
   double _lever;
@@ -111,6 +121,7 @@ class ConstrainedDragSession {
     this.onCue,
     MotionCounters? counters,
     this.useReference = true,
+    this.useLocalRetraction = true,
   })  : _call = call,
         _lever = leverArm,
         _nowMs = nowMs,
@@ -164,6 +175,11 @@ class ConstrainedDragSession {
       final frame = _hyst.frame(wish);
       final prev = frame.prevPoses;
       if (frame.event == 'adopted' && prev != null) _blender.onAnchor(prev, frame.poses);
+      final local = frame.event == 'adopted' ? null : _localFrame(wish, frame.poses);
+      if (local != null) {
+        _blender.reset(); // already on the manifold and continuous with the last frame: nothing to blend
+        return local;
+      }
       return _blender.shown(frame.poses);
     });
     if (!_holding) {
@@ -173,6 +189,22 @@ class ConstrainedDragSession {
     }
     _prevShownGrabbed = poses[0];
     return DragFrame(ids, poses, held: _holding);
+  }
+
+  /// One local retraction frame (spec §4b): from the previous DISPLAYED poses towards the hand (grabbed) / the previous
+  /// displayed poses (followers: least, continuous motion). `null` = not available or rejected: draw the projection.
+  List<Pose>? _localFrame(Pose wish, List<Pose> projected) {
+    final local = _local;
+    if (local == null) return null;
+    final start = _shown ?? _hyst.active!.refs;
+    final result = local.frame(
+      poses: start,
+      wishes: <Pose>[wish, ...start.skip(1)],
+      fallback: projected,
+      lever: _lever,
+    );
+    counters.recordLocal(accepted: result.accepted, residualInf: result.residualInf);
+    return result.accepted ? result.poses : null;
   }
 
   void _maybeRequest() {
@@ -210,6 +242,8 @@ class ConstrainedDragSession {
         leverArm: _lever > 0 ? _lever : null,
         commit: false,
         reference: useReference ? _anchor?.members : null,
+        // the mate geometry is static during a drag: ask for it until we hold it
+        includeConstraintModel: !(useLocalRetraction && _local != null),
       );
     } on ApiException catch (e) {
       failure = e.statusCode == null ? 'transport' : 'http_${e.statusCode}';
@@ -225,12 +259,32 @@ class ConstrainedDragSession {
     _handleResponse(response, wishSent);
   }
 
+  /// `true` when the wish is far from the anchor pose but the current model's answer for it has hardly moved (blocked).
+  bool _blockedWall(Pose own, Pose wish, double lever) {
+    final ref = _hyst.active?.refs[0];
+    if (ref == null) return false;
+    final hand = weightedDist(wish, ref, lever);
+    return hand > lever && weightedDist(own, ref, lever) < kWallStayFraction * hand;
+  }
+
+  /// The grabbed pose the CURRENT model answers for [wish] - what the anchor is measured against (spec §7). With the local
+  /// retraction available that is its nearest-point answer (the anchor is the nearest point too, so on a curved mate the two
+  /// agree where the linearised projection would not); otherwise the projection.
+  Pose _ownProjection(Pose wish) {
+    final projected = _hyst.peek(wish);
+    final local = _local;
+    final shown = _shown;
+    if (local == null || shown == null || _holding) return projected[0];
+    final r = local.frame(poses: shown, wishes: <Pose>[wish, ...shown.skip(1)], fallback: projected, lever: _lever);
+    return r.accepted ? r.poses[0] : projected[0];
+  }
+
   void _handleResponse(MateMotionDto r, Pose? wishSent) {
     final model = projectorFromMateMotion(r);
     final usable = model != null;
     final lever = model?.lever ?? _lever;
     Pose? own;
-    if (usable && hasModel && wishSent != null) own = _hyst.peek(wishSent)[0];
+    if (usable && hasModel && wishSent != null) own = _ownProjection(wishSent);
     final decision = acceptAnchor(
       converged: usable,
       residualInf: r.quality.residualInf,
@@ -239,6 +293,13 @@ class ConstrainedDragSession {
       lever: lever,
     );
     if (!decision.accept) {
+      if (decision.verdict == AnchorVerdict.jump && own != null && _blockedWall(own, wishSent!, lever)) {
+        // The hand is far away but the model says the part cannot go there (it stays put): the backend's answer is a far
+        // branch of "nearest". Nothing about what is shown is wrong, so this is neither a miss nor a "can't follow" cue.
+        _sched.onIgnored();
+        counters.recordWallIgnored();
+        return;
+      }
       // A converged answer with no usable model (missing basis/chart) counts as not_converged, never "all free".
       _miss(r.converged && !usable ? 'not_converged' : decision.reason);
       return;
@@ -260,6 +321,7 @@ class ConstrainedDragSession {
       _held = null;
       _shown = null;
       _prevShownGrabbed = null;
+      _local = null;
     } else {
       final List<Pose> old = _holding ? _held! : _hyst.peek(wish!);
       if (_holding) _blender.reset();
@@ -270,6 +332,13 @@ class ConstrainedDragSession {
     }
     _lever = model.lever;
     _anchor = r;
+    // The model arrives with the first anchor and is kept while the group is the same (a later answer may omit it).
+    final local = useLocalRetraction ? LocalRetractor.tryParse(r.constraintModel) : null;
+    if (local != null && _sameIds(local.memberIds, ids)) {
+      _local = local;
+    } else if (_local != null && !_sameIds(_local!.memberIds, ids)) {
+      _local = null;
+    }
     _sched.onAccepted(maxStep: r.quality.maxStep, sigmaGap: r.quality.sigmaGap);
     counters.recordAccepted();
     _dirty = true;
@@ -322,6 +391,7 @@ class ConstrainedDragSession {
           leverArm: _lever > 0 ? _lever : null,
           commit: true,
           reference: useReference ? _anchor?.members : null,
+          includeConstraintModel: false,
         );
         break;
       } on ApiException catch (e) {
