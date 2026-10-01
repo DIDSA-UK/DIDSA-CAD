@@ -93,3 +93,24 @@ jerk (still two rejected anchors and a hold: the backend's anchor and the displa
 rejected anchors on a 180 deg flick against a fully fixed part - the local solve is not involved there). The first run of the circle path was WORSE (ratio 2.59,
 jerk 7.1, 12 local fallbacks): the guard compared the local answer with the projector's within 0.5 L, but on a curved mate with a far wish the projector is the
 one that is off; the guard now scales with the hand's distance (spec s4b.1) and the fallbacks are 0.
+
+## F1c addendum: after the follow-ups (2026-10-01)
+
+Same real-backend sweep (bolt / hinge, floating / fixed, 9 paths, `reference` on, local retraction on) after F1c.1-F1c.7 (anchors measured against the
+local answer, blocked-wall rejections not counted as misses, hitch iterations, analytic backend Jacobian). Weighted mm; `off > F1b > F1c` for the rows that changed.
+
+| scene / variant / path | rejected anchors | holds | grabbed jerk | tracking error max |
+|---|---|---|---|---|
+| hinge fixed, circle 25 mm | 2 > 2 > **0** | 2 > 2 > **0** | 2.39 > 7.15 > **0.23** | 12.78 > 12.78 > **0.03** |
+| hinge fixed, translate x 40 mm | 0 > 0 > 0 | 0 | 0.104 > 0.038 > 0.081 | 4.34 > 0.29 > **0.15** |
+| hinge fixed, radial out/back 12 mm | 0 | 0 | 0.021 > 0.016 > 0.016 | 1.15 > 0.007 > 0.002 |
+| hinge fixed, 180 deg flick against the fixed leaf | 23 > 21 > **0** | 1 > 1 > **0** | 0 | the part stays put (error = the hand's distance) |
+| bolt fixed, 180 deg flick against the fixed plate | 12 > 14 > **0** | 1 > 1 > **0** | 0 | the part stays put |
+| all floating variants | 0 | 0 | unchanged (0.007-0.2 = the hand's own) | unchanged |
+
+Everything else is identical to the F1b table. Remaining honest limits: a wish that needs a far branch of the mate (a flick) is simply not followed (the part
+stays put, silently); one-frame convergence of the local solve drops to roughly 10-23 of 30 on the floating hinge for a 60 mm / 1 rad step (the guard then draws the
+projection), and groups with more than 8 members or 64 residual rows stay on the projector.
+
+Cost: backend `solve_group` (build + Gauss-Newton + nearest-point stage + analysis) k = 1 / 3 / 8: 3.4 / 15 / 46 ms (was 1.9 / 35 / 224 ms without the stage). Client
+local frame, AOT exe, one frame (3 iterations + polish, Jacobians included): k = 1-2 members 0.07 ms, k = 5 (36 rows) 0.9 ms, k = 8 (60 rows) 3.0 ms.
