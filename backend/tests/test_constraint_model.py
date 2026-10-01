@@ -96,7 +96,7 @@ def test_exported_model_reproduces_the_backend_residual_and_jacobian():
             assert np.max(np.abs(r - expected)) < 1e-9, (name, scale)
             # backend finite-difference Jacobian at the perturbed poses
             perturbed = {o: apply_delta(model.base_transforms[o], x[6 * i : 6 * i + 6]) for i, o in enumerate(model.member_ids)}
-            fd = model.jacobian(perturbed)  # the backend's own (central difference, ~1e-4 accurate)
+            fd = model._jacobian_differences(perturbed, 1e-6)  # the old backend Jacobian (central differences, ~1e-4 accurate)
             assert np.max(np.abs(jac - fd)) < 1e-4 * (1.0 + np.max(np.abs(fd))), (name, scale)
             # and an exact check of the analytic Jacobian against central differences of the exported model itself
             fd2 = np.zeros_like(jac)
@@ -238,3 +238,31 @@ class _Rt:
 
     def __init__(self, j):
         self.translation, self.rotation_axis, self.rotation_angle_degrees = j["translation"], j["rotation_axis"], j["rotation_angle_degrees"]
+
+
+def test_solve_group_latency_with_the_nearest_point_stage(capsys):
+    """F1c.3: the stage and the analytic Jacobian keep a whole solve (build model + Gauss-Newton + nearest point + analysis) far
+    below the 150 ms re-anchor interval at k = 1, 3, 8 (measured on the dev box: ~3 / 15 / 46 ms; before the analytic Jacobian
+    k = 8 alone took ~220 ms). The bound is loose on purpose: CI runners are several times slower."""
+    import time
+
+    from app.document.assembly_group import solve_group as solve
+    from tests.test_assembly_group import _doc, _row_scene
+
+    rows = []
+    for k in (1, 3, 8):
+        root, ids = _row_scene(k)
+        document, part = _doc(root)
+        stored = next(o for o in part.occurrences if o.id == ids[0]).transform
+        wish = apply_delta(stored, (3.0, 1.0, 0.0, 0, 0, 0.1))
+        solve(document, part, ids[0], wish, 10.0)  # warm the OCCT / body caches
+        times = []
+        for _ in range(5):
+            t = time.perf_counter()
+            result = solve(document, part, ids[0], wish, 10.0)
+            times.append((time.perf_counter() - t) * 1e3)
+        assert result.converged
+        rows.append((k, min(times), result.quality.seeded_by))
+    with capsys.disabled():
+        print("\nSOLVE_GROUP LATENCY (best of 5, ms):", ", ".join(f"k={k}: {t:.1f} ({how})" for k, t, how in rows))
+    assert rows[-1][1] < 400.0, rows
