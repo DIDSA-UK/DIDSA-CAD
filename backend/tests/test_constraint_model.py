@@ -200,7 +200,12 @@ def test_backend_retraction_reproduces_the_golden_vectors():
 
     from app.document.constraint_model import ACCEPT_RESIDUAL, residual_inf
 
-    doc = json.loads((Path(__file__).resolve().parents[2] / "docs" / "motion" / "vectors.json").read_text())
+    vectors = Path(__file__).resolve().parents[2] / "docs" / "motion" / "vectors.json"
+    if not vectors.exists():  # the backend CI image holds backend/ only; the client suite and `generate.py --check` pin the file there
+        import pytest
+
+        pytest.skip(f"{vectors} not available in this environment")
+    doc = json.loads(vectors.read_text())
     c = doc["constants"]
     cases = [x for x in doc["cases"] if x["kind"] == "local_retract"]
     assert len(cases) >= 12
