@@ -186,6 +186,9 @@ def test_mate_motion_response_carries_the_constraint_model():
     assert mate["type"] == "concentric" and mate["a"]["member"] == 0 and mate["b"]["member"] == -1
     assert "frozen" not in mate["b"]  # the root's own geometry: identity pose
     assert "axis_origin" in mate["a"] and "direction" in mate["a"]
+    # the client asks once: with include_constraint_model false the answer omits it
+    again = client.post(f"/document/parts/{root}/occurrences/{occ.id}/mate-motion", json={"transform": None, "lever_arm": _L, "include_constraint_model": False})
+    assert again.status_code == 200 and again.json()["constraint_model"] is None and again.json()["converged"]
     # a non-converged answer has none
     bad = client.post(f"/document/parts/{root}/occurrences/{occ.id}/mate-motion", json={"transform": {"translation": [1e9, 0, 0], "rotation_axis": [0, 0, 1], "rotation_angle_degrees": 0}})
     if bad.status_code == 200 and not bad.json()["converged"]:

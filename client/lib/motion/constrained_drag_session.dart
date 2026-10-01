@@ -38,6 +38,7 @@ typedef MateMotionCall = Future<MateMotionDto> Function(
   double? leverArm,
   bool commit,
   List<MateMotionMemberDto>? reference,
+  bool includeConstraintModel,
 });
 
 /// Poses to draw for one frame, [ids] and [poses] in member order (grabbed first).
@@ -241,6 +242,8 @@ class ConstrainedDragSession {
         leverArm: _lever > 0 ? _lever : null,
         commit: false,
         reference: useReference ? _anchor?.members : null,
+        // the mate geometry is static during a drag: ask for it until we hold it
+        includeConstraintModel: !(useLocalRetraction && _local != null),
       );
     } on ApiException catch (e) {
       failure = e.statusCode == null ? 'transport' : 'http_${e.statusCode}';
@@ -329,8 +332,13 @@ class ConstrainedDragSession {
     }
     _lever = model.lever;
     _anchor = r;
+    // The model arrives with the first anchor and is kept while the group is the same (a later answer may omit it).
     final local = useLocalRetraction ? LocalRetractor.tryParse(r.constraintModel) : null;
-    _local = local != null && _sameIds(local.memberIds, ids) ? local : null;
+    if (local != null && _sameIds(local.memberIds, ids)) {
+      _local = local;
+    } else if (_local != null && !_sameIds(_local!.memberIds, ids)) {
+      _local = null;
+    }
     _sched.onAccepted(maxStep: r.quality.maxStep, sigmaGap: r.quality.sigmaGap);
     counters.recordAccepted();
     _dirty = true;
@@ -383,6 +391,7 @@ class ConstrainedDragSession {
           leverArm: _lever > 0 ? _lever : null,
           commit: true,
           reference: useReference ? _anchor?.members : null,
+          includeConstraintModel: false,
         );
         break;
       } on ApiException catch (e) {

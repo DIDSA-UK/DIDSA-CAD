@@ -3346,6 +3346,9 @@ class MateMotionRequest(BaseModel):
     # consecutive anchors of one drag are measured from each other and the freedoms nothing pins down (a follower's
     # spin, a bolt's slide) do not jump back to the grab-time values. Null = the stored poses (the old behaviour).
     reference: list[MateMotionReferencePose] | None = None
+    # The resolved mate geometry (`constraint_model` in the response) is static during a drag: a client that already holds it
+    # for this group asks for it once and sends false afterwards.
+    include_constraint_model: bool = True
 
 
 class MateMotionMember(BaseModel):

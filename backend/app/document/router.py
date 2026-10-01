@@ -4175,7 +4175,7 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
         ),
         diagnostics=MateMotionDiagnostics(solve_ms=solve_ms),
         committed=payload.commit,
-        constraint_model=result.constraint_model,
+        constraint_model=result.constraint_model if payload.include_constraint_model else None,
         **alias,
     )
 

@@ -40,6 +40,7 @@ class _Pin {
   final bool sendModel;
   Pose stored = _onPin(0, 30);
   int calls = 0;
+  final List<bool> modelRequested = <bool>[];
 
   Future<MateMotionDto> call(
     String partId,
@@ -48,8 +49,10 @@ class _Pin {
     double? leverArm,
     bool commit = false,
     List<MateMotionMemberDto>? reference,
+    bool includeConstraintModel = true,
   }) async {
     calls++;
+    modelRequested.add(includeConstraintModel);
     Pose at = stored;
     if (transform != null) {
       // an ON-manifold answer for the wish: its spin angle and height (not the nearest point, which does not matter here)
@@ -72,7 +75,7 @@ class _Pin {
       chart: const MateMotionChartDto(kind: 'se3_owner_frame', leverArm: _lever),
       quality: const MateMotionQualityDto(residualInf: 1e-12, sigmaGap: 1e4),
       committed: commit,
-      constraintModel: sendModel ? _model() : null,
+      constraintModel: sendModel && includeConstraintModel ? _model() : null,
     );
   }
 }
@@ -125,6 +128,24 @@ void main() {
     expect(without.session.counters.localAccepted, 0);
   });
 
+  test('the constraint model is requested once per drag, then kept (later answers omit it) and the drag still runs locally', () async {
+    final api = _Pin();
+    final clock = _Clock();
+    final s = ConstrainedDragSession(call: api.call, partId: 'root', grabbedId: 'pin', leverArm: _lever, nowMs: clock.call);
+    await s.begin();
+    final start = _onPin(0, 30);
+    for (var f = 1; f <= 60; f++) {
+      clock.now += 1000 / 60;
+      s.update(applyDelta(start, <double>[0, 0, 0, 0, 0, 0.5 * f / 60]));
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(api.modelRequested.first, isTrue, reason: 'the grab anchor asks for the model');
+    expect(api.modelRequested.skip(1), everyElement(isFalse), reason: 'later anchors do not');
+    expect(api.modelRequested.length, greaterThan(3));
+    expect(s.counters.localAccepted, greaterThan(40));
+    expect(s.counters.localFallbacks, 0);
+  });
+
   test('no constraint_model in the answer: the projector is used and nothing is counted as local', () async {
     final r = await _drag(local: true, sendModel: false);
     expect(r.session.counters.localAccepted + r.session.counters.localFallbacks, 0);
@@ -158,7 +179,7 @@ void main() {
 class _Wall {
   int calls = 0;
   Future<MateMotionDto> call(String partId, String occId,
-      {RigidTransformDto? transform, double? leverArm, bool commit = false, List<MateMotionMemberDto>? reference}) async {
+      {RigidTransformDto? transform, double? leverArm, bool commit = false, List<MateMotionMemberDto>? reference, bool includeConstraintModel = true}) async {
     calls++;
     final at = transform == null ? _onPin(0, 30) : _onPin(0, 30 + 400);
     return MateMotionDto(

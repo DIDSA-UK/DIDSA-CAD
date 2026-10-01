@@ -128,6 +128,8 @@ void main() {
         }
       ]);
       expect(const MateMotionRequestDto().toJson().containsKey('reference'), isFalse);
+      expect(const MateMotionRequestDto().toJson().containsKey('include_constraint_model'), isFalse);
+      expect(const MateMotionRequestDto(includeConstraintModel: false).toJson()['include_constraint_model'], isFalse);
     });
 
     test('request JSON: null transform is sent as null, lever_arm only when given', () {

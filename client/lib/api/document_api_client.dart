@@ -1823,12 +1823,22 @@ class MateMotionRequestDto {
   /// Warm start: the poses the client last accepted for the members (see backend `MateMotionRequest.reference`).
   final List<MateMotionMemberDto>? reference;
 
-  const MateMotionRequestDto({this.transform, this.leverArm, this.commit = false, this.reference});
+  /// `false` = the client already holds this group's `constraint_model` (static during a drag): the answer omits it.
+  final bool includeConstraintModel;
+
+  const MateMotionRequestDto({
+    this.transform,
+    this.leverArm,
+    this.commit = false,
+    this.reference,
+    this.includeConstraintModel = true,
+  });
 
   Map<String, dynamic> toJson() => {
         'transform': transform?.toJson(),
         if (leverArm != null) 'lever_arm': leverArm,
         'commit': commit,
+        if (!includeConstraintModel) 'include_constraint_model': false,
         if (reference != null)
           'reference': [
             for (final r in reference!) {'occurrence_id': r.occurrenceId, 'transform': r.transform.toJson()},
@@ -5274,13 +5284,20 @@ class DocumentApiClient {
     double? leverArm,
     bool commit = false,
     List<MateMotionMemberDto>? reference,
+    bool includeConstraintModel = true,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/occurrences/$occurrenceId/mate-motion'),
               headers: _headers,
               body: jsonEncode(
-                MateMotionRequestDto(transform: transform, leverArm: leverArm, commit: commit, reference: reference).toJson(),
+                MateMotionRequestDto(
+                  transform: transform,
+                  leverArm: leverArm,
+                  commit: commit,
+                  reference: reference,
+                  includeConstraintModel: includeConstraintModel,
+                ).toJson(),
               ),
             ),
         (body) => MateMotionDto.fromJson(body as Map<String, dynamic>),
