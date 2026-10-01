@@ -29,6 +29,8 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "docs" / "motion" / "vectors.json"
+# The backend CI image holds backend/ only: it gets its own copy of the constants + `local_retract` cases (kept in step by --check).
+BACKEND_OUT = REPO / "backend" / "tests" / "data" / "local_retract_vectors.json"
 
 # ---- constants (mirrored in the spec, section 10) -------------------------------------------------
 FOLLOWER_WEIGHT = 1e-4      # backend _FOLLOWER_WEIGHT: follower metric scale relative to the grabbed member
@@ -45,6 +47,7 @@ GAIN_FRAMES = 3
 # Local retraction (spec section 4b)
 LOCAL_FOLLOWER = 1e-2       # follower weight of the local retraction (the PROJECTION metric keeps FOLLOWER_WEIGHT)
 LOCAL_ITERS = 3
+LOCAL_ITERS_MAX = 8          # a far wish (hitch) gets more iterations: ITERS + ceil((d_wish - TRUST) / TRUST), capped here
 LOCAL_POLISH = 1
 LOCAL_TRUST = 6.0           # weighted mm of wished displacement per iteration
 LOCAL_ROT_CAP = 0.6         # rad per iteration, any member
@@ -484,6 +487,11 @@ def local_residual_inf(model, poses):
     return float(np.max(np.abs(r))) if r.size else 0.0
 
 
+def local_iterations(wish_step):
+    """Iterations for one frame: the base count, plus one per `LOCAL_TRUST` of hand distance beyond the first (a hitch)."""
+    return int(min(LOCAL_ITERS_MAX, max(LOCAL_ITERS, LOCAL_ITERS + math.ceil((wish_step - LOCAL_TRUST) / LOCAL_TRUST))))
+
+
 def local_frame(i):
     """One frame of the client's local retraction with the acceptance guard (spec section 4b)."""
     model = ConstraintModel(i["model"])
@@ -492,10 +500,10 @@ def local_frame(i):
     wishes = [Pose.from_json(p) for p in i["wishes"]]
     fallback = [Pose.from_json(p) for p in i["fallback_poses"]]
     w = local_weights(len(poses), lever)
-    got = local_retract(model, poses, wishes, w)
+    wish_step = weighted_dist(wishes[0], poses[0], lever)  # how far the hand is from the pose the frame starts at
+    got = local_retract(model, poses, wishes, w, iters=local_iterations(wish_step))
     res = local_residual_inf(model, got)
     dist = weighted_dist(got[0], fallback[0], lever)
-    wish_step = weighted_dist(wishes[0], poses[0], lever)  # how far the hand is from the pose the frame starts at
     accepted = res <= LOCAL_ACCEPT_RESIDUAL and dist <= LOCAL_ACCEPT_DISTANCE * max(lever, wish_step)
     shown = got if accepted else fallback
     return {
@@ -1096,8 +1104,10 @@ def build():
                float_model, [bolt_f, plate0], [turned(bolt_f, 3, (1, 0, 0)), plate0], 20.0)
     local_case("local-floating-bolt-slide-and-spin", "Floating group: slide 4 mm along x and spin 10 deg: the plate rides along (minimal motion)",
                float_model, [bolt_f, plate0], [turned(moved(bolt_f, (4, 0, 0)), 10), plate0], 20.0)
-    local_case("local-floating-bolt-turn-60deg-x", "Floating group, 60 deg in one frame: documents the guard (not converged in 3+1 -> fallback)",
+    local_case("local-floating-bolt-turn-60deg-x", "Floating group, 60 deg in one frame: with the hitch iterations it converges, but lands more than 0.5 max(L, d_wish) from the fallback: rejected",
                float_model, [bolt_f, plate0], [turned(bolt_f, 60, (1, 0, 0)), plate0], 20.0)
+    local_case("local-floating-bolt-turn-90deg-y", "Floating group, 90 deg about y in one frame (a hitch the 8 iterations do not finish: residual > 1e-6): rejected, fallback shown",
+               float_model, [bolt_f, plate0], [turned(bolt_f, 90, (0, 1, 0)), plate0], 20.0)
     local_case("local-fully-locked", "Concentric without rotation + end face: rank 6, no free motion; any wish returns the start",
                locked_model, [bolt_start], [turned(moved(bolt_start, (10, 0, 5)), 30)], 10.0)
     local_case("local-guard-distance", "The local answer converges but lies more than 0.5 L from the fallback (a far projector output): rejected, fallback shown",
@@ -1179,7 +1189,7 @@ def main():
             "tau_frames": TAU_FRAMES, "residual_tol": RESIDUAL_TOL, "jump_reject_factor": JUMP_REJECT_FACTOR,
             "reanchor_ms": REANCHOR_MS, "reanchor_ms_near_singular": REANCHOR_MS_NEAR_SINGULAR, "sigma_gap_low": SIGMA_GAP_LOW,
             "gain_min": GAIN_MIN, "gain_frames": GAIN_FRAMES,
-            "local_follower": LOCAL_FOLLOWER, "local_iters": LOCAL_ITERS, "local_polish": LOCAL_POLISH, "local_trust": LOCAL_TRUST,
+            "local_follower": LOCAL_FOLLOWER, "local_iters": LOCAL_ITERS, "local_iters_max": LOCAL_ITERS_MAX, "local_polish": LOCAL_POLISH, "local_trust": LOCAL_TRUST,
             "local_rot_cap": LOCAL_ROT_CAP, "local_lam_abs": LOCAL_LAM_ABS, "local_accept_residual": LOCAL_ACCEPT_RESIDUAL,
             "local_accept_distance": LOCAL_ACCEPT_DISTANCE,
         },
@@ -1194,10 +1204,19 @@ def main():
     cleaned = clean(doc)
     cleaned["constants"] = doc["constants"]  # exact: `clean` would round gram_schmidt_drop_absolute (1e-12) to 0.0
     text = json.dumps(cleaned, indent=1) + "\n"
+    backend_doc = {
+        "generator": "tools/motion_vectors/generate.py (copy of the local_retract cases of docs/motion/vectors.json for the backend CI image)",
+        "tolerance": cleaned["tolerance"], "constants": doc["constants"],
+        "cases": [c for c in cleaned["cases"] if c["kind"] == "local_retract"],
+    }
+    backend_text = json.dumps(backend_doc, indent=1) + "\n"
     if "--check" in sys.argv:
-        sys.exit(0 if OUT.exists() and OUT.read_text() == text else 1)
+        ok = OUT.exists() and OUT.read_text() == text and BACKEND_OUT.exists() and BACKEND_OUT.read_text() == backend_text
+        sys.exit(0 if ok else 1)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(text)
+    BACKEND_OUT.parent.mkdir(parents=True, exist_ok=True)
+    BACKEND_OUT.write_text(backend_text)
     kinds = {}
     for c in CASES:
         kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1

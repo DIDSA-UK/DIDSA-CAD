@@ -141,7 +141,7 @@ gives the cross/dot rows; `unit()` has derivative `(I − ûûᵀ)/|d|`. Only th
 
 **Algorithm** (fixed iteration count, so latency is bounded and the vectors are deterministic). Let `W` be the metric `diag(1,1,1,L,L,L)` for the grabbed member and
 `LOCAL_FOLLOWER ×` that for every other member, `x` the poses to refine (start: the previous DISPLAYED poses) and `x*` the wished poses (grabbed: the hand's pose; every
-follower: its previous displayed pose, so followers move least and continuously). Repeat `ITERS` times:
+follower: its previous displayed pose, so followers move least and continuously). Repeat `n_iter = clamp(ITERS + ceil((d_wish − TRUST)/TRUST), ITERS, ITERS_MAX)` times (`d_wish` as in 4b.1: the base 3 for a hand step up to `TRUST`, one more per `TRUST` of hand distance beyond - a hitch after a stalled frame - up to 8; F1c.6: one-frame convergence for a 20 mm / 0.3 rad step went 11 → 23 of 30 on the hinge, 21 → 26 on the bolt; a 90–180° turn of a floating group converges in 8):
 
 1. `r, J = residual(x)`; `g = [t*_i − t_i, rotvec(R*_i R_iᵀ)]` stacked (the additive chart, `rotvec` as in §5)
 2. `y0 = W g`; if `|y0| > TRUST` then `y0 ← y0 · TRUST/|y0|`; `A = J W⁻¹`
@@ -308,7 +308,7 @@ extrapolation past a hold.
 
 `FOLLOWER_WEIGHT 1e-4` · GS drop `1e-6` relative / `1e-12` absolute · `τ = 2` frames · `residual_tol 1e-6` · `jump_reject 1.0·L` ·
 re-anchor `150 ms` (`75 ms` if `sigma_gap < 100`) · hysteresis `gain 0.05`, `3` frames · series switch `1e-4` rad · `max_step` `TOL 0.25`.
-Local retraction (§4b): `LOCAL_FOLLOWER 1e-2` · `ITERS 3` · `POLISH 1` · `TRUST 6.0` weighted mm · `ROT_CAP 0.6` rad · `LAM_ABS 1e-9` · `ACCEPT_RESIDUAL 1e-6` ·
+Local retraction (§4b): `LOCAL_FOLLOWER 1e-2` · `ITERS 3` · `ITERS_MAX 8` · `POLISH 1` · `TRUST 6.0` weighted mm · `ROT_CAP 0.6` rad · `LAM_ABS 1e-9` · `ACCEPT_RESIDUAL 1e-6` ·
 `ACCEPT_DISTANCE 0.5·max(L, d_wish)` · `WALL_STAY 0.05` · `LOCAL_MAX_MEMBERS` 8 (Dart) / 3 (GDScript).
 All are also in `vectors.json → constants`.
 
@@ -328,7 +328,7 @@ poses compared as matrices).
 | `blend`, `blend_anchor` | 4 + 1 | §9: decay of translation/rotation offsets, moving projection, followers, continuity at an anchor |
 | `scheduler` | 8 | §8 |
 | `accept_anchor` | 8 | §7 |
-| `local_retract` | 13 | §4b: one frame of the local retraction + acceptance - bolt in a fixed plate (spin on-manifold, pull-off, sideways), off-axis pin (small / large wish), angle cone (tilt, free spin), distance plane, floating bolt + plate (3° turn, slide + spin, 60° turn), fully locked, distance guard. `input`: `model`, `poses`, `wishes`, `fallback_poses` (stand-in for the projector's output), `lever_arm`; `expected`: `accepted`, shown `poses`, the raw `local_poses` (`local_poses`, `residual_inf` and `fallback_distance` are compared only when `residual_inf ≤ 1e-6`: a non-converged answer is a sensitive function of the linear solver's rounding - there only `accepted: false` and the shown fallback poses are pinned) |
+| `local_retract` | 13 | §4b: one frame of the local retraction + acceptance - bolt in a fixed plate (spin on-manifold, pull-off, sideways), off-axis pin (small / large wish), angle cone (tilt, free spin), distance plane, floating bolt + plate (3° turn, slide + spin, 60° turn), fully locked, distance guard. `input`: `model`, `poses`, `wishes`, `fallback_poses` (stand-in for the projector's output), `lever_arm`; `expected`: `accepted`, shown `poses`, the raw `local_poses` (`local_poses`, `residual_inf` and `fallback_distance` are compared only when `residual_inf ≤ 1e-9`: an answer that is not converged tightly is a sensitive function of the linear solver's rounding - there `accepted` and the shown poses are pinned) |
 | `swing_sequence` | 1 | 64 frames of the off-axis swing with anchors every 9 frames, once with analytic nearest anchors and once with the real backend anchors (captured from `solve_group`; not recomputed by the script), per-frame `screw`, `screw_blended`, `additive` poses and a `summary` |
 
 Bases are analytic (no SVD) so regeneration does not depend on LAPACK. The B/C/D basis was checked against the real backend

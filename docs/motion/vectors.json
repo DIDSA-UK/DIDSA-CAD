@@ -16,6 +16,7 @@
   "gain_frames": 3,
   "local_follower": 0.01,
   "local_iters": 3,
+  "local_iters_max": 8,
   "local_polish": 1,
   "local_trust": 6.0,
   "local_rot_cap": 0.6,
@@ -17569,11 +17570,11 @@
        10.0
       ],
       "rotation": [
-       0.9633260361,
-       -0.2683336507,
+       0.948867623,
+       -0.315674253,
        0.0,
-       0.2683336507,
-       0.9633260361,
+       0.315674253,
+       0.948867623,
        0.0,
        0.0,
        0.0,
@@ -17589,11 +17590,11 @@
        10.0
       ],
       "rotation": [
-       0.9633260361,
-       -0.2683336507,
+       0.948867623,
+       -0.315674253,
        0.0,
-       0.2683336507,
-       0.9633260361,
+       0.315674253,
+       0.948867623,
        0.0,
        0.0,
        0.0,
@@ -17602,7 +17603,7 @@
      }
     ],
     "residual_inf": 0.0,
-    "fallback_distance": 0.774030242
+    "fallback_distance": 0.2789869322
    }
   },
   {
@@ -18101,16 +18102,16 @@
     "local_poses": [
      {
       "translation": [
-       -14.1422174045,
-       -4.9997693599,
-       40.5425164061
+       -13.4033939037,
+       -6.734168981,
+       44.2349083329
       ],
       "rotation": [
-       0.9428144795,
-       -0.3333179523,
+       0.8935595936,
+       -0.4489445987,
        0.0,
-       0.3333179523,
-       0.9428144795,
+       0.4489445987,
+       0.8935595936,
        0.0,
        0.0,
        0.0,
@@ -18118,8 +18119,8 @@
       ]
      }
     ],
-    "residual_inf": 2.127e-07,
-    "fallback_distance": 12.1830185306
+    "residual_inf": 1e-10,
+    "fallback_distance": 16.4987160696
    }
   },
   {
@@ -19081,7 +19082,7 @@
   {
    "id": "local-floating-bolt-turn-60deg-x",
    "kind": "local_retract",
-   "description": "Floating group, 60 deg in one frame: documents the guard (not converged in 3+1 -> fallback)",
+   "description": "Floating group, 60 deg in one frame: with the hitch iterations it converges, but lands more than 0.5 max(L, d_wish) from the fallback: rejected",
    "input": {
     "lever_arm": 20.0,
     "local_follower": 0.01,
@@ -19308,43 +19309,312 @@
     "local_poses": [
      {
       "translation": [
-       29.9997092663,
-       29.9991244184,
-       10.001674129
+       29.9996899015,
+       29.9982890519,
+       10.0021783641
       ],
       "rotation": [
-       0.9997076937,
-       -0.0038636771,
-       -0.0238662772,
-       -0.0098995341,
-       0.8351865682,
-       -0.5498776188,
-       0.0220573437,
-       0.5499531511,
-       0.8349041892
+       0.9856636643,
+       0.0192322391,
+       -0.1676223789,
+       -0.1276423862,
+       0.7347011154,
+       -0.6662744871,
+       0.1103383985,
+       0.6781182728,
+       0.7266230425
       ]
      },
      {
       "translation": [
-       2.9073366816,
-       8.7558161716,
-       -16.7412900426
+       3.1009848177,
+       17.1094812337,
+       -21.7836409506
       ],
       "rotation": [
-       0.9960810156,
-       -0.0851646069,
-       -0.0238662952,
-       0.0580652505,
-       0.8332244793,
-       -0.5498776171,
-       0.0667160925,
-       0.5463368529,
-       0.8349041898
+       0.9853052318,
+       -0.0328075965,
+       -0.1676223786,
+       -0.0886946879,
+       0.7404131011,
+       -0.666274487,
+       0.1459686697,
+       0.6713509525,
+       0.7266230426
       ]
      }
     ],
-    "residual_inf": 0.0041157968,
-    "fallback_distance": 11.6569333401
+    "residual_inf": 3.625e-07,
+    "fallback_distance": 15.2389227731
+   }
+  },
+  {
+   "id": "local-floating-bolt-turn-90deg-y",
+   "kind": "local_retract",
+   "description": "Floating group, 90 deg about y in one frame (a hitch the 8 iterations do not finish: residual > 1e-6): rejected, fallback shown",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 1,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       1.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 90.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": false,
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       10.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       29.9984665263,
+       30.0002050249,
+       9.9964356577
+      ],
+      "rotation": [
+       0.5373135607,
+       -0.3097446567,
+       0.7844439974,
+       0.0151390524,
+       0.9335088626,
+       0.3582345775,
+       -0.8432466701,
+       -0.1806085576,
+       0.5062762115
+      ]
+     },
+     {
+      "translation": [
+       15.3347368035,
+       -2.0502493757,
+       35.6434229221
+      ],
+      "rotation": [
+       0.537218205,
+       -0.3099099878,
+       0.7844440067,
+       0.0154263412,
+       0.9335041661,
+       0.3582345598,
+       -0.8433022164,
+       -0.1803490263,
+       0.5062762097
+      ]
+     }
+    ],
+    "residual_inf": 0.0001882051,
+    "fallback_distance": 21.207399427
    }
   },
   {

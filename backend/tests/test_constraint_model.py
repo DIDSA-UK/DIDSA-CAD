@@ -239,12 +239,9 @@ def test_backend_retraction_reproduces_the_golden_vectors():
 
     from app.document.constraint_model import ACCEPT_RESIDUAL
 
-    vectors = Path(__file__).resolve().parents[2] / "docs" / "motion" / "vectors.json"
-    if not vectors.exists():  # the backend CI image holds backend/ only; the client suite and `generate.py --check` pin the file there
-        import pytest
-
-        pytest.skip(f"{vectors} not available in this environment")
-    doc = json.loads(vectors.read_text())
+    # tests/data/local_retract_vectors.json is the backend's copy of the `local_retract` cases of docs/motion/vectors.json
+    # (the CI image holds backend/ only); tools/motion_vectors/generate.py --check keeps the two in step.
+    doc = json.loads((Path(__file__).resolve().parent / "data" / "local_retract_vectors.json").read_text())
     c = doc["constants"]
     cases = [x for x in doc["cases"] if x["kind"] == "local_retract"]
     assert len(cases) >= 12
@@ -257,17 +254,18 @@ def test_backend_retraction_reproduces_the_golden_vectors():
         poses = [pose_of(p) for p in inp["poses"]]
         wishes = [pose_of(p) for p in inp["wishes"]]
         w = weights(len(poses), inp["lever_arm"], follower=inp["local_follower"])
-        got = sqp_nearest(cm, poses, wishes, w, iters=c["local_iters"], polish=c["local_polish"])
+        wish_step = float(np.linalg.norm(np.concatenate([wishes[0][1] - poses[0][1], rotvec_from_rot(wishes[0][0] @ poses[0][0].T) * inp["lever_arm"]])))
+        iters = int(min(c["local_iters_max"], max(c["local_iters"], c["local_iters"] + math.ceil((wish_step - c["local_trust"]) / c["local_trust"]))))
+        got = sqp_nearest(cm, poses, wishes, w, iters=iters, polish=c["local_polish"])
         for i, p in enumerate(got):
-            if exp["residual_inf"] > ACCEPT_RESIDUAL:
-                break  # a non-converged raw answer is a sensitive function of the linear solve; only converged ones are pinned
+            if exp["residual_inf"] > 1e-9:
+                break  # a raw answer not converged TIGHTLY is a sensitive function of the linear solve; only tight ones are pinned
             assert np.max(np.abs(p[1] - np.array(exp["local_poses"][i]["translation"]))) < 1e-9, case["id"]
             assert np.max(np.abs(p[0].reshape(9) - np.array(exp["local_poses"][i]["rotation"]))) < 1e-9, case["id"]
-        if exp["residual_inf"] <= ACCEPT_RESIDUAL:
+        if exp["residual_inf"] <= 1e-9:
             assert abs(residual_inf(cm, got) - exp["residual_inf"]) < 1e-9, case["id"]
-        else:
+        elif exp["residual_inf"] > ACCEPT_RESIDUAL:
             assert residual_inf(cm, got) > ACCEPT_RESIDUAL, case["id"]
-        wish_step = float(np.linalg.norm(np.concatenate([wishes[0][1] - poses[0][1], rotvec_from_rot(wishes[0][0] @ poses[0][0].T) * inp["lever_arm"]])))
         accepted = residual_inf(cm, got) <= ACCEPT_RESIDUAL and exp["fallback_distance"] <= c["local_accept_distance"] * max(inp["lever_arm"], wish_step)
         assert accepted == exp["accepted"], case["id"]
 

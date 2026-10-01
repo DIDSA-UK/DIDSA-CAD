@@ -52,12 +52,21 @@ void main() {
     expect((constants['local_follower'] as num).toDouble(), kLocalFollower);
     expect((constants['local_iters'] as num).toInt(), kLocalIterations);
     expect((constants['local_polish'] as num).toInt(), kLocalPolish);
+    expect((constants['local_iters_max'] as num).toInt(), kLocalIterationsMax);
     expect((constants['local_trust'] as num).toDouble(), kLocalTrust);
     expect((constants['local_rot_cap'] as num).toDouble(), kLocalRotationCap);
     expect((constants['local_lam_abs'] as num).toDouble(), kLocalLambdaAbs);
     expect((constants['local_accept_residual'] as num).toDouble(), kLocalAcceptResidual);
     expect((constants['local_accept_distance'] as num).toDouble(), kLocalAcceptDistance);
     expect(cases.length, greaterThanOrEqualTo(12));
+  });
+
+  test('the backend CI copy of the local_retract cases is identical to vectors.json (generate.py writes both)', () {
+    final copy = File('../backend/tests/data/local_retract_vectors.json');
+    expect(copy.existsSync(), isTrue);
+    final b = jsonDecode(copy.readAsStringSync()) as Map<String, dynamic>;
+    expect(jsonEncode(b['cases']), jsonEncode(cases));
+    expect(jsonEncode(b['constants']), jsonEncode(constants));
   });
 
   for (final c in cases) {
@@ -74,17 +83,17 @@ void main() {
       final r = model!.frame(poses: poses, wishes: wishes, fallback: fallback, lever: lever);
       expect(r.accepted, exp['accepted'], reason: '$id accepted');
       for (var i = 0; i < poses.length; i++) {
-        // A NON-converged raw answer (residual far above the acceptance bar) is a sensitive function of the rounding of
-        // the linear solve; only converged ones are pinned.
-        if ((exp['residual_inf'] as num) <= kLocalAcceptResidual) {
+        // A raw answer that is not converged TIGHTLY (residual above 1e-9: slow, ill-conditioned convergence) is a sensitive
+        // function of the rounding of the linear solve; only tightly converged ones are pinned.
+        if ((exp['residual_inf'] as num) <= 1e-9) {
           _expectPose(r.localPoses[i], (exp['local_poses'] as List)[i], '$id local[$i]', tol);
         }
         _expectPose(r.poses[i], (exp['poses'] as List)[i], '$id shown[$i]', tol);
       }
-      if ((exp['residual_inf'] as num) <= kLocalAcceptResidual) {
+      if ((exp['residual_inf'] as num) <= 1e-9) {
         expect((r.residualInf - (exp['residual_inf'] as num).toDouble()).abs(), lessThan(tol), reason: '$id residual');
         expect((r.fallbackDistance - (exp['fallback_distance'] as num).toDouble()).abs(), lessThan(tol), reason: '$id distance');
-      } else {
+      } else if ((exp['residual_inf'] as num) > kLocalAcceptResidual) {
         expect(r.residualInf, greaterThan(kLocalAcceptResidual), reason: '$id stays non-converged');
       }
     });

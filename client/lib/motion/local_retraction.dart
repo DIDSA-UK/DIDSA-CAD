@@ -16,6 +16,9 @@ import 'weighted_basis.dart' show memberScale;
 /// Follower weight of the LOCAL solve (the projection metric keeps `kFollowerWeight` = 1e-4, which squares to 1e8 in `A·Aᵀ`).
 const double kLocalFollower = 1e-2;
 const int kLocalIterations = 3;
+
+/// A far wish (a hitch) gets `kLocalIterations + ceil((d_wish - kLocalTrust) / kLocalTrust)` iterations, capped here.
+const int kLocalIterationsMax = 8;
 const int kLocalPolish = 1;
 
 /// Weighted mm of wished displacement per iteration.
@@ -443,10 +446,10 @@ class LocalRetractor {
     required double lever,
   }) {
     final w = localScale(members, lever);
-    final got = retract(poses, wishes, w);
+    final wishStep = weightedDist(wishes[0], poses[0], lever);
+    final got = retract(poses, wishes, w, iterations: localIterations(wishStep));
     final res = residualInf(got);
     final dist = weightedDist(got[0], fallback[0], lever);
-    final wishStep = weightedDist(wishes[0], poses[0], lever);
     final ok = res <= kLocalAcceptResidual && dist <= kLocalAcceptDistance * math.max(lever, wishStep);
     return LocalFrameResult(
       accepted: ok,
@@ -457,6 +460,11 @@ class LocalRetractor {
     );
   }
 }
+
+/// Iterations for one frame whose hand wish is [wishStep] (weighted mm) from the start pose: the base count, plus one per
+/// [kLocalTrust] beyond the first, capped at [kLocalIterationsMax].
+int localIterations(double wishStep) =>
+    math.min(kLocalIterationsMax, math.max(kLocalIterations, kLocalIterations + ((wishStep - kLocalTrust) / kLocalTrust).ceil()));
 
 /// The local metric: grabbed `[1,1,1,L,L,L]`, followers × [kLocalFollower]; the grabbed member is index 0.
 List<double> localScale(int members, double lever) => memberScale(members, lever, follower: kLocalFollower);
