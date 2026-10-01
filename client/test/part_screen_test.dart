@@ -4904,6 +4904,36 @@ void main() {
       expect(panel.selectedOccurrenceId, isNull);
     });
 
+    testWidgets('fixing another member of the group refreshes the cues (found driving the real app)', (tester) async {
+      var plateFixed = false;
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+        handler: (body, id) => anchor(
+          dof: plateFixed ? 1 : 2,
+          basis: plateFixed ? [slideXY.first] : slideXY,
+        )(body, id),
+      );
+      await settle(tester);
+      expect(backend.mateMotionRequests.length, 1);
+      expect(tester.widget<Text>(find.byKey(const ValueKey('move-rotate-status'))).data, 'Group: 2 DOF');
+
+      // The plate gets fixed (here: straight in the backend), the tree is refreshed (lens round trip).
+      plateFixed = true;
+      backend.occurrences[1]['fixed'] = true;
+      await tester.tap(find.byTooltip('Feature tree').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byTooltip('Assembly tree').last);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await settle(tester);
+      expect(backend.mateMotionRequests.length, 2, reason: 'a new anchor was fetched for the changed group');
+      expect(tester.widget<Text>(find.byKey(const ValueKey('move-rotate-status'))).data, 'Group: 1 DOF');
+    });
+
     testWidgets('an empty-space tap does not pull the target out from under an open Move/Rotate gizmo', (tester) async {
       await openWithGizmo(
         tester,

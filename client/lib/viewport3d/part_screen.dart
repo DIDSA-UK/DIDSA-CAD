@@ -812,7 +812,8 @@ class _PartScreenState extends State<PartScreen> {
     if (occurrence == null || !_isMated(occurrence.id)) return null;
     if (_dragSession != null) return _gizmoFreedom;
     final key = '${occurrence.id}|${jsonEncode(occurrence.transform.toJson())}|'
-        '${_mates.map((m) => '${m.id}:${m.suppressed}:${m.flipped}:${m.value}').join(',')}';
+        '${_mates.map((m) => '${m.id}:${m.suppressed}:${m.flipped}:${m.value}').join(',')}|'
+        '${_occurrences.map((o) => '${o.id}:${o.fixed}:${o.suppressed}').join(',')}';
     if (key != _gizmoFreedomKey) {
       _gizmoFreedomKey = key;
       _gizmoFreedom = null;
