@@ -3325,6 +3325,11 @@ class MateUpdate(BaseModel):
     allow_rotation: bool | None = None
 
 
+class MateMotionReferencePose(BaseModel):
+    occurrence_id: str
+    transform: RigidTransformResponse
+
+
 class MateMotionRequest(BaseModel):
     """`POST .../occurrences/{occurrence_id}/mate-motion`'s body
     (`docs/constrained-drag-implementation-plan.md` §3). `occurrence_id` is the
@@ -3336,6 +3341,11 @@ class MateMotionRequest(BaseModel):
     transform: RigidTransformResponse | None = None
     lever_arm: float | None = Field(default=None, gt=0)
     commit: bool = False
+    # Warm start (smoothness): the poses the client last accepted/showed for the members. The solve treats them as the
+    # members' current poses (seed, nearest-solution reference, free-motion analysis, `jump`) instead of the stored ones, so
+    # consecutive anchors of one drag are measured from each other and the freedoms nothing pins down (a follower's
+    # spin, a bolt's slide) do not jump back to the grab-time values. Null = the stored poses (the old behaviour).
+    reference: list[MateMotionReferencePose] | None = None
 
 
 class MateMotionMember(BaseModel):

@@ -1820,12 +1820,19 @@ class MateMotionRequestDto {
   /// `true` also persists the solved group atomically (one undo unit). Only on release.
   final bool commit;
 
-  const MateMotionRequestDto({this.transform, this.leverArm, this.commit = false});
+  /// Warm start: the poses the client last accepted for the members (see backend `MateMotionRequest.reference`).
+  final List<MateMotionMemberDto>? reference;
+
+  const MateMotionRequestDto({this.transform, this.leverArm, this.commit = false, this.reference});
 
   Map<String, dynamic> toJson() => {
         'transform': transform?.toJson(),
         if (leverArm != null) 'lever_arm': leverArm,
         'commit': commit,
+        if (reference != null)
+          'reference': [
+            for (final r in reference!) {'occurrence_id': r.occurrenceId, 'transform': r.transform.toJson()},
+          ],
       };
 }
 
@@ -5259,13 +5266,14 @@ class DocumentApiClient {
     RigidTransformDto? transform,
     double? leverArm,
     bool commit = false,
+    List<MateMotionMemberDto>? reference,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/occurrences/$occurrenceId/mate-motion'),
               headers: _headers,
               body: jsonEncode(
-                MateMotionRequestDto(transform: transform, leverArm: leverArm, commit: commit).toJson(),
+                MateMotionRequestDto(transform: transform, leverArm: leverArm, commit: commit, reference: reference).toJson(),
               ),
             ),
         (body) => MateMotionDto.fromJson(body as Map<String, dynamic>),

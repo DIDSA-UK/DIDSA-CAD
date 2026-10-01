@@ -389,3 +389,41 @@ def test_floating_bolt_turned_by_large_angles_about_x_and_y_follows_the_wish():
             if axis != (0, 0, 1):
                 assert moved > 1.0, (axis, degrees)  # the plate rode along
 
+
+def test_reference_poses_warm_start_the_solve():
+    """`reference` = the poses a client last accepted. The solve measures 'nearest' from them, not from the stored poses:
+    with a reference that already satisfies the mates and a wish equal to its grabbed pose nothing moves at all (a fixed
+    point), although the stored poses are elsewhere; and an empty/None reference is the old behaviour."""
+    root = _floating_bolt_scene()
+    document = get_document()
+    part = document.parts[root]
+    stored = {o.id: o.transform for o in part.occurrences}
+    wish = apply_delta(stored["occ-bolt"], (0, 0, 0, *(np.array((1.0, 0, 0)) * math.radians(60))))
+    away = solve_group(document, part, "occ-bolt", wish, lever_arm=20.0)
+    assert away.converged
+    plain = solve_group(document, part, "occ-bolt", wish, lever_arm=20.0, reference=None)
+    assert all(float(np.linalg.norm(pose_delta(plain.poses[k], away.poses[k]))) < 1e-9 for k in stored)
+    # the satisfying configuration reached above, used as the reference, with its own grabbed pose as the wish: a fixed point
+    again = solve_group(document, part, "occ-bolt", away.poses["occ-bolt"], lever_arm=20.0, reference=dict(away.poses))
+    assert again.converged and again.quality.iterations == 0
+    for oid in stored:
+        assert float(np.linalg.norm(pose_delta(again.poses[oid], away.poses[oid]))) < 1e-9
+    # a second step from that reference moves the follower by about the rigid motion of the step, not by a re-pick of its free freedoms
+    step = apply_delta(away.poses["occ-bolt"], (0, 0, 0, *(np.array((1.0, 0, 0)) * math.radians(2))))
+    nxt = solve_group(document, part, "occ-bolt", step, lever_arm=20.0, reference=dict(away.poses))
+    assert nxt.converged
+    plate_move = float(np.linalg.norm(pose_delta(nxt.poses["occ-plate"], away.poses["occ-plate"])[:3]))
+    assert plate_move < 3.0, plate_move  # a 2 degree turn about an axis ~40 mm from the plate origin is ~1.5 mm
+
+
+def test_mate_motion_endpoint_accepts_reference_poses():
+    root = _floating_bolt_scene()
+    from app.document.store import get_document as _gd
+    stored = {o.id: o.transform for o in _gd().parts[root].occurrences}
+    body = {"transform": None, "lever_arm": 20.0,
+            "reference": [{"occurrence_id": k, "transform": {"translation": list(v.translation), "rotation_axis": list(v.rotation_axis), "rotation_angle_degrees": v.rotation_angle_degrees}} for k, v in stored.items()]}
+    r = client.post(f"/document/parts/{root}/occurrences/occ-bolt/mate-motion", json=body)
+    assert r.status_code == 200 and r.json()["converged"], r.text
+    bad = dict(body, reference=[{"occurrence_id": "occ-bolt"}])
+    assert client.post(f"/document/parts/{root}/occurrences/occ-bolt/mate-motion", json=bad).status_code == 422
+

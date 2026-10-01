@@ -64,6 +64,8 @@ repo that talks to the real backend (already the VR convention).
   "diagnostics": { "solve_ms": 3.4 } }
 ```
 
+Optional request field `reference: [{occurrence_id, transform}]` (added after the S7 smoothness study): the poses the client last accepted for the members; the solve treats them as the current poses (seed, nearest reference, free-motion analysis, `jump`) instead of the stored ones, so consecutive anchors of one drag are consistent (warm start). Null = stored poses.
+
 Rules: nothing stored unless `commit`; a `fixed` grabbed occurrence → 422 (as today); non-convergence → `converged:false`, **no basis**
 (clients must not read it as "all free"); `commit:true` with `converged:false` stores nothing. `solve_for_occurrence`,
 `preview-mate-solve` and the post-`create_mate` snap are re-implemented on the group solver; the plain `PATCH …/occurrences/{id}` remains for raw edits

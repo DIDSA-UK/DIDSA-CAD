@@ -592,6 +592,7 @@ def solve_group(
     also_frozen: frozenset[str] = frozenset(),
     extra_mates: tuple[Mate, ...] = (),
     with_jump: bool = True,
+    reference: dict[str, RigidTransform] | None = None,
 ) -> GroupSolveResult:
     """Nearest mate-satisfying configuration of the whole group to the wish:
     the grabbed member seeded at `wanted_pose` (`None` = its stored pose), the
@@ -605,6 +606,9 @@ def solve_group(
     py-slvs single-occurrence solution (`solve_occurrence_from_guess`) as a
     seed - py-slvs is a fallback seed only, never the verifier."""
     model = build_group_model(document, part, grabbed_id, also_frozen, extra_mates)
+    if reference:
+        # Warm start: the members' current poses are the client's last accepted ones, not the stored ones.
+        model = replace(model, base_transforms={**model.base_transforms, **{k: v for k, v in reference.items() if k in model.member_ids}})
     if lever_arm is None:
         lever_arm = bounding_radius(document, part, grabbed_id)
     weights = _solve_weights(model, grabbed_id, lever_arm)
