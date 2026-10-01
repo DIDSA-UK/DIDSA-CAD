@@ -66,6 +66,9 @@ class DragCommit {
   const DragCommit({required this.committed, this.poses = const <String, Pose>{}, this.response, this.message});
 }
 
+/// A jump-rejected anchor is a "blocked wall" (not a miss) when the model's answer moved less than this fraction of the hand's distance.
+const double kWallStayFraction = 0.05;
+
 class ConstrainedDragSession {
   final MateMotionCall _call;
   final String partId;
@@ -253,12 +256,32 @@ class ConstrainedDragSession {
     _handleResponse(response, wishSent);
   }
 
+  /// `true` when the wish is far from the anchor pose but the current model's answer for it has hardly moved (blocked).
+  bool _blockedWall(Pose own, Pose wish, double lever) {
+    final ref = _hyst.active?.refs[0];
+    if (ref == null) return false;
+    final hand = weightedDist(wish, ref, lever);
+    return hand > lever && weightedDist(own, ref, lever) < kWallStayFraction * hand;
+  }
+
+  /// The grabbed pose the CURRENT model answers for [wish] - what the anchor is measured against (spec §7). With the local
+  /// retraction available that is its nearest-point answer (the anchor is the nearest point too, so on a curved mate the two
+  /// agree where the linearised projection would not); otherwise the projection.
+  Pose _ownProjection(Pose wish) {
+    final projected = _hyst.peek(wish);
+    final local = _local;
+    final shown = _shown;
+    if (local == null || shown == null || _holding) return projected[0];
+    final r = local.frame(poses: shown, wishes: <Pose>[wish, ...shown.skip(1)], fallback: projected, lever: _lever);
+    return r.accepted ? r.poses[0] : projected[0];
+  }
+
   void _handleResponse(MateMotionDto r, Pose? wishSent) {
     final model = projectorFromMateMotion(r);
     final usable = model != null;
     final lever = model?.lever ?? _lever;
     Pose? own;
-    if (usable && hasModel && wishSent != null) own = _hyst.peek(wishSent)[0];
+    if (usable && hasModel && wishSent != null) own = _ownProjection(wishSent);
     final decision = acceptAnchor(
       converged: usable,
       residualInf: r.quality.residualInf,
@@ -267,6 +290,13 @@ class ConstrainedDragSession {
       lever: lever,
     );
     if (!decision.accept) {
+      if (decision.verdict == AnchorVerdict.jump && own != null && _blockedWall(own, wishSent!, lever)) {
+        // The hand is far away but the model says the part cannot go there (it stays put): the backend's answer is a far
+        // branch of "nearest". Nothing about what is shown is wrong, so this is neither a miss nor a "can't follow" cue.
+        _sched.onIgnored();
+        counters.recordWallIgnored();
+        return;
+      }
       // A converged answer with no usable model (missing basis/chart) counts as not_converged, never "all free".
       _miss(r.converged && !usable ? 'not_converged' : decision.reason);
       return;

@@ -205,6 +205,16 @@ drag length (~0 on flat mates, up to ~6.6 weighted mm on the off-axis swing scen
 corrections. A rejected anchor counts as a miss (§11), keeps the old model and the shown pose, and does not restart the timer for
 the next request.
 
+**`own` with the local retraction (§4b):** when the client runs the local retraction, `own` is ITS answer for the wish (one extra
+local solve at the anchor, from the displayed poses; the projector's answer if that solve is not accepted), because the backend's
+anchor is the nearest point too - on a curved mate the linearised projection is the one that disagrees with it (F1c.1: the hinge circle path went from
+2 rejected anchors + a hold to none, grabbed jerk 2.74 → 0.23).
+
+**Blocked wall (exception to "a rejection is a miss"):** a `jump` rejection is set aside - the model is not replaced, but it is **not a miss**: no hold,
+no cue, the cadence continues from that request's send time - when the wish is farther than `L` from the anchor pose and `own` has moved less than
+`WALL_STAY = 0.05` of that distance (the model says the part cannot go there; the backend's answer is a far branch of "nearest"). Measured: a 180° flick against a fully fixed
+bolt / hinge leaf gave 12–23 rejected anchors, a hold and a "can't follow" cue for a part that correctly stayed put; now none.
+
 ## 8. Re-anchor policy
 
 One request in flight, ever. `reanchor?` is evaluated each frame:
@@ -259,7 +269,7 @@ optional candidate `rows'` and a counter.
 The response carries no basis/dof/members. **Never read it as "all free".** Keep the last model *and hold the last shown pose*
 (stop moving the part), keep requesting anchors at the normal cadence with the current wish (a moving wish may become reachable),
 count consecutive misses, show "can't follow that move" after 3 (throttle to ≤ 1/s), and resume with a normal blend when an anchor is
-accepted. The same applies to a rejected anchor (§7) and to a network error/timeout of an anchor request. There is no local
+accepted. The same applies to a rejected anchor (§7; except a blocked wall, which is set aside without counting) and to a network error/timeout of an anchor request. There is no local
 extrapolation past a hold.
 
 ## 12. Release / commit flow
@@ -299,7 +309,7 @@ extrapolation past a hold.
 `FOLLOWER_WEIGHT 1e-4` · GS drop `1e-6` relative / `1e-12` absolute · `τ = 2` frames · `residual_tol 1e-6` · `jump_reject 1.0·L` ·
 re-anchor `150 ms` (`75 ms` if `sigma_gap < 100`) · hysteresis `gain 0.05`, `3` frames · series switch `1e-4` rad · `max_step` `TOL 0.25`.
 Local retraction (§4b): `LOCAL_FOLLOWER 1e-2` · `ITERS 3` · `POLISH 1` · `TRUST 6.0` weighted mm · `ROT_CAP 0.6` rad · `LAM_ABS 1e-9` · `ACCEPT_RESIDUAL 1e-6` ·
-`ACCEPT_DISTANCE 0.5·max(L, d_wish)` · `LOCAL_MAX_MEMBERS` 8 (Dart) / 3 (GDScript).
+`ACCEPT_DISTANCE 0.5·max(L, d_wish)` · `WALL_STAY 0.05` · `LOCAL_MAX_MEMBERS` 8 (Dart) / 3 (GDScript).
 All are also in `vectors.json → constants`.
 
 ## 15. Golden vectors

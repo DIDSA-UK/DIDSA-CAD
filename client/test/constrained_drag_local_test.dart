@@ -54,8 +54,9 @@ class _Pin {
     if (transform != null) {
       // an ON-manifold answer for the wish: its spin angle and height (not the nearest point, which does not matter here)
       final wish = poseOfDto(transform);
-      final w = rotvecFromRot(wish.r);
-      at = _onPin(w[2], wish.t[2]);
+      // the weighted-nearest on-manifold pose, like the real backend after F1b
+      final from = reference == null ? stored : poseOfDto(reference.first.transform);
+      at = LocalRetractor.tryParse(_model())!.retract(<Pose>[from], <Pose>[wish], localScale(1, _lever), iterations: 40, polish: 3).first;
     }
     if (commit) stored = at;
     // free motion at `at`: spin about the world z axis through the origin, slide along z (raw twists, spatial left chart)
@@ -118,6 +119,8 @@ void main() {
     expect(without.worst, greaterThan(1e-4), reason: 'the linearised projection drifts off between anchors (what F1 removes; here the pin orbit is a screw, so only ~1e-3)');
     expect(withLocal.session.counters.localAccepted, greaterThan(50));
     expect(withLocal.session.counters.localFallbacks, 0);
+    expect(withLocal.session.counters.anchorsRejectedTotal, 0, reason: 'anchors are measured against the local answer, which agrees with the nearest-point anchor');
+    expect(withLocal.session.counters.holds, 0);
     expect(withLocal.session.counters.localResidualMax, lessThan(1e-6));
     expect(without.session.counters.localAccepted, 0);
   });
@@ -136,6 +139,8 @@ void main() {
     expect(a.session.counters.maxShownStep, lessThanOrEqualTo(b.session.counters.maxShownStep + 1e-9));
   });
 
+  wallTests();
+
   test('the commit still sends the release wish and reports the stored poses (unchanged by the local solve)', () async {
     final api = _Pin();
     final clock = _Clock();
@@ -146,5 +151,47 @@ void main() {
     final c = await s.finish(wish: wish);
     expect(c.committed, isTrue);
     expect(api.stored.t[2], closeTo(30, 1e-9));
+  });
+}
+
+/// A fully locked part (dof 0, empty basis) whose backend answer to a far wish is another branch of "nearest" far away.
+class _Wall {
+  int calls = 0;
+  Future<MateMotionDto> call(String partId, String occId,
+      {RigidTransformDto? transform, double? leverArm, bool commit = false, List<MateMotionMemberDto>? reference}) async {
+    calls++;
+    final at = transform == null ? _onPin(0, 30) : _onPin(0, 30 + 400);
+    return MateMotionDto(
+      converged: true,
+      dof: 0,
+      grounded: true,
+      members: <MateMotionMemberDto>[MateMotionMemberDto(occurrenceId: 'pin', transform: dtoOfPose(at), mobility: 0)],
+      basis: const <List<double>>[],
+      chart: const MateMotionChartDto(kind: 'se3_owner_frame', leverArm: _lever),
+      quality: const MateMotionQualityDto(residualInf: 1e-12, sigmaGap: null),
+      committed: commit,
+    );
+  }
+}
+
+void wallTests() {
+  test('a far wish against a fully locked part: far-branch anchors are set aside, no miss, no hold, no cue', () async {
+    final api = _Wall();
+    final clock = _Clock();
+    final cues = <String>[];
+    final s = ConstrainedDragSession(
+      call: api.call, partId: 'root', grabbedId: 'pin', leverArm: _lever, nowMs: clock.call, onCue: cues.add, useLocalRetraction: false);
+    await s.begin();
+    final start = _onPin(0, 30);
+    for (var f = 1; f <= 90; f++) {
+      clock.now += 1000 / 60;
+      final fr = s.update(applyDelta(start, <double>[0, 0, 0, math.pi * math.min(1.0, f / 6.0), 0, 0]));
+      if (fr != null) expect(weightedDist(fr.poses[0], start, _lever), lessThan(1e-9), reason: 'the locked part stays put');
+      await Future<void>.delayed(Duration.zero);
+    }
+    expect(s.counters.wallsIgnored, greaterThan(3));
+    expect(s.counters.anchorsRejectedTotal, 0);
+    expect(s.counters.holds, 0);
+    expect(cues, isEmpty);
   });
 }

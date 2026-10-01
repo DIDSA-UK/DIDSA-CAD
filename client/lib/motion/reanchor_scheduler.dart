@@ -107,6 +107,13 @@ class ReanchorScheduler {
     _misses++;
   }
 
+  /// The in-flight request's answer was set aside WITHOUT being a failure (spec §11, blocked wall): the model is not replaced,
+  /// there is no miss and no cue, and the normal cadence continues from this request's send time.
+  void onIgnored() {
+    _inFlight = false;
+    _anchorMs = _pendingSentMs;
+  }
+
   /// Drop the in-flight token (release): its response must be ignored by the caller.
   void invalidate() {
     _inFlight = false;

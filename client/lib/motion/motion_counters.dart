@@ -16,6 +16,9 @@ class MotionCounters {
 
   /// Frames drawn from the local nearest-point retraction / frames where it was available but its answer was rejected
   /// (not converged, or too far from the projection) and the projection was drawn instead (spec §4b.1).
+  /// Far-branch answers set aside because the model says the part cannot move that way (spec §11): not misses, no cue.
+  int wallsIgnored = 0;
+
   int localAccepted = 0;
   int localFallbacks = 0;
 
@@ -48,6 +51,8 @@ class MotionCounters {
   void recordRejected(String reason) => anchorsRejected[reason] = (anchorsRejected[reason] ?? 0) + 1;
 
   void recordHold() => holds++;
+
+  void recordWallIgnored() => wallsIgnored++;
 
   void recordLocal({required bool accepted, required double residualInf}) {
     if (accepted) {
@@ -86,7 +91,7 @@ class MotionCounters {
     anchorsRejected.clear();
     reanchorsByReason.clear();
     frames = projectionMicrosTotal = projectionMicrosMax = holds = 0;
-    localAccepted = localFallbacks = 0;
+    localAccepted = localFallbacks = wallsIgnored = 0;
     localResidualMax = 0;
     maxShownStep = 0;
   }
@@ -99,7 +104,7 @@ class MotionCounters {
         'anchors accepted=$anchorsAccepted rejected=${map(anchorsRejected)} holds=$holds frames=$frames '
         'projection_us mean=${projectionMicrosMean.toStringAsFixed(1)} max=$projectionMicrosMax '
         'reanchors=${map(reanchorsByReason)} max_shown_step=${maxShownStep.toStringAsFixed(3)} '
-        'local=$localAccepted/${localAccepted + localFallbacks} (fallbacks $localFallbacks, max residual ${localResidualMax.toStringAsExponential(1)})';
+        'walls_ignored=$wallsIgnored local=$localAccepted/${localAccepted + localFallbacks} (fallbacks $localFallbacks, max residual ${localResidualMax.toStringAsExponential(1)})';
   }
 
   Map<String, Object> toJson() => <String, Object>{
@@ -115,6 +120,7 @@ class MotionCounters {
         'holds': holds,
         'reanchors_by_reason': Map<String, int>.of(reanchorsByReason),
         'max_shown_step': maxShownStep,
+        'walls_ignored': wallsIgnored,
         'local_accepted': localAccepted,
         'local_fallbacks': localFallbacks,
         'local_residual_max': localResidualMax,
