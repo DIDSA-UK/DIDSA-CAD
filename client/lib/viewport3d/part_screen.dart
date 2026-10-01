@@ -1138,7 +1138,8 @@ class _PartScreenState extends State<PartScreen> {
   /// own `bodyId` is looked up against this same merged map (see
   /// `selection_list_drawer.dart`'s own `curveFeature` branch), for the
   /// identical "a shared id-to-name map, not a raw id truncation" reason.
-  Map<String, String> get _selectionBodyNames => {..._bodyNames, ..._surfaceNames, ..._curveNames};
+  Map<String, String> get _selectionBodyNames =>
+      {..._bodyNames, ..._surfaceNames, ..._curveNames, ...occurrenceDisplayNames(_occurrences)};
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
@@ -22337,6 +22338,7 @@ class _PartScreenState extends State<PartScreen> {
                       final occurrence = _occurrences[index];
                       return AssemblyComponentSelectionDrawer(
                         selectedComponent: occurrence,
+                        displayName: occurrenceDisplayName(_occurrences, index),
                         onMove: () => setState(() {
                           _selectionMode = false;
                           _moveRotateComponentActive = true;

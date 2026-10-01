@@ -69,6 +69,26 @@ void main() {
       expect(occurrenceDisplayName(occurrences, 0), 'bracket');
     });
 
+    test('a generated file name (UUID / hex id) is not a name: "Component N" instead, counted by position', () {
+      final occurrences = [
+        _occurrence('o1', externalRef: 'parts/bracket.didsa'),
+        _occurrence('o2', externalRef: 'parts/a441a4ab-e3b7-4c63-8784-aec0d5159295.didsa'),
+        _occurrence('o3', externalRef: 'parts/part-3f2a9c41d07e5b8a1c2d.didsa'),
+        _occurrence('o4', externalRef: 'parts/Bolt M8.didsa'),
+      ];
+      expect([for (var i = 0; i < 4; i++) occurrenceDisplayName(occurrences, i)], ['bracket', 'Component 2', 'Component 3', 'Bolt M8']);
+      expect(occurrenceDisplayNames(occurrences), {'o1': 'bracket', 'o2': 'Component 2', 'o3': 'Component 3', 'o4': 'Bolt M8'});
+    });
+
+    test('looksGeneratedName: uuids and long hex ids yes, ordinary names no', () {
+      for (final g in ['a441a4ab-e3b7-4c63-8784-aec0d5159295', 'a441a4abe3b74c638784aec0d5159295', 'occ_3f2a9c41d07e5b8a1c2d', '']) {
+        expect(looksGeneratedName(g), isTrue, reason: g);
+      }
+      for (final n in ['bolt', 'Plate 2', 'cafe', 'deadbeef', 'M8x30', 'Bracket-A']) {
+        expect(looksGeneratedName(n), isFalse, reason: n);
+      }
+    });
+
     test('falls back to an ordinal "Component N" when neither is available', () {
       final occurrences = [_occurrence('o1'), _occurrence('o2')];
       expect(occurrenceDisplayName(occurrences, 0), 'Component 1');

@@ -245,8 +245,7 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
     // below would always print "#0", so this gets its own branch the same
     // way [SelectionEntityKind.body] already does above.
     if (entity.kind == SelectionEntityKind.component) {
-      final id = entity.occurrenceId;
-      return 'Component ${id.length > 8 ? id.substring(0, 8) : id}';
+      return widget.bodyNames[entity.occurrenceId] ?? 'Component';
     }
     if (entity.kind == SelectionEntityKind.sketchPoint ||
         entity.kind == SelectionEntityKind.sketchLine ||
