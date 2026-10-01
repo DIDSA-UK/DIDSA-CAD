@@ -72,3 +72,24 @@ weights with followers following, component-wise group solve (S1/S2), rank-based
   the F1 refinement, most of the F2 re-anchor cost and the "can't follow" noise at walls, and is how the desktop products behave.
   Cost: a second implementation of the mate residuals in two client languages, pinned by golden vectors like the projector.
 * Cheap, independent: soften the wall noise (don't count a `jump` rejection as a miss when the projection says the wish is blocked).
+
+## F1b addendum: local nearest-point retraction (2026-10-01)
+
+Same scenes, paths and real backend as above, `reference` on, 90 frames, drag through the real `ConstrainedDragSession`; **off** = projector only,
+**on** = the F1b local retraction (`DIDSA_SMOOTH_LOCAL=0|1`). Weighted mm; `errG` = max distance of the shown grabbed pose from the exact answer.
+
+| scene / variant / path | step ratio off > on | jerk grabbed off > on | errG max off > on |
+|---|---|---|---|
+| hinge fixed, translate x 40 mm | 1.37 > 1.26 | 0.104 > 0.038 | **4.34 > 0.29** |
+| hinge fixed, radial out/back 12 mm | 0.98 > 1.08 | 0.021 > 0.016 | **1.15 > 0.007** |
+| hinge fixed, rot z 120 deg (off-manifold turn) | 1.14 > 0.36 | 0.029 > 0.005 | 1.80 > 1.27 |
+| hinge fixed, circle 25 mm (re-run after the guard fix) | 1.05 > 1.08 | 2.39 > 2.74 | **12.78 > 2.73** |
+| bolt / hinge floating, all 9 paths | 1.0 > 1.0 | unchanged (0.007-0.2 = the hand's own) | ~0 > <= 0.17 |
+| walls (rot x flick 180 against a fully fixed part) | 0 > 0 | 0 > 0 | unchanged, still 12-23 rejected anchors |
+
+Reading: the curved-mate weak spot of finding 3 is largely gone (tracking error 4.3 > 0.29, 1.15 > 0.007, 12.8 > 2.7; the 120 deg off-manifold
+turn no longer outruns the hand: ratio 1.14 > 0.36). Everything that was already smooth is unchanged. NOT fixed: the circle path's
+jerk (still two rejected anchors and a hold: the backend's anchor and the displayed pose disagree about a far wish) and the wall noise of finding 4 (12-23
+rejected anchors on a 180 deg flick against a fully fixed part - the local solve is not involved there). The first run of the circle path was WORSE (ratio 2.59,
+jerk 7.1, 12 local fallbacks): the guard compared the local answer with the projector's within 0.5 L, but on a curved mate with a far wish the projector is the
+one that is off; the guard now scales with the hand's distance (spec s4b.1) and the fallbacks are 0.
