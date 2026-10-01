@@ -9,6 +9,9 @@ import 'assembly_tree_panel.dart';
 /// in a draggable sheet matching Part lens UI conventions.
 class AssemblyComponentSelectionDrawer extends StatelessWidget {
   final OccurrenceDto selectedComponent;
+
+  /// The human-readable name to show (see `occurrenceDisplayName`); defaults to the one derived from the component alone.
+  final String? displayName;
   final VoidCallback onMove;
   final VoidCallback onFixFloat;
   final VoidCallback onDelete;
@@ -18,6 +21,7 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
   const AssemblyComponentSelectionDrawer({
     super.key,
     required this.selectedComponent,
+    this.displayName,
     required this.onMove,
     required this.onFixFloat,
     required this.onDelete,
@@ -25,7 +29,7 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final componentName = occurrenceDisplayName([selectedComponent], 0);
+    final componentName = displayName ?? occurrenceDisplayName([selectedComponent], 0);
 
     return DraggableScrollableSheet(
       initialChildSize: 0.18,

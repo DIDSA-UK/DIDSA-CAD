@@ -4123,7 +4123,17 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
         )
     document = get_document()
     started = time.perf_counter()
-    result = solve_group(document, part, occurrence_id, wanted, payload.lever_arm)
+    reference = None
+    if payload.reference:
+        reference = {
+            r.occurrence_id: RigidTransform(
+                translation=tuple(r.transform.translation),
+                rotation_axis=tuple(r.transform.rotation_axis),
+                rotation_angle_degrees=r.transform.rotation_angle_degrees,
+            )
+            for r in payload.reference
+        }
+    result = solve_group(document, part, occurrence_id, wanted, payload.lever_arm, reference=reference)
     solve_ms = (time.perf_counter() - started) * 1000.0
     # v0 aliases: the old single-occurrence answer, computed the old way.
     legacy = solve_occurrence_from_guess(document, part, occurrence_id, wanted)

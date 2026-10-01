@@ -6,7 +6,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import 'mesh_geometry.dart' show AlwaysOnTopMaterial;
 import 'section_gizmo.dart' show angleOnRotationPlane, closestPointOnLineToRay;
-import 'selection_hit_test.dart' show kSelectionHitRadiusPixels, kCameraVerticalFovRadians;
+import 'selection_hit_test.dart' show kCameraVerticalFovRadians;
 
 /// Assembly support Phase 5 (`docs/assembly-scope.md` §3): the Move/Rotate
 /// gizmo for a selected Occurrence - `section_gizmo.dart`'s sibling,
@@ -50,6 +50,10 @@ class ComponentHandleCue {
 const double kComponentHandleLockedBelow = 0.05;
 const double kComponentHandleFreeAtLeast = 0.95;
 
+/// Grab radius of the Move/Rotate gizmo's handles, in pixels: wider than a plain selection pick
+/// (`kSelectionHitRadiusPixels`, 12.5) because the thin arrows and rings are hard to hit, most of all on touch.
+const double kComponentGizmoHitRadiusPixels = 26.0;
+
 /// A locked handle's arrow is drawn this fraction of its normal length.
 const double kComponentLockedLengthFactor = 0.35;
 
@@ -91,7 +95,7 @@ vm.Vector3 rotatePointAboutPivot(vm.Vector3 point, vm.Vector3 pivot, vm.Vector3 
 
 /// The in-plane handle's square, in (u, v) coordinates as fractions of the arrow length.
 const double kComponentPlaneHandleNear = 0.2;
-const double kComponentPlaneHandleFar = 0.55;
+const double kComponentPlaneHandleFar = 0.6;
 
 /// Where the ray meets the plane through [origin] with [normal] (ray parameter, point), or null when parallel/behind.
 (double, vm.Vector3)? rayPlaneHit(vm.Ray ray, vm.Vector3 origin, vm.Vector3 normal) {
@@ -236,7 +240,7 @@ ComponentGizmoHit? hitTestComponentGizmo(
   vm.Ray ray,
   ComponentGizmoBasis basis,
   Size viewportSize, {
-  double radiusPixels = kSelectionHitRadiusPixels,
+  double radiusPixels = kComponentGizmoHitRadiusPixels,
   double fovRadiansY = kCameraVerticalFovRadians,
   double? targetBoundingRadius,
   ComponentGizmoCues? cues,
@@ -303,7 +307,8 @@ ComponentGizmoHit? hitTestComponentGizmo(
       final (u, v) = componentGizmoPlaneFrame(basis, normal);
       final rel = hit.$2 - basis.origin;
       final a = rel.dot(u) / arrowLength, b = rel.dot(v) / arrowLength;
-      const lo = kComponentPlaneHandleNear, hi = kComponentPlaneHandleFar;
+      // A little slack around the drawn square (same spirit as the arrows' pixel radius).
+      const lo = kComponentPlaneHandleNear - 0.06, hi = kComponentPlaneHandleFar + 0.06;
       if (a >= lo && a <= hi && b >= lo && b <= hi) {
         best = ComponentGizmoHit(kind: ComponentGizmoHandleKind.translatePlane, rayT: hit.$1);
       }

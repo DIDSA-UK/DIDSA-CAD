@@ -79,6 +79,16 @@ void main() {
     Pose wishAt(int f) {
       final s = f / frames;
       switch (path) {
+        case 'rot_x_270':
+        case 'rot_y_270':
+        case 'rot_x_flick':
+        case 'rot_y_flick': // whole-group turn about a world axis through the grabbed origin; _flick = 180 deg in 6 frames
+          final flick = path.endsWith('flick');
+          final deg = flick ? 180.0 : 270.0;
+          final frac = flick ? math.min(1.0, f / 6.0) : s;
+          final a = path.startsWith('rot_x') ? <double>[1, 0, 0] : <double>[0, 1, 0];
+          final turn = deg * math.pi / 180 * frac;
+          return applyDelta(base, <double>[0, 0, 0, a[0] * turn, a[1] * turn, 0]);
         case 'swing_z': // rotate handle about the occurrence's own z axis (through its origin, 15 mm off the pin axis)
           return applyDelta(base, <double>[0, 0, 0, 0, 0, math.pi / 2 * s]);
         case 'swing_pivot': // S8: the re-pivoted ring - turn about the screw axis the freedom reports (on the manifold)
@@ -123,6 +133,10 @@ void main() {
     if (path == 'swing_pivot') expect(maxOff, lessThan(1e-3), reason: 'a wish on the screw axis stays on the manifold');
     // ignore: avoid_print
     print('live[$path] max |shown - wish| = ${maxOff.toStringAsExponential(2)}');
+    if (path.startsWith('rot_')) {
+      expect(session.counters.anchorsRejectedTotal, 0, reason: 'no anchor may be rejected: ${session.counters.toJson()}');
+      expect(session.counters.holds, 0);
+    }
     final commit = await session.finish(wish: wishAt(frames));
     expect(commit.committed, isTrue, reason: commit.message);
     // ignore: avoid_print
@@ -138,7 +152,7 @@ void main() {
       final b = poseOfDto(again.members.firstWhere((x) => x.occurrenceId == mem.occurrenceId).transform);
       expect(weightedDist(a, b, L), lessThan(1e-6), reason: '${mem.occurrenceId} moved when re-solved from its stored pose');
     }
-    if (!path.contains('combined') && !path.contains('slide_turn')) {
+    if (!path.contains('combined') && !path.contains('slide_turn') && !path.startsWith('rot_')) {
       expect(session.counters.requests, lessThanOrEqualTo(1 + (frames * 16 ~/ 150) + 3 + 1));
     }
   }, skip: manifestPath == null ? 'set DIDSA_LIVE_MANIFEST (see the file header)' : false, timeout: const Timeout(Duration(minutes: 3)));

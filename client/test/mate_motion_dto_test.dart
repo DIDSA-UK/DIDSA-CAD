@@ -111,6 +111,25 @@ void main() {
   });
 
   group('MateMotionRequestDto / DocumentApiClient.mateMotion', () {
+    test('request JSON: reference poses are sent only when given', () {
+      final withRef = MateMotionRequestDto(
+        reference: [
+          MateMotionMemberDto(
+            occurrenceId: 'occ-B',
+            transform: RigidTransformDto(translation: const [1, 2, 3], rotationAxis: const [0, 0, 1], rotationAngleDegrees: 0),
+            mobility: 3,
+          ),
+        ],
+      ).toJson();
+      expect(withRef['reference'], [
+        {
+          'occurrence_id': 'occ-B',
+          'transform': {'translation': [1, 2, 3], 'rotation_axis': [0, 0, 1], 'rotation_angle_degrees': 0},
+        }
+      ]);
+      expect(const MateMotionRequestDto().toJson().containsKey('reference'), isFalse);
+    });
+
     test('request JSON: null transform is sent as null, lever_arm only when given', () {
       expect(const MateMotionRequestDto().toJson(), {'transform': null, 'commit': false});
       final j = MateMotionRequestDto(

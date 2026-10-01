@@ -16,6 +16,7 @@ void main() {
   Future<void> pumpDrawer(
     WidgetTester tester,
     OccurrenceDto occurrence, {
+    String? displayName,
     VoidCallback? onMove,
     VoidCallback? onFixFloat,
     VoidCallback? onDelete,
@@ -30,6 +31,7 @@ void main() {
             children: [
               AssemblyComponentSelectionDrawer(
                 selectedComponent: occurrence,
+                displayName: displayName,
                 onMove: onMove ?? () {},
                 onFixFloat: onFixFloat ?? () {},
                 onDelete: onDelete ?? () {},
@@ -41,6 +43,16 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets('a generated (UUID) file name is never shown; the screen-supplied display name wins', (tester) async {
+    const uuidRef = 'parts/a441a4ab-e3b7-4c63-8784-aec0d5159295.didsa';
+    await pumpDrawer(tester, _occurrence(externalRef: uuidRef));
+    expect(find.text('Component 1'), findsOneWidget);
+    expect(find.textContaining('a441a4ab'), findsNothing);
+
+    await pumpDrawer(tester, _occurrence(externalRef: uuidRef), displayName: 'Component 2');
+    expect(find.text('Component 2'), findsOneWidget);
+  });
 
   testWidgets('shows the component name and Move / Fix / Delete actions', (tester) async {
     await pumpDrawer(tester, _occurrence(nameOverride: 'Bracket'));

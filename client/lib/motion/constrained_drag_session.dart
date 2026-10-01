@@ -36,6 +36,7 @@ typedef MateMotionCall = Future<MateMotionDto> Function(
   RigidTransformDto? transform,
   double? leverArm,
   bool commit,
+  List<MateMotionMemberDto>? reference,
 });
 
 /// Poses to draw for one frame, [ids] and [poses] in member order (grabbed first).
@@ -73,6 +74,11 @@ class ConstrainedDragSession {
   /// Fired at most once per second after 3 consecutive anchor misses (spec §11), e.g. to show "can't follow that move".
   final void Function(String message)? onCue;
 
+  /// Warm start (default on): send the last accepted anchor's member poses as `reference` with every request after the
+  /// first, so the backend measures "nearest" from where the drag is rather than from the grab-time pose. Measured on
+  /// floating multi-part groups: follower jerk 40.7 -> 0.07 weighted mm/frame (`tools/motion_smoothness/`).
+  final bool useReference;
+
   /// Instrumentation for the F1 gate; owned by the session (read it after [finish]).
   final MotionCounters counters;
 
@@ -104,6 +110,7 @@ class ConstrainedDragSession {
     required double Function() nowMs,
     this.onCue,
     MotionCounters? counters,
+    this.useReference = true,
   })  : _call = call,
         _lever = leverArm,
         _nowMs = nowMs,
@@ -202,6 +209,7 @@ class ConstrainedDragSession {
         transform: wishSent == null ? null : dtoOfPose(wishSent),
         leverArm: _lever > 0 ? _lever : null,
         commit: false,
+        reference: useReference ? _anchor?.members : null,
       );
     } on ApiException catch (e) {
       failure = e.statusCode == null ? 'transport' : 'http_${e.statusCode}';
@@ -313,6 +321,7 @@ class ConstrainedDragSession {
           transform: w == null ? null : dtoOfPose(w),
           leverArm: _lever > 0 ? _lever : null,
           commit: true,
+          reference: useReference ? _anchor?.members : null,
         );
         break;
       } on ApiException catch (e) {
