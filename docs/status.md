@@ -3644,3 +3644,7 @@ Branch `s9-cleanup-f2`. Before deleting, DIDSA-VR `main` (313db7a) was searched:
 ## 2026-10-02 - F1b VR: headset result (Quest 3) - GDScript local retraction not worth wiring in
 
 One solver `frame()` on the Quest 3 (flat 2D debug APK, headset worn 180 s): p95 3.1 ms for k=1 and k=2, 7.8 ms for k=3 (max 13 ms); the projector's frame is 0.56 ms p95. Rule was p95 <= 1.5 ms: no-go at every member count. VR keeps the projector; the port (DIDSA-VR PR #21) stays as a tested, unwired artifact. The F1b CAD work (backend nearest-point anchors, Dart client) is unaffected. Table and reasoning in DIDSA-VR `docs/local-retraction-benchmark.md`.
+
+## 2026-10-02 - Plan tracker: F1-gate row closed
+
+The F1-gate row had stayed unticked although F1a/F1b/F1c ran. It now records what actually happened: the owner decided "go for F1a" after the S7 counters and the real-backend smoothness study (rough on curved mates with a part fixed), not through a separate walkthrough review, and the outcome (F1b/F1c merged, the same rows now smooth). Docs only.
