@@ -59,6 +59,8 @@ from app.document.constraint_model import (
     pose_to_rigid,
     residual_inf as _model_residual_inf,
     rigid_to_pose,
+    screw_exp,
+    screw_log,
     sqp_nearest,
     weights as _local_weights,
     wish_cost,
@@ -784,36 +786,33 @@ def _screw_translation_delta(t: np.ndarray, v: np.ndarray, w: np.ndarray) -> np.
 
 
 def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_arm: float, at_rest_analysis: GroupAnalysis | None = None) -> tuple[float, float | None]:
-    """`(jump, max_step)`. `jump`: distance (grabbed block, metric diag(1,1,1,L,L,L)) between where
-    the solve landed and where a client projecting the wish onto the STORED pose's free-motion basis
-    would have put the grabbed member (additive prediction) - how far the first-order model was off
-    (curved mates), i.e. the pop a re-anchor would cause. `max_step`: see the rule above."""
+    """`(jump, max_step)`, both in the screw chart the client integrates in (projector spec sections 5-6).
+    `jump`: distance (grabbed block, metric diag(1,1,1,L,L,L), `screw_log`) between where the solve landed and where a
+    client projecting the wish onto the STORED pose's free-motion basis and integrating the screw would have put the
+    grabbed member - how far the first-order model was off (curved mates). It is ~0 on every screw orbit (flat mates,
+    concentric about any axis). `max_step`: see the rule above."""
     ids = model.member_ids
     analysis = at_rest_analysis or analyze_model(replace(model, base_transforms=dict(stored)), lever_arm)
     w = _solve_weights(model, grabbed_id, lever_arm)
+    stored_poses = {oid: rigid_to_pose(stored[oid]) for oid in ids}
     want = np.zeros(6 * len(ids))
     if seed_wish is not None:
-        want[:6] = pose_delta(seed_wish, stored[grabbed_id])
+        want[:6] = screw_log(stored_poses[grabbed_id], rigid_to_pose(seed_wish))
     predicted = np.zeros_like(want)
     if analysis.basis.size:
         nb = analysis.basis  # rows; solve min |W (N^T c - want)| over c
         a = (nb * w) @ (nb * w).T
         c = np.linalg.solve(a + 1e-12 * np.eye(len(a)), (nb * w) @ (want * w))
         predicted = nb.T @ c
-    actual = np.concatenate([pose_delta(solved[oid], stored[oid]) for oid in ids])
+    shown = {oid: screw_exp(stored_poses[oid], predicted[6 * i : 6 * i + 6]) for i, oid in enumerate(ids)}
     g = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
-    jump = float(np.linalg.norm((actual[:6] - predicted[:6]) * g))
+    jump = float(np.linalg.norm(screw_log(shown[grabbed_id], rigid_to_pose(solved[grabbed_id])) * g))
 
     max_step = None
     sigma_min = analysis.quality.sigma_min
     d = float(np.linalg.norm(predicted[:6] * g))
     if sigma_min and d >= _MAX_STEP_MIN_D:
-        probe = {}
-        for i, oid in enumerate(ids):
-            blk = predicted[6 * i : 6 * i + 6].copy()
-            blk[:3] = _screw_translation_delta(np.array(stored[oid].translation), blk[:3], blk[3:])
-            probe[oid] = apply_delta(stored[oid], blk)
-        r = model.residual(None, {**stored, **probe})
+        r = model.residual(None, {**stored, **{oid: pose_to_rigid(p) for oid, p in shown.items()}})
         e = float(np.linalg.norm(r)) / sigma_min
         if e >= _MAX_STEP_MIN_E:
             max_step = d * math.sqrt(_MAX_STEP_TOL / e)

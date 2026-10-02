@@ -1934,9 +1934,7 @@ class MateMotionDiagnosticsDto {
 /// Response of the `mate-motion` endpoint (contract §3).
 ///
 /// `converged: false` carries NO basis / dof / members / chart: clients must
-/// read that as "hold", never as "all free". The v0 alias fields
-/// (`transform`, `free_twists`) that the backend still echoes until S9 are
-/// deliberately NOT parsed.
+/// read that as "hold", never as "all free".
 class MateMotionDto {
   final bool converged;
 
@@ -1997,7 +1995,6 @@ class MateMotionDto {
         constraintModel: json['constraint_model'] as Map<String, dynamic>?,
       );
 
-  /// Contract fields only (no v0 aliases).
   Map<String, dynamic> toJson() => {
         'converged': converged,
         'dof': dof,

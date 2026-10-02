@@ -4,7 +4,8 @@ Companion to a feature request covering: NX/Siemens-style assemblies in the
 same viewport and file type as part modelling — an assembly tree showing
 parts/subassemblies/mates instead of features/bodies/surfaces, long-press
 "make focus" to edit a part in the visual context of the assembly, a
-move/rotate triad gizmo clamped by mates, basic mates (coincident/
+move/rotate triad gizmo clamped by mates (true since the constrained
+drag, `docs/constrained-drag-implementation-plan.md` S1-S7), basic mates (coincident/
 concentric/parallel/distance/angle), linear/circular component pattern,
 hide/show, isolate, and LLM-driven assembly authoring via the existing AI
 plan pipeline. Same convention as `docs/pattern-mirror-scope.md`: broken
@@ -77,7 +78,9 @@ a focused sub-assembly needs ancestor-transform composition this phase
 doesn't attempt), §2h for Phase 6a's own deliberate scope limit (the new
 hit-test capability wasn't yet wired into any live picking mode - fixed by
 Phase 6's own Mate picking mode, §2i), §2i for Phase 6/6b's own
-deliberate v1 scope limits (single-Occurrence-against-fixed-peers solving,
+deliberate v1 scope limits (single-Occurrence-against-fixed-peers solving -
+superseded: `mate-motion`, `/solve` and the preview solve the whole mate-graph
+component, `assembly_group.solve_group`,
 no straight-edge axis reference, no feature-level breadcrumb tier, no live
 breadcrumb hover-preview highlight), and §2j for Phase 7's own deliberate
 v1 scope limits (top-level source Occurrences only, one source per
@@ -1176,8 +1179,8 @@ constraint, combined with a **warm-start seed** - a closed-form
 computed from a first geometry-resolution pass and used as the Newton
 solve's *initial guess*, resolving the sign ambiguity `addParallel` alone
 leaves open by starting already on the correct branch rather than by
-adding a constraint that can't express it. `solve_occurrence`'s own
-two-pass structure (resolve all applicable mates' geometry, compute the
+adding a constraint that can't express it. `solve_occurrence_from_guess`'s own
+two-pass structure (`solve_occurrence` itself was removed in S9) (resolve all applicable mates' geometry, compute the
 seed from that resolved geometry, *then* build the `py_slvs` system) is
 required by this ordering, not incidental.
 

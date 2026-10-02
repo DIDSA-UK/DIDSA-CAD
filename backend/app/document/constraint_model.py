@@ -70,6 +70,33 @@ def log_delta(a: Pose, b: Pose) -> np.ndarray:
     return np.concatenate([b[1] - a[1], rotvec_from_rot(b[0] @ a[0].T)])
 
 
+def _screw_v(w) -> np.ndarray:
+    """`V(w) = I + (1-cos th)/th^2 K + (th-sin th)/th^3 K^2` (projector spec section 5)."""
+    th = float(np.linalg.norm(w))
+    k = skew(w)
+    if th < 1e-4:
+        return np.eye(3) + (0.5 - th * th / 24.0) * k + (1.0 / 6.0 - th * th / 120.0) * k @ k
+    return np.eye(3) + (1.0 - math.cos(th)) / (th * th) * k + (th - math.sin(th)) / th**3 * k @ k
+
+
+def screw_exp(pose: Pose, d) -> Pose:
+    """Pose reached by integrating the twist `d = [v, w]` (origin velocity + rotation vector) as a constant spatial screw:
+    `R' = exp(w) R`, `t' = exp(w) t + V (v - w x t)`. The client's integrator (projector spec section 5)."""
+    w = np.asarray(d[3:6], float)
+    r, t = pose
+    return exp_rot(w) @ r, exp_rot(w) @ t + _screw_v(w) @ (np.asarray(d[:3], float) - np.cross(w, t))
+
+
+def screw_log(a: Pose, b: Pose) -> np.ndarray:
+    """The twist `d` with `screw_exp(a, d) == b` (exact inverse of `screw_exp`, projector spec section 5)."""
+    w = rotvec_from_rot(b[0] @ a[0].T)
+    th = float(np.linalg.norm(w))
+    k = skew(w)
+    c = (1.0 / 12.0 + th**2 / 720.0 + th**4 / 30240.0) if th < 1e-2 else (1.0 - th * math.sin(th) / (2.0 * (1.0 - math.cos(th)))) / (th * th)
+    u = (np.eye(3) - 0.5 * k + c * k @ k) @ (b[1] - exp_rot(w) @ a[1])
+    return np.concatenate([u + np.cross(w, a[1]), w])
+
+
 def weights(k: int, lever: float, grabbed: int = 0, follower: float = LOCAL_FOLLOWER) -> np.ndarray:
     base = np.array([1.0, 1.0, 1.0, lever, lever, lever])
     return np.concatenate([base if i == grabbed else base * follower for i in range(k)])
