@@ -3648,3 +3648,7 @@ One solver `frame()` on the Quest 3 (flat 2D debug APK, headset worn 180 s): p95
 ## 2026-10-02 - Plan tracker: F1-gate row closed
 
 The F1-gate row had stayed unticked although F1a/F1b/F1c ran. It now records what actually happened: the owner decided "go for F1a" after the S7 counters and the real-backend smoothness study (rough on curved mates with a part fixed), not through a separate walkthrough review, and the outcome (F1b/F1c merged, the same rows now smooth). Docs only.
+
+## 2026-10-02 - Constrained drag S9 closed in both repos
+
+The S9 row is ticked for CAD and VR. CAD half: PR #276 (aliases removed, F2 screw-chart `jump`/`max_step`, doc drift). VR half: DIDSA-VR PR #24 (docs only; its e2e drag test passes against the post-S9 backend). Remaining roadmap: the optional sketch track S10-S13, the F3 watch item, and an on-device / GUI drag check of the new drag code. Docs only.
