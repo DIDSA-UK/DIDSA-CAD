@@ -191,6 +191,8 @@ def _topology_extras(part_mesh: MeshData) -> dict[str, dict]:
       per real edge - flat segment endpoints in the Part's own frame (the
       same frame as the triangles). `i` is the raw `MapShapes` index
       (`BodyTopology`'s docstring: NOT the dense drawing id).
+      `k` is `"line"` / `"circle"` / `"other"` - a mate needs a straight or circular one.
+    * `face_kinds`: indexed by face id, `"plane"` / `"cylinder"` / `"other"` - a mate needs a plane or a cylinder.
     * `vertices`: one `{"i": SubShapeRef.index, "p": [x, y, z]}` per
       topology vertex.
     * `face_edges`: indexed by face id (the same id `face_ids` carries), each
@@ -207,7 +209,11 @@ def _topology_extras(part_mesh: MeshData) -> dict[str, dict]:
         for segment_index, dense_id in enumerate(topo.edge_ids):
             segments_by_edge.setdefault(dense_id, []).extend(topo.edges[segment_index * 6 : segment_index * 6 + 6])
         edges = [
-            {"i": topo.edge_ref_indices[dense_id], "s": _r(segments)}
+            {
+                "i": topo.edge_ref_indices[dense_id],
+                "k": topo.edge_kinds[dense_id] if dense_id < len(topo.edge_kinds) else "other",
+                "s": _r(segments),
+            }
             for dense_id, segments in sorted(segments_by_edge.items())
             if dense_id < len(topo.edge_ref_indices)
         ]
@@ -219,7 +225,7 @@ def _topology_extras(part_mesh: MeshData) -> dict[str, dict]:
             [topo.edge_ref_indices[e] for e in face_edge_ids if e < len(topo.edge_ref_indices)]
             for face_edge_ids in topo.face_edge_ids
         ]
-        out[body_id] = {"edges": edges, "vertices": vertices, "face_edges": face_edges}
+        out[body_id] = {"edges": edges, "vertices": vertices, "face_edges": face_edges, "face_kinds": list(topo.face_kinds)}
     return out
 
 

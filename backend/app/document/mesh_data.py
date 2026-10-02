@@ -96,6 +96,11 @@ class BodyTopology:
     topology_vertices: list[tuple[float, float, float]] = field(default_factory=list)
     topology_vertex_ids: list[int] = field(default_factory=list)
     face_edge_ids: list[list[int]] = field(default_factory=list)
+    # VR Mates tool: what a mate can use each one as. `edge_kinds[dense_edge_id]` is "line" / "circle" / "other"
+    # (a mate needs a straight or circular edge: `assembly_solver._resolve_local_geometry`), `face_kinds[face_id]`
+    # is "plane" / "cylinder" / "other" (likewise), so a client only offers what the solver can use.
+    edge_kinds: list[str] = field(default_factory=list)
+    face_kinds: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -162,6 +167,8 @@ class MeshData:
     # the edges are the synthesized mesh-triangle wireframe (an
     # ImportFeature's mesh-format Body has no real B-rep edges to name).
     edge_ref_indices: list[int] = field(default_factory=list)
+    edge_kinds: list[str] = field(default_factory=list) # dense edge id -> "line" / "circle" / "other"
+    face_kinds: list[str] = field(default_factory=list) # face id -> "plane" / "cylinder" / "other"
     # VR Measure tool: per-Body edge/vertex/face-boundary data, only ever set
     # by `app.document.router._merged_body_mesh_data` (like `body_ids`), for
     # `assembly-mesh.glb`'s per-primitive `topology` extras.

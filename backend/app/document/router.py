@@ -9618,6 +9618,8 @@ def _merged_body_mesh_data(bodies: dict[str, object], mesh_quality: MeshQuality 
                 topology_vertices=body_mesh.topology_vertices,
                 topology_vertex_ids=body_mesh.topology_vertex_ids,
                 face_edge_ids=body_mesh.face_edge_ids,
+                edge_kinds=body_mesh.edge_kinds,
+                face_kinds=body_mesh.face_kinds,
             )
     return merged
 

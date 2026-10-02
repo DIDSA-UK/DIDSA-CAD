@@ -355,6 +355,9 @@ def test_assembly_mesh_glb_primitive_extras_carry_edge_vertex_and_face_boundary_
     assert len(topo["face_edges"]) == 6  # indexed by the same face id face_ids carries
     assert all(len(f) == 4 for f in topo["face_edges"])
     assert all(0 <= edge < 12 for f in topo["face_edges"] for edge in f)
+    # What a mate can use: a box is all straight edges and planar faces.
+    assert {e["k"] for e in topo["edges"]} == {"line"}
+    assert topo["face_kinds"] == ["plane"] * 6
 
 
 def test_assembly_mesh_glb_topology_can_be_left_out():

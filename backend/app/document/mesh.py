@@ -2,7 +2,7 @@ from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.GCPnts import GCPnts_TangentialDeflection
-from OCC.Core.GeomAbs import GeomAbs_Plane
+from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line, GeomAbs_Plane
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_REVERSED, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopLoc import TopLoc_Location
@@ -83,6 +83,8 @@ def tessellate_shape(shape, quality: MeshQuality = DEFAULT_MESH_QUALITY) -> Mesh
     mesh.edges, mesh.edge_ids = _extract_edges(shape)
     if mesh.edges:
         mesh.edge_ref_indices = _edge_ref_indices(shape)
+        mesh.edge_kinds = _edge_kinds(shape)
+        mesh.face_kinds = _face_kinds(shape)
     if not mesh.edges and mesh.triangles:
         # On-device feedback: a shape with a triangulation but no real
         # B-rep edges at all (an ImportFeature's own mesh-format Body) -
@@ -129,6 +131,29 @@ def _edge_ref_indices(shape) -> list[int]:
     for map_index, dense_id in edge_id_by_map_index.items():
         ref_indices[dense_id] = map_index - 1
     return ref_indices
+
+
+def _edge_kinds(shape) -> list[str]:
+    """VR Mates tool: `"line"` / `"circle"` / `"other"` per dense edge id (a mate can only use a straight or
+    circular edge as an axis - `app.document.assembly_solver._resolve_local_geometry`)."""
+    edge_map, edge_id_by_map_index = _dense_edge_ids(shape)
+    kinds = ["other"] * len(edge_id_by_map_index)
+    for map_index, dense_id in edge_id_by_map_index.items():
+        curve_type = BRepAdaptor_Curve(topods.Edge(edge_map.FindKey(map_index))).GetType()
+        kinds[dense_id] = "line" if curve_type == GeomAbs_Line else "circle" if curve_type == GeomAbs_Circle else "other"
+    return kinds
+
+
+def _face_kinds(shape) -> list[str]:
+    """VR Mates tool: `"plane"` / `"cylinder"` / `"other"` per face id (`TopExp_Explorer` face order, the same as
+    `face_ids`) - the only surfaces a mate can use (a plane's normal, a cylinder's axis)."""
+    kinds: list[str] = []
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        surface_type = BRepAdaptor_Surface(topods.Face(explorer.Current()), True).GetType()
+        kinds.append("plane" if surface_type == GeomAbs_Plane else "cylinder" if surface_type == GeomAbs_Cylinder else "other")
+        explorer.Next()
+    return kinds
 
 
 def _extract_edges(shape) -> tuple[list[float], list[int]]:

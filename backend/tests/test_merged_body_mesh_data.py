@@ -110,3 +110,16 @@ def test_edge_ref_indices_name_the_edge_the_resolver_would_find_even_past_a_dege
         close = lambda a, b: all(abs(x - y) < 1e-6 for x, y in zip(a, b))  # noqa: E731
         assert (close(start, drawn_start) and close(end, drawn_end)) or (close(start, drawn_end) and close(end, drawn_start))
 
+
+
+def test_edge_and_face_kinds_say_what_a_mate_can_use():
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeSphere
+
+    cyl = _merged_body_mesh_data({"c": BRepPrimAPI_MakeCylinder(5.0, 10.0).Shape()}).body_topology["c"]
+    assert sorted(cyl.face_kinds) == ["cylinder", "plane", "plane"]
+    assert sorted(cyl.edge_kinds) == ["circle", "circle", "line"]  # two rims and the seam
+    assert len(cyl.edge_kinds) == len(cyl.edge_ref_indices)
+
+    ball = _merged_body_mesh_data({"b": BRepPrimAPI_MakeSphere(5.0).Shape()}).body_topology["b"]
+    assert ball.face_kinds == ["other"]  # a mate cannot use a sphere's surface
+    assert len(ball.edge_kinds) == len(ball.edge_ref_indices)
