@@ -28,7 +28,7 @@ def _t(transform):
     return np.array(transform["translation"], float)
 
 
-def test_contract_shape_group_dof_basis_members_and_aliases():
+def test_contract_shape_group_dof_basis_and_members():
     root, _p, _parts = _plate_bcd()
     stored = _occs(root)
     r = _motion(root, "occ-B", {"transform": None, "lever_arm": 12.5})
@@ -45,8 +45,7 @@ def test_contract_shape_group_dof_basis_members_and_aliases():
     q = body["quality"]
     assert q["residual_inf"] < 1e-7 and q["sigma_min"] > 0 and q["sigma_gap"] > 1 and q["jump"] < 1e-6 and q["max_step"] is None
     assert body["diagnostics"]["solve_ms"] > 0 and body["committed"] is False
-    # v0 aliases (VR on main): the grabbed occurrence solved alone against frozen peers.
-    assert body["transform"] is not None and body["free_twists"] == []
+    assert "transform" not in body and "free_twists" not in body  # the v0 single-occurrence aliases are gone
     assert _occs(root) == stored  # nothing stored without commit
 
 

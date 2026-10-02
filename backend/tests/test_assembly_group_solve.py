@@ -427,3 +427,42 @@ def test_mate_motion_endpoint_accepts_reference_poses():
     bad = dict(body, reference=[{"occurrence_id": "occ-bolt"}])
     assert client.post(f"/document/parts/{root}/occurrences/occ-bolt/mate-motion", json=bad).status_code == 422
 
+
+
+# ---- quality.jump in the screw chart (projector spec sections 6, 13, F2) ------------
+
+
+def _jumps(root, wishes):
+    document = get_document()
+    part = document.parts[root]
+    occ = part.occurrences[0]
+    settled = solve_group(document, part, occ.id, None, lever_arm=_L)
+    occ.transform = settled.poses[occ.id]
+    return [solve_group(document, part, occ.id, apply_delta(occ.transform, d), lever_arm=_L).quality.jump for d in wishes]
+
+
+def test_screw_exp_and_log_are_exact_inverses():
+    from app.document.constraint_model import exp_rot, screw_exp, screw_log
+
+    rng = np.random.default_rng(7)
+    for _ in range(20):
+        d = np.concatenate([rng.normal(size=3) * 40.0, rng.normal(size=3) * 0.8])
+        base = (exp_rot(rng.normal(size=3)), rng.normal(size=3) * 50.0)
+        r, t = screw_exp(base, d)
+        assert np.allclose(screw_log(base, (r, t)), d, atol=1e-9)
+    # a pure spin about the occurrence origin (v = 0) leaves the origin in place; a pure slide is the displacement
+    base = (np.eye(3), np.array([10.0, 0.0, 0.0]))
+    assert np.allclose(screw_exp(base, [0, 0, 0, 0, 0, 0.5])[1], base[1])
+    assert np.allclose(screw_exp(base, [0, 0, 0, 0, 0, 0.5])[0], exp_rot([0, 0, 0.5]))
+    assert np.allclose(screw_exp(base, [3.0, 4.0, 5.0, 0, 0, 0])[1], [13.0, 4.0, 5.0])
+
+
+def test_jump_is_measured_against_the_screw_prediction():
+    """A turn about the offset pin is a screw orbit: the screw prediction lands on it, so the jump is small (the additive
+    chart reported 0.35 weighted mm for the 40 degree spin and 1.83 for slide + 90 degrees, F2); flat mates stay ~0."""
+    swing = _jumps(_offset_pin_scene(), [(0, 0, 0, 0, 0, math.radians(40)), (0, 0, 15.0, 0, 0, math.radians(90))])
+    assert swing[0] < 0.05 and swing[1] < 0.5, swing
+    root, _plate, _parts = _plate_bcd()
+    stored = get_document().parts[root].occurrences[0].transform
+    flat = solve_group(get_document(), get_document().parts[root], "occ-B", apply_delta(stored, (0.0, 6.0, 0.0, 0, 0, 0)), lever_arm=10.0)
+    assert flat.quality.jump < 1e-6
