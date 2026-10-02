@@ -342,3 +342,127 @@ def test_max_step_reaches_the_http_response():
     assert response.json()["quality"]["max_step"] is not None and response.json()["quality"]["max_step"] > 0
     flat = client.post(f"/document/parts/{root}/occurrences/{occ.id}/mate-motion", json={"transform": None, "lever_arm": _L})
     assert flat.json()["quality"]["max_step"] is None
+
+
+# ---- floating bolt + plate (nothing fixed): large rigid-group wishes ---------------------------------
+
+
+def _floating_bolt_scene():
+    """A plate with a through hole and a bolt standing in it, BOTH floating occurrences of an empty root
+    (nothing fixed): concentric (bolt shank / hole) + coincident (bolt end face on the plate top). Group dof 7:
+    the rigid-body motions plus the bolt's spin."""
+    from tests.test_assembly_solver import _add_point, _create_part
+    plate = _make_box_part("HolePlate", size=60.0, depth=10.0)
+    sf = client.post(f"/document/parts/{plate['id']}/features/sketch", json={"plane": "XY"}).json()
+    center = _add_point(sf["sketch_id"], 30.0, 30.0)
+    assert client.post(f"/sketch/sketches/{sf['sketch_id']}/circles", json={"center_point_id": center["id"], "radius": 5.0, "angle": 0.0}).status_code == 201
+    cut = client.post(f"/document/parts/{plate['id']}/extrude-features", json={
+        "sketch_feature_id": sf["id"], "extrude_type": "cut", "start_distance": 0.0, "end_distance": 10.0, "target_body_ids": [plate["body_id"]]})
+    assert cut.status_code == 201, cut.text
+    bolt = _make_cylinder_part("Bolt", radius=4.0, depth=20.0)
+    root = _compose(_create_part("BoltAssembly"), [("occ-plate", plate, (0, 0, 0)), ("occ-bolt", bolt, (30, 30, 10))])
+    _mate(root, "concentric", "occ-bolt", _cyl(bolt), "occ-plate", _cyl(plate))
+    _mate(root, "coincident", "occ-bolt", _face(bolt, (0, 0, -1)), "occ-plate", _face(plate, (0, 0, 1)))
+    return root
+
+
+def test_floating_bolt_turned_by_large_angles_about_x_and_y_follows_the_wish():
+    """Regression (owner report): with nothing fixed, turning a bolt mated to a plate worked for a while and then
+    'cannot follow that move'. Plain Gauss-Newton from 'followers where they are' failed at a quarter turn about x/y and
+    returned a pose with the bolt pulled back towards where it was for 120 deg and more; the solve now seeds the
+    followers at the screw prediction, so the bolt lands (within a fraction of a degree) at the wish."""
+    root = _floating_bolt_scene()
+    document = get_document()
+    part = document.parts[root]
+    analysis0 = solve_group(document, part, "occ-bolt", None, lever_arm=20.0)
+    assert analysis0.converged and analysis0.analysis.dof == 7 and analysis0.analysis.grounded is False
+    stored = next(o for o in part.occurrences if o.id == "occ-bolt").transform
+    for axis in ((1, 0, 0), (0, 1, 0), (0, 0, 1)):
+        for degrees in (10, 30, 60, 90, 120, 150, 180):
+            wish = apply_delta(stored, (0, 0, 0, *(np.array(axis, float) * math.radians(degrees))))
+            result = solve_group(document, part, "occ-bolt", wish, lever_arm=20.0)
+            assert result.converged and result.quality.residual_inf < _TOL, (axis, degrees, result.quality)
+            off = math.degrees(float(np.linalg.norm(pose_delta(result.poses["occ-bolt"], wish)[3:])))
+            assert off < 0.05, (axis, degrees, off)  # the bolt sits at the wish, not dragged back
+            assert float(np.linalg.norm(pose_delta(result.poses["occ-bolt"], wish)[:3])) < 1e-6
+            moved = float(np.linalg.norm(pose_delta(result.poses["occ-plate"], next(o for o in part.occurrences if o.id == "occ-plate").transform)))
+            if axis != (0, 0, 1):
+                assert moved > 1.0, (axis, degrees)  # the plate rode along
+
+
+def test_reference_poses_warm_start_the_solve():
+    """`reference` = the poses a client last accepted. The solve measures 'nearest' from them, not from the stored poses:
+    with a reference that already satisfies the mates and a wish equal to its grabbed pose nothing moves at all (a fixed
+    point), although the stored poses are elsewhere; and an empty/None reference is the old behaviour."""
+    root = _floating_bolt_scene()
+    document = get_document()
+    part = document.parts[root]
+    stored = {o.id: o.transform for o in part.occurrences}
+    wish = apply_delta(stored["occ-bolt"], (0, 0, 0, *(np.array((1.0, 0, 0)) * math.radians(60))))
+    away = solve_group(document, part, "occ-bolt", wish, lever_arm=20.0)
+    assert away.converged
+    plain = solve_group(document, part, "occ-bolt", wish, lever_arm=20.0, reference=None)
+    assert all(float(np.linalg.norm(pose_delta(plain.poses[k], away.poses[k]))) < 1e-9 for k in stored)
+    # the satisfying configuration reached above, used as the reference, with its own grabbed pose as the wish: a fixed point
+    again = solve_group(document, part, "occ-bolt", away.poses["occ-bolt"], lever_arm=20.0, reference=dict(away.poses))
+    assert again.converged and again.quality.iterations == 0
+    for oid in stored:
+        assert float(np.linalg.norm(pose_delta(again.poses[oid], away.poses[oid]))) < 1e-9
+    # a second step from that reference moves the follower by about the rigid motion of the step, not by a re-pick of its free freedoms
+    step = apply_delta(away.poses["occ-bolt"], (0, 0, 0, *(np.array((1.0, 0, 0)) * math.radians(2))))
+    nxt = solve_group(document, part, "occ-bolt", step, lever_arm=20.0, reference=dict(away.poses))
+    assert nxt.converged
+    plate_move = float(np.linalg.norm(pose_delta(nxt.poses["occ-plate"], away.poses["occ-plate"])[:3]))
+    assert plate_move < 3.0, plate_move  # a 2 degree turn about an axis ~40 mm from the plate origin is ~1.5 mm
+
+
+def test_mate_motion_endpoint_accepts_reference_poses():
+    root = _floating_bolt_scene()
+    from app.document.store import get_document as _gd
+    stored = {o.id: o.transform for o in _gd().parts[root].occurrences}
+    body = {"transform": None, "lever_arm": 20.0,
+            "reference": [{"occurrence_id": k, "transform": {"translation": list(v.translation), "rotation_axis": list(v.rotation_axis), "rotation_angle_degrees": v.rotation_angle_degrees}} for k, v in stored.items()]}
+    r = client.post(f"/document/parts/{root}/occurrences/occ-bolt/mate-motion", json=body)
+    assert r.status_code == 200 and r.json()["converged"], r.text
+    bad = dict(body, reference=[{"occurrence_id": "occ-bolt"}])
+    assert client.post(f"/document/parts/{root}/occurrences/occ-bolt/mate-motion", json=bad).status_code == 422
+
+
+
+# ---- quality.jump in the screw chart (projector spec sections 6, 13, F2) ------------
+
+
+def _jumps(root, wishes):
+    document = get_document()
+    part = document.parts[root]
+    occ = part.occurrences[0]
+    settled = solve_group(document, part, occ.id, None, lever_arm=_L)
+    occ.transform = settled.poses[occ.id]
+    return [solve_group(document, part, occ.id, apply_delta(occ.transform, d), lever_arm=_L).quality.jump for d in wishes]
+
+
+def test_screw_exp_and_log_are_exact_inverses():
+    from app.document.constraint_model import exp_rot, screw_exp, screw_log
+
+    rng = np.random.default_rng(7)
+    for _ in range(20):
+        d = np.concatenate([rng.normal(size=3) * 40.0, rng.normal(size=3) * 0.8])
+        base = (exp_rot(rng.normal(size=3)), rng.normal(size=3) * 50.0)
+        r, t = screw_exp(base, d)
+        assert np.allclose(screw_log(base, (r, t)), d, atol=1e-9)
+    # a pure spin about the occurrence origin (v = 0) leaves the origin in place; a pure slide is the displacement
+    base = (np.eye(3), np.array([10.0, 0.0, 0.0]))
+    assert np.allclose(screw_exp(base, [0, 0, 0, 0, 0, 0.5])[1], base[1])
+    assert np.allclose(screw_exp(base, [0, 0, 0, 0, 0, 0.5])[0], exp_rot([0, 0, 0.5]))
+    assert np.allclose(screw_exp(base, [3.0, 4.0, 5.0, 0, 0, 0])[1], [13.0, 4.0, 5.0])
+
+
+def test_jump_is_measured_against_the_screw_prediction():
+    """A turn about the offset pin is a screw orbit: the screw prediction lands on it, so the jump is small (the additive
+    chart reported 0.35 weighted mm for the 40 degree spin and 1.83 for slide + 90 degrees, F2); flat mates stay ~0."""
+    swing = _jumps(_offset_pin_scene(), [(0, 0, 0, 0, 0, math.radians(40)), (0, 0, 15.0, 0, 0, math.radians(90))])
+    assert swing[0] < 0.05 and swing[1] < 0.5, swing
+    root, _plate, _parts = _plate_bcd()
+    stored = get_document().parts[root].occurrences[0].transform
+    flat = solve_group(get_document(), get_document().parts[root], "occ-B", apply_delta(stored, (0.0, 6.0, 0.0, 0, 0, 0)), lever_arm=10.0)
+    assert flat.quality.jump < 1e-6

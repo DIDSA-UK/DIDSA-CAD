@@ -52,6 +52,9 @@ static void my_application_activate(GApplication* application) {
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(project, self->dart_entrypoint_arguments);
+  // The 3D viewport (flutter_scene) needs Flutter GPU; the Linux runner is how the app is built and driven headlessly
+  // (Xvfb) in dev, so enable it here, the equivalent of the Android/iOS manifest settings.
+  fl_dart_project_set_enable_flutter_gpu(project, TRUE);
 
   FlView* view = fl_view_new(project);
   gtk_widget_show(GTK_WIDGET(view));

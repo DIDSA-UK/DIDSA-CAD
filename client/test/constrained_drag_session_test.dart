@@ -33,6 +33,7 @@ class _FakeBackend {
   };
 
   final List<({RigidTransformDto? transform, double? lever, bool commit})> calls = [];
+  final List<List<MateMotionMemberDto>?> references = [];
 
   /// Modes for the NEXT answers, consumed one per call; empty = behave.
   final List<String> script = [];
@@ -47,8 +48,11 @@ class _FakeBackend {
     RigidTransformDto? transform,
     double? leverArm,
     bool commit = false,
+    List<MateMotionMemberDto>? reference,
+    bool includeConstraintModel = true,
   }) async {
     calls.add((transform: transform, lever: leverArm, commit: commit));
+    references.add(reference);
     final g = gate;
     if (g != null) await g.future;
     final mode = script.isEmpty ? 'ok' : script.removeAt(0);
@@ -350,6 +354,31 @@ void main() {
       }
       expect(s.counters.maxShownStep, closeTo(0.5, 1e-6));
       await s.finish();
+    });
+
+    test('warm start: the last accepted anchor\'s poses go out as `reference` with every request after the first (commit included)', () async {
+      final api = _FakeBackend(withFollower: true);
+      final clock = _Clock();
+      final s = _session(api, clock);
+      await s.begin();
+      expect(api.references.first, isNull, reason: 'the grab anchor has nothing to be relative to');
+      clock.now += 16;
+      s.update(_at(1, 0, 0));
+      clock.now += 200;
+      s.update(_at(2, 0, 0));
+      await _settle();
+      final second = api.references[1]!;
+      expect(second.map((m) => m.occurrenceId), ['B', 'D']);
+      await s.finish();
+      expect(api.references.last!.map((m) => m.occurrenceId), ['B', 'D']);
+
+      final off = ConstrainedDragSession(
+          call: api.call, partId: 'root', grabbedId: 'B', leverArm: _lever, nowMs: clock.call, useReference: false);
+      await off.begin();
+      clock.now += 200;
+      off.update(_at(1, 0, 0));
+      await _settle();
+      expect(api.references.last, isNull, reason: 'useReference: false keeps the old stored-pose behaviour');
     });
 
     test('constrainedDragNotice explains a fully constrained or locked component, says nothing otherwise', () {

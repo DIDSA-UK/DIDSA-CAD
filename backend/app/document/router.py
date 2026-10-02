@@ -14,7 +14,7 @@ from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances
 from app.document.assembly_group import GroupSolveResult, solve_group
-from app.document.assembly_solver import _quaternion_from_axis_angle, solve_occurrence_from_guess
+from app.document.assembly_solver import _quaternion_from_axis_angle
 from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, resolve_bevel_gear_coarse
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -4106,9 +4106,7 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
     transaction). A `fixed` grabbed occurrence 422s like `solve_for_occurrence`;
     non-convergence is `converged: false` with NO basis (not a 4xx), and a
     `commit` with `converged: false` stores nothing.
-
-    `transform`/`free_twists` in the response are the v0 single-occurrence
-    aliases VR on `main` still reads (S9 deletes them)."""
+"""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     if occurrence.fixed:
@@ -4123,22 +4121,23 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
         )
     document = get_document()
     started = time.perf_counter()
-    result = solve_group(document, part, occurrence_id, wanted, payload.lever_arm)
-    solve_ms = (time.perf_counter() - started) * 1000.0
-    # v0 aliases: the old single-occurrence answer, computed the old way.
-    legacy = solve_occurrence_from_guess(document, part, occurrence_id, wanted)
-    alias = {}
-    if legacy.converged:
-        alias = {
-            "transform": _rigid_transform_response(legacy.transform),
-            "free_twists": [list(t) for t in legacy.free_twists],
+    reference = None
+    if payload.reference:
+        reference = {
+            r.occurrence_id: RigidTransform(
+                translation=tuple(r.transform.translation),
+                rotation_axis=tuple(r.transform.rotation_axis),
+                rotation_angle_degrees=r.transform.rotation_angle_degrees,
+            )
+            for r in payload.reference
         }
+    result = solve_group(document, part, occurrence_id, wanted, payload.lever_arm, reference=reference)
+    solve_ms = (time.perf_counter() - started) * 1000.0
     if not result.converged or result.analysis is None:
         return MateMotionResponse(
             converged=False,
             quality=MateMotionQuality(residual_inf=result.quality.residual_inf),
             diagnostics=MateMotionDiagnostics(solve_ms=solve_ms),
-            **alias,
         )
     analysis = result.analysis
     if payload.commit:
@@ -4165,7 +4164,7 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
         ),
         diagnostics=MateMotionDiagnostics(solve_ms=solve_ms),
         committed=payload.commit,
-        **alias,
+        constraint_model=result.constraint_model if payload.include_constraint_model else None,
     )
 
 
@@ -4181,8 +4180,8 @@ def preview_mate_solve_endpoint(
     .../mates` accepts) as a *hypothetical* Mate referencing `occurrence_id`,
     against `occurrence_id`'s real peers (both its own already-created Mates
     and `payload` itself), without creating a Mate or mutating
-    `occurrence_id`'s own `transform` at all (`preview_mate_solve`'s own
-    docstring). `MatePanel` calls this on every type/value/flip/allow-
+    `occurrence_id`'s own `transform` at all (the hypothetical mate joins
+    the group solve as `extra_mates`). `MatePanel` calls this on every type/value/flip/allow-
     rotation change while the user is still picking/adjusting, well before
     ever tapping Confirm.
 

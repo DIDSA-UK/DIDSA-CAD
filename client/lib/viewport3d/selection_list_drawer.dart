@@ -318,7 +318,7 @@ class SelectionListDrawer extends StatelessWidget {
     // documents.
     if (entity.kind == SelectionEntityKind.component) {
       final id = entity.occurrenceId;
-      return 'Component ${id.length > 8 ? id.substring(0, 8) : id}';
+      return bodyNames[id] ?? 'Component';
     }
     return '${_labelFor(entity.kind)} #${entity.id}';
   }

@@ -166,6 +166,7 @@ void main() {
     test('every kind in the file has a runner in this test', () {
       const handled = {
         'gram_schmidt', 'project', 'screw_log', 'hysteresis', 'blend', 'blend_anchor', 'scheduler', 'accept_anchor', 'swing_sequence',
+        'local_retract', // run by test/local_retraction_test.dart (same file, its own constants)
       };
       final kinds = (_doc['cases'] as List).map((c) => (c as Map)['kind'] as String).toSet();
       expect(kinds.difference(handled), isEmpty, reason: 'new vector kind without a Dart runner');

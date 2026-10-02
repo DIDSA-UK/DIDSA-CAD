@@ -488,8 +488,8 @@ def test_coincident_plane_to_plane_from_a_wrongly_facing_pose_flips_it_back():
 
 def _mate_motion(root_part_id: str, transform: dict | None, occurrence_id: str = "occ-driven") -> dict:
     response = client.post(
-        f"/document/parts/{root_part_id}/occurrences/{occurrence_id}/mate-motion", json={"transform": transform}
-    )
+        f"/document/parts/{root_part_id}/occurrences/{occurrence_id}/mate-motion", json={"transform": transform, "lever_arm": 1.0}
+    )  # lever arm 1: the basis rows are then orthonormal in the plain [v, w] coordinates
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -537,19 +537,19 @@ def test_mate_motion_reports_three_free_directions_for_a_face_to_face_mate():
     result = _mate_motion(base["id"], None)
     assert result["converged"] is True
     assert result["dof"] == 3
-    assert len(result["free_twists"]) == 3
+    assert len(result["basis"]) == 3
     # Orthonormal basis.
-    twists = result["free_twists"]
+    twists = result["basis"]
     for i, a in enumerate(twists):
         for j, b in enumerate(twists):
             dot = sum(x * y for x, y in zip(a, b))
             assert abs(dot - (1.0 if i == j else 0.0)) < 1e-6
 
 
-def test_mate_motion_free_twists_really_keep_the_mate_satisfied_and_forbidden_ones_dont():
+def test_mate_motion_basis_really_keep_the_mate_satisfied_and_forbidden_ones_dont():
     base, _bracket = _make_face_mated_bracket()
     result = _mate_motion(base["id"], None)
-    solved = _rigid_transform_from_response({"transform": result["transform"]})
+    solved = _rigid_transform_from_response({"transform": result["members"][0]["transform"]})
 
     def plane_height_and_normal(transform):
         point = apply_transform_to_point(transform, (0.0, 0.0, 0.0)) # the bracket's bottom face lies in its local z=0 plane
@@ -560,7 +560,7 @@ def test_mate_motion_free_twists_really_keep_the_mate_satisfied_and_forbidden_on
     assert abs(z0 - 10.0) < _TOLERANCE
     # Every free twist, moved along a little, leaves the bracket's bottom face on
     # Base's top plane and pointing the same way (to first order).
-    for twist in result["free_twists"]:
+    for twist in result["basis"]:
         moved = _apply_twist(solved, twist, 1e-4)
         z, normal = plane_height_and_normal(moved)
         assert abs(z - z0) < 1e-6, twist
@@ -569,7 +569,7 @@ def test_mate_motion_free_twists_really_keep_the_mate_satisfied_and_forbidden_on
     # free subspace: it can't be built from the twists.
     import numpy as np
 
-    basis = np.array(result["free_twists"])
+    basis = np.array(result["basis"])
     for forbidden in ((0, 0, 1, 0, 0, 0), (0, 0, 0, 1, 0, 0), (0, 0, 0, 0, 1, 0)):
         v = np.array(forbidden, dtype=float)
         assert np.linalg.norm(v - basis.T @ (basis @ v)) > 0.5, forbidden
@@ -579,7 +579,7 @@ def test_mate_motion_solves_from_the_wanted_pose_keeps_free_directions_and_store
     base, _bracket = _make_face_mated_bracket()
     wanted = {"translation": [9.0, -4.0, 33.0], "rotation_axis": [0.0, 0.0, 1.0], "rotation_angle_degrees": 25.0}
     result = _mate_motion(base["id"], wanted)
-    solved = _rigid_transform_from_response({"transform": result["transform"]})
+    solved = _rigid_transform_from_response({"transform": result["members"][0]["transform"]})
     assert result["converged"] is True
     # On Base's top plane, in-plane position and spin left where they were wanted.
     assert abs(solved.translation[2] - 10.0) < _TOLERANCE
@@ -596,8 +596,8 @@ def test_mate_motion_with_no_mates_is_all_six_free():
     bracket = _make_box_part("Bracket", size=8.0, depth=4.0)
     _place_occurrence(base["id"], bracket["id"], translation=(3.0, 3.0, 50.0))
     result = _mate_motion(base["id"], {"translation": [1.0, 2.0, 3.0], "rotation_axis": [0.0, 0.0, 1.0], "rotation_angle_degrees": 0.0})
-    assert result["converged"] is True and result["dof"] == 6 and len(result["free_twists"]) == 6
-    assert result["transform"]["translation"] == [1.0, 2.0, 3.0]
+    assert result["converged"] is True and result["dof"] == 6 and len(result["basis"]) == 6
+    assert result["members"][0]["transform"]["translation"] == [1.0, 2.0, 3.0]
 
 
 def test_mate_motion_rejects_a_grounded_occurrence():
@@ -757,7 +757,7 @@ def test_coincident_after_concentric_on_the_same_occurrence_still_converges():
     *same* direction CONCENTRIC's own `addParallel` already forces, via a
     second, independently-built pair of line entities - mathematically
     redundant, not conflicting, but `py_slvs` reports a non-zero
-    `result_code` for it regardless. `solve_occurrence` now falls back to
+    `result_code` for it regardless. `solve_occurrence_from_guess` now falls back to
     verifying each Mate's own residual directly against the solved
     positions before giving up.
 

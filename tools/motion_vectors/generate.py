@@ -29,6 +29,8 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "docs" / "motion" / "vectors.json"
+# The backend CI image holds backend/ only: it gets its own copy of the constants + `local_retract` cases (kept in step by --check).
+BACKEND_OUT = REPO / "backend" / "tests" / "data" / "local_retract_vectors.json"
 
 # ---- constants (mirrored in the spec, section 10) -------------------------------------------------
 FOLLOWER_WEIGHT = 1e-4      # backend _FOLLOWER_WEIGHT: follower metric scale relative to the grabbed member
@@ -42,6 +44,16 @@ REANCHOR_MS_NEAR_SINGULAR = 75.0
 SIGMA_GAP_LOW = 100.0
 GAIN_MIN = 0.05             # hysteresis: weighted mm of wish captured only by the new directions
 GAIN_FRAMES = 3
+# Local retraction (spec section 4b)
+LOCAL_FOLLOWER = 1e-2       # follower weight of the local retraction (the PROJECTION metric keeps FOLLOWER_WEIGHT)
+LOCAL_ITERS = 3
+LOCAL_ITERS_MAX = 8          # a far wish (hitch) gets more iterations: ITERS + ceil((d_wish - TRUST) / TRUST), capped here
+LOCAL_POLISH = 1
+LOCAL_TRUST = 6.0           # weighted mm of wished displacement per iteration
+LOCAL_ROT_CAP = 0.6         # rad per iteration, any member
+LOCAL_LAM_ABS = 1e-9
+LOCAL_ACCEPT_RESIDUAL = 1e-6
+LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
 
 
 # ---- rotation / pose math ---------------------------------------------------------------------------
@@ -292,6 +304,215 @@ class Hysteresis:
         proj = screw_exp(refs[0], project_delta(rows, self.s, want)[:6])
         return proj, gain, event
 
+
+
+# ---- local retraction (spec section 4b): constraint model, residual + analytic Jacobian, nearest-point SQP ----------------
+class _V:
+    """A world 3-vector with its derivative (3 x n) w.r.t. the 6k twist coordinates [v, w] per member."""
+    __slots__ = ("v", "d")
+
+    def __init__(self, v, d):
+        self.v, self.d = v, d
+
+
+class _S:
+    __slots__ = ("v", "d")
+
+    def __init__(self, v, d):
+        self.v, self.d = v, d
+
+
+def _vsub(a, b):
+    return _V(a.v - b.v, a.d - b.d)
+
+
+def _vdot(a, b):
+    return _S(float(a.v @ b.v), a.d.T @ b.v + b.d.T @ a.v)
+
+
+def _vcross(a, b):
+    return _V(np.cross(a.v, b.v), -skew(b.v) @ a.d + skew(a.v) @ b.d)
+
+
+def _vunit(a):
+    n = float(np.linalg.norm(a.v))
+    u = a.v / n
+    return _V(u, (np.eye(3) - np.outer(u, u)) @ a.d / n)
+
+
+class ConstraintModel:
+    """`spec` = the `constraint_model` of a mate-motion answer (see the spec, section 4b)."""
+
+    def __init__(self, spec):
+        self.spec, self.k = spec, len(spec["members"])
+        self.n = 6 * self.k
+
+    def _world(self, side, poses, name, kind, plane=False):
+        local = np.array(side["plane"][name] if plane else side[name], float)
+        m = side["member"]
+        d = np.zeros((3, self.n))
+        if m < 0:
+            fz = side.get("frozen")
+            if fz is None:
+                return _V(local.copy(), d)
+            r, t = np.array(fz["r"], float), np.array(fz["t"], float)
+        else:
+            r, t = poses[m]
+        w = r @ local
+        if kind == "point":
+            v = w + t
+            if m >= 0:
+                d[:, 6 * m:6 * m + 3] = np.eye(3)
+                d[:, 6 * m + 3:6 * m + 6] = -skew(w)
+        else:
+            v = w
+            if m >= 0:
+                d[:, 6 * m + 3:6 * m + 6] = -skew(w)
+        return _V(v, d)
+
+    def _geo(self, side, poses):
+        g = {}
+        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir")):
+            if name in side:
+                g[name] = self._world(side, poses, name, kind)
+        if "plane" in side:
+            g["porigin"] = self._world(side, poses, "origin", "point", plane=True)
+            g["pnormal"] = self._world(side, poses, "normal", "dir", plane=True)
+        return g
+
+    def residual(self, poses):
+        rows, jac = [], []
+
+        def add(s):
+            rows.append(s.v)
+            jac.append(s.d)
+
+        def addv(vec):
+            for i in range(3):
+                rows.append(float(vec.v[i]))
+                jac.append(vec.d[i])
+
+        for mate in self.spec["mates"]:
+            d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
+            t = mate["type"]
+            if t == "coincident":
+                if "porigin" in d and "porigin" in f:
+                    add(_vdot(_vsub(d["porigin"], f["porigin"]), f["pnormal"]))
+                    addv(_vcross(d["pnormal"], f["pnormal"]))
+                elif "porigin" in d:
+                    add(_vdot(_vsub(f["point"], d["porigin"]), d["pnormal"]))
+                elif "porigin" in f:
+                    add(_vdot(_vsub(d["point"], f["porigin"]), f["pnormal"]))
+                else:
+                    addv(_vsub(d["point"], f["point"]))
+            elif t == "concentric":
+                addv(_vcross(d["direction"], f["direction"]))
+                addv(_vcross(_vsub(d["axis_origin"], f["axis_origin"]), f["direction"]))
+                if not mate["allow_rotation"] and "perp" in d and "perp" in f:
+                    addv(_vcross(d["perp"], f["perp"]))
+            elif t == "parallel":
+                addv(_vcross(d["direction"], f["direction"]))
+            elif t == "angle":
+                target = abs(mate["value"]) % 360.0
+                target = min(target, 360.0 - target)
+                dd = _vdot(_vunit(d["direction"]), _vunit(f["direction"]))
+                add(_S(dd.v - math.cos(math.radians(target)), dd.d))
+            elif t == "distance":
+                tsq = mate["value"] ** 2
+                if "porigin" in d and "porigin" in f:
+                    sg = _vdot(_vsub(d["porigin"], f["porigin"]), f["pnormal"])
+                    add(_S(sg.v ** 2 - tsq, 2 * sg.v * sg.d))
+                    addv(_vcross(d["pnormal"], f["pnormal"]))
+                elif "porigin" in d:
+                    sg = _vdot(_vsub(f["point"], d["porigin"]), d["pnormal"])
+                    add(_S(sg.v ** 2 - tsq, 2 * sg.v * sg.d))
+                elif "porigin" in f:
+                    sg = _vdot(_vsub(d["point"], f["porigin"]), f["pnormal"])
+                    add(_S(sg.v ** 2 - tsq, 2 * sg.v * sg.d))
+                elif "axis_origin" in d and "axis_origin" in f:
+                    p = _vcross(_vsub(d["axis_origin"], f["axis_origin"]), f["direction"])
+                    pp = _vdot(p, p)
+                    add(_S(pp.v - tsq, pp.d))
+                    addv(_vcross(d["direction"], f["direction"]))
+                else:
+                    off = _vsub(d["point"], f["point"])
+                    oo = _vdot(off, off)
+                    add(_S(oo.v - tsq, oo.d))
+        return np.array(rows, float), (np.array(jac, float) if jac else np.zeros((0, self.n)))
+
+
+def local_weights(k, lever, grabbed=0, follower=LOCAL_FOLLOWER):
+    return member_scale(k, lever, grabbed, follower)
+
+
+def _cap_rot(dx, k, cap):
+    rot = max(float(np.linalg.norm(dx[6 * i + 3:6 * i + 6])) for i in range(k))
+    return dx * (cap / rot) if rot > cap else dx
+
+
+def local_retract(model, poses, wishes, w, iters=LOCAL_ITERS, polish=LOCAL_POLISH):
+    """Sequential nearest-point retraction. `poses`, `wishes`: lists of Pose; returns a list of Pose."""
+    k = model.k
+    cur = [(p.r, p.t) for p in poses]
+    wish = [(p.r, p.t) for p in wishes]
+
+    def step(cur, dx):
+        return [(rot_from_rotvec(dx[6 * i + 3:6 * i + 6]) @ cur[i][0], cur[i][1] + dx[6 * i:6 * i + 3]) for i in range(k)]
+
+    for _ in range(iters):
+        r, jac = model.residual(cur)
+        g = np.concatenate([np.concatenate([wish[i][1] - cur[i][1], rotvec_from_rot(wish[i][0] @ cur[i][0].T)]) for i in range(k)])
+        a = jac / w
+        y0 = w * g
+        n0 = float(np.linalg.norm(y0))
+        if n0 > LOCAL_TRUST:
+            y0 = y0 * (LOCAL_TRUST / n0)
+        if r.size:
+            y = y0 - a.T @ np.linalg.solve(a @ a.T + LOCAL_LAM_ABS * np.eye(len(a)), a @ y0 + r)
+        else:
+            y = y0
+        cur = step(cur, _cap_rot(y / w, k, LOCAL_ROT_CAP))
+    for _ in range(polish):
+        r, jac = model.residual(cur)
+        if not r.size or float(np.max(np.abs(r))) < 1e-12:
+            break
+        a = jac / w
+        dx = -(a.T @ np.linalg.solve(a @ a.T + LOCAL_LAM_ABS * np.eye(len(a)), r)) / w
+        cur = step(cur, _cap_rot(dx, k, LOCAL_ROT_CAP))
+    return [Pose(t, r) for r, t in cur]
+
+
+def local_residual_inf(model, poses):
+    r, _ = model.residual([(p.r, p.t) for p in poses])
+    return float(np.max(np.abs(r))) if r.size else 0.0
+
+
+def local_iterations(wish_step):
+    """Iterations for one frame: the base count, plus one per `LOCAL_TRUST` of hand distance beyond the first (a hitch)."""
+    return int(min(LOCAL_ITERS_MAX, max(LOCAL_ITERS, LOCAL_ITERS + math.ceil((wish_step - LOCAL_TRUST) / LOCAL_TRUST))))
+
+
+def local_frame(i):
+    """One frame of the client's local retraction with the acceptance guard (spec section 4b)."""
+    model = ConstraintModel(i["model"])
+    lever = i["lever_arm"]
+    poses = [Pose.from_json(p) for p in i["poses"]]
+    wishes = [Pose.from_json(p) for p in i["wishes"]]
+    fallback = [Pose.from_json(p) for p in i["fallback_poses"]]
+    w = local_weights(len(poses), lever)
+    wish_step = weighted_dist(wishes[0], poses[0], lever)  # how far the hand is from the pose the frame starts at
+    got = local_retract(model, poses, wishes, w, iters=local_iterations(wish_step))
+    res = local_residual_inf(model, got)
+    dist = weighted_dist(got[0], fallback[0], lever)
+    accepted = res <= LOCAL_ACCEPT_RESIDUAL and dist <= LOCAL_ACCEPT_DISTANCE * max(lever, wish_step)
+    shown = got if accepted else fallback
+    return {
+        "accepted": bool(accepted),
+        "poses": [p.out() for p in shown],
+        "local_poses": [p.out() for p in got],
+        "residual_inf": res,
+        "fallback_distance": dist,
+    }
 
 # ---- output helpers ---------------------------------------------------------------------------------------
 def clean(x):
@@ -799,6 +1020,120 @@ def build():
          "(they overshoot). Screw integration stays on the manifold; blending shrinks the anchor pop; the additive "
          "integrator (v0) leaves the manifold", inp, swing)
 
+    # ---- local retraction (spec section 4b) -------------------------------------------------------------------
+    I3 = np.eye(3).tolist()
+
+    def side(member, **geom):
+        d = {"member": member}
+        d.update(geom)
+        return d
+
+    def mate(kind, a, b, value=None, allow_rotation=True):
+        return {"type": kind, "value": value, "allow_rotation": allow_rotation, "a": a, "b": b}
+
+    def plane_side(member, origin, normal, **extra):
+        return side(member, point=list(origin), direction=list(normal), plane={"origin": list(origin), "normal": list(normal)}, **extra)
+
+    def axis_side(member, origin, direction, **extra):
+        return side(member, axis_origin=list(origin), direction=list(direction), **extra)
+
+    FROZEN0 = {"r": I3, "t": [0.0, 0.0, 0.0]}
+    bolt_fixed = {"version": 1, "members": ["bolt"], "mates": [
+        mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1)), axis_side(-1, (30, 30, 0), (0, 0, 1), frozen=FROZEN0)),
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0)),
+    ]}
+    bolt_start = P((30.0, 30.0, 10.0))
+    swing_model = {"version": 1, "members": ["pin"], "mates": [
+        mate("concentric", axis_side(0, (CX, 0, 0), (0, 0, 1)), axis_side(-1, (0, 0, 0), (0, 0, 1))),
+    ]}
+    swing_start = P((-CX, 0.0, 30.0))
+    angle_model = {"version": 1, "members": ["part"], "mates": [
+        mate("angle", side(0, direction=[0.0, 0.0, 1.0]), side(-1, direction=[0.0, 0.0, 1.0]), value=60.0),
+    ]}
+    angle_start = P((5.0, 5.0, 60.0), (1, 0, 0), 60.0)
+    float_model = {"version": 1, "members": ["bolt", "plate"], "mates": [
+        mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1)), axis_side(1, (30, 30, 0), (0, 0, 1))),
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(1, (0, 0, 10), (0, 0, 1))),
+    ]}
+    distance_model = {"version": 1, "members": ["part"], "mates": [
+        mate("distance", plane_side(0, (0, 0, 0), (0, 0, 1)), plane_side(-1, (0, 0, 0), (0, 0, 1)), value=7.0),
+    ]}
+    distance_start = P((2.0, 3.0, 7.0))
+    locked_model = {"version": 1, "members": ["bolt"], "mates": [
+        mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1), perp=[1.0, 0.0, 0.0]), axis_side(-1, (30, 30, 0), (0, 0, 1), perp=[1.0, 0.0, 0.0], frozen=FROZEN0), allow_rotation=False),
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0)),
+    ]}
+
+    def local_case(cid, description, spec, poses, wishes, lever, fallback=None):
+        r0, _ = ConstraintModel(spec).residual([(p.r, p.t) for p in poses])
+        assert (not r0.size) or float(np.max(np.abs(r0))) < 1e-9, f"{cid}: start is not on the manifold ({np.max(np.abs(r0))})"
+        enc = lambda ps: [pose_in(p.t, *axis_angle_of(p.r)) for p in ps]
+        inp = {
+            "lever_arm": lever, "local_follower": LOCAL_FOLLOWER, "model": spec,
+            "poses": enc(poses), "wishes": enc(wishes), "fallback_poses": enc(fallback if fallback is not None else poses),
+        }
+        case("local_retract", cid, description, inp, local_frame)
+
+    def turned(p, deg, axis=(0, 0, 1)):
+        return apply_delta(p, np.concatenate([np.zeros(3), np.array(axis, float) * D(deg)]))
+
+    def moved(p, dt):
+        return Pose(p.t + np.array(dt, float), p.r)
+
+    plate0 = P((0.0, 0.0, 0.0))
+    local_case("local-bolt-spin-on-manifold", "Bolt in a fixed plate hole (concentric + end face): the free motion is the spin about the hole axis; a spin wish is "
+               "ON the manifold, the retraction must return it exactly (fallback = the wish, as the projector reproduces it)",
+               bolt_fixed, [bolt_start], [turned(bolt_start, 40)], 10.0, fallback=[turned(bolt_start, 40)])
+    local_case("local-bolt-pull-off-and-spin", "Pull the bolt 15 mm off the plate while spinning 20 deg: nearest mate-satisfying pose = back on the face, spun 20 deg",
+               bolt_fixed, [bolt_start], [turned(moved(bolt_start, (0, 0, 15)), 20)], 10.0, fallback=[turned(bolt_start, 20)])
+    local_case("local-bolt-slide-off-axis", "Slide the bolt 6/-3 mm sideways out of the hole: nearest = back on the axis (the grabbed pose stays ~1e-4 relative short of the wish)",
+               bolt_fixed, [bolt_start], [moved(bolt_start, (6, -3, 0))], 10.0)
+    local_case("local-swing-offset-pin-4deg", "Off-axis pin (axis 15 mm from the part origin, the CURVED mate of the investigation): a 4 deg turn of the part about its own origin is off the "
+               "manifold; the retraction lands on the pin's orbit",
+               swing_model, [swing_start], [turned(swing_start, 4)], 10.0)
+    local_case("local-swing-offset-pin-large-wish", "Same pin, a 90 deg wish in one frame (an unrealistic hitch): the retraction converges but far (12 weighted mm) from the fallback pose; the distance guard rejects it and the fallback is shown",
+               swing_model, [swing_start], [turned(moved(swing_start, (0, 0, 15)), 90)], 10.0)
+    local_case("local-angle-cone-tilt-3deg", "Angle mate 60 deg: tilting the part 3 deg further is off the cone; nearest = back on the cone",
+               angle_model, [angle_start], [turned(angle_start, 3, (1, 0, 0))], 10.0)
+    local_case("local-angle-cone-spin-free", "Angle mate: a spin about the cone axis (world z) keeps the angle: on the manifold, reproduced exactly",
+               angle_model, [angle_start], [turned(angle_start, 25)], 10.0, fallback=[turned(angle_start, 25)])
+    local_case("local-distance-plane-wish-9", "Distance mate 7 to a plane: wish 9 mm out -> nearest 7 mm (signed-squared residual, either side)",
+               distance_model, [distance_start], [moved(distance_start, (0, 0, 2))], 10.0)
+    bolt_f = P((30.0, 30.0, 10.0))
+    local_case("local-floating-bolt-turn-3deg-x", "Nothing fixed (bolt AND plate move): a 3 deg turn of the grabbed bolt about x, the plate's wish is its current pose; both land on the manifold",
+               float_model, [bolt_f, plate0], [turned(bolt_f, 3, (1, 0, 0)), plate0], 20.0)
+    local_case("local-floating-bolt-slide-and-spin", "Floating group: slide 4 mm along x and spin 10 deg: the plate rides along (minimal motion)",
+               float_model, [bolt_f, plate0], [turned(moved(bolt_f, (4, 0, 0)), 10), plate0], 20.0)
+    local_case("local-floating-bolt-turn-60deg-x", "Floating group, 60 deg in one frame: with the hitch iterations it converges, but lands more than 0.5 max(L, d_wish) from the fallback: rejected",
+               float_model, [bolt_f, plate0], [turned(bolt_f, 60, (1, 0, 0)), plate0], 20.0)
+    local_case("local-floating-bolt-turn-90deg-y", "Floating group, 90 deg about y in one frame (a hitch the 8 iterations do not finish: residual > 1e-6): rejected, fallback shown",
+               float_model, [bolt_f, plate0], [turned(bolt_f, 90, (0, 1, 0)), plate0], 20.0)
+    local_case("local-fully-locked", "Concentric without rotation + end face: rank 6, no free motion; any wish returns the start",
+               locked_model, [bolt_start], [turned(moved(bolt_start, (10, 0, 5)), 30)], 10.0)
+    local_case("local-guard-distance", "The local answer converges but lies more than 0.5 L from the fallback (a far projector output): rejected, fallback shown",
+               bolt_fixed, [bolt_start], [moved(bolt_start, (6, -3, 0))], 10.0, fallback=[moved(bolt_start, (6, -3, 0))])
+
+    # k = 5 / 8 boxes in a row on a fixed plate (each: bottom coincident with the plate top, +x face coincident with the next box's -x face):
+    # 4 residual rows per mate -> 40 / 60 rows. The group cannot be solved by the old 32-row limit (kLocalMaxRows is now 64).
+    def row_model(k):
+        mates = []
+        for i in range(k):
+            mates.append(mate("coincident", plane_side(i, (4, 4, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1))))
+        for i in range(k - 1):
+            mates.append(mate("coincident", plane_side(i, (8, 4, 2), (1, 0, 0)), plane_side(i + 1, (0, 4, 2), (-1, 0, 0))))
+        return {"version": 1, "members": [f"box{i}" for i in range(k)], "mates": mates}
+
+    def row_poses(k):
+        return [P((5.0 + 8.0 * i, 20.0, 10.0)) for i in range(k)]
+
+    for k in (5, 8):
+        ps = row_poses(k)
+        local_case(f"local-row{k}-slide-spin", f"{k} boxes in a row on a plate, faces mated (group dof 3: slide x, y, spin z as one rigid row): the first box is slid 3 mm and turned 2 deg - "
+                   "the whole row must follow, 4 residual rows per mate (%d rows)" % (4 * (2 * k - 1)),
+                   row_model(k), ps, [turned(moved(ps[0], (3, 0, 0)), 2)] + ps[1:], 10.0)
+        local_case(f"local-row{k}-lift-and-slide", f"{k}-box row: the first box is lifted 2 mm off the plate and slid 3 mm - the lift is blocked, the slide drags the row",
+                   row_model(k), ps, [moved(ps[0], (3, 0, 2))] + ps[1:], 10.0)
+
 
 def self_check():
     """Properties the vectors rely on (the prototype's `_skew` had a wrong third row, which made its screw translation
@@ -854,6 +1189,9 @@ def main():
             "tau_frames": TAU_FRAMES, "residual_tol": RESIDUAL_TOL, "jump_reject_factor": JUMP_REJECT_FACTOR,
             "reanchor_ms": REANCHOR_MS, "reanchor_ms_near_singular": REANCHOR_MS_NEAR_SINGULAR, "sigma_gap_low": SIGMA_GAP_LOW,
             "gain_min": GAIN_MIN, "gain_frames": GAIN_FRAMES,
+            "local_follower": LOCAL_FOLLOWER, "local_iters": LOCAL_ITERS, "local_iters_max": LOCAL_ITERS_MAX, "local_polish": LOCAL_POLISH, "local_trust": LOCAL_TRUST,
+            "local_rot_cap": LOCAL_ROT_CAP, "local_lam_abs": LOCAL_LAM_ABS, "local_accept_residual": LOCAL_ACCEPT_RESIDUAL,
+            "local_accept_distance": LOCAL_ACCEPT_DISTANCE,
         },
         "conventions": {
             "pose_in": "translation + rotation_axis (normalised on read) + rotation_angle_degrees (the contract's RigidTransform)",
@@ -866,10 +1204,19 @@ def main():
     cleaned = clean(doc)
     cleaned["constants"] = doc["constants"]  # exact: `clean` would round gram_schmidt_drop_absolute (1e-12) to 0.0
     text = json.dumps(cleaned, indent=1) + "\n"
+    backend_doc = {
+        "generator": "tools/motion_vectors/generate.py (copy of the local_retract cases of docs/motion/vectors.json for the backend CI image)",
+        "tolerance": cleaned["tolerance"], "constants": doc["constants"],
+        "cases": [c for c in cleaned["cases"] if c["kind"] == "local_retract"],
+    }
+    backend_text = json.dumps(backend_doc, indent=1) + "\n"
     if "--check" in sys.argv:
-        sys.exit(0 if OUT.exists() and OUT.read_text() == text else 1)
+        ok = OUT.exists() and OUT.read_text() == text and BACKEND_OUT.exists() and BACKEND_OUT.read_text() == backend_text
+        sys.exit(0 if ok else 1)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(text)
+    BACKEND_OUT.parent.mkdir(parents=True, exist_ok=True)
+    BACKEND_OUT.write_text(backend_text)
     kinds = {}
     for c in CASES:
         kinds[c["kind"]] = kinds.get(c["kind"], 0) + 1

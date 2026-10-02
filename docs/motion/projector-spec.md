@@ -18,6 +18,7 @@ exactly but takes ≥ 1 round trip, so it only *anchors* the projector (a fresh 
 | `basis` (dof × 6k) | rows, raw twists `[vx vy vz wx wy wz]` per member (§2) |
 | `chart.lever_arm` | `L`. **Always use the echoed value**, never a local one |
 | `quality.{residual_inf, sigma_gap, max_step, jump}` | acceptance (§7), scheduling (§8) |
+| `constraint_model` | optional resolved mate geometry for the local retraction (§4b); absent ⇒ keep projecting (§4–5) |
 | `converged` | false ⇒ no model at all (§11) |
 
 `dof`, `grounded`, `members[].mobility` are for UI (gizmo cues); the projector does not need them. The v0 aliases
@@ -108,6 +109,62 @@ unchanged; only a slide *across* the rotation axis differs from the additive cha
 angles and breaks the 1e-9 vectors), scaled by `θ/sin θ` (series `1 + θ²/6` below 1e-4), and near π (`π − θ < 1e-3`) take the
 axis from the largest column of `(R + I)/2`, sign from `a`.
 
+## 4b. Local retraction (optional, F1b)
+
+The linearised projection (§4–5) leaves the mate manifold between anchors on curved mates (up to ~21 weighted mm on the offset hinge
+measured in F1a, `docs/constrained-drag-f1a-design.md`), and the anchor then pops the display back. When the anchor carries a
+`constraint_model` the client MAY instead solve the mates itself every frame: the **sequential nearest-point retraction** below is
+exact (mate residual ≤ 1e-6 after the polish) and lands at the weighted-nearest mate-satisfying pose. The projector stays: it is the
+predictor, the fallback and the only path for a model the client cannot evaluate.
+
+**Wire format** (`constraint_model`, `version: 1`). `members`: occurrence ids in `basis` column order. `mates[]`: `type` ∈
+`coincident | concentric | parallel | angle | distance`, `value` (number or null), `allow_rotation`, and sides `a`, `b` - each
+`{member: index | -1, frozen?: {r: 3×3 row-major, t: [3]}, point?, axis_origin?, direction?, perp?: [3], plane?: {origin, normal}}` with the geometry in the LOCAL frame of the
+occurrence it belongs to; `member = -1` is a part outside the group (pose `frozen`, identity when absent). The side order is the backend's
+(`a` = the mover side). A `version` other than 1, an unknown `type`, or a field the residual below needs but a side lacks ⇒ ignore the model (§4–5 only).
+
+**Residual** `r(x)` (stacked per mate, `x` = the member poses), with `dW`/`fW` the world geometry of side `a`/`b` (point `p`, axis point `o`, unit-or-not direction `d`, `perp`, plane origin `po` and normal `pn`; `R x + t` for points, `R x` for directions):
+
+| type | rows |
+|---|---|
+| coincident, plane/plane | `(a.po − b.po)·b.pn`, `a.pn × b.pn` (3) |
+| coincident, plane/point | `(point − plane.po)·plane.pn` (the plane is whichever side has one; `a` first) |
+| coincident, point/point | `a.p − b.p` (3) |
+| concentric | `a.d × b.d`, `(a.o − b.o) × b.d` (6), plus `a.perp × b.perp` (3) if `allow_rotation` is false and both have `perp` |
+| parallel | `a.d × b.d` (3) |
+| angle | `unit(a.d)·unit(b.d) − cos(min(θ, 360−θ))`, `θ = |value| mod 360` |
+| distance | plane/plane: `((a.po − b.po)·b.pn)² − value²`, `a.pn × b.pn`; plane/point: `s² − value²` with `s` as in coincident; axis/axis: `|(a.o − b.o) × b.d|² − value²`, `a.d × b.d`; point/point: `|a.p − b.p|² − value²` |
+
+These are exactly the backend's `_mate_residual_vector` (`app/document/assembly_solver.py`); the Jacobian is analytic, forward-mode, per member in the
+chart of §2 (`t += v`, `R = exp(w) R`): for a world point `∂p/∂v = I`, `∂p/∂w = −[R·local]×`; for a direction `∂d/∂w = −[R·local]×`; the product rule
+gives the cross/dot rows; `unit()` has derivative `(I − ûûᵀ)/|d|`. Only the 6 columns of a side's own member are non-zero.
+
+**Algorithm** (fixed iteration count, so latency is bounded and the vectors are deterministic). Let `W` be the metric `diag(1,1,1,L,L,L)` for the grabbed member and
+`LOCAL_FOLLOWER ×` that for every other member, `x` the poses to refine (start: the previous DISPLAYED poses) and `x*` the wished poses (grabbed: the hand's pose; every
+follower: its previous displayed pose, so followers move least and continuously). Repeat `n_iter = clamp(ITERS + ceil((d_wish − TRUST)/TRUST), ITERS, ITERS_MAX)` times (`d_wish` as in 4b.1: the base 3 for a hand step up to `TRUST`, one more per `TRUST` of hand distance beyond - a hitch after a stalled frame - up to 8; F1c.6: one-frame convergence for a 20 mm / 0.3 rad step went 11 → 23 of 30 on the hinge, 21 → 26 on the bolt; a 90–180° turn of a floating group converges in 8):
+
+1. `r, J = residual(x)`; `g = [t*_i − t_i, rotvec(R*_i R_iᵀ)]` stacked (the additive chart, `rotvec` as in §5)
+2. `y0 = W g`; if `|y0| > TRUST` then `y0 ← y0 · TRUST/|y0|`; `A = J W⁻¹`
+3. `y = y0 − Aᵀ (A Aᵀ + LAM_ABS·I)⁻¹ (A y0 + r)` (with no residual rows, `y = y0`); `dx = W⁻¹ y`
+4. scale `dx` so no member's rotation part exceeds `ROT_CAP`; apply `t += v`, `R = exp(w) R` to every member
+
+then `POLISH` times: `dx = −W⁻¹ Aᵀ (A Aᵀ + LAM_ABS·I)⁻¹ r` (no wish), same cap, skipped if `max|r| < 1e-12`. `exp(w)` is Rodrigues (the series below `|w| = 1e-9`).
+The follower weight here is `LOCAL_FOLLOWER = 1e-2`, **not** the contract's 1e-4: `1e-4` squares to 1e8 in `A Aᵀ` and drowns in rounding; the cost is that the
+grabbed pose of an *on-manifold* wish is ~1e-4 of the followers' travel short of the wish, which the projector (metric of §2) does not have - use the projection for an on-manifold wish if exact reproduction matters (the backend anchor does, §4b.3).
+A linear solve of size `rows` (≤ 64): any stable solver (Cholesky with the damping above, or Gaussian elimination with partial pivoting) reproduces the vectors to 1e-9.
+
+**4b.1 Acceptance ("never worse than the projection").** Use the local result for the frame only if `residual_inf ≤ ACCEPT_RESIDUAL` **and** the weighted distance (§7's
+`weighted_dist`) between its grabbed pose and the projector's grabbed pose for the same wish is `≤ ACCEPT_DISTANCE · max(L, d_wish)`, `d_wish` = the weighted distance (§7) of the hand's wish from the frame's start pose (a far wish may legitimately sit far from the linearised projection - on a curved mate the projection is the one that is off); otherwise show the projector's poses and count a
+`local_fallback`. The result then goes through the blender of §9 like any projection; the anchor test of §7 is unchanged (it measures the anchor against the DISPLAYED pose's
+projection, and a healthy local model makes `jump` ≈ 0).
+
+**4b.2 When not to run it.** No `constraint_model`, `members > LOCAL_MAX_MEMBERS` (Dart 8, GDScript 3) or more than 64 residual rows, a rank/dof change pending (§10: re-anchor
+first), `converged: false`/hold (§11). Singular seeds (an angle mate at 0°/180°, a flipped coincident plane, a rank change) are the backend's job: the local retraction never tries to leave such a point.
+
+**4b.3 Backend.** `solve_group` runs the same algorithm (12 iterations + 3 polish steps, current poses = `reference`/stored poses as the followers' wishes) after the Gauss–Newton retraction
+and adopts the result only if it converges and is strictly nearer to the wish (same metric), so an anchor is the nearest point too; if the answer is within 1e-3 of the wish it pins the grabbed
+member exactly at it (contract metric), so an on-manifold wish still comes back as the wish. Constants of §4b are in `vectors.json → constants` (`local_*`).
+
 ## 6. Lever arm and `quality.max_step`
 
 **Lever arm `L`** = the grabbed occurrence's *bounding radius*: half the diagonal of its bounding box in the occurrence's own
@@ -123,7 +180,7 @@ from the manifold); the error grows like `d²`, so `max_step = d·√(TOL / e)`.
 wish == stored (`d < 1e-3`), rank 0, or `e < 1e-4` (flat mates and every screw orbit, incl. the off-axis concentric — measured null
 or > 150 there). Measured: `ANGLE` cone, rotation about the cone's axis of symmetry ⇒ `null`; tilt ⇒ 2.94–2.97 weighted mm
 for 0.05 rad and 0.5 rad wishes (a curvature property, independent of wish length). `null` means "time cap only" (§8), never
-"unlimited forever". It deliberately ignores where the backend *lands* (see §13.2).
+"unlimited forever". It deliberately ignores where the backend *lands* (see §13.2). `quality.jump` (`_jump`) uses the same prediction: the distance, `g ∘ screw_log`, from the screw-applied prediction of the grabbed member to where the solve landed.
 
 Client-side travel since the anchor: `travel = ‖g ∘ log(ref_0, P_shown)‖` with `g = [1,1,1,L,L,L]`, grabbed member.
 
@@ -143,10 +200,20 @@ accept(resp, own):        # own = pose the CURRENT model projects the same wish 
 ```
 
 The client-measured `jump` (anchor vs. own projection of the *same wish*) is the acceptance quantity. `resp.quality.jump` is
-**telemetry only**: it is measured against the *additive* first-order prediction from the *stored* pose, so it grows with the whole
-drag length (~0 on flat mates, up to ~6.6 weighted mm on the off-axis swing scene where the screw is exact) and would reject honest
-corrections. A rejected anchor counts as a miss (§11), keeps the old model and the shown pose, and does not restart the timer for
+**telemetry only**: it is measured against the first-order screw prediction (`screw_log` / `screw_exp`, §5) from the *stored* pose, so it still
+grows with the whole drag length on curved mates (~0 on flat mates and every screw orbit; 0.27 weighted mm on the off-axis swing scene for a 15 mm slide + 90° wish,
+1.83 when it was measured in the additive chart) and would reject honest corrections. A rejected anchor counts as a miss (§11), keeps the old model and the shown pose, and does not restart the timer for
 the next request.
+
+**`own` with the local retraction (§4b):** when the client runs the local retraction, `own` is ITS answer for the wish (one extra
+local solve at the anchor, from the displayed poses; the projector's answer if that solve is not accepted), because the backend's
+anchor is the nearest point too - on a curved mate the linearised projection is the one that disagrees with it (F1c.1: the hinge circle path went from
+2 rejected anchors + a hold to none, grabbed jerk 2.74 → 0.23).
+
+**Blocked wall (exception to "a rejection is a miss"):** a `jump` rejection is set aside - the model is not replaced, but it is **not a miss**: no hold,
+no cue, the cadence continues from that request's send time - when the wish is farther than `L` from the anchor pose and `own` has moved less than
+`WALL_STAY = 0.05` of that distance (the model says the part cannot go there; the backend's answer is a far branch of "nearest"). Measured: a 180° flick against a fully fixed
+bolt / hinge leaf gave 12–23 rejected anchors, a hold and a "can't follow" cue for a part that correctly stayed put; now none.
 
 ## 8. Re-anchor policy
 
@@ -202,7 +269,7 @@ optional candidate `rows'` and a counter.
 The response carries no basis/dof/members. **Never read it as "all free".** Keep the last model *and hold the last shown pose*
 (stop moving the part), keep requesting anchors at the normal cadence with the current wish (a moving wish may become reachable),
 count consecutive misses, show "can't follow that move" after 3 (throttle to ≤ 1/s), and resume with a normal blend when an anchor is
-accepted. The same applies to a rejected anchor (§7) and to a network error/timeout of an anchor request. There is no local
+accepted. The same applies to a rejected anchor (§7; except a blocked wall, which is set aside without counting) and to a network error/timeout of an anchor request. There is no local
 extrapolation past a hold.
 
 ## 12. Release / commit flow
@@ -223,7 +290,7 @@ extrapolation past a hold.
    scene: spin angle 51.0° at the 90° wish vs. the true weighted-nearest 28.5° (cost 213 vs 170); the screw projection of the
    linearised wish lands near the true nearest (~28°). Consequence: at a re-anchor the model jumps toward the overshoot (that is the
    4.06 anchor step and `quality.jump` up to 6.6). Handled here by screw + blend + acceptance; a solver-side fix (sequential
-   nearest-point retraction) is a **S2 follow-up**, not done. Vectors: `swing-offset-axis-90deg`, `nearest_anchors` vs. `backend_anchors`.
+   nearest-point retraction) was a **S2 follow-up**; done in F1b (§4b.3): the backend answer is now the nearest point (spin 28.5° at the 90° wish). Vectors: `swing-offset-axis-90deg`, `nearest_anchors` vs. `backend_anchors`.
 3. **Chart mismatch in S4 (fixed in this revision).** S4 built the wish with the additive chart (`[t_W − t_ref, rotvec]`) but integrated with the
    screw, so a wish that lay ON the free manifold was not reproduced whenever it both slid across and turned about an axis: 2.1 mm (12 mm + 0.3 rad), 22.4 mm
    (150 mm + 0.3 rad), 48.6 mm (100 mm + 1 rad), 23 mm on a flat face, 2.9 mm on the off-axis pin's orbit. The anchor (the wish itself) then sat that far from the client's
@@ -232,7 +299,8 @@ extrapolation past a hold.
    from 0.33 to 0.52 weighted mm (nearest anchors; hand 0.34) and from 0.89 to 1.11 (real backend anchors); blended 0.29 → 0.35 and 0.37 → 0.47. Synthetic random
    off-manifold wishes (≤ 0.3 rad, ≤ 40 mm) land within ±10 % of each other's distance to the nearest point, better on the angle cone. A Gauss–Newton refinement to the true
    additive-metric nearest point brought the swing steps to 0.28 (both anchor sets) but diverged on large wishes without damping, so it is NOT specified; see the plan's S6 row.
-   `quality.jump` / `max_step` on the backend are still computed in the additive chart (telemetry / a conservative guard; second-order difference).
+   `quality.jump` / `max_step` on the backend were still computed in the additive chart at this revision; F2 (S9) moved both into the screw chart
+   (`constraint_model.screw_log` / `screw_exp`, the same formulas as §5), so the prediction they are measured against is the client's own.
 4. **The prototype's `geo._skew` has a wrong third row** (`[-w0, w1, 0]` instead of `[-w1, w0, 0]`): `geo._V`, hence `project_motion_screw`'s translation, is wrong for any twist with an x or y rotation component (the investigation's z-axis scenes were unaffected; the cone/tilted cases are not). The vectors use the correct skew and `generate.py` asserts screw exactness about arbitrary axes; with `_skew` patched the prototype agrees with all 21 single-member `project` vectors to 5e-13. `acos` → `atan2` rotation vector (§5); follower-weighted GS (§3); hysteresis/blend/scheduler/acceptance are specified as
    state machines with vectors (the investigation had one-liners).
 5. **Uncalibrated constants**: `SIGMA_GAP_LOW`, `GAIN_MIN`, `JUMP_REJECT_FACTOR`, `TOL` — first guesses, tune with S6/S7 instrumentation.
@@ -241,12 +309,14 @@ extrapolation past a hold.
 
 `FOLLOWER_WEIGHT 1e-4` · GS drop `1e-6` relative / `1e-12` absolute · `τ = 2` frames · `residual_tol 1e-6` · `jump_reject 1.0·L` ·
 re-anchor `150 ms` (`75 ms` if `sigma_gap < 100`) · hysteresis `gain 0.05`, `3` frames · series switch `1e-4` rad · `max_step` `TOL 0.25`.
+Local retraction (§4b): `LOCAL_FOLLOWER 1e-2` · `ITERS 3` · `ITERS_MAX 8` · `POLISH 1` · `TRUST 6.0` weighted mm · `ROT_CAP 0.6` rad · `LAM_ABS 1e-9` · `ACCEPT_RESIDUAL 1e-6` ·
+`ACCEPT_DISTANCE 0.5·max(L, d_wish)` · `WALL_STAY 0.05` · `LOCAL_MAX_MEMBERS` 8 (Dart) / 3 (GDScript).
 All are also in `vectors.json → constants`.
 
 ## 15. Golden vectors
 
 `tools/motion_vectors/generate.py` (numpy only) writes `docs/motion/vectors.json`; `--check` verifies the committed file byte for
-byte (identical across the two numpy 2.4.6 builds tried; rounding to 10 decimals absorbs ~1e-12 BLAS noise, far below the 1e-9 tolerance). 76 cases; each has `id`, `kind`, `input`, `expected`; every float is rounded to 10 decimals and every input is rounded
+byte (identical across the two numpy 2.4.6 builds tried; rounding to 10 decimals absorbs ~1e-12 BLAS noise, far below the 1e-9 tolerance). 89 cases; each has `id`, `kind`, `input`, `expected`; every float is rounded to 10 decimals and every input is rounded
 *before* the expectation is computed, so a client that reads the JSON reproduces `expected` from `input` alone (tolerance 1e-9,
 poses compared as matrices).
 
@@ -259,6 +329,7 @@ poses compared as matrices).
 | `blend`, `blend_anchor` | 4 + 1 | §9: decay of translation/rotation offsets, moving projection, followers, continuity at an anchor |
 | `scheduler` | 8 | §8 |
 | `accept_anchor` | 8 | §7 |
+| `local_retract` | 13 | §4b: one frame of the local retraction + acceptance - bolt in a fixed plate (spin on-manifold, pull-off, sideways), off-axis pin (small / large wish), angle cone (tilt, free spin), distance plane, floating bolt + plate (3° turn, slide + spin, 60° turn), fully locked, distance guard. `input`: `model`, `poses`, `wishes`, `fallback_poses` (stand-in for the projector's output), `lever_arm`; `expected`: `accepted`, shown `poses`, the raw `local_poses` (`local_poses`, `residual_inf` and `fallback_distance` are compared only when `residual_inf ≤ 1e-9`: an answer that is not converged tightly is a sensitive function of the linear solver's rounding - there `accepted` and the shown poses are pinned) |
 | `swing_sequence` | 1 | 64 frames of the off-axis swing with anchors every 9 frames, once with analytic nearest anchors and once with the real backend anchors (captured from `solve_group`; not recomputed by the script), per-frame `screw`, `screw_blended`, `additive` poses and a `summary` |
 
 Bases are analytic (no SVD) so regeneration does not depend on LAPACK. The B/C/D basis was checked against the real backend

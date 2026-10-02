@@ -812,7 +812,8 @@ class _PartScreenState extends State<PartScreen> {
     if (occurrence == null || !_isMated(occurrence.id)) return null;
     if (_dragSession != null) return _gizmoFreedom;
     final key = '${occurrence.id}|${jsonEncode(occurrence.transform.toJson())}|'
-        '${_mates.map((m) => '${m.id}:${m.suppressed}:${m.flipped}:${m.value}').join(',')}';
+        '${_mates.map((m) => '${m.id}:${m.suppressed}:${m.flipped}:${m.value}').join(',')}|'
+        '${_occurrences.map((o) => '${o.id}:${o.fixed}:${o.suppressed}').join(',')}';
     if (key != _gizmoFreedomKey) {
       _gizmoFreedomKey = key;
       _gizmoFreedom = null;
@@ -1137,7 +1138,8 @@ class _PartScreenState extends State<PartScreen> {
   /// own `bodyId` is looked up against this same merged map (see
   /// `selection_list_drawer.dart`'s own `curveFeature` branch), for the
   /// identical "a shared id-to-name map, not a raw id truncation" reason.
-  Map<String, String> get _selectionBodyNames => {..._bodyNames, ..._surfaceNames, ..._curveNames};
+  Map<String, String> get _selectionBodyNames =>
+      {..._bodyNames, ..._surfaceNames, ..._curveNames, ...occurrenceDisplayNames(_occurrences)};
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
@@ -2907,6 +2909,15 @@ class _PartScreenState extends State<PartScreen> {
               if (_patternAxisEntity != null) _patternAxisEntity!,
             }
           : {};
+      // Assembly lens: an empty-space tap also deselects the component, which closes its context drawer (the
+      // drawer is keyed on [_selectedOccurrenceId], not on [_selectedEntities]). Left alone while a tool owns the
+      // selection (Move/Rotate gizmo, Mate, pattern source picking).
+      if (_lens == AssemblyLens.assembly &&
+          !_moveRotateComponentActive &&
+          !_mateActive &&
+          !_componentPatternPickingSources) {
+        _selectedOccurrenceId = null;
+      }
     });
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
@@ -22327,6 +22338,7 @@ class _PartScreenState extends State<PartScreen> {
                       final occurrence = _occurrences[index];
                       return AssemblyComponentSelectionDrawer(
                         selectedComponent: occurrence,
+                        displayName: occurrenceDisplayName(_occurrences, index),
                         onMove: () => setState(() {
                           _selectionMode = false;
                           _moveRotateComponentActive = true;

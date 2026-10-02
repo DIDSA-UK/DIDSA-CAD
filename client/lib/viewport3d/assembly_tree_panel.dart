@@ -24,11 +24,31 @@ String occurrenceDisplayName(List<OccurrenceDto> occurrences, int index) {
   if (ref != null && ref.isNotEmpty) {
     final fileName = ref.split('/').last;
     final dot = fileName.lastIndexOf('.');
-    return dot > 0 ? fileName.substring(0, dot) : fileName;
+    final base = dot > 0 ? fileName.substring(0, dot) : fileName;
+    // A generated file name (a UUID, `part-<hex>`...) is not a name a person chose: "Component N" instead, the same
+    // way Bodies/Faces fall back to "Body N" rather than showing their ids.
+    if (!looksGeneratedName(base)) return base;
   }
   final ordinal = occurrences.take(index + 1).length;
   return 'Component $ordinal';
 }
+
+/// `true` for an identifier that is clearly machine-generated rather than a human-chosen name: a UUID (with or without
+/// dashes), or a long run of hex digits optionally prefixed (`part-3f2a…`, `occ_ab12…`).
+bool looksGeneratedName(String name) {
+  final n = name.trim();
+  if (n.isEmpty) return true;
+  final uuid = RegExp(r'^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$');
+  if (uuid.hasMatch(n)) return true;
+  final prefixedHex = RegExp(r'^(?:[A-Za-z]{1,6}[-_])?[0-9a-fA-F]{16,}$');
+  return prefixedHex.hasMatch(n);
+}
+
+/// Occurrence id -> [occurrenceDisplayName] for every occurrence: the map the selection drawers / "select other" sheet
+/// read, merged into the same `bodyNames` map the Bodies use, so a component is called the same thing everywhere.
+Map<String, String> occurrenceDisplayNames(List<OccurrenceDto> occurrences) => {
+      for (var i = 0; i < occurrences.length; i++) occurrences[i].id: occurrenceDisplayName(occurrences, i),
+    };
 
 /// The display name for the ComponentPattern at [index] in [patterns] -
 /// mirrors [mateDisplayName]'s own "Type N" convention (a

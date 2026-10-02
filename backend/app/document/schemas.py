@@ -3325,6 +3325,11 @@ class MateUpdate(BaseModel):
     allow_rotation: bool | None = None
 
 
+class MateMotionReferencePose(BaseModel):
+    occurrence_id: str
+    transform: RigidTransformResponse
+
+
 class MateMotionRequest(BaseModel):
     """`POST .../occurrences/{occurrence_id}/mate-motion`'s body
     (`docs/constrained-drag-implementation-plan.md` §3). `occurrence_id` is the
@@ -3336,6 +3341,14 @@ class MateMotionRequest(BaseModel):
     transform: RigidTransformResponse | None = None
     lever_arm: float | None = Field(default=None, gt=0)
     commit: bool = False
+    # Warm start (smoothness): the poses the client last accepted/showed for the members. The solve treats them as the
+    # members' current poses (seed, nearest-solution reference, free-motion analysis, `jump`) instead of the stored ones, so
+    # consecutive anchors of one drag are measured from each other and the freedoms nothing pins down (a follower's
+    # spin, a bolt's slide) do not jump back to the grab-time values. Null = the stored poses (the old behaviour).
+    reference: list[MateMotionReferencePose] | None = None
+    # The resolved mate geometry (`constraint_model` in the response) is static during a drag: a client that already holds it
+    # for this group asks for it once and sends false afterwards.
+    include_constraint_model: bool = True
 
 
 class MateMotionMember(BaseModel):
@@ -3367,11 +3380,7 @@ class MateMotionResponse(BaseModel):
     `dof` is the GROUP dof (`6k - rank(J)`); `members` order defines the column order
     of `basis` (rows: orthonormal in the lever-arm metric, `[dx dy dz rx ry rz]` per
     member). `converged: false` carries NO basis, dof or members - clients must not
-    read that as "all free".
-
-    `transform` and `free_twists` are the v0 single-occurrence fields (grabbed
-    occurrence solved against frozen peers), kept ONLY so DIDSA-VR on `main` keeps
-    working until it adopts this contract (plan S5); S9 deletes them."""
+    read that as "all free"."""
 
     converged: bool
     dof: int | None = None
@@ -3382,9 +3391,11 @@ class MateMotionResponse(BaseModel):
     quality: MateMotionQuality | None = None
     diagnostics: MateMotionDiagnostics | None = None
     committed: bool = False
-    # v0 aliases (delete in S9)
-    transform: RigidTransformResponse | None = None
-    free_twists: list[list[float]] = []
+    # Resolved mate geometry for the client's local nearest-point retraction (docs/motion/projector-spec.md section 4b): `version`,
+    # `members` (occurrence ids, the basis order) and `mates` (type, value, allow_rotation, sides a/b with `member` index or -1 +
+    # optional `frozen` {r, t} + local point / axis_origin / direction / perp / plane {origin, normal}). Null = not available
+    # (not converged, or a mate the client cannot evaluate): the client keeps projecting.
+    constraint_model: dict[str, Any] | None = None
 
 
 class MateSolvePreviewResponse(BaseModel):

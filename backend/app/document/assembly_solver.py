@@ -115,7 +115,7 @@ Quaternion = tuple[float, float, float, float]
 _FIXED_GROUP = 1
 _SOLVE_GROUP = 2
 
-# `solve_occurrence`'s own residual-verified-convergence fallback (see
+# `solve_occurrence_from_guess`'s own residual-verified-convergence fallback (see
 # `_mate_residual_satisfied`'s own docstring) - mirrors `app.sketch.solver`'s
 # identically-named, identically-scoped `_RESIDUAL_TOLERANCE` constant and
 # the reasoning behind it (`py_slvs`'s own `result_code` cannot always tell
@@ -157,7 +157,7 @@ def _driven_occurrence_not_found(occurrence_id: str) -> HTTPException:
 
 @dataclass
 class MateSolveResult:
-    """`solve_occurrence`'s own result - `converged` mirrors `app.sketch.
+    """`solve_occurrence_from_guess`'s own result - `converged` mirrors `app.sketch.
     solver.SolveResult`'s identically-named field (`system.solve`'s result
     code, `0` meaning success). `transform` is the *new* transform to store
     on `driven_occurrence_id` when `converged`; when not converged, it is
@@ -168,15 +168,6 @@ class MateSolveResult:
     converged: bool
     transform: RigidTransform
     dof: int
-    free_twists: tuple[tuple[float, float, float, float, float, float], ...] = ()
-    """An orthonormal basis of the mated occurrence's remaining FREE motion at
-    `transform` (`dof` vectors; all six unit vectors when there are no mates):
-    each `(dx, dy, dz, rx, ry, rz)` is a small move that leaves every mate
-    satisfied to first order, in the same coordinates `_independent_dof`
-    perturbs - `dx..dz` added to the occurrence's translation, `rx..rz` a
-    rotation vector (radians) composed onto its rotation about its own origin
-    in the owner's frame. A client can project a wanted motion onto this
-    subspace locally, every frame, with no round trip."""
 
 
 @dataclass
@@ -406,7 +397,7 @@ def _axis_angle_from_quaternion(q: Quaternion) -> tuple[Vec3, float]:
 
 def _quaternion_aligning(source: Vec3, target: Vec3) -> Quaternion:
     """A quaternion rotating unit vector `source` onto unit vector `target`
-    - `solve_occurrence`'s own warm-start seed for a COINCIDENT plane-plane
+    - `solve_occurrence_from_guess`'s own warm-start seed for a COINCIDENT plane-plane
     mate's direction, used *instead of* an extra sign-picking constraint
     (see `_direction_lock`'s own docstring for why one doesn't work): once
     `addParallel` has already locked the driven direction to lie along the
@@ -580,7 +571,7 @@ def _direction_lock(
     driven direction to end up parallel to `fixed_direction` (2 DOF) -
     *which* of the two parallel branches (same-direction vs opposite) is
     `flipped`'s own job, resolved not by an extra constraint here but by
-    `solve_occurrence`'s own warm-start seed (`_quaternion_aligning`) -
+    `solve_occurrence_from_guess`'s own warm-start seed (`_quaternion_aligning`) -
     see that function's own docstring for why a *constraint* meant to pick
     the sign doesn't actually work.
 
@@ -662,7 +653,7 @@ def _add_mate_constraints(
             # see-through pair, or disambiguating a symmetric part), not a
             # mistake. See `_direction_lock`'s own docstring for why
             # *which* of the two parallel branches is picked by
-            # `solve_occurrence`'s own warm-start seed, not a constraint.
+            # `solve_occurrence_from_guess`'s own warm-start seed, not a constraint.
             driven_point = builder.point(driven.plane.origin)
             fixed_workplane = _fixed_workplane(system, fixed.plane)
             system.addPointInPlane(driven_point, fixed_workplane, group=_SOLVE_GROUP)
@@ -721,7 +712,7 @@ def _add_mate_constraints(
             # documents and avoids for COINCIDENT's plane-lock ("rejected
             # approach 3"). `addParallel` has the same 0-degree solution but a
             # non-degenerate (cross-product) Jacobian there, so the solve can
-            # actually converge onto it - see `solve_occurrence`'s own
+            # actually converge onto it - see `solve_occurrence_from_guess`'s own
             # `seed_rotation_quaternion` handling for how the resulting
             # sign/branch ambiguity (parallel is satisfied at 0 *or* 180
             # degrees) is resolved via a warm start instead of a constraint,
@@ -825,7 +816,7 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
     """Recomputes `mate`'s own constraint violation directly from
     `driven_world` (the driven Occurrence's geometry placed into world space
     by the just-solved transform) and `fixed` (already world-placed) -
-    `solve_occurrence`'s own residual-verified-convergence fallback, run only
+    `solve_occurrence_from_guess`'s own residual-verified-convergence fallback, run only
     when `py_slvs`'s raw `result_code` reported failure.
 
     Mirrors `app.sketch.solver._residual_verified_convergence`'s exact
@@ -1195,21 +1186,15 @@ def _solve_occurrence_against(
     driven_occurrence: Occurrence,
     applicable: list[tuple[Mate, MateEntityRef, MateEntityRef]],
 ) -> MateSolveResult:
-    """The shared tail of `solve_occurrence`/`preview_mate_solve` (test
-    report item 3, New Mate ghost preview) - given `driven_occurrence` and
-    its own already-gathered `applicable` Mate list (the real ones from
-    `part.mates` for `solve_occurrence`; that same list plus one
-    hypothetical, not-yet-created Mate for `preview_mate_solve`'s own live
-    "New Mate" ghost preview), does the actual `py_slvs` solve and returns
+    """The `py_slvs` tail of `solve_occurrence_from_guess` - given `driven_occurrence` and
+    its own already-gathered `applicable` Mate list, does the actual solve and returns
     the result. Never mutates `driven_occurrence` or `part.mates` itself -
     each caller decides separately whether/how to persist anything.
 
     No applicable Mates at all is not an error - returns the Occurrence's
     own current transform, trivially "converged" (nothing to satisfy).
-    Seeds the solve's own initial guess from that same current transform,
-    so a gizmo-dragged position (passed in in a live implementation, which
-    always writes to `Occurrence.transform` *before* calling this - see the
-    router's own `solve_for_occurrence` endpoint) snaps to the *nearest*
+    Seeds the solve's own initial guess from the occurrence's (or the
+    caller's wanted) transform, so a dragged position snaps to the *nearest*
     mate-satisfying placement rather than jumping to some other,
     arbitrarily-different valid solution."""
     if not applicable:
@@ -1217,7 +1202,6 @@ def _solve_occurrence_against(
             converged=True,
             transform=driven_occurrence.transform,
             dof=6,
-            free_twists=tuple(tuple(1.0 if i == j else 0.0 for j in range(6)) for i in range(6)),
         )
 
     if driven_occurrence.part_id is None or driven_occurrence.part_id not in document.parts:
@@ -1356,64 +1340,23 @@ def _solve_occurrence_against(
     # Newton's method last reached, a meaningful point to report DOF
     # around, exactly like `system.Dof` itself was already read
     # unconditionally here before this fix).
-    dof, free_twists = _free_motion(resolved, transform)
+    dof = _independent_dof(resolved, transform)
 
-    return MateSolveResult(converged=converged, transform=transform, dof=dof, free_twists=free_twists)
-
-
-def solve_occurrence(document: Document, part: Part, driven_occurrence_id: str) -> MateSolveResult:
-    """Solves every Mate in `part.mates` that references
-    `driven_occurrence_id`, against every other referenced Occurrence held
-    fixed at its own current transform - the real prerequisite this
-    module's own docstring describes. `driven_occurrence_id` must name a
-    real, top-level entry in `part.occurrences` (never `""` - the root has
-    no transform of its own to solve for). See `_solve_occurrence_against`
-    for the actual solve."""
-    driven_occurrence = _find_occurrence(part, driven_occurrence_id)
-    applicable = _applicable_mates(part, driven_occurrence_id)
-    return _solve_occurrence_against(document, part, driven_occurrence, applicable)
+    return MateSolveResult(converged=converged, transform=transform, dof=dof)
 
 
 def solve_occurrence_from_guess(
     document: Document, part: Part, driven_occurrence_id: str, guess: RigidTransform | None
 ) -> MateSolveResult:
-    """Like `solve_occurrence`, but seeds the solve from `guess` (a pose the
+    """Solves every Mate of `part.mates` that references `driven_occurrence_id`, against every other referenced Occurrence held
+    fixed at its own current transform, seeding the solve from `guess` (a pose the
     client WANTS - e.g. wherever a hand has dragged a part) instead of the
     occurrence's stored transform, and never stores anything: the result
-    carries the nearest mate-satisfying pose AND the remaining free motion
-    (`MateSolveResult.free_twists`), which is what lets a client move a mated
-    part smoothly on its own between occasional re-solves. `guess=None` solves
-    from the stored transform."""
+    carries the nearest mate-satisfying pose and this occurrence's own dof
+    against frozen peers (the group solver, `assembly_group`, uses it as a
+    fallback seed). `guess=None` solves from the stored transform."""
     driven_occurrence = _find_occurrence(part, driven_occurrence_id)
     if guess is not None:
         driven_occurrence = replace(driven_occurrence, transform=guess)
     applicable = _applicable_mates(part, driven_occurrence_id)
-    return _solve_occurrence_against(document, part, driven_occurrence, applicable)
-
-
-def preview_mate_solve(
-    document: Document, part: Part, driven_occurrence_id: str, extra_mate: Mate
-) -> MateSolveResult:
-    """Test report item 3 (New Mate ghost preview): like `solve_occurrence`,
-    but against `part.mates` *plus* one hypothetical `extra_mate` - never
-    appended to `part.mates`, never persisted anywhere. Lets the client show
-    a live ghost preview of where a Mate currently being authored in the UI
-    (`MatePanel`, before the user ever taps Confirm) would actually place
-    its driven Occurrence, recomputed on every type/value/flip/allow-
-    rotation change. `extra_mate.references` must have exactly 2 entries,
-    exactly one of them naming `driven_occurrence_id` (the router's own
-    `preview_mate_solve_endpoint` builds it directly from the same payload
-    shape `POST .../mates` validates, so this is always true in practice);
-    if neither or both do, `extra_mate` is silently dropped and this behaves
-    exactly like `solve_occurrence` (the real Mates already on
-    `driven_occurrence_id`, if any) rather than raising - a live preview
-    tolerates a still-being-edited, momentarily-nonsensical selection."""
-    driven_occurrence = _find_occurrence(part, driven_occurrence_id)
-    applicable = _applicable_mates(part, driven_occurrence_id)
-    if len(extra_mate.references) == 2:
-        first, second = extra_mate.references
-        if first.occurrence_id == driven_occurrence_id and second.occurrence_id != driven_occurrence_id:
-            applicable = [*applicable, (extra_mate, first, second)]
-        elif second.occurrence_id == driven_occurrence_id and first.occurrence_id != driven_occurrence_id:
-            applicable = [*applicable, (extra_mate, second, first)]
     return _solve_occurrence_against(document, part, driven_occurrence, applicable)
