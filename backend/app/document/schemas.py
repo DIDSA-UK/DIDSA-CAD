@@ -3380,11 +3380,7 @@ class MateMotionResponse(BaseModel):
     `dof` is the GROUP dof (`6k - rank(J)`); `members` order defines the column order
     of `basis` (rows: orthonormal in the lever-arm metric, `[dx dy dz rx ry rz]` per
     member). `converged: false` carries NO basis, dof or members - clients must not
-    read that as "all free".
-
-    `transform` and `free_twists` are the v0 single-occurrence fields (grabbed
-    occurrence solved against frozen peers), kept ONLY so DIDSA-VR on `main` keeps
-    working until it adopts this contract (plan S5); S9 deletes them."""
+    read that as "all free"."""
 
     converged: bool
     dof: int | None = None
@@ -3400,9 +3396,6 @@ class MateMotionResponse(BaseModel):
     # optional `frozen` {r, t} + local point / axis_origin / direction / perp / plane {origin, normal}). Null = not available
     # (not converged, or a mate the client cannot evaluate): the client keeps projecting.
     constraint_model: dict[str, Any] | None = None
-    # v0 aliases (delete in S9)
-    transform: RigidTransformResponse | None = None
-    free_twists: list[list[float]] = []
 
 
 class MateSolvePreviewResponse(BaseModel):

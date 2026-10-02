@@ -143,12 +143,10 @@ def test_plate_bcd_group_dof_5_mobility_3_and_alone_dof_0_1_1():
     root, _plate, _parts = _plate_bcd()
     document, part = _doc(root)
 
-    # Existing behaviour: each alone against frozen peers -> 0 / 1 / 1 (the v0 aliases of the
-    # HTTP endpoint report it as the number of free twists; the module with peers frozen agrees).
+    # Each alone against frozen peers -> 0 / 1 / 1 (the module with peers frozen), while the endpoint reports the GROUP dof.
     for oid, expected in (("occ-B", 0), ("occ-C", 1), ("occ-D", 1)):
         response = client.post(f"/document/parts/{root}/occurrences/{oid}/mate-motion", json={"transform": None})
-        assert response.status_code == 200 and len(response.json()["free_twists"]) == expected, (oid, response.text)
-        assert response.json()["dof"] == 5  # ... while the endpoint's own dof is now the GROUP dof
+        assert response.status_code == 200 and response.json()["dof"] == 5, (oid, response.text)
         peers = frozenset({"occ-B", "occ-C", "occ-D"} - {oid})
         assert analyze_group(document, part, oid, _LEVER, also_frozen=peers).dof == expected
 

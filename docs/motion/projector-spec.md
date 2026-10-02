@@ -180,7 +180,7 @@ from the manifold); the error grows like `d²`, so `max_step = d·√(TOL / e)`.
 wish == stored (`d < 1e-3`), rank 0, or `e < 1e-4` (flat mates and every screw orbit, incl. the off-axis concentric — measured null
 or > 150 there). Measured: `ANGLE` cone, rotation about the cone's axis of symmetry ⇒ `null`; tilt ⇒ 2.94–2.97 weighted mm
 for 0.05 rad and 0.5 rad wishes (a curvature property, independent of wish length). `null` means "time cap only" (§8), never
-"unlimited forever". It deliberately ignores where the backend *lands* (see §13.2).
+"unlimited forever". It deliberately ignores where the backend *lands* (see §13.2). `quality.jump` (`_jump`) uses the same prediction: the distance, `g ∘ screw_log`, from the screw-applied prediction of the grabbed member to where the solve landed.
 
 Client-side travel since the anchor: `travel = ‖g ∘ log(ref_0, P_shown)‖` with `g = [1,1,1,L,L,L]`, grabbed member.
 
@@ -200,9 +200,9 @@ accept(resp, own):        # own = pose the CURRENT model projects the same wish 
 ```
 
 The client-measured `jump` (anchor vs. own projection of the *same wish*) is the acceptance quantity. `resp.quality.jump` is
-**telemetry only**: it is measured against the *additive* first-order prediction from the *stored* pose, so it grows with the whole
-drag length (~0 on flat mates, up to ~6.6 weighted mm on the off-axis swing scene where the screw is exact) and would reject honest
-corrections. A rejected anchor counts as a miss (§11), keeps the old model and the shown pose, and does not restart the timer for
+**telemetry only**: it is measured against the first-order screw prediction (`screw_log` / `screw_exp`, §5) from the *stored* pose, so it still
+grows with the whole drag length on curved mates (~0 on flat mates and every screw orbit; 0.27 weighted mm on the off-axis swing scene for a 15 mm slide + 90° wish,
+1.83 when it was measured in the additive chart) and would reject honest corrections. A rejected anchor counts as a miss (§11), keeps the old model and the shown pose, and does not restart the timer for
 the next request.
 
 **`own` with the local retraction (§4b):** when the client runs the local retraction, `own` is ITS answer for the wish (one extra
@@ -299,7 +299,8 @@ extrapolation past a hold.
    from 0.33 to 0.52 weighted mm (nearest anchors; hand 0.34) and from 0.89 to 1.11 (real backend anchors); blended 0.29 → 0.35 and 0.37 → 0.47. Synthetic random
    off-manifold wishes (≤ 0.3 rad, ≤ 40 mm) land within ±10 % of each other's distance to the nearest point, better on the angle cone. A Gauss–Newton refinement to the true
    additive-metric nearest point brought the swing steps to 0.28 (both anchor sets) but diverged on large wishes without damping, so it is NOT specified; see the plan's S6 row.
-   `quality.jump` / `max_step` on the backend are still computed in the additive chart (telemetry / a conservative guard; second-order difference).
+   `quality.jump` / `max_step` on the backend were still computed in the additive chart at this revision; F2 (S9) moved both into the screw chart
+   (`constraint_model.screw_log` / `screw_exp`, the same formulas as §5), so the prediction they are measured against is the client's own.
 4. **The prototype's `geo._skew` has a wrong third row** (`[-w0, w1, 0]` instead of `[-w1, w0, 0]`): `geo._V`, hence `project_motion_screw`'s translation, is wrong for any twist with an x or y rotation component (the investigation's z-axis scenes were unaffected; the cone/tilted cases are not). The vectors use the correct skew and `generate.py` asserts screw exactness about arbitrary axes; with `_skew` patched the prototype agrees with all 21 single-member `project` vectors to 5e-13. `acos` → `atan2` rotation vector (§5); follower-weighted GS (§3); hysteresis/blend/scheduler/acceptance are specified as
    state machines with vectors (the investigation had one-liners).
 5. **Uncalibrated constants**: `SIGMA_GAP_LOW`, `GAIN_MIN`, `JUMP_REJECT_FACTOR`, `TOL` — first guesses, tune with S6/S7 instrumentation.
