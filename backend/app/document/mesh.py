@@ -81,6 +81,8 @@ def tessellate_shape(shape, quality: MeshQuality = DEFAULT_MESH_QUALITY) -> Mesh
         explorer.Next()
 
     mesh.edges, mesh.edge_ids = _extract_edges(shape)
+    if mesh.edges:
+        mesh.edge_ref_indices = _edge_ref_indices(shape)
     if not mesh.edges and mesh.triangles:
         # On-device feedback: a shape with a triangulation but no real
         # B-rep edges at all (an ImportFeature's own mesh-format Body) -
@@ -112,6 +114,21 @@ def _dense_edge_ids(shape) -> tuple[TopTools_IndexedMapOfShape, dict[int, int]]:
         next_edge_id += 1
 
     return edge_map, edge_id_by_map_index
+
+
+def _edge_ref_indices(shape) -> list[int]:
+    """VR Measure tool: `{dense edge id -> SubShapeRef.index}`, as a list
+    indexed by dense id. `_dense_edge_ids` skips degenerate edges when it
+    assigns ids, but `app.document.extrude.resolve_subshape_from_bodies`
+    resolves an EDGE ref against the raw 0-based `topexp.MapShapes` index
+    (degenerate edges included), so the two id spaces diverge past any
+    degenerate edge - this is the translation a client needs to name an edge
+    it picked from `edge_ids`-keyed geometry."""
+    _edge_map, edge_id_by_map_index = _dense_edge_ids(shape)
+    ref_indices = [0] * len(edge_id_by_map_index)
+    for map_index, dense_id in edge_id_by_map_index.items():
+        ref_indices[dense_id] = map_index - 1
+    return ref_indices
 
 
 def _extract_edges(shape) -> tuple[list[float], list[int]]:

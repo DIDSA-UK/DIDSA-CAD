@@ -179,8 +179,54 @@ def _color_to_base_color_factor(color: str) -> list[float]:
     return [r, g, b, 1.0]
 
 
+_TOPOLOGY_DECIMALS = 5  # coordinates in the topology extras are rounded to this many decimals (JSON size)
+
+
+def _topology_extras(part_mesh: MeshData) -> dict[str, dict]:
+    """VR Measure tool: `{body_id: {"edges", "vertices", "face_edges"}}` for a
+    primitive's `extras["topology"]`, so a client can pick an edge or vertex
+    and name it as a real `SubShapeRef{body_id, shape_type, index}`:
+
+    * `edges`: one `{"i": SubShapeRef.index, "s": [x1,y1,z1,x2,y2,z2, ...]}`
+      per real edge - flat segment endpoints in the Part's own frame (the
+      same frame as the triangles). `i` is the raw `MapShapes` index
+      (`BodyTopology`'s docstring: NOT the dense drawing id).
+    * `vertices`: one `{"i": SubShapeRef.index, "p": [x, y, z]}` per
+      topology vertex.
+    * `face_edges`: indexed by face id (the same id `face_ids` carries), each
+      the list of edge `i`s on that face's boundary - lets a client limit
+      its candidates to the face under the laser.
+    """
+
+    def _r(values) -> list[float]:
+        return [round(v, _TOPOLOGY_DECIMALS) for v in values]
+
+    out: dict[str, dict] = {}
+    for body_id, topo in part_mesh.body_topology.items():
+        segments_by_edge: dict[int, list[float]] = {}
+        for segment_index, dense_id in enumerate(topo.edge_ids):
+            segments_by_edge.setdefault(dense_id, []).extend(topo.edges[segment_index * 6 : segment_index * 6 + 6])
+        edges = [
+            {"i": topo.edge_ref_indices[dense_id], "s": _r(segments)}
+            for dense_id, segments in sorted(segments_by_edge.items())
+            if dense_id < len(topo.edge_ref_indices)
+        ]
+        vertices = [
+            {"i": vertex_id, "p": _r(point)}
+            for vertex_id, point in zip(topo.topology_vertex_ids, topo.topology_vertices)
+        ]
+        face_edges = [
+            [topo.edge_ref_indices[e] for e in face_edge_ids if e < len(topo.edge_ref_indices)]
+            for face_edge_ids in topo.face_edge_ids
+        ]
+        out[body_id] = {"edges": edges, "vertices": vertices, "face_edges": face_edges}
+    return out
+
+
 def encode_assembly_glb(
-    meshes_by_part_id: dict[str, MeshData], instances: Sequence[AssemblyGlbInstance]
+    meshes_by_part_id: dict[str, MeshData],
+    instances: Sequence[AssemblyGlbInstance],
+    include_topology: bool = True,
 ) -> bytes:
     """Node-instanced binary glTF 2.0 for an assembly scene (`docs/vr-recon-
     2-2026-09-24.md` SS3's own size estimate) - one glTF mesh per unique
@@ -232,6 +278,7 @@ def encode_assembly_glb(
         accessors.append(accessor)
         return len(accessors) - 1
 
+    topology_by_part_id: dict[str, dict[str, dict]] = {}  # per Part: shared by every colour variant of it
     part_accessor_indices: dict[str, tuple[int, int]] = {}
     for part_id, mesh in meshes_by_part_id.items():
         # A Part with no geometry at all (e.g. an assembly root that only
@@ -291,6 +338,11 @@ def encode_assembly_glb(
             part_mesh = meshes_by_part_id[instance.part_id]
             if part_mesh.face_ids:
                 primitive["extras"] = {"face_ids": list(part_mesh.face_ids), "body_ids": list(part_mesh.body_ids)}
+                if include_topology and part_mesh.body_topology:
+                    # VR Measure tool: real edges / vertices / face boundaries, see _topology_extras.
+                    if instance.part_id not in topology_by_part_id:
+                        topology_by_part_id[instance.part_id] = _topology_extras(part_mesh)
+                    primitive["extras"]["topology"] = topology_by_part_id[instance.part_id]
             mesh_index = len(meshes)
             mesh_index_by_variant[variant_key] = mesh_index
             meshes.append({"primitives": [primitive]})

@@ -93,7 +93,7 @@ from app.document.graph import (
 )
 from app.document.import_geometry import extract_step_metadata, resolve_import
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_slider, tessellate_shape
-from app.document.mesh_data import MeshQuality, Triangle
+from app.document.mesh_data import BodyTopology, MeshQuality, Triangle
 from app.document.mesh_export import AssemblyGlbInstance, encode_assembly_glb, encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
 from app.document.add_component import AddComponentError, merge_component_into_document
@@ -9386,6 +9386,7 @@ def get_assembly_mesh_glb(
     quality: float | None = Query(default=None, ge=0.0, le=1.0),
     tier: Literal["full", "coarse"] = Query(default="full"),
     include_hidden: bool = Query(default=False),
+    topology: bool = Query(default=True),
 ) -> Response:
     """`GET /parts/{part_id}/assembly-mesh`'s node-instanced binary glTF
     sibling (`docs/vr-recon-2026-09-24.md` SS2 point 2, sized for real in
@@ -9409,7 +9410,13 @@ def get_assembly_mesh_glb(
     Occurrence is hidden before encoding, so a Quest client that doesn't
     want to bother decoding-then-discarding hidden geometry doesn't have to;
     `?include_hidden=true` restores the JSON endpoint's "everything, client
-    filters" behaviour."""
+    filters" behaviour.
+
+    `topology` (default `True`, VR Measure tool): also carry each Body's real
+    edges, vertices and per-face boundary edges in the primitive's `extras`
+    (see `app.document.mesh_export.encode_assembly_glb`), so a client can pick
+    and name an edge or vertex, not just a face. `?topology=false` leaves
+    them out for a client that only picks faces (smaller file)."""
     document = get_document()
     root_part = get_part_or_404(part_id)
     mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
@@ -9432,7 +9439,7 @@ def get_assembly_mesh_glb(
     )
     visible_instances = instances if include_hidden else [instance for instance in instances if not instance.hidden]
 
-    data = encode_assembly_glb(geometry_by_part_id, visible_instances)
+    data = encode_assembly_glb(geometry_by_part_id, visible_instances, include_topology=topology)
     return Response(
         content=data,
         media_type="model/gltf-binary",
@@ -9602,6 +9609,16 @@ def _merged_body_mesh_data(bodies: dict[str, object], mesh_quality: MeshQuality 
         )
         merged.face_ids.extend(body_mesh.face_ids)
         merged.body_ids.extend([body_id] * len(body_mesh.triangles))
+        if body_mesh.edge_ref_indices:
+            # VR Measure tool: edges/vertices stay per Body (see BodyTopology).
+            merged.body_topology[body_id] = BodyTopology(
+                edges=body_mesh.edges,
+                edge_ids=body_mesh.edge_ids,
+                edge_ref_indices=body_mesh.edge_ref_indices,
+                topology_vertices=body_mesh.topology_vertices,
+                topology_vertex_ids=body_mesh.topology_vertex_ids,
+                face_edge_ids=body_mesh.face_edge_ids,
+            )
     return merged
 
 
