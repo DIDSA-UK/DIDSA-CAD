@@ -338,3 +338,37 @@ def test_assembly_mesh_glb_geometry_less_root_is_a_meshless_node_not_a_placehold
     # The root instance is stamped with its own Part id as owner (see get_assembly_mesh_glb).
     assert root_node["extras"]["owner_part_id"] == root["id"]
     assert root_node["extras"]["occurrence_id"] == ""
+
+
+def test_assembly_mesh_glb_primitive_extras_carry_edge_vertex_and_face_boundary_topology():
+    part = _make_box_part("Solo Part")
+
+    gltf, _bin_bytes = _parse_glb(_fetch_assembly_glb(part["id"]))
+
+    extras = gltf["meshes"][0]["primitives"][0]["extras"]
+    body_id = extras["body_ids"][0]
+    topo = extras["topology"][body_id]
+    assert sorted(e["i"] for e in topo["edges"]) == list(range(12))  # a box has 12 edges, named by SubShapeRef index
+    assert all(len(e["s"]) % 6 == 0 and len(e["s"]) >= 6 for e in topo["edges"])  # flat start/end point pairs
+    assert sorted(v["i"] for v in topo["vertices"]) == list(range(8))
+    assert all(len(v["p"]) == 3 for v in topo["vertices"])
+    assert len(topo["face_edges"]) == 6  # indexed by the same face id face_ids carries
+    assert all(len(f) == 4 for f in topo["face_edges"])
+    assert all(0 <= edge < 12 for f in topo["face_edges"] for edge in f)
+    # What a mate can use: a box is all straight edges and planar faces.
+    assert {e["k"] for e in topo["edges"]} == {"line"}
+    assert topo["face_kinds"] == ["plane"] * 6
+
+
+def test_assembly_mesh_glb_topology_can_be_left_out():
+    part = _make_box_part("Solo Part")
+
+    with_topology = _fetch_assembly_glb(part["id"])
+    response = client.get(f"/document/parts/{part['id']}/assembly-mesh.glb", params={"topology": "false"})
+    assert response.status_code == 200
+    gltf, _bin_bytes = _parse_glb(response.content)
+
+    extras = gltf["meshes"][0]["primitives"][0]["extras"]
+    assert "topology" not in extras
+    assert "face_ids" in extras  # face picking is untouched
+    assert len(response.content) < len(with_topology)

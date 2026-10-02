@@ -78,6 +78,32 @@ class Triangle:
 
 
 @dataclass
+class BodyTopology:
+    """VR Measure tool: one Body's own edge / vertex / face-boundary data,
+    kept per Body (not merged flat like `triangles`) so `assembly-mesh.glb`
+    can name each edge and vertex by a real `SubShapeRef{body_id,
+    shape_type, index}`. `edge_ref_indices[dense_edge_id]` is that edge's
+    `SubShapeRef.index` - the raw 0-based `TopTools_IndexedMapOfShape`
+    position `app.document.extrude.resolve_subshape_from_bodies` resolves
+    against. `edge_ids` (the dense, degenerate-skipping drawing ids) are NOT
+    that index: a Body with a degenerate edge (a cone apex, a sphere pole)
+    has dense ids shifted down from the raw ones past the degenerate edge, so
+    a client must never send a dense id as a SubShapeRef index."""
+
+    edges: list[float] = field(default_factory=list)
+    edge_ids: list[int] = field(default_factory=list)
+    edge_ref_indices: list[int] = field(default_factory=list)
+    topology_vertices: list[tuple[float, float, float]] = field(default_factory=list)
+    topology_vertex_ids: list[int] = field(default_factory=list)
+    face_edge_ids: list[list[int]] = field(default_factory=list)
+    # VR Mates tool: what a mate can use each one as. `edge_kinds[dense_edge_id]` is "line" / "circle" / "other"
+    # (a mate needs a straight or circular edge: `assembly_solver._resolve_local_geometry`), `face_kinds[face_id]`
+    # is "plane" / "cylinder" / "other" (likewise), so a client only offers what the solver can use.
+    edge_kinds: list[str] = field(default_factory=list)
+    face_kinds: list[str] = field(default_factory=list)
+
+
+@dataclass
 class MeshData:
     vertices: list[tuple[float, float, float]] = field(default_factory=list)
     normals: list[tuple[float, float, float]] = field(default_factory=list)
@@ -136,6 +162,17 @@ class MeshData:
     # break that. `GET /parts/{id}/mesh`'s per-Body `BodyMeshResponse`s never
     # need this - each response is already scoped to one Body.
     body_ids: list[str] = field(default_factory=list)
+    # VR Measure tool: `tessellate_shape` fills this, `edge_ids`' dense id ->
+    # `SubShapeRef.index` lookup (see `BodyTopology`'s docstring). Empty when
+    # the edges are the synthesized mesh-triangle wireframe (an
+    # ImportFeature's mesh-format Body has no real B-rep edges to name).
+    edge_ref_indices: list[int] = field(default_factory=list)
+    edge_kinds: list[str] = field(default_factory=list) # dense edge id -> "line" / "circle" / "other"
+    face_kinds: list[str] = field(default_factory=list) # face id -> "plane" / "cylinder" / "other"
+    # VR Measure tool: per-Body edge/vertex/face-boundary data, only ever set
+    # by `app.document.router._merged_body_mesh_data` (like `body_ids`), for
+    # `assembly-mesh.glb`'s per-primitive `topology` extras.
+    body_topology: dict[str, BodyTopology] = field(default_factory=dict)
 
 
 def synthesize_wireframe_edges_from_triangles(mesh: MeshData) -> tuple[list[float], list[int]]:
