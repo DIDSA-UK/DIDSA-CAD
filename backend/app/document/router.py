@@ -9256,14 +9256,30 @@ def get_assembly_mesh(
     return AssemblyMeshResponse(geometry=list(geometry_by_part_id.values()), instances=instances)
 
 
-def _assembly_glb_part_mesh_data(part: Part, mesh_quality: MeshQuality, tier: Literal["full", "coarse"]) -> MeshData:
+def _assembly_glb_part_mesh_data(
+    part: Part,
+    mesh_quality: MeshQuality,
+    tier: Literal["full", "coarse"],
+    rollback_excluded: frozenset[str] = frozenset(),
+    hidden: frozenset[str] = frozenset(),
+) -> MeshData:
     """`assembly-mesh.glb`'s own per-Part geometry lookup - the same
     placeholder-or-real-bodies/`tier="coarse"` logic `_assembly_body_mesh_
     responses` and `get_part_mesh` already have, but returns one merged
     `MeshData` per Part (`_merged_body_mesh_data`) rather than a list of
     per-Body `BodyMeshResponse`s - `encode_assembly_glb` needs exactly one
     glTF mesh per unique Part (per colour - see that function's own
-    docstring), not one per Body."""
+    docstring), not one per Body.
+
+    `rollback_excluded` / `hidden` are `GET /parts/{id}/mesh`'s own two client-side
+    exclusion sets (see `get_part_mesh`), for the one Part the client is
+    editing (`get_assembly_mesh_glb` passes them for the requested root only):
+    `rollback_excluded` is fed straight into `compute_part_bodies` (those
+    Features, and everything depending on them, are skipped as if they did not
+    exist yet); `hidden` is purely cosmetic - every Body is still computed
+    against the real history (so a Plane anchored to a hidden Body's face keeps
+    resolving), and a Body whose creating Feature is hidden is just left out of
+    the merged mesh. Both default to empty, which is the old behaviour exactly."""
     if not part.produces_displayable_geometry:
         # Empty, not the placeholder box - see `_assembly_body_mesh_responses`.
         return MeshData()
@@ -9272,11 +9288,13 @@ def _assembly_glb_part_mesh_data(part: Part, mesh_quality: MeshQuality, tier: Li
         coarse_eligible = coarse_eligible_feature_ids(part)
         bodies = {
             body_id: shape
-            for body_id, shape in compute_part_bodies_coarse(part, frozenset()).items()
+            for body_id, shape in compute_part_bodies_coarse(part, rollback_excluded).items()
             if base_feature_id(body_id) in coarse_eligible
         }
     else:
-        bodies = compute_part_bodies(part, frozenset())
+        bodies = compute_part_bodies(part, rollback_excluded)
+    if hidden:
+        bodies = {body_id: shape for body_id, shape in bodies.items() if base_feature_id(body_id) not in hidden}
     return _merged_body_mesh_data(bodies, mesh_quality)
 
 
@@ -9386,6 +9404,8 @@ def get_assembly_mesh_glb(
     tier: Literal["full", "coarse"] = Query(default="full"),
     include_hidden: bool = Query(default=False),
     topology: bool = Query(default=True),
+    hidden_feature_ids: list[str] = Query(default=[]),
+    rollback_excluded_feature_ids: list[str] = Query(default=[]),
 ) -> Response:
     """`GET /parts/{part_id}/assembly-mesh`'s node-instanced binary glTF
     sibling (`docs/vr-recon-2026-09-24.md` SS2 point 2, sized for real in
@@ -9415,12 +9435,31 @@ def get_assembly_mesh_glb(
     edges, vertices and per-face boundary edges in the primitive's `extras`
     (see `app.document.mesh_export.encode_assembly_glb`), so a client can pick
     and name an edge or vertex, not just a face. `?topology=false` leaves
-    them out for a client that only picks faces (smaller file)."""
+    them out for a client that only picks faces (smaller file).
+
+    `hidden_feature_ids` / `rollback_excluded_feature_ids` (VR design table's
+    build tree): the same two client-side exclusion sets `GET /parts/{id}/mesh`
+    takes - Hide / Show (cosmetic: the Feature's Body is left out of the mesh
+    but everything is still computed against the real history) and rollback
+    (the named Features and what depends on them are skipped). They apply to
+    the REQUESTED part's own geometry only, never to the placed child Parts of
+    an assembly, the same rule the JSON assembly endpoint already states (they
+    are the open Part's live-editing state). Both default to empty: the
+    response is then byte-identical to before."""
     document = get_document()
     root_part = get_part_or_404(part_id)
     mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
 
     geometry_by_part_id: dict[str, MeshData] = {}
+    if hidden_feature_ids or rollback_excluded_feature_ids:
+        # Pre-seeded for the root only: the walk below computes every OTHER part itself and skips any part already in this dict.
+        geometry_by_part_id[root_part.id] = _assembly_glb_part_mesh_data(
+            root_part,
+            mesh_quality,
+            tier,
+            rollback_excluded=frozenset(rollback_excluded_feature_ids),
+            hidden=frozenset(hidden_feature_ids),
+        )
     instances: list[AssemblyGlbInstance] = []
     _walk_assembly_glb_instances(
         document,
