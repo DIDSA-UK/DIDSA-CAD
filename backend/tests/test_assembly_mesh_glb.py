@@ -372,3 +372,117 @@ def test_assembly_mesh_glb_topology_can_be_left_out():
     assert "topology" not in extras
     assert "face_ids" in extras  # face picking is untouched
     assert len(response.content) < len(with_topology)
+
+
+# --- hidden_feature_ids / rollback_excluded_feature_ids (VR design table's build tree) ---------
+
+
+def _add_boss_box(part_id: str, *, x: float, size: float = 10.0) -> str:
+    """Adds one more sketch + new-body Boss to `part_id` (a square of `size` at `x` on XY, 10 tall) and returns the
+    Extrude feature's id - a second, independent Body when the Part already has one."""
+    sketch_response = client.post(f"/document/parts/{part_id}/features/sketch", json={"plane": "XY"})
+    assert sketch_response.status_code == 201
+    sketch_id = sketch_response.json()["sketch_id"]
+    corners = [_add_point(sketch_id, cx, cy) for cx, cy in [(x, 0), (x + size, 0), (x + size, size), (x, size)]]
+    for a, b in zip(corners, corners[1:] + corners[:1]):
+        _add_line(sketch_id, a["id"], b["id"])
+    extrude_response = client.post(
+        f"/document/parts/{part_id}/extrude-features",
+        json={
+            "sketch_feature_id": sketch_response.json()["id"],
+            "extrude_type": "boss",
+            "start_distance": 0.0,
+            "end_distance": 10.0,
+        },
+    )
+    assert extrude_response.status_code == 201
+    return extrude_response.json()["id"]
+
+
+def _first_extrude_id(part_id: str) -> str:
+    features = client.get(f"/document/parts/{part_id}/features").json()
+    return next(f["id"] for f in features if f["type"] == "extrude")
+
+
+def _triangle_count(gltf: dict) -> int:
+    return sum(accessor["count"] for accessor in gltf["accessors"][:1]) // 3 if gltf["meshes"] else 0
+
+
+def _body_id_set(gltf: dict) -> set:
+    if not gltf["meshes"]:
+        return set()
+    return set(gltf["meshes"][0]["primitives"][0]["extras"]["body_ids"])
+
+
+def test_assembly_mesh_glb_hidden_and_rollback_default_to_no_change():
+    part = _make_box_part("Two Bodies")
+    _add_boss_box(part["id"], x=30.0)
+    plain = _fetch_assembly_glb(part["id"])
+    explicit = _fetch_assembly_glb(part["id"], hidden_feature_ids=[], rollback_excluded_feature_ids=[])
+    assert plain == explicit
+
+
+def test_assembly_mesh_glb_hidden_feature_leaves_its_body_out_of_the_mesh():
+    part = _make_box_part("Two Bodies")
+    first = _first_extrude_id(part["id"])
+    second = _add_boss_box(part["id"], x=30.0)
+
+    full, _ = _parse_glb(_fetch_assembly_glb(part["id"]))
+    hidden_first, _ = _parse_glb(_fetch_assembly_glb(part["id"], hidden_feature_ids=[first]))
+
+    assert len(_body_id_set(full)) == 2
+    assert _body_id_set(hidden_first) == {second}
+    assert _triangle_count(hidden_first) * 2 == _triangle_count(full)  # two identical boxes
+    # face / body ids stay dense and consistent with the triangles that remain
+    extras = hidden_first["meshes"][0]["primitives"][0]["extras"]
+    assert len(extras["face_ids"]) == _triangle_count(hidden_first) == len(extras["body_ids"])
+
+
+def test_assembly_mesh_glb_hiding_everything_gives_a_meshless_node():
+    part = _make_box_part("Solo Part")
+    gltf, _ = _parse_glb(_fetch_assembly_glb(part["id"], hidden_feature_ids=[_first_extrude_id(part["id"])]))
+    assert len(gltf["nodes"]) == 1
+    assert "mesh" not in gltf["nodes"][0]
+    assert gltf["meshes"] == []
+
+
+def test_assembly_mesh_glb_rollback_skips_the_named_feature_and_keeps_the_rest():
+    part = _make_box_part("Two Bodies")
+    first = _first_extrude_id(part["id"])
+    second = _add_boss_box(part["id"], x=30.0)
+
+    rolled, _ = _parse_glb(_fetch_assembly_glb(part["id"], rollback_excluded_feature_ids=[second]))
+
+    assert _body_id_set(rolled) == {first}
+
+
+def test_assembly_mesh_glb_hidden_and_rollback_work_with_the_coarse_tier():
+    part = _make_box_part("Two Bodies")
+    first = _first_extrude_id(part["id"])
+    _add_boss_box(part["id"], x=30.0)
+    response = client.get(
+        f"/document/parts/{part['id']}/assembly-mesh.glb",
+        params={"tier": "coarse", "hidden_feature_ids": [first]},
+    )
+    assert response.status_code == 200
+    gltf, _ = _parse_glb(response.content)
+    # Plain extrudes have no coarse stand-in at all, so the coarse mesh is empty either way: the params must not break it.
+    assert isinstance(gltf["nodes"], list)
+
+
+def test_assembly_mesh_glb_hidden_and_rollback_apply_to_the_requested_part_only_not_placed_children():
+    mount = _make_box_part("Mount", size=20.0)
+    bolt = _make_box_part("Bolt", size=2.0)
+    _place_occurrence(mount, bolt, occurrence_id="occ-bolt-1", translation=[15.0, 0.0, 10.0])
+    bolt_extrude = _first_extrude_id(bolt["id"])
+    mount_extrude = _first_extrude_id(mount["id"])
+
+    # The bolt's own feature id named while requesting the mount: the child is not the open part, so nothing changes.
+    unaffected, _ = _parse_glb(_fetch_assembly_glb(mount["id"], hidden_feature_ids=[bolt_extrude], rollback_excluded_feature_ids=[bolt_extrude]))
+    plain, _ = _parse_glb(_fetch_assembly_glb(mount["id"]))
+    assert len(unaffected["meshes"]) == len(plain["meshes"]) == 2
+
+    # Hiding the mount's own feature empties the mount only; the bolt keeps its mesh.
+    only_bolt, _ = _parse_glb(_fetch_assembly_glb(mount["id"], hidden_feature_ids=[mount_extrude]))
+    assert len(only_bolt["nodes"]) == 2
+    assert sum(1 for n in only_bolt["nodes"] if "mesh" in n) == 1
