@@ -3661,3 +3661,9 @@ Follow-up (same day): each edge in the `topology` extras also carries `k` (`"lin
 ## 2026-10-03 — assembly-mesh.glb takes hidden_feature_ids / rollback_excluded_feature_ids (VR design table's build tree)
 
 `GET /parts/{id}/assembly-mesh.glb` gains the two client-side exclusion sets `GET /parts/{id}/mesh` already had: `hidden_feature_ids` (Hide / Show: a Feature's Body is left out of the mesh, everything still computed against the real history) and `rollback_excluded_feature_ids` (the named Features and what depends on them are skipped). They apply to the REQUESTED part's own geometry only, never to placed child parts. Defaults are empty and the response is byte-identical to before. Why: the VR design table's Build tree (the flat app's Build Tree for the part on the table) hides and rolls back features, and VR only fetches the glb (the `/mesh` JSON has no topology). Implementation: `_assembly_glb_part_mesh_data(..., rollback_excluded, hidden)`; the route pre-seeds the root part's geometry so the walk skips it. Tests: six new cases in `backend/tests/test_assembly_mesh_glb.py` (defaults unchanged, hidden body left out with dense ids, hide-all gives a mesh-less node, rollback skips a feature, coarse tier accepted, children unaffected). An older backend ignores the params, so VR simply shows no hiding.
+
+### 2026-10-06 — Reference-renumbering probe (no behaviour change)
+
+Added `backend/tests/test_reference_follows_upstream_topology_change.py` (2 passing regressions, 4 xfails) and a "Findings" paragraph in `docs/roadmap.md`
+("Reference drift"): a Sketch's external reference follows topology-preserving upstream edits, but a topology-changing one renumbers vertices and the reference silently
+binds to a different corner with no `has_lost_reference`. Found while building the VR design table's direct dimensioning to part geometry (DIDSA-VR `docs/design-table-gaps.md`, R1 / R2).
