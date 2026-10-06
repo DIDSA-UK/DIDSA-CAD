@@ -335,6 +335,13 @@ class BodyFaceMeasurer:
     def all(self) -> list[FaceSignature]:
         return [self.signature(i) for i in range(self.count)]
 
+    def index_of(self, face: TopoDS_Shape) -> int:
+        """0-based index of `face` in this Body, or -1 when it is not one of its faces."""
+        return self._faces.FindIndex(face) - 1
+
+    def shape_at(self, index: int) -> TopoDS_Shape:
+        return self._faces.FindKey(index + 1)
+
 
 _MEASURER_CACHE: dict[tuple[int, str], tuple[TopoDS_Shape, object]] = {}
 _MEASURER_CACHE_SIZE = 16

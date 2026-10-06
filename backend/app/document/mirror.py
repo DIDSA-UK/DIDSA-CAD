@@ -21,6 +21,7 @@ from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCC.Core.gp import gp_Ax2, gp_Dir, gp_Pnt, gp_Trsf
 from OCC.Core.TopoDS import TopoDS_Shape
 
+from app.document.reference_history import note_operation
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
 from app.document.graph import body_ids_for_feature_id, excluded_feature_ids_after, tool_feature_qualifies
@@ -225,9 +226,13 @@ def resolve_mirror_tool_feature_from_bodies(
     mirrored_tool = transform.Shape()
 
     if is_cut:
-        new_shape = BRepAlgoAPI_Cut(bodies[target_id], mirrored_tool).Shape()
+        tool_op = BRepAlgoAPI_Cut(bodies[target_id], mirrored_tool)
+        new_shape = tool_op.Shape()
+        note_operation(tool_op)
     else:
-        new_shape = BRepAlgoAPI_Fuse(bodies[target_id], mirrored_tool).Shape()
+        tool_op = BRepAlgoAPI_Fuse(bodies[target_id], mirrored_tool)
+        new_shape = tool_op.Shape()
+        note_operation(tool_op)
     return target_id, new_shape
 
 

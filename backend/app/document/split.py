@@ -77,6 +77,7 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.gp import gp_Dir, gp_Vec
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
+from app.document.reference_history import note_operation
 from app.document.create_plane import resolve_plane_ref, resolve_sketch_basis
 from app.document.extrude import (
     EXTRUDABLE_STATUSES,
@@ -512,8 +513,11 @@ def resolve_split_pieces(
     if block is None:
         logger.warning("Skipping SplitFeature %s: its cutting tool could not be resolved", feature.id)
         return None
-    piece_a = BRepAlgoAPI_Common(target_shape, block).Shape()
-    piece_b = BRepAlgoAPI_Cut(target_shape, block).Shape()
+    common, cut = BRepAlgoAPI_Common(target_shape, block), BRepAlgoAPI_Cut(target_shape, block)
+    piece_a, piece_b = common.Shape(), cut.Shape()
+    # Both operations are recorded: a sub-shape of the target is carried into whichever piece it lands in (the other piece's operation simply never names it).
+    note_operation(common)
+    note_operation(cut)
     return piece_a, piece_b
 
 

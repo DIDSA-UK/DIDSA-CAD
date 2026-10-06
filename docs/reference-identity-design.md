@@ -56,8 +56,8 @@ While a Part replays, operations that expose OCCT history report themselves (`no
 (when its operands were not converted), `ShapeUpgrade_UnifySameDomain.History()`. `_apply_feature_to_bodies` closes each Feature step into a `StepRecord` (Body before, Body
 after, the operations in between) **only while a trace is being recorded**, i.e. never on the normal cached path.
 
-*Carrying a vertex across a step* (`HistoryTrace.forward`): the same TShape still in the result survives; else whatever `Modified()` / `Generated()` says it became; else, if the
-step had no history for it (an operation without a hook: Shell, Mirror, Move Face, ...), a lone vertex of the result at exactly the same position; else it was consumed.
+*Carrying a vertex across a step* (`HistoryTrace.forward`): the same TShape still in the result survives, and so does whatever `Modified()` says it became (`Generated()` is not read, see "Hooked operations"); else, if the
+step reported nothing for it, a lone sub-shape of the result with the same fingerprint at exactly the same position; else it was consumed - or, in a step with no authoritative operation of its own, simply *unknown* (see "Hooked operations").
 `IsDeleted()` is deliberately not used to decide survival: measured on OCCT 7.9, `BRepFilletAPI_MakeFillet.IsDeleted()` is True for vertices the fillet never touched.
 
 *At creation* the steps are walked backwards from the picked vertex to the step that created it (nothing in that step's input maps to it) -> `LineageOrigin`.
@@ -65,8 +65,28 @@ step had no history for it (an operation without a hook: Shell, Mirror, Move Fac
 Feature's new output by signature, and walked forward through every later step to the final Body: one survivor -> `followed` (`method=history`); none -> **lost,
 `consumed_by_<feature id>`** (and it is *not* rebound to a look-alike, which is what the plain signature search would have done); several -> narrowed by signature, else ambiguous.
 
-Not wired (falls back to position-at-the-step, then signature): Shell, Draft/thicken, Move/Delete Face, Mirror/Pattern, Loft/Sweep/Revolve internals, Split, and a Fuse whose operand
-needed Bezier preparation. Adding a hook is one `note_operation(maker)` call after the operation succeeded.
+**Hooked operations** (each reports `Modified()` to the recorder right after it succeeded; `note_operation(maker)` is the whole hook):
+
+| Operation | Where | Notes |
+|---|---|---|
+| Fillet, Chamfer | `fillet.py`, `chamfer.py` | authoritative |
+| Boss / Cut (extrude, revolve, sweep, loft), Merge, Mirror / Pattern FUSE_INTO_ONE | `extrude.py` `_apply_boss_or_cut`, `_safe_fuse` | authoritative; a Bezier-conversion of an operand (`_prepare_for_boolean`) is reported first through `ReShapeHistory` (a `ShapeBuild_ReShape` context), so conversion -> fuse still names the caller's sub-shapes |
+| Boolean Subtract / Common | `boolean.py` | authoritative |
+| Split | `split.py` | both the Common and the Cut are recorded; the second piece's step takes the target as its input (see below) |
+| Shell | `shell_ops.py` (`thicken_capped_solid_to_solid`) | authoritative; the original faces survive (they become the cavity walls), the opened face is Modified into the rim |
+| Delete Face | `delete_face.py` (`BRepAlgoAPI_Defeaturing`) | authoritative |
+| Move Body, Scale Body (in place) | `move_body.py`, `scale_body.py` | `BRepBuilderAPI_Transform(copy=True)` makes new TShapes with the same structure: every sub-shape is reported Modified into its twin. Without this hook a reference through a move or a scale read as "consumed" |
+| Mirror / Pattern `tool_feature_id` Cut / Fuse | `mirror.py`, `pattern.py` | authoritative |
+| Move Face (all three techniques) | `move_face.py` | **non-authoritative**: booleans / `BRepOffset_MakeOffset` are recorded, plus `_MovedFacesHistory`, because OCCT reports the faces being moved as consumed (old wall deleted, new one generated) while for a reference they CONTINUE: it answers "the face of the result with the same kind and normal at the expected displaced place". Edges / vertices of a moved face and (offset mode) the re-cut neighbours are not reported: "unknown", the signature search takes over |
+| unify (after every step) | `extrude.py` `_unify_same_domain` | non-authoritative |
+
+Three rules make the table safe:
+
+* `Generated()` is not read. It lists NEW sub-shapes derived from the input (a Fillet's face from the rounded edge, a Shell's inner offset face from the outer face), not what the input became; reading it would have sent a Shell's outer face to the inner one. A sub-shape both survives by identity and gets its `Modified()` results, and everything not in the step's result is dropped.
+* **Coverage.** `StepRecord.covered` is true only when the step ran at least one authoritative operation. Where a covered step finds no survivor the sub-shape is *consumed*; where an uncovered step finds none (an operation nobody hooked, or Move Face's unplaceable edges, or a step whose only operation is the unify pass) the answer is *unknown* and the reference falls back to the signature search - history never claims consumption it cannot back.
+* **Derived Bodies.** A Body that appears in a step (it had no entry before it) while exactly one pre-existing Body was changed or removed by an authoritative operation - a Split's second piece, the second half of a Cut that severs a Body - starts its history from that Body.
+
+Not hooked (these create new Bodies from scratch, so there is nothing to carry; the new Body's sub-shapes have the creating Feature as their origin and are located by signature in its output): Extrude / Revolve / Sweep / Loft tool solids, gears, Thicken, surfaces, Mirror / Pattern instance copies (the transform that makes a copy is deliberately NOT recorded - it would map the source's sub-shapes onto the copy's). Not hooked and in place: none known - every operation that modifies an existing Body in place is in the table.
 
 ## Never silent
 
@@ -123,7 +143,7 @@ mechanism (`app/document/subshape_identity.py`), not one per consumer:
 * **OCCT history, per edge and face** (the same machinery as for sketch vertices, generalised by sub-shape kind - see "OCCT history" above). A reference stamped while the Part has at most `HISTORY_MAX_FEATURES` (80) Features also stores a
   `LineageOrigin` (`SubShapeRef.lineage`, `repr=False`, saved in the native format): the Feature whose output created the sub-shape. The stamp comes from ONE recorded replay of the whole Part (`HistoryTrace.inputs` keeps the Bodies each Feature found,
   so a mid-history reference can start its backward walk from them), shared through the trace memo by every reference of every Feature. When a stored index goes stale the refresh carries the origin forward to the Feature's own input with
-  `Modified()` / `Generated()` (measured on OCCT 7.9: a Fillet reports the faces next to the rounded edge as Modified, the rounded edge as consumed with only a *generated face*; a Cut reports split edges / faces as Modified and removed ones as nothing): one
+  `Modified()` (measured on OCCT 7.9: a Fillet reports the faces next to the rounded edge as Modified, the rounded edge as consumed with only a *generated face*; a Cut reports split edges / faces as Modified and removed ones as nothing): one
   survivor is followed, none is `consumed_by_<feature>`, several are narrowed by signature. **A consumed sub-shape is also recorded on the reference (`SubShapeRef.lost_reason`, in `repr` so the body cache is invalidated)** and replay then fails closed on it - the
   case that matters: an edge or face consumed upstream while an identical-looking twin remains, which the signature search alone would have bound (flagged "potentially moved") or called ambiguous. The marker is cleared by the next refresh that finds the
   sub-shape again (an undone edit heals). Replay itself stays signature-only. Circle centres use the edge lineage too.

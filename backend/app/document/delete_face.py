@@ -86,6 +86,7 @@ from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, topods
 
+from app.document.reference_history import note_operation
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
 from app.document.models import DeleteFaceFeature, Part, SubShapeType
 
@@ -206,6 +207,7 @@ def resolve_delete_face_from_bodies(
         raise _delete_face_failed(body_id)
 
     result = defeaturing.Shape()
+    note_operation(defeaturing)
     # Belt-and-braces: HasWarnings() is the confirmed real-world signal for
     # the silent-no-op case (see this module's own top docstring), but an
     # empty/degenerate result (zero faces, zero-or-negative volume) fails

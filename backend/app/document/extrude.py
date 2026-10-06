@@ -37,6 +37,7 @@ from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_V
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape, TopTools_ListOfShape
 
 from app.document import body_cache, reference_history
+from app.document.reference_history import ReShapeHistory
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
 from app.document.shell_ops import thicken_capped_solid_to_solid, thicken_shell_to_solid
 from app.document.plane_geometry import (
@@ -1454,6 +1455,8 @@ def _prepare_for_boolean(shape: TopoDS_Shape) -> TopoDS_Shape:
     converter.Set2dConversion(True)
     converter.SetExtrusionMode(True)
     converter.Perform()
+    # The conversion replaces sub-shapes (new TShapes): report it, so a boolean on the converted operand can still be followed back to the caller's own shape.
+    reference_history.note_operation(ReShapeHistory(converter.GetContext()))
     return converter.Result()
 
 
@@ -1514,8 +1517,7 @@ def _safe_fuse(
     shape = fuse.Shape()
     if not _fuse_result_is_sane(shape, vol_a, vol_b):
         raise _boolean_op_failed(op, body_ids)
-    if a_prepared is a and b_prepared is b:  # a converted operand is a different TShape: its history would not name the caller's vertices
-        reference_history.note_operation(fuse)
+    reference_history.note_operation(fuse)  # any conversion above was reported first, so the chain conversion -> fuse still names the caller's sub-shapes
     return shape
 
 
@@ -2936,7 +2938,7 @@ def _unify_same_domain(shape: TopoDS_Shape) -> TopoDS_Shape:
     unified = unify.Shape()
     if unified is None or unified.IsNull() or not BRepCheck_Analyzer(unified).IsValid():
         return shape
-    reference_history.note_operation(unify.History())
+    reference_history.note_operation(unify.History(), authoritative=False)  # merges faces only: its silence is not evidence of consumption
     return unified
 
 

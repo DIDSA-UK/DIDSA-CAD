@@ -400,7 +400,7 @@ deliberately unbuilt along the way, not yet scoped further:
 
 ## Reference drift / "potentially broken reference" health flag
 
-**Status 2026-10-06: done for Sketch external references (including circle / arc centres) and for every other `SubShapeRef` consumer (Fillet, Chamfer, Create Plane, Pattern, Mirror, Shell, Delete / Move Face, ...); OCCT history lineage now covers vertices, edges and faces.** A Sketch's `external_references` now carry a geometric
+**Status 2026-10-06: done for Sketch external references (including circle / arc centres) and for every other `SubShapeRef` consumer (Fillet, Chamfer, Create Plane, Pattern, Mirror, Shell, Delete / Move Face, ...); OCCT history lineage now covers vertices, edges and faces, and every in-place Body operation is hooked into the recorder.** A Sketch's `external_references` now carry a geometric
 signature (position in the Body frame, valence, adjacent-face normals / kinds, incident-edge directions, Body diagonal) and an OCCT-history lineage, are re-validated on
 every refresh, are re-found by signature / history when the index goes stale, and are flagged - never silently rebound - when they cannot be found unambiguously
 (`has_lost_reference` plus `lost_reference_point_ids`, `moved_reference_point_ids`, `reference_reasons`; new `GET external-references`, `.../reattach`, `.../confirm` routes). The four

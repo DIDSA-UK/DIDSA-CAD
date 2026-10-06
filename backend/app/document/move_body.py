@@ -39,6 +39,7 @@ from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCC.Core.gp import gp_Trsf, gp_Vec
 from OCC.Core.TopoDS import TopoDS_Shape
 
+from app.document.reference_history import note_operation
 from app.document.extrude import compute_part_bodies
 from app.document.models import MoveBodyFeature, Part
 from app.document.pattern import _axis_from_ref
@@ -88,6 +89,7 @@ def resolve_move_body_from_bodies(
         if not rotated.IsDone():
             raise _move_body_failed(feature.body_id)
         shape = rotated.Shape()
+        note_operation(rotated)
 
     dx, dy, dz = feature.delta
     if (dx, dy, dz) != (0.0, 0.0, 0.0):
@@ -97,6 +99,7 @@ def resolve_move_body_from_bodies(
         if not translated.IsDone():
             raise _move_body_failed(feature.body_id)
         shape = translated.Shape()
+        note_operation(translated)
 
     return feature.body_id, shape
 

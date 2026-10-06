@@ -40,6 +40,7 @@ was independently confirmed to already return a genuine Solid, so this
 check is a no-op there.
 """
 
+from app.document.reference_history import note_operation
 from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeFace,
     BRepBuilderAPI_MakeSolid,
@@ -318,6 +319,7 @@ def thicken_capped_solid_to_solid(
         raise ValueError("thickened capped solid is invalid")
     if result.ShapeType() != TopAbs_SOLID:
         raise ValueError("thickened capped solid did not come back as a genuine solid")
+    note_operation(thicken)  # a Shell hollows its Body in place: faces survive or are Modified, the inner offset faces are new
 
     volume_props = GProp_GProps()
     brepgprop.VolumeProperties(result, volume_props)

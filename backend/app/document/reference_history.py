@@ -46,23 +46,36 @@ logger = logging.getLogger(__name__)
 
 
 class HistoryOp:
-    """One recorded OCCT operation, seen through the two calls the mapping needs. `source` is a `BRepBuilderAPI_MakeShape` / `BRepAlgoAPI_*` maker (both expose
-    `Modified` / `Generated`) or a `BRepTools_History` (same names)."""
+    """One recorded OCCT operation, seen through the one call the mapping needs. `source` is a `BRepBuilderAPI_MakeShape` / `BRepAlgoAPI_*` maker (both expose
+    `Modified`), a `BRepTools_History`, or any object with `Modified(shape)` (see `ReShapeHistory`).
 
-    def __init__(self, source: Any) -> None:
+    `authoritative` is False for an operation that only ever *merges or simplifies* (the unify pass that runs after every step): its silence about a sub-shape
+    does not mean the sub-shape was consumed, so a step with no authoritative operation cannot say what became of anything (see `StepRecord.covered`)."""
+
+    def __init__(self, source: Any, authoritative: bool = True) -> None:
         self._source = source
+        self.authoritative = authoritative
 
     def successors(self, shape: TopoDS_Shape) -> list[TopoDS_Shape]:
-        """The sub-shapes of `shape`'s own kind (vertex / edge / face) that `shape` was reported to have become (Modified then Generated; a Fillet "generates" a
-        face from an edge, which is not what became of the edge); empty when the operation says nothing about it."""
-        out: list[TopoDS_Shape] = []
+        """The sub-shapes of `shape`'s own kind (vertex / edge / face) that `shape` was reported to have been MODIFIED into; empty when the operation says nothing
+        about it (it survived untouched, or it is gone). `Generated()` is deliberately not read: it lists NEW sub-shapes derived from `shape` (a Fillet's face
+        from the rounded edge, a Shell's inner offset face from the outer face), which are not what `shape` became."""
         kind = shape.ShapeType()
-        for call in (self._source.Modified, self._source.Generated):
-            try:
-                out.extend(s for s in call(shape) if s.ShapeType() == kind)
-            except Exception:  # an operation may refuse a shape that was never one of its arguments
-                continue
-        return out
+        try:
+            return [s for s in self._source.Modified(shape) if s.ShapeType() == kind]
+        except Exception:  # an operation may refuse a shape that was never one of its arguments
+            return []
+
+
+class ReShapeHistory:
+    """Adapts a `ShapeBuild_ReShape` context (what `ShapeUpgrade_ShapeConvertToBezier` and friends replace sub-shapes through) to the `Modified(shape)` call."""
+
+    def __init__(self, context: Any) -> None:
+        self._context = context
+
+    def Modified(self, shape: TopoDS_Shape) -> list[TopoDS_Shape]:  # noqa: N802 - mirrors OCCT's name
+        replaced = self._context.Value(shape)
+        return [] if replaced is None or replaced.IsNull() or replaced.IsSame(shape) else [replaced]
 
 
 class _Recorder:
@@ -85,11 +98,11 @@ def recording() -> bool:
     return _active.get() is not None
 
 
-def note_operation(source: Any) -> None:
+def note_operation(source: Any, authoritative: bool = True) -> None:
     """Called by an operation that has OCCT history to offer, right after it succeeded. A no-op unless a trace is being recorded."""
     recorder = _active.get()
     if recorder is not None:
-        recorder.pending.append(HistoryOp(source))
+        recorder.pending.append(HistoryOp(source, authoritative))
 
 
 def begin_step(feature_id: str | None = None, bodies: dict[str, TopoDS_Shape] | None = None) -> None:
@@ -106,10 +119,17 @@ def end_step(feature_id: str, before: dict[str, TopoDS_Shape], bodies: dict[str,
     if recorder is None:
         return
     ops = recorder.drain()
+    # A Body that did not exist before the step but came out of an operation that works on exactly one pre-existing Body this step changed or removed (a Split's
+    # second piece, the second half of a Cut that severs a Body) is derived from it: its history starts from that Body, not from nothing.
+    changed_sources = [shape for body_id, shape in before.items() if bodies.get(body_id) is not shape]
+    derived_from = changed_sources[0] if len(changed_sources) == 1 and any(op.authoritative for op in ops) else None
     for body_id, shape in bodies.items():
         if before.get(body_id) is shape:
             continue
-        recorder.steps.append(StepRecord(feature_id, body_id, before.get(body_id), shape, ops))
+        source = before.get(body_id)
+        if source is None:
+            source = derived_from
+        recorder.steps.append(StepRecord(feature_id, body_id, source, shape, ops))
 
 
 @dataclass
@@ -119,6 +139,13 @@ class StepRecord:
     before: TopoDS_Shape | None
     after: TopoDS_Shape
     ops: tuple[HistoryOp, ...]
+
+    @property
+    def covered(self) -> bool:
+        """Whether the step ran at least one operation that reports history authoritatively. An uncovered step (Move Face, Pattern internals, ... anything
+        without a hook) can still carry a sub-shape across when it survives by identity or sits at exactly the same place, but when it finds nothing it must
+        say "unknown", never "consumed"."""
+        return any(op.authoritative for op in self.ops)
 
 
 @dataclass(frozen=True)
@@ -166,7 +193,8 @@ class HistoryTrace:
         before_map, after_map = self._map(step.before, kind), self._map(step.after, kind)
         current = [before_map.FindKey(old_index + 1)]
         for op in step.ops:
-            current = [t for s in current for t in (op.successors(s) or [s])]
+            # untouched (kept as it is) and/or modified into something: both stay candidates; whatever is not in the result is dropped at the end
+            current = [t for s in current for t in (s, *op.successors(s))]
         found = sorted({after_map.FindIndex(s) - 1 for s in current if after_map.FindIndex(s) > 0})
         if not found:
             found = self._by_position(step, old_index, kind)
@@ -232,6 +260,7 @@ class HistoryTrace:
         queue: list[tuple[TopoDS_Shape, list[int]]] = [(origin_step.after, [located.index])]
         finals: list[tuple[TopoDS_Shape, list[int]]] = []
         consumed_by: str | None = None
+        unknown = False
         while queue:
             shape, indices = queue.pop()
             steps = [] if shape is target else self._by_before.get(id(shape), [])
@@ -242,12 +271,14 @@ class HistoryTrace:
                 survivors = sorted({j for i in indices for j in self.forward(step, i, kind)})
                 if survivors:
                     queue.append((step.after, survivors))
+                elif not step.covered:
+                    unknown = True  # nothing found, but this step reports no history of its own: that is not evidence of consumption
                 elif consumed_by is None:
                     consumed_by = step.feature_id
         for shape, indices in finals:
             if shape is target:
                 return HistoryOutcome("found", tuple(indices))
-        if not finals and consumed_by is not None:
+        if not finals and consumed_by is not None and not unknown:
             return HistoryOutcome("consumed", consumed_by=consumed_by)
         return HistoryOutcome("unavailable")
 
