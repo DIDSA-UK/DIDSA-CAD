@@ -1394,6 +1394,7 @@ class _SketchScreenState extends State<SketchScreen> {
         // see PartViewport.preferEntityPickIncludesFace's own doc comment.
         preferEntityPickIncludesFace: _controller.mode == SketchMode.convert,
         preferEntityPickIncludesEdge: _preferEntityPickIncludesEdge,
+        preferEntityPickIncludesVertex: _preferEntityPickIncludesVertex,
         onSketchEntityTap: _handleEmbeddedSketchEntityTap,
         hasEntityNearSketchTap: (x, y) => _controller.hasEntityNear(x, y, SketchController.snapRadius),
         // P19 on-device feedback: same _orbitCursorActive gating as
@@ -1452,8 +1453,12 @@ class _SketchScreenState extends State<SketchScreen> {
       _controller.mode == SketchMode.select ||
       _controller.mode == SketchMode.draw;
 
-  /// Whether the 3D pick may land on a Body edge: everything but draw tools (corners only) and the re-attach pick (corners only).
-  bool get _preferEntityPickIncludesEdge => !_controller.isReattaching && _controller.mode != SketchMode.draw;
+  /// Whether the 3D pick may land on a Body edge: everything but draw tools (corners only); while re-attaching, only for a circle's centre (a circular edge).
+  bool get _preferEntityPickIncludesEdge =>
+      _controller.isReattaching ? _controller.reattachWantsEdge : _controller.mode != SketchMode.draw;
+
+  /// Whether the 3D pick may land on a Body vertex: always, except while re-attaching a circle's centre (that pick is an edge; a vertex next to it must not steal it).
+  bool get _preferEntityPickIncludesVertex => !(_controller.isReattaching && _controller.reattachWantsEdge);
 
   /// P10: [PartViewport.onSketchEntityTap]'s handler - materializes a real
   /// Body vertex/edge as either a dimensionable Point/Line ([SketchMode.
@@ -1479,7 +1484,8 @@ class _SketchScreenState extends State<SketchScreen> {
     final offset = _controller.mode == SketchMode.offset;
     // Reference-identity overhaul: re-attaching a lost reference - the pick IS the replacement corner (a tap on anything else does nothing).
     if (_controller.isReattaching) {
-      if (entity.kind == SelectionEntityKind.vertex) {
+      final wanted = _controller.reattachWantsEdge ? SelectionEntityKind.edge : SelectionEntityKind.vertex;
+      if (entity.kind == wanted) {
         unawaited(_controller.reattachTo(entity.bodyId, entity.id));
       }
       return;
@@ -1581,7 +1587,7 @@ class _SketchScreenState extends State<SketchScreen> {
   SelectionFilterState get _embeddedCursorModeFilter {
     final targetsBodyGeometry = _preferEntityPickOnTap;
     return SelectionFilterState(
-      vertex: targetsBodyGeometry,
+      vertex: targetsBodyGeometry && _preferEntityPickIncludesVertex,
       edge: targetsBodyGeometry && _preferEntityPickIncludesEdge,
       face: _controller.mode == SketchMode.convert,
       body: false,
@@ -2691,8 +2697,12 @@ class _SketchScreenState extends State<SketchScreen> {
         if (color != null) colors[line.id] = color;
       }
       for (final arc in _controller.arcs.values) {
-        final color = flagColor([arc.startPointId, arc.endPointId]);
+        final color = flagColor([arc.centerPointId, arc.startPointId, arc.endPointId]);
         if (color != null) colors[arc.id] = color;
+      }
+      for (final circle in _controller.circles.values) {
+        final color = flagColor([circle.centerPointId]);
+        if (color != null) colors[circle.id] = color;
       }
     }
     final draggingPointId = _controller.draggingPointId;
@@ -3131,7 +3141,8 @@ class _ReferenceHealthBanner extends StatelessWidget {
             color: Colors.amber.shade100,
             textColor: Colors.amber.shade900,
             icon: Icons.ads_click,
-            message: '${controller.describeReferenceProblem(pointId)} Tap the replacement corner on the body.',
+            message: '${controller.describeReferenceProblem(pointId)} '
+                '${controller.reattachWantsEdge ? 'Tap the replacement circular edge on the body.' : 'Tap the replacement corner on the body.'}',
             actionLabel: 'Cancel',
             onAction: controller.cancelReattach,
           );

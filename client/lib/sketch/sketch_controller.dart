@@ -12851,6 +12851,7 @@ class SketchController extends ChangeNotifier {
       'ambiguous' => 'Several identical corners now match - pick the right one.',
       'body_missing' => 'The body it was attached to is gone.',
       'sketch_plane_unresolved' => "This sketch's plane could not be resolved.",
+      'not_coplanar' => 'The circular edge it was attached to no longer lies in this sketch\'s plane.',
       _ => 'The corner it was attached to can no longer be found.',
     };
   }
@@ -12900,7 +12901,12 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Completes [beginReattach]: points the picked Point at the Body vertex ([bodyId], [vertexIndex]). The Point keeps its id, so every line, dimension
+  /// Whether the replacement being picked is a circular EDGE (the flagged reference is a circle's centre) rather than a vertex - tells the canvas / Orbit View
+  /// which Body geometry a tap may pick while re-attaching.
+  bool get reattachWantsEdge => _reattachPointId != null && (_referenceStatuses[_reattachPointId]?.isCircleCentre ?? false);
+
+  /// Completes [beginReattach]: points the picked Point at the Body vertex ([bodyId], [vertexIndex]) - or, when the flagged reference is a circle's centre
+  /// ([reattachWantsEdge]), at the centre of the circular Body edge with that index. The Point keeps its id, so every line, dimension
   /// and constraint built on it stays; only what it follows changes. Not undoable (the previous vertex is gone or untrusted).
   Future<void> reattachTo(String bodyId, int vertexIndex) async {
     final pointId = _reattachPointId;
@@ -12909,11 +12915,13 @@ class SketchController extends ChangeNotifier {
     if (pointId == null || partId == null || sketchFeatureId == null || _busy || _sketchId == null) return;
     var done = false;
     await _runGuarded(() async {
-      final point = await _api.reattachExternalReference(partId, sketchFeatureId, pointId, bodyId, vertexIndex);
+      final point = _referenceStatuses[pointId]?.isCircleCentre ?? false
+          ? await _api.reattachExternalReference(partId, sketchFeatureId, pointId, bodyId, edgeIndex: vertexIndex)
+          : await _api.reattachExternalReference(partId, sketchFeatureId, pointId, bodyId, vertexIndex: vertexIndex);
       points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       _lockedPointIds.add(point.id);
       _externalReferencePointIds.removeWhere((_, id) => id == pointId);
-      _externalReferencePointIds['$bodyId:$vertexIndex'] = pointId;
+      if (!(_referenceStatuses[pointId]?.isCircleCentre ?? false)) _externalReferencePointIds['$bodyId:$vertexIndex'] = pointId;
       _externalReferenceEdgeSelections.clear(); // an edge's cached line may now join different corners
       await _solveAndTrackDof();
       done = true;

@@ -40,7 +40,7 @@ from app.sketch.intersections import (
     line_vs_line,
     line_vs_segment,
 )
-from app.sketch.reference_signature import LineageOrigin, ReferenceDecision, VertexSignature
+from app.sketch.reference_signature import LineageOrigin, ReferenceDecision, ShapeSignature
 
 
 class Plane(str, Enum):
@@ -91,8 +91,12 @@ class ExternalVertexReference:
     # confirmed healthy) and, when OCCT history could say, where the vertex originally came from. Both are `compare=False` so the
     # re-pick-idempotent `add_or_reuse_external_vertex_reference` still matches on (body_id, vertex_index) alone, and both default to None so a
     # reference made before they existed (or in a bare test) behaves exactly as it always did until its first refresh adopts a signature.
-    signature: VertexSignature | None = field(default=None, compare=False)
+    signature: ShapeSignature | None = field(default=None, compare=False)
     lineage: LineageOrigin | None = field(default=None, compare=False)
+    # What `vertex_index` indexes: "vertex" (the original meaning: a Body vertex the Point sits on) or "circle_centre" (the index of a CIRCULAR Body edge; the
+    # Point sits at that circle's centre, and the Circle / Arc built on it follows its position and radius - see `refresh_external_references`). Part of the
+    # reference's identity (compare=True): the same index means different things for the two kinds.
+    kind: str = "vertex"
 
 
 @dataclass

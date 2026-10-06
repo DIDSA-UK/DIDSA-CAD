@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from app.sketch.models import Plane, SketchEntityRef
+from app.sketch.reference_signature import ShapeSignature
 
 
 class Produces(str, Enum):
@@ -285,6 +286,11 @@ class SubShapeRef:
     body_id: str
     shape_type: SubShapeType
     index: int
+    # Reference-identity overhaul (docs/reference-identity-design.md): the geometric signature of the sub-shape this reference named when it was made (or last
+    # confirmed healthy). `compare=False` / `repr=False` so equality, hashing and the body-cache fingerprint of a Feature are unchanged by it; None for a
+    # reference made before it existed (or in a bare test), which then behaves exactly as before until its first refresh adopts one. Set by
+    # `app.document.subshape_identity.refresh_feature_subshape_refs`, honoured by `app.document.extrude.resolve_subshape_from_bodies`.
+    signature: ShapeSignature | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

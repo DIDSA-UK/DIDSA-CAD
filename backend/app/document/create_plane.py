@@ -74,16 +74,19 @@ from app.document.plane_geometry import (
     sketch_basis_for_plane,
     world_point_to_basis,
 )
-from app.document.reference_signature import BodyVertexMeasurer
-from app.sketch.models import ExternalVertexReference, Point, Sketch
+from app.document.reference_signature import BodyVertexMeasurer, measurer_for
+from app.sketch.constraints import DistanceConstraint
+from app.sketch.models import Arc, Circle, ExternalVertexReference, Point, Sketch
 from app.sketch.reference_signature import (
     SEARCH_TOLERANCE_REL,
     LineageOrigin,
     ReferenceDecision,
     ReferenceStatus,
+    NORMAL_TOLERANCE_DEGREES,
+    ShapeSignature,
     decide_reference,
-    distance,
     fingerprint_matches,
+    shape_distance,
 )
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
@@ -508,18 +511,41 @@ def make_external_vertex_reference(
     return ExternalVertexReference(body_id=body_id, vertex_index=vertex_index, signature=signature, lineage=lineage)
 
 
+def make_circle_centre_reference(
+    bodies: dict[str, TopoDS_Shape], body_id: str, edge_index: int
+) -> ExternalVertexReference:
+    """A new `kind="circle_centre"` reference: the centre of the CIRCULAR Body edge `edge_index` (a hole's or boss's rim), signed with the edge's own signature
+    (circle, axis, adjacent faces, plus the centre and radius it is re-derived from). Fails closed with `missing_reference` if the edge does not exist and with
+    `not_a_circular_edge` (422) if it is not a circle - an arc's or full circle's centre is only defined for a circular edge."""
+    resolve_subshape_from_bodies(bodies, SubShapeRef(body_id=body_id, shape_type=SubShapeType.EDGE, index=edge_index))
+    signature = measurer_for(bodies[body_id], "edge").signature(edge_index)
+    if signature.curve_kind != "circle":
+        raise HTTPException(status_code=422, detail={"type": "not_a_circular_edge", "body_id": body_id, "index": edge_index})
+    return ExternalVertexReference(body_id=body_id, vertex_index=edge_index, signature=signature, kind="circle_centre")
+
+
+def capture_external_reference(
+    bodies: dict[str, TopoDS_Shape], ref: ExternalVertexReference, lineage: LineageOrigin | None = None
+) -> ExternalVertexReference:
+    """`ref` re-captured against `bodies` as it names its sub-shape now (confirm / re-attach): a fresh signature, whatever the kind."""
+    if ref.kind == "circle_centre":
+        return make_circle_centre_reference(bodies, ref.body_id, ref.vertex_index)
+    return make_external_vertex_reference(bodies, ref.body_id, ref.vertex_index, lineage)
+
+
+def _measurer_kind(ref: ExternalVertexReference) -> str:
+    return "edge" if ref.kind == "circle_centre" else "vertex"
+
+
 def _decide_external_reference(
     ref: ExternalVertexReference,
-    measurers: dict[str, BodyVertexMeasurer],
     bodies: dict[str, TopoDS_Shape],
     history: "ReferenceHistory | None",
 ) -> ReferenceDecision:
     body = bodies.get(ref.body_id)
     if body is None:
         return ReferenceDecision(ReferenceStatus.LOST, None, reason="body_missing")
-    measurer = measurers.get(ref.body_id)
-    if measurer is None:
-        measurer = measurers[ref.body_id] = BodyVertexMeasurer(body)
+    measurer = measurer_for(body, _measurer_kind(ref))
     in_range = 0 <= ref.vertex_index < measurer.count
 
     if ref.signature is None:
@@ -528,17 +554,57 @@ def _decide_external_reference(
             return ReferenceDecision(ReferenceStatus.OK, ref.vertex_index, reason="signature_adopted", method="index")
         return ReferenceDecision(ReferenceStatus.LOST, None, reason="no_match")
 
-    # Fast path, measuring only the one vertex the index names: same fingerprint and still where it was (to within the search tolerance).
+    # Fast path, measuring only the one sub-shape the index names: same fingerprint and still where it was (to within the search tolerance).
     if in_range:
         here = measurer.signature(ref.vertex_index)
         tolerance = SEARCH_TOLERANCE_REL * (ref.signature.body_diagonal or measurer.diagonal)
-        if fingerprint_matches(ref.signature, here) and distance(here.position, ref.signature.position) <= tolerance:
+        if fingerprint_matches(ref.signature, here) and shape_distance(ref.signature, here) <= tolerance:
             return ReferenceDecision(ReferenceStatus.OK, ref.vertex_index, method="index")
 
     signature_decision = decide_reference(ref.signature, ref.vertex_index, measurer.all())
-    if history is not None and ref.lineage is not None:
+    if history is not None and ref.lineage is not None and ref.kind == "vertex":
         return history.refine(ref, signature_decision, bodies, measurer)
     return signature_decision
+
+
+def _reference_world_position(ref: ExternalVertexReference, signature: ShapeSignature) -> tuple[float, float, float]:
+    return signature.centre if ref.kind == "circle_centre" else signature.position
+
+
+def _follow_circle_centre(
+    sketch: Sketch, centre_point_id: str, old_xy: tuple[float, float], new_xy: tuple[float, float], new_radius: float
+) -> bool:
+    """The Circle built on a re-found circle centre follows it: every Point that defines it (radius Point, the four cardinal Points) is moved with the centre
+    and scaled about it to the circle's new radius, so a hole that moved or changed diameter upstream moves and resizes here too. An Arc only has its centre
+    to move (its start / end Points are vertex references of their own). Returns whether anything moved or resized (the centre Point itself is the caller's)."""
+    changed = math.dist(old_xy, new_xy) > 1e-12
+    for entity in sketch.entities.values():
+        if isinstance(entity, Circle) and entity.center_point_id == centre_point_id:
+            radius_point = sketch.points[entity.radius_point_id]
+            old_radius = math.dist(old_xy, (radius_point.x, radius_point.y))
+            scale = new_radius / old_radius if old_radius > 1e-12 else 1.0
+            if abs(scale - 1.0) > 1e-12:
+                changed = True
+            for point_id in {entity.radius_point_id, *entity.cardinal_point_ids}:
+                point = sketch.points[point_id]
+                point.x = new_xy[0] + (point.x - old_xy[0]) * scale
+                point.y = new_xy[1] + (point.y - old_xy[1]) * scale
+    return changed
+
+
+def _sync_provisional_radius_dimensions(sketch: Sketch, centre_point_ids: set[str]) -> None:
+    """The provisional radius DistanceConstraint a converted Circle / Arc carries stores a length; after its centre moved it must say the geometry's own."""
+    for entity in sketch.entities.values():
+        if isinstance(entity, Circle) and entity.center_point_id in centre_point_ids:
+            far_point_id = entity.radius_point_id
+        elif isinstance(entity, Arc) and entity.center_point_id in centre_point_ids:
+            far_point_id = entity.start_point_id
+        else:
+            continue
+        constraint = sketch.constraints.get(entity.radius_constraint_id)
+        if isinstance(constraint, DistanceConstraint) and getattr(constraint, "provisional", False):
+            centre, far = sketch.points[entity.center_point_id], sketch.points[far_point_id]
+            constraint.distance = math.dist((centre.x, centre.y), (far.x, far.y))
 
 
 def refresh_external_references(
@@ -551,18 +617,21 @@ def refresh_external_references(
     """Sketcher-roadmap Phase 4.3 v1, rebuilt by the reference-identity overhaul (docs/reference-identity-design.md): re-validates every one of
     `sketch`'s `external_references` against `bodies`' *current* topology and returns the ids of the Points whose reference is lost.
 
-    A reference is no longer just "the index still resolves". Each one carries the signature of the vertex it was made against, and the stored index is
-    only trusted while the vertex it now names still has that fingerprint (`app.sketch.reference_signature.decide_reference`). When it does not, the
-    vertex is re-found by signature (and by OCCT history, `history`), unique match only; the new index is persisted, so downstream resolution by index
-    keeps working. A reference that cannot be found unambiguously is *never rebound*: it is left at its last-known position (so the rest of the Sketch
+    A reference is no longer just "the index still resolves". Each one carries the signature of the sub-shape it was made against, and the stored index is
+    only trusted while the sub-shape it now names still has that fingerprint (`app.sketch.reference_signature.decide_reference`). When it does not, it
+    is re-found by signature (and, for a vertex, by OCCT history, `history`), unique match only; the new index is persisted, so downstream resolution by
+    index keeps working. A reference that cannot be found unambiguously is *never rebound*: it is left at its last-known position (so the rest of the Sketch
     does not visually collapse), its Point id is returned, and the reason is on `sketch.external_reference_decisions` for the response layer.
-    Each healthy outcome also refreshes the stored signature (the vertex legitimately moves with parametric edits); a `potentially_moved` binding keeps
+    Each healthy outcome also refreshes the stored signature (the sub-shape legitimately moves with parametric edits); a `potentially_moved` binding keeps
     its old signature until the user confirms it.
+
+    Two kinds of reference: `"vertex"` (the Point sits on a Body vertex) and `"circle_centre"` (the Point sits at the centre of a circular Body edge; the Circle /
+    Arc built on it follows its position and radius, and the reference is lost - `not_coplanar` - if the edge no longer lies in the Sketch's plane).
 
     Every decision of this refresh (ok / followed / potentially_moved / lost, and why) is left on `sketch.external_reference_decisions`."""
     lost_point_ids: list[str] = []
     decisions: dict[str, ReferenceDecision] = {}
-    measurers: dict[str, BodyVertexMeasurer] = {}
+    moved_centres: set[str] = set()
     try:
         basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids) if sketch.external_references else None
     except HTTPException:
@@ -571,22 +640,31 @@ def refresh_external_references(
         if basis is None:
             decision = ReferenceDecision(ReferenceStatus.LOST, None, reason="sketch_plane_unresolved")
         else:
-            decision = _decide_external_reference(ref, measurers, bodies, history)
+            decision = _decide_external_reference(ref, bodies, history)
+        if decision.index is not None and decision.status != ReferenceStatus.LOST and ref.kind == "circle_centre":
+            here = measurer_for(bodies[ref.body_id], "edge").signature(decision.index)
+            axis_alignment = abs(sum(a * b for a, b in zip(here.direction, basis.normal)))
+            if axis_alignment < math.cos(math.radians(NORMAL_TOLERANCE_DEGREES)):
+                decision = ReferenceDecision(ReferenceStatus.LOST, None, reason="not_coplanar")
         decisions[point_id] = decision
         if decision.status == ReferenceStatus.LOST or decision.index is None:
             lost_point_ids.append(point_id)
             continue
-        measurer = measurers[ref.body_id]
-        here = measurer.signature(decision.index)
+        here = measurer_for(bodies[ref.body_id], _measurer_kind(ref)).signature(decision.index)
         refreshed = replace(ref, vertex_index=decision.index)
         if decision.status != ReferenceStatus.POTENTIALLY_MOVED:
             refreshed = replace(refreshed, signature=here)
         if decision.lineage is not None:
             refreshed = replace(refreshed, lineage=decision.lineage)
         sketch.external_references[point_id] = refreshed
-        x, y = world_point_to_basis(basis, here.position)
-        sketch.points[point_id].x = x
-        sketch.points[point_id].y = y
+        x, y = world_point_to_basis(basis, _reference_world_position(ref, here))
+        point = sketch.points[point_id]
+        if ref.kind == "circle_centre" and _follow_circle_centre(sketch, point_id, (point.x, point.y), (x, y), here.radius):
+            moved_centres.add(point_id)
+        point.x = x
+        point.y = y
+    if moved_centres:
+        _sync_provisional_radius_dimensions(sketch, moved_centres)
     sketch.external_reference_decisions = decisions
     return lost_point_ids
 

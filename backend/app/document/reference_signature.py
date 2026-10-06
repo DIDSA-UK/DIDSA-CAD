@@ -13,14 +13,16 @@ from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.BRepBndLib import brepbndlib
-from OCC.Core.BRepGProp import BRepGProp_Face
+from OCC.Core.BRepGProp import BRepGProp_Face, brepgprop
+from OCC.Core.BRepTools import breptools
+from OCC.Core.GProp import GProp_GProps
 from OCC.Core.gp import gp_Pnt, gp_Vec
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
 from OCC.Core.TopExp import topexp
 from OCC.Core.TopoDS import TopoDS_Shape, topods
 from OCC.Core.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
 
-from app.sketch.reference_signature import VertexSignature
+from app.sketch.reference_signature import EdgeSignature, FaceSignature, ShapeSignature, VertexSignature
 
 _SURFACE_KIND_NAMES = {
     0: "plane",
@@ -173,3 +175,181 @@ def vertex_signatures(shape: TopoDS_Shape) -> list[VertexSignature]:
 def vertex_signature(shape: TopoDS_Shape, index: int) -> VertexSignature:
     """One vertex's signature (callers measuring several vertices of one Body should keep a `BodyVertexMeasurer`)."""
     return BodyVertexMeasurer(shape).signature(index)
+
+
+# --- edges and faces (reference-identity overhaul, SubShapeRef consumers) --------------------------------------------------------------
+
+_CURVE_KIND_NAMES = {0: "line", 1: "circle"}
+
+
+def _unsigned(unit: tuple[float, float, float]) -> tuple[float, float, float]:
+    for component in unit:
+        if abs(component) > 1e-9:
+            return unit if component > 0 else (-unit[0], -unit[1], -unit[2])
+    return unit
+
+
+class BodyEdgeMeasurer:
+    """`BodyVertexMeasurer`'s edge counterpart: signature of edge `index` (0-based, `topexp.MapShapes` order) of one Body, measured on demand and remembered."""
+
+    def __init__(self, shape: TopoDS_Shape) -> None:
+        self._diagonal = body_diagonal(shape)
+        self._edges = TopTools_IndexedMapOfShape()
+        topexp.MapShapes(shape, TopAbs_EDGE, self._edges)
+        self._faces_of = TopTools_IndexedDataMapOfShapeListOfShape()
+        topexp.MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, self._faces_of)
+        self._cache: dict[int, EdgeSignature] = {}
+
+    @property
+    def count(self) -> int:
+        return self._edges.Size()
+
+    @property
+    def diagonal(self) -> float:
+        return self._diagonal
+
+    def signature(self, index: int) -> EdgeSignature:
+        cached = self._cache.get(index)
+        if cached is not None:
+            return cached
+        edge = topods.Edge(self._edges.FindKey(index + 1))
+        curve = BRepAdaptor_Curve(edge)
+        first, last = curve.FirstParameter(), curve.LastParameter()
+        middle = (first + last) / 2.0
+        point, tangent = gp_Pnt(), gp_Vec()
+        curve.D1(middle, point, tangent)
+        kind = _CURVE_KIND_NAMES.get(int(curve.GetType()), "other")
+        direction = (0.0, 0.0, 0.0)
+        radius, centre = 0.0, (0.0, 0.0, 0.0)
+        if kind == "line":
+            unit = _unit(tangent)
+            direction = _unsigned(unit) if unit is not None else direction
+        elif kind == "circle":
+            circle = curve.Circle()
+            axis = circle.Axis().Direction()
+            direction = _unsigned((axis.X(), axis.Y(), axis.Z()))
+            radius = circle.Radius()
+            location = circle.Location()
+            centre = (location.X(), location.Y(), location.Z())
+        length = 0.0
+        try:
+            props = GProp_GProps()
+            brepgprop.LinearProperties(edge, props)
+            length = props.Mass()
+        except Exception:
+            pass
+
+        normals: list[tuple[tuple[float, float, float], str]] = []
+        seen = TopTools_IndexedMapOfShape()
+        for face in self._faces_of.FindFromIndex(index + 1):
+            if seen.Contains(face):
+                continue
+            seen.Add(face)
+            face = topods.Face(face)
+            try:
+                pcurve, p_first, p_last = BRep_Tool.CurveOnSurface(edge, face)
+                uv = pcurve.Value(p_first + (p_last - p_first) * ((middle - first) / (last - first) if last > first else 0.5))
+                surface_point, normal = gp_Pnt(), gp_Vec()
+                BRepGProp_Face(face).Normal(uv.X(), uv.Y(), surface_point, normal)
+                unit = _unit(normal)
+                if unit is not None:
+                    kind_name = _SURFACE_KIND_NAMES.get(int(BRepAdaptor_Surface(face, True).GetType()), "other")
+                    normals.append((unit, kind_name))
+            except Exception:
+                continue
+        normals.sort(key=lambda item: (item[1], _round_key(item[0])))
+        measured = EdgeSignature(
+            position=(point.X(), point.Y(), point.Z()),
+            curve_kind=kind,
+            direction=direction,
+            length=length,
+            radius=radius,
+            centre=centre,
+            face_normals=tuple(n for n, _ in normals),
+            face_kinds=tuple(k for _, k in normals),
+            body_diagonal=self._diagonal,
+        )
+        self._cache[index] = measured
+        return measured
+
+    def all(self) -> list[EdgeSignature]:
+        return [self.signature(i) for i in range(self.count)]
+
+
+class BodyFaceMeasurer:
+    """`BodyVertexMeasurer`'s face counterpart (signature of face `index`, 0-based, `topexp.MapShapes` order)."""
+
+    def __init__(self, shape: TopoDS_Shape) -> None:
+        self._diagonal = body_diagonal(shape)
+        self._faces = TopTools_IndexedMapOfShape()
+        topexp.MapShapes(shape, TopAbs_FACE, self._faces)
+        self._cache: dict[int, FaceSignature] = {}
+
+    @property
+    def count(self) -> int:
+        return self._faces.Size()
+
+    @property
+    def diagonal(self) -> float:
+        return self._diagonal
+
+    def signature(self, index: int) -> FaceSignature:
+        cached = self._cache.get(index)
+        if cached is not None:
+            return cached
+        face = topods.Face(self._faces.FindKey(index + 1))
+        props = GProp_GProps()
+        brepgprop.SurfaceProperties(face, props)
+        centre = props.CentreOfMass()
+        surface = BRepAdaptor_Surface(face, True)
+        kind = _SURFACE_KIND_NAMES.get(int(surface.GetType()), "other")
+        direction = (0.0, 0.0, 0.0)
+        try:
+            if kind in ("cylinder", "cone", "sphere", "torus"):
+                axis = {
+                    "cylinder": lambda: surface.Cylinder().Axis(),
+                    "cone": lambda: surface.Cone().Axis(),
+                    "sphere": lambda: surface.Sphere().Position().Axis(),
+                    "torus": lambda: surface.Torus().Axis(),
+                }[kind]().Direction()
+                direction = _unsigned((axis.X(), axis.Y(), axis.Z()))
+            else:
+                u_min, u_max, v_min, v_max = breptools.UVBounds(face)
+                point, normal = gp_Pnt(), gp_Vec()
+                BRepGProp_Face(face).Normal((u_min + u_max) / 2.0, (v_min + v_max) / 2.0, point, normal)
+                unit = _unit(normal)
+                if unit is not None:
+                    direction = unit if kind == "plane" else _unsigned(unit)
+        except Exception:
+            pass
+        measured = FaceSignature(
+            position=(centre.X(), centre.Y(), centre.Z()),
+            surface_kind=kind,
+            direction=direction,
+            area=props.Mass(),
+            body_diagonal=self._diagonal,
+        )
+        self._cache[index] = measured
+        return measured
+
+    def all(self) -> list[FaceSignature]:
+        return [self.signature(i) for i in range(self.count)]
+
+
+_MEASURER_CACHE: dict[tuple[int, str], tuple[TopoDS_Shape, object]] = {}
+_MEASURER_CACHE_SIZE = 16
+
+
+def measurer_for(shape: TopoDS_Shape, kind: str):
+    """The (cached per Body shape object) measurer for `kind` ("vertex" / "edge" / "face"). A replay builds each Body once and may resolve many references
+    against it, so the ancestor maps are built once per Body per replay, not once per reference. The shape is kept alive by the cache entry, so `id()` stays
+    unique for as long as the entry exists."""
+    key = (id(shape), kind)
+    hit = _MEASURER_CACHE.get(key)
+    if hit is not None:
+        return hit[1]
+    measurer = {"vertex": BodyVertexMeasurer, "edge": BodyEdgeMeasurer, "face": BodyFaceMeasurer}[kind](shape)
+    while len(_MEASURER_CACHE) >= _MEASURER_CACHE_SIZE:
+        _MEASURER_CACHE.pop(next(iter(_MEASURER_CACHE)))
+    _MEASURER_CACHE[key] = (shape, measurer)
+    return measurer

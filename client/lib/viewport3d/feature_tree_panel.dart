@@ -1026,7 +1026,11 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         subtitle: Text(
           feature.hasLostReference
               ? (!isSketch
-                  ? 'Lost reference'
+                  ? (feature.lostReferences.isEmpty
+                      ? 'Lost reference'
+                      : feature.lostReferences.length > 1
+                          ? '${feature.lostReferences.length} lost references - open to re-select'
+                          : 'Lost reference - open to re-select')
                   : feature.lostReferencePointIds.length > 1
                       ? '${feature.lostReferencePointIds.length} lost references - open to re-attach'
                       : 'Lost reference - open to re-attach')

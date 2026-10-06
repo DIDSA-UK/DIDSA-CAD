@@ -3693,3 +3693,23 @@ lines): draw snaps to the pinned corner, select picks it; Dimension mode uses th
 **Not verified.** Nothing was seen on a device: the Orbit View tap routing (Select / draw tools aimed at body corners and edges, hover highlight), the flat canvas ring painting and the banner's look are covered by analyze and controller / widget tests only. Not done: the same signature treatment for the other `SubShapeRef` consumers (listed in the design doc), a "nothing is offered between two
 pinned things" check beyond what the solver already does for locked points, edge re-attach as a single gesture (an edge's two endpoints are re-attached one at a time), history hooks for Shell / Mirror / Pattern / Move Face (they fall back to position-at-the-step, then signature), the centre Point of a converted Arc / Circle (still non-associative).
 
+## 2026-10-06 - Reference identity, follow-up: every SubShapeRef consumer, and circle centres
+
+Closes the two user-visible gaps the first round listed (design: `docs/reference-identity-design.md`, sections "Edges, and circle centres" and "SubShapeRef consumers").
+
+**Item 1 - fillet, chamfer, Create Plane, Pattern, Mirror (and every other `SubShapeRef`).** `SubShapeRef.signature` (`compare=False`, `repr=False`) holds a vertex / edge / face signature; `resolve_subshape_from_bodies`, the single function every consumer resolves through, now re-finds a signed
+reference or fails closed with `missing_reference` + `reason`. `app/document/subshape_identity.py` stamps (at creation, from the Bodies the Feature saw as input, read from the body-cache checkpoint chain), re-validates and persists, when a Feature's response is built; all 38 Feature responses gained
+`has_lost_reference` / `lost_references` / `moved_references` / `followed_references` / `reference_reasons`. One generic walk over every Feature's dataclass fields covers Fillet, Chamfer (+ face options), Create Plane, Pattern, Mirror, Shell, Delete / Move Face, Offset Surface at once. Distances use `shape_distance`
+(line-to-line, centre, offset along the normal, axis) so a neighbouring fillet that shortens an edge or trims a face does not read as the sub-shape moving. Native format carries the signatures. The flat app's tree shows "N lost references - open to re-select" / "Reference may have moved" for any Feature type.
+Measured: with an upstream fillet moved onto each box edge, a downstream fillet's edge and a plane's top face are re-found at their new indices (the plane's face index goes 4 -> 3 / 5), flagged lost when the upstream fillet consumes the edge, never rebound to another edge. Tests: `tests/test_subshape_identity.py` (15).
+
+**Item 4 - circle and arc centres.** `ExternalVertexReference.kind = "circle_centre"` (`vertex_index` = the circular EDGE index, `EdgeSignature`): `convert-entities/edge` makes the centre of a full circle and of an arc this way; the refresh re-finds the edge and moves the whole Circle with it
+(centre, radius Point and the four cardinals translated and scaled to the new radius; an Arc moves its centre), lost with `not_coplanar` if the edge leaves the sketch plane. New status `kind`, `reattach` takes `edge_index` for these (422 `edge_required` / `not_a_circular_edge` / `not_coplanar`). The flat app re-attaches by tapping a circular edge, and
+colours the circle / arc red / orange with its centre. Tests: `tests/test_circle_centre_reference.py` (10): a hole moved and resized upstream moves and resizes the sketch circle (cardinals included, still pinned, survives a solve), an arc follows centre and both ends, a rim reshaped by a fillet is flagged "potentially moved"
+(not silently followed), confirm / re-attach / refusals, same-edge-twice shares one centre, native round trip.
+
+Client: `FeatureDto` parses the new lists, `ExternalReferenceStatusDto.kind`, `SketchController.reattachWantsEdge` (flat canvas and Orbit View both route the right pick), tests in `sketch_controller_test.dart` and `feature_tree_panel_test.dart`.
+
+**Still open.** OCCT history only exists for vertex references (an edge or face consumed upstream reads `no_match`, not "consumed by Fillet X"); a lost Fillet / Plane / Pattern reference has no re-attach route, the user re-selects in the Feature's own panel; the PATCH routes validate indices against the Part including later features (pre-existing);
+legacy files adopt signatures on first view; assembly mate references are not covered. As before: nothing seen on a device.
+

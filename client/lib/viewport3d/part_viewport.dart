@@ -684,6 +684,9 @@ class PartViewport extends StatefulWidget {
   /// but the sketch draw tools, which only snap to body corners - tapping near an edge while drawing must fall through to placing geometry on the plane.
   final bool preferEntityPickIncludesEdge;
 
+  /// The vertex counterpart of [preferEntityPickIncludesEdge] - false only while re-attaching a circle's centre, whose replacement is a circular edge.
+  final bool preferEntityPickIncludesVertex;
+
   /// P10: fired instead of [onSketchPlaneTap] when [preferEntityPick] is
   /// true and the tap resolves to a real Body vertex/edge (via
   /// [hitTestBodies]) rather than landing near an existing Sketch entity
@@ -1100,6 +1103,7 @@ class PartViewport extends StatefulWidget {
     this.preferEntityPick = false,
     this.preferEntityPickIncludesFace = false,
     this.preferEntityPickIncludesEdge = true,
+    this.preferEntityPickIncludesVertex = true,
     this.onSketchEntityTap,
     this.hasEntityNearSketchTap,
     this.sectionPlanes = const [],
@@ -4219,7 +4223,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               viewportSize: _viewportSize,
               bodies: widget.bodies,
               filter: SelectionFilterState(
-                vertex: true,
+                vertex: widget.preferEntityPickIncludesVertex,
                 edge: widget.preferEntityPickIncludesEdge,
                 face: widget.preferEntityPickIncludesFace,
                 body: false,
@@ -5632,7 +5636,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             viewportSize: _viewportSize,
             bodies: widget.bodies,
             filter: SelectionFilterState(
-              vertex: true,
+              vertex: widget.preferEntityPickIncludesVertex,
               edge: widget.preferEntityPickIncludesEdge,
               face: widget.preferEntityPickIncludesFace,
               body: false,

@@ -149,6 +149,12 @@ def clear() -> None:
     _cache.clear()
 
 
+def chain_for(part_id: str) -> "_CheckpointChain | None":
+    """The last checkpoint chain stored for `part_id` (read-only use: `app.document.subshape_identity` reads the per-step `snapshots` to get the Bodies a Feature
+    saw as its input without replaying the Part), or None."""
+    return _cache.get(part_id)
+
+
 def compute_with_cache(
     part_id: str,
     order: list[str],

@@ -91,7 +91,7 @@ class _FakeBackend {
   int convertEdgeRequestCount = 0;
 
   /// Reference-identity overhaul: what `GET .../external-references` reports (the unhealthy references of the adopted sketch), the re-attach /
-  /// confirm calls the fake has seen as `"<point id>:<body id>:<vertex index>"` / `"<point id>"`, and whether `convert-entities/edge` should behave
+  /// confirm calls the fake has seen as `"<point id>:<body id>:<vertex|edge>:<index>"` / `"<point id>"`, and whether `convert-entities/edge` should behave
   /// like the real backend and reuse its endpoint Points (it always makes a new Line, which is what the client's duplicate check is for).
   List<Map<String, dynamic>> referenceStatuses = [];
   final List<String> reattachRequests = [];
@@ -573,9 +573,10 @@ class _FakeBackend {
       final point = points[pointId];
       if (point == null) return _json({'detail': 'point_id is not an external reference of this Sketch'}, 404);
       if (reattachMatch.group(2) == 'reattach') {
-        reattachRequests.add('$pointId:${body['body_id']}:${body['vertex_index']}');
+        final index = (body['vertex_index'] ?? body['edge_index']) as num;
+        reattachRequests.add('$pointId:${body['body_id']}:${body.containsKey('edge_index') ? 'edge' : 'vertex'}:$index');
         point['x'] = (body['body_id'] as String).length.toDouble();
-        point['y'] = (body['vertex_index'] as num).toDouble();
+        point['y'] = index.toDouble();
       } else {
         confirmRequests.add(pointId);
       }
@@ -8318,10 +8319,36 @@ void main() {
       expect(freshController.reattachCandidates, {('body-1', 5), ('body-1', 6)});
       await freshController.reattachTo('body-1', 6);
 
-      expect(freshBackend.reattachRequests, ['p-lost:body-1:6']);
+      expect(freshBackend.reattachRequests, ['p-lost:body-1:vertex:6']);
       expect(freshController.isReattaching, isFalse);
       expect(freshController.hasFlaggedReferences, isFalse);
       expect(freshController.points['p-lost']!.y, 6); // same Point id, moved to the replacement corner
+    });
+
+    test('a circle centre is re-attached by picking a circular EDGE, and says so', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-centre'] = {'id': 'p-centre', 'x': 1.0, 'y': 1.0, 'is_locked': true};
+      final (freshController, freshBackend) = await adoptedController(
+        existing: backendWithPoints,
+        statuses: [{...status('p-centre', 'lost', reason: 'not_coplanar'), 'kind': 'circle_centre'}],
+      );
+      expect(freshController.referenceStatusOf('p-centre')!.isCircleCentre, isTrue);
+      expect(freshController.describeReferenceProblem('p-centre'), contains('no longer lies in this sketch'));
+
+      freshController.beginReattach('p-centre');
+      expect(freshController.reattachWantsEdge, isTrue);
+      await freshController.reattachTo('body-1', 7);
+
+      expect(freshBackend.reattachRequests, ['p-centre:body-1:edge:7']);
+      expect(freshController.hasFlaggedReferences, isFalse);
+    });
+
+    test('a vertex reference does not want an edge', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-lost'] = {'id': 'p-lost', 'x': 1.0, 'y': 1.0, 'is_locked': true};
+      final (freshController, _) = await adoptedController(existing: backendWithPoints, statuses: [status('p-lost', 'lost')]);
+      freshController.beginReattach('p-lost');
+      expect(freshController.reattachWantsEdge, isFalse);
     });
 
     test('cancelReattach leaves the reference flagged and sends nothing', () async {

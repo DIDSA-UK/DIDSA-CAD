@@ -81,29 +81,47 @@ needed Bezier preparation. Adding a hook is one `note_operation(maker)` call aft
 | Route | Notes |
 |---|---|
 | `POST external-references`, `POST external-references/edge`, `POST convert-entities/vertex`, `POST convert-entities/edge` | **Unchanged wire shape.** Now capture signature + lineage, and resolve against the Sketch's causal snapshot (the Part as it stood after the features before the Sketch) rather than the final Part; identical for a last-in-history Sketch. Convert is still re-pick idempotent and a re-pick does no extra work. |
-| `GET external-references` | New. `[{point_id, body_id, vertex_index, status, reason, method, candidates}]` after a fresh refresh. |
-| `POST external-references/{point_id}/reattach` `{body_id, vertex_index}` | New. Points an existing reference Point at a different vertex; the Point id (and every line / dimension on it) is kept; signature + lineage re-captured. 404 if not an external reference of this Sketch, 422 `missing_reference` for a bad vertex. |
+| `GET external-references` | New. `[{point_id, body_id, kind, vertex_index, status, reason, method, candidates}]` after a fresh refresh (`kind` is `vertex`, or `circle_centre` where `vertex_index` is a circular EDGE index). |
+| `POST external-references/{point_id}/reattach` `{body_id, vertex_index}` or `{body_id, edge_index}` | New. Points an existing reference Point at a different vertex - or, for a `circle_centre` reference, a different circular edge (`edge_index`; the Circle / Arc on it moves and resizes with it); the Point id (and every line / dimension on it) is kept; signature (+ lineage for a vertex) re-captured. 404 if not an external reference of this Sketch, 422 `missing_reference` for a bad index, `edge_required` / `vertex_required` for the wrong payload kind, `not_a_circular_edge`, `not_coplanar`. |
 | `POST external-references/{point_id}/confirm` | New. "Yes, that is the right vertex" for a `potentially_moved` reference: re-captures its signature. 409 if lost. |
 | `GET features` | `SketchFeatureResponse` gains `lost_reference_point_ids`, `moved_reference_point_ids`, `followed_reference_point_ids`, `reference_reasons`. `has_lost_reference` unchanged in meaning (and now also true for a reference that is lost because it is ambiguous). |
 
 All additions are optional on the wire (defaults `[]` / `{}`), so the VR design table's `sketch_session.gd: ensure_reference` (`convert-entities/vertex` / `edge`) needs no change.
 
-## Edges
+## Edges, and circle centres (item 4)
 
-A converted / referenced edge is two vertex references and a (construction) line, reused if present; the line follows its endpoints, so edge identity is the identity of both
-endpoint references (and each endpoint's `edge_directions` carry the edge direction). The centre Point of a converted Arc / Circle is still a plain, non-associative Point
-(unchanged, noted in the VR handover): it has no signature and does not follow.
+A converted / referenced straight edge is two vertex references and a (construction) line, reused if present; the line follows its endpoints, so edge identity is the identity of both endpoint references.
 
-## SubShapeRef consumers with the same weakness (listed, not changed)
+The **centre** of a converted circular edge (a hole, a boss, a cylinder's rim, an arc) used to be a plain, non-associative Point: an upstream edit that moved or resized the hole left the sketch circle behind, with no flag. It is now a
+reference of `kind="circle_centre"` (`ExternalVertexReference.kind`; `vertex_index` then indexes the circular EDGE) carrying an `EdgeSignature` (curve kind, axis, adjacent faces; centre and radius ride along, not part of the fingerprint).
+`refresh_external_references` re-finds the edge with the same rules as a vertex, then **moves the Circle with it**: the centre Point goes to the edge's centre and every other defining Point of the Circle (radius Point, the four cardinal Points) is
+translated and scaled about it to the edge's new radius; an Arc only has its centre to move (its ends are vertex references). The provisional radius dimension is re-synced to the geometry. If the edge no longer lies in the Sketch's plane
+(axis not parallel to the plane normal) the reference is **lost**, reason `not_coplanar`. `convert-entities/edge` makes the centre this way for both the full-circle and the arc branch (reused if the same edge is converted again); an
+Arc's `FixedConstraint` is no longer needed (every Point of it is a live reference). No OCCT lineage for circle centres (history is tracked per vertex): the signature search carries it. Re-attach picks a circular EDGE (`edge_index`); the flat app
+lets the user tap one (the banner says so).
 
-The same silent-rebind failure is possible wherever a raw `SubShapeRef` index is stored and resolved after an upstream topology change. Not done here (each needs a signature field on
-`SubShapeRef`, its schema, native-format and several routes; the machinery above is reusable: `BodyVertexMeasurer`, `decide_reference`, `ReferenceHistory`, and face / edge analogues of
-the signature):
+## SubShapeRef consumers (item 1)
 
-* `FilletFeature.edge_refs`, `ChamferFeature.edge_refs` (+ `ChamferEdgeOptions.face_ref`) - highest value: moving an upstream fillet can silently move a downstream one.
-* `CreatePlaneFeature.face_refs` / `edge_ref` / `vertex_ref` / `point_refs` (the 2026-07-31 drift fix handled the causal snapshot, not a mismatch within it).
-* `PatternDirectionRef.edge_ref` / `PatternAxisRef`, `MirrorFeature.mirror_plane` face refs.
-* Shell / Delete Face / Move Face / Draft face selections, Measure and Mate topology refs (mates reference Occurrence faces).
+The same silent-rebind failure existed wherever a raw `SubShapeRef` index was stored and resolved after an upstream topology change. Every `SubShapeRef` held by a Part's Features now has the sketch references' treatment, through ONE
+mechanism (`app/document/subshape_identity.py`), not one per consumer:
+
+* `SubShapeRef.signature` (`compare=False`, `repr=False`: equality, hashing and the body-cache fingerprint are unchanged) holds a `VertexSignature`, `EdgeSignature` or `FaceSignature`. Edge: curve kind, unsigned direction (axis for a circle), adjacent
+  faces' normals / kinds at the midpoint; face: surface kind and the outward normal (planes, signed) or axis. Length, radius, area are not fingerprint. **Distances are measured so that trimming does not read as moving** (`shape_distance`): a
+  straight edge by its distance from the stored LINE (a neighbouring fillet shortens it and shifts its midpoint), a circle by its centre, a plane by its offset along the normal, a cylinder / cone by its distance from the axis.
+* `resolve_subshape_from_bodies` - the one function every consumer resolves through - honours a signature: the stored index is trusted while it still names a sub-shape with that fingerprint nearby, else the unique match is used, else it
+  **fails closed** with the usual `missing_reference` 422, now carrying a `reason` (`no_match` | `ambiguous`). Nothing silently resolves to a look-alike any more, in replay or at create / update.
+* Stamping and refreshing happen when a Feature's response is built (`_feature_response`: create, update and every `GET .../features`). A reference with no signature is stamped from the Bodies the Feature saw as its input
+  (`bodies_before_feature`, read from the body-cache checkpoint chain, no replay) - at creation that is exactly the right moment; a file saved before signatures existed adopts on first view. A signed one is re-validated, the re-found index and a
+  refreshed signature are persisted, and the response says what happened.
+* Every Feature response (`FeatureResponseBase`, all 38) can carry `has_lost_reference`, `lost_references` / `moved_references` / `followed_references` (paths inside the Feature: `edge_refs[0]`, `face_refs[1].face_ref`, `edge_ref`, ...) and
+  `reference_reasons`. A Feature whose reference is lost keeps being skipped during replay as before (Fillet / Chamfer log and skip), but is now **flagged** instead of silent. The way out is to re-select in its own edit panel (the tree says so);
+  there is no separate re-attach route for these.
+* Covered by walking every dataclass field of every Feature, so Fillet / Chamfer `edge_refs` and `ChamferEdgeOptions.face_ref`, Create Plane (`face_refs`, `edge_ref`, `vertex_ref`, `point_refs`), Pattern direction / axis refs, Mirror
+  `mirror_plane`, Shell / Delete Face / Move Face selections, Offset Surface, ... are all in. BODY references (nothing to sign) and assembly mate references (another Part's Bodies) are not.
+* Native format: signatures are saved with each `SubShapeRef` (tagged by kind), a file without them loads unsigned.
+
+Limits of this half: **no OCCT history** (vertex references only - an edge or face is re-found by signature, so a consumed edge reads `no_match` rather than "consumed by Fillet X"); the PATCH routes validate an edit's edge indices against the Part as it
+stands INCLUDING later features, which is pre-existing and unchanged (it can refuse or misread an index when editing a non-last feature); a coplanar split of a face leaves two identical-looking faces (flagged ambiguous, by design).
 
 ## Open decisions / limits
 

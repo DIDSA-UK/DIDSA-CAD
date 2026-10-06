@@ -920,6 +920,49 @@ void main() {
   );
 
   testWidgets(
+    'reference-identity overhaul: a Fillet (any non-Sketch Feature) with lost sub-shape references says how many and that its edges must be re-selected',
+    (tester) async {
+      Future<void> pumpRow(FeatureDto feature) => tester.pumpWidget(
+            _wrap(
+              FeatureTreePanel(
+                visible: true,
+                features: [feature],
+                selectedFeatureId: null,
+                onFeatureTap: (_) {},
+                onFeatureLongPress: (_) {},
+                onClose: () {},
+                onBodyTap: (_) {},
+              ),
+            ),
+          );
+
+      await pumpRow(FeatureDto.fromJson({
+        'type': 'fillet',
+        'id': 'f1',
+        'locked': false,
+        'produces': 'body',
+        'radius': 2.0,
+        'has_lost_reference': true,
+        'lost_references': ['edge_refs[0]', 'edge_refs[1]'],
+        'reference_reasons': {'edge_refs[0]': 'no_match', 'edge_refs[1]': 'ambiguous'},
+      }));
+      expect(find.byIcon(Icons.warning_rounded), findsOneWidget);
+      expect(find.text('2 lost references - open to re-select'), findsOneWidget);
+
+      await pumpRow(FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'p1',
+        'locked': false,
+        'produces': 'plane',
+        'has_lost_reference': false,
+        'moved_references': ['face_refs[0].face_ref'],
+      }));
+      expect(find.byIcon(Icons.help_rounded), findsOneWidget);
+      expect(find.text('Reference may have moved - open to check'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'the pin-to-coarse control only renders for a coarse-eligible Feature type when '
     'onToggleCoarsePin is supplied',
     (tester) async {

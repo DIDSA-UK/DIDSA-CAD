@@ -500,8 +500,9 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // Reference-identity overhaul: while re-attaching a lost / potentially-moved reference, the next tap on a ghost corner IS the replacement pick
     // (see SketchController.beginReattach); a tap anywhere else does nothing (the banner's Cancel leaves the mode).
     if (controller.isReattaching) {
-      final ghostVertex = _referenceGhostVertexAt(transform, cursorScreen);
-      if (ghostVertex != null) unawaited(controller.reattachTo(ghostVertex.$1, ghostVertex.$2));
+      // A circle's centre is re-attached by picking the replacement circular EDGE; every other reference by picking a corner.
+      final picked = controller.reattachWantsEdge ? _referenceGhostEdgeAt(transform, cursorScreen) : _referenceGhostVertexAt(transform, cursorScreen);
+      if (picked != null) unawaited(controller.reattachTo(picked.$1, picked.$2));
       return;
     }
     final implicitReference = controller.mode == SketchMode.select || controller.mode == SketchMode.draw;

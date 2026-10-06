@@ -138,6 +138,10 @@ class ExternalEdgeReferenceDto {
 class ExternalReferenceStatusDto {
   final String pointId;
   final String bodyId;
+
+  /// What [vertexIndex] indexes: `vertex` (a Body vertex the Point sits on) or `circle_centre` (a circular Body EDGE whose centre the Point sits at - the
+  /// Circle / Arc built on it follows the edge's position and radius).
+  final String kind;
   final int vertexIndex;
   final String status;
   final String reason;
@@ -149,11 +153,13 @@ class ExternalReferenceStatusDto {
     required this.bodyId,
     required this.vertexIndex,
     required this.status,
+    this.kind = 'vertex',
     this.reason = '',
     this.method = '',
     this.candidates = const [],
   });
 
+  bool get isCircleCentre => kind == 'circle_centre';
   bool get isLost => status == 'lost';
   bool get isPotentiallyMoved => status == 'potentially_moved';
 
@@ -161,6 +167,7 @@ class ExternalReferenceStatusDto {
         pointId: json['point_id'] as String,
         bodyId: json['body_id'] as String,
         vertexIndex: json['vertex_index'] as int,
+        kind: json['kind'] as String? ?? 'vertex',
         status: json['status'] as String? ?? 'ok',
         reason: json['reason'] as String? ?? '',
         method: json['method'] as String? ?? '',
@@ -1794,20 +1801,26 @@ class SketchApiClient {
         (body) => (body as List).map((e) => ExternalReferenceStatusDto.fromJson(e as Map<String, dynamic>)).toList(),
       );
 
-  /// Reference-identity overhaul: points the existing external-reference Point [pointId] at a different Body vertex (the replacement the user picked for
-  /// a lost or potentially-moved reference). The Point keeps its id and everything built on it.
+  /// Reference-identity overhaul: points the existing external-reference Point [pointId] at a different Body vertex ([vertexIndex]) - or, for a circle-centre
+  /// reference, a different circular edge ([edgeIndex]) - the replacement the user picked for a lost or potentially-moved reference. The Point keeps its id
+  /// and everything built on it.
   Future<PointDto> reattachExternalReference(
     String partId,
     String sketchFeatureId,
     String pointId,
-    String bodyId,
-    int vertexIndex,
-  ) =>
+    String bodyId, {
+    int? vertexIndex,
+    int? edgeIndex,
+  }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references/$pointId/reattach'),
               headers: _headers,
-              body: jsonEncode({'body_id': bodyId, 'vertex_index': vertexIndex}),
+              body: jsonEncode({
+                'body_id': bodyId,
+                if (vertexIndex != null) 'vertex_index': vertexIndex,
+                if (edgeIndex != null) 'edge_index': edgeIndex,
+              }),
             ),
         (body) => PointDto.fromJson(body as Map<String, dynamic>),
       );

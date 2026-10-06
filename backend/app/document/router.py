@@ -21,8 +21,11 @@ from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coars
 from app.document.chamfer import resolve_chamfer
 from app.document.jobs import JobStatus, cancel_job, get_job, submit_bevel_pair_job, submit_planetary_job
 from app.document.reference_history import history_for_part
+from app.document.subshape_identity import refresh_feature_subshape_refs
 from app.document.create_plane import (
     basis_for_sketch,
+    capture_external_reference,
+    make_circle_centre_reference,
     make_external_vertex_reference,
     refresh_external_references,
     resolve_create_plane,
@@ -946,6 +949,20 @@ def _sketch_has_lost_reference(part: Part, feature: SketchFeature) -> bool:
 
 
 def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
+    """Builds `feature`'s response and, for a Feature holding `SubShapeRef`s, first stamps / re-validates them (`refresh_feature_subshape_refs`: signature adopted
+    on creation, index re-found after an upstream topology change, never silently rebound) and reports the lost / potentially-moved ones on the response."""
+    state = refresh_feature_subshape_refs(part, feature)
+    response = _feature_response_unflagged(part, feature)
+    if state is not None:
+        response.has_lost_reference = response.has_lost_reference or state.has_lost
+        response.lost_references = state.lost
+        response.moved_references = state.moved
+        response.followed_references = state.followed
+        response.reference_reasons = {**response.reference_reasons, **state.reasons}
+    return response
+
+
+def _feature_response_unflagged(part: Part, feature: Feature) -> FeatureResponse:
     if isinstance(feature, SketchFeature):
         return SketchFeatureResponse(
             id=feature.id,
@@ -4274,6 +4291,7 @@ def _external_reference_statuses(part: Part, feature: SketchFeature) -> list[Ext
             ExternalReferenceStatus(
                 point_id=point_id,
                 body_id=ref.body_id,
+                kind=ref.kind,
                 vertex_index=ref.vertex_index,
                 status=decision.status.value if decision else "ok",
                 reason=decision.reason if decision else "",
@@ -4314,12 +4332,29 @@ def reattach_external_reference(
         raise HTTPException(status_code=404, detail="point_id is not an external reference of this Sketch")
     excluded = excluded_feature_ids_after(part, feature_id)
     bodies = compute_part_bodies(part, excluded)
+    existing = sketch.external_references[point_id]
+    point = sketch.points[point_id]
+    if existing.kind == "circle_centre":
+        if payload.edge_index is None:
+            raise HTTPException(status_code=422, detail={"type": "edge_required", "point_id": point_id})
+        reference = make_circle_centre_reference(bodies, payload.body_id, payload.edge_index)
+        sketch.external_references[point_id] = reference
+        # `refresh_external_references` moves the Point to the new centre, and the Circle / Arc built on it with it (position and radius); the new edge must lie in
+        # this Sketch's plane, otherwise it is refused and the old binding restored.
+        lost = refresh_external_references(part, sketch, bodies, excluded)
+        if point_id in lost:
+            reason = sketch.external_reference_decisions[point_id].reason
+            sketch.external_references[point_id] = existing
+            raise HTTPException(status_code=422, detail={"type": "not_coplanar" if reason == "not_coplanar" else "reference_lost", "reason": reason})
+        sketch.external_reference_decisions.pop(point_id, None)
+        return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+    if payload.vertex_index is None:
+        raise HTTPException(status_code=422, detail={"type": "vertex_required", "point_id": point_id})
     reference = make_external_vertex_reference(bodies, payload.body_id, payload.vertex_index)
     reference = dataclasses.replace(reference, lineage=history_for_part(part, excluded).lineage_for(payload.body_id, payload.vertex_index))
     x, y = resolve_external_vertex_position(part, sketch, reference, bodies, excluded)
     sketch.external_references[point_id] = reference
     sketch.external_reference_decisions.pop(point_id, None)
-    point = sketch.points[point_id]
     point.x, point.y = x, y
     return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
 
@@ -4343,10 +4378,12 @@ def confirm_external_reference(part_id: str, feature_id: str, point_id: str) -> 
     if point_id in lost:
         raise HTTPException(status_code=409, detail={"type": "reference_lost", "point_id": point_id})
     ref = sketch.external_references[point_id]
-    confirmed = make_external_vertex_reference(bodies, ref.body_id, ref.vertex_index)
-    sketch.external_references[point_id] = dataclasses.replace(
-        confirmed, lineage=history_for_part(part, excluded).lineage_for(ref.body_id, ref.vertex_index) or ref.lineage
-    )
+    confirmed = capture_external_reference(bodies, ref)
+    if ref.kind == "vertex":
+        confirmed = dataclasses.replace(
+            confirmed, lineage=history_for_part(part, excluded).lineage_for(ref.body_id, ref.vertex_index) or ref.lineage
+        )
+    sketch.external_references[point_id] = confirmed
     sketch.external_reference_decisions.pop(point_id, None)
     point = sketch.points[point_id]
     return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
@@ -4365,6 +4402,16 @@ def _new_external_reference(
     reference = make_external_vertex_reference(bodies, body_id, vertex_index)
     lineage = history_for_part(part, excluded).lineage_for(body_id, vertex_index)
     return dataclasses.replace(reference, lineage=lineage)
+
+
+def _new_circle_centre_reference(sketch, bodies: dict, body_id: str, edge_index: int) -> ExternalVertexReference:
+    """`_new_external_reference`'s sibling for the centre of a circular edge (`kind="circle_centre"`; no OCCT lineage - history is tracked per vertex): the
+    reference already tracking this edge's centre if the Sketch has one, else a new, signed one."""
+    probe = ExternalVertexReference(body_id=body_id, vertex_index=edge_index, kind="circle_centre")
+    for point_id, existing in sketch.external_references.items():
+        if existing == probe and point_id in sketch.points:
+            return existing
+    return make_circle_centre_reference(bodies, body_id, edge_index)
 
 
 @router.post(
@@ -4589,7 +4636,11 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
                 detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
             )
         center_x, center_y, radius = circle_params
-        center_point = sketch.add_point(center_x, center_y)
+        # Reference-identity overhaul: the centre is a live reference to the circular edge (`kind="circle_centre"`), so the Circle follows its hole / boss when an
+        # upstream edit moves it or changes its diameter - and is flagged, like any reference, when the edge is gone.
+        center_point = sketch.add_or_reuse_external_vertex_reference(
+            center_x, center_y, _new_circle_centre_reference(sketch, bodies, payload.body_id, payload.edge_index)
+        )
         circle = sketch.add_circle(center_point.id, radius=radius, construction=payload.construction)
         # On-device feedback ("converted edges... the converted entities
         # should be projected onto the sketch plane and locked at that
@@ -4638,16 +4689,16 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             arc_start_point, arc_end_point = start_point, end_point
         else:
             arc_start_point, arc_end_point = end_point, start_point
-        center_point = sketch.add_point(center_x, center_y)
+        center_point = sketch.add_or_reuse_external_vertex_reference(
+            center_x, center_y, _new_circle_centre_reference(sketch, bodies, payload.body_id, payload.edge_index)
+        )
         arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
-        # See the full-circle branch's own identical comment above - an
-        # Arc's centre has no Body vertex of its own either. Its start/end
-        # Points are already `external_references`-locked (see above), so
-        # `add_fixed_constraint`'s own already-locked filter leaves only
-        # the centre to actually add here - same net effect as the old
-        # centre-only `pinned_point_ids.add`, without hardcoding that this
-        # is the only Point Arc needs pinned.
-        sketch.add_fixed_constraint(arc.id)
+        # An Arc's start / end Points are vertex references and (since the reference-identity overhaul) its centre is a circle-centre reference, so every
+        # Point of it is already pinned by `external_references`.
+        try:
+            sketch.add_fixed_constraint(arc.id)
+        except ValueError:
+            pass  # every Point of the Arc is a live reference now (start, end and, since the overhaul, the centre): nothing left to pin
         return ConvertEdgeResponse(
             arc=ArcResponse(
                 id=arc.id,

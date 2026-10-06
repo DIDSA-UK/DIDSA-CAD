@@ -400,12 +400,11 @@ deliberately unbuilt along the way, not yet scoped further:
 
 ## Reference drift / "potentially broken reference" health flag
 
-**Status 2026-10-06: Sketch external references are done; other `SubShapeRef` consumers are not.** A Sketch's `external_references` now carry a geometric
+**Status 2026-10-06: done for Sketch external references (including circle / arc centres) and for every other `SubShapeRef` consumer (Fillet, Chamfer, Create Plane, Pattern, Mirror, Shell, Delete / Move Face, ...); history lineage is still vertex-only.** A Sketch's `external_references` now carry a geometric
 signature (position in the Body frame, valence, adjacent-face normals / kinds, incident-edge directions, Body diagonal) and an OCCT-history lineage, are re-validated on
 every refresh, are re-found by signature / history when the index goes stale, and are flagged - never silently rebound - when they cannot be found unambiguously
 (`has_lost_reference` plus `lost_reference_point_ids`, `moved_reference_point_ids`, `reference_reasons`; new `GET external-references`, `.../reattach`, `.../confirm` routes). The four
-xfail probes pass. Design, tolerances, routes and the list of consumers still on raw indices (Fillet / Chamfer `edge_refs`, Create Plane refs, Pattern / Mirror refs, Shell / Delete / Move
-Face selections, mates): **`docs/reference-identity-design.md`**. The flat app makes referencing implicit (any select / draw tool aimed at a body corner, select aimed at an edge) and
+xfail probes pass. Design, tolerances, routes and what is still open (mates, history for edges / faces, a re-attach route for non-sketch Features): **`docs/reference-identity-design.md`**. The flat app makes referencing implicit (any select / draw tool aimed at a body corner, select aimed at an edge) and
 shows the lost / "potentially moved" state on the sketch, in a banner with Fix / Keep, and in the feature tree. The text below is the original brainstorm and findings, kept for the reasoning.
 
 User brainstorm (2026-07-31, prompted by the same day's three related bug

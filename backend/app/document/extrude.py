@@ -3266,7 +3266,7 @@ _TOPABS_FOR_SUBSHAPE_TYPE = {
 }
 
 
-def _missing_reference(ref: SubShapeRef) -> HTTPException:
+def _missing_reference(ref: SubShapeRef, reason: str | None = None) -> HTTPException:
     """B1: the structured `missing_reference` validation error `resolve_
     subshape` raises whenever `ref` can no longer be resolved - matches
     app.document.router._validate_target_body_ids's established envelope
@@ -3277,15 +3277,15 @@ def _missing_reference(ref: SubShapeRef) -> HTTPException:
     reselect" instead of a generic message). 422, matching Cut's own
     already-established "structurally invalid, not just malformed" use of
     422 in `_validate_target_body_ids`."""
-    return HTTPException(
-        status_code=422,
-        detail={
-            "type": "missing_reference",
-            "body_id": ref.body_id,
-            "shape_type": ref.shape_type.value,
-            "index": ref.index,
-        },
-    )
+    detail = {
+        "type": "missing_reference",
+        "body_id": ref.body_id,
+        "shape_type": ref.shape_type.value,
+        "index": ref.index,
+    }
+    if reason is not None:
+        detail["reason"] = reason  # why a signed reference could not be re-found: "no_match" | "ambiguous"
+    return HTTPException(status_code=422, detail=detail)
 
 
 def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> TopoDS_Shape:
@@ -3307,12 +3307,23 @@ def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeR
     if ref.shape_type == SubShapeType.BODY:
         return body
 
+    # Reference-identity overhaul (docs/reference-identity-design.md): a reference that carries a geometric signature is re-found when its index has gone
+    # stale (an upstream edit renumbered the Body), and fails closed - never silently resolves to a look-alike - when it cannot be found unambiguously.
+    index = ref.index
+    if ref.signature is not None:
+        from app.document.subshape_identity import decide_subshape
+
+        decision = decide_subshape(ref, body)
+        if decision.index is None:
+            raise _missing_reference(ref, reason=decision.reason or "no_match")
+        index = decision.index
+
     shape_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(body, _TOPABS_FOR_SUBSHAPE_TYPE[ref.shape_type], shape_map)
-    if not (0 <= ref.index < shape_map.Size()):
+    if not (0 <= index < shape_map.Size()):
         raise _missing_reference(ref)
 
-    return shape_map.FindKey(ref.index + 1)
+    return shape_map.FindKey(index + 1)
 
 
 def apply_rigid_transform_to_shape(shape: TopoDS_Shape, transform: RigidTransform) -> TopoDS_Shape:
