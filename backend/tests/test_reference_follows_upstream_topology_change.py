@@ -1,13 +1,12 @@
 """Probe, written 2026-10-06 while building the VR design table's "dimension to the part's own geometry": does a Sketch's external-reference Point
 (`POST .../external-references`, a `body_id` plus a raw OCCT vertex index) still track the SAME physical corner after an upstream edit?
 
-Findings (see docs/roadmap.md "Reference drift"):
-  * Edits that keep the Body's topology (a different extrude depth, base-Sketch dimensions, a fillet radius) are followed: the index still names the
+Findings (see docs/roadmap.md "Reference drift", and docs/reference-identity-design.md for the fix):
+  * Edits that keep the Body's topology (a different extrude depth, base-Sketch dimensions, a fillet radius) were always followed: the index still names the
     same corner. Covered by the passing tests below.
-  * An upstream edit that CHANGES the topology (the fillet moved to another edge, or a second edge added) renumbers the vertices, and the reference
-    then silently resolves to a DIFFERENT corner, with `has_lost_reference` False. Covered by the xfail test: it asserts the behaviour we want (the
-    reference follows its corner, or is flagged lost; never silently rebound) and will start passing when references carry a geometric signature
-    and / or use OCCT's Modified() / Generated() history.
+  * An upstream edit that CHANGES the topology (the fillet moved to another edge, or a second edge added) renumbers the vertices. Before the overhaul the
+    reference then silently resolved to a DIFFERENT corner, with `has_lost_reference` False (these tests were xfail). References now carry a geometric
+    signature and OCCT-history lineage: the reference follows its corner, or is flagged lost (when the edit consumed the corner); it never silently rebinds.
 
 Needs a real pythonocc-core environment, like every other OCCT-touching test here. Same helper conventions as test_stage_phase43_v2_external_edge_reference.py.
 """
@@ -19,6 +18,7 @@ from app.document.create_plane import _resolve_vertex_position
 from app.document.models import SubShapeRef, SubShapeType
 from app.document.router import compute_part_bodies, get_part_or_404
 from app.main import app
+from app.sketch.store import all_sketches
 from tests.conftest import TEST_API_KEY
 
 client = TestClient(app)
@@ -81,15 +81,21 @@ def _track_far_corner(part_id: str, body_id: str):
     return sketch, point["id"], index
 
 
-def _where_is_the_reference_now(part_id: str, body_id: str, index: int):
-    return _vertex_positions(part_id, body_id).get(index)
+def _where_is_the_reference_now(part_id: str, sketch_feature: dict, point_id: str):
+    """Reads the Sketch feature (which refreshes its references against the Part as it is now), then the corner its reference names. Returns
+    (that corner's position or None, the feature as the API reports it)."""
+    feature = next(f for f in _json(client.get(f"/document/parts/{part_id}/features")) if f["id"] == sketch_feature["id"])
+    ref = all_sketches()[feature["sketch_id"]].external_references[point_id]
+    return _vertex_positions(part_id, ref.body_id).get(ref.vertex_index), feature
 
 
 def test_a_fillet_radius_change_keeps_the_reference_on_its_corner():
     part_id, _, body_id, fillet_id = _box_with_fillet(0)
-    _, _, index = _track_far_corner(part_id, body_id)
+    sketch, point_id, index = _track_far_corner(part_id, body_id)
     _json(client.patch(f"/document/parts/{part_id}/fillet-features/{fillet_id}", json={"radius": 3.0}))
-    assert _where_is_the_reference_now(part_id, body_id, index) == (10.0, 10.0, 10.0)
+    now_at, feature = _where_is_the_reference_now(part_id, sketch, point_id)
+    assert now_at == (10.0, 10.0, 10.0)
+    assert not feature["has_lost_reference"] and feature["followed_reference_point_ids"] == []  # same index: nothing to report
 
 
 def test_an_extrude_depth_change_moves_the_reference_with_its_corner():
@@ -102,23 +108,17 @@ def test_an_extrude_depth_change_moves_the_reference_with_its_corner():
     assert (10.0, 10.0, 20.0) in _vertex_positions(part_id, body_id).values()
 
 
-@pytest.mark.xfail(
-    reason="References are body id + raw OCCT vertex index: a topology-changing upstream edit renumbers the vertices and the reference silently "
-    "binds to a different corner (no has_lost_reference). Wanted: it follows its corner, or is flagged lost. See docs/roadmap.md 'Reference drift'.",
-    strict=False,
-)
 @pytest.mark.parametrize("new_edge", [1, 3, 5, 8])
 def test_moving_the_fillet_to_another_edge_does_not_silently_rebind_the_reference(new_edge: int):
     part_id, _, body_id, fillet_id = _box_with_fillet(0)
-    sketch, _, index = _track_far_corner(part_id, body_id)
+    sketch, point_id, index = _track_far_corner(part_id, body_id)
     _json(
         client.patch(
             f"/document/parts/{part_id}/fillet-features/{fillet_id}",
             json={"edge_refs": [{"body_id": body_id, "shape_type": "edge", "index": new_edge}]},
         )
     )
-    now_at = _where_is_the_reference_now(part_id, body_id, index)
-    feature = next(f for f in _json(client.get(f"/document/parts/{part_id}/features")) if f["id"] == sketch["id"])
+    now_at, feature = _where_is_the_reference_now(part_id, sketch, point_id)
     followed = now_at == (10.0, 10.0, 10.0)
-    flagged = bool(feature.get("has_lost_reference"))
+    flagged = bool(feature.get("has_lost_reference")) and point_id in feature["lost_reference_point_ids"]
     assert followed or flagged, f"the reference now sits on {now_at} and nothing says so"

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from app.sketch.models import Plane, SketchEntityRef
+from app.sketch.reference_signature import LineageOrigin, ShapeSignature
 
 
 class Produces(str, Enum):
@@ -285,6 +286,19 @@ class SubShapeRef:
     body_id: str
     shape_type: SubShapeType
     index: int
+    # Reference-identity overhaul (docs/reference-identity-design.md): the geometric signature of the sub-shape this reference named when it was made (or last
+    # confirmed healthy). `compare=False` / `repr=False` so equality, hashing and the body-cache fingerprint of a Feature are unchanged by it; None for a
+    # reference made before it existed (or in a bare test), which then behaves exactly as before until its first refresh adopts one. Set by
+    # `app.document.subshape_identity.refresh_feature_subshape_refs`, honoured by `app.document.extrude.resolve_subshape_from_bodies`.
+    signature: ShapeSignature | None = field(default=None, compare=False, repr=False)
+    # Where OCCT history says the sub-shape came from (the first Feature whose output created it, and its signature there); `repr=False` like `signature`. Lets a
+    # refresh carry the reference through every operation since (Fillet / Chamfer / Cut / Fuse / unify report Modified / Generated per edge and face as they do
+    # per vertex) and say "consumed by <feature>" when one removed it. None when the Part was too large to trace, or the reference predates it.
+    lineage: LineageOrigin | None = field(default=None, compare=False, repr=False)
+    # Set by a refresh when OCCT history says the sub-shape was CONSUMED by an upstream Feature (`consumed_by_<feature id>`), so replay fails closed on it even if
+    # a look-alike exists that the signature search alone would have bound. In `repr` on purpose: flagging a reference must invalidate the body cache. Cleared
+    # by the next refresh that finds the sub-shape again. `compare=False`: equality and hashing are unchanged.
+    lost_reason: str | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True)

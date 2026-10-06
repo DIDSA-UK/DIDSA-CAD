@@ -132,6 +132,49 @@ class ExternalEdgeReferenceDto {
       );
 }
 
+/// Reference-identity overhaul (`docs/reference-identity-design.md`): the wire counterpart to the backend's `ExternalReferenceStatus` - one external-
+/// reference Point's health. [status] is `ok`, `followed` (re-found at a new vertex automatically), `potentially_moved` (bound on weaker evidence - confirm
+/// or re-attach) or `lost` (not found / consumed / ambiguous - re-attach). [candidates] lists the vertex indices an ambiguous lost reference could be.
+class ExternalReferenceStatusDto {
+  final String pointId;
+  final String bodyId;
+
+  /// What [vertexIndex] indexes: `vertex` (a Body vertex the Point sits on) or `circle_centre` (a circular Body EDGE whose centre the Point sits at - the
+  /// Circle / Arc built on it follows the edge's position and radius).
+  final String kind;
+  final int vertexIndex;
+  final String status;
+  final String reason;
+  final String method;
+  final List<int> candidates;
+
+  ExternalReferenceStatusDto({
+    required this.pointId,
+    required this.bodyId,
+    required this.vertexIndex,
+    required this.status,
+    this.kind = 'vertex',
+    this.reason = '',
+    this.method = '',
+    this.candidates = const [],
+  });
+
+  bool get isCircleCentre => kind == 'circle_centre';
+  bool get isLost => status == 'lost';
+  bool get isPotentiallyMoved => status == 'potentially_moved';
+
+  factory ExternalReferenceStatusDto.fromJson(Map<String, dynamic> json) => ExternalReferenceStatusDto(
+        pointId: json['point_id'] as String,
+        bodyId: json['body_id'] as String,
+        vertexIndex: json['vertex_index'] as int,
+        kind: json['kind'] as String? ?? 'vertex',
+        status: json['status'] as String? ?? 'ok',
+        reason: json['reason'] as String? ?? '',
+        method: json['method'] as String? ?? '',
+        candidates: (json['candidates'] as List?)?.cast<int>() ?? const [],
+      );
+}
+
 /// On-device feedback ("when I offset a curved edge it creates a straight
 /// line"): the wire counterpart to the backend's `ConvertEdgeResponse` -
 /// [SketchApiClient.convertBodyEdge]'s own dedicated DTO, separate from
@@ -1746,6 +1789,49 @@ class SketchApiClient {
               body: jsonEncode({'body_id': bodyId, 'edge_index': edgeIndex}),
             ),
         (body) => ExternalEdgeReferenceDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Reference-identity overhaul: the health of every external reference of this Sketch (after a fresh refresh on the backend) - which Points are
+  /// lost / potentially moved and why. See [ExternalReferenceStatusDto].
+  Future<List<ExternalReferenceStatusDto>> listExternalReferences(String partId, String sketchFeatureId) => _send(
+        () => _httpClient.get(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references'),
+              headers: _headers,
+            ),
+        (body) => (body as List).map((e) => ExternalReferenceStatusDto.fromJson(e as Map<String, dynamic>)).toList(),
+      );
+
+  /// Reference-identity overhaul: points the existing external-reference Point [pointId] at a different Body vertex ([vertexIndex]) - or, for a circle-centre
+  /// reference, a different circular edge ([edgeIndex]) - the replacement the user picked for a lost or potentially-moved reference. The Point keeps its id
+  /// and everything built on it.
+  Future<PointDto> reattachExternalReference(
+    String partId,
+    String sketchFeatureId,
+    String pointId,
+    String bodyId, {
+    int? vertexIndex,
+    int? edgeIndex,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references/$pointId/reattach'),
+              headers: _headers,
+              body: jsonEncode({
+                'body_id': bodyId,
+                if (vertexIndex != null) 'vertex_index': vertexIndex,
+                if (edgeIndex != null) 'edge_index': edgeIndex,
+              }),
+            ),
+        (body) => PointDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Reference-identity overhaul: "yes, that is the right vertex" for a potentially-moved reference - the backend re-captures its signature.
+  Future<PointDto> confirmExternalReference(String partId, String sketchFeatureId, String pointId) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references/$pointId/confirm'),
+              headers: _headers,
+            ),
+        (body) => PointDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Sketcher-roadmap Phase 9 v2 (Convert Entities): [createExternalVertexReference]'s

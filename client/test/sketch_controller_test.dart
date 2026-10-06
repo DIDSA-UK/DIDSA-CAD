@@ -90,6 +90,15 @@ class _FakeBackend {
   /// P48's edge-shaped sibling to [convertVertexRequestCount].
   int convertEdgeRequestCount = 0;
 
+  /// Reference-identity overhaul: what `GET .../external-references` reports (the unhealthy references of the adopted sketch), the re-attach /
+  /// confirm calls the fake has seen as `"<point id>:<body id>:<vertex|edge>:<index>"` / `"<point id>"`, and whether `convert-entities/edge` should behave
+  /// like the real backend and reuse its endpoint Points (it always makes a new Line, which is what the client's duplicate check is for).
+  List<Map<String, dynamic>> referenceStatuses = [];
+  final List<String> reattachRequests = [];
+  final List<String> confirmRequests = [];
+  bool reuseConvertedEdgeEndpoints = false;
+  final Map<String, (String, String)> _convertedEdgeEndpointIds = {};
+
   /// On-device feedback ("when deleting lines, curves, trimming I end up
   /// with floating, redundant points"): every fake `DELETE .../lines|
   /// circles|arcs|ellipses|polygons|splines|texts/{id}` route reports this
@@ -552,6 +561,29 @@ class _FakeBackend {
       return _json(point, 201);
     }
 
+    // Reference-identity overhaul: the health of every external reference, and the re-attach / confirm actions.
+    if (externalReferenceMatch && request.method == 'GET') {
+      return _jsonList(referenceStatuses, 200);
+    }
+    final reattachMatch = RegExp(
+      r'^/document/parts/[^/]+/features/sketch/[^/]+/external-references/([^/]+)/(reattach|confirm)$',
+    ).firstMatch(path);
+    if (reattachMatch != null && request.method == 'POST') {
+      final pointId = reattachMatch.group(1)!;
+      final point = points[pointId];
+      if (point == null) return _json({'detail': 'point_id is not an external reference of this Sketch'}, 404);
+      if (reattachMatch.group(2) == 'reattach') {
+        final index = (body['vertex_index'] ?? body['edge_index']) as num;
+        reattachRequests.add('$pointId:${body['body_id']}:${body.containsKey('edge_index') ? 'edge' : 'vertex'}:$index');
+        point['x'] = (body['body_id'] as String).length.toDouble();
+        point['y'] = index.toDouble();
+      } else {
+        confirmRequests.add(pointId);
+      }
+      referenceStatuses.removeWhere((status) => status['point_id'] == pointId);
+      return _json({...point, 'is_locked': true}, 200);
+    }
+
     // Sketcher-roadmap Phase 4.3 v2: materializes a Body edge as a real,
     // pinned Line (two fresh Points plus a Line between them) - same
     // "fake backend has no real Bodies, just deterministically derive
@@ -625,8 +657,11 @@ class _FakeBackend {
       final bodyId = body['body_id'] as String;
       final edgeIndex = (body['edge_index'] as num).toDouble();
       final construction = (body['construction'] as bool?) ?? false;
-      final startId = _newId('point');
-      final endId = _newId('point');
+      final edgeKey = '$bodyId:${body['edge_index']}';
+      final reused = reuseConvertedEdgeEndpoints ? _convertedEdgeEndpointIds[edgeKey] : null;
+      final startId = reused?.$1 ?? _newId('point');
+      final endId = reused?.$2 ?? _newId('point');
+      if (reuseConvertedEdgeEndpoints) _convertedEdgeEndpointIds[edgeKey] = (startId, endId);
       // 'is_locked': true throughout this route - matches the real
       // backend's own `PointResponse.is_locked` for a converted edge's
       // associative endpoints and (`Sketch.pinned_point_ids`) its centre/
@@ -7966,7 +8001,7 @@ void main() {
 
       await freshController.pickReferenceGhostVertex('body-1', 3);
 
-      expect(freshBackend.externalReferenceRequestCount, 1);
+      expect(freshBackend.convertVertexRequestCount, 1);
       expect(freshController.dimensionSelection, hasLength(1));
       expect(freshController.dimensionSelection.single.kind, SelectionKind.point);
       final pointId = freshController.dimensionSelection.single.id;
@@ -7986,11 +8021,11 @@ void main() {
 
       await freshController.pickReferenceGhostVertex('body-1', 3);
 
-      expect(freshBackend.externalReferenceRequestCount, 1); // still just the one network call
+      expect(freshBackend.convertVertexRequestCount, 1); // still just the one network call (the cache; the route is idempotent anyway)
       expect(freshController.dimensionSelection.single.id, firstPointId);
     });
 
-    test('picking two different body vertices materializes two distinct Points, showing dimension ghosts',
+    test('picking two different body vertices materializes two distinct Points - and offers nothing between two pinned things',
         () async {
       final (freshController, freshBackend) = await adoptedController();
       freshController.enterDimensionMode();
@@ -7998,7 +8033,21 @@ void main() {
       await freshController.pickReferenceGhostVertex('body-1', 0);
       await freshController.pickReferenceGhostVertex('body-1', 1);
 
-      expect(freshBackend.externalReferenceRequestCount, 2);
+      expect(freshBackend.convertVertexRequestCount, 2);
+      expect(freshController.dimensionSelection, hasLength(2));
+      // Both are pinned to the part (the design table's rule): a driving dimension between them could only over-constrain the sketch.
+      expect(freshController.ghosts, isEmpty);
+    });
+
+    test('a body vertex and a free sketch point still offer the distance ghosts', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterDimensionMode();
+      // A free Point, away from the (soon pinned) reference corner at (6, 0).
+      freshController.points['free-1'] = const SketchPointView(id: 'free-1', x: 20, y: 20);
+
+      await freshController.pickReferenceGhostVertex('body-1', 0);
+      await freshController.handleCanvasTap(20, 20);
+
       expect(freshController.dimensionSelection, hasLength(2));
       expect(freshController.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
     });
@@ -8031,7 +8080,7 @@ void main() {
 
       await freshController.pickReferenceGhostEdge('body-1', 0);
 
-      expect(freshBackend.externalEdgeReferenceRequestCount, 1);
+      expect(freshBackend.convertEdgeRequestCount, 1);
       expect(freshController.dimensionSelection, hasLength(1));
       expect(freshController.dimensionSelection.single.kind, SelectionKind.line);
       final lineId = freshController.dimensionSelection.single.id;
@@ -8039,7 +8088,8 @@ void main() {
       expect(line, isNotNull);
       expect(freshController.points.containsKey(line!.startPointId), isTrue);
       expect(freshController.points.containsKey(line.endPointId), isTrue);
-      expect(freshController.ghosts.map((g) => g.key).toSet(), {'length'});
+      // A body edge is pinned to the part (both its Points are), so its own length is not offered as a driving dimension.
+      expect(freshController.ghosts, isEmpty);
       expect(freshController.errorMessage, isNull);
       // On-device feedback (bug fix): a materialized Body edge is a
       // reference to dimension against, not new solid geometry the user
@@ -8060,18 +8110,34 @@ void main() {
 
       await freshController.pickReferenceGhostEdge('body-1', 0);
 
-      expect(freshBackend.externalEdgeReferenceRequestCount, 1); // still just the one network call
+      expect(freshBackend.convertEdgeRequestCount, 1); // still just the one network call
       expect(freshController.dimensionSelection.single.id, firstLineId);
     });
 
-    test('picking two different (parallel) body edges shows a lineDistance ghost', () async {
+    test('picking two different (parallel) body edges makes both references - and offers nothing between two pinned things', () async {
       final (freshController, freshBackend) = await adoptedController();
       freshController.enterDimensionMode();
 
       await freshController.pickReferenceGhostEdge('body-1', 0);
       await freshController.pickReferenceGhostEdge('body-1', 1);
 
-      expect(freshBackend.externalEdgeReferenceRequestCount, 2);
+      expect(freshBackend.convertEdgeRequestCount, 2);
+      expect(freshController.dimensionSelection, hasLength(2));
+      expect(freshController.ghosts, isEmpty);
+    });
+
+    test('a body edge and a free parallel line still offer the lineDistance ghost', () async {
+      final (freshController, _) = await adoptedController();
+      // A free line parallel to the reference edge the fake derives for ('body-1', 0): (6, 0)-(16, 0).
+      freshController.selectDrawTool(SketchTool.line);
+      await freshController.handleCanvasTap(6, 20);
+      await freshController.handleCanvasTap(16, 20);
+      freshController.finishChain();
+      freshController.enterDimensionMode();
+
+      await freshController.pickReferenceGhostEdge('body-1', 0);
+      await freshController.handleCanvasTap(8, 20); // on the free line, away from its midpoint
+
       expect(freshController.dimensionSelection, hasLength(2));
       expect(freshController.ghosts.map((g) => g.key).toSet(), {'lineDistance'});
     });
@@ -8082,6 +8148,252 @@ void main() {
       await controller.pickReferenceGhostEdge('body-1', 0);
 
       expect(controller.dimensionSelection, isEmpty);
+    });
+  });
+
+  group('implicit references and reference health (reference-identity overhaul)', () {
+    Future<(SketchController, _FakeBackend)> adoptedController({
+      List<Map<String, dynamic>> statuses = const [],
+      bool reuseEdgeEndpoints = false,
+      _FakeBackend? existing,
+    }) async {
+      final freshBackend = existing ?? _FakeBackend();
+      if (existing == null) freshBackend.seedSketch('sketch-99', 'origin-99');
+      freshBackend.referenceStatuses = [...statuses];
+      freshBackend.reuseConvertedEdgeEndpoints = reuseEdgeEndpoints;
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      return (freshController, freshBackend);
+    }
+
+    test('ensureReferencePoint makes the pinned Point once, with no Convert mode and no undo entry', () async {
+      final (freshController, freshBackend) = await adoptedController();
+
+      final first = await freshController.ensureReferencePoint('body-1', 3);
+      final second = await freshController.ensureReferencePoint('body-1', 3);
+
+      expect(first, isNotNull);
+      expect(second, first);
+      expect(freshBackend.convertVertexRequestCount, 1);
+      expect(freshController.points.containsKey(first), isTrue);
+      expect(freshController.mode, isNot(SketchMode.convert));
+      expect(freshController.canUndo, isFalse); // a reference is not something the user drew
+    });
+
+    test('ensureReferencePoint is a no-op for a bare, non-Part sketch', () async {
+      expect(await controller.ensureReferencePoint('body-1', 0), isNull);
+      expect(backend.convertVertexRequestCount, 0);
+    });
+
+    test('a draw tool aimed at two body corners draws between the two reference Points (snap, no new Points)', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.selectDrawTool(SketchTool.line);
+
+      // What SketchCanvas._tapOnReferenceVertex does for a tap on a ghost corner: ensure the Point, then tap exactly on it.
+      for (final vertex in [0, 1]) {
+        final pointId = await freshController.ensureReferencePoint('body-1', vertex);
+        final point = freshController.points[pointId]!;
+        await freshController.handleCanvasTap(point.x, point.y);
+      }
+
+      expect(freshController.lines, hasLength(1));
+      final line = freshController.lines.values.single;
+      final referenceIds = {
+        for (final entry in freshController.points.entries)
+          if (entry.key != 'origin-99') entry.key,
+      };
+      expect(referenceIds, hasLength(2)); // nothing but the two reference Points exists
+      expect({line.startPointId, line.endPointId}, referenceIds);
+    });
+
+    test('select mode picks the reference Point it was aimed at (selectEntity on the ensured Point)', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.exitToSelectMode();
+      final pointId = await freshController.ensureReferencePoint('body-1', 2);
+      final point = freshController.points[pointId]!;
+
+      await freshController.handleCanvasTap(point.x, point.y);
+
+      expect(freshController.selectionSet.map((s) => s.id), [pointId]);
+    });
+
+    test('ensureReferenceEdge makes a construction Line once and reuses it, leaving no undo entry', () async {
+      final (freshController, freshBackend) = await adoptedController();
+
+      final first = await freshController.ensureReferenceEdge('body-1', 0);
+      final second = await freshController.ensureReferenceEdge('body-1', 0);
+
+      expect(first, isNotNull);
+      expect(first!.kind, SelectionKind.line);
+      expect(second!.id, first.id);
+      expect(freshBackend.convertEdgeRequestCount, 1);
+      expect(freshController.lines[first.id]!.construction, isTrue);
+      expect(freshController.canUndo, isFalse);
+    });
+
+    test('an edge already joined by a line is reused when the sketch is reopened (the duplicate the backend makes is dropped)', () async {
+      final (firstSession, freshBackend) = await adoptedController(reuseEdgeEndpoints: true);
+      final original = await firstSession.ensureReferenceEdge('body-1', 0);
+      expect(freshBackend.lines, hasLength(1));
+
+      // A new session over the same backend state: the per-session cache is empty and the backend hands back a second Line on the same two Points.
+      final (secondSession, _) = await adoptedController(existing: freshBackend, reuseEdgeEndpoints: true);
+      final again = await secondSession.ensureReferenceEdge('body-1', 0);
+
+      expect(again!.id, original!.id);
+      expect(secondSession.lines, hasLength(1));
+      expect(freshBackend.lines, hasLength(1)); // the new duplicate was deleted on the backend too
+    });
+
+    test('a circular edge gives a reference circle, not a chord', () async {
+      final (freshController, _) = await adoptedController();
+
+      final selection = await freshController.ensureReferenceEdge('body-1', 100);
+
+      expect(selection!.kind, SelectionKind.circle);
+      expect(freshController.circles[selection.id]!.construction, isTrue);
+    });
+
+    test('dimension mode aimed at a corner still adds the (now idempotently made) Point to the pick', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+
+      await freshController.pickReferenceGhostVertex('body-1', 4);
+
+      expect(freshBackend.convertVertexRequestCount, 1);
+      expect(freshController.dimensionSelection.single.kind, SelectionKind.point);
+    });
+
+    Map<String, dynamic> status(String pointId, String state, {String reason = '', List<int> candidates = const []}) => {
+          'point_id': pointId,
+          'body_id': 'body-1',
+          'vertex_index': 3,
+          'status': state,
+          'reason': reason,
+          'method': 'signature',
+          'candidates': candidates,
+        };
+
+    test('flagged references load when the sketch opens and are told apart as lost / potentially moved', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-lost'] = {'id': 'p-lost', 'x': 1.0, 'y': 1.0, 'is_locked': true};
+      backendWithPoints.points['p-moved'] = {'id': 'p-moved', 'x': 2.0, 'y': 2.0, 'is_locked': true};
+      final (freshController, _) = await adoptedController(
+        existing: backendWithPoints,
+        statuses: [
+          status('p-lost', 'lost', reason: 'consumed_by_fillet-1'),
+          status('p-moved', 'potentially_moved', reason: 'nearest_of_identical_vertices'),
+        ],
+      );
+
+      expect(freshController.hasFlaggedReferences, isTrue);
+      expect(freshController.lostReferencePointIds, {'p-lost'});
+      expect(freshController.movedReferencePointIds, {'p-moved'});
+      expect(freshController.describeReferenceProblem('p-lost'), contains('removed by an earlier feature'));
+      expect(freshController.describeReferenceProblem('p-moved'), contains('nearest of several identical'));
+    });
+
+    test('healthy and merely re-followed references are not flagged', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-ok'] = {'id': 'p-ok', 'x': 1.0, 'y': 1.0, 'is_locked': true};
+      final (freshController, _) = await adoptedController(
+        existing: backendWithPoints,
+        statuses: [status('p-ok', 'followed')],
+      );
+
+      expect(freshController.hasFlaggedReferences, isFalse);
+    });
+
+    test('re-attaching: pick the replacement corner and the same Point follows it, then the flag is gone', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-lost'] = {'id': 'p-lost', 'x': 1.0, 'y': 1.0, 'is_locked': true};
+      final (freshController, freshBackend) = await adoptedController(
+        existing: backendWithPoints,
+        statuses: [status('p-lost', 'lost', reason: 'ambiguous', candidates: [5, 6])],
+      );
+      expect(freshController.reattachCandidates, isEmpty); // not reattaching yet
+
+      freshController.beginReattach('p-lost');
+      expect(freshController.isReattaching, isTrue);
+      expect(freshController.reattachCandidates, {('body-1', 5), ('body-1', 6)});
+      await freshController.reattachTo('body-1', 6);
+
+      expect(freshBackend.reattachRequests, ['p-lost:body-1:vertex:6']);
+      expect(freshController.isReattaching, isFalse);
+      expect(freshController.hasFlaggedReferences, isFalse);
+      expect(freshController.points['p-lost']!.y, 6); // same Point id, moved to the replacement corner
+    });
+
+    test('a circle centre is re-attached by picking a circular EDGE, and says so', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-centre'] = {'id': 'p-centre', 'x': 1.0, 'y': 1.0, 'is_locked': true};
+      final (freshController, freshBackend) = await adoptedController(
+        existing: backendWithPoints,
+        statuses: [{...status('p-centre', 'lost', reason: 'not_coplanar'), 'kind': 'circle_centre'}],
+      );
+      expect(freshController.referenceStatusOf('p-centre')!.isCircleCentre, isTrue);
+      expect(freshController.describeReferenceProblem('p-centre'), contains('no longer lies in this sketch'));
+
+      freshController.beginReattach('p-centre');
+      expect(freshController.reattachWantsEdge, isTrue);
+      await freshController.reattachTo('body-1', 7);
+
+      expect(freshBackend.reattachRequests, ['p-centre:body-1:edge:7']);
+      expect(freshController.hasFlaggedReferences, isFalse);
+    });
+
+    test('a vertex reference does not want an edge', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-lost'] = {'id': 'p-lost', 'x': 1.0, 'y': 1.0, 'is_locked': true};
+      final (freshController, _) = await adoptedController(existing: backendWithPoints, statuses: [status('p-lost', 'lost')]);
+      freshController.beginReattach('p-lost');
+      expect(freshController.reattachWantsEdge, isFalse);
+    });
+
+    test('cancelReattach leaves the reference flagged and sends nothing', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-lost'] = {'id': 'p-lost', 'x': 1.0, 'y': 1.0, 'is_locked': true};
+      final (freshController, freshBackend) = await adoptedController(
+        existing: backendWithPoints,
+        statuses: [status('p-lost', 'lost')],
+      );
+      freshController.beginReattach('p-lost');
+
+      freshController.cancelReattach();
+
+      expect(freshController.isReattaching, isFalse);
+      expect(freshController.lostReferencePointIds, {'p-lost'});
+      expect(freshBackend.reattachRequests, isEmpty);
+    });
+
+    test('confirmReference clears a potentially-moved flag', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['p-moved'] = {'id': 'p-moved', 'x': 2.0, 'y': 2.0, 'is_locked': true};
+      final (freshController, freshBackend) = await adoptedController(
+        existing: backendWithPoints,
+        statuses: [status('p-moved', 'potentially_moved', reason: 'unique_fingerprint_far')],
+      );
+
+      await freshController.confirmReference('p-moved');
+
+      expect(freshBackend.confirmRequests, ['p-moved']);
+      expect(freshController.hasFlaggedReferences, isFalse);
+    });
+
+    test('the flagged Points of a selected Line are offered to the ribbon, lost ones first', () async {
+      final backendWithPoints = _FakeBackend()..seedSketch('sketch-99', 'origin-99');
+      backendWithPoints.points['a'] = {'id': 'a', 'x': 0.0, 'y': 0.0, 'is_locked': true};
+      backendWithPoints.points['b'] = {'id': 'b', 'x': 5.0, 'y': 0.0, 'is_locked': true};
+      backendWithPoints.lines['l'] = {'id': 'l', 'start_point_id': 'a', 'end_point_id': 'b', 'length': 5.0, 'construction': true};
+      final (freshController, _) = await adoptedController(
+        existing: backendWithPoints,
+        statuses: [status('a', 'potentially_moved'), status('b', 'lost')],
+      );
+
+      freshController.selectEntity(SketchSelection(kind: SelectionKind.line, id: 'l'));
+
+      expect(freshController.flaggedReferencePointsInSelection, ['b', 'a']);
     });
   });
 

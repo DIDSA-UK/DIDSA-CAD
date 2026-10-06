@@ -105,7 +105,34 @@ class SketchRibbon extends StatelessWidget {
     final constructionToggles = controller.availableConstructionToggles;
     final fixToggles = controller.availableFixToggles;
 
+    // Reference-identity overhaul: a selected Point (or a Line / Arc ending on one) whose body corner is lost or may have moved.
+    final flaggedReferences = controller.flaggedReferencePointsInSelection;
+    final movedReferences = [
+      for (final id in flaggedReferences)
+        if (controller.referenceStatusOf(id)?.isPotentiallyMoved ?? false) id,
+    ];
+
     final chips = <Widget>[
+      if (flaggedReferences.isNotEmpty)
+        _RibbonActionChip(
+          svgAsset: 'assets/icons/ribbon/ribbon_coincident.svg',
+          label: 'Re-attach',
+          tooltip: controller.describeReferenceProblem(flaggedReferences.first),
+          onTap: controller.busy ? null : () => controller.beginReattach(flaggedReferences.first),
+        ),
+      if (movedReferences.isNotEmpty)
+        _RibbonActionChip(
+          svgAsset: 'assets/icons/ribbon/ribbon_apply.svg',
+          label: 'Keep',
+          tooltip: 'This is the right corner: stop flagging it.',
+          onTap: controller.busy
+              ? null
+              : () async {
+                  for (final id in movedReferences) {
+                    await controller.confirmReference(id);
+                  }
+                },
+        ),
       // Stage 19b item 6: only meaningful for a single selected Line -
       // inserted first/leftmost per the brief, ahead of Make Construction.
       if (selectionSet.length == 1 && selectionSet.first.kind == SelectionKind.line)

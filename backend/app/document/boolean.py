@@ -26,6 +26,7 @@ import logging
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Common, BRepAlgoAPI_Cut
 from OCC.Core.TopoDS import TopoDS_Shape
 
+from app.document.reference_history import note_operation
 from app.document.extrude import _register_solids
 from app.document.models import BooleanFeature, BooleanOperation
 
@@ -86,7 +87,9 @@ def apply_boolean_to_bodies(bodies: dict[str, TopoDS_Shape], feature: BooleanFea
             continue
         shape = bodies[target_id]
         for tool_id in tool_ids:
-            shape = occt_op(shape, bodies[tool_id]).Shape()
+            boolean_op = occt_op(shape, bodies[tool_id])
+            shape = boolean_op.Shape()
+            note_operation(boolean_op)
         del bodies[target_id]
         _register_solids(bodies, target_id, shape)
 

@@ -190,6 +190,7 @@ identical circular-import workaround) extrude.py imports this module back
 via a function-local import inside `_apply_feature_to_bodies` instead.
 """
 
+import dataclasses
 import math
 
 from fastapi import HTTPException
@@ -210,6 +211,9 @@ from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Face, TopoDS_Shape, topods
 from OCC.Core.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
+from app.document.reference_history import note_operation
+from app.document.reference_signature import measurer_for
+from app.sketch.reference_signature import fingerprint_matches, shape_distance
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
 from app.document.models import MoveFaceFeature, Part, SubShapeType
 from app.document.pattern import direction_vector
@@ -656,18 +660,24 @@ def _resolve_move_face_coaxial_reposition(
     classifier = BRepClass3d_SolidClassifier(source, midpoint, _OFFSET_TOLERANCE)
     is_boss = classifier.State() == TopAbs_IN
 
+    # Both booleans are recorded in order (the second takes the first's result as its argument), so a sub-shape of `source` is carried through both.
     if is_boss:
-        step1 = BRepAlgoAPI_Cut(source, fill).Shape()
+        first_op = BRepAlgoAPI_Cut(source, fill)
+        step1 = first_op.Shape()
         step1_op_is_valid = step1 is not None and not step1.IsNull() and BRepCheck_Analyzer(step1).IsValid()
         if not step1_op_is_valid:
             raise _move_face_failed(body_id)
-        result = BRepAlgoAPI_Fuse(step1, target).Shape()
+        second_op = BRepAlgoAPI_Fuse(step1, target)
     else:
-        step1 = BRepAlgoAPI_Fuse(source, fill).Shape()
+        first_op = BRepAlgoAPI_Fuse(source, fill)
+        step1 = first_op.Shape()
         step1_op_is_valid = step1 is not None and not step1.IsNull() and BRepCheck_Analyzer(step1).IsValid()
         if not step1_op_is_valid:
             raise _move_face_failed(body_id)
-        result = BRepAlgoAPI_Cut(step1, target).Shape()
+        second_op = BRepAlgoAPI_Cut(step1, target)
+    result = second_op.Shape()
+    note_operation(first_op, authoritative=False)
+    note_operation(second_op, authoritative=False)
 
     if result is None or result.IsNull():
         raise _move_face_failed(body_id)
@@ -712,6 +722,7 @@ def _resolve_move_face_offset(
 
     if not offset_maker.IsDone() or result is None or result.IsNull():
         raise _move_face_null_result(body_id)
+    note_operation(offset_maker, authoritative=False)
     if not BRepCheck_Analyzer(result).IsValid():
         raise _move_face_failed(body_id)
     if _face_count(result) == 0 or _volume(result) <= 0.0:
@@ -720,7 +731,7 @@ def _resolve_move_face_offset(
     return result
 
 
-def resolve_move_face_from_bodies(
+def _resolve_move_face_from_bodies_core(
     part: Part,
     bodies: dict[str, TopoDS_Shape],
     feature: MoveFaceFeature,
@@ -800,7 +811,9 @@ def resolve_move_face_from_bodies(
         raise _move_face_failed(body_id)
 
     boolean_op = BRepAlgoAPI_Fuse if normal_component > 0 else BRepAlgoAPI_Cut
-    result = boolean_op(source, prism).Shape()
+    made = boolean_op(source, prism)
+    result = made.Shape()
+    note_operation(made, authoritative=False)
 
     # Same silent-null gotcha `_resolve_move_face_offset` already guards
     # against (see this module's own top docstring) - a boolean op can
@@ -813,6 +826,68 @@ def resolve_move_face_from_bodies(
     if _face_count(result) == 0 or _volume(result) <= 0.0:
         raise _move_face_failed(body_id)
 
+    return body_id, result
+
+
+class _MovedFacesHistory:
+    """OCCT reports the faces a Move Face moves as consumed (the old wall is deleted, a new one generated at the new place), but for a reference they simply
+    CONTINUE: the face the user moved is still that face, displaced. `Modified(face)` here answers exactly that - the one face of the result with the same
+    kind and orientation that sits where the moved face was expected to land (`shifts[i]` is the displacement of the i-th moved face; a curved face's centroid
+    does not move across its own axis, so zero for those). Anything else (a neighbour, an untouched face) is not this object's to say: empty."""
+
+    def __init__(self, source: TopoDS_Shape, result: TopoDS_Shape, faces: list[TopoDS_Face], shifts: list[tuple[float, float, float]]) -> None:
+        self._source = measurer_for(source, "face")
+        self._result = measurer_for(result, "face")
+        self._expected: dict[int, tuple[float, float, float]] = {}
+        for face, shift in zip(faces, shifts):
+            index = self._source.index_of(face)
+            if index >= 0:
+                self._expected[index] = shift
+        self._signatures = [self._source.signature(i) for i in self._expected]
+
+    def Modified(self, shape: TopoDS_Shape) -> list[TopoDS_Shape]:  # noqa: N802 - mirrors OCCT's name
+        index = self._source.index_of(shape) if shape.ShapeType() == TopAbs_FACE else -1
+        shift = self._expected.get(index)
+        if shift is None:
+            return []
+        old = self._source.signature(index)
+        expected = dataclasses.replace(old, position=(old.position[0] + shift[0], old.position[1] + shift[1], old.position[2] + shift[2]))
+        tolerance = 1e-4 * (old.body_diagonal or 1.0)
+        near = [
+            j
+            for j in range(self._result.count)
+            if fingerprint_matches(old, self._result.signature(j)) and shape_distance(expected, self._result.signature(j)) <= tolerance
+        ]
+        return [self._result.shape_at(near[0])] if len(near) == 1 else []
+
+
+def resolve_move_face_from_bodies(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature: MoveFaceFeature,
+    excluded_feature_ids: frozenset[str],
+) -> tuple[str, TopoDS_Shape]:
+    """The Body id `feature` modifies and its post-move shape - see `_resolve_move_face_from_bodies_core`. Also records the moved faces' own continuation for
+    the reference-identity history (`_MovedFacesHistory`); the booleans / offset inside are recorded non-authoritatively, so a sub-shape this step cannot place
+    (an edge or vertex of a moved face) is "unknown" to history, never "consumed"."""
+    body_id, result = _resolve_move_face_from_bodies_core(part, bodies, feature, excluded_feature_ids)
+    try:
+        source = bodies[body_id]
+        faces = [topods.Face(resolve_subshape_from_bodies(bodies, ref)) for ref in feature.face_refs]
+        if feature.offset_distance is not None:
+            shifts = []
+            for face in faces:
+                if BRepAdaptor_Surface(face, True).GetType() == GeomAbs_Plane:
+                    normal = _outward_normal(face)
+                    shifts.append((normal.X() * feature.offset_distance, normal.Y() * feature.offset_distance, normal.Z() * feature.offset_distance))
+                else:
+                    shifts.append((0.0, 0.0, 0.0))
+        else:
+            vec = _movement_vector(part, bodies, feature, excluded_feature_ids, body_id)
+            shifts = [(vec.X(), vec.Y(), vec.Z())] * len(faces)
+        note_operation(_MovedFacesHistory(source, result, faces, shifts), authoritative=False)
+    except Exception:  # history is a convenience for references, never a reason to fail a Move Face
+        pass
     return body_id, result
 
 

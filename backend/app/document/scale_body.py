@@ -28,6 +28,7 @@ from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
 from OCC.Core.gp import gp_Pnt, gp_Trsf
 from OCC.Core.TopoDS import TopoDS_Shape
 
+from app.document.reference_history import note_operation
 from app.document.extrude import compute_part_bodies
 from app.document.models import Part, ScaleBodyFeature
 
@@ -76,6 +77,7 @@ def resolve_scale_body_from_bodies(
     transform = BRepBuilderAPI_Transform(source, trsf, True)
     if not transform.IsDone():
         raise _scale_body_failed(feature.body_id)
+    note_operation(transform)  # copy=True makes new TShapes with the same structure: each sub-shape is reported Modified into its transformed twin
     return feature.body_id, transform.Shape()
 
 

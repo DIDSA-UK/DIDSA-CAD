@@ -10338,6 +10338,13 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Whether [selection] names at least one Point-owning entity and every one of those Points is already pinned: an external (body) reference, a Fix,
+  /// or the sketch's own origin - the "nothing is offered between two pinned things" rule shared by dimension ghosts and ribbon constraint options.
+  bool _everyPointPinned(Iterable<SketchSelection> selection) {
+    final pointIds = {for (final s in selection) ..._pointIdsForSelection(s)};
+    return pointIds.isNotEmpty && pointIds.every((id) => id == _originPointId || _lockedPointIds.contains(id));
+  }
+
   /// Every Point id [selection] itself references - the client-side mirror
   /// of the backend's `Sketch._entity_defining_point_ids` (used there by
   /// `add_fixed_constraint`/the deletion-cascade path for the same "which
@@ -10502,6 +10509,9 @@ class SketchController extends ChangeNotifier {
   /// tangent ties are created internally, not via this flyout).
   List<ConstraintOption> get availableConstraintOptions {
     final sel = _selectionSet;
+
+    // Nothing is offered between two pinned things (see [_rebuildDimensionGhosts]): every Point of the selection is already immovable.
+    if (_everyPointPinned(sel)) return const [];
 
     if (sel.length == 1 && sel.first.kind == SelectionKind.line) {
       return const [
@@ -12710,31 +12720,67 @@ class SketchController extends ChangeNotifier {
   /// Bodies to reference at all in that case.
   Future<void> pickReferenceGhostVertex(String bodyId, int vertexIndex) async {
     if (_busy || _sketchId == null) return;
+    final pointId = await ensureReferencePoint(bodyId, vertexIndex);
+    if (pointId == null) return;
+    _applyDimensionHit(SketchSelection(kind: SelectionKind.point, id: pointId));
+  }
+
+  /// Implicit referencing (the DIDSA-VR design table's rule, `sketch_session.gd: ensure_reference`): makes the Body vertex ([bodyId], [vertexIndex])
+  /// usable in this Sketch and returns the id of the pinned Point that follows it - the backend's `convert-entities/vertex`, which is idempotent (asking
+  /// again for the same vertex gives the same Point), so the user never enters Convert mode, fixes it or marks it construction first. Called by every
+  /// tool that aims at a ghost vertex ([SketchCanvas._dispatchTap]); no undo entry (a reference is not something the user drew). Null for a bare,
+  /// non-Part Sketch (no Bodies to reference) or when the backend refuses (the error lands in [errorMessage]).
+  Future<String?> ensureReferencePoint(String bodyId, int vertexIndex) async {
+    if (_sketchId == null) return null;
     final partId = _documentPartId;
     final sketchFeatureId = _documentSketchFeatureId;
-    if (partId == null || sketchFeatureId == null) return;
+    if (partId == null || sketchFeatureId == null) return null;
 
     final cacheKey = '$bodyId:$vertexIndex';
     final existingId = _externalReferencePointIds[cacheKey];
-    if (existingId != null && points.containsKey(existingId)) {
-      _applyDimensionHit(SketchSelection(kind: SelectionKind.point, id: existingId));
-      return;
-    }
+    if (existingId != null && points.containsKey(existingId)) return existingId;
 
-    SketchSelection? hit;
+    String? pointId;
     await _runGuarded(() async {
-      final point = await _api.createExternalVertexReference(partId, sketchFeatureId, bodyId, vertexIndex);
+      final point = await _api.convertBodyVertex(partId, sketchFeatureId, bodyId, vertexIndex);
       points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      if (point.isLocked) _lockedPointIds.add(point.id);
       _externalReferencePointIds[cacheKey] = point.id;
-      hit = SketchSelection(kind: SelectionKind.point, id: point.id);
+      pointId = point.id;
     });
-    _applyDimensionHit(hit);
+    return pointId;
   }
+
+  /// [ensureReferencePoint]'s edge-shaped sibling: the pinned CONSTRUCTION line (or arc / circle, for a coplanar circular edge) between the edge's two
+  /// pinned reference Points, reused if the Sketch already has one (see [_convertBodyEdgeToLocalState]'s duplicate check). Same no-undo, no-Convert-mode
+  /// contract.
+  Future<SketchSelection?> ensureReferenceEdge(String bodyId, int edgeIndex) async {
+    if (_sketchId == null) return null;
+    if (_documentPartId == null || _documentSketchFeatureId == null) return null;
+
+    final cacheKey = '$bodyId:$edgeIndex';
+    final cached = _externalReferenceEdgeSelections[cacheKey];
+    if (cached != null && _selectionStillExists(cached)) return cached;
+
+    SketchSelection? selection;
+    await _runGuarded(() async {
+      selection = await _convertBodyEdgeToLocalState(bodyId, edgeIndex, construction: true, undoable: false);
+      _externalReferenceEdgeSelections[cacheKey] = selection!;
+    });
+    return selection;
+  }
+
+  bool _selectionStillExists(SketchSelection selection) => switch (selection.kind) {
+        SelectionKind.line => lines.containsKey(selection.id),
+        SelectionKind.arc => arcs.containsKey(selection.id),
+        SelectionKind.circle => circles.containsKey(selection.id),
+        _ => false,
+      };
 
   // Sketcher-roadmap Phase 4.3 v2: "bodyId:edgeIndex" -> the real Line id
   // [pickReferenceGhostEdge] already materialized for it - same reuse-on-
   // re-pick reasoning as [_externalReferencePointIds].
-  final Map<String, String> _externalReferenceLineIds = {};
+  final Map<String, SketchSelection> _externalReferenceEdgeSelections = {};
 
   /// Sketcher-roadmap Phase 4.3 v2: dimension-mode's own body-edge pick -
   /// [pickReferenceGhostVertex]'s sibling, called by [SketchCanvas] when a
@@ -12743,7 +12789,7 @@ class SketchController extends ChangeNotifier {
   /// (via two external-reference Points - see the backend's
   /// `create_external_edge_reference` doc comment) on first pick, reusing
   /// the same Line on every later re-pick via
-  /// [_externalReferenceLineIds], then hands it straight to
+  /// [_externalReferenceEdgeSelections], then hands it straight to
   /// [_applyDimensionHit] as an ordinary [SelectionKind.line] hit - once
   /// materialized, a picked ghost edge is indistinguishable from any other
   /// Line, so every existing ghost-building/confirm/undo path (length,
@@ -12752,34 +12798,147 @@ class SketchController extends ChangeNotifier {
   /// non-Part Sketch.
   Future<void> pickReferenceGhostEdge(String bodyId, int edgeIndex) async {
     if (_busy || _sketchId == null) return;
+    final selection = await ensureReferenceEdge(bodyId, edgeIndex);
+    if (selection == null) return;
+    _applyDimensionHit(selection);
+  }
+
+  // --- Reference health (reference-identity overhaul, docs/reference-identity-design.md) --------------------------------------------------
+
+  /// Point id -> the backend's verdict on that external reference, for every reference that is NOT healthy (lost, or potentially moved). Refreshed by
+  /// [refreshReferenceStatuses] when the Sketch opens and after anything that can change it (making / re-attaching / confirming a reference).
+  Map<String, ExternalReferenceStatusDto> _referenceStatuses = const {};
+
+  /// Points whose Body vertex can no longer be found (consumed by an upstream feature, or matched ambiguously) - never silently rebound; see
+  /// [beginReattach].
+  Set<String> get lostReferencePointIds => {for (final s in _referenceStatuses.values) if (s.isLost) s.pointId};
+
+  /// Points that were re-bound on weaker evidence ("potentially moved") - the Sketch still solves, but the user should look: [confirmReference] keeps
+  /// it, [beginReattach] picks a different vertex.
+  Set<String> get movedReferencePointIds => {for (final s in _referenceStatuses.values) if (s.isPotentiallyMoved) s.pointId};
+
+  bool get hasFlaggedReferences => _referenceStatuses.isNotEmpty;
+
+  ExternalReferenceStatusDto? referenceStatusOf(String pointId) => _referenceStatuses[pointId];
+
+  /// The flagged reference Points the current selection touches (a selected Point, or either end of a selected Line / Arc), lost ones first - what the
+  /// ribbon's Re-attach / Keep chips act on.
+  List<String> get flaggedReferencePointsInSelection {
+    final ids = <String>{};
+    for (final selection in _selectionSet) {
+      ids.addAll(_pointIdsForSelection(selection).where(_referenceStatuses.containsKey));
+    }
+    final lost = ids.where((id) => _referenceStatuses[id]!.isLost);
+    final moved = ids.where((id) => !_referenceStatuses[id]!.isLost);
+    return [...lost, ...moved];
+  }
+
+  /// A one-line, human description of why [pointId]'s reference is flagged, from the backend's machine-readable reason.
+  String describeReferenceProblem(String pointId) {
+    final status = _referenceStatuses[pointId];
+    if (status == null) return '';
+    final reason = status.reason;
+    if (status.isPotentiallyMoved) {
+      return switch (reason) {
+        'nearest_of_identical_vertices' => 'Re-attached to the nearest of several identical corners - check it is the right one.',
+        'unique_fingerprint_far' => 'Re-attached to the only matching corner, but it is far from where it was - check it.',
+        'fingerprint_changed_in_place' => 'The corner it was attached to was reshaped - check it.',
+        _ => 'This reference may have moved - check it.',
+      };
+    }
+    if (reason.startsWith('consumed_by_')) return 'The corner it was attached to was removed by an earlier feature.';
+    return switch (reason) {
+      'ambiguous' => 'Several identical corners now match - pick the right one.',
+      'body_missing' => 'The body it was attached to is gone.',
+      'sketch_plane_unresolved' => "This sketch's plane could not be resolved.",
+      'not_coplanar' => 'The circular edge it was attached to no longer lies in this sketch\'s plane.',
+      _ => 'The corner it was attached to can no longer be found.',
+    };
+  }
+
+  /// The Body vertex indices an ambiguous lost reference could be (highlighted while re-attaching), as `(bodyId, vertexIndex)`.
+  Set<(String, int)> get reattachCandidates {
+    final status = _reattachPointId == null ? null : _referenceStatuses[_reattachPointId];
+    if (status == null) return const {};
+    return {for (final index in status.candidates) (status.bodyId, index)};
+  }
+
+  String? _reattachPointId;
+
+  /// The reference Point the user is currently picking a replacement corner for, or null.
+  String? get reattachPointId => _reattachPointId;
+  bool get isReattaching => _reattachPointId != null;
+
+  /// Re-reads every external reference's health from the backend (no-op for a bare, non-Part Sketch). A failure keeps the previous answer: a flag
+  /// that cannot be refreshed should not vanish.
+  Future<void> refreshReferenceStatuses() async {
     final partId = _documentPartId;
     final sketchFeatureId = _documentSketchFeatureId;
     if (partId == null || sketchFeatureId == null) return;
-
-    final cacheKey = '$bodyId:$edgeIndex';
-    final existingId = _externalReferenceLineIds[cacheKey];
-    if (existingId != null && lines.containsKey(existingId)) {
-      _applyDimensionHit(SketchSelection(kind: SelectionKind.line, id: existingId));
-      return;
+    try {
+      final statuses = await _api.listExternalReferences(partId, sketchFeatureId);
+      _referenceStatuses = {
+        for (final status in statuses)
+          if (status.isLost || status.isPotentiallyMoved) status.pointId: status,
+      };
+      if (_reattachPointId != null && !_referenceStatuses.containsKey(_reattachPointId)) _reattachPointId = null;
+      notifyListeners();
+    } on ApiException {
+      // Keep what we had.
     }
+  }
 
-    SketchSelection? hit;
+  /// Starts "pick the replacement corner" for [pointId] (a flagged reference): the next tap on a ghost vertex re-attaches it ([reattachTo]).
+  void beginReattach(String pointId) {
+    if (!_referenceStatuses.containsKey(pointId)) return;
+    _reattachPointId = pointId;
+    notifyListeners();
+  }
+
+  void cancelReattach() {
+    if (_reattachPointId == null) return;
+    _reattachPointId = null;
+    notifyListeners();
+  }
+
+  /// Whether the replacement being picked is a circular EDGE (the flagged reference is a circle's centre) rather than a vertex - tells the canvas / Orbit View
+  /// which Body geometry a tap may pick while re-attaching.
+  bool get reattachWantsEdge => _reattachPointId != null && (_referenceStatuses[_reattachPointId]?.isCircleCentre ?? false);
+
+  /// Completes [beginReattach]: points the picked Point at the Body vertex ([bodyId], [vertexIndex]) - or, when the flagged reference is a circle's centre
+  /// ([reattachWantsEdge]), at the centre of the circular Body edge with that index. The Point keeps its id, so every line, dimension
+  /// and constraint built on it stays; only what it follows changes. Not undoable (the previous vertex is gone or untrusted).
+  Future<void> reattachTo(String bodyId, int vertexIndex) async {
+    final pointId = _reattachPointId;
+    final partId = _documentPartId;
+    final sketchFeatureId = _documentSketchFeatureId;
+    if (pointId == null || partId == null || sketchFeatureId == null || _busy || _sketchId == null) return;
+    var done = false;
     await _runGuarded(() async {
-      final result = await _api.createExternalEdgeReference(partId, sketchFeatureId, bodyId, edgeIndex);
-      points[result.startPoint.id] =
-          SketchPointView(id: result.startPoint.id, x: result.startPoint.x, y: result.startPoint.y);
-      points[result.endPoint.id] =
-          SketchPointView(id: result.endPoint.id, x: result.endPoint.x, y: result.endPoint.y);
-      lines[result.line.id] = SketchLineView(
-        id: result.line.id,
-        startPointId: result.line.startPointId,
-        endPointId: result.line.endPointId,
-        construction: result.line.construction,
-      );
-      _externalReferenceLineIds[cacheKey] = result.line.id;
-      hit = SketchSelection(kind: SelectionKind.line, id: result.line.id);
+      final point = _referenceStatuses[pointId]?.isCircleCentre ?? false
+          ? await _api.reattachExternalReference(partId, sketchFeatureId, pointId, bodyId, edgeIndex: vertexIndex)
+          : await _api.reattachExternalReference(partId, sketchFeatureId, pointId, bodyId, vertexIndex: vertexIndex);
+      points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+      _lockedPointIds.add(point.id);
+      _externalReferencePointIds.removeWhere((_, id) => id == pointId);
+      if (!(_referenceStatuses[pointId]?.isCircleCentre ?? false)) _externalReferencePointIds['$bodyId:$vertexIndex'] = pointId;
+      _externalReferenceEdgeSelections.clear(); // an edge's cached line may now join different corners
+      await _solveAndTrackDof();
+      done = true;
     });
-    _applyDimensionHit(hit);
+    if (done) _reattachPointId = null;
+    await refreshReferenceStatuses();
+  }
+
+  /// "Yes, that is the right corner" for a potentially-moved reference: the backend re-captures its signature so it stops being flagged.
+  Future<void> confirmReference(String pointId) async {
+    final partId = _documentPartId;
+    final sketchFeatureId = _documentSketchFeatureId;
+    if (partId == null || sketchFeatureId == null || _busy || _sketchId == null) return;
+    await _runGuarded(() async {
+      await _api.confirmExternalReference(partId, sketchFeatureId, pointId);
+    });
+    await refreshReferenceStatuses();
   }
 
   /// Convert Entities' own staged-pick set - a tap now only stages a Body
@@ -12963,9 +13122,15 @@ class SketchController extends ChangeNotifier {
     String bodyId,
     int edgeIndex, {
     bool construction = false,
+    bool undoable = true,
   }) async {
     final partId = _documentPartId!;
     final sketchFeatureId = _documentSketchFeatureId!;
+    // An implicit reference ([ensureReferenceEdge]) is not something the user drew, so it leaves no undo entry.
+    void pushUndo(Future<void> Function() undo) {
+      if (undoable) _pushUndo(undo);
+    }
+
     final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex, construction: construction);
     final newPointIds = <String>[];
     for (final p in [result.startPoint, result.endPoint, if (result.centerPoint case final c?) c]) {
@@ -12986,7 +13151,7 @@ class SketchController extends ChangeNotifier {
         construction: arc.construction,
       );
       final arcId = arc.id;
-      _pushUndo(() async {
+      pushUndo(() async {
         await _api.deleteArc(sketchId, arcId);
         arcs.remove(arcId);
         for (final pointId in newPointIds) {
@@ -13042,7 +13207,7 @@ class SketchController extends ChangeNotifier {
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
         cardinalPointIds.add(point.id);
       }
-      _pushUndo(() async {
+      pushUndo(() async {
         await _api.deleteCircle(sketchId, circleId);
         circles.remove(circleId);
         for (final pointId in [...newPointIds, ...cardinalPointIds]) {
@@ -13060,6 +13225,19 @@ class SketchController extends ChangeNotifier {
 
     final line = result.line!;
     if (lines.containsKey(line.id)) return SketchSelection(kind: SelectionKind.line, id: line.id);
+    // Implicit references (see [ensureReferenceEdge]): an edge is two pinned points plus ONE construction line, reused if present. The backend's
+    // convert-entities/edge reuses the endpoint Points but always makes a new Line, so a second pick of the same edge (e.g. after reopening the sketch,
+    // when the per-session cache is empty) hands back a duplicate: keep the line already joining those two Points and drop the new one.
+    if (!undoable) {
+      for (final existing in lines.values) {
+        final sameEnds = (existing.startPointId == line.startPointId && existing.endPointId == line.endPointId) ||
+            (existing.startPointId == line.endPointId && existing.endPointId == line.startPointId);
+        if (sameEnds) {
+          await _api.deleteLine(sketchId, line.id);
+          return SketchSelection(kind: SelectionKind.line, id: existing.id);
+        }
+      }
+    }
     lines[line.id] = SketchLineView(
       id: line.id,
       startPointId: line.startPointId,
@@ -13067,7 +13245,7 @@ class SketchController extends ChangeNotifier {
       construction: line.construction,
     );
     final lineId = line.id;
-    _pushUndo(() async {
+    pushUndo(() async {
       await _api.deleteLine(sketchId, lineId);
       lines.remove(lineId);
       for (final pointId in newPointIds) {
@@ -13321,6 +13499,13 @@ class SketchController extends ChangeNotifier {
   /// alone, or anything with more than two entities) shows no ghosts.
   void _rebuildDimensionGhosts() {
     final sel = _dimensionSelection;
+
+    // Reference-identity overhaul (the DIDSA-VR design table's rule): nothing is offered between two pinned things. A driving dimension on geometry
+    // whose every Point is already pinned (a body corner or edge reference, the origin, a Fix) could only over-constrain the sketch.
+    if (_everyPointPinned(sel)) {
+      _ghosts = [];
+      return;
+    }
 
     if (sel.length == 1) {
       switch (sel.first.kind) {
@@ -14122,6 +14307,7 @@ class SketchController extends ChangeNotifier {
       _adoptSketchDto(sketch);
       await _loadExistingContent(sketchId);
     });
+    await refreshReferenceStatuses();
   }
 
   Future<void> _loadExistingContent(String sketchId) async {

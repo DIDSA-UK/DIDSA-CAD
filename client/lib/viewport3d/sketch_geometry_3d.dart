@@ -1021,6 +1021,11 @@ final vm.Vector4 sketchConstructionColor = vm.Vector4(0.290, 0.565, 0.851, 1.0);
 /// being manipulated right now.
 final vm.Vector4 sketchGrabbedColor = vm.Vector4(1.0, 0.671, 0.251, 1.0);
 
+/// Reference-identity overhaul (`docs/reference-identity-design.md`): a reference Point (and the Lines / Arcs / Circles that end on it) whose Body corner is
+/// lost (red, same hue as the lost-reference banner) or was re-bound on weaker evidence ("potentially moved", orange).
+final vm.Vector4 sketchLostReferenceColor = vm.Vector4(0.827, 0.184, 0.184, 1.0);
+final vm.Vector4 sketchMovedReferenceColor = vm.Vector4(0.961, 0.486, 0.0, 1.0);
+
 /// P26 (on-device feedback: "make construction lines dashed"): world-space
 /// dash/gap length for construction geometry - mirrors `sketch_canvas.dart`'s
 /// own dashed-stroke look, but at a fixed *sketch-unit* cadence rather than

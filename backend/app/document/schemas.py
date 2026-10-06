@@ -134,9 +134,24 @@ class SketchFeatureCreate(BaseModel):
     plane_feature_id: str | None = None
 
 
+class FeatureResponseBase(BaseModel):
+    """Reference-identity overhaul (docs/reference-identity-design.md): every Feature response can say that some of the Feature's `SubShapeRef`s (an edge a Fillet
+    rounds, the face a Plane sits on, a Pattern's direction edge, ...) are lost - not found, or found only ambiguously, never silently rebound - or were bound on
+    weaker evidence ("potentially moved"), or were re-followed at a new index (informational). Entries are reference paths inside the Feature (`edge_refs[0]`,
+    `face_refs[1].face_ref`, `edge_ref`, ...); `reference_reasons` maps each flagged path to a short machine-readable reason (`no_match`, `ambiguous`,
+    `body_missing`, `unique_fingerprint_far`, `nearest_of_identical_vertices`, ...). A Sketch reports its external-reference Points instead (see
+    `SketchFeatureResponse`). `has_lost_reference` is the one flag a client tree shows."""
+
+    has_lost_reference: bool = False
+    lost_references: list[str] = []
+    moved_references: list[str] = []
+    followed_references: list[str] = []
+    reference_reasons: dict[str, str] = {}
+
+
 # `type` is a discriminator, same pattern as app.sketch.schemas'
 # SketchEntityResponse.
-class SketchFeatureResponse(BaseModel):
+class SketchFeatureResponse(FeatureResponseBase):
     type: Literal["sketch"] = "sketch"
     id: str
     sketch_id: str
@@ -159,6 +174,14 @@ class SketchFeatureResponse(BaseModel):
     # Sketch with no external references at all - the common case, and the
     # only case before this field existed.
     has_lost_reference: bool = False
+    # Reference-identity overhaul (docs/reference-identity-design.md): which external-reference Points are lost (not found, consumed by an upstream
+    # feature, or found ambiguously - never silently rebound), which are bound but "potentially moved" (bound on weaker evidence; the user should look
+    # and can confirm or re-attach), and which were re-found at a new index automatically (informational). `reference_reasons` maps each of those ids
+    # to a short machine-readable reason ("no_match", "ambiguous", "body_missing", "consumed_by_<feature>", "nearest_of_identical_vertices", ...).
+    lost_reference_point_ids: list[str] = []
+    moved_reference_point_ids: list[str] = []
+    followed_reference_point_ids: list[str] = []
+    reference_reasons: dict[str, str] = {}
 
 
 class SketchEntityRefSchema(BaseModel):
@@ -248,7 +271,7 @@ class ExtrudeFeatureUpdate(BaseModel):
     draft_outward: bool | None = None
 
 
-class ExtrudeFeatureResponse(BaseModel):
+class ExtrudeFeatureResponse(FeatureResponseBase):
     type: Literal["extrude"] = "extrude"
     id: str
     sketch_feature_id: str
@@ -412,6 +435,33 @@ class ExternalVertexReferenceCreate(BaseModel):
 
     body_id: str
     vertex_index: int
+
+
+class ExternalReferenceStatus(BaseModel):
+    """Reference-identity overhaul: one external-reference Point's health, as of a fresh refresh. `status` is `ok`, `followed` (re-found at a new index,
+    informational), `potentially_moved` (bound on weaker evidence; confirm or re-attach) or `lost` (not found / consumed / ambiguous: never rebound).
+    `reason` and `method` ("index" / "signature" / "history" / "position") say why; `candidates` lists the vertex indices a lost-as-ambiguous reference
+    could be (empty otherwise), so a client can offer them."""
+
+    point_id: str
+    body_id: str
+    # What `vertex_index` indexes: "vertex" (a Body vertex) or "circle_centre" (a circular Body EDGE whose centre the Point sits at).
+    kind: str = "vertex"
+    vertex_index: int
+    status: str
+    reason: str = ""
+    method: str = ""
+    candidates: list[int] = []
+
+
+class ExternalReferenceReattach(BaseModel):
+    """Re-attach an existing external-reference Point to a different Body vertex (the one the user picked as the replacement)."""
+
+    body_id: str
+    # The replacement for a "vertex" reference; omit for a "circle_centre" one.
+    vertex_index: int | None = None
+    # The replacement circular edge for a "circle_centre" reference (the Point then sits at that circle's centre); omit for a "vertex" one.
+    edge_index: int | None = None
 
 
 class ExternalEdgeReferenceCreate(BaseModel):
@@ -634,7 +684,7 @@ class CreatePlaneFeatureUpdate(BaseModel):
     curve_parameter: float | None = None
 
 
-class CreatePlaneFeatureResponse(BaseModel):
+class CreatePlaneFeatureResponse(FeatureResponseBase):
     type: Literal["create_plane"] = "create_plane"
     id: str
     plane_type: PlaneType
@@ -707,7 +757,7 @@ class CurveFeatureUpdate(BaseModel):
     profile_refs_b: list[SketchEntityRefSchema] | None = None
 
 
-class CurveFeatureResponse(BaseModel):
+class CurveFeatureResponse(FeatureResponseBase):
     type: Literal["curve"] = "curve"
     id: str
     curve_type: CurveType
@@ -749,7 +799,7 @@ class FilletFeatureUpdate(BaseModel):
     radius: float | None = None
 
 
-class FilletFeatureResponse(BaseModel):
+class FilletFeatureResponse(FeatureResponseBase):
     type: Literal["fillet"] = "fillet"
     id: str
     edge_refs: list[SubShapeRefSchema] = []
@@ -798,7 +848,7 @@ class ChamferFeatureUpdate(BaseModel):
     edge_options: dict[int, ChamferEdgeOptionsSchema] | None = None
 
 
-class ChamferFeatureResponse(BaseModel):
+class ChamferFeatureResponse(FeatureResponseBase):
     type: Literal["chamfer"] = "chamfer"
     id: str
     edge_refs: list[SubShapeRefSchema] = []
@@ -844,7 +894,7 @@ class RevolveFeatureUpdate(BaseModel):
     profile_refs: list[SketchEntityRefSchema] | None = None
 
 
-class RevolveFeatureResponse(BaseModel):
+class RevolveFeatureResponse(FeatureResponseBase):
     type: Literal["revolve"] = "revolve"
     id: str
     sketch_feature_id: str
@@ -899,7 +949,7 @@ class SweepFeatureUpdate(BaseModel):
     profile_refs: list[SketchEntityRefSchema] | None = None
 
 
-class SweepFeatureResponse(BaseModel):
+class SweepFeatureResponse(FeatureResponseBase):
     type: Literal["sweep"] = "sweep"
     id: str
     sketch_feature_id: str
@@ -954,7 +1004,7 @@ class MirrorFeatureUpdate(BaseModel):
     tool_feature_id: str | None = None
 
 
-class MirrorFeatureResponse(BaseModel):
+class MirrorFeatureResponse(FeatureResponseBase):
     type: Literal["mirror"] = "mirror"
     id: str
     source_body_ids: list[str]
@@ -984,7 +1034,7 @@ class MergeFeatureUpdate(BaseModel):
     body_ids: list[str] | None = None
 
 
-class MergeFeatureResponse(BaseModel):
+class MergeFeatureResponse(FeatureResponseBase):
     type: Literal["merge"] = "merge"
     id: str
     body_ids: list[str]
@@ -1020,7 +1070,7 @@ class BooleanFeatureUpdate(BaseModel):
     consume_tool_bodies: bool | None = None
 
 
-class BooleanFeatureResponse(BaseModel):
+class BooleanFeatureResponse(FeatureResponseBase):
     type: Literal["boolean"] = "boolean"
     id: str
     operation: BooleanOperation
@@ -1049,7 +1099,7 @@ class DeleteBodyFeatureUpdate(BaseModel):
     body_ids: list[str] | None = None
 
 
-class DeleteBodyFeatureResponse(BaseModel):
+class DeleteBodyFeatureResponse(FeatureResponseBase):
     type: Literal["delete_body"] = "delete_body"
     id: str
     body_ids: list[str]
@@ -1078,7 +1128,7 @@ class ScaleBodyFeatureUpdate(BaseModel):
     factor: float | None = None
 
 
-class ScaleBodyFeatureResponse(BaseModel):
+class ScaleBodyFeatureResponse(FeatureResponseBase):
     type: Literal["scale_body"] = "scale_body"
     id: str
     body_id: str
@@ -1125,7 +1175,7 @@ class SplitFeatureUpdate(BaseModel):
     tool: SplitToolRefSchema | None = None
 
 
-class SplitFeatureResponse(BaseModel):
+class SplitFeatureResponse(FeatureResponseBase):
     type: Literal["split"] = "split"
     id: str
     target_body_id: str
@@ -1196,7 +1246,7 @@ class MoveBodyFeatureUpdate(BaseModel):
     make_copy: bool | None = None
 
 
-class MoveBodyFeatureResponse(BaseModel):
+class MoveBodyFeatureResponse(FeatureResponseBase):
     type: Literal["move_body"] = "move_body"
     id: str
     body_id: str
@@ -1227,7 +1277,7 @@ class DeleteFaceFeatureUpdate(BaseModel):
     face_refs: list[SubShapeRefSchema] | None = None
 
 
-class DeleteFaceFeatureResponse(BaseModel):
+class DeleteFaceFeatureResponse(FeatureResponseBase):
     type: Literal["delete_face"] = "delete_face"
     id: str
     face_refs: list[SubShapeRefSchema]
@@ -1261,7 +1311,7 @@ class ShellFeatureUpdate(BaseModel):
     thickness_direction: ThicknessDirection | None = None
 
 
-class ShellFeatureResponse(BaseModel):
+class ShellFeatureResponse(FeatureResponseBase):
     type: Literal["shell"] = "shell"
     id: str
     body_id: str
@@ -1308,7 +1358,7 @@ class MoveFaceFeatureUpdate(BaseModel):
     direction_distance: float | None = None
 
 
-class MoveFaceFeatureResponse(BaseModel):
+class MoveFaceFeatureResponse(FeatureResponseBase):
     type: Literal["move_face"] = "move_face"
     id: str
     face_refs: list[SubShapeRefSchema]
@@ -1360,7 +1410,7 @@ class SurfaceFeatureUpdate(BaseModel):
     profile_refs: list[SketchEntityRefSchema] | None = None
 
 
-class SurfaceFeatureResponse(BaseModel):
+class SurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["surface"] = "surface"
     id: str
     sketch_feature_id: str
@@ -1395,7 +1445,7 @@ class PlanarSurfaceFeatureUpdate(BaseModel):
     profile_refs: list[SketchEntityRefSchema] | None = None
 
 
-class PlanarSurfaceFeatureResponse(BaseModel):
+class PlanarSurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["planar_surface"] = "planar_surface"
     id: str
     sketch_feature_id: str
@@ -1425,7 +1475,7 @@ class RevolveSurfaceFeatureUpdate(BaseModel):
     profile_refs: list[SketchEntityRefSchema] | None = None
 
 
-class RevolveSurfaceFeatureResponse(BaseModel):
+class RevolveSurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["revolve_surface"] = "revolve_surface"
     id: str
     sketch_feature_id: str
@@ -1455,7 +1505,7 @@ class SweptSurfaceFeatureUpdate(BaseModel):
     profile_refs: list[SketchEntityRefSchema] | None = None
 
 
-class SweptSurfaceFeatureResponse(BaseModel):
+class SweptSurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["swept_surface"] = "swept_surface"
     id: str
     sketch_feature_id: str
@@ -1481,7 +1531,7 @@ class FillSurfaceFeatureUpdate(BaseModel):
     boundary_refs: list[SketchOrEdgeRefSchema] | None = None
 
 
-class FillSurfaceFeatureResponse(BaseModel):
+class FillSurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["fill_surface"] = "fill_surface"
     id: str
     boundary_refs: list[SketchOrEdgeRefSchema] = []
@@ -1580,7 +1630,7 @@ class PatternFeatureUpdate(BaseModel):
     tool_feature_id: str | None = None
 
 
-class PatternFeatureResponse(BaseModel):
+class PatternFeatureResponse(FeatureResponseBase):
     type: Literal["pattern"] = "pattern"
     id: str
     source_body_ids: list[str]
@@ -1620,7 +1670,7 @@ class ImportFeatureCreate(BaseModel):
     data_base64: str
 
 
-class ImportFeatureResponse(BaseModel):
+class ImportFeatureResponse(FeatureResponseBase):
     type: Literal["import"] = "import"
     id: str
     source_format: ImportSourceFormat
@@ -1711,7 +1761,7 @@ class GearFeatureUpdate(BaseModel):
     points_per_flank: int | None = None
 
 
-class GearFeatureResponse(BaseModel):
+class GearFeatureResponse(FeatureResponseBase):
     type: Literal["gear"] = "gear"
     id: str
     plane_ref: PlaneRefSchema
@@ -1788,7 +1838,7 @@ class RackFeatureUpdate(BaseModel):
     target_body_ids: list[str] | None = None
 
 
-class RackFeatureResponse(BaseModel):
+class RackFeatureResponse(FeatureResponseBase):
     type: Literal["rack"] = "rack"
     id: str
     plane_ref: PlaneRefSchema
@@ -1856,7 +1906,7 @@ class BevelGearFeatureUpdate(BaseModel):
     spiral_hand: SpiralBevelHand | None = None
 
 
-class BevelGearFeatureResponse(BaseModel):
+class BevelGearFeatureResponse(FeatureResponseBase):
     type: Literal["bevel_gear"] = "bevel_gear"
     id: str
     plane_ref: PlaneRefSchema
@@ -1949,7 +1999,7 @@ class BevelPairFeatureUpdate(BaseModel):
     spiral_angle_degrees: float | None = None
 
 
-class BevelPairFeatureResponse(BaseModel):
+class BevelPairFeatureResponse(FeatureResponseBase):
     type: Literal["bevel_pair"] = "bevel_pair"
     id: str
     plane_ref: PlaneRefSchema
@@ -2042,7 +2092,7 @@ class LoftFeatureUpdate(BaseModel):
     guide_curve_refs: list[SketchOrEdgeRefSchema] | None = None
 
 
-class LoftFeatureResponse(BaseModel):
+class LoftFeatureResponse(FeatureResponseBase):
     type: Literal["loft"] = "loft"
     id: str
     sections: list[LoftSectionSchema]
@@ -2082,7 +2132,7 @@ class LoftSurfaceFeatureUpdate(BaseModel):
     guide_curve_refs: list[SketchOrEdgeRefSchema] | None = None
 
 
-class LoftSurfaceFeatureResponse(BaseModel):
+class LoftSurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["loft_surface"] = "loft_surface"
     id: str
     sections: list[LoftSectionSchema]
@@ -2121,7 +2171,7 @@ class RuledSurfaceFeatureUpdate(BaseModel):
     sections: list[RuledSurfaceSectionSchema] | None = None
 
 
-class RuledSurfaceFeatureResponse(BaseModel):
+class RuledSurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["ruled_surface"] = "ruled_surface"
     id: str
     sections: list[RuledSurfaceSectionSchema]
@@ -2147,7 +2197,7 @@ class ThickenFeatureUpdate(BaseModel):
     thickness: float | None = None
 
 
-class ThickenFeatureResponse(BaseModel):
+class ThickenFeatureResponse(FeatureResponseBase):
     type: Literal["thicken"] = "thicken"
     id: str
     surface_feature_id: str
@@ -2170,7 +2220,7 @@ class KnitSurfaceFeatureUpdate(BaseModel):
     surface_feature_ids: list[str] | None = None
 
 
-class KnitSurfaceFeatureResponse(BaseModel):
+class KnitSurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["knit_surface"] = "knit_surface"
     id: str
     surface_feature_ids: list[str]
@@ -2195,7 +2245,7 @@ class SolidFromSurfacesFeatureUpdate(BaseModel):
     surface_feature_ids: list[str] | None = None
 
 
-class SolidFromSurfacesFeatureResponse(BaseModel):
+class SolidFromSurfacesFeatureResponse(FeatureResponseBase):
     type: Literal["solid_from_surfaces"] = "solid_from_surfaces"
     id: str
     surface_feature_ids: list[str]
@@ -2230,7 +2280,7 @@ class OffsetSurfaceFeatureUpdate(BaseModel):
     distance: float | None = None
 
 
-class OffsetSurfaceFeatureResponse(BaseModel):
+class OffsetSurfaceFeatureResponse(FeatureResponseBase):
     type: Literal["offset_surface"] = "offset_surface"
     id: str
     source: OffsetSourceRefSchema
@@ -2301,7 +2351,7 @@ class GearChainFeatureUpdate(BaseModel):
     print_clearance_margin: float | None = None
 
 
-class GearChainFeatureResponse(BaseModel):
+class GearChainFeatureResponse(FeatureResponseBase):
     type: Literal["gear_chain"] = "gear_chain"
     id: str
     plane_ref: PlaneRefSchema
@@ -2353,7 +2403,7 @@ class PlanetaryGearFeatureUpdate(BaseModel):
     pressure_angle_degrees: float | None = None
 
 
-class PlanetaryGearFeatureResponse(BaseModel):
+class PlanetaryGearFeatureResponse(FeatureResponseBase):
     type: Literal["planetary_gear"] = "planetary_gear"
     id: str
     plane_ref: PlaneRefSchema

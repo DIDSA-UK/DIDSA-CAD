@@ -36,7 +36,8 @@ from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Vertex, TopoDS_Wire, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape, TopTools_ListOfShape
 
-from app.document import body_cache
+from app.document import body_cache, reference_history
+from app.document.reference_history import ReShapeHistory
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
 from app.document.shell_ops import thicken_capped_solid_to_solid, thicken_shell_to_solid
 from app.document.plane_geometry import (
@@ -1454,6 +1455,8 @@ def _prepare_for_boolean(shape: TopoDS_Shape) -> TopoDS_Shape:
     converter.Set2dConversion(True)
     converter.SetExtrusionMode(True)
     converter.Perform()
+    # The conversion replaces sub-shapes (new TShapes): report it, so a boolean on the converted operand can still be followed back to the caller's own shape.
+    reference_history.note_operation(ReShapeHistory(converter.GetContext()))
     return converter.Result()
 
 
@@ -1514,6 +1517,7 @@ def _safe_fuse(
     shape = fuse.Shape()
     if not _fuse_result_is_sane(shape, vol_a, vol_b):
         raise _boolean_op_failed(op, body_ids)
+    reference_history.note_operation(fuse)  # any conversion above was reported first, so the chain conversion -> fuse still names the caller's sub-shapes
     return shape
 
 
@@ -1579,6 +1583,7 @@ def _apply_boss_or_cut(
             if not cut_op.IsDone():
                 raise _boolean_op_failed("cut", [target_id])
             cut_result = cut_op.Shape()
+            reference_history.note_operation(cut_op)
             del bodies[target_id]
             _register_solids(bodies, target_id, cut_result)
 
@@ -2933,6 +2938,7 @@ def _unify_same_domain(shape: TopoDS_Shape) -> TopoDS_Shape:
     unified = unify.Shape()
     if unified is None or unified.IsNull() or not BRepCheck_Analyzer(unified).IsValid():
         return shape
+    reference_history.note_operation(unify.History(), authoritative=False)  # merges faces only: its silence is not evidence of consumption
     return unified
 
 
@@ -2963,13 +2969,15 @@ def _apply_feature_to_bodies(
     this call" from "this key already existed, untouched, from an earlier
     step" without needing to understand any one branch's own internals."""
     before = dict(bodies)
+    reference_history.begin_step(feature.id, bodies)
     _apply_feature_to_bodies_impl(feature, part, bodies, feature_index, excluded_feature_ids)
-    if not unify:
-        return
-    for body_id, shape in list(bodies.items()):
-        if before.get(body_id) is shape:
-            continue
-        bodies[body_id] = _unify_same_domain(shape)
+    if unify:
+        for body_id, shape in list(bodies.items()):
+            if before.get(body_id) is shape:
+                continue
+            bodies[body_id] = _unify_same_domain(shape)
+    # Reference-identity overhaul: a no-op unless a history trace is being recorded (see app.document.reference_history).
+    reference_history.end_step(feature.id, before, bodies)
 
 
 def compute_part_bodies(
@@ -3260,7 +3268,7 @@ _TOPABS_FOR_SUBSHAPE_TYPE = {
 }
 
 
-def _missing_reference(ref: SubShapeRef) -> HTTPException:
+def _missing_reference(ref: SubShapeRef, reason: str | None = None) -> HTTPException:
     """B1: the structured `missing_reference` validation error `resolve_
     subshape` raises whenever `ref` can no longer be resolved - matches
     app.document.router._validate_target_body_ids's established envelope
@@ -3271,15 +3279,15 @@ def _missing_reference(ref: SubShapeRef) -> HTTPException:
     reselect" instead of a generic message). 422, matching Cut's own
     already-established "structurally invalid, not just malformed" use of
     422 in `_validate_target_body_ids`."""
-    return HTTPException(
-        status_code=422,
-        detail={
-            "type": "missing_reference",
-            "body_id": ref.body_id,
-            "shape_type": ref.shape_type.value,
-            "index": ref.index,
-        },
-    )
+    detail = {
+        "type": "missing_reference",
+        "body_id": ref.body_id,
+        "shape_type": ref.shape_type.value,
+        "index": ref.index,
+    }
+    if reason is not None:
+        detail["reason"] = reason  # why a signed reference could not be re-found: "no_match" | "ambiguous"
+    return HTTPException(status_code=422, detail=detail)
 
 
 def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> TopoDS_Shape:
@@ -3301,12 +3309,26 @@ def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeR
     if ref.shape_type == SubShapeType.BODY:
         return body
 
+    # Reference-identity overhaul (docs/reference-identity-design.md): a reference that carries a geometric signature is re-found when its index has gone
+    # stale (an upstream edit renumbered the Body), and fails closed - never silently resolves to a look-alike - when it cannot be found unambiguously.
+    index = ref.index
+    if ref.lost_reason is not None:
+        # OCCT history said an upstream Feature consumed this sub-shape (set by `refresh_feature_subshape_refs`): never bind a look-alike.
+        raise _missing_reference(ref, reason=ref.lost_reason)
+    if ref.signature is not None:
+        from app.document.subshape_identity import decide_subshape
+
+        decision = decide_subshape(ref, body)
+        if decision.index is None:
+            raise _missing_reference(ref, reason=decision.reason or "no_match")
+        index = decision.index
+
     shape_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(body, _TOPABS_FOR_SUBSHAPE_TYPE[ref.shape_type], shape_map)
-    if not (0 <= ref.index < shape_map.Size()):
+    if not (0 <= index < shape_map.Size()):
         raise _missing_reference(ref)
 
-    return shape_map.FindKey(ref.index + 1)
+    return shape_map.FindKey(index + 1)
 
 
 def apply_rigid_transform_to_shape(shape: TopoDS_Shape, transform: RigidTransform) -> TopoDS_Shape:

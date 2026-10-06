@@ -40,6 +40,7 @@ from app.sketch.intersections import (
     line_vs_line,
     line_vs_segment,
 )
+from app.sketch.reference_signature import LineageOrigin, ReferenceDecision, ShapeSignature
 
 
 class Plane(str, Enum):
@@ -86,6 +87,16 @@ class ExternalVertexReference:
 
     body_id: str
     vertex_index: int
+    # Reference-identity overhaul (docs/reference-identity-design.md): the geometric signature captured when this reference was made (or last
+    # confirmed healthy) and, when OCCT history could say, where the vertex originally came from. Both are `compare=False` so the
+    # re-pick-idempotent `add_or_reuse_external_vertex_reference` still matches on (body_id, vertex_index) alone, and both default to None so a
+    # reference made before they existed (or in a bare test) behaves exactly as it always did until its first refresh adopts a signature.
+    signature: ShapeSignature | None = field(default=None, compare=False)
+    lineage: LineageOrigin | None = field(default=None, compare=False)
+    # What `vertex_index` indexes: "vertex" (the original meaning: a Body vertex the Point sits on) or "circle_centre" (the index of a CIRCULAR Body edge; the
+    # Point sits at that circle's centre, and the Circle / Arc built on it follows its position and radius - see `refresh_external_references`). Part of the
+    # reference's identity (compare=True): the same index means different things for the two kinds.
+    kind: str = "vertex"
 
 
 @dataclass
@@ -1152,6 +1163,9 @@ class Sketch:
     # leaving the Point at its last-known position (and reporting the id as
     # lost) whenever a reference no longer resolves.
     external_references: dict[str, ExternalVertexReference] = field(default_factory=dict)
+    # Transient (never persisted, recomputed by every `refresh_external_references`): Point id -> what that refresh decided about the reference
+    # (ok / followed / potentially_moved / lost, and why). Read by the feature response and the external-references status route.
+    external_reference_decisions: dict[str, ReferenceDecision] = field(default_factory=dict, repr=False, compare=False)
     _origin_point_id: str | None = field(default=None, repr=False)
     # Sketcher-roadmap Phase 7 (2D Pattern/Mirror, §2.9 Option 2): lightweight,
     # non-solved instances - see SketchPatternInstance/SketchMirrorInstance's

@@ -29,6 +29,7 @@ from OCC.Core.GProp import GProp_GProps
 from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape, topods
 
+from app.document.reference_history import note_operation
 from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import basis_point_to_world, compute_part_bodies, resolve_subshape_from_bodies
 from app.document.graph import (
@@ -649,9 +650,13 @@ def resolve_pattern_tool_feature_from_bodies(
         return target_id, bodies[target_id]
 
     if is_cut:
-        new_shape = BRepAlgoAPI_Cut(bodies[target_id], combined_tool).Shape()
+        tool_op = BRepAlgoAPI_Cut(bodies[target_id], combined_tool)
+        new_shape = tool_op.Shape()
+        note_operation(tool_op)
     else:
-        new_shape = BRepAlgoAPI_Fuse(bodies[target_id], combined_tool).Shape()
+        tool_op = BRepAlgoAPI_Fuse(bodies[target_id], combined_tool)
+        new_shape = tool_op.Shape()
+        note_operation(tool_op)
     return target_id, new_shape
 
 

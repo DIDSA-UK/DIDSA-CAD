@@ -152,6 +152,13 @@ from app.sketch.models import (
     Spline,
     TextEntity,
 )
+from app.sketch.reference_signature import (
+    EdgeSignature,
+    FaceSignature,
+    LineageOrigin,
+    ShapeSignature,
+    VertexSignature,
+)
 
 # Bumped whenever the on-disk shape changes in a way that breaks reading an
 # older file - `import_native` rejects anything else outright rather than
@@ -599,6 +606,123 @@ def _mirror_instance_from_dict(data: dict) -> SketchMirrorInstance:
     )
 
 
+def _vec_list(vectors) -> list[list[float]]:
+    return [list(v) for v in vectors]
+
+
+def _signature_to_dict(signature: VertexSignature) -> dict:
+    return {
+        "position": list(signature.position),
+        "valence": signature.valence,
+        "face_normals": _vec_list(signature.face_normals),
+        "face_kinds": list(signature.face_kinds),
+        "edge_directions": _vec_list(signature.edge_directions),
+        "body_diagonal": signature.body_diagonal,
+    }
+
+
+def _signature_from_dict(data: dict) -> VertexSignature:
+    return VertexSignature(
+        position=tuple(data["position"]),
+        valence=int(data["valence"]),
+        face_normals=tuple(tuple(v) for v in data.get("face_normals", [])),
+        face_kinds=tuple(data.get("face_kinds", [])),
+        edge_directions=tuple(tuple(v) for v in data.get("edge_directions", [])),
+        body_diagonal=float(data.get("body_diagonal", 0.0)),
+    )
+
+
+def _shape_signature_to_dict(signature: ShapeSignature) -> dict:
+    """A tagged dict for any of the three signature kinds (a sketch's external vertex reference uses `_signature_to_dict` directly, untagged, for
+    backward compatibility with the files already written)."""
+    if isinstance(signature, VertexSignature):
+        return {"kind": "vertex", **_signature_to_dict(signature)}
+    if isinstance(signature, EdgeSignature):
+        return {
+            "kind": "edge",
+            "position": list(signature.position),
+            "curve_kind": signature.curve_kind,
+            "direction": list(signature.direction),
+            "length": signature.length,
+            "radius": signature.radius,
+            "centre": list(signature.centre),
+            "face_normals": _vec_list(signature.face_normals),
+            "face_kinds": list(signature.face_kinds),
+            "body_diagonal": signature.body_diagonal,
+        }
+    return {
+        "kind": "face",
+        "position": list(signature.position),
+        "surface_kind": signature.surface_kind,
+        "direction": list(signature.direction),
+        "area": signature.area,
+        "body_diagonal": signature.body_diagonal,
+    }
+
+
+def _shape_signature_from_dict(data: dict) -> ShapeSignature:
+    kind = data.get("kind", "vertex")
+    if kind == "edge":
+        return EdgeSignature(
+            position=tuple(data["position"]),
+            curve_kind=data["curve_kind"],
+            direction=tuple(data.get("direction", (0.0, 0.0, 0.0))),
+            length=float(data.get("length", 0.0)),
+            radius=float(data.get("radius", 0.0)),
+            centre=tuple(data.get("centre", (0.0, 0.0, 0.0))),
+            face_normals=tuple(tuple(v) for v in data.get("face_normals", [])),
+            face_kinds=tuple(data.get("face_kinds", [])),
+            body_diagonal=float(data.get("body_diagonal", 0.0)),
+        )
+    if kind == "face":
+        return FaceSignature(
+            position=tuple(data["position"]),
+            surface_kind=data["surface_kind"],
+            direction=tuple(data.get("direction", (0.0, 0.0, 0.0))),
+            area=float(data.get("area", 0.0)),
+            body_diagonal=float(data.get("body_diagonal", 0.0)),
+        )
+    return _signature_from_dict(data)
+
+
+def _external_reference_to_dict(point_id: str, ref: ExternalVertexReference) -> dict:
+    data: dict = {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
+    if ref.kind != "vertex":
+        data["kind"] = ref.kind  # absent == "vertex": every file written before circle-centre references reads as it always did
+    if ref.signature is not None:
+        data["signature"] = _signature_to_dict(ref.signature) if ref.kind == "vertex" else _shape_signature_to_dict(ref.signature)
+    if ref.lineage is not None:
+        data["lineage"] = {
+            "feature_id": ref.lineage.feature_id,
+            "body_id": ref.lineage.body_id,
+            "index": ref.lineage.index,
+            "signature": _signature_to_dict(ref.lineage.signature) if ref.lineage.kind == "vertex" else _shape_signature_to_dict(ref.lineage.signature),
+            **({"kind": ref.lineage.kind} if ref.lineage.kind != "vertex" else {}),
+        }
+    return data
+
+
+def _external_reference_from_dict(data: dict) -> ExternalVertexReference:
+    kind = data.get("kind", "vertex")
+    signature = None
+    if data.get("signature"):
+        signature = _signature_from_dict(data["signature"]) if kind == "vertex" else _shape_signature_from_dict(data["signature"])
+    lineage = None
+    if data.get("lineage"):
+        raw = data["lineage"]
+        lineage_kind = raw.get("kind", "vertex")
+        lineage = LineageOrigin(
+            feature_id=raw["feature_id"],
+            body_id=raw["body_id"],
+            index=int(raw["index"]),
+            signature=_signature_from_dict(raw["signature"]) if lineage_kind == "vertex" else _shape_signature_from_dict(raw["signature"]),
+            kind=lineage_kind,
+        )
+    return ExternalVertexReference(
+        body_id=data["body_id"], vertex_index=data["vertex_index"], signature=signature, lineage=lineage, kind=kind
+    )
+
+
 def sketch_to_dict(sketch: Sketch) -> dict:
     """A `Sketch`'s full state, serialized to a plain dict - the same shape
     `export_native`'s own `"sketches"` array entries use.
@@ -621,10 +745,8 @@ def sketch_to_dict(sketch: Sketch) -> dict:
         "entities": [_entity_to_dict(e) for e in sketch.entities.values()],
         "constraints": [_constraint_to_dict(c) for c in sketch.constraints.values()],
         # Sketcher-roadmap Phase 4.3 v1.
-        "external_references": [
-            {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
-            for point_id, ref in sketch.external_references.items()
-        ],
+        # Reference-identity overhaul: `signature` / `lineage` are written only when present, and a file without them loads exactly as before.
+        "external_references": [_external_reference_to_dict(point_id, ref) for point_id, ref in sketch.external_references.items()],
         # A converted Arc/Circle centre's own pin (On-device feedback:
         # "converted edges... should be... locked at that projection
         # point") is a `FixedConstraint` now, not a separate field - it
@@ -664,9 +786,7 @@ def sketch_from_dict(data: dict) -> Sketch:
     # before this feature existed has no opinion on it" reasoning as
     # flip/rotation_quarter_turns above.
     for ref_data in data.get("external_references", []):
-        sketch.external_references[ref_data["point_id"]] = ExternalVertexReference(
-            body_id=ref_data["body_id"], vertex_index=ref_data["vertex_index"]
-        )
+        sketch.external_references[ref_data["point_id"]] = _external_reference_from_dict(ref_data)
     # Backward compatibility: a file saved before `pinned_point_ids` was
     # replaced by `FixedConstraint` still has that key, naming Points a
     # converted Arc/Circle centre pinned in the old, non-Constraint way
@@ -710,14 +830,37 @@ def _sketch_entity_ref_from_dict(data: dict) -> SketchEntityRef:
 
 
 def _subshape_ref_to_dict(ref: SubShapeRef) -> dict:
-    return {"body_id": ref.body_id, "shape_type": ref.shape_type.value, "index": ref.index}
+    data = {"body_id": ref.body_id, "shape_type": ref.shape_type.value, "index": ref.index}
+    if ref.signature is not None:
+        data["signature"] = _shape_signature_to_dict(ref.signature)
+    if ref.lineage is not None:
+        data["lineage"] = {
+            "feature_id": ref.lineage.feature_id,
+            "body_id": ref.lineage.body_id,
+            "index": ref.lineage.index,
+            "kind": ref.lineage.kind,
+            "signature": _shape_signature_to_dict(ref.lineage.signature),
+        }
+    return data
 
 
 def _subshape_ref_from_dict(data: dict) -> SubShapeRef:
+    lineage = None
+    if data.get("lineage"):
+        raw = data["lineage"]
+        lineage = LineageOrigin(
+            feature_id=raw["feature_id"],
+            body_id=raw["body_id"],
+            index=int(raw["index"]),
+            signature=_shape_signature_from_dict(raw["signature"]),
+            kind=raw.get("kind", "vertex"),
+        )
     return SubShapeRef(
         body_id=_require(data, "body_id"),
         shape_type=SubShapeType(_require(data, "shape_type")),
         index=_require(data, "index"),
+        signature=_shape_signature_from_dict(data["signature"]) if data.get("signature") else None,
+        lineage=lineage,
     )
 
 
