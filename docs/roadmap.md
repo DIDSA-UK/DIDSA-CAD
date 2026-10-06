@@ -502,6 +502,21 @@ here to capture the idea and the concrete bug reports that motivated it
 before they're forgotten, per the user's own explicit "let's scope the
 roadmap entry" ask.
 
+
+**Findings, 2026-10-06 (measured, not a guess).** Probed through the VR design table's work on dimensioning to the part's own geometry
+(`backend/tests/test_reference_follows_upstream_topology_change.py`, written as passing regressions plus an xfail for the wanted behaviour).
+A Sketch's `external_references` Point is `body_id` + a raw OCCT vertex index. A box with one filleted edge, then a Sketch that references the
+corner at (10, 10, 10):
+* a fillet **radius** change, an extrude **depth** change and base-Sketch dimension changes are followed correctly (topology unchanged, the index still
+  names the same corner), `has_lost_reference` false;
+* **moving the fillet to another edge**, or adding a second edge, renumbers the vertices: in 5 of 7 trials the reference then resolved to a **different
+  corner** (e.g. vertex 8 from (10,10,10) to (0,10,10) or (-0,2,10)), and `has_lost_reference` stayed **false**. This is the "resolves successfully
+  but wrongly" case described above, now reproduced on the smallest possible part.
+* A Sketch only sees the Body as of its own place in the feature history (later features do not move its references): correct, and what SolidWorks does.
+So the heuristic in this section (a geometric signature checked on every refresh, flag rather than silently accept) is confirmed worth doing, and OCCT's
+`Modified()` / `Generated()` history is the thorough fix. The flat app's picking flow (Dimension mode's ghost vertices and edges, plus a separate Convert
+mode) should then be made implicit, as the VR design table now does: aiming at a part corner or edge in any tool makes the reference on demand.
+
 ## Other open items
 
 - **Shared network storage + server-side assembly composition for a
