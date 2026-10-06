@@ -39,6 +39,8 @@ there would recurse forever.
 """
 
 import math
+from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Tool
@@ -72,8 +74,21 @@ from app.document.plane_geometry import (
     sketch_basis_for_plane,
     world_point_to_basis,
 )
+from app.document.reference_signature import BodyVertexMeasurer
 from app.sketch.models import ExternalVertexReference, Point, Sketch
+from app.sketch.reference_signature import (
+    SEARCH_TOLERANCE_REL,
+    LineageOrigin,
+    ReferenceDecision,
+    ReferenceStatus,
+    decide_reference,
+    distance,
+    fingerprint_matches,
+)
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
+
+if TYPE_CHECKING:
+    from app.document.reference_history import ReferenceHistory
 
 
 def _non_planar_reference(ref: SubShapeRef) -> HTTPException:
@@ -483,32 +498,96 @@ def resolve_external_vertex_position(
     return world_point_to_basis(basis, (world_point.X(), world_point.Y(), world_point.Z()))
 
 
+def make_external_vertex_reference(
+    bodies: dict[str, TopoDS_Shape], body_id: str, vertex_index: int, lineage: LineageOrigin | None = None
+) -> ExternalVertexReference:
+    """A new `ExternalVertexReference` carrying the geometric signature of the vertex it names, measured on `bodies` now (reference-identity overhaul,
+    docs/reference-identity-design.md (a)). Fails closed with the usual `missing_reference` 422 if the vertex does not exist."""
+    resolve_subshape_from_bodies(bodies, SubShapeRef(body_id=body_id, shape_type=SubShapeType.VERTEX, index=vertex_index))
+    signature = BodyVertexMeasurer(bodies[body_id]).signature(vertex_index)
+    return ExternalVertexReference(body_id=body_id, vertex_index=vertex_index, signature=signature, lineage=lineage)
+
+
+def _decide_external_reference(
+    ref: ExternalVertexReference,
+    measurers: dict[str, BodyVertexMeasurer],
+    bodies: dict[str, TopoDS_Shape],
+    history: "ReferenceHistory | None",
+) -> ReferenceDecision:
+    body = bodies.get(ref.body_id)
+    if body is None:
+        return ReferenceDecision(ReferenceStatus.LOST, None, reason="body_missing")
+    measurer = measurers.get(ref.body_id)
+    if measurer is None:
+        measurer = measurers[ref.body_id] = BodyVertexMeasurer(body)
+    in_range = 0 <= ref.vertex_index < measurer.count
+
+    if ref.signature is None:
+        # A reference made before signatures existed (an old file): trust the index once and adopt its signature.
+        if in_range:
+            return ReferenceDecision(ReferenceStatus.OK, ref.vertex_index, reason="signature_adopted", method="index")
+        return ReferenceDecision(ReferenceStatus.LOST, None, reason="no_match")
+
+    # Fast path, measuring only the one vertex the index names: same fingerprint and still where it was (to within the search tolerance).
+    if in_range:
+        here = measurer.signature(ref.vertex_index)
+        tolerance = SEARCH_TOLERANCE_REL * (ref.signature.body_diagonal or measurer.diagonal)
+        if fingerprint_matches(ref.signature, here) and distance(here.position, ref.signature.position) <= tolerance:
+            return ReferenceDecision(ReferenceStatus.OK, ref.vertex_index, method="index")
+
+    signature_decision = decide_reference(ref.signature, ref.vertex_index, measurer.all())
+    if history is not None and ref.lineage is not None:
+        return history.refine(ref, signature_decision, bodies, measurer)
+    return signature_decision
+
+
 def refresh_external_references(
     part: Part,
     sketch: Sketch,
     bodies: dict[str, TopoDS_Shape],
     excluded_feature_ids: frozenset[str] = frozenset(),
+    history: "ReferenceHistory | None" = None,
 ) -> list[str]:
-    """Sketcher-roadmap Phase 4.3 v1: re-resolves every one of `sketch`'s
-    `external_references` against `bodies`' *current* topology, writing
-    each success straight onto `sketch.points` (so the next `solve_sketch`
-    - which only ever pins whatever `(x, y)` is already stored there, see
-    its own doc comment - pins the fresh position). A reference that no
-    longer resolves is left at its last-known position (so the rest of the
-    Sketch doesn't visually collapse) and its Point id is returned instead
-    of raising - the "lost reference" list every caller of this function
-    (the materialize-on-pick endpoint's own re-validation, and
-    `has_lost_reference` on a Sketch's owning Feature) surfaces rather than
-    hard-failing on."""
+    """Sketcher-roadmap Phase 4.3 v1, rebuilt by the reference-identity overhaul (docs/reference-identity-design.md): re-validates every one of
+    `sketch`'s `external_references` against `bodies`' *current* topology and returns the ids of the Points whose reference is lost.
+
+    A reference is no longer just "the index still resolves". Each one carries the signature of the vertex it was made against, and the stored index is
+    only trusted while the vertex it now names still has that fingerprint (`app.sketch.reference_signature.decide_reference`). When it does not, the
+    vertex is re-found by signature (and by OCCT history, `history`), unique match only; the new index is persisted, so downstream resolution by index
+    keeps working. A reference that cannot be found unambiguously is *never rebound*: it is left at its last-known position (so the rest of the Sketch
+    does not visually collapse), its Point id is returned, and the reason is on `sketch.external_reference_decisions` for the response layer.
+    Each healthy outcome also refreshes the stored signature (the vertex legitimately moves with parametric edits); a `potentially_moved` binding keeps
+    its old signature until the user confirms it.
+
+    Every decision of this refresh (ok / followed / potentially_moved / lost, and why) is left on `sketch.external_reference_decisions`."""
     lost_point_ids: list[str] = []
-    for point_id, ref in sketch.external_references.items():
-        try:
-            x, y = resolve_external_vertex_position(part, sketch, ref, bodies, excluded_feature_ids)
-        except HTTPException:
+    decisions: dict[str, ReferenceDecision] = {}
+    measurers: dict[str, BodyVertexMeasurer] = {}
+    try:
+        basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids) if sketch.external_references else None
+    except HTTPException:
+        basis = None
+    for point_id, ref in list(sketch.external_references.items()):
+        if basis is None:
+            decision = ReferenceDecision(ReferenceStatus.LOST, None, reason="sketch_plane_unresolved")
+        else:
+            decision = _decide_external_reference(ref, measurers, bodies, history)
+        decisions[point_id] = decision
+        if decision.status == ReferenceStatus.LOST or decision.index is None:
             lost_point_ids.append(point_id)
             continue
+        measurer = measurers[ref.body_id]
+        here = measurer.signature(decision.index)
+        refreshed = replace(ref, vertex_index=decision.index)
+        if decision.status != ReferenceStatus.POTENTIALLY_MOVED:
+            refreshed = replace(refreshed, signature=here)
+        if decision.lineage is not None:
+            refreshed = replace(refreshed, lineage=decision.lineage)
+        sketch.external_references[point_id] = refreshed
+        x, y = world_point_to_basis(basis, here.position)
         sketch.points[point_id].x = x
         sketch.points[point_id].y = y
+    sketch.external_reference_decisions = decisions
     return lost_point_ids
 
 

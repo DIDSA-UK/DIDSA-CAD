@@ -16,6 +16,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from OCC.Core.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_IndexedMapOfShape
 
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
+from app.document.reference_history import note_operation
 from app.document.models import ChamferEdgeOptions, ChamferFeature, Part, SubShapeRef, SubShapeType
 
 
@@ -156,6 +157,7 @@ def resolve_chamfer_from_bodies(
     _build_chamfer(chamfer_maker, body_id)
     if not chamfer_maker.IsDone():
         raise _chamfer_failed(body_id)
+    note_operation(chamfer_maker)
     return body_id, chamfer_maker.Shape()
 
 

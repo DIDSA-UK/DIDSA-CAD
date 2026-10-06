@@ -958,7 +958,8 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     // badge/subtitle slot - a stale reference is a real problem to fix, a
     // pending coarse-to-full swap is just this Feature's normal, temporary
     // "still loading" state.
-    final hasPendingDetail = !feature.hasLostReference && widget.pendingDetailFeatureIds.contains(feature.id);
+    final hasPendingDetail =
+        !feature.hasLostReference && !feature.hasMovedReference && widget.pendingDetailFeatureIds.contains(feature.id);
     final isCoarseEligible = _coarseEligibleFeatureTypes.contains(feature.type);
     final isPinnedCoarse = widget.pinnedCoarseFeatureIds.contains(feature.id);
     // Dimmed (but still tappable - an ineligible tap surfaces a SnackBar via
@@ -1001,6 +1002,13 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                 bottom: -2,
                 child: Icon(Icons.warning_rounded, size: 14, color: Colors.amber.shade800),
               )
+            else if (feature.hasMovedReference)
+              // Reference-identity overhaul: bound, but on weaker evidence - milder than lost, so a different glyph and colour.
+              Positioned(
+                right: -2,
+                bottom: -2,
+                child: Icon(Icons.help_rounded, size: 14, color: Colors.deepOrange.shade400),
+              )
             else if (hasPendingDetail)
               Positioned(
                 right: -2,
@@ -1017,7 +1025,13 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         ),
         subtitle: Text(
           feature.hasLostReference
-              ? 'Lost reference'
+              ? (!isSketch
+                  ? 'Lost reference'
+                  : feature.lostReferencePointIds.length > 1
+                      ? '${feature.lostReferencePointIds.length} lost references - open to re-attach'
+                      : 'Lost reference - open to re-attach')
+              : feature.hasMovedReference
+                  ? 'Reference may have moved - open to check'
               : hasPendingDetail
                   ? 'Loading full detail…'
                   : _hasEditPanel(feature.type)
@@ -1027,6 +1041,8 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
           overflow: TextOverflow.ellipsis,
           style: feature.hasLostReference
               ? _rowSubtitleStyle.copyWith(color: Colors.amber.shade800, fontWeight: FontWeight.bold)
+              : feature.hasMovedReference
+                  ? _rowSubtitleStyle.copyWith(color: Colors.deepOrange.shade400, fontWeight: FontWeight.bold)
               : hasPendingDetail
                   ? _rowSubtitleStyle.copyWith(color: Colors.blue.shade600, fontWeight: FontWeight.bold)
                   : _rowSubtitleStyle,

@@ -389,7 +389,7 @@ void main() {
       'bug fix (on-device feedback: "when in selecting edges, vertices, faces to convert or '
       'offset, there should be dynamic highlight so the user knows what will need selected"): '
       'the hover selectionFilter now enables Body vertex/edge (and face, for Convert only) for '
-      'Dimension/Convert/Offset, matching what the tap path already targets - it used to be '
+      'Select/Dimension/Convert/Offset, matching what the tap path already targets - it used to be '
       'permanently off, so nothing but Sketch entities ever hover-highlighted', (tester) async {
     final controller = await _freshController();
     await _openInOrbitView(tester, controller);
@@ -397,10 +397,10 @@ void main() {
     SelectionFilterState currentFilter() =>
         tester.widget<PartViewport>(find.byType(PartViewport)).selectionFilter;
 
-    // SketchMode.select (the default on entry): unchanged - Body geometry
-    // was never a hover target here, only Sketch entities.
-    expect(currentFilter().vertex, isFalse);
-    expect(currentFilter().edge, isFalse);
+    // SketchMode.select (the default on entry): reference-identity overhaul - Select is an implicit-reference mode now (aiming at a body corner or
+    // edge makes the pinned reference and picks it, with no Convert mode first), so Body vertex/edge hover-highlight here too; never a face.
+    expect(currentFilter().vertex, isTrue);
+    expect(currentFilter().edge, isTrue);
     expect(currentFilter().face, isFalse);
 
     controller.enterDimensionMode();
@@ -420,6 +420,12 @@ void main() {
     expect(currentFilter().vertex, isTrue);
     expect(currentFilter().edge, isTrue);
     expect(currentFilter().face, isFalse);
+
+    // A draw tool only snaps to body corners (tapping near an edge while drawing must not litter the sketch with reference lines): vertex yes, edge no.
+    controller.selectDrawTool(SketchTool.line);
+    await tester.pump();
+    expect(tester.widget<PartViewport>(find.byType(PartViewport)).preferEntityPick, isTrue);
+    expect(tester.widget<PartViewport>(find.byType(PartViewport)).preferEntityPickIncludesEdge, isFalse);
 
     // Trim/Extend never references Body geometry at all - stays off.
     controller.enterTrimMode();

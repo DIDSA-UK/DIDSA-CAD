@@ -159,6 +159,14 @@ class SketchFeatureResponse(BaseModel):
     # Sketch with no external references at all - the common case, and the
     # only case before this field existed.
     has_lost_reference: bool = False
+    # Reference-identity overhaul (docs/reference-identity-design.md): which external-reference Points are lost (not found, consumed by an upstream
+    # feature, or found ambiguously - never silently rebound), which are bound but "potentially moved" (bound on weaker evidence; the user should look
+    # and can confirm or re-attach), and which were re-found at a new index automatically (informational). `reference_reasons` maps each of those ids
+    # to a short machine-readable reason ("no_match", "ambiguous", "body_missing", "consumed_by_<feature>", "nearest_of_identical_vertices", ...).
+    lost_reference_point_ids: list[str] = []
+    moved_reference_point_ids: list[str] = []
+    followed_reference_point_ids: list[str] = []
+    reference_reasons: dict[str, str] = {}
 
 
 class SketchEntityRefSchema(BaseModel):
@@ -409,6 +417,28 @@ class ExternalVertexReferenceCreate(BaseModel):
     v1" reasoning) - `app.document.router` converts this into the domain
     `ExternalVertexReference` at the same boundary every other schema/
     dataclass pair here already converts at."""
+
+    body_id: str
+    vertex_index: int
+
+
+class ExternalReferenceStatus(BaseModel):
+    """Reference-identity overhaul: one external-reference Point's health, as of a fresh refresh. `status` is `ok`, `followed` (re-found at a new index,
+    informational), `potentially_moved` (bound on weaker evidence; confirm or re-attach) or `lost` (not found / consumed / ambiguous: never rebound).
+    `reason` and `method` ("index" / "signature" / "history" / "position") say why; `candidates` lists the vertex indices a lost-as-ambiguous reference
+    could be (empty otherwise), so a client can offer them."""
+
+    point_id: str
+    body_id: str
+    vertex_index: int
+    status: str
+    reason: str = ""
+    method: str = ""
+    candidates: list[int] = []
+
+
+class ExternalReferenceReattach(BaseModel):
+    """Re-attach an existing external-reference Point to a different Body vertex (the one the user picked as the replacement)."""
 
     body_id: str
     vertex_index: int

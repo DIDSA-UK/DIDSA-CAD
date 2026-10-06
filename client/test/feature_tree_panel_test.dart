@@ -874,6 +874,52 @@ void main() {
   );
 
   testWidgets(
+    'reference-identity overhaul: a Sketch row says how many references are lost and how to fix them, and a potentially-moved one gets its own milder '
+    'badge and text',
+    (tester) async {
+      Future<void> pumpRow(FeatureDto feature) => tester.pumpWidget(
+            _wrap(
+              FeatureTreePanel(
+                visible: true,
+                features: [feature],
+                selectedFeatureId: null,
+                onFeatureTap: (_) {},
+                onFeatureLongPress: (_) {},
+                onClose: () {},
+                onBodyTap: (_) {},
+              ),
+            ),
+          );
+
+      await pumpRow(FeatureDto.fromJson({
+        'type': 'sketch',
+        'id': 's1',
+        'sketch_id': 'sk1',
+        'locked': false,
+        'produces': 'none',
+        'has_lost_reference': true,
+        'lost_reference_point_ids': ['a', 'b'],
+        'reference_reasons': {'a': 'no_match', 'b': 'ambiguous'},
+      }));
+      expect(find.byIcon(Icons.warning_rounded), findsOneWidget);
+      expect(find.text('2 lost references - open to re-attach'), findsOneWidget);
+
+      await pumpRow(FeatureDto.fromJson({
+        'type': 'sketch',
+        'id': 's1',
+        'sketch_id': 'sk1',
+        'locked': false,
+        'produces': 'none',
+        'has_lost_reference': false,
+        'moved_reference_point_ids': ['a'],
+      }));
+      expect(find.byIcon(Icons.warning_rounded), findsNothing);
+      expect(find.byIcon(Icons.help_rounded), findsOneWidget);
+      expect(find.text('Reference may have moved - open to check'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
     'the pin-to-coarse control only renders for a coarse-eligible Feature type when '
     'onToggleCoarsePin is supplied',
     (tester) async {

@@ -692,6 +692,7 @@ class _SketchScreenState extends State<SketchScreen> {
                 );
               },
             ),
+            _ReferenceHealthBanner(controller: _controller),
             Expanded(
               child: Stack(
                 children: [
@@ -1392,6 +1393,7 @@ class _SketchScreenState extends State<SketchScreen> {
         // edges as lines"): only Convert Entities ever wants a Face hit -
         // see PartViewport.preferEntityPickIncludesFace's own doc comment.
         preferEntityPickIncludesFace: _controller.mode == SketchMode.convert,
+        preferEntityPickIncludesEdge: _preferEntityPickIncludesEdge,
         onSketchEntityTap: _handleEmbeddedSketchEntityTap,
         hasEntityNearSketchTap: (x, y) => _controller.hasEntityNear(x, y, SketchController.snapRadius),
         // P19 on-device feedback: same _orbitCursorActive gating as
@@ -1432,10 +1434,26 @@ class _SketchScreenState extends State<SketchScreen> {
   /// anticipated - the one-line addition it predicted. On-device feedback
   /// (P52): Offset mode too - "select edges from other bodies to create
   /// sketch geometry offset from the body edges".
+  ///
+  /// Reference-identity overhaul: Select and every draw tool are implicit-
+  /// reference modes now (the DIDSA-VR design table's rule) - aiming at a
+  /// body corner (and, for Select, an edge) makes the pinned reference on
+  /// demand and carries on as if the user had tapped a real Point / Line
+  /// there ([_handleEmbeddedSketchEntityTap]), so nothing needs Convert mode
+  /// first. A draw tool only snaps to corners ([_preferEntityPickIncludesEdge]):
+  /// tapping near an edge while drawing must not litter the sketch with
+  /// reference lines. While re-attaching a lost reference ([SketchController.
+  /// isReattaching]) every tap is a corner pick, whatever the mode.
   bool get _preferEntityPickOnTap =>
+      _controller.isReattaching ||
       _controller.mode == SketchMode.dimension ||
       _controller.mode == SketchMode.convert ||
-      _controller.mode == SketchMode.offset;
+      _controller.mode == SketchMode.offset ||
+      _controller.mode == SketchMode.select ||
+      _controller.mode == SketchMode.draw;
+
+  /// Whether the 3D pick may land on a Body edge: everything but draw tools (corners only) and the re-attach pick (corners only).
+  bool get _preferEntityPickIncludesEdge => !_controller.isReattaching && _controller.mode != SketchMode.draw;
 
   /// P10: [PartViewport.onSketchEntityTap]'s handler - materializes a real
   /// Body vertex/edge as either a dimensionable Point/Line ([SketchMode.
@@ -1459,6 +1477,18 @@ class _SketchScreenState extends State<SketchScreen> {
   void _handleEmbeddedSketchEntityTap(SelectionEntityRef entity) {
     final convert = _controller.mode == SketchMode.convert;
     final offset = _controller.mode == SketchMode.offset;
+    // Reference-identity overhaul: re-attaching a lost reference - the pick IS the replacement corner (a tap on anything else does nothing).
+    if (_controller.isReattaching) {
+      if (entity.kind == SelectionEntityKind.vertex) {
+        unawaited(_controller.reattachTo(entity.bodyId, entity.id));
+      }
+      return;
+    }
+    // Implicit referencing (the DIDSA-VR design table's rule): Select and draw tools aimed at a body corner / edge make the pinned reference on demand.
+    if (_controller.mode == SketchMode.select || _controller.mode == SketchMode.draw) {
+      unawaited(_tapOnBodyEntity(entity));
+      return;
+    }
     switch (entity.kind) {
       case SelectionEntityKind.vertex:
         if (convert) {
@@ -1478,6 +1508,30 @@ class _SketchScreenState extends State<SketchScreen> {
         unawaited(_controller.pickReferenceGhostEdge(entity.bodyId, entity.id));
       case SelectionEntityKind.face:
         if (convert) _convertFaceEdges(entity);
+      default:
+        break;
+    }
+  }
+
+  /// Implicit referencing for [SketchMode.select] / [SketchMode.draw] in Orbit View (see [_preferEntityPickOnTap]): a body corner becomes (or reuses) the
+  /// pinned reference Point ([SketchController.ensureReferencePoint]) and the tool carries on as if the user had tapped that real Point - draw tools snap to
+  /// it, select picks it; a body edge (select only) becomes the pinned reference line (arc / circle) and is selected. Idempotent, no undo entry, no Convert
+  /// mode, no Fix / Make Construction step.
+  Future<void> _tapOnBodyEntity(SelectionEntityRef entity) async {
+    switch (entity.kind) {
+      case SelectionEntityKind.vertex:
+        final pointId = await _controller.ensureReferencePoint(entity.bodyId, entity.id);
+        final point = pointId == null ? null : _controller.points[pointId];
+        if (point == null) return;
+        if (_controller.mode == SketchMode.select) {
+          _controller.selectEntity(SketchSelection(kind: SelectionKind.point, id: pointId!));
+        } else {
+          await _controller.handleCanvasTap(point.x, point.y, SketchController.snapRadius);
+        }
+      case SelectionEntityKind.edge:
+        if (_controller.mode != SketchMode.select) return;
+        final selection = await _controller.ensureReferenceEdge(entity.bodyId, entity.id);
+        if (selection != null) _controller.selectEntity(selection);
       default:
         break;
     }
@@ -1528,7 +1582,7 @@ class _SketchScreenState extends State<SketchScreen> {
     final targetsBodyGeometry = _preferEntityPickOnTap;
     return SelectionFilterState(
       vertex: targetsBodyGeometry,
-      edge: targetsBodyGeometry,
+      edge: targetsBodyGeometry && _preferEntityPickIncludesEdge,
       face: _controller.mode == SketchMode.convert,
       body: false,
       sketchPoint: true,
@@ -1575,6 +1629,11 @@ class _SketchScreenState extends State<SketchScreen> {
         kind: isMirror ? SelectionKind.mirrorInstance : SelectionKind.patternInstance,
         id: entity.sketchEntityId,
       ));
+      return;
+    }
+    // Reference-identity overhaul: Select aimed at a body corner / edge (enabled by [_embeddedCursorModeFilter]) makes the pinned reference and picks it.
+    if (entity.kind == SelectionEntityKind.vertex || entity.kind == SelectionEntityKind.edge) {
+      _handleEmbeddedSketchEntityTap(entity);
       return;
     }
     final kind = switch (entity.kind) {
@@ -2613,6 +2672,29 @@ class _SketchScreenState extends State<SketchScreen> {
     // (Orbit View's selected/hover highlight is a separate overlay layered
     // on top by PartViewport itself, so only "grabbed" needs replicating
     // here).
+    // Reference-identity overhaul: a flagged reference Point (lost: red, potentially moved: orange) and anything that ends on it wins over the status
+    // colours - the problem must be visible on the sketch itself, not only in the banner / feature tree - but not over a grabbed entity.
+    if (_controller.hasFlaggedReferences) {
+      final lost = _controller.lostReferencePointIds;
+      final moved = _controller.movedReferencePointIds;
+      vm.Vector4? flagColor(Iterable<String> pointIds) {
+        if (pointIds.any(lost.contains)) return sketchLostReferenceColor;
+        if (pointIds.any(moved.contains)) return sketchMovedReferenceColor;
+        return null;
+      }
+
+      for (final pointId in [...lost, ...moved]) {
+        colors[pointId] = lost.contains(pointId) ? sketchLostReferenceColor : sketchMovedReferenceColor;
+      }
+      for (final line in _controller.lines.values) {
+        final color = flagColor([line.startPointId, line.endPointId]);
+        if (color != null) colors[line.id] = color;
+      }
+      for (final arc in _controller.arcs.values) {
+        final color = flagColor([arc.startPointId, arc.endPointId]);
+        if (color != null) colors[arc.id] = color;
+      }
+    }
     final draggingPointId = _controller.draggingPointId;
     if (draggingPointId != null) colors[draggingPointId] = sketchGrabbedColor;
     final draggingLineId = _controller.draggingLineId;
@@ -3027,3 +3109,89 @@ class _CanvasColorSwatch extends StatelessWidget {
   }
 }
 
+
+
+/// Reference-identity overhaul (`docs/reference-identity-design.md`): the strip under the app bar that makes a lost / potentially-moved reference
+/// impossible to miss while sketching, and offers the way out - tap Fix to pick the replacement corner for the first lost reference ([SketchController.
+/// beginReattach]), or Keep all to accept the ones the backend re-bound on weaker evidence. While re-attaching it tells the user what to tap.
+/// Renders nothing for a healthy sketch (the common case).
+class _ReferenceHealthBanner extends StatelessWidget {
+  final SketchController controller;
+
+  const _ReferenceHealthBanner({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        if (controller.isReattaching) {
+          final pointId = controller.reattachPointId!;
+          return _strip(
+            color: Colors.amber.shade100,
+            textColor: Colors.amber.shade900,
+            icon: Icons.ads_click,
+            message: '${controller.describeReferenceProblem(pointId)} Tap the replacement corner on the body.',
+            actionLabel: 'Cancel',
+            onAction: controller.cancelReattach,
+          );
+        }
+        if (!controller.hasFlaggedReferences) return const SizedBox.shrink();
+        final lost = controller.lostReferencePointIds;
+        final moved = controller.movedReferencePointIds;
+        if (lost.isNotEmpty) {
+          return _strip(
+            color: Colors.red.shade100,
+            textColor: Colors.red.shade900,
+            icon: Icons.link_off,
+            message: lost.length == 1
+                ? 'A reference to the part is lost. ${controller.describeReferenceProblem(lost.first)}'
+                : '${lost.length} references to the part are lost.',
+            actionLabel: 'Fix',
+            onAction: controller.busy ? null : () => controller.beginReattach(lost.first),
+          );
+        }
+        return _strip(
+          color: Colors.orange.shade100,
+          textColor: Colors.orange.shade900,
+          icon: Icons.warning_amber_rounded,
+          message: moved.length == 1
+              ? 'A reference may have moved. ${controller.describeReferenceProblem(moved.first)}'
+              : '${moved.length} references may have moved - check them.',
+          actionLabel: 'Keep all',
+          onAction: controller.busy
+              ? null
+              : () async {
+                  for (final id in moved) {
+                    await controller.confirmReference(id);
+                  }
+                },
+        );
+      },
+    );
+  }
+
+  Widget _strip({
+    required Color color,
+    required Color textColor,
+    required IconData icon,
+    required String message,
+    required String actionLabel,
+    required VoidCallback? onAction,
+  }) {
+    return Container(
+      key: const ValueKey('reference-health-banner'),
+      width: double.infinity,
+      color: color,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: textColor),
+          const SizedBox(width: 8),
+          Expanded(child: Text(message, style: TextStyle(color: textColor, fontSize: 13))),
+          TextButton(onPressed: onAction, child: Text(actionLabel)),
+        ],
+      ),
+    );
+  }
+}

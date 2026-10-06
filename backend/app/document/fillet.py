@@ -12,6 +12,7 @@ from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
 from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
+from app.document.reference_history import note_operation
 from app.document.models import FilletFeature, Part
 
 
@@ -90,6 +91,7 @@ def resolve_fillet_from_bodies(
     _build_fillet(fillet_maker, body_id)
     if not fillet_maker.IsDone():
         raise _fillet_failed(body_id)
+    note_operation(fillet_maker)
     return body_id, fillet_maker.Shape()
 
 

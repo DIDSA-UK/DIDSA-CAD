@@ -492,6 +492,10 @@ below.
   between two camera/input models cleanly.
 
 ### 4.3 Dimensioning from body edges/points + yellow "lost reference" tree indicator
+**Update 2026-10-06 (reference-identity overhaul, `docs/reference-identity-design.md`):** the reference is no longer a bare body id + OCCT vertex index. It carries a geometric
+signature and OCCT-history lineage, follows topology-changing upstream edits, and is flagged (lost / potentially moved, with the Point ids and a reason) rather than silently
+rebound; the tree indicator gained a "may have moved" state and the sketch shows the flagged Points with a Fix / Keep banner and a re-attach pick. Picking is implicit: select and every
+draw tool snap to / pick a body corner (select also an edge) via the idempotent `convert-entities` routes, no Convert mode first (Convert stays for making real geometry).
 **Status: v1 (vertices) and v2 (whole edges) both implemented, pending
 on-device verification.** v1 shipped first (per this section's own item
 6 recommendation) and was verified on-device, which surfaced an unrelated

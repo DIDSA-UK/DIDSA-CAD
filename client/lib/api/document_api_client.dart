@@ -840,6 +840,18 @@ class FeatureDto {
   /// field entirely.
   final bool hasLostReference;
 
+  /// Reference-identity overhaul (`docs/reference-identity-design.md`): only meaningful on a `"sketch"` Feature - the Point ids of its external
+  /// references that are lost (not found, consumed upstream, or ambiguous - never silently rebound), bound but potentially moved (the reference was
+  /// followed on weaker evidence), and re-followed automatically (informational), plus a short reason per flagged id. All empty for a Sketch whose
+  /// references are healthy, and for a backend that predates the fields.
+  final List<String> lostReferencePointIds;
+  final List<String> movedReferencePointIds;
+  final List<String> followedReferencePointIds;
+  final Map<String, String> referenceReasons;
+
+  /// Whether this Feature should carry a (milder than lost) "reference may have moved" warning - see [movedReferencePointIds].
+  bool get hasMovedReference => movedReferencePointIds.isNotEmpty;
+
   /// Pattern/Mirror scoping's Phase 1/6 - present on both `"mirror"` and
   /// `"pattern"` Features: which Body/Bodies (by id) are being reflected/
   /// repeated (the backend's `MirrorFeature`/`PatternFeature.source_
@@ -1154,6 +1166,10 @@ class FeatureDto {
     this.thinFromClosedProfile,
     this.guideCurveRefs = const [],
     this.hasLostReference = false,
+    this.lostReferencePointIds = const [],
+    this.movedReferencePointIds = const [],
+    this.followedReferencePointIds = const [],
+    this.referenceReasons = const {},
     this.sourceBodyIds = const [],
     this.sourceFeatureIds = const [],
     this.mirrorPlane,
@@ -1276,6 +1292,10 @@ class FeatureDto {
                 .toList() ??
             const [],
         hasLostReference: json['has_lost_reference'] as bool? ?? false,
+        lostReferencePointIds: (json['lost_reference_point_ids'] as List?)?.cast<String>() ?? const [],
+        movedReferencePointIds: (json['moved_reference_point_ids'] as List?)?.cast<String>() ?? const [],
+        followedReferencePointIds: (json['followed_reference_point_ids'] as List?)?.cast<String>() ?? const [],
+        referenceReasons: (json['reference_reasons'] as Map?)?.map((k, v) => MapEntry(k as String, v as String)) ?? const {},
         sourceBodyIds: (json['source_body_ids'] as List?)?.cast<String>() ?? const [],
         sourceFeatureIds: (json['source_feature_ids'] as List?)?.cast<String>() ?? const [],
         mirrorPlane: json['mirror_plane'] == null

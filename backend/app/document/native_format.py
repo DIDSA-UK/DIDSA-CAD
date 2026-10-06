@@ -152,6 +152,7 @@ from app.sketch.models import (
     Spline,
     TextEntity,
 )
+from app.sketch.reference_signature import LineageOrigin, VertexSignature
 
 # Bumped whenever the on-disk shape changes in a way that breaks reading an
 # older file - `import_native` rejects anything else outright rather than
@@ -599,6 +600,62 @@ def _mirror_instance_from_dict(data: dict) -> SketchMirrorInstance:
     )
 
 
+def _vec_list(vectors) -> list[list[float]]:
+    return [list(v) for v in vectors]
+
+
+def _signature_to_dict(signature: VertexSignature) -> dict:
+    return {
+        "position": list(signature.position),
+        "valence": signature.valence,
+        "face_normals": _vec_list(signature.face_normals),
+        "face_kinds": list(signature.face_kinds),
+        "edge_directions": _vec_list(signature.edge_directions),
+        "body_diagonal": signature.body_diagonal,
+    }
+
+
+def _signature_from_dict(data: dict) -> VertexSignature:
+    return VertexSignature(
+        position=tuple(data["position"]),
+        valence=int(data["valence"]),
+        face_normals=tuple(tuple(v) for v in data.get("face_normals", [])),
+        face_kinds=tuple(data.get("face_kinds", [])),
+        edge_directions=tuple(tuple(v) for v in data.get("edge_directions", [])),
+        body_diagonal=float(data.get("body_diagonal", 0.0)),
+    )
+
+
+def _external_reference_to_dict(point_id: str, ref: ExternalVertexReference) -> dict:
+    data: dict = {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
+    if ref.signature is not None:
+        data["signature"] = _signature_to_dict(ref.signature)
+    if ref.lineage is not None:
+        data["lineage"] = {
+            "feature_id": ref.lineage.feature_id,
+            "body_id": ref.lineage.body_id,
+            "index": ref.lineage.index,
+            "signature": _signature_to_dict(ref.lineage.signature),
+        }
+    return data
+
+
+def _external_reference_from_dict(data: dict) -> ExternalVertexReference:
+    signature = _signature_from_dict(data["signature"]) if data.get("signature") else None
+    lineage = None
+    if data.get("lineage"):
+        raw = data["lineage"]
+        lineage = LineageOrigin(
+            feature_id=raw["feature_id"],
+            body_id=raw["body_id"],
+            index=int(raw["index"]),
+            signature=_signature_from_dict(raw["signature"]),
+        )
+    return ExternalVertexReference(
+        body_id=data["body_id"], vertex_index=data["vertex_index"], signature=signature, lineage=lineage
+    )
+
+
 def sketch_to_dict(sketch: Sketch) -> dict:
     """A `Sketch`'s full state, serialized to a plain dict - the same shape
     `export_native`'s own `"sketches"` array entries use.
@@ -621,10 +678,8 @@ def sketch_to_dict(sketch: Sketch) -> dict:
         "entities": [_entity_to_dict(e) for e in sketch.entities.values()],
         "constraints": [_constraint_to_dict(c) for c in sketch.constraints.values()],
         # Sketcher-roadmap Phase 4.3 v1.
-        "external_references": [
-            {"point_id": point_id, "body_id": ref.body_id, "vertex_index": ref.vertex_index}
-            for point_id, ref in sketch.external_references.items()
-        ],
+        # Reference-identity overhaul: `signature` / `lineage` are written only when present, and a file without them loads exactly as before.
+        "external_references": [_external_reference_to_dict(point_id, ref) for point_id, ref in sketch.external_references.items()],
         # A converted Arc/Circle centre's own pin (On-device feedback:
         # "converted edges... should be... locked at that projection
         # point") is a `FixedConstraint` now, not a separate field - it
@@ -664,9 +719,7 @@ def sketch_from_dict(data: dict) -> Sketch:
     # before this feature existed has no opinion on it" reasoning as
     # flip/rotation_quarter_turns above.
     for ref_data in data.get("external_references", []):
-        sketch.external_references[ref_data["point_id"]] = ExternalVertexReference(
-            body_id=ref_data["body_id"], vertex_index=ref_data["vertex_index"]
-        )
+        sketch.external_references[ref_data["point_id"]] = _external_reference_from_dict(ref_data)
     # Backward compatibility: a file saved before `pinned_point_ids` was
     # replaced by `FixedConstraint` still has that key, naming Points a
     # converted Arc/Circle centre pinned in the old, non-Constraint way

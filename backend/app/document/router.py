@@ -1,5 +1,6 @@
 import base64
 import binascii
+import dataclasses
 import logging
 import math
 import time
@@ -19,8 +20,10 @@ from app.document.bevel import _spiral_hand_from_feature, resolve_bevel_gear, re
 from app.document.bevel_pair import resolve_bevel_pair, resolve_bevel_pair_coarse, resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.jobs import JobStatus, cancel_job, get_job, submit_bevel_pair_job, submit_planetary_job
+from app.document.reference_history import history_for_part
 from app.document.create_plane import (
     basis_for_sketch,
+    make_external_vertex_reference,
     refresh_external_references,
     resolve_create_plane,
     resolve_external_vertex_position,
@@ -276,6 +279,8 @@ from app.document.schemas import (
     ShellFeatureResponse,
     ShellFeatureUpdate,
     ExternalEdgeReferenceResponse,
+    ExternalReferenceReattach,
+    ExternalReferenceStatus,
     ExternalVertexReferenceCreate,
     ExtrudeFeatureCreate,
     ExtrudeFeatureResponse,
@@ -399,6 +404,7 @@ from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
 from app.session_context import bind_session_id
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
+from app.sketch.reference_signature import ReferenceStatus
 from app.sketch.profile import Profile, ProfileStatus, detect_profile
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
@@ -896,35 +902,47 @@ def _fill_surface_feature_response(part: Part, feature: FillSurfaceFeature) -> F
     )
 
 
-def _sketch_has_lost_reference(part: Part, feature: SketchFeature) -> bool:
-    """Sketcher-roadmap Phase 4.3 v1: whether `feature`'s own Sketch has at
-    least one `external_references` entry that no longer resolves against
-    the Part's *current* Bodies - same soft-fail-without-raising story as
-    `_create_plane_feature_response`'s own `origin`/`normal` resolution:
-    any failure (an unresolvable reference, or the Part's Bodies failing to
-    compute at all for an unrelated reason) is treated as "lost" rather
-    than propagating and failing the whole `GET .../features` list.
-    Short-circuits to `False` without touching OCCT at all for the common
-    case (a Sketch with no external references), so this costs nothing for
-    every Sketch that doesn't use the feature.
+def _sketch_reference_state(part: Part, feature: SketchFeature) -> dict:
+    """Sketcher-roadmap Phase 4.3 v1, widened by the reference-identity overhaul (docs/reference-identity-design.md): the state of `feature`'s own
+    Sketch `external_references` against the Part's *current* Bodies, as the kwargs `SketchFeatureResponse` takes: `has_lost_reference` plus the Point
+    ids that are lost, potentially moved and (informationally) re-followed, and a reason per flagged id. Same soft-fail-without-raising story as
+    `_create_plane_feature_response`'s own `origin`/`normal` resolution: any failure (an unresolvable reference, or the Part's Bodies failing to compute
+    at all for an unrelated reason) is treated as "lost" rather than propagating and failing the whole `GET .../features` list. Short-circuits without
+    touching OCCT at all for the common case (a Sketch with no external references).
 
-    Bug fix: resolves (and, via `refresh_external_references`, persists)
-    each external reference against `excluded_feature_ids_after`'s own
-    causally-consistent snapshot rather than the Part's fully-built one -
-    see that helper's own docstring for the full "why" (a stored vertex/
-    edge index silently relocating to the wrong Body feature once a later
-    Feature modifies the very Body this Sketch references)."""
+    Bug fix: resolves (and, via `refresh_external_references`, persists) each external reference against `excluded_feature_ids_after`'s own
+    causally-consistent snapshot rather than the Part's fully-built one - see that helper's own docstring for the full "why"."""
     sketch = all_sketches().get(feature.sketch_id)
     if sketch is None or not sketch.external_references:
-        return False
+        return {"has_lost_reference": False}
     try:
         excluded = excluded_feature_ids_after(part, feature.id)
         bodies = compute_part_bodies(part, excluded)
-        lost_point_ids = refresh_external_references(part, sketch, bodies, excluded)
+        lost_point_ids = refresh_external_references(part, sketch, bodies, excluded, history=history_for_part(part, excluded))
     except HTTPException:
         logger.warning("SketchFeature %s could not refresh its external references", feature.id)
-        return True
-    return bool(lost_point_ids)
+        return {
+            "has_lost_reference": True,
+            "lost_reference_point_ids": list(sketch.external_references),
+            "reference_reasons": {point_id: "refresh_failed" for point_id in sketch.external_references},
+        }
+    decisions = sketch.external_reference_decisions
+    moved = [pid for pid, d in decisions.items() if d.status == ReferenceStatus.POTENTIALLY_MOVED]
+    followed = [pid for pid, d in decisions.items() if d.status == ReferenceStatus.FOLLOWED]
+    return {
+        "has_lost_reference": bool(lost_point_ids),
+        "lost_reference_point_ids": lost_point_ids,
+        "moved_reference_point_ids": moved,
+        "followed_reference_point_ids": followed,
+        "reference_reasons": {
+            pid: decisions[pid].reason for pid in [*lost_point_ids, *moved, *followed] if pid in decisions and decisions[pid].reason
+        },
+    }
+
+
+def _sketch_has_lost_reference(part: Part, feature: SketchFeature) -> bool:
+    """Whether `feature`'s Sketch has at least one lost external reference (see `_sketch_reference_state`)."""
+    return bool(_sketch_reference_state(part, feature)["has_lost_reference"])
 
 
 def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
@@ -933,7 +951,7 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
             id=feature.id,
             sketch_id=feature.sketch_id,
             plane_feature_id=feature.plane_feature_id,
-            has_lost_reference=_sketch_has_lost_reference(part, feature),
+            **_sketch_reference_state(part, feature),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
@@ -4243,6 +4261,112 @@ def _get_sketch_feature_or_404(part: Part, feature_id: str) -> SketchFeature:
     return feature
 
 
+def _external_reference_statuses(part: Part, feature: SketchFeature) -> list[ExternalReferenceStatus]:
+    sketch = get_sketch_or_404(feature.sketch_id)
+    if sketch.external_references:
+        excluded = excluded_feature_ids_after(part, feature.id)
+        bodies = compute_part_bodies(part, excluded)
+        refresh_external_references(part, sketch, bodies, excluded, history=history_for_part(part, excluded))
+    out = []
+    for point_id, ref in sketch.external_references.items():
+        decision = sketch.external_reference_decisions.get(point_id)
+        out.append(
+            ExternalReferenceStatus(
+                point_id=point_id,
+                body_id=ref.body_id,
+                vertex_index=ref.vertex_index,
+                status=decision.status.value if decision else "ok",
+                reason=decision.reason if decision else "",
+                method=decision.method if decision else "",
+                candidates=list(decision.candidates) if decision and decision.status == ReferenceStatus.LOST else [],
+            )
+        )
+    return out
+
+
+@router.get(
+    "/parts/{part_id}/features/sketch/{feature_id}/external-references",
+    response_model=list[ExternalReferenceStatus],
+)
+def list_external_references(part_id: str, feature_id: str) -> list[ExternalReferenceStatus]:
+    """Reference-identity overhaul: the health of every external reference of this Sketch (see `ExternalReferenceStatus`), after a fresh refresh -
+    which Points are lost / potentially moved and why. `GET .../features` carries the same ids as `lost_reference_point_ids` /
+    `moved_reference_point_ids`; this is the per-reference detail a "fix this reference" UI needs."""
+    part = get_part_or_404(part_id)
+    return _external_reference_statuses(part, _get_sketch_feature_or_404(part, feature_id))
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/external-references/{point_id}/reattach",
+    response_model=PointResponse,
+)
+def reattach_external_reference(
+    part_id: str, feature_id: str, point_id: str, payload: ExternalReferenceReattach
+) -> PointResponse:
+    """Reference-identity overhaul: points the existing external-reference Point `point_id` at a different Body vertex (the replacement the user picked
+    for a lost or potentially-moved reference). Everything built on the Point (lines, dimensions, constraints) stays attached to it; only what it tracks
+    changes, and its signature / lineage are re-captured from the new vertex. 404 for a Point that is not an external reference of this Sketch; the usual
+    `missing_reference` 422 if the vertex does not exist."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    if point_id not in sketch.external_references or point_id not in sketch.points:
+        raise HTTPException(status_code=404, detail="point_id is not an external reference of this Sketch")
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    reference = make_external_vertex_reference(bodies, payload.body_id, payload.vertex_index)
+    reference = dataclasses.replace(reference, lineage=history_for_part(part, excluded).lineage_for(payload.body_id, payload.vertex_index))
+    x, y = resolve_external_vertex_position(part, sketch, reference, bodies, excluded)
+    sketch.external_references[point_id] = reference
+    sketch.external_reference_decisions.pop(point_id, None)
+    point = sketch.points[point_id]
+    point.x, point.y = x, y
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/external-references/{point_id}/confirm",
+    response_model=PointResponse,
+)
+def confirm_external_reference(part_id: str, feature_id: str, point_id: str) -> PointResponse:
+    """Reference-identity overhaul: "yes, this is the right vertex" for a `potentially_moved` reference - re-captures its signature (and lineage) from the
+    vertex it is bound to now, so it stops being flagged. 409 if the reference is lost (nothing to confirm: re-attach it instead)."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    ref = sketch.external_references.get(point_id)
+    if ref is None or point_id not in sketch.points:
+        raise HTTPException(status_code=404, detail="point_id is not an external reference of this Sketch")
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    lost = refresh_external_references(part, sketch, bodies, excluded, history=history_for_part(part, excluded))
+    if point_id in lost:
+        raise HTTPException(status_code=409, detail={"type": "reference_lost", "point_id": point_id})
+    ref = sketch.external_references[point_id]
+    confirmed = make_external_vertex_reference(bodies, ref.body_id, ref.vertex_index)
+    sketch.external_references[point_id] = dataclasses.replace(
+        confirmed, lineage=history_for_part(part, excluded).lineage_for(ref.body_id, ref.vertex_index) or ref.lineage
+    )
+    sketch.external_reference_decisions.pop(point_id, None)
+    point = sketch.points[point_id]
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+
+
+def _new_external_reference(
+    part: Part, sketch, bodies: dict, excluded: frozenset[str], body_id: str, vertex_index: int
+) -> ExternalVertexReference:
+    """The `ExternalVertexReference` a creation route stores for (`body_id`, `vertex_index`): carries the vertex's geometric signature and, when OCCT history
+    can say, its lineage (reference-identity overhaul, docs/reference-identity-design.md). A vertex the Sketch already tracks is returned as it is (the
+    convert-entities routes are re-pick-idempotent, and re-measuring must neither cost a history replay nor replace a healthy signature)."""
+    probe = ExternalVertexReference(body_id=body_id, vertex_index=vertex_index)
+    for point_id, existing in sketch.external_references.items():
+        if existing == probe and point_id in sketch.points:
+            return existing
+    reference = make_external_vertex_reference(bodies, body_id, vertex_index)
+    lineage = history_for_part(part, excluded).lineage_for(body_id, vertex_index)
+    return dataclasses.replace(reference, lineage=lineage)
+
+
 @router.post(
     "/parts/{part_id}/features/sketch/{feature_id}/external-references",
     response_model=PointResponse,
@@ -4269,9 +4393,10 @@ def create_external_vertex_reference(
     part = get_part_or_404(part_id)
     sketch_feature = _get_sketch_feature_or_404(part, feature_id)
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
-    ref = ExternalVertexReference(body_id=payload.body_id, vertex_index=payload.vertex_index)
-    bodies = compute_part_bodies(part)
-    x, y = resolve_external_vertex_position(part, sketch, ref, bodies)
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, payload.vertex_index)
+    x, y = resolve_external_vertex_position(part, sketch, ref, bodies, excluded)
     point = sketch.add_external_vertex_reference(x, y, ref)
     return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
@@ -4303,7 +4428,8 @@ def create_external_edge_reference(
     part = get_part_or_404(part_id)
     sketch_feature = _get_sketch_feature_or_404(part, feature_id)
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
-    bodies = compute_part_bodies(part)
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
     edge_ref = SubShapeRef(body_id=payload.body_id, shape_type=SubShapeType.EDGE, index=payload.edge_index)
     start_ref, end_ref = edge_endpoint_vertex_refs(bodies, edge_ref)
     if start_ref.index == end_ref.index:
@@ -4312,12 +4438,12 @@ def create_external_edge_reference(
             detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
         )
 
-    start_vertex_ref = ExternalVertexReference(body_id=start_ref.body_id, vertex_index=start_ref.index)
-    start_x, start_y = resolve_external_vertex_position(part, sketch, start_vertex_ref, bodies)
+    start_vertex_ref = _new_external_reference(part, sketch, bodies, excluded, start_ref.body_id, start_ref.index)
+    start_x, start_y = resolve_external_vertex_position(part, sketch, start_vertex_ref, bodies, excluded)
     start_point = sketch.add_external_vertex_reference(start_x, start_y, start_vertex_ref)
 
-    end_vertex_ref = ExternalVertexReference(body_id=end_ref.body_id, vertex_index=end_ref.index)
-    end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies)
+    end_vertex_ref = _new_external_reference(part, sketch, bodies, excluded, end_ref.body_id, end_ref.index)
+    end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies, excluded)
     end_point = sketch.add_external_vertex_reference(end_x, end_y, end_vertex_ref)
 
     # On-device feedback: a materialized Body edge is a reference for
@@ -4382,9 +4508,10 @@ def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCre
     part = get_part_or_404(part_id)
     sketch_feature = _get_sketch_feature_or_404(part, feature_id)
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
-    ref = ExternalVertexReference(body_id=payload.body_id, vertex_index=payload.vertex_index)
-    bodies = compute_part_bodies(part)
-    x, y = resolve_external_vertex_position(part, sketch, ref, bodies)
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, payload.vertex_index)
+    x, y = resolve_external_vertex_position(part, sketch, ref, bodies, excluded)
     point = sketch.add_or_reuse_external_vertex_reference(x, y, ref)
     return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
@@ -4449,11 +4576,12 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
     part = get_part_or_404(part_id)
     sketch_feature = _get_sketch_feature_or_404(part, feature_id)
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
-    bodies = compute_part_bodies(part)
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
     edge_ref = SubShapeRef(body_id=payload.body_id, shape_type=SubShapeType.EDGE, index=payload.edge_index)
     start_ref, end_ref = edge_endpoint_vertex_refs(bodies, edge_ref)
     if start_ref.index == end_ref.index:
-        basis = basis_for_sketch(part, sketch, bodies, frozenset())
+        basis = basis_for_sketch(part, sketch, bodies, excluded)
         circle_params = resolve_full_circular_edge(bodies, edge_ref, basis)
         if circle_params is None:
             raise HTTPException(
@@ -4494,15 +4622,15 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             center_point=center_response,
         )
 
-    start_vertex_ref = ExternalVertexReference(body_id=start_ref.body_id, vertex_index=start_ref.index)
-    start_x, start_y = resolve_external_vertex_position(part, sketch, start_vertex_ref, bodies)
+    start_vertex_ref = _new_external_reference(part, sketch, bodies, excluded, start_ref.body_id, start_ref.index)
+    start_x, start_y = resolve_external_vertex_position(part, sketch, start_vertex_ref, bodies, excluded)
     start_point = sketch.add_or_reuse_external_vertex_reference(start_x, start_y, start_vertex_ref)
 
-    end_vertex_ref = ExternalVertexReference(body_id=end_ref.body_id, vertex_index=end_ref.index)
-    end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies)
+    end_vertex_ref = _new_external_reference(part, sketch, bodies, excluded, end_ref.body_id, end_ref.index)
+    end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies, excluded)
     end_point = sketch.add_or_reuse_external_vertex_reference(end_x, end_y, end_vertex_ref)
 
-    basis = basis_for_sketch(part, sketch, bodies, frozenset())
+    basis = basis_for_sketch(part, sketch, bodies, excluded)
     arc_params = resolve_circular_edge_arc(bodies, edge_ref, basis, (start_x, start_y), (end_x, end_y))
     if arc_params is not None:
         center_x, center_y, _radius, resolved_start_xy, resolved_end_xy = arc_params

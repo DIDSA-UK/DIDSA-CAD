@@ -497,7 +497,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         return;
       }
     }
-    if (controller.mode == SketchMode.dimension || controller.mode == SketchMode.convert) {
+    // Reference-identity overhaul: while re-attaching a lost / potentially-moved reference, the next tap on a ghost corner IS the replacement pick
+    // (see SketchController.beginReattach); a tap anywhere else does nothing (the banner's Cancel leaves the mode).
+    if (controller.isReattaching) {
+      final ghostVertex = _referenceGhostVertexAt(transform, cursorScreen);
+      if (ghostVertex != null) unawaited(controller.reattachTo(ghostVertex.$1, ghostVertex.$2));
+      return;
+    }
+    final implicitReference = controller.mode == SketchMode.select || controller.mode == SketchMode.draw;
+    if (controller.mode == SketchMode.dimension || controller.mode == SketchMode.convert || implicitReference) {
       // Sketcher-roadmap Phase 4.3 v1 / Phase 9 v2: only reachable once a
       // tap misses every real ghost/value-editor (dimension mode only -
       // convert mode has no ghost-value-editor of its own), and (see
@@ -512,12 +520,23 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // than converting it immediately - [SketchController.
       // confirmConvertSelection] (the ribbon Tick) is what actually
       // materializes it.
+      //
+      // Reference-identity overhaul: select and every draw tool are
+      // "implicit reference" modes too (the DIDSA-VR design table's rule):
+      // aiming at a ghost corner / edge makes the pinned reference on
+      // demand (SketchController.ensureReferencePoint / ensureReferenceEdge,
+      // idempotent) and then carries on as if the user had tapped a real
+      // Point / Line there - so a line, circle, rectangle... snaps to a body
+      // corner and select / dimension can pick it, with no Convert mode,
+      // Fix or Make Construction step first.
       final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
       if (!controller.hasEntityNear(controller.cursorX, controller.cursorY, hitRadius)) {
         final ghostVertex = _referenceGhostVertexAt(transform, cursorScreen);
         if (ghostVertex != null) {
           if (controller.mode == SketchMode.convert) {
             controller.stageConvertVertex(ghostVertex.$1, ghostVertex.$2);
+          } else if (implicitReference) {
+            unawaited(_tapOnReferenceVertex(controller, ghostVertex.$1, ghostVertex.$2, hitRadius));
           } else {
             controller.pickReferenceGhostVertex(ghostVertex.$1, ghostVertex.$2);
           }
@@ -528,10 +547,16 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         // every edge that touches it, so checking edges second means a
         // corner tap always resolves to the (more specific) vertex pick,
         // never its ambiguous choice of two adjacent edges.
-        final ghostEdge = _referenceGhostEdgeAt(transform, cursorScreen);
+        //
+        // A draw tool only snaps to corners (like the design table): a tap
+        // that merely lands near a body edge while drawing must not litter
+        // the sketch with reference lines, so draw falls through here.
+        final ghostEdge = controller.mode == SketchMode.draw ? null : _referenceGhostEdgeAt(transform, cursorScreen);
         if (ghostEdge != null) {
           if (controller.mode == SketchMode.convert) {
             controller.stageConvertEdge(ghostEdge.$1, ghostEdge.$2);
+          } else if (implicitReference) {
+            unawaited(_tapOnReferenceEdge(controller, ghostEdge.$1, ghostEdge.$2, hitRadius));
           } else {
             controller.pickReferenceGhostEdge(ghostEdge.$1, ghostEdge.$2);
           }
@@ -562,6 +587,30 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     }
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     controller.handleCanvasTap(controller.cursorX, controller.cursorY, hitRadius);
+  }
+
+  /// [_dispatchTap]'s implicit-reference path for a ghost corner: makes the pinned reference Point, moves the persistent cursor exactly onto it, and then
+  /// lets the active tool handle the tap as if the user had tapped that real Point (every draw tool and select already snap to / pick an existing Point
+  /// under the cursor).
+  Future<void> _tapOnReferenceVertex(SketchController controller, String bodyId, int vertexIndex, double hitRadius) async {
+    final pointId = await controller.ensureReferencePoint(bodyId, vertexIndex);
+    final point = pointId == null ? null : controller.points[pointId];
+    if (point == null) return;
+    await controller.handleCanvasTap(point.x, point.y, hitRadius);
+  }
+
+  /// [_tapOnReferenceVertex]'s edge-shaped sibling, for select: picks the reference line (or arc / circle). (Draw tools only snap to corners and
+  /// never reach this - see [_dispatchTap].)
+  Future<void> _tapOnReferenceEdge(SketchController controller, String bodyId, int edgeIndex, double hitRadius) async {
+    final aimedX = controller.cursorX;
+    final aimedY = controller.cursorY;
+    final selection = await controller.ensureReferenceEdge(bodyId, edgeIndex);
+    if (selection == null) return;
+    if (controller.mode == SketchMode.select) {
+      controller.selectEntity(selection);
+      return;
+    }
+    await controller.handleCanvasTap(aimedX, aimedY, hitRadius);
   }
 
   /// Sketcher-roadmap Phase 4.3 v1: the `(bodyId, vertexIndex)` of whichever
@@ -2164,6 +2213,9 @@ class _SketchPainter extends CustomPainter {
   /// (green/deepOrange/indigo) used elsewhere in this painter.
   static const Color _hoverColor = Colors.amber;
   static const Color _selectedColor = Colors.purple;
+  // Reference-identity overhaul: a reference Point whose body corner is lost / may have moved.
+  static const Color _lostReferenceColor = Color(0xFFD32F2F);
+  static const Color _movedReferenceColor = Color(0xFFF57C00);
 
   /// Drag-mode's "currently grabbed" highlight - the entity a tap has
   /// picked up (see [SketchController.isEntityGrabbed]) while its cursor is
@@ -3205,6 +3257,39 @@ class _SketchPainter extends CustomPainter {
   /// render through the ordinary Circle painter like any other Circle, so
   /// drawing this dashed overlay on top too would just double up on the
   /// exact same two circles.
+  /// Reference-identity overhaul: marks every reference Point the backend flagged - a lost one (its corner is gone or ambiguous) with a red ring
+  /// and a bang, a potentially-moved one (re-bound on weaker evidence) with an amber dashed ring - and the Point being re-attached with a pulse-free
+  /// bold ring, so the problem is visible on the sketch itself and not only in the feature tree.
+  void _paintFlaggedReferencePoints(Canvas canvas) {
+    if (!controller.hasFlaggedReferences) return;
+    final lost = controller.lostReferencePointIds;
+    final moved = controller.movedReferencePointIds;
+    final reattaching = controller.reattachPointId;
+    for (final pointId in [...lost, ...moved]) {
+      final point = controller.points[pointId];
+      if (point == null) continue;
+      final center = transform.sketchToScreen(point.x, point.y);
+      final isLost = lost.contains(pointId);
+      final color = isLost ? _lostReferenceColor : _movedReferenceColor;
+      final ring = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = pointId == reattaching ? 3.5 : 2;
+      if (isLost) {
+        canvas.drawCircle(center, 11, ring);
+        canvas.drawLine(center + const Offset(0, -5), center + const Offset(0, 1), ring..strokeWidth = 2);
+        canvas.drawCircle(center + const Offset(0, 4.5), 1.2, Paint()..color = color);
+      } else {
+        const segments = 10;
+        for (var i = 0; i < segments; i += 2) {
+          final a0 = 2 * math.pi * i / segments;
+          final a1 = 2 * math.pi * (i + 1) / segments;
+          canvas.drawArc(Rect.fromCircle(center: center, radius: 11), a0, a1 - a0, false, ring);
+        }
+      }
+    }
+  }
+
   void _paintPolygonGuideCircles(Canvas canvas) {
     if (!controller.createPolygonReferenceCircles) return;
     final polygons = controller.polygons.values;
@@ -3967,15 +4052,45 @@ class _SketchPainter extends CustomPainter {
     // painter already uses, so a staged vertex reads as selected rather
     // than just another tappable ghost before its own Tick actually
     // converts it.
+    //
+    // Reference-identity overhaul: also shown (smaller) while a select / draw
+    // tool is active, since aiming at one of these corners now snaps to / picks
+    // it with no Convert mode (see SketchCanvas._dispatchTap) - and the one
+    // under the cursor is ringed so the user can see what a tap will use.
+    // While re-attaching a lost reference they are the picks, and the corners
+    // the backend says it might have been (an ambiguous match) are amber.
+    final dimensionOrConvert = controller.mode == SketchMode.dimension || controller.mode == SketchMode.convert;
+    final implicitReference = controller.mode == SketchMode.select || controller.mode == SketchMode.draw;
     if (!referenceBodyHidden &&
         referenceGhostVertices.isNotEmpty &&
-        (controller.mode == SketchMode.dimension || controller.mode == SketchMode.convert)) {
+        (dimensionOrConvert || implicitReference || controller.isReattaching)) {
       final pendingVertices =
           controller.mode == SketchMode.convert ? controller.pendingConvertVertices : const <(String, int)>[];
+      final candidates = controller.reattachCandidates;
+      final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
       for (final (bodyId, vertexIndex, x, y) in referenceGhostVertices) {
         final isPending = pendingVertices.any((p) => p.$1 == bodyId && p.$2 == vertexIndex);
-        final vertexPaint = Paint()..color = isPending ? _selectedColor : _referenceGhostColor;
-        canvas.drawCircle(transform.sketchToScreen(x, y), isPending ? 5 : 3.5, vertexPaint);
+        final isCandidate = candidates.contains((bodyId, vertexIndex));
+        final screen = transform.sketchToScreen(x, y);
+        final aimed = (screen - cursorScreen).distance <= _ghostHitRadiusPixels;
+        final vertexPaint = Paint()
+          ..color = isPending
+              ? _selectedColor
+              : isCandidate
+                  ? _lostReferenceColor
+                  : _referenceGhostColor;
+        final baseRadius = (dimensionOrConvert || controller.isReattaching) ? 3.5 : 2.5;
+        canvas.drawCircle(screen, isPending ? 5 : (isCandidate ? 5.5 : baseRadius), vertexPaint);
+        if (aimed && !dimensionOrConvert) {
+          canvas.drawCircle(
+            screen,
+            8,
+            Paint()
+              ..color = _snapCandidateColor
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = 2,
+          );
+        }
       }
     }
 
@@ -4651,6 +4766,7 @@ class _SketchPainter extends CustomPainter {
       canvas.drawCircle(screenPos, radius, Paint()..color = color);
     }
 
+    _paintFlaggedReferencePoints(canvas);
     _paintPolygonGuideCircles(canvas);
     if (labelsVisible) _paintDimensionOverlays(canvas);
     _paintGhosts(canvas);

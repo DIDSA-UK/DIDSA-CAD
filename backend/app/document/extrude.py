@@ -36,7 +36,7 @@ from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Edge, TopoDS_Shape, TopoDS_Vertex, TopoDS_Wire, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape, TopTools_ListOfShape
 
-from app.document import body_cache
+from app.document import body_cache, reference_history
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
 from app.document.shell_ops import thicken_capped_solid_to_solid, thicken_shell_to_solid
 from app.document.plane_geometry import (
@@ -1514,6 +1514,8 @@ def _safe_fuse(
     shape = fuse.Shape()
     if not _fuse_result_is_sane(shape, vol_a, vol_b):
         raise _boolean_op_failed(op, body_ids)
+    if a_prepared is a and b_prepared is b:  # a converted operand is a different TShape: its history would not name the caller's vertices
+        reference_history.note_operation(fuse)
     return shape
 
 
@@ -1579,6 +1581,7 @@ def _apply_boss_or_cut(
             if not cut_op.IsDone():
                 raise _boolean_op_failed("cut", [target_id])
             cut_result = cut_op.Shape()
+            reference_history.note_operation(cut_op)
             del bodies[target_id]
             _register_solids(bodies, target_id, cut_result)
 
@@ -2933,6 +2936,7 @@ def _unify_same_domain(shape: TopoDS_Shape) -> TopoDS_Shape:
     unified = unify.Shape()
     if unified is None or unified.IsNull() or not BRepCheck_Analyzer(unified).IsValid():
         return shape
+    reference_history.note_operation(unify.History())
     return unified
 
 
@@ -2963,13 +2967,15 @@ def _apply_feature_to_bodies(
     this call" from "this key already existed, untouched, from an earlier
     step" without needing to understand any one branch's own internals."""
     before = dict(bodies)
+    reference_history.begin_step()
     _apply_feature_to_bodies_impl(feature, part, bodies, feature_index, excluded_feature_ids)
-    if not unify:
-        return
-    for body_id, shape in list(bodies.items()):
-        if before.get(body_id) is shape:
-            continue
-        bodies[body_id] = _unify_same_domain(shape)
+    if unify:
+        for body_id, shape in list(bodies.items()):
+            if before.get(body_id) is shape:
+                continue
+            bodies[body_id] = _unify_same_domain(shape)
+    # Reference-identity overhaul: a no-op unless a history trace is being recorded (see app.document.reference_history).
+    reference_history.end_step(feature.id, before, bodies)
 
 
 def compute_part_bodies(
