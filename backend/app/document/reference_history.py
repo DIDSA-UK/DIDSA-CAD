@@ -24,20 +24,22 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from OCC.Core.TopAbs import TopAbs_VERTEX
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_VERTEX
 from OCC.Core.TopExp import topexp
 from OCC.Core.TopoDS import TopoDS_Shape
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
-from app.document.reference_signature import BodyVertexMeasurer
+from app.document.reference_signature import measurer_for
 from app.sketch.reference_signature import (
     LineageOrigin,
     ReferenceDecision,
     ReferenceStatus,
+    ShapeSignature,
     decide_reference,
     distance,
     fingerprint_matches,
     narrow_by_signature,
+    shape_distance,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,11 +53,13 @@ class HistoryOp:
         self._source = source
 
     def successors(self, shape: TopoDS_Shape) -> list[TopoDS_Shape]:
-        """The vertices `shape` (a vertex) was reported to have become (Modified then Generated); empty when the operation says nothing about it."""
+        """The sub-shapes of `shape`'s own kind (vertex / edge / face) that `shape` was reported to have become (Modified then Generated; a Fillet "generates" a
+        face from an edge, which is not what became of the edge); empty when the operation says nothing about it."""
         out: list[TopoDS_Shape] = []
+        kind = shape.ShapeType()
         for call in (self._source.Modified, self._source.Generated):
             try:
-                out.extend(s for s in call(shape) if s.ShapeType() == TopAbs_VERTEX)
+                out.extend(s for s in call(shape) if s.ShapeType() == kind)
             except Exception:  # an operation may refuse a shape that was never one of its arguments
                 continue
         return out
@@ -65,6 +69,9 @@ class _Recorder:
     def __init__(self) -> None:
         self.pending: list[HistoryOp] = []
         self.steps: list[StepRecord] = []
+        # feature id -> the Bodies as that Feature found them (a shallow copy of the accumulator at the start of its step): the shape objects a reference made by
+        # that Feature points into, so `HistoryTrace.lineage_before_feature` can start a backward walk from them.
+        self.inputs: dict[str, dict[str, TopoDS_Shape]] = {}
 
     def drain(self) -> tuple[HistoryOp, ...]:
         ops, self.pending = tuple(self.pending), []
@@ -85,10 +92,12 @@ def note_operation(source: Any) -> None:
         recorder.pending.append(HistoryOp(source))
 
 
-def begin_step() -> None:
+def begin_step(feature_id: str | None = None, bodies: dict[str, TopoDS_Shape] | None = None) -> None:
     recorder = _active.get()
     if recorder is not None:
         recorder.pending = []
+        if feature_id is not None and bodies is not None:
+            recorder.inputs[feature_id] = dict(bodies)
 
 
 def end_step(feature_id: str, before: dict[str, TopoDS_Shape], bodies: dict[str, TopoDS_Shape]) -> None:
@@ -119,14 +128,19 @@ class HistoryOutcome:
     consumed_by: str | None = None
 
 
-class HistoryTrace:
-    """A recorded replay of a Part's features: the steps and the Bodies it ended with."""
+_TOPABS_FOR_KIND = {"vertex": TopAbs_VERTEX, "edge": TopAbs_EDGE, "face": TopAbs_FACE}
 
-    def __init__(self, steps: list[StepRecord], bodies: dict[str, TopoDS_Shape]) -> None:
+
+class HistoryTrace:
+    """A recorded replay of a Part's features: the steps, the Bodies it ended with and the Bodies each Feature found as its input. Everything is per sub-shape
+    `kind` ("vertex" / "edge" / "face"; the index of a sub-shape is its `topexp.MapShapes` index within its Body)."""
+
+    def __init__(self, steps: list[StepRecord], bodies: dict[str, TopoDS_Shape], inputs: dict[str, dict[str, TopoDS_Shape]] | None = None) -> None:
         self.steps = steps
         self.bodies = bodies
-        self._vertex_maps: dict[int, tuple[TopoDS_Shape, TopTools_IndexedMapOfShape]] = {}
-        self._forward_cache: dict[tuple[int, int], tuple[int, ...]] = {}
+        self.inputs = inputs or {}
+        self._maps: dict[tuple[int, str], tuple[TopoDS_Shape, TopTools_IndexedMapOfShape]] = {}
+        self._forward_cache: dict[tuple[int, int, str], tuple[int, ...]] = {}
         self._by_before: dict[int, list[StepRecord]] = {}
         self._produced_by: dict[int, StepRecord] = {}
         for step in steps:
@@ -134,87 +148,102 @@ class HistoryTrace:
                 self._by_before.setdefault(id(step.before), []).append(step)
             self._produced_by[id(step.after)] = step
 
-    def _vmap(self, shape: TopoDS_Shape) -> TopTools_IndexedMapOfShape:
-        cached = self._vertex_maps.get(id(shape))
+    def _map(self, shape: TopoDS_Shape, kind: str) -> TopTools_IndexedMapOfShape:
+        cached = self._maps.get((id(shape), kind))
         if cached is None:
-            vertex_map = TopTools_IndexedMapOfShape()
-            topexp.MapShapes(shape, TopAbs_VERTEX, vertex_map)
-            cached = self._vertex_maps[id(shape)] = (shape, vertex_map)  # keeping `shape` alive keeps id() unique
+            sub_shapes = TopTools_IndexedMapOfShape()
+            topexp.MapShapes(shape, _TOPABS_FOR_KIND[kind], sub_shapes)
+            cached = self._maps[(id(shape), kind)] = (shape, sub_shapes)  # keeping `shape` alive keeps id() unique
         return cached[1]
 
-    def forward(self, step: StepRecord, old_index: int) -> tuple[int, ...]:
-        """Indices in `step.after` that vertex `old_index` of `step.before` became (empty: consumed)."""
-        key = (id(step), old_index)
+    def forward(self, step: StepRecord, old_index: int, kind: str = "vertex") -> tuple[int, ...]:
+        """Indices in `step.after` that sub-shape `old_index` of `step.before` became (empty: consumed)."""
+        key = (id(step), old_index, kind)
         cached = self._forward_cache.get(key)
         if cached is not None:
             return cached
         assert step.before is not None
-        before_map, after_map = self._vmap(step.before), self._vmap(step.after)
+        before_map, after_map = self._map(step.before, kind), self._map(step.after, kind)
         current = [before_map.FindKey(old_index + 1)]
         for op in step.ops:
             current = [t for s in current for t in (op.successors(s) or [s])]
         found = sorted({after_map.FindIndex(s) - 1 for s in current if after_map.FindIndex(s) > 0})
         if not found:
-            found = self._by_position(step, old_index)
+            found = self._by_position(step, old_index, kind)
         result = tuple(found)
         self._forward_cache[key] = result
         return result
 
-    def _by_position(self, step: StepRecord, old_index: int) -> list[int]:
-        """The step had no history for this vertex: a lone vertex of the result at exactly the same place (an operation we have no hook for)."""
-        before = BodyVertexMeasurer(step.before).signature(old_index)
-        after = BodyVertexMeasurer(step.after)
+    def _by_position(self, step: StepRecord, old_index: int, kind: str) -> list[int]:
+        """The step had no history for this sub-shape: a lone sub-shape of the result with the same fingerprint at exactly the same place (an operation we have
+        no hook for)."""
+        before = measurer_for(step.before, kind).signature(old_index)
+        after = measurer_for(step.after, kind)
         eps = 1e-6 * (before.body_diagonal or 1.0)
-        near = [i for i in range(after.count) if distance(after.signature(i).position, before.position) <= eps]
+        near = [
+            i
+            for i in range(after.count)
+            if distance(after.signature(i).position, before.position) <= eps and fingerprint_matches(before, after.signature(i))
+        ]
         return near if len(near) == 1 else []
 
-    def preimages(self, step: StepRecord, new_index: int) -> list[int]:
+    def preimages(self, step: StepRecord, new_index: int, kind: str = "vertex") -> list[int]:
         if step.before is None:
             return []
-        count = self._vmap(step.before).Size()
-        return [i for i in range(count) if new_index in self.forward(step, i)]
+        count = self._map(step.before, kind).Size()
+        return [i for i in range(count) if new_index in self.forward(step, i, kind)]
 
-    def lineage_for(self, body_id: str, index: int) -> LineageOrigin | None:
-        """Walks the recorded steps backwards from vertex `index` of the final Body `body_id` to the step that created it."""
-        final = self.bodies.get(body_id)
+    def _walk_back(self, final: TopoDS_Shape | None, index: int, kind: str) -> LineageOrigin | None:
         if final is None:
             return None
         step = self._produced_by.get(id(final))
         if step is None:
             return None
         while True:
-            pre = self.preimages(step, index)
+            pre = self.preimages(step, index, kind)
             previous = self._produced_by.get(id(step.before)) if step.before is not None else None
             if len(pre) != 1 or previous is None:
                 break
             index, step = pre[0], previous
-        signature = BodyVertexMeasurer(step.after).signature(index)
-        return LineageOrigin(feature_id=step.feature_id, body_id=step.body_id, index=index, signature=signature)
+        signature = measurer_for(step.after, kind).signature(index)
+        return LineageOrigin(feature_id=step.feature_id, body_id=step.body_id, index=index, signature=signature, kind=kind)
 
-    def forward_from_origin(self, origin: LineageOrigin, final_body_id: str) -> HistoryOutcome:
+    def lineage_for(self, body_id: str, index: int, kind: str = "vertex") -> LineageOrigin | None:
+        """Walks the recorded steps backwards from sub-shape `index` of the final Body `body_id` to the step that created it."""
+        return self._walk_back(self.bodies.get(body_id), index, kind)
+
+    def lineage_before_feature(self, feature_id: str, body_id: str, index: int, kind: str) -> LineageOrigin | None:
+        """The same walk, from sub-shape `index` of Body `body_id` as `feature_id` found it (a reference made by that Feature names a sub-shape of its input)."""
+        return self._walk_back(self.inputs.get(feature_id, {}).get(body_id), index, kind)
+
+    def forward_from_origin(self, origin: LineageOrigin, final_body_id: str | None = None, target: TopoDS_Shape | None = None) -> HistoryOutcome:
+        """Where did the sub-shape `origin` names end up? Walked forward from the origin Feature's output to `target` (default: this trace's final Body
+        `final_body_id`); the walk stops when it reaches `target`, so a reference made mid-history is not carried past the Feature that holds it."""
+        kind = origin.kind
         origin_step = next((s for s in self.steps if s.feature_id == origin.feature_id and s.body_id == origin.body_id), None)
         if origin_step is None:
             return HistoryOutcome("unavailable")
-        measurer = BodyVertexMeasurer(origin_step.after)
+        measurer = measurer_for(origin_step.after, kind)
         located = decide_reference(origin.signature, origin.index, measurer.all())
         if located.status == ReferenceStatus.LOST or located.index is None:
             return HistoryOutcome("unavailable")
+        if target is None:
+            target = self.bodies.get(final_body_id) if final_body_id is not None else None
         queue: list[tuple[TopoDS_Shape, list[int]]] = [(origin_step.after, [located.index])]
         finals: list[tuple[TopoDS_Shape, list[int]]] = []
         consumed_by: str | None = None
         while queue:
             shape, indices = queue.pop()
-            steps = self._by_before.get(id(shape), [])
+            steps = [] if shape is target else self._by_before.get(id(shape), [])
             if not steps:
                 finals.append((shape, indices))
                 continue
             for step in steps:
-                survivors = sorted({j for i in indices for j in self.forward(step, i)})
+                survivors = sorted({j for i in indices for j in self.forward(step, i, kind)})
                 if survivors:
                     queue.append((step.after, survivors))
                 elif consumed_by is None:
                     consumed_by = step.feature_id
-        target = self.bodies.get(final_body_id)
         for shape, indices in finals:
             if shape is target:
                 return HistoryOutcome("found", tuple(indices))
@@ -250,7 +279,7 @@ def compute_history_trace(part, excluded_feature_ids: frozenset[str]) -> History
             _apply_feature_to_bodies(feature, part, bodies, feature_index, excluded_feature_ids)
     finally:
         _active.reset(token)
-    trace = HistoryTrace(recorder.steps, bodies)
+    trace = HistoryTrace(recorder.steps, bodies, recorder.inputs)
     while len(_TRACE_CACHE) >= _TRACE_CACHE_SIZE:
         _TRACE_CACHE.pop(next(iter(_TRACE_CACHE)))
     _TRACE_CACHE[key] = trace
@@ -275,49 +304,85 @@ class ReferenceHistory:
                 self._failed = True
         return self._trace
 
-    def lineage_for(self, body_id: str, index: int) -> LineageOrigin | None:
+    def lineage_for(self, body_id: str, index: int, kind: str = "vertex") -> LineageOrigin | None:
         trace = self.trace()
         if trace is None:
             return None
         try:
-            return trace.lineage_for(body_id, index)
+            return trace.lineage_for(body_id, index, kind)
         except Exception:
-            logger.warning("Could not trace lineage of vertex %s of %s", index, body_id, exc_info=True)
+            logger.warning("Could not trace lineage of %s %s of %s", kind, index, body_id, exc_info=True)
             return None
 
-    def refine(self, ref, signature_decision: ReferenceDecision, bodies: dict[str, TopoDS_Shape], measurer: BodyVertexMeasurer) -> ReferenceDecision:
-        """Combine what OCCT history says with the signature search's `signature_decision` (docs/reference-identity-design.md, "Combining")."""
+    def lineage_before_feature(self, feature_id: str, body_id: str, index: int, kind: str) -> LineageOrigin | None:
+        """Lineage of a sub-shape named by `feature_id` (see `HistoryTrace.lineage_before_feature`); needs a trace of the whole Part (`excluded` empty)."""
         trace = self.trace()
-        if trace is None or ref.lineage is None:
-            return signature_decision
+        if trace is None:
+            return None
         try:
-            outcome = trace.forward_from_origin(ref.lineage, ref.body_id)
+            return trace.lineage_before_feature(feature_id, body_id, index, kind)
         except Exception:
-            logger.warning("OCCT history lookup failed for a reference on %s", ref.body_id, exc_info=True)
+            logger.warning("Could not trace lineage of %s %s of %s before %s", kind, index, body_id, feature_id, exc_info=True)
+            return None
+
+    def refine(self, ref, signature_decision: ReferenceDecision, bodies: dict[str, TopoDS_Shape], measurer) -> ReferenceDecision:
+        """A sketch vertex reference: combine what OCCT history says with the signature search's `signature_decision` (see `refine_lineage`)."""
+        return self.refine_lineage(
+            ref.lineage, ref.body_id, ref.vertex_index, ref.signature, signature_decision, measurer, final_body_id=ref.body_id, kind="vertex"
+        )
+
+    def refine_lineage(
+        self,
+        lineage: LineageOrigin | None,
+        body_id: str,
+        current_index: int,
+        stored_signature: ShapeSignature | None,
+        signature_decision: ReferenceDecision,
+        measurer,
+        *,
+        final_body_id: str | None = None,
+        target_feature_id: str | None = None,
+        kind: str = "vertex",
+    ) -> ReferenceDecision:
+        """Combine what OCCT history says with the signature search's `signature_decision` (docs/reference-identity-design.md, "Combining"): history carries the
+        origin sub-shape forward to the target Body (this trace's final Body `final_body_id`, or the input of Feature `target_feature_id`); one survivor is
+        followed, none is consumed (lost, never rebound to a look-alike), several are narrowed by signature."""
+        trace = self.trace()
+        if trace is None or lineage is None:
+            return signature_decision
+        target = trace.inputs.get(target_feature_id, {}).get(body_id) if target_feature_id is not None else None
+        try:
+            outcome = trace.forward_from_origin(lineage, final_body_id=final_body_id, target=target)
+        except Exception:
+            logger.warning("OCCT history lookup failed for a reference on %s", body_id, exc_info=True)
             return signature_decision
         if outcome.kind == "consumed":
             return ReferenceDecision(ReferenceStatus.LOST, None, reason=f"consumed_by_{outcome.consumed_by}", method="history")
         if outcome.kind != "found":
             return signature_decision
 
-        # Translate the trace's own numbering of the final Body into the caller's (the same shape rebuilt, so normally identical; matched by position).
-        trace_measurer = BodyVertexMeasurer(trace.bodies[ref.body_id])
+        # Translate the trace's own numbering of the target Body into the caller's (the same shape rebuilt, so normally identical; matched by position).
+        target_shape = target if target is not None else trace.bodies[body_id]
+        trace_measurer = measurer_for(target_shape, kind)
         eps = 1e-6 * (measurer.diagonal or 1.0)
         mapped: list[int] = []
         for i in outcome.indices:
-            position = trace_measurer.signature(i).position
-            mapped.extend(j for j in range(measurer.count) if distance(measurer.signature(j).position, position) <= eps and j not in mapped)
+            expected = trace_measurer.signature(i)
+            mapped.extend(
+                j
+                for j in range(measurer.count)
+                if j not in mapped
+                and distance(measurer.signature(j).position, expected.position) <= eps
+                and fingerprint_matches(expected, measurer.signature(j))
+            )
         if not mapped:
             return signature_decision
-        if len(mapped) > 1 and ref.signature is not None:
-            mapped = narrow_by_signature(ref.signature, mapped, measurer.all())
+        if len(mapped) > 1 and stored_signature is not None:
+            mapped = narrow_by_signature(stored_signature, mapped, measurer.all())
         if len(mapped) != 1:
             return ReferenceDecision(ReferenceStatus.LOST, None, reason="ambiguous", method="history", candidates=tuple(mapped))
         index = mapped[0]
-        lineage = LineageOrigin(
-            ref.lineage.feature_id, ref.lineage.body_id, ref.lineage.index, ref.lineage.signature
-        )
-        status = ReferenceStatus.OK if index == ref.vertex_index else ReferenceStatus.FOLLOWED
+        status = ReferenceStatus.OK if index == current_index else ReferenceStatus.FOLLOWED
         reason = "" if status == ReferenceStatus.OK else "history"
         return ReferenceDecision(status, index, reason=reason, method="history", lineage=lineage)
 

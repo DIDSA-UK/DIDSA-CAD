@@ -512,7 +512,7 @@ def make_external_vertex_reference(
 
 
 def make_circle_centre_reference(
-    bodies: dict[str, TopoDS_Shape], body_id: str, edge_index: int
+    bodies: dict[str, TopoDS_Shape], body_id: str, edge_index: int, lineage: LineageOrigin | None = None
 ) -> ExternalVertexReference:
     """A new `kind="circle_centre"` reference: the centre of the CIRCULAR Body edge `edge_index` (a hole's or boss's rim), signed with the edge's own signature
     (circle, axis, adjacent faces, plus the centre and radius it is re-derived from). Fails closed with `missing_reference` if the edge does not exist and with
@@ -521,7 +521,7 @@ def make_circle_centre_reference(
     signature = measurer_for(bodies[body_id], "edge").signature(edge_index)
     if signature.curve_kind != "circle":
         raise HTTPException(status_code=422, detail={"type": "not_a_circular_edge", "body_id": body_id, "index": edge_index})
-    return ExternalVertexReference(body_id=body_id, vertex_index=edge_index, signature=signature, kind="circle_centre")
+    return ExternalVertexReference(body_id=body_id, vertex_index=edge_index, signature=signature, lineage=lineage, kind="circle_centre")
 
 
 def capture_external_reference(
@@ -529,7 +529,7 @@ def capture_external_reference(
 ) -> ExternalVertexReference:
     """`ref` re-captured against `bodies` as it names its sub-shape now (confirm / re-attach): a fresh signature, whatever the kind."""
     if ref.kind == "circle_centre":
-        return make_circle_centre_reference(bodies, ref.body_id, ref.vertex_index)
+        return make_circle_centre_reference(bodies, ref.body_id, ref.vertex_index, lineage)
     return make_external_vertex_reference(bodies, ref.body_id, ref.vertex_index, lineage)
 
 
@@ -562,8 +562,17 @@ def _decide_external_reference(
             return ReferenceDecision(ReferenceStatus.OK, ref.vertex_index, method="index")
 
     signature_decision = decide_reference(ref.signature, ref.vertex_index, measurer.all())
-    if history is not None and ref.lineage is not None and ref.kind == "vertex":
-        return history.refine(ref, signature_decision, bodies, measurer)
+    if history is not None and ref.lineage is not None:
+        return history.refine_lineage(
+            ref.lineage,
+            ref.body_id,
+            ref.vertex_index,
+            ref.signature,
+            signature_decision,
+            measurer,
+            final_body_id=ref.body_id,
+            kind=_measurer_kind(ref),
+        )
     return signature_decision
 
 

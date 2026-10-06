@@ -696,7 +696,8 @@ def _external_reference_to_dict(point_id: str, ref: ExternalVertexReference) -> 
             "feature_id": ref.lineage.feature_id,
             "body_id": ref.lineage.body_id,
             "index": ref.lineage.index,
-            "signature": _signature_to_dict(ref.lineage.signature),
+            "signature": _signature_to_dict(ref.lineage.signature) if ref.lineage.kind == "vertex" else _shape_signature_to_dict(ref.lineage.signature),
+            **({"kind": ref.lineage.kind} if ref.lineage.kind != "vertex" else {}),
         }
     return data
 
@@ -709,11 +710,13 @@ def _external_reference_from_dict(data: dict) -> ExternalVertexReference:
     lineage = None
     if data.get("lineage"):
         raw = data["lineage"]
+        lineage_kind = raw.get("kind", "vertex")
         lineage = LineageOrigin(
             feature_id=raw["feature_id"],
             body_id=raw["body_id"],
             index=int(raw["index"]),
-            signature=_signature_from_dict(raw["signature"]),
+            signature=_signature_from_dict(raw["signature"]) if lineage_kind == "vertex" else _shape_signature_from_dict(raw["signature"]),
+            kind=lineage_kind,
         )
     return ExternalVertexReference(
         body_id=data["body_id"], vertex_index=data["vertex_index"], signature=signature, lineage=lineage, kind=kind
@@ -830,15 +833,34 @@ def _subshape_ref_to_dict(ref: SubShapeRef) -> dict:
     data = {"body_id": ref.body_id, "shape_type": ref.shape_type.value, "index": ref.index}
     if ref.signature is not None:
         data["signature"] = _shape_signature_to_dict(ref.signature)
+    if ref.lineage is not None:
+        data["lineage"] = {
+            "feature_id": ref.lineage.feature_id,
+            "body_id": ref.lineage.body_id,
+            "index": ref.lineage.index,
+            "kind": ref.lineage.kind,
+            "signature": _shape_signature_to_dict(ref.lineage.signature),
+        }
     return data
 
 
 def _subshape_ref_from_dict(data: dict) -> SubShapeRef:
+    lineage = None
+    if data.get("lineage"):
+        raw = data["lineage"]
+        lineage = LineageOrigin(
+            feature_id=raw["feature_id"],
+            body_id=raw["body_id"],
+            index=int(raw["index"]),
+            signature=_shape_signature_from_dict(raw["signature"]),
+            kind=raw.get("kind", "vertex"),
+        )
     return SubShapeRef(
         body_id=_require(data, "body_id"),
         shape_type=SubShapeType(_require(data, "shape_type")),
         index=_require(data, "index"),
         signature=_shape_signature_from_dict(data["signature"]) if data.get("signature") else None,
+        lineage=lineage,
     )
 
 

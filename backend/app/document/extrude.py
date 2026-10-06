@@ -2967,7 +2967,7 @@ def _apply_feature_to_bodies(
     this call" from "this key already existed, untouched, from an earlier
     step" without needing to understand any one branch's own internals."""
     before = dict(bodies)
-    reference_history.begin_step()
+    reference_history.begin_step(feature.id, bodies)
     _apply_feature_to_bodies_impl(feature, part, bodies, feature_index, excluded_feature_ids)
     if unify:
         for body_id, shape in list(bodies.items()):
@@ -3310,6 +3310,9 @@ def resolve_subshape_from_bodies(bodies: dict[str, TopoDS_Shape], ref: SubShapeR
     # Reference-identity overhaul (docs/reference-identity-design.md): a reference that carries a geometric signature is re-found when its index has gone
     # stale (an upstream edit renumbered the Body), and fails closed - never silently resolves to a look-alike - when it cannot be found unambiguously.
     index = ref.index
+    if ref.lost_reason is not None:
+        # OCCT history said an upstream Feature consumed this sub-shape (set by `refresh_feature_subshape_refs`): never bind a look-alike.
+        raise _missing_reference(ref, reason=ref.lost_reason)
     if ref.signature is not None:
         from app.document.subshape_identity import decide_subshape
 

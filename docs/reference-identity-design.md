@@ -97,7 +97,7 @@ reference of `kind="circle_centre"` (`ExternalVertexReference.kind`; `vertex_ind
 `refresh_external_references` re-finds the edge with the same rules as a vertex, then **moves the Circle with it**: the centre Point goes to the edge's centre and every other defining Point of the Circle (radius Point, the four cardinal Points) is
 translated and scaled about it to the edge's new radius; an Arc only has its centre to move (its ends are vertex references). The provisional radius dimension is re-synced to the geometry. If the edge no longer lies in the Sketch's plane
 (axis not parallel to the plane normal) the reference is **lost**, reason `not_coplanar`. `convert-entities/edge` makes the centre this way for both the full-circle and the arc branch (reused if the same edge is converted again); an
-Arc's `FixedConstraint` is no longer needed (every Point of it is a live reference). No OCCT lineage for circle centres (history is tracked per vertex): the signature search carries it. Re-attach picks a circular EDGE (`edge_index`); the flat app
+Arc's `FixedConstraint` is no longer needed (every Point of it is a live reference). A circle centre carries the EDGE lineage (OCCT history per edge): a rim consumed by an upstream fillet is therefore `consumed_by_<fillet>` (lost; the new circular edges are different edges even when one shares the centre), and only a reference without lineage (an old file, an untraced Part) falls back to the signature search's "potentially moved, `fingerprint_changed_in_place`". Re-attach picks a circular EDGE (`edge_index`); the flat app
 lets the user tap one (the banner says so).
 
 ## SubShapeRef consumers (item 1)
@@ -120,7 +120,16 @@ mechanism (`app/document/subshape_identity.py`), not one per consumer:
   `mirror_plane`, Shell / Delete Face / Move Face selections, Offset Surface, ... are all in. BODY references (nothing to sign) and assembly mate references (another Part's Bodies) are not.
 * Native format: signatures are saved with each `SubShapeRef` (tagged by kind), a file without them loads unsigned.
 
-Limits of this half: **no OCCT history** (vertex references only - an edge or face is re-found by signature, so a consumed edge reads `no_match` rather than "consumed by Fillet X"); the PATCH routes validate an edit's edge indices against the Part as it
+* **OCCT history, per edge and face** (the same machinery as for sketch vertices, generalised by sub-shape kind - see "OCCT history" above). A reference stamped while the Part has at most `HISTORY_MAX_FEATURES` (80) Features also stores a
+  `LineageOrigin` (`SubShapeRef.lineage`, `repr=False`, saved in the native format): the Feature whose output created the sub-shape. The stamp comes from ONE recorded replay of the whole Part (`HistoryTrace.inputs` keeps the Bodies each Feature found,
+  so a mid-history reference can start its backward walk from them), shared through the trace memo by every reference of every Feature. When a stored index goes stale the refresh carries the origin forward to the Feature's own input with
+  `Modified()` / `Generated()` (measured on OCCT 7.9: a Fillet reports the faces next to the rounded edge as Modified, the rounded edge as consumed with only a *generated face*; a Cut reports split edges / faces as Modified and removed ones as nothing): one
+  survivor is followed, none is `consumed_by_<feature>`, several are narrowed by signature. **A consumed sub-shape is also recorded on the reference (`SubShapeRef.lost_reason`, in `repr` so the body cache is invalidated)** and replay then fails closed on it - the
+  case that matters: an edge or face consumed upstream while an identical-looking twin remains, which the signature search alone would have bound (flagged "potentially moved") or called ambiguous. The marker is cleared by the next refresh that finds the
+  sub-shape again (an undone edit heals). Replay itself stays signature-only. Circle centres use the edge lineage too.
+
+Limits of this half: the history verdict is only recorded by a refresh, so after an upstream edit that consumes a sub-shape the Feature keeps replaying signature-only until the next `GET .../features` (the client refreshes features after every edit); a Part above the feature cap is not traced (signature search only);
+every reference creation / first view makes one recorded replay (uncached, memoised per Part state); the PATCH routes validate an edit's edge indices against the Part as it
 stands INCLUDING later features, which is pre-existing and unchanged (it can refuse or misread an index when editing a non-last feature); a coplanar split of a face leaves two identical-looking faces (flagged ambiguous, by design).
 
 ## Open decisions / limits

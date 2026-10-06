@@ -13,8 +13,12 @@ sketch's external references got a geometric signature and a re-find rule (`app.
   against the Bodies the Feature saw as its input, persists the re-found index and refreshed signature, and reports which references are lost / potentially moved
   so the response can flag them.
 
-Not covered, by design: OCCT history lineage (sketch vertex references only), BODY references (no sub-shape), assembly mate references (a different
-resolution context: another Part's Bodies).
+OCCT history (docs/reference-identity-design.md, "OCCT history"): a reference stamped while the Part is small enough to trace also carries a `LineageOrigin` - the
+Feature whose output created the sub-shape - for edges and faces exactly as for sketch vertices. When the stored index goes stale, the refresh asks the recorded trace
+what became of it (`Modified()` / `Generated()` through Fillet, Chamfer, Cut, Fuse and unify): one survivor is followed, none is "consumed by <feature>" (and the
+reference is marked so replay fails closed on it instead of binding a look-alike), several are narrowed by signature. Replay itself stays signature-only.
+
+Not covered, by design: BODY references (no sub-shape), assembly mate references (a different resolution context: another Part's Bodies).
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document import body_cache
 from app.document.graph import build_feature_graph, topological_order
 from app.document.models import Feature, Part, SubShapeRef, SubShapeType
+from app.document.reference_history import ReferenceHistory
 from app.document.reference_signature import measurer_for
 from app.sketch.reference_signature import (
     SEARCH_TOLERANCE_REL,
@@ -51,8 +56,19 @@ def signature_kind(ref: SubShapeRef) -> str | None:
     return _KIND_FOR_TYPE.get(ref.shape_type)
 
 
-def decide_subshape(ref: SubShapeRef, body: TopoDS_Shape) -> ReferenceDecision:
-    """Where does `ref` now point on `body`? Never raises; a BODY reference or one without a signature is `ok` at its own index when that index exists."""
+# Tracing replays the whole Part once (uncached, recording); a Part with more Features than this is not traced, so a very large Part never pays for lineage at
+# creation and its references fall back to the signature search alone (see the design doc).
+HISTORY_MAX_FEATURES = 80
+
+
+def decide_subshape(
+    ref: SubShapeRef,
+    body: TopoDS_Shape,
+    history: ReferenceHistory | None = None,
+    feature_id: str | None = None,
+) -> ReferenceDecision:
+    """Where does `ref` now point on `body`? Never raises; a BODY reference or one without a signature is `ok` at its own index when that index exists.
+    With `history` (and `feature_id`, the Feature holding the reference) a stale index is refined by OCCT history when the reference carries a lineage."""
     kind = signature_kind(ref)
     if kind is None:
         return ReferenceDecision(ReferenceStatus.OK, ref.index, method="index")
@@ -67,7 +83,12 @@ def decide_subshape(ref: SubShapeRef, body: TopoDS_Shape) -> ReferenceDecision:
         tolerance = SEARCH_TOLERANCE_REL * (ref.signature.body_diagonal or measurer.diagonal)
         if fingerprint_matches(ref.signature, here) and shape_distance(ref.signature, here) <= tolerance:
             return ReferenceDecision(ReferenceStatus.OK, ref.index, method="index")
-    return decide_reference(ref.signature, ref.index, measurer.all())
+    signature_decision = decide_reference(ref.signature, ref.index, measurer.all())
+    if history is not None and ref.lineage is not None and feature_id is not None:
+        return history.refine_lineage(
+            ref.lineage, ref.body_id, ref.index, ref.signature, signature_decision, measurer, target_feature_id=feature_id, kind=kind
+        )
+    return signature_decision
 
 
 def measure_signature(body: TopoDS_Shape, ref: SubShapeRef, index: int) -> ShapeSignature | None:
@@ -186,20 +207,28 @@ def refresh_feature_subshape_refs(part: Part, feature: Feature) -> FeatureRefSta
         logger.warning("Feature %s: could not compute its input Bodies to check its references", feature.id)
         return None
 
+    # The recorded replay is only made when a reference needs it (a new reference wanting a lineage, or a stale index wanting history), then shared by every
+    # reference of every Feature through the trace memo.
+    history = ReferenceHistory(part, frozenset()) if len(part.features) <= HISTORY_MAX_FEATURES else None
     state = FeatureRefState()
 
     def refresh(path: str, ref: SubShapeRef) -> SubShapeRef:
-        if signature_kind(ref) is None:
+        kind = signature_kind(ref)
+        if kind is None:
             return ref
         body = bodies.get(ref.body_id)
         if body is None:
             state.lost.append(path)
             state.reasons[path] = "body_missing"
             return ref
-        decision = decide_subshape(ref, body)
+        decision = decide_subshape(ref, body, history, feature.id)
         if decision.status == ReferenceStatus.LOST or decision.index is None:
             state.lost.append(path)
             state.reasons[path] = decision.reason or "no_match"
+            # Only a verdict that came from OCCT history is recorded on the reference: it can disagree with what replay's signature search alone would do (a
+            # consumed sub-shape with a look-alike left), and replay must then fail closed too. A signature-only loss replay finds out for itself.
+            if decision.method == "history" and ref.lost_reason != decision.reason:
+                return dataclasses.replace(ref, lost_reason=decision.reason)
             return ref
         if decision.status == ReferenceStatus.POTENTIALLY_MOVED:
             state.moved.append(path)
@@ -210,9 +239,13 @@ def refresh_feature_subshape_refs(part: Part, feature: Feature) -> FeatureRefSta
                 state.followed.append(path)
                 state.reasons[path] = decision.reason
             signature = measure_signature(body, ref, decision.index)
-        if decision.index == ref.index and signature is ref.signature:
+        lineage = decision.lineage or ref.lineage
+        if ref.signature is None and lineage is None and history is not None:
+            # Stamped for the first time (creation, or a file saved before signatures existed): remember where the sub-shape came from.
+            lineage = history.lineage_before_feature(feature.id, ref.body_id, decision.index, kind)
+        if decision.index == ref.index and signature is ref.signature and lineage is ref.lineage and ref.lost_reason is None:
             return ref
-        return dataclasses.replace(ref, index=decision.index, signature=signature)
+        return dataclasses.replace(ref, index=decision.index, signature=signature, lineage=lineage, lost_reason=None)
 
     map_subshape_refs(feature, refresh)
     return state

@@ -4337,7 +4337,9 @@ def reattach_external_reference(
     if existing.kind == "circle_centre":
         if payload.edge_index is None:
             raise HTTPException(status_code=422, detail={"type": "edge_required", "point_id": point_id})
-        reference = make_circle_centre_reference(bodies, payload.body_id, payload.edge_index)
+        reference = make_circle_centre_reference(
+            bodies, payload.body_id, payload.edge_index, history_for_part(part, excluded).lineage_for(payload.body_id, payload.edge_index, "edge")
+        )
         sketch.external_references[point_id] = reference
         # `refresh_external_references` moves the Point to the new centre, and the Circle / Arc built on it with it (position and radius); the new edge must lie in
         # this Sketch's plane, otherwise it is refused and the old binding restored.
@@ -4379,10 +4381,11 @@ def confirm_external_reference(part_id: str, feature_id: str, point_id: str) -> 
         raise HTTPException(status_code=409, detail={"type": "reference_lost", "point_id": point_id})
     ref = sketch.external_references[point_id]
     confirmed = capture_external_reference(bodies, ref)
-    if ref.kind == "vertex":
-        confirmed = dataclasses.replace(
-            confirmed, lineage=history_for_part(part, excluded).lineage_for(ref.body_id, ref.vertex_index) or ref.lineage
-        )
+    confirmed = dataclasses.replace(
+        confirmed,
+        lineage=history_for_part(part, excluded).lineage_for(ref.body_id, ref.vertex_index, "edge" if ref.kind == "circle_centre" else "vertex")
+        or ref.lineage,
+    )
     sketch.external_references[point_id] = confirmed
     sketch.external_reference_decisions.pop(point_id, None)
     point = sketch.points[point_id]
@@ -4404,14 +4407,15 @@ def _new_external_reference(
     return dataclasses.replace(reference, lineage=lineage)
 
 
-def _new_circle_centre_reference(sketch, bodies: dict, body_id: str, edge_index: int) -> ExternalVertexReference:
-    """`_new_external_reference`'s sibling for the centre of a circular edge (`kind="circle_centre"`; no OCCT lineage - history is tracked per vertex): the
+def _new_circle_centre_reference(part: Part, sketch, bodies: dict, excluded: frozenset[str], body_id: str, edge_index: int) -> ExternalVertexReference:
+    """`_new_external_reference`'s sibling for the centre of a circular edge (`kind="circle_centre"`, lineage of the EDGE): the
     reference already tracking this edge's centre if the Sketch has one, else a new, signed one."""
     probe = ExternalVertexReference(body_id=body_id, vertex_index=edge_index, kind="circle_centre")
     for point_id, existing in sketch.external_references.items():
         if existing == probe and point_id in sketch.points:
             return existing
-    return make_circle_centre_reference(bodies, body_id, edge_index)
+    lineage = history_for_part(part, excluded).lineage_for(body_id, edge_index, "edge")
+    return make_circle_centre_reference(bodies, body_id, edge_index, lineage)
 
 
 @router.post(
@@ -4639,7 +4643,7 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         # Reference-identity overhaul: the centre is a live reference to the circular edge (`kind="circle_centre"`), so the Circle follows its hole / boss when an
         # upstream edit moves it or changes its diameter - and is flagged, like any reference, when the edge is gone.
         center_point = sketch.add_or_reuse_external_vertex_reference(
-            center_x, center_y, _new_circle_centre_reference(sketch, bodies, payload.body_id, payload.edge_index)
+            center_x, center_y, _new_circle_centre_reference(part, sketch, bodies, excluded, payload.body_id, payload.edge_index)
         )
         circle = sketch.add_circle(center_point.id, radius=radius, construction=payload.construction)
         # On-device feedback ("converted edges... the converted entities
@@ -4690,7 +4694,7 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         else:
             arc_start_point, arc_end_point = end_point, start_point
         center_point = sketch.add_or_reuse_external_vertex_reference(
-            center_x, center_y, _new_circle_centre_reference(sketch, bodies, payload.body_id, payload.edge_index)
+            center_x, center_y, _new_circle_centre_reference(part, sketch, bodies, excluded, payload.body_id, payload.edge_index)
         )
         arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
         # An Arc's start / end Points are vertex references and (since the reference-identity overhaul) its centre is a circle-centre reference, so every

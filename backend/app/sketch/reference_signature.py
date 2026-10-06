@@ -89,7 +89,8 @@ class LineageOrigin:
     feature_id: str
     body_id: str
     index: int
-    signature: VertexSignature
+    signature: ShapeSignature
+    kind: str = "vertex"  # "vertex" | "edge" | "face": which sub-shape `index` indexes
 
 
 class ReferenceStatus(str, Enum):

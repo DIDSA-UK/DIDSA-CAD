@@ -151,7 +151,7 @@ def test_a_fillet_whose_edge_is_consumed_upstream_is_flagged_lost_and_never_land
         if feature["has_lost_reference"]:
             flagged = True
             assert feature["lost_references"] == ["edge_refs[0]"]
-            assert feature["reference_reasons"]["edge_refs[0]"] in ("no_match", "ambiguous")
+            assert feature["reference_reasons"]["edge_refs[0]"].startswith("consumed_by_") or feature["reference_reasons"]["edge_refs[0]"] in ("no_match", "ambiguous")
     assert flagged, "no probe edit consumed the downstream fillet's edge"
     return
     feature = _feature(part_id, f2["id"])
@@ -267,11 +267,15 @@ def test_edge_and_face_signatures_survive_a_native_save_and_load_and_a_legacy_fi
     loaded_face = part.get_feature(plane["id"]).face_refs[0].face_ref.signature
     original = get_part_or_404(part_id)
     assert loaded_edge == original.get_feature(f2["id"]).edge_refs[0].signature and isinstance(loaded_edge, EdgeSignature)
+    # the OCCT-history lineage travels with the reference too (an edge, here, created by the extrude)
+    loaded_lineage = part.get_feature(f2["id"]).edge_refs[0].lineage
+    assert loaded_lineage == original.get_feature(f2["id"]).edge_refs[0].lineage and loaded_lineage is not None and loaded_lineage.kind == "edge"
     assert loaded_face == original.get_feature(plane["id"]).face_refs[0].face_ref.signature and isinstance(loaded_face, FaceSignature)
 
     def strip(node):
         if isinstance(node, dict):
             node.pop("signature", None)
+            node.pop("lineage", None)
             for value in node.values():
                 strip(value)
         elif isinstance(node, list):

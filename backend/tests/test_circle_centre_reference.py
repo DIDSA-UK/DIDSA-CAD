@@ -81,6 +81,7 @@ def test_converting_a_circular_edge_makes_its_centre_a_live_reference_with_the_e
     ref = refs[circle["center_point_id"]]
     assert ref.kind == "circle_centre" and isinstance(ref.signature, EdgeSignature)
     assert ref.signature.curve_kind == "circle" and ref.signature.radius == pytest.approx(5.0)
+    assert ref.lineage is not None and ref.lineage.kind == "edge" and ref.lineage.feature_id == extrude["id"]  # OCCT history, per edge
     assert result["center_point"]["is_locked"] is True
     assert _radius_of(_points(sketch), circle) == pytest.approx(5.0)
     assert not _feature(part_id, sketch["id"])["has_lost_reference"]
@@ -185,25 +186,38 @@ def _rim_filleted_upstream():
     return part_id, extrude, sketch, circle, reshape_the_bottom_rim
 
 
-def test_a_rim_that_is_reshaped_upstream_is_flagged_potentially_moved_not_silently_followed():
+def test_a_rim_that_is_filleted_upstream_is_lost_as_consumed_not_silently_followed():
     part_id, extrude, sketch, circle, reshape = _rim_filleted_upstream()
-    assert not _feature(part_id, sketch["id"])["moved_reference_point_ids"]
+    assert not _feature(part_id, sketch["id"])["has_lost_reference"]
     reshape()
     feature = _feature(part_id, sketch["id"])
     centre_id = circle["center_point_id"]
+    # OCCT history knows the rim EDGE was consumed by the fillet (the new circular edges are different edges, even though one has the same centre).
+    assert feature["lost_reference_point_ids"] == [centre_id] and feature["has_lost_reference"]
+    assert feature["reference_reasons"][centre_id].startswith("consumed_by_")
+
+
+def test_without_history_a_reshaped_rim_is_flagged_potentially_moved():
+    part_id, extrude, sketch, circle, reshape = _rim_filleted_upstream()
+    obj = all_sketches()[sketch["sketch_id"]]
+    centre_id = circle["center_point_id"]
+    obj.external_references[centre_id] = dataclasses.replace(obj.external_references[centre_id], lineage=None)  # an old file, or a Part too large to trace
+    reshape()
+    feature = _feature(part_id, sketch["id"])
     assert feature["moved_reference_point_ids"] == [centre_id] and not feature["has_lost_reference"]
     assert feature["reference_reasons"][centre_id] == "fingerprint_changed_in_place"
 
 
-def test_confirming_a_reshaped_circle_centre_clears_the_flag_and_reattaching_picks_another_edge():
+def test_reattaching_a_lost_circle_centre_picks_another_edge_and_confirm_keeps_a_potentially_moved_one():
     part_id, extrude, sketch, circle, reshape = _rim_filleted_upstream()
     reshape()
     base = f"/document/parts/{part_id}/features/sketch/{sketch['id']}/external-references"
     centre_id = circle["center_point_id"]
     statuses = _json(client.get(base))
-    assert [(s["point_id"], s["kind"], s["status"]) for s in statuses] == [(centre_id, "circle_centre", "potentially_moved")]
+    assert [(s["point_id"], s["kind"], s["status"]) for s in statuses] == [(centre_id, "circle_centre", "lost")]
+    assert client.post(f"{base}/{centre_id}/confirm").status_code == 409  # lost: nothing to keep, re-attach instead
 
-    # re-attach to the circle where the cylinder wall now meets the fillet, a smaller-radius-or-higher rim: any circular edge in the XY-parallel plane is valid
+    # re-attach to a circular edge of the reshaped rim: any circular edge in an XY-parallel plane is valid
     body = compute_part_bodies(get_part_or_404(part_id))[extrude["id"]]
     target = next(i for i, s in enumerate(BodyEdgeMeasurer(body).all()) if s.curve_kind == "circle" and abs(s.centre[2]) > 0.5 and abs(s.centre[2] - 10.0) > 0.5)
     point = _json(client.post(f"{base}/{centre_id}/reattach", json={"body_id": extrude["id"], "edge_index": target}))
@@ -212,12 +226,10 @@ def test_confirming_a_reshaped_circle_centre_clears_the_flag_and_reattaching_pic
     assert not feature["has_lost_reference"] and feature["moved_reference_point_ids"] == []
     assert all_sketches()[sketch["sketch_id"]].external_references[centre_id].vertex_index == target
 
-    # a second flag, then Keep
-    reshape_again = _json(client.get(base))
-    assert [s["status"] for s in reshape_again] == ["ok"]
+    # a potentially-moved one (stale signature, no lineage): Keep clears it
     ref = all_sketches()[sketch["sketch_id"]].external_references[centre_id]
     stale = dataclasses.replace(ref.signature, face_kinds=("cone", "cone"), face_normals=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)))
-    all_sketches()[sketch["sketch_id"]].external_references[centre_id] = dataclasses.replace(ref, signature=stale)
+    all_sketches()[sketch["sketch_id"]].external_references[centre_id] = dataclasses.replace(ref, signature=stale, lineage=None)
     assert _feature(part_id, sketch["id"])["moved_reference_point_ids"] == [centre_id]
     _json(client.post(f"{base}/{centre_id}/confirm"))
     assert _feature(part_id, sketch["id"])["moved_reference_point_ids"] == []
@@ -270,3 +282,4 @@ def test_a_circle_centre_reference_survives_a_native_save_and_load():
     _, sketches = import_native(data)
     loaded = sketches[sketch["sketch_id"]].external_references[circle["center_point_id"]]
     assert loaded.kind == "circle_centre" and loaded.signature == original.signature and isinstance(loaded.signature, EdgeSignature)
+    assert loaded.lineage == original.lineage and loaded.lineage is not None and loaded.lineage.kind == "edge"
