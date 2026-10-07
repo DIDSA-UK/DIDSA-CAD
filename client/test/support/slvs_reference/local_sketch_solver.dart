@@ -25,16 +25,10 @@ import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:math' as math;
 
-import '../../api/sketch_api_client.dart';
+import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/sketch/projector/sketch_projector.dart' show LineEndpoints;
 import 'slvs_bindings.dart';
 import 'solver_builder.dart';
-
-/// Resolves a Line id to its (start, end) Point ids - the Dart client
-/// tracks this via `SketchController.lines` (`SketchLineView`), unlike the
-/// backend's constraint dataclasses, which capture a Line's endpoints
-/// directly at constraint-creation time. Constraint dispatch below needs
-/// this to build the same `line_segment` handles the backend would.
-typedef LineEndpoints = (String startId, String endId) Function(String lineId);
 
 /// Outcome of one local solve - mirrors solver.py's `SolveResult` (minus
 /// `blamed_constraint_ids`, a purely UI-blame convention not needed by the

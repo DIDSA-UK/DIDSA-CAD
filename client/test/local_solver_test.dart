@@ -18,8 +18,8 @@ import 'dart:math' as math;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
-import 'package:didsa_cad_client/sketch/local_solver/local_sketch_solver.dart';
-import 'package:didsa_cad_client/sketch/local_solver/slvs_bindings.dart';
+import 'support/slvs_reference/local_sketch_solver.dart';
+import 'support/slvs_reference/slvs_bindings.dart';
 
 String? _findHostLibrary() {
   final candidates = [

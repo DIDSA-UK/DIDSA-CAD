@@ -10,7 +10,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
-import 'package:didsa_cad_client/sketch/local_solver/slvs_bindings.dart';
+import 'support/slvs_reference/slvs_bindings.dart';
+import 'support/slvs_reference/solvespace_clamp.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/view_transform.dart';
@@ -30,6 +31,23 @@ String? _findHostSlvsLibrary() {
     if (file.existsSync()) return file.absolute.path;
   }
   return null;
+}
+
+/// A constraint the local projector has no model for (a spline tangency): any drag whose group touches it is not clamped
+/// locally and takes the network fallback - the path a platform without a local clamp used to take for every drag.
+void _blockLocalClamp(SketchController controller, String pointId) {
+  controller.constraints['block-local-clamp'] = SplineTangentConstraintDto(
+    id: 'block-local-clamp',
+    splineId: 'none',
+    segmentAP0: pointId,
+    segmentAP1: pointId,
+    segmentAP2: pointId,
+    segmentAP3: pointId,
+    segmentBP0: pointId,
+    segmentBP1: pointId,
+    segmentBP2: pointId,
+    segmentBP3: pointId,
+  );
 }
 
 /// A tiny in-memory fake of the backend's `/sketch` API (point/line/circle
@@ -203,6 +221,18 @@ class _FakeBackend {
     }
     final arc = arcs[entityId]!;
     return (arc['center_point_id'] as String, arc['start_point_id'] as String);
+  }
+
+  /// The real backend's `SolveRequest.point_updates`: the drop's wish, written before the solve.
+  void _applyPointUpdates(Map<String, dynamic> body) {
+    for (final update in (body['point_updates'] as List<dynamic>? ?? const [])) {
+      final u = update as Map<String, dynamic>;
+      final point = points[u['id']];
+      if (point != null) {
+        point['x'] = (u['x'] as num).toDouble();
+        point['y'] = (u['y'] as num).toDouble();
+      }
+    }
   }
 
   http.Response handle(http.Request request) {
@@ -2208,6 +2238,7 @@ class _FakeBackend {
 
     final solveMatch = RegExp(r'^/sketch/sketches/[^/]+/solve$').hasMatch(path);
     if (solveMatch && request.method == 'POST') {
+      _applyPointUpdates(body);
       return _json(_solveResultBody(), 200);
     }
 
@@ -2216,6 +2247,7 @@ class _FakeBackend {
     // POST .../solve-and-refresh (SketchStateResponse).
     final solveAndRefreshMatch = RegExp(r'^/sketch/sketches/[^/]+/solve-and-refresh$').hasMatch(path);
     if (solveAndRefreshMatch && request.method == 'POST') {
+      _applyPointUpdates(body);
       return _json({
         'solve': _solveResultBody(),
         'points': points.values.toList(),
@@ -2865,7 +2897,7 @@ void main() {
       // doc comment) - exactly what [_intactRectangleForPoint]'s live
       // points-map check reads, with no other side effects.
       controller.points.remove(rectangle.centerPointId);
-      final corner1Before = controller.points[rectangle.cornerPointIds[1]]!;
+      final oppositeBefore = controller.points[rectangle.cornerPointIds[2]]!;
 
       final corner0Id = rectangle.cornerPointIds[0];
       final corner0 = controller.points[corner0Id]!;
@@ -2874,11 +2906,13 @@ void main() {
       expect(controller.beginPointDrag(corner0Id), isTrue);
       await controller.updatePointDrag(0, 0);
 
-      // The closed-form path (which would have moved it instantly, per the
-      // test above) didn't run - corner 1 never moved.
-      final corner1After = controller.points[rectangle.cornerPointIds[1]]!;
-      expect(corner1After.x, closeTo(corner1Before.x, 1e-9));
-      expect(corner1After.y, closeTo(corner1Before.y, 1e-9));
+      // The closed-form path (which resizes about the centre and never touches the constraint clamp) didn't run:
+      // the general path clamped this frame, and the opposite corner - which a centre-based resize would have moved -
+      // stayed where it was.
+      expect(controller.dragStats.frames, 1);
+      final oppositeAfter = controller.points[rectangle.cornerPointIds[2]]!;
+      expect(oppositeAfter.x, closeTo(oppositeBefore.x, 1e-9));
+      expect(oppositeAfter.y, closeTo(oppositeBefore.y, 1e-9));
     });
   });
 
@@ -5305,22 +5339,24 @@ void main() {
     expect(cPointAfter.y, closeTo(cPointBefore.y, 1e-9));
   });
 
-  group('hybrid drag: the formula proposes, the local solver clamps to the user constraints', () {
-    // These need the real solver; skip the whole group (like local_solver_test.dart) where the host
-    // library hasn't been built - a skip inside setUp would still run the test bodies.
-    final libraryPath = _findHostSlvsLibrary();
-    if (libraryPath == null) {
-      test('hybrid drag (skipped - host didsa_slvs_ffi library not built, see client/native/slvs/CMakeLists.txt)', () {},
-          skip: true);
+  // Every case runs on the bundled projector (no solver); where the host SolveSpace build exists it also runs on it as the
+  // reference engine, so the two are pinned to the same behaviour (see client/native/slvs/CMakeLists.txt).
+  for (final engine in ['projector', 'solvespace']) {
+  group('hybrid drag ($engine): the formula proposes, the constraints clamp', () {
+    final libraryPath = engine == 'solvespace' ? _findHostSlvsLibrary() : null;
+    if (engine == 'solvespace' && libraryPath == null) {
+      test('hybrid drag on SolveSpace (skipped - host didsa_slvs_ffi library not built)', () {}, skip: true);
       return;
     }
     late SketchController solved;
+    late _FakeBackend solvedBackend;
 
     setUp(() async {
-      final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+      final bindings = libraryPath == null ? null : SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
       final localBackend = _FakeBackend();
+      solvedBackend = localBackend;
       final localClient = MockClient((request) async => localBackend.handle(request));
-      solved = SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+      solved = SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
       await solved.ensureSketch();
     });
 
@@ -5538,6 +5574,38 @@ void main() {
       await solved.endPointDrag();
     });
 
+    test('the drop is one request: the points the drag moved ride in the solve, no PATCH per point', () async {
+      solved.selectDrawTool(SketchTool.polygon);
+      solved.setPolygonSides(6);
+      await solved.handleCanvasTap(20, 20);
+      await solved.handleCanvasTap(30, 20);
+      solved.exitToSelectMode();
+      final polygon = solved.polygons.values.single;
+      final edge = solved.lines[polygon.lineIds[1]]!;
+      solved.constraints['user-horizontal'] = HorizontalConstraintDto(
+        id: 'user-horizontal',
+        pointAId: edge.startPointId,
+        pointBId: edge.endPointId,
+        lineId: edge.id,
+      );
+      final vertexId = polygon.vertexPointIds[0];
+      final start = solved.points[vertexId]!;
+      solved.cursorX = start.x;
+      solved.cursorY = start.y;
+      expect(solved.beginPointDrag(vertexId), isTrue);
+      for (final target in [(32.0, 20.0), (35.0, 20.0), (38.0, 21.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+      }
+      expect(solvedBackend.requestLog.where((r) => r.startsWith('PATCH')), isEmpty,
+          reason: 'no per-frame traffic while the local clamp answers');
+      solvedBackend.requestLog.clear();
+      await solved.endPointDrag();
+      expect(solvedBackend.requestLog.where((r) => r.contains('/points/') && r.startsWith('PATCH')), isEmpty,
+          reason: 'the reflowed points are the solve request\'s wish, not separate PATCHes');
+      expect(solvedBackend.requestLog.where((r) => r.endsWith('/solve-and-refresh')), hasLength(1));
+      expect(solved.errorMessage, isNull);
+    });
+
     test('a circle whose centre is dimensioned to another point slides around it, radius unchanged', () async {
       solved.selectDrawTool(SketchTool.point);
       await solved.handleCanvasTap(60, 20);
@@ -5564,10 +5632,213 @@ void main() {
         await solved.updatePointDrag(target.$1, target.$2);
         expect(dist(circle.centerPointId, anchor.id), closeTo(20, 1e-3), reason: 'the dimension drives every frame');
         expect(dist(circle.centerPointId, circle.radiusPointId), closeTo(10, 1e-3), reason: 'the circle keeps its size');
+        // Points no constraint ties to the dragged one (the circle's other cardinal points) still follow the proposal.
+        for (final id in circle.cardinalPointIds) {
+          expect(dist(circle.centerPointId, id), closeTo(10, 0.5), reason: 'cardinal point $id travels with the circle');
+        }
       }
       final moved = solved.points[circle.centerPointId]!;
       expect(moved.y, greaterThan(26), reason: 'it did follow the cursor along the permitted path');
       await solved.endPointDrag();
+    });
+  });
+  }
+
+  // Feel of the hybrid drag, projector vs SolveSpace, same dense hand path through both engines in lock-step
+  // (docs/sketch-drag-projector.md). Prints a table; set DIDSA_SKETCH_BENCH=1 (needs the host library for the reference).
+  group('hybrid drag feel (bench)', () {
+    final libraryPath = _findHostSlvsLibrary();
+    if (Platform.environment['DIDSA_SKETCH_BENCH'] != '1' || libraryPath == null) {
+      test('hybrid feel bench (set DIDSA_SKETCH_BENCH=1 and build the host library)', () {}, skip: true);
+      return;
+    }
+
+    double mj(double t) => t * t * t * (10 - 15 * t + 6 * t * t);
+
+    Future<SketchController> make(bool solveSpace) async {
+      final bindings = solveSpace ? SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath)) : null;
+      final fake = _FakeBackend();
+      final client = MockClient((request) async => fake.handle(request));
+      final c = SketchController(api: SketchApiClient(httpClient: client), dragClampOverride: solveSpaceDragClamp(bindings));
+      await c.ensureSketch();
+      return c;
+    }
+
+    // (dragged point, ring centre, ring radius): the hand sweeps a ring around the centre, beyond what the user dimension
+    // allows, so the point has to slide along the permitted path.
+    Future<(String, (double, double), double)> hexagon(SketchController c) async {
+      c.selectDrawTool(SketchTool.polygon);
+      c.setPolygonSides(6);
+      await c.handleCanvasTap(20, 20);
+      await c.handleCanvasTap(30, 20);
+      c.exitToSelectMode();
+      final polygon = c.polygons.values.single;
+      final edge = c.lines[polygon.lineIds[1]]!;
+      c.constraints['user-horizontal'] =
+          HorizontalConstraintDto(id: 'user-horizontal', pointAId: edge.startPointId, pointBId: edge.endPointId, lineId: edge.id);
+      return (polygon.vertexPointIds[0], (20.0, 20.0), 14.0);
+    }
+
+    Future<(String, (double, double), double)> arc(SketchController c) async {
+      c.selectDrawTool(SketchTool.point);
+      await c.handleCanvasTap(60, 20);
+      final anchor = c.points.values.firstWhere((p) => p.x == 60 && p.y == 20);
+      c.selectDrawTool(SketchTool.arc);
+      await c.handleCanvasTap(40, 20);
+      await c.handleCanvasTap(50, 20);
+      await c.handleCanvasTap(40, 30);
+      c.exitToSelectMode();
+      final a = c.arcs.values.single;
+      c.constraints['user-distance'] =
+          DistanceConstraintDto(id: 'user-distance', pointAId: a.startPointId, pointBId: anchor.id, distance: 10);
+      return (a.startPointId, (60.0, 20.0), 18.0);
+    }
+
+    Future<(String, (double, double), double)> slot(SketchController c) async {
+      c.selectDrawTool(SketchTool.point);
+      await c.handleCanvasTap(50, 20);
+      final anchor = c.points.values.firstWhere((p) => p.x == 50 && p.y == 20);
+      c.selectDrawTool(SketchTool.slot);
+      await c.handleCanvasTap(10, 20);
+      await c.handleCanvasTap(30, 20);
+      await c.handleCanvasTap(20, 25);
+      c.exitToSelectMode();
+      final sl = c.slots.values.single;
+      c.constraints['user-distance'] =
+          DistanceConstraintDto(id: 'user-distance', pointAId: sl.center2PointId, pointBId: anchor.id, distance: 20);
+      return (sl.center2PointId, (50.0, 20.0), 28.0);
+    }
+
+    Future<(String, (double, double), double)> rectangle(SketchController c) async {
+      c.selectDrawTool(SketchTool.point);
+      await c.handleCanvasTap(0, 60);
+      final anchor = c.points.values.firstWhere((p) => p.x == 0 && p.y == 60);
+      c.selectDrawTool(SketchTool.rectangle);
+      await c.handleCanvasTap(10, 10);
+      await c.handleCanvasTap(30, 25);
+      c.exitToSelectMode();
+      final r = c.rectangles.values.single;
+      final opposite = r.cornerPointIds[2];
+      final pa = c.points[opposite]!;
+      final gap = math.sqrt(math.pow(pa.x - anchor.x, 2) + math.pow(pa.y - anchor.y, 2));
+      c.constraints['user-distance'] =
+          DistanceConstraintDto(id: 'user-distance', pointAId: opposite, pointBId: anchor.id, distance: gap);
+      return (opposite, (0.0, 60.0), gap * 1.3);
+    }
+
+    Future<(String, (double, double), double)> circle(SketchController c) async {
+      c.selectDrawTool(SketchTool.point);
+      await c.handleCanvasTap(60, 20);
+      final anchor = c.points.values.firstWhere((p) => p.x == 60 && p.y == 20);
+      c.selectDrawTool(SketchTool.circle);
+      await c.handleCanvasTap(40, 20);
+      await c.handleCanvasTap(50, 20);
+      c.exitToSelectMode();
+      final ci = c.circles.values.single;
+      c.constraints['user-distance'] =
+          DistanceConstraintDto(id: 'user-distance', pointAId: ci.centerPointId, pointBId: anchor.id, distance: 20);
+      return (ci.centerPointId, (60.0, 20.0), 28.0);
+    }
+
+    final scenarios = <String, Future<(String, (double, double), double)> Function(SketchController)>{
+      'hexagon, H edge, vertex': hexagon,
+      'arc, start dimensioned': arc,
+      'slot, centre dimensioned': slot,
+      'rectangle, corner dimensioned': rectangle,
+      'circle, centre dimensioned': circle,
+    };
+
+    test('projector vs SolveSpace on the same dense hand path', () async {
+      final out = StringBuffer('\n== hybrid drag feel: projector (PJ) vs SolveSpace (SS), 150 frames, ring sweep ==\n');
+      for (final entry in scenarios.entries) {
+        final pj = await make(false);
+        final ss = await make(true);
+        final (idP, centre, ringR) = await entry.value(pj);
+        final (idS, _, _) = await entry.value(ss);
+        expect(idP, idS, reason: 'both fakes assign the same ids');
+        final start = pj.points[idP]!;
+        final a0 = math.atan2(start.y - centre.$2, start.x - centre.$1);
+        final path = <(double, double)>[];
+        const approach = 25, sweep = 100, ret = 25;
+        final ringStart = (centre.$1 + ringR * math.cos(a0), centre.$2 + ringR * math.sin(a0));
+        for (var f = 1; f <= approach; f++) {
+          final k = mj(f / approach);
+          path.add((start.x + (ringStart.$1 - start.x) * k, start.y + (ringStart.$2 - start.y) * k));
+        }
+        for (var f = 1; f <= sweep; f++) {
+          final a = a0 + 1.5 * math.pi * mj(f / sweep);
+          path.add((centre.$1 + ringR * math.cos(a), centre.$2 + ringR * math.sin(a)));
+        }
+        final last = path.last;
+        for (var f = 1; f <= ret; f++) {
+          final k = mj(f / ret);
+          path.add((last.$1 + (centre.$1 - last.$1) * 0.5 * k, last.$2 + (centre.$2 - last.$2) * 0.5 * k));
+        }
+        for (final c in [pj, ss]) {
+          c.cursorX = start.x;
+          c.cursorY = start.y;
+          expect(c.beginPointDrag(idP), isTrue, reason: entry.key);
+          c.dragStats.reset();
+        }
+        var devMax = 0.0, devSum = 0.0, devN = 0;
+        final jerkMax = [0.0, 0.0];
+        final ratioMax = [0.0, 0.0];
+        final prev = [
+          {for (final e in pj.points.entries) e.key: (e.value.x, e.value.y)},
+          {for (final e in ss.points.entries) e.key: (e.value.x, e.value.y)},
+        ];
+        final prevStep = <Map<String, double>?>[null, null];
+        var prevCursor = (start.x, start.y);
+        for (final cursor in path) {
+          final controllers = [pj, ss];
+          final hand = math.sqrt(math.pow(cursor.$1 - prevCursor.$1, 2) + math.pow(cursor.$2 - prevCursor.$2, 2));
+          for (var i = 0; i < 2; i++) {
+            await controllers[i].updatePointDrag(cursor.$1, cursor.$2);
+            final now = {for (final e in controllers[i].points.entries) e.key: (e.value.x, e.value.y)};
+            final step = <String, double>{
+              for (final e in now.entries)
+                e.key: math.sqrt(math.pow(e.value.$1 - prev[i][e.key]!.$1, 2) + math.pow(e.value.$2 - prev[i][e.key]!.$2, 2)),
+            };
+            if (hand > 1e-9) ratioMax[i] = math.max(ratioMax[i], step[idP]! / hand);
+            final ps = prevStep[i];
+            if (ps != null) {
+              for (final id in now.keys) {
+                if (id == idP) continue;
+                jerkMax[i] = math.max(jerkMax[i], (step[id]! - ps[id]!).abs());
+              }
+            }
+            prev[i] = now;
+            prevStep[i] = step;
+          }
+          for (final id in prev[0].keys) {
+            final a = prev[0][id]!, b = prev[1][id];
+            if (b == null) continue;
+            final d = math.sqrt(math.pow(a.$1 - b.$1, 2) + math.pow(a.$2 - b.$2, 2));
+            devMax = math.max(devMax, d);
+            devSum += d;
+            devN++;
+          }
+          prevCursor = cursor;
+          if (Platform.environment['DIDSA_FEEL_TRACE'] == entry.key.split(',').first && path.indexOf(cursor) % 10 == 0) {
+            final ids = prev[0].keys.toList();
+            final line = StringBuffer('  f${path.indexOf(cursor)} cursor=(${cursor.$1.toStringAsFixed(1)},${cursor.$2.toStringAsFixed(1)})');
+            for (final id in ids) {
+              final a = prev[0][id]!, b = prev[1][id]!;
+              if ((a.$1 - b.$1).abs() + (a.$2 - b.$2).abs() > 0.05) {
+                line.write(' $id PJ(${a.$1.toStringAsFixed(1)},${a.$2.toStringAsFixed(1)}) SS(${b.$1.toStringAsFixed(1)},${b.$2.toStringAsFixed(1)})');
+              }
+            }
+            // ignore: avoid_print
+            print(line);
+          }
+        }
+        out.writeln('${entry.key}:');
+        out.writeln('   PJ ${pj.dragStats} | stepRatio(max)=${ratioMax[0].toStringAsFixed(2)} followerJerk(max)=${jerkMax[0].toStringAsFixed(3)}');
+        out.writeln('   SS ${ss.dragStats} | stepRatio(max)=${ratioMax[1].toStringAsFixed(2)} followerJerk(max)=${jerkMax[1].toStringAsFixed(3)}');
+        out.writeln('   PJ vs SS per-point deviation: mean=${(devSum / devN).toStringAsFixed(4)} max=${devMax.toStringAsFixed(4)}');
+      }
+      // ignore: avoid_print
+      print(out);
     });
   });
 
@@ -6095,7 +6366,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     localController.selectDrawTool(SketchTool.slot);
@@ -6151,7 +6422,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     localController.selectDrawTool(SketchTool.polygon);
@@ -7082,19 +7353,15 @@ void main() {
       // exercised. Removing the Point directly from the local cache is
       // exactly what that check reads, with no other side effects.
       controller.points.remove(ellipse.minorPointNegId);
-      final majorBefore = controller.points[ellipse.majorPointId]!;
-
       final center0 = controller.points[ellipse.centerPointId]!;
       controller.cursorX = center0.x;
       controller.cursorY = center0.y;
       expect(controller.beginPointDrag(ellipse.centerPointId), isTrue);
       await controller.updatePointDrag(30, 30);
 
-      // The closed-form path (which would have translated it instantly, per
-      // the test above) didn't run - the major Point never moved.
-      final majorAfter = controller.points[ellipse.majorPointId]!;
-      expect(majorAfter.x, closeTo(majorBefore.x, 1e-9));
-      expect(majorAfter.y, closeTo(majorBefore.y, 1e-9));
+      // The closed-form path (which translates the whole shape and never touches the constraint clamp) didn't run:
+      // this frame went through the general clamp instead.
+      expect(controller.dragStats.frames, 1);
     });
   });
 
@@ -7299,19 +7566,15 @@ void main() {
         'the ordinary drag path instead of the closed-form one', () async {
       final ellipseArc = await placeArc();
       controller.points.remove(ellipseArc.startPointId);
-      final minorBefore = controller.points[ellipseArc.minorPointId]!;
-
       final major0 = controller.points[ellipseArc.majorPointId]!;
       controller.cursorX = major0.x;
       controller.cursorY = major0.y;
       expect(controller.beginPointDrag(ellipseArc.majorPointId), isTrue);
       await controller.updatePointDrag(major0.x, major0.y + 20);
 
-      // The closed-form path (which would have rotated it instantly, per
-      // the test above) didn't run - the minor Point never moved.
-      final minorAfter = controller.points[ellipseArc.minorPointId]!;
-      expect(minorAfter.x, closeTo(minorBefore.x, 1e-9));
-      expect(minorAfter.y, closeTo(minorBefore.y, 1e-9));
+      // The closed-form path (which rotates the whole shape and never touches the constraint clamp) didn't run:
+      // this frame went through the general clamp instead.
+      expect(controller.dragStats.frames, 1);
     });
   });
 
@@ -11152,6 +11415,7 @@ void main() {
     // relative to it rather than snapping the Point to the raw touch
     // position - see beginPointDrag's doc comment.
     controller.beginPointDrag(pointId);
+    _blockLocalClamp(controller, pointId); // not clampable locally: the network fallback under test
 
     backend.dof = 7; // would surface in isUnderConstrained if a solve ran
     await controller.updatePointDrag(17, 34);
@@ -11174,7 +11438,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     localController.selectDrawTool(SketchTool.line);
@@ -11241,7 +11505,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     // Third Point created *before* the Line, not after - beginLineDrag
@@ -11314,7 +11578,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     // Third Point first, same drag-start-cursor reasoning as the passing
@@ -11398,7 +11662,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     localController.selectDrawTool(SketchTool.point);
@@ -11483,6 +11747,7 @@ void main() {
     // of this Line.
     final pointId = controller.lines.values.last.endPointId;
     controller.beginPointDrag(pointId);
+    _blockLocalClamp(controller, pointId); // not clampable locally: the network fallback under test
     await controller.updatePointDrag(12, 34); // lands at (12, 34): 10 + (12 - 10), 0 + (34 - 0)
 
     backend.dof = 0; // simulates the drop settling the sketch fully

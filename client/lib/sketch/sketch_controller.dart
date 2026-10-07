@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -6,8 +7,8 @@ import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 
 import '../api/sketch_api_client.dart';
 import 'dof_analysis.dart';
-import 'local_solver/local_sketch_solver.dart';
-import 'local_solver/slvs_bindings.dart';
+import 'projector/sketch_drag_stats.dart';
+import 'projector/sketch_projector.dart';
 import 'pattern_mirror_expansion.dart';
 import 'view_transform.dart';
 
@@ -1506,15 +1507,11 @@ class SketchController extends ChangeNotifier {
   /// one.
   SketchApiClient get api => _api;
 
-  /// [localSolverBindings] lets a test inject an already-loaded native
-  /// library (e.g. the host desktop build under client/native/slvs/
-  /// build-host/) so the in-process solve path itself - not just its
-  /// server-round-trip fallback - can be exercised deterministically off
-  /// Android. Production code never passes this; [_trySolveDuringDragLocally]
-  /// lazily loads the real bundled library on first use instead.
-  SketchController({SketchApiClient? api, SlvsNativeBindings? localSolverBindings})
+  /// [dragClampOverride] replaces the per-frame constraint step ([projectSketch]) - tests use it to run the real SolveSpace as a
+  /// reference engine. Production never passes it: the client has no constraint solver in it.
+  SketchController({SketchApiClient? api, SketchClampOverride? dragClampOverride})
       : _api = api ?? SketchApiClient(),
-        _localSolverBindings = localSolverBindings;
+        _dragClampOverride = dragClampOverride;
 
   /// Touch drag moves the cursor relatively, scaled by this factor - not
   /// 1:1 with finger position, per the project brief's interaction model.
@@ -2523,6 +2520,11 @@ class SketchController extends ChangeNotifier {
   /// verified against the specific Point being dragged.
   int _dof = 0;
 
+  /// Test hook: pretend the backend's last solve reported [dof] degrees of freedom (a sketch built straight into the maps
+  /// has had no solve, and a converged 0 would read as "fully constrained" and refuse every grab).
+  @visibleForTesting
+  void debugSetBackendDof(int dof) => _dof = dof;
+
   /// Bug-fix round 2: whether the most recent solve actually converged.
   /// `dof` is only meaningful when it did - py-slvs can (and does, for a
   /// genuinely redundant-but-consistent constraint set, e.g. two
@@ -2754,8 +2756,12 @@ class SketchController extends ChangeNotifier {
   /// [_refreshConstraints] triple collapses into this one request, since
   /// [SketchApiClient.solveAndRefresh] already returns the post-solve
   /// Points/Constraints/profile alongside the solve result itself.
-  Future<void> _solveAndTrackDof({List<String> anchorPointIds = const []}) async {
-    final result = await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds);
+  Future<void> _solveAndTrackDof({
+    List<String> anchorPointIds = const [],
+    Map<String, (double, double)> pointUpdates = const {},
+  }) async {
+    final result =
+        await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds, pointUpdates: pointUpdates);
     _dof = result.solve.dof;
     _lastSolveConverged = result.solve.converged;
     _solverReportedFailedConstraintIds = result.solve.solverReportedFailedConstraintIds;
@@ -5229,13 +5235,11 @@ class SketchController extends ChangeNotifier {
   /// the backend (that's deliberate - no network round trip on the hot
   /// per-frame path), so without this the backend's own stored positions
   /// for every reflowed point sit frozen at their pre-drag values for the
-  /// whole drag. Since soft-drag (see [solveSketchLocally]'s own doc
-  /// comment), this now also includes the dragged Point itself whenever its
-  /// own solved position differs from the raw value [updatePointDrag]
-  /// separately PATCHed it to moments earlier - the live-clamp/resistance
-  /// behaviour that mechanism exists to produce, not a bug: the backend
-  /// needs that corrected value synced too, same as every other reflowed
-  /// Point. [endPointDrag]'s final solve
+  /// whole drag. It also includes the dragged Point itself whenever its
+  /// clamped position differs from the raw cursor value (the live clamp of
+  /// [projectSketch]: a constrained point slides along the permitted path) -
+  /// not a bug: the backend needs that corrected value synced too, same as
+  /// every other reflowed Point. [endPointDrag]'s final solve
   /// would then hand the backend a single, discontinuous jump ("everything
   /// at rest" straight to "the dropped shape") - exactly the condition a
   /// Newton solver has no protection against (see this session's own
@@ -5454,10 +5458,6 @@ class SketchController extends ChangeNotifier {
     // constraint of any other kind (across-flats, corner-to-corner, horizontal/vertical or parallel on
     // an edge, a tie to other geometry, ...) must drive. With a local solver that is the hybrid drag
     // (see [_hybridStructuralFor]); without one, fall back to the general path via the backend.
-    if (_ensureLocalSolver() == null &&
-        _polygonHasUserConstraints(polygon, centreDrag: pointId == polygon.centerPointId)) {
-      return null;
-    }
     return polygon;
   }
 
@@ -5511,7 +5511,6 @@ class SketchController extends ChangeNotifier {
   /// there; a centre drag counts them. Shapes whose structural ids were never learned count as having
   /// none, which keeps the plain closed-form drag.
   Set<String>? _hybridStructuralFor(String pointId) {
-    if (_ensureLocalSolver() == null) return null;
     final polygon = _intactPolygonForVertex(pointId);
     if (polygon != null) {
       final centre = pointId == polygon.centerPointId;
@@ -5619,7 +5618,12 @@ class SketchController extends ChangeNotifier {
         }
       }
     }
-    _trySolveDuringDragLocally([draggedId], seed: positions, provisionalDistances: sizes);
+    if (!_trySolveDuringDragLocally([draggedId], seed: positions, provisionalDistances: sizes) &&
+        _dragSolveUnsupported) {
+      // A constraint in the group has no local model (a spline tangency): nothing can clamp the proposal, so it is
+      // applied as the plain closed-form drag (the old no-solver behaviour) and the drop's backend solve settles it.
+      unawaited(_applyClosedFormPositions(positions, sync: false));
+    }
   }
 
   /// What dragging [draggedPointId] may do to an intact [polygon], mirroring [_circleDragMode]:
@@ -6814,6 +6818,15 @@ class SketchController extends ChangeNotifier {
   /// than a delta from it - would visibly teleport the Point on tap-down,
   /// before the user has dragged at all. See [updatePointDrag].
   bool beginPointDrag(String pointId) {
+    final ok = _beginPointDrag(pointId);
+    if (_dragLogEnabled) {
+      // ignore: avoid_print
+      print('[SketchDrag] beginPointDrag($pointId) -> $ok (busy=$_busy locked=${_isPointDragLocked(pointId)} underConstrained=$isUnderConstrained)');
+    }
+    return ok;
+  }
+
+  bool _beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null || _draggingLineId != null) return false;
     // Defence in depth alongside [_applyClosedFormPositions]'s own origin
@@ -6856,12 +6869,19 @@ class SketchController extends ChangeNotifier {
       // sketch_canvas.dart colors these Points red so this isn't a silent
       // no-op. Checks every red source (see [isPointForcedOverConstrained]),
       // not just [rigidity]'s own structural verdict.
-      if (isPointForcedOverConstrained(pointId)) return false;
+      if (isPointForcedOverConstrained(pointId)) {
+        _logGrabRefused(pointId, 'forced over-constrained (structural/backend flags)');
+        return false;
+      }
       // Bug-fix round: a fully constrained *and* grounded Point (rendered
       // green - see [isPointFullyPinned]'s own doc comment) has nowhere
       // left to move into either, same reasoning as the over-constrained
       // case above but for the opposite ("done", not "broken") reason.
-      if (isPointFullyPinned(pointId)) return false;
+      // Measured, not counted: [_isPointImmobile] asks the constraints' own Jacobian what the Point can still do.
+      if (_isPointImmobile(pointId, structural: isPointFullyPinned)) {
+        _logGrabRefused(pointId, 'immobile (mobility oracle / structural fallback)');
+        return false;
+      }
     }
     // Bug fix (on-device feedback, see [_circleDragMode]'s own doc
     // comment): the intact-shape exemption just above is deliberately blind
@@ -6911,7 +6931,11 @@ class SketchController extends ChangeNotifier {
     // (The narrower per-point test, not the sketch-wide flag [isPointFullyPinned] ORs in - see [_arcDragMode].)
     final hybridStructural = _hybridStructuralFor(pointId);
     if (hybridStructural != null) {
-      if (isPointForcedOverConstrained(pointId) || rigidity.isPointFullyConstrained(pointId)) return false;
+      if (isPointForcedOverConstrained(pointId) ||
+          _isPointImmobile(pointId, structural: rigidity.isPointFullyConstrained)) {
+        _logGrabRefused(pointId, 'hybrid shape point: over-constrained or immobile');
+        return false;
+      }
     }
     final point = points[pointId]!;
     _dragHybridStructural = hybridStructural;
@@ -6925,6 +6949,7 @@ class SketchController extends ChangeNotifier {
     _dragOriginPointY = point.y;
     _lastDragSolveAt = null;
     _dragReflowedPointIds.clear();
+    _dragReference = {for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y)};
     notifyListeners();
     return true;
   }
@@ -6952,9 +6977,8 @@ class SketchController extends ChangeNotifier {
   /// and-forget PATCH otherwise. The dragged Point itself shows the raw
   /// dragged position, exactly under the touch, *unless* the local solve
   /// succeeds and a live Constraint genuinely requires it to sit somewhere
-  /// else - the soft-drag/live-clamp behaviour [solveSketchLocally] exists
-  /// to produce (see its own doc comment) - in which case it tracks that
-  /// clamped position instead. Every *other* Point is periodically
+  /// else - the live clamp [projectSketch] exists to produce - in which
+  /// case it tracks that clamped position instead. Every *other* Point is periodically
   /// re-solved into place as the drag continues (throttled - see
   /// [_maybeSolveDuringDrag]), rather than staying frozen until
   /// [endPointDrag]'s single final solve - the fix for constraint systems
@@ -7127,45 +7151,158 @@ class SketchController extends ChangeNotifier {
     }));
   }
 
-  SlvsNativeBindings? _localSolverBindings;
-  bool _localSolverUnavailable = false;
+  /// Test-only reference engine, see the constructor.
+  final SketchClampOverride? _dragClampOverride;
 
-  /// Attempts the in-process local solve for [updatePointDrag]'s/
-  /// [updateLineDrag]'s mid-drag reflow - returns false (never partially
-  /// applied) if the native library isn't loadable or the solve itself
-  /// throws, so the caller can fall back to the server round trip
-  /// unconditionally. [anchorPointIds] must already be seeded in [points]
-  /// with the caller's own raw drag target *before* this is called (both
-  /// callers now write it directly, no network round trip) - this is what
-  /// [solveSketchLocally] soft-drags, and (on success) what gets written
-  /// back into [points], possibly softly clamped - see that function's own
-  /// doc comment.
-  /// The local solver library, loading it on first use; null where it isn't available (everywhere
-  /// but Android, unless a test injected one), after which this stops trying.
-  SlvsNativeBindings? _ensureLocalSolver() {
-    var bindings = _localSolverBindings;
-    if (bindings == null && !_localSolverUnavailable) {
-      try {
-        bindings = loadSlvsBindings();
-        _localSolverBindings = bindings;
-      } catch (_) {
-        _localSolverUnavailable = true;
-      }
+  /// The drop's wish: where every Point the drag's local clamps moved now sits (see [_dragReflowedPointIds]), handed to
+  /// the backend inside the solve request ([SketchApiClient.solveAndRefresh]'s `pointUpdates`) instead of one PATCH per
+  /// Point. Clears the set.
+  Map<String, (double, double)> _takeDragWish() {
+    final wish = <String, (double, double)>{};
+    for (final id in _dragReflowedPointIds) {
+      final p = points[id];
+      if (p != null && id != _originPointId) wish[id] = (p.x, p.y);
     }
-    return bindings;
+    _dragReflowedPointIds.clear();
+    return wish;
   }
 
-  /// [seed] overrides the positions the solve starts from (the hybrid drag's closed-form proposal);
+  /// Whether the constraints leave [pointId] no motion at all, *measured* on the constraint Jacobian
+  /// ([analyseSketchMobility]: a rank, so redundant-but-consistent constraints don't fool it and a point pinned by a
+  /// dimension plus a horizontal is found pinned). [structural] (the old union-find count of `dof_analysis.dart`, which is
+  /// wrong both ways on such sketches) is only the fallback when the group holds a constraint the oracle has no model for.
+  bool _isPointImmobile(String pointId, {required bool Function(String) structural}) {
+    final lineEnds = {for (final e in lines.entries) e.key: (e.value.startPointId, e.value.endPointId)};
+    final mobility = analyseSketchMobility(
+      points: {for (final e in points.entries) e.key: (e.value.x, e.value.y)},
+      constraints: constraints.values.toList(),
+      lineEndpoints: (id) => lineEnds[id]!,
+      startIds: {pointId},
+      pinnedPointIds: {..._lockedPointIds, if (_originPointId != null) _originPointId!},
+    );
+    if (mobility.unsupported) return structural(pointId);
+    return mobility.mobilityOf(pointId) == 0;
+  }
+
+  /// Set by [_clampDragFrame] when the dragged group holds a constraint the projector has no model for, so a caller can
+  /// tell "this frame was rejected" from "this drag cannot be clamped locally at all".
+  bool _dragSolveUnsupported = false;
+
+  /// Last accepted frame's positions for the current drag (null outside one): the projector takes its branch choices from
+  /// here (angle supplement, side of a horizontal/vertical dimension), not from the frame's proposal.
+  Map<String, (double, double)>? _dragReference;
+
+  /// The one per-frame constraint step of a drag: [pointXY] is the wish (cursor / closed-form proposal over the current
+  /// positions); returns every point the clamp placed, or null when it could not (no result, did not converge, or the group
+  /// is not supported). The engine is [projectSketch] (no solver); a test may replace it via [SketchController.dragClampOverride].
+  Map<String, (double, double)>? _clampDragFrame({
+    required Map<String, (double, double)> pointXY,
+    required Map<String, (String, String)> lineEndpoints,
+    required Set<String> anchors,
+    required Set<String> stiff,
+    required Map<String, double> provisionalDistances,
+  }) {
+    final pinned = {..._lockedPointIds, if (_originPointId != null) _originPointId!};
+    final override = _dragClampOverride;
+    if (override != null) {
+      return override(
+        points: pointXY,
+        constraints: constraints.values.toList(),
+        lineEndpoints: (id) => lineEndpoints[id]!,
+        anchors: anchors,
+        pinned: pinned,
+        provisionalDistances: provisionalDistances,
+      );
+    }
+    final projection = projectSketch(
+      points: pointXY,
+      constraints: constraints.values.toList(),
+      lineEndpoints: (id) => lineEndpoints[id]!,
+      anchorPointIds: anchors,
+      stiffPointIds: stiff,
+      pinnedPointIds: pinned,
+      provisionalDistances: provisionalDistances,
+      reference: _dragReference,
+    );
+    dragStats.recordSystem(projection.variablePoints, projection.rows, projection.iterations,
+        walks: projection.walks, rejectedSteps: projection.rejectedSteps);
+    if (projection.unsupported) {
+      _dragSolveUnsupported = true;
+      return null;
+    }
+    if (!projection.converged) return null;
+    // The projector only returns the points an active constraint ties to the dragged one. A closed-form proposal also
+    // positions points no constraint touches (a circle's other cardinal points, say): nothing clamps those, so the
+    // proposal stands.
+    return {
+      for (final id in stiff)
+        if (!projection.points.containsKey(id)) id: pointXY[id]!,
+      ...projection.points,
+    };
+  }
+
+  /// Clamps one drag frame to the sketch's constraints, in process, for [updatePointDrag]'s/
+  /// [updateLineDrag]'s mid-drag reflow - returns false (never partially applied) if the projector cannot place the
+  /// frame (it does not converge, a guard below rejects it, or the group holds a constraint it has no model for), so
+  /// the caller can fall back to the server round trip. [anchorPointIds] must already be seeded in [points] with the
+  /// caller's own raw drag target *before* this is called (both callers write it directly, no network round trip):
+  /// it is the wish [projectSketch] walks towards, and (on success) what gets written back into [points], possibly
+  /// clamped to the permitted path.
+  /// [seed] overrides the positions of the wish (the hybrid drag's closed-form proposal);
   /// [provisionalDistances] switches a shape's own unconfirmed size constraints on at the given values
-  /// for this solve only - see [solveSketchLocally]'s `provisionalDistances`.
+  /// for this frame only - see [projectSketch]'s `provisionalDistances`.
   bool _trySolveDuringDragLocally(
     List<String> anchorPointIds, {
     Map<String, (double, double)> seed = const {},
     Map<String, double> provisionalDistances = const {},
   }) {
-    final bindings = _ensureLocalSolver();
-    if (bindings == null) return false;
+    final watch = Stopwatch()..start();
+    final ok = _trySolveDuringDragFrame(anchorPointIds, seed, provisionalDistances);
+    dragStats.recordTime(watch.elapsedMicroseconds);
+    if (_dragLogEnabled) {
+      final id = anchorPointIds.first;
+      final p = points[id];
+      // ignore: avoid_print
+      print('[SketchDrag] frame ${dragStats.frames} ${ok ? 'ok' : (_dragSolveUnsupported ? 'UNSUPPORTED' : 'REJECTED')} '
+          '${watch.elapsedMicroseconds}us anchor=$id@(${p?.x.toStringAsFixed(2)},${p?.y.toStringAsFixed(2)}) '
+          'system=${dragStats.lastVariablePoints}pts/${dragStats.lastRows}rows iters=${dragStats.lastIterations}');
+    }
+    if (ok) {
+      dragStats.accepted++;
+    } else if (_dragSolveUnsupported) {
+      dragStats.unsupported++;
+    } else {
+      dragStats.rejected++;
+    }
+    return ok;
+  }
 
+  void _logGrabRefused(String pointId, String why) {
+    if (!_dragLogEnabled) return;
+    // ignore: avoid_print
+    print('[SketchDrag] grab of $pointId refused: $why');
+  }
+
+  /// `DIDSA_DRAG_LOG=1` in the environment prints one `[SketchDrag]` line per clamped frame (for the headless GUI harness).
+  bool get dragLogEnabled => _dragLogEnabled;
+
+  static final bool _dragLogEnabled = (() {
+    try {
+      return Platform.environment['DIDSA_DRAG_LOG'] == '1';
+    } catch (_) {
+      return false;
+    }
+  })();
+
+  /// Per-frame cost and rejection counters of the drag clamp (see [SketchDragStats]).
+  final SketchDragStats dragStats = SketchDragStats();
+
+  bool _trySolveDuringDragFrame(
+    List<String> anchorPointIds,
+    Map<String, (double, double)> seed,
+    Map<String, double> provisionalDistances,
+  ) {
+    _dragSolveUnsupported = false;
     try {
       final pointXY = <String, (double, double)>{
         for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y),
@@ -7175,28 +7312,23 @@ class SketchController extends ChangeNotifier {
       final lineEndpoints = <String, (String, String)>{
         for (final entry in lines.entries) entry.key: (entry.value.startPointId, entry.value.endPointId),
       };
-      final result = solveSketchLocally(
-        bindings: bindings,
-        points: pointXY,
-        constraints: constraints.values.toList(),
-        lineEndpoints: (id) => lineEndpoints[id]!,
-        originPointId: _originPointId,
-        anchorPointIds: anchorPointIds.toSet(),
-        lockedPointIds: _lockedPointIds,
+      final solved = _clampDragFrame(
+        pointXY: pointXY,
+        lineEndpoints: lineEndpoints,
+        anchors: anchorPointIds.toSet(),
+        stiff: seed.keys.toSet(),
         provisionalDistances: provisionalDistances,
       );
+      if (solved == null) return false;
+      final result = (solvedPoints: solved);
       final anchorSet = anchorPointIds.toSet();
-      // No anchor-drift check here any more (there used to be one - see git
-      // history if you're looking for it): [solveSketchLocally] now
-      // soft-drags [anchorPointIds] via SolveSpace's own `dragged[]`
-      // mechanism (see that function's own doc comment) rather than
-      // hard-pinning them into the fixed group, so a solved anchor position
-      // that differs from its raw pre-solve seed is no longer a solver bug
-      // to reject - it's the intended "clamp to what the Constraints
-      // actually allow" behaviour this mechanism exists to produce (e.g.
-      // sliding along an Arc's own tangency, or snapping back to the
-      // nearest valid point once a confirmed dimension leaves no freedom in
-      // the dragged direction).
+      // No anchor-drift check here (there used to be one - see git history):
+      // the dragged points are walked towards the wish, not hard-pinned, so a
+      // solved anchor position that differs from its raw value is the intended
+      // "clamp to what the Constraints actually allow" behaviour (e.g. sliding
+      // along an Arc's own tangency, or stopping at the nearest valid point
+      // once a confirmed dimension leaves no freedom in the dragged
+      // direction), not something to reject.
       //
       // Blow-up guard (on-device feedback: dragging a Slot corner produced a
       // visibly broken shape - a cusp where a smooth tangent arc should be).
@@ -7310,21 +7442,31 @@ class SketchController extends ChangeNotifier {
           final r2 = distOf(c.center2PointId, c.radius2PointId);
           if ((r1 - r2).abs() > residualTolerance) return false;
         } else if (c is DistanceConstraintDto && !c.provisional) {
-          if ((distOf(c.pointAId, c.pointBId) - c.distance).abs() > residualTolerance) return false;
+          // An axis dimension ('horizontal' / 'vertical' orientation) pins only one coordinate's separation - a circle's
+          // cardinal-point pins are exactly that with distance 0 - so compare that axis, not the Euclidean length.
+          final (ax, ay) = solvedOf(c.pointAId);
+          final (bx, by) = solvedOf(c.pointBId);
+          final actual = c.orientation == 'horizontal'
+              ? (bx - ax).abs()
+              : c.orientation == 'vertical'
+                  ? (by - ay).abs()
+                  : distOf(c.pointAId, c.pointBId);
+          if ((actual - c.distance.abs()).abs() > residualTolerance) return false;
         }
       }
-      // Writes every solved Point back, including the dragged one(s) - see
-      // [solveSketchLocally]'s own doc comment for why a soft-dragged
-      // Point's solved position can legitimately differ from the raw value
-      // [updatePointDrag] PATCHed it to moments earlier (the live-clamp
-      // behaviour that mechanism exists to produce), and this file's own
-      // [_dragReflowedPointIds] doc comment for why that clamped position
-      // needs syncing back to the backend too, same as any other reflowed
-      // Point.
+      // Writes every solved Point back, including the dragged one(s): a clamped
+      // dragged Point legitimately differs from the raw cursor value, and
+      // [_dragReflowedPointIds]'s doc comment says why that position needs
+      // syncing back to the backend too, same as any other reflowed Point.
       for (final entry in result.solvedPoints.entries) {
         final (x, y) = entry.value;
+        final before = pointXY[entry.key];
+        // The group the projector solved includes points that did not move; only a moved one (or a dragged one, whose
+        // raw position may differ from the backend's) needs syncing at the drop.
+        final moved = before == null || (x - before.$1).abs() > 1e-9 || (y - before.$2).abs() > 1e-9;
         points[entry.key] = SketchPointView(id: entry.key, x: x, y: y);
-        _dragReflowedPointIds.add(entry.key);
+        _dragReference?[entry.key] = (x, y);
+        if (moved || anchorSet.contains(entry.key)) _dragReflowedPointIds.add(entry.key);
       }
       notifyListeners();
       return true;
@@ -7419,21 +7561,18 @@ class SketchController extends ChangeNotifier {
       await _runGuarded(() async {
         final startPoints = dragStartPoints ?? const <String, (double, double)>{};
         _pushUndo(() async {
+          // One request: the pre-drag positions are the wish, the solve refreshes the sketch.
+          final restore = <String, (double, double)>{};
           for (final entry in startPoints.entries) {
             final current = points[entry.key];
-            if (current == null || (current.x == entry.value.$1 && current.y == entry.value.$2)) continue;
-            final restored = await _api.updatePoint(_sketchId!, entry.key, entry.value.$1, entry.value.$2);
-            points[entry.key] = SketchPointView(id: restored.id, x: restored.x, y: restored.y);
+            if (current == null || entry.key == _originPointId) continue;
+            if (current.x == entry.value.$1 && current.y == entry.value.$2) continue;
+            restore[entry.key] = entry.value;
           }
-          await _solveAndTrackDof();
+          await _solveAndTrackDof(pointUpdates: restore);
         });
         await _autoCoincideIfNear(pointId, droppedPoint.x, droppedPoint.y);
-        for (final id in _dragReflowedPointIds) {
-          final p = points[id];
-          if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
-        }
-        _dragReflowedPointIds.clear();
-        await _solveAndTrackDof(anchorPointIds: [pointId]);
+        await _solveAndTrackDof(anchorPointIds: [pointId], pointUpdates: _takeDragWish());
       });
       return;
     }
@@ -7517,18 +7656,14 @@ class SketchController extends ChangeNotifier {
       // for all of them sit frozen at their pre-drag values for the whole
       // drag, and this call hands it a single, discontinuous jump instead
       // of a small settle from an already-correct seed.
-      for (final id in _dragReflowedPointIds) {
-        final p = points[id];
-        if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
-      }
-      _dragReflowedPointIds.clear();
+      // (The sync rides in the solve request below as its wish: one request, not one PATCH per Point.)
       // Anchored so the just-dropped Point stays exactly where the user put
       // it and the rest of the Sketch settles around it, instead of every
       // Point (including this one) being equally free to move - Phase 2 of
       // docs/sketcher-overhaul-scope.md. Also gives the auto-coincide above
       // its intuitive result: the *other*, pre-existing Point moves to meet
       // this one, not the other way around.
-      await _solveAndTrackDof(anchorPointIds: [pointId]);
+      await _solveAndTrackDof(anchorPointIds: [pointId], pointUpdates: _takeDragWish());
     });
   }
 
@@ -7608,6 +7743,7 @@ class SketchController extends ChangeNotifier {
     _dragOriginLineEndY = end.y;
     _lastDragSolveAt = null;
     _dragReflowedPointIds.clear();
+    _dragReference = {for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y)};
     notifyListeners();
     return true;
   }
@@ -7729,14 +7865,13 @@ class SketchController extends ChangeNotifier {
         await _autoCoincideIfNear(line.endPointId, droppedEnd.x, droppedEnd.y);
       }
       // Solver-drag-findings fix - mirrors [endPointDrag]'s own sync step.
-      for (final id in _dragReflowedPointIds) {
-        final p = points[id];
-        if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
-      }
-      _dragReflowedPointIds.clear();
+      // The sync rides in the solve request as its wish (see [_takeDragWish]).
       // Both endpoints anchored - mirrors [endPointDrag]'s reasoning, applied
       // to the whole dropped Line rather than a single Point.
-      await _solveAndTrackDof(anchorPointIds: [line.startPointId, line.endPointId]);
+      await _solveAndTrackDof(
+        anchorPointIds: [line.startPointId, line.endPointId],
+        pointUpdates: _takeDragWish(),
+      );
     });
   }
 

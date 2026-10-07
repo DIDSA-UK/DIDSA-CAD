@@ -1,8 +1,13 @@
 # Sketch drag: the hybrid (formula proposes, constraints clamp)
 
 Groundwork for the sketch track of the wish > solve design (`docs/constrained-drag-implementation-plan.md`, S10-S13). Written so the
-per-frame clamp can later move from the local SolveSpace solver to a bespoke client-side projector (the goal: a client with no
+per-frame clamp can move from the local SolveSpace solver to a bespoke client-side projector (the goal: a client with no
 GPL solver in it, e.g. for the iOS App Store) without touching the shape logic.
+
+> **Update:** that move has been made - the clamp is now `projectSketch` (pure Dart, every platform) and SolveSpace is gone from
+> `client/lib`. See `docs/sketch-drag-projector.md` for the design, measurements and what changed. Where this file says "local
+> solver" below, read "the per-frame clamp"; point 4 ("with no local solver ...") no longer applies except for groups holding a
+> spline tangency, and the drop no longer PATCHes point by point (the moved points ride in the solve request).
 
 ## What a drag does now
 

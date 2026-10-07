@@ -19,6 +19,6 @@ PREFS=$HOME/.local/share/uk.snail_shell.didsa_cad_client; mkdir -p "$PREFS"
 echo '{"flutter.server_url":"http://127.0.0.1:8000","flutter.api_key":"test-api-key"}' > "$PREFS/shared_preferences.json"
 cd "$ROOT/client/build/linux/x64/release/bundle"
 DISPLAY=:99 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json FLUTTER_ENGINE_SWITCHES=1 FLUTTER_ENGINE_SWITCH_1=enable-impeller=true \
-  nohup ./didsa_cad_client > "$WORK/app.log" 2>&1 &
+  nohup stdbuf -oL -eL ./didsa_cad_client > "$WORK/app.log" 2>&1 &
 sleep 8
 echo "up: work dir $WORK (app.log has the '[PartScreen] constrained drag: ...' lines)"
