@@ -608,3 +608,57 @@ def test_confirming_the_circles_radius_resizes_the_polygon():
     assert result.converged
     for vertex_id in polygon.vertex_point_ids:
         assert abs(_dist(sketch, center.id, vertex_id) - 15.0) < 1e-6
+
+
+def test_every_closed_form_shape_reports_exactly_its_own_structural_constraints():
+    """A fresh shape has only structural constraints; one user constraint added on top is never listed."""
+    from app.sketch.router import (
+        _arc_response,
+        _circle_response,
+        _ellipse_arc_response,
+        _ellipse_response,
+        _rectangle_response,
+        _slot_response,
+    )
+
+    sketch = Sketch(id="s", plane=Plane.XY)
+
+    def user_constraint():
+        a = sketch.add_point(100.0, 100.0)
+        b = sketch.add_point(110.0, 105.0)
+        return sketch.add_distance_constraint(a.id, b.id, 11.0)
+
+    cases = []
+    c = sketch.add_point(0.0, 0.0)
+    circle = sketch.add_circle(c.id, radius=5.0)
+    cases.append(("circle", _circle_response(sketch, circle).structural_constraint_ids))
+
+    c2 = sketch.add_point(20.0, 0.0)
+    s2 = sketch.add_point(25.0, 0.0)
+    e2 = sketch.add_point(20.0, 5.0)
+    arc = sketch.add_arc(c2.id, s2.id, end_point_id=e2.id)
+    cases.append(("arc", _arc_response(sketch, arc).structural_constraint_ids))
+
+    slot = sketch.add_slot(sketch.add_point(40.0, 0.0).id, sketch.add_point(60.0, 0.0).id, 5.0)
+    cases.append(("slot", _slot_response(sketch, slot).structural_constraint_ids))
+
+    corners = [sketch.add_point(x, y).id for x, y in ((0.0, 30.0), (10.0, 30.0), (10.0, 40.0), (0.0, 40.0))]
+    rect = sketch.add_rectangle(corners)
+    cases.append(("rectangle", _rectangle_response(sketch, rect).structural_constraint_ids))
+
+    ellipse = sketch.add_ellipse(
+        sketch.add_point(80.0, 0.0).id, major_point_id=sketch.add_point(90.0, 0.0).id, minor_radius=4.0
+    )
+    cases.append(("ellipse", _ellipse_response(sketch, ellipse).structural_constraint_ids))
+
+    ellipse_arc = sketch.add_ellipse_arc(
+        sketch.add_point(120.0, 0.0).id, sketch.add_point(130.0, 0.0).id, 4.0, 0.0, 1.5
+    )
+    cases.append(("ellipse_arc", _ellipse_arc_response(sketch, ellipse_arc).structural_constraint_ids))
+
+    for name, ids in cases:
+        assert ids, f"{name} should list its own constraints"
+        assert all(i in sketch.constraints for i in ids), name
+    extra = user_constraint()
+    for name, ids in cases:
+        assert extra.id not in ids, name
