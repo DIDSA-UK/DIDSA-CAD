@@ -33,3 +33,4 @@ server (globals `client` = REST test client, `all_sketches`, `get_document`; out
 (shapes drawn through the UI, dimensions over REST) and prints per-scenario frame / rejected / exception counts; screenshots and
 `app.log` land in `$GUI_WORK` (default `/tmp/didsa-gui`). Coordinates are for 1280x800 and the default fit; scenarios that change
 the view (selection panel) use the shifted coordinates they were recorded with.
+`SKETCHER=3d` (env, for `fresh.sh` and every scenario) enters the 3D Part Design sketcher instead of the standalone 2D tool.

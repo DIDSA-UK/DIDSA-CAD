@@ -247,6 +247,14 @@ constraints allow), per-frame log + screenshots + backend read-back:
 | arc, start point dimensioned | 63 | 0 / 0 | 0.09-0.2 ms, 4 pts / 3 rows | stays a smooth arc, 19.92 holds |
 | 2-link arm, both lengths dimensioned, tip swept beyond reach | 84 | 0 / 0 | 0.1-3.6 ms, 3 pts / 4 rows | tip stops at the wall (reach 9.66) and slides round as the cursor orbits; fully stretched toward the cursor at the end, lengths 4.94 + 4.72 intact |
 
+**Both sketchers were driven**: the standalone "2D Drawing" tool and, separately, the **3D Part Design sketcher** (new sketch on the XY
+plane → Continue → the embedded sketcher with its grid backdrop and different controls; `SKETCHER=3d tools/gui_harness/run_all.sh`).
+The table above is the 2D tool; the 3D-sketcher run gave the same picture: hexagon 66 frames, circle 63, rectangle 59, arc 63, arm 84,
+slot 62 (needed a different grab pixel: the first one landed on a constraint badge), all 0 rejected / 0 exceptions, shapes intact,
+dimensions holding; free-line end follows the cursor (30 frames), the drop persists in the backend and undo restores it. Differences
+noticed in the embedded sketcher: taps land ~33 px higher for the polygon/slot tools, and an edge click for the Horizontal flyout
+did not select (the constraint was added over REST there).
+
 Observations: a free anchor point a dimension ties to is dragged along by the shape (a "rope"; SolveSpace did the same). The wall
 case is the expensive one (up to ~120 evaluations per frame at the fold of a stretched arm; 0.3 ms per frame in an AOT build
 of this 3-point case); the cap on corrector steps per walking step went 6 → 4 after measuring (3 halves the cost again but doubles

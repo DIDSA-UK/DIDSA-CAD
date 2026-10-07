@@ -7,6 +7,6 @@ $G click 1236 676; sleep .6; $G click 1243 572; sleep .6; $G click 1051 572; sle
 tools/gui_harness/script.sh tools/gui_harness/scenarios/slot_dim.py
 $G click 1180 27; sleep 1.5; $G click 36 628; sleep .5; $G shot slot_before .3
 N0=$(grep -c "\[SketchDrag\]" $LOG)
-tools/gui_harness/ring.sh 600 380 1000 380 480 40 60 0.04; sleep 2; $G shot slot_after 1
+tools/gui_harness/ring.sh ${GX:-600} ${GY:-380} 1000 380 480 40 60 0.04; sleep 2; $G shot slot_after 1
 echo "frames: $(( $(grep -c "\[SketchDrag\]" $LOG) - N0 ))  rejected/unsupported: $(grep -c "REJECTED\|UNSUPPORTED" $LOG)  exceptions: $(grep -c "Null check\|Exception" $LOG)"
 grep "\[SketchDrag\]" $LOG | tail -n +$((N0+1)) | awk 'NR%8==1' | cut -c1-175
