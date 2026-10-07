@@ -5440,7 +5440,7 @@ class SketchController extends ChangeNotifier {
     // corner-to-corner, horizontal/vertical or parallel on an edge, a tie to
     // other geometry, ...) must drive, so the general constraint solver takes
     // over and the usual over-constrained/pinned gating applies.
-    if (_polygonHasUserConstraints(polygon)) return null;
+    if (_polygonHasUserConstraints(polygon, centreDrag: pointId == polygon.centerPointId)) return null;
     return polygon;
   }
 
@@ -5457,8 +5457,12 @@ class SketchController extends ChangeNotifier {
   /// Whether any constraint other than [polygon]'s own structural ones
   /// (`SketchPolygonView.structuralConstraintIds`) references one of its
   /// Points, edge/radial Lines or reference-circle Points.
-  bool _polygonHasUserConstraints(SketchPolygonView polygon) {
-    final pointIds = <String>{polygon.centerPointId, ...polygon.vertexPointIds};
+  ///
+  /// A vertex drag never moves the centre, so constraints that only involve the centre (grounded
+  /// on the origin, dimensioned to other geometry, ...) cannot be violated by it and are ignored
+  /// there; a [centreDrag] counts them too.
+  bool _polygonHasUserConstraints(SketchPolygonView polygon, {required bool centreDrag}) {
+    final pointIds = <String>{if (centreDrag) polygon.centerPointId, ...polygon.vertexPointIds};
     final lineIds = <String>{...polygon.lineIds, ...polygon.radialLineIds};
     for (final circleId in [polygon.circumscribedCircleId, polygon.inscribedCircleId]) {
       final circle = circleId == null ? null : circles[circleId];
@@ -6684,14 +6688,19 @@ class SketchController extends ChangeNotifier {
     // (a confirmed dimension protects the radius, and the centre itself has
     // nowhere left to move either) - refuse the grab outright rather than
     // starting a drag guaranteed to visibly do nothing.
-    final intactCircle = _intactCircleForPoint(pointId);
+    // A Polygon's circumscribed reference circle shares the Polygon's first vertex as its radius
+    // point, so the Polygon's own drag rules (see [_polygonDragMode]) take precedence over the
+    // Circle's for that point: a pinned centre blocks a Circle rim drag, but a Polygon corner can
+    // still rotate about it.
+    final intactPolygon = _intactPolygonForVertex(pointId);
+    final intactCircle = intactPolygon == null ? _intactCircleForPoint(pointId) : null;
     if (intactCircle != null && _circleDragMode(intactCircle, pointId) == CircleDragMode.blocked) {
       return false;
     }
     // Same reasoning, for Arc (see [_arcDragMode]'s own doc comment for the
     // bug this closes - an Arc with a confirmed radius dimension and a
     // fully-pinned centre had nowhere to go, but wasn't refusing the grab).
-    final intactArc = _intactArcForPoint(pointId);
+    final intactArc = intactPolygon == null ? _intactArcForPoint(pointId) : null;
     if (intactArc != null && _arcDragMode(intactArc, pointId) == ArcDragMode.blocked) {
       return false;
     }
@@ -6701,7 +6710,6 @@ class SketchController extends ChangeNotifier {
     // centre already holds - "somewhere to go" regardless of whether that
     // centre is pinned), a centre drag is a translate, which has nowhere
     // to go at all once the centre itself is fully pinned/grounded.
-    final intactPolygon = _intactPolygonForVertex(pointId);
     if (intactPolygon != null && _polygonDragMode(intactPolygon, pointId) == PolygonDragMode.blocked) {
       return false;
     }

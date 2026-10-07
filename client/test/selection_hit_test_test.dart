@@ -245,7 +245,9 @@ void main() {
     });
 
     test('sketchMidpointFor resolves only mid: ids of known Lines', () {
-      expect(sketchMidpointFor('mid:line-a', ['line-a'], segments), vm.Vector3(0.05, 0, 10));
+      final midpoint = sketchMidpointFor('mid:line-a', ['line-a'], segments)!;
+      expect(midpoint.x, closeTo(0.05, 1e-6));
+      expect(midpoint.z, closeTo(10, 1e-6));
       expect(sketchMidpointFor('mid:line-b', ['line-a'], segments), isNull);
       expect(sketchMidpointFor('point-a', ['line-a'], segments), isNull);
     });

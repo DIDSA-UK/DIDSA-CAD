@@ -17,12 +17,17 @@ Widget _panel() => MaterialApp(
       ),
     );
 
-/// The panel's own laid-out width: [AssemblyTreePanel]'s `SafeArea` wraps
-/// the width-constrained `SizedBox`, so with zero insets it has that width.
-double _panelWidth(WidgetTester tester) => tester.getSize(find.descendant(
-      of: find.byType(AssemblyTreePanel),
-      matching: find.byType(SafeArea),
-    )).width;
+/// The panel's own visible width: [AssemblyTreePanel]'s `SafeArea` wraps the width-constrained
+/// `SizedBox`, which is the panel plus a 12px gutter on its right that hosts the outer half of the
+/// resize handle (see `_handleOverhang`), so subtract that gutter.
+double _panelWidth(WidgetTester tester) =>
+    tester
+        .getSize(find.descendant(
+          of: find.byType(AssemblyTreePanel),
+          matching: find.byType(SafeArea),
+        ))
+        .width -
+    12;
 
 void _setScreen(WidgetTester tester, Size size) {
   tester.view.devicePixelRatio = 1.0;
@@ -69,6 +74,21 @@ void main() {
       tester.view.physicalSize = const Size(800, 400);
       await tester.pumpAndSettle();
       expect(_panelWidth(tester), closeTo(800 * 0.4, 0.5));
+    });
+
+    testWidgets('the resize handle works on both sides of the visible panel edge', (tester) async {
+      _setScreen(tester, const Size(1000, 800));
+      await tester.pumpWidget(_panel());
+      await tester.pumpAndSettle();
+
+      // Inside the panel, then in the gutter just outside its visible edge - the half of the handle
+      // that used to be clipped away and never received a pointer.
+      for (final offset in const [-6.0, 6.0]) {
+        final before = _panelWidth(tester);
+        await tester.dragFrom(Offset(before + offset, 300), const Offset(40, 0));
+        await tester.pumpAndSettle();
+        expect(_panelWidth(tester), greaterThan(before + 20), reason: 'drag from edge $offset');
+      }
     });
 
     testWidgets('a width the user dragged to survives rotation instead of being reset', (tester) async {
