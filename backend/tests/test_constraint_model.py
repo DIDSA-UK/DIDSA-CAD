@@ -280,7 +280,7 @@ class _Rt:
 def test_solve_group_latency_with_the_nearest_point_stage(capsys):
     """F1c.3: the stage and the analytic Jacobian keep a whole solve (build model + Gauss-Newton + nearest point + analysis) far
     below the 150 ms re-anchor interval at k = 1, 3, 8 (measured on the dev box: ~3 / 15 / 46 ms; before the analytic Jacobian
-    k = 8 alone took ~220 ms). The bound is loose on purpose: CI runners are several times slower."""
+    k = 8 alone took ~220 ms). The bound is loose on purpose: CI runners are several times slower. Measured in CPU time so machine load can't fail it."""
     import time
 
     from app.document.assembly_group import solve_group as solve
@@ -295,9 +295,11 @@ def test_solve_group_latency_with_the_nearest_point_stage(capsys):
         solve(document, part, ids[0], wish, 10.0)  # warm the OCCT / body caches
         times = []
         for _ in range(5):
-            t = time.perf_counter()
+            # CPU time, not wall clock: the bound is about the work the solve does, and a loaded machine
+            # (parallel test workers, a busy CI runner) must not turn scheduling delay into a failure.
+            t = time.process_time()
             result = solve(document, part, ids[0], wish, 10.0)
-            times.append((time.perf_counter() - t) * 1e3)
+            times.append((time.process_time() - t) * 1e3)
         assert result.converged
         rows.append((k, min(times), result.quality.seeded_by))
     with capsys.disabled():

@@ -5306,14 +5306,17 @@ void main() {
   });
 
   group('hybrid drag: the formula proposes, the local solver clamps to the user constraints', () {
+    // These need the real solver; skip the whole group (like local_solver_test.dart) where the host
+    // library hasn't been built - a skip inside setUp would still run the test bodies.
+    final libraryPath = _findHostSlvsLibrary();
+    if (libraryPath == null) {
+      test('hybrid drag (skipped - host didsa_slvs_ffi library not built, see client/native/slvs/CMakeLists.txt)', () {},
+          skip: true);
+      return;
+    }
     late SketchController solved;
 
     setUp(() async {
-      final libraryPath = _findHostSlvsLibrary();
-      if (libraryPath == null) {
-        markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
-        return;
-      }
       final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
       final localBackend = _FakeBackend();
       final localClient = MockClient((request) async => localBackend.handle(request));
