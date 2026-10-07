@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -7242,6 +7243,14 @@ class SketchController extends ChangeNotifier {
     final watch = Stopwatch()..start();
     final ok = _trySolveDuringDragFrame(anchorPointIds, seed, provisionalDistances);
     dragStats.recordTime(watch.elapsedMicroseconds);
+    if (_dragLogEnabled) {
+      final id = anchorPointIds.first;
+      final p = points[id];
+      // ignore: avoid_print
+      print('[SketchDrag] frame ${dragStats.frames} ${ok ? 'ok' : (_dragSolveUnsupported ? 'UNSUPPORTED' : 'REJECTED')} '
+          '${watch.elapsedMicroseconds}us anchor=$id@(${p?.x.toStringAsFixed(2)},${p?.y.toStringAsFixed(2)}) '
+          'system=${dragStats.lastVariablePoints}pts/${dragStats.lastRows}rows iters=${dragStats.lastIterations}');
+    }
     if (ok) {
       dragStats.accepted++;
     } else if (_dragSolveUnsupported) {
@@ -7251,6 +7260,15 @@ class SketchController extends ChangeNotifier {
     }
     return ok;
   }
+
+  /// `DIDSA_DRAG_LOG=1` in the environment prints one `[SketchDrag]` line per clamped frame (for the headless GUI harness).
+  static final bool _dragLogEnabled = (() {
+    try {
+      return Platform.environment['DIDSA_DRAG_LOG'] == '1';
+    } catch (_) {
+      return false;
+    }
+  })();
 
   /// Per-frame cost and rejection counters of the drag clamp (see [SketchDragStats]).
   final SketchDragStats dragStats = SketchDragStats();
@@ -7400,7 +7418,16 @@ class SketchController extends ChangeNotifier {
           final r2 = distOf(c.center2PointId, c.radius2PointId);
           if ((r1 - r2).abs() > residualTolerance) return false;
         } else if (c is DistanceConstraintDto && !c.provisional) {
-          if ((distOf(c.pointAId, c.pointBId) - c.distance).abs() > residualTolerance) return false;
+          // An axis dimension ('horizontal' / 'vertical' orientation) pins only one coordinate's separation - a circle's
+          // cardinal-point pins are exactly that with distance 0 - so compare that axis, not the Euclidean length.
+          final (ax, ay) = solvedOf(c.pointAId);
+          final (bx, by) = solvedOf(c.pointBId);
+          final actual = c.orientation == 'horizontal'
+              ? (bx - ax).abs()
+              : c.orientation == 'vertical'
+                  ? (by - ay).abs()
+                  : distOf(c.pointAId, c.pointBId);
+          if ((actual - c.distance.abs()).abs() > residualTolerance) return false;
         }
       }
       // Writes every solved Point back, including the dragged one(s): a clamped

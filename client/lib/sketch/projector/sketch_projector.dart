@@ -418,7 +418,14 @@ class _System {
         );
       }
       if (c is FixedConstraintDto) continue; // pinned by the caller through [pinned]
-      final ids = _pointIdsOf(c, lineEndpoints);
+      List<String>? ids;
+      try {
+        ids = _pointIdsOf(c, lineEndpoints);
+      } catch (_) {
+        // A constraint naming a Line the caller does not know (state not loaded yet, a stale reference): it cannot be
+        // evaluated, so it takes no part - never a crash in the middle of a grab or a drag frame.
+        continue;
+      }
       if (ids == null) {
         // Only an unsupported constraint that touches the group matters; decided after the group is known.
         active.add(c);

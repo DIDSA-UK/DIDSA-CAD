@@ -44,6 +44,30 @@ def inject_bolt() -> str:
     return rid
 
 
+def run_scripts() -> None:
+    """`WORK/script.py` is exec'd inside this process (globals: client, all_sketches, get_document, work) and its stdout
+    written to `WORK/script.out` (then `script.py` is removed) - build sketch scenarios over REST, inspect backend state."""
+    import contextlib
+    import io
+    from app.sketch.store import all_sketches
+    path, out = os.path.join(work, "script.py"), os.path.join(work, "script.out")
+    while True:
+        time.sleep(0.3)
+        if not os.path.exists(path):
+            continue
+        code = open(path).read()
+        os.remove(path)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            try:
+                exec(compile(code, "script.py", "exec"), {"client": client, "all_sketches": all_sketches,
+                                                         "get_document": get_document, "work": work})
+            except Exception:
+                import traceback
+                traceback.print_exc(file=buf)
+        open(out, "w").write(buf.getvalue() + "\nDONE\n")
+
+
 def watch() -> None:
     flag, done = os.path.join(work, "inject"), os.path.join(work, "injected")
     while True:
@@ -60,6 +84,7 @@ def watch() -> None:
 
 
 threading.Thread(target=watch, daemon=True).start()
+threading.Thread(target=run_scripts, daemon=True).start()
 threading.Thread(target=uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8000, log_level="warning")).run, daemon=True).start()
 print("READY", flush=True)
 while True:

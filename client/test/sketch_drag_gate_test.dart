@@ -75,4 +75,41 @@ void main() {
       expect(c.beginPointDrag(id), isFalse, reason: id);
     }
   });
+
+  test('a constraint naming a Line the controller does not know is ignored, never a crash (found by the real app)', () async {
+    final c = await _controller();
+    _rectangle(c);
+    c.constraints['stale'] = ParallelConstraintDto(id: 'stale', line1Id: 'l0', line2Id: 'no-such-line');
+    c.cursorX = 10;
+    c.cursorY = 6;
+    expect(c.beginPointDrag('b'), isTrue);
+    await c.updatePointDrag(10, 8);
+    expect(c.points['b']!.y, closeTo(8, 0.01));
+    expect(c.dragStats.rejected, 0);
+  });
+
+  test('axis dimensions (a circle\'s cardinal-point pins: horizontal/vertical distance 0) do not trip the residual guard', () async {
+    // Found by driving the real app: the real backend gives every circle such pins; the guard used to compare the
+    // Euclidean distance (the radius) with 0 and reject every frame of a drag.
+    final c = await _controller();
+    c.points['ctr'] = const SketchPointView(id: 'ctr', x: 20, y: 20);
+    c.points['north'] = const SketchPointView(id: 'north', x: 20, y: 24);
+    c.points['east'] = const SketchPointView(id: 'east', x: 24, y: 20);
+    c.constraints['n'] =
+        DistanceConstraintDto(id: 'n', pointAId: 'ctr', pointBId: 'north', distance: 0, orientation: 'horizontal');
+    c.constraints['e'] =
+        DistanceConstraintDto(id: 'e', pointAId: 'ctr', pointBId: 'east', distance: 0, orientation: 'vertical');
+    c.constraints['r'] = DistanceConstraintDto(id: 'r', pointAId: 'ctr', pointBId: 'north', distance: 4);
+    c.constraints['re'] = EqualRadiusConstraintDto(
+        id: 're', center1PointId: 'ctr', radius1PointId: 'north', center2PointId: 'ctr', radius2PointId: 'east');
+    c.cursorX = 20;
+    c.cursorY = 20;
+    expect(c.beginPointDrag('ctr'), isTrue);
+    for (final t in [(21.0, 20.0), (23.0, 22.0), (25.0, 25.0)]) {
+      await c.updatePointDrag(t.$1, t.$2);
+    }
+    expect(c.dragStats.rejected, 0);
+    expect(c.points['north']!.x, closeTo(c.points['ctr']!.x, 1e-4), reason: 'the axis pin holds');
+    expect(c.points['east']!.y, closeTo(c.points['ctr']!.y, 1e-4));
+  });
 }
