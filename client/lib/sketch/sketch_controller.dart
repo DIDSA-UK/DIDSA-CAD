@@ -7183,7 +7183,15 @@ class SketchController extends ChangeNotifier {
       _dragSolveUnsupported = true;
       return null;
     }
-    return projection.converged ? projection.points : null;
+    if (!projection.converged) return null;
+    // The projector only returns the points an active constraint ties to the dragged one. A closed-form proposal also
+    // positions points no constraint touches (a circle's other cardinal points, say): nothing clamps those, so the
+    // proposal stands.
+    return {
+      for (final id in stiff)
+        if (!projection.points.containsKey(id)) id: pointXY[id]!,
+      ...projection.points,
+    };
   }
 
   /// Attempts the in-process local solve for [updatePointDrag]'s/

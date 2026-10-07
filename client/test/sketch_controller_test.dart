@@ -5583,6 +5583,10 @@ void main() {
         await solved.updatePointDrag(target.$1, target.$2);
         expect(dist(circle.centerPointId, anchor.id), closeTo(20, 1e-3), reason: 'the dimension drives every frame');
         expect(dist(circle.centerPointId, circle.radiusPointId), closeTo(10, 1e-3), reason: 'the circle keeps its size');
+        // Points no constraint ties to the dragged one (the circle's other cardinal points) still follow the proposal.
+        for (final id in circle.cardinalPointIds) {
+          expect(dist(circle.centerPointId, id), closeTo(10, 0.5), reason: 'cardinal point $id travels with the circle');
+        }
       }
       final moved = solved.points[circle.centerPointId]!;
       expect(moved.y, greaterThan(26), reason: 'it did follow the cursor along the permitted path');
@@ -5590,6 +5594,204 @@ void main() {
     });
   });
   }
+
+  // Feel of the hybrid drag, projector vs SolveSpace, same dense hand path through both engines in lock-step
+  // (docs/sketch-drag-projector.md). Prints a table; set DIDSA_SKETCH_BENCH=1 (needs the host library for the reference).
+  group('hybrid drag feel (bench)', () {
+    final libraryPath = _findHostSlvsLibrary();
+    if (Platform.environment['DIDSA_SKETCH_BENCH'] != '1' || libraryPath == null) {
+      test('hybrid feel bench (set DIDSA_SKETCH_BENCH=1 and build the host library)', () {}, skip: true);
+      return;
+    }
+
+    double mj(double t) => t * t * t * (10 - 15 * t + 6 * t * t);
+
+    Future<SketchController> make(bool solveSpace) async {
+      final bindings = solveSpace ? SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath)) : null;
+      final fake = _FakeBackend();
+      final client = MockClient((request) async => fake.handle(request));
+      final c = SketchController(api: SketchApiClient(httpClient: client), localSolverBindings: bindings);
+      await c.ensureSketch();
+      return c;
+    }
+
+    // (dragged point, ring centre, ring radius): the hand sweeps a ring around the centre, beyond what the user dimension
+    // allows, so the point has to slide along the permitted path.
+    Future<(String, (double, double), double)> hexagon(SketchController c) async {
+      c.selectDrawTool(SketchTool.polygon);
+      c.setPolygonSides(6);
+      await c.handleCanvasTap(20, 20);
+      await c.handleCanvasTap(30, 20);
+      c.exitToSelectMode();
+      final polygon = c.polygons.values.single;
+      final edge = c.lines[polygon.lineIds[1]]!;
+      c.constraints['user-horizontal'] =
+          HorizontalConstraintDto(id: 'user-horizontal', pointAId: edge.startPointId, pointBId: edge.endPointId, lineId: edge.id);
+      return (polygon.vertexPointIds[0], (20.0, 20.0), 14.0);
+    }
+
+    Future<(String, (double, double), double)> arc(SketchController c) async {
+      c.selectDrawTool(SketchTool.point);
+      await c.handleCanvasTap(60, 20);
+      final anchor = c.points.values.firstWhere((p) => p.x == 60 && p.y == 20);
+      c.selectDrawTool(SketchTool.arc);
+      await c.handleCanvasTap(40, 20);
+      await c.handleCanvasTap(50, 20);
+      await c.handleCanvasTap(40, 30);
+      c.exitToSelectMode();
+      final a = c.arcs.values.single;
+      c.constraints['user-distance'] =
+          DistanceConstraintDto(id: 'user-distance', pointAId: a.startPointId, pointBId: anchor.id, distance: 10);
+      return (a.startPointId, (60.0, 20.0), 18.0);
+    }
+
+    Future<(String, (double, double), double)> slot(SketchController c) async {
+      c.selectDrawTool(SketchTool.point);
+      await c.handleCanvasTap(50, 20);
+      final anchor = c.points.values.firstWhere((p) => p.x == 50 && p.y == 20);
+      c.selectDrawTool(SketchTool.slot);
+      await c.handleCanvasTap(10, 20);
+      await c.handleCanvasTap(30, 20);
+      await c.handleCanvasTap(20, 25);
+      c.exitToSelectMode();
+      final sl = c.slots.values.single;
+      c.constraints['user-distance'] =
+          DistanceConstraintDto(id: 'user-distance', pointAId: sl.center2PointId, pointBId: anchor.id, distance: 20);
+      return (sl.center2PointId, (50.0, 20.0), 28.0);
+    }
+
+    Future<(String, (double, double), double)> rectangle(SketchController c) async {
+      c.selectDrawTool(SketchTool.point);
+      await c.handleCanvasTap(0, 60);
+      final anchor = c.points.values.firstWhere((p) => p.x == 0 && p.y == 60);
+      c.selectDrawTool(SketchTool.rectangle);
+      await c.handleCanvasTap(10, 10);
+      await c.handleCanvasTap(30, 25);
+      c.exitToSelectMode();
+      final r = c.rectangles.values.single;
+      final opposite = r.cornerPointIds[2];
+      final pa = c.points[opposite]!;
+      final gap = math.sqrt(math.pow(pa.x - anchor.x, 2) + math.pow(pa.y - anchor.y, 2));
+      c.constraints['user-distance'] =
+          DistanceConstraintDto(id: 'user-distance', pointAId: opposite, pointBId: anchor.id, distance: gap);
+      return (opposite, (0.0, 60.0), gap * 1.3);
+    }
+
+    Future<(String, (double, double), double)> circle(SketchController c) async {
+      c.selectDrawTool(SketchTool.point);
+      await c.handleCanvasTap(60, 20);
+      final anchor = c.points.values.firstWhere((p) => p.x == 60 && p.y == 20);
+      c.selectDrawTool(SketchTool.circle);
+      await c.handleCanvasTap(40, 20);
+      await c.handleCanvasTap(50, 20);
+      c.exitToSelectMode();
+      final ci = c.circles.values.single;
+      c.constraints['user-distance'] =
+          DistanceConstraintDto(id: 'user-distance', pointAId: ci.centerPointId, pointBId: anchor.id, distance: 20);
+      return (ci.centerPointId, (60.0, 20.0), 28.0);
+    }
+
+    final scenarios = <String, Future<(String, (double, double), double)> Function(SketchController)>{
+      'hexagon, H edge, vertex': hexagon,
+      'arc, start dimensioned': arc,
+      'slot, centre dimensioned': slot,
+      'rectangle, corner dimensioned': rectangle,
+      'circle, centre dimensioned': circle,
+    };
+
+    test('projector vs SolveSpace on the same dense hand path', () async {
+      final out = StringBuffer('\n== hybrid drag feel: projector (PJ) vs SolveSpace (SS), 150 frames, ring sweep ==\n');
+      for (final entry in scenarios.entries) {
+        final pj = await make(false);
+        final ss = await make(true);
+        final (idP, centre, ringR) = await entry.value(pj);
+        final (idS, _, _) = await entry.value(ss);
+        expect(idP, idS, reason: 'both fakes assign the same ids');
+        final start = pj.points[idP]!;
+        final a0 = math.atan2(start.y - centre.$2, start.x - centre.$1);
+        final path = <(double, double)>[];
+        const approach = 25, sweep = 100, ret = 25;
+        final ringStart = (centre.$1 + ringR * math.cos(a0), centre.$2 + ringR * math.sin(a0));
+        for (var f = 1; f <= approach; f++) {
+          final k = mj(f / approach);
+          path.add((start.x + (ringStart.$1 - start.x) * k, start.y + (ringStart.$2 - start.y) * k));
+        }
+        for (var f = 1; f <= sweep; f++) {
+          final a = a0 + 1.5 * math.pi * mj(f / sweep);
+          path.add((centre.$1 + ringR * math.cos(a), centre.$2 + ringR * math.sin(a)));
+        }
+        final last = path.last;
+        for (var f = 1; f <= ret; f++) {
+          final k = mj(f / ret);
+          path.add((last.$1 + (centre.$1 - last.$1) * 0.5 * k, last.$2 + (centre.$2 - last.$2) * 0.5 * k));
+        }
+        for (final c in [pj, ss]) {
+          c.cursorX = start.x;
+          c.cursorY = start.y;
+          expect(c.beginPointDrag(idP), isTrue, reason: entry.key);
+          c.dragStats.reset();
+        }
+        var devMax = 0.0, devSum = 0.0, devN = 0;
+        final jerkMax = [0.0, 0.0];
+        final ratioMax = [0.0, 0.0];
+        final prev = [
+          {for (final e in pj.points.entries) e.key: (e.value.x, e.value.y)},
+          {for (final e in ss.points.entries) e.key: (e.value.x, e.value.y)},
+        ];
+        final prevStep = <Map<String, double>?>[null, null];
+        var prevCursor = (start.x, start.y);
+        for (final cursor in path) {
+          final controllers = [pj, ss];
+          final hand = math.sqrt(math.pow(cursor.$1 - prevCursor.$1, 2) + math.pow(cursor.$2 - prevCursor.$2, 2));
+          for (var i = 0; i < 2; i++) {
+            await controllers[i].updatePointDrag(cursor.$1, cursor.$2);
+            final now = {for (final e in controllers[i].points.entries) e.key: (e.value.x, e.value.y)};
+            final step = <String, double>{
+              for (final e in now.entries)
+                e.key: math.sqrt(math.pow(e.value.$1 - prev[i][e.key]!.$1, 2) + math.pow(e.value.$2 - prev[i][e.key]!.$2, 2)),
+            };
+            if (hand > 1e-9) ratioMax[i] = math.max(ratioMax[i], step[idP]! / hand);
+            final ps = prevStep[i];
+            if (ps != null) {
+              for (final id in now.keys) {
+                if (id == idP) continue;
+                jerkMax[i] = math.max(jerkMax[i], (step[id]! - ps[id]!).abs());
+              }
+            }
+            prev[i] = now;
+            prevStep[i] = step;
+          }
+          for (final id in prev[0].keys) {
+            final a = prev[0][id]!, b = prev[1][id];
+            if (b == null) continue;
+            final d = math.sqrt(math.pow(a.$1 - b.$1, 2) + math.pow(a.$2 - b.$2, 2));
+            devMax = math.max(devMax, d);
+            devSum += d;
+            devN++;
+          }
+          prevCursor = cursor;
+          if (Platform.environment['DIDSA_FEEL_TRACE'] == entry.key.split(',').first && path.indexOf(cursor) % 10 == 0) {
+            final ids = prev[0].keys.toList();
+            final line = StringBuffer('  f${path.indexOf(cursor)} cursor=(${cursor.$1.toStringAsFixed(1)},${cursor.$2.toStringAsFixed(1)})');
+            for (final id in ids) {
+              final a = prev[0][id]!, b = prev[1][id]!;
+              if ((a.$1 - b.$1).abs() + (a.$2 - b.$2).abs() > 0.05) {
+                line.write(' $id PJ(${a.$1.toStringAsFixed(1)},${a.$2.toStringAsFixed(1)}) SS(${b.$1.toStringAsFixed(1)},${b.$2.toStringAsFixed(1)})');
+              }
+            }
+            // ignore: avoid_print
+            print(line);
+          }
+        }
+        out.writeln('${entry.key}:');
+        out.writeln('   PJ ${pj.dragStats} | stepRatio(max)=${ratioMax[0].toStringAsFixed(2)} followerJerk(max)=${jerkMax[0].toStringAsFixed(3)}');
+        out.writeln('   SS ${ss.dragStats} | stepRatio(max)=${ratioMax[1].toStringAsFixed(2)} followerJerk(max)=${jerkMax[1].toStringAsFixed(3)}');
+        out.writeln('   PJ vs SS per-point deviation: mean=${(devSum / devN).toStringAsFixed(4)} max=${devMax.toStringAsFixed(4)}');
+      }
+      // ignore: avoid_print
+      print(out);
+    });
+  });
 
   group('confirmed dimensions drive Slot / Ellipse drags instead of being overwritten', () {
     test('a Slot corner cannot be grabbed once its radius is confirmed', () async {
