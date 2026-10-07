@@ -946,3 +946,40 @@ def test_thin_closed_square_to_circle_loft_builds_a_shell(monkeypatch):
     )
     assert response.status_code == 201, response.json()
     assert _volume(part["id"]) > 0
+
+
+def _triangle_to_circle(seam_param=None, monkeypatch=None, auto_align=True):
+    import app.document.loft as loft_module
+
+    if not auto_align:
+        monkeypatch.setattr(loft_module, "_wants_auto_align", lambda entry: False)
+    part = _create_part()
+    bottom = _create_sketch_feature(part["id"])
+    triangle = [(6 * math.cos(math.radians(-90 + 120 * i)), 6 * math.sin(math.radians(-90 + 120 * i))) for i in range(3)]
+    _add_polygon(bottom["sketch_id"], triangle)
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    ).json()
+    center = _add_point(top["sketch_id"], 0, 0)
+    rim = _add_point(top["sketch_id"], 4, 0)
+    client.post(
+        f"/sketch/sketches/{top['sketch_id']}/circles",
+        json={"center_point_id": center["id"], "radius_point_id": rim["id"]},
+    )
+    section = _section(top)
+    if seam_param is not None:
+        section["seam_param"] = seam_param
+    response = _create_loft(part["id"], [_section(bottom), section])
+    assert response.status_code == 201, response.json()
+    return _volume(part["id"])
+
+
+def test_triangle_to_circle_auto_alignment_is_as_good_as_the_best_explicit_seam(monkeypatch):
+    """A triangle needs the circle cut into three equal arcs (not 180/90/90 degrees), and its start
+    on a corner direction: the automatic result should match the best of a sweep of explicit seams."""
+    automatic = _triangle_to_circle()
+    best_explicit = max(_triangle_to_circle(k / 12, monkeypatch, auto_align=False) for k in range(12))
+    assert automatic >= best_explicit - 1.0
+    default_search = _triangle_to_circle(None, monkeypatch, auto_align=False)
+    assert automatic >= default_search - 0.5

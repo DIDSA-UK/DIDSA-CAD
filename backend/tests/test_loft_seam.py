@@ -109,3 +109,24 @@ def test_best_alignment_matches_a_circle_start_to_a_square_corner():
 def test_best_alignment_rejects_mismatched_samples():
     with pytest.raises(ValueError):
         best_alignment([(0, 0, 0)], [])
+
+
+def test_allocate_splits_cuts_a_lone_circle_into_equal_arcs():
+    from app.document.loft_seam import allocate_splits
+
+    assert allocate_splits([100.0], 3) == [3]
+
+
+def test_allocate_splits_gives_extra_edges_to_the_longest_ones():
+    from app.document.loft_seam import allocate_splits
+
+    assert allocate_splits([10.0, 10.0, 10.0, 10.0], 6) == [2, 2, 1, 1]
+    assert allocate_splits([30.0, 10.0], 3) == [2, 1]
+    assert allocate_splits([5.0, 5.0], 2) == [1, 1]
+
+
+def test_allocate_splits_never_reduces_a_wire():
+    from app.document.loft_seam import allocate_splits
+
+    with pytest.raises(ValueError):
+        allocate_splits([1.0, 1.0, 1.0], 2)

@@ -99,3 +99,17 @@ def best_alignment(reference: list[Point3], candidate: list[Point3]) -> tuple[in
             if candidate_cost < best_cost * (1 - 1e-9) - 1e-12:
                 best, best_cost = (shift, reverse), candidate_cost
     return best
+
+
+def allocate_splits(lengths: list[float], target_count: int) -> list[int]:
+    """How many pieces each edge should be cut into so the wire ends up with `target_count` edges,
+    keeping the pieces as even in length as possible. Each extra split goes to the edge whose
+    current pieces are longest, so a single circle edge matched against a triangle becomes three
+    equal arcs, where repeatedly halving the longest edge would give 180/90/90 degree arcs."""
+    if target_count < len(lengths):
+        raise ValueError("a wire cannot be reduced to fewer edges")
+    pieces = [1] * len(lengths)
+    for _ in range(target_count - len(lengths)):
+        longest = max(range(len(lengths)), key=lambda i: lengths[i] / pieces[i])
+        pieces[longest] += 1
+    return pieces

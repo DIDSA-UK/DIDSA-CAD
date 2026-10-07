@@ -90,7 +90,7 @@ from app.document.extrude import (
     select_profiles,
     wire_for_profile,
 )
-from app.document.loft_seam import best_alignment, locate_seam, reseam_order
+from app.document.loft_seam import allocate_splits, best_alignment, locate_seam, reseam_order
 from app.document.models import LoftFeature, LoftSection, Part, ResolvedPlane, SketchFeature
 from app.document.shell_ops import thicken_shell_to_solid
 from app.document.plane_geometry import is_mirrored_basis
@@ -831,6 +831,23 @@ def _split_edge_in_half(edge: TopoDS_Edge) -> tuple[TopoDS_Edge, TopoDS_Edge]:
     return edge_a, edge_b
 
 
+def _split_edge_evenly(edge: TopoDS_Edge, count: int) -> list[TopoDS_Edge]:
+    """`edge` cut into `count` pieces of equal curve-parameter span (the original when `count` is 1),
+    each the same curve over a sub-range, like `_split_edge_in_half`. The pieces come back in the
+    edge's own curve order; `_harmonize_section_wire_edge_counts` only needs them as a set because
+    `BRepBuilderAPI_MakeWire` joins edges by shared vertices."""
+    if count <= 1:
+        return [edge]
+    curve, first, last = BRep_Tool.Curve(edge)
+    step = (last - first) / count
+    pieces = [BRepBuilderAPI_MakeEdge(curve, first + i * step, first + (i + 1) * step).Edge() for i in range(count)]
+    if edge.Orientation() == TopAbs_REVERSED:
+        # The wire runs this edge against its curve: hand the pieces back in traversal order, each
+        # running the wire's way, so the wire keeps its start vertex and direction.
+        return [topods.Edge(piece.Reversed()) for piece in reversed(pieces)]
+    return pieces
+
+
 def _harmonize_section_wire_edge_counts(wires: list[TopoDS_Wire]) -> list[TopoDS_Wire]:
     """Fixes the Thicken-Surface corner-defect bug ("lofted between an arc
     and a profile of lines then thickened... inconsistent thickness,
@@ -874,11 +891,9 @@ def _harmonize_section_wire_edge_counts(wires: list[TopoDS_Wire]) -> list[TopoDS
         if len(edges) == target_edge_count:
             harmonized.append(wire)
             continue
-        edges = list(edges)
-        while len(edges) < target_edge_count:
-            longest_index = max(range(len(edges)), key=lambda i: _edge_length(edges[i]))
-            edge_a, edge_b = _split_edge_in_half(edges[longest_index])
-            edges[longest_index : longest_index + 1] = [edge_a, edge_b]
+        # Spread the extra edges evenly (a lone circle against a triangle becomes three equal arcs).
+        pieces = allocate_splits([_edge_length(edge) for edge in edges], target_edge_count)
+        edges = [piece for edge, count in zip(edges, pieces) for piece in _split_edge_evenly(edge, count)]
         wire_maker = BRepBuilderAPI_MakeWire()
         for edge in edges:
             wire_maker.Add(edge)
