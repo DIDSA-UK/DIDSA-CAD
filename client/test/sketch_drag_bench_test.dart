@@ -58,17 +58,30 @@ class _Result {
   final double maxFollowerJerk;
   final double meanTipError;
   final Map<String, (double, double)> finalPoints;
-  _Result(this.label, this.stats, this.maxStepRatio, this.maxFollowerJerk, this.meanTipError, this.finalPoints);
+  final double maxTipError;
+  final double meanHandStep;
+  _Result(this.label, this.stats, this.maxStepRatio, this.maxFollowerJerk, this.meanTipError, this.finalPoints,
+      [this.maxTipError = 0, this.meanHandStep = 0]);
 }
 
-/// An arm of [links] segments of length 5 anchored at the origin, every segment a distance dimension. The tip is dragged
-/// along a circle of radius `0.7 reach`, then out and back past the reach (the wall).
-Future<_Result> _arm(int links, {required bool solveSpace, int frames = 90}) async {
+/// Minimum-jerk interpolation 0..1.
+double _mj(double t) => t * t * t * (10 - 15 * t + 6 * t * t);
+
+/// An arm of [links] segments of length 5 anchored at the origin, every segment a distance dimension. The hand (min-jerk
+/// segments, [frames] frames in all) takes the tip in from the stretched start to 0.7 reach, a quarter turn about the origin,
+/// then out past the reach (the wall) and back. Ground truth is analytic: the tip should be the cursor clamped to the reach disc.
+Future<_Result> _arm(int links, {required bool solveSpace, int frames = 120}) async {
   final c = await _controller(solveSpace: solveSpace);
   final ids = <String>['origin-1'];
+  // A gentle curl (3 degrees more per link) rather than a perfectly straight arm: a straight one is a bifurcation (the tip
+  // cannot move inwards at first order), which both engines handle badly and which says nothing about normal dragging.
+  var px = 0.0, py = 0.0;
   for (var i = 1; i <= links; i++) {
+    final a = i * 3 * math.pi / 180;
+    px += 5 * math.cos(a);
+    py += 5 * math.sin(a);
     final id = 'p$i';
-    c.points[id] = SketchPointView(id: id, x: 5.0 * i, y: 0);
+    c.points[id] = SketchPointView(id: id, x: px, y: py);
     ids.add(id);
   }
   for (var i = 1; i <= links; i++) {
@@ -77,37 +90,45 @@ Future<_Result> _arm(int links, {required bool solveSpace, int frames = 90}) asy
   }
   final tip = ids.last;
   final reach = 5.0 * links;
+  final startTip = (px, py);
+  final seg = frames ~/ 3;
   final path = <(double, double)>[];
-  for (var f = 0; f < frames; f++) {
-    final t = f / (frames - 1);
-    // circle at 0.7 reach for the first half, then radial out to 1.3 reach and back
-    if (t < 0.5) {
-      final a = t * 2 * 2 * math.pi * 0.25;
+  for (var f = 1; f <= frames; f++) {
+    if (f <= seg) {
+      final k = _mj(f / seg);
+      path.add((startTip.$1 + (0.7 * reach - startTip.$1) * k, startTip.$2 * (1 - k)));
+    } else if (f <= 2 * seg) {
+      final a = _mj((f - seg) / seg) * math.pi / 2;
       path.add((0.7 * reach * math.cos(a), 0.7 * reach * math.sin(a)));
     } else {
-      final u = (t - 0.5) * 2;
-      final r = reach * (0.7 + 0.6 * math.sin(u * math.pi));
-      final a = math.pi / 2;
-      path.add((r * math.cos(a), r * math.sin(a)));
+      final r = reach * (0.7 + 0.6 * math.sin(_mj((f - 2 * seg) / (frames - 2 * seg)) * math.pi));
+      path.add((0, r));
     }
   }
-  c.cursorX = 5.0 * links;
-  c.cursorY = 0;
+  (double, double) ideal((double, double) cur) {
+    final r = math.sqrt(cur.$1 * cur.$1 + cur.$2 * cur.$2);
+    return r <= reach ? cur : (cur.$1 * reach / r, cur.$2 * reach / r);
+  }
+
+  c.cursorX = startTip.$1;
+  c.cursorY = startTip.$2;
   expect(c.beginPointDrag(tip), isTrue);
   c.dragStats.reset();
-  final shown = <List<(double, double)>>[];
-  var maxRatio = 0.0, maxJerk = 0.0, tipError = 0.0;
-  Map<String, (double, double)> prev = {for (final e in c.points.entries) e.key: (e.value.x, e.value.y)};
+  var maxRatio = 0.0, maxJerk = 0.0, errSum = 0.0, errMax = 0.0, handSum = 0.0;
+  var prev = {for (final e in c.points.entries) e.key: (e.value.x, e.value.y)};
   Map<String, double>? prevStep;
-  (double, double) prevCursor = (5.0 * links, 0);
-  for (final (cx, cy) in path) {
-    await c.updatePointDrag(cx, cy);
+  var prevIdeal = startTip;
+  for (final cursor in path) {
+    await c.updatePointDrag(cursor.$1, cursor.$2);
     final now = {for (final e in c.points.entries) e.key: (e.value.x, e.value.y)};
     final step = <String, double>{
-      for (final e in now.entries) e.key: math.sqrt(math.pow(e.value.$1 - prev[e.key]!.$1, 2) + math.pow(e.value.$2 - prev[e.key]!.$2, 2)),
+      for (final e in now.entries)
+        e.key: math.sqrt(math.pow(e.value.$1 - prev[e.key]!.$1, 2) + math.pow(e.value.$2 - prev[e.key]!.$2, 2)),
     };
-    final hand = math.sqrt(math.pow(cx - prevCursor.$1, 2) + math.pow(cy - prevCursor.$2, 2));
-    if (hand > 1e-9) maxRatio = math.max(maxRatio, step[tip]! / hand);
+    final want = ideal(cursor);
+    final idealStep = math.sqrt(math.pow(want.$1 - prevIdeal.$1, 2) + math.pow(want.$2 - prevIdeal.$2, 2));
+    handSum += idealStep;
+    if (idealStep > 0.05 * reach / frames) maxRatio = math.max(maxRatio, step[tip]! / idealStep);
     if (prevStep != null) {
       for (final id in ids) {
         if (id == tip) continue;
@@ -115,15 +136,16 @@ Future<_Result> _arm(int links, {required bool solveSpace, int frames = 90}) asy
       }
     }
     final p = now[tip]!;
-    tipError += math.sqrt(math.pow(p.$1 - cx, 2) + math.pow(p.$2 - cy, 2));
+    final err = math.sqrt(math.pow(p.$1 - want.$1, 2) + math.pow(p.$2 - want.$2, 2));
+    errSum += err;
+    if (Platform.environment['DIDSA_ARM_TRACE'] == '$links') print('${solveSpace ? 'SS' : 'PJ'} cursor=(${cursor.$1.toStringAsFixed(1)},${cursor.$2.toStringAsFixed(1)}) tip=(${p.$1.toStringAsFixed(2)},${p.$2.toStringAsFixed(2)}) err=${err.toStringAsFixed(2)}');
+    errMax = math.max(errMax, err);
     prev = now;
     prevStep = step;
-    prevCursor = (cx, cy);
-    shown.add([p]);
+    prevIdeal = want;
   }
-  final stats = c.dragStats.toString();
-  return _Result('arm $links links (${links + 1} pts) ${solveSpace ? 'SolveSpace' : 'projector '}', stats, maxRatio, maxJerk,
-      tipError / frames, prev);
+  return _Result('arm $links links (${links + 1} pts) ${solveSpace ? 'SolveSpace' : 'projector '}', c.dragStats.toString(), maxRatio,
+      maxJerk, errSum / frames, prev, errMax, handSum / frames);
 }
 
 /// [count] unconnected rectangles (4 points, H/V on the sides, width and height dimensions) plus the dragged one - what
@@ -162,7 +184,7 @@ Future<_Result> _grid(int count, {required bool solveSpace, int frames = 60}) as
 
 void main() {
   test('smoke: a 6-link arm dragged through the controller is clamped by the projector on every frame', () async {
-    final result = await _arm(6, solveSpace: false, frames: 30);
+    final result = await _arm(6, solveSpace: false, frames: 60);
     // frames that leave the reach may be rejected by the projector only if it fails to converge; none should.
     expect(result.stats, contains('rejected=0'));
     expect(result.stats, contains('unsupported=0'));
@@ -179,13 +201,11 @@ void main() {
     test('arm: cost vs size, rejects, feel', () async {
       final out = StringBuffer('\n== arm (tip dragged on a circle then out past the reach and back) ==\n');
       for (final links in [5, 20, 50, 100, 200]) {
-        _Result? ref;
         for (final solveSpace in engines) {
           final r = await _arm(links, solveSpace: solveSpace);
-          out.writeln('${r.label}: ${r.stats} | maxStepRatio=${r.maxStepRatio.toStringAsFixed(2)} '
-              'maxFollowerJerk=${r.maxFollowerJerk.toStringAsFixed(3)} meanTipErr=${r.meanTipError.toStringAsFixed(3)}');
-          if (solveSpace) ref = r;
-          if (!solveSpace && ref != null) {}
+          out.writeln('${r.label}: ${r.stats}\n    stepRatio(max)=${r.maxStepRatio.toStringAsFixed(2)} '
+              'followerJerk(max)=${r.maxFollowerJerk.toStringAsFixed(3)} tipErr(mean/max)=${r.meanTipError.toStringAsFixed(3)}/'
+              '${r.maxTipError.toStringAsFixed(3)} handStep(mean)=${r.meanHandStep.toStringAsFixed(3)}');
         }
       }
       // ignore: avoid_print

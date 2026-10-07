@@ -45,6 +45,11 @@ class SketchProjection {
   final int variablePoints;
   final int rows;
 
+  /// Walking steps taken / reverted, and why the walk ended ('arrived', 'wall', 'limit', 'stalled', 'none').
+  final int walks;
+  final int rejectedSteps;
+  final String exit;
+
   const SketchProjection({
     required this.converged,
     required this.unsupported,
@@ -53,6 +58,9 @@ class SketchProjection {
     required this.iterations,
     required this.variablePoints,
     required this.rows,
+    this.walks = 0,
+    this.rejectedSteps = 0,
+    this.exit = 'none',
   });
 }
 
@@ -61,7 +69,19 @@ class SketchProjection {
 const double kProjectorFollowerStiffness = 0.1;
 /// Sequential nearest-point steps (pulling towards the wish) before the constraint-only polish.
 const int kProjectorNearestIterations = 3;
-const int kProjectorNearestMax = 12;
+const int kProjectorNearestMax = 24;
+
+/// A walking step that moves nothing further than this fraction of the group's size has arrived.
+const double kProjectorArrived = 1e-5;
+
+/// Smallest step multiplier before a walk that cannot get closer to the wish is declared arrived.
+const double kProjectorMinOmega = 1.0 / 32;
+
+/// Upper bound of the extrapolation factor on a walking step.
+const double kProjectorMaxBoost = 8.0;
+
+/// Corrector steps after each walking step before it is judged.
+const int kProjectorCorrectors = 6;
 
 /// Constraint-only steps after the walk (quadratic convergence; a healthy frame needs 1-3).
 const int kProjectorMaxPolish = 10;
@@ -71,8 +91,8 @@ const double kProjectorTolerance = 1e-6;
 
 /// Wished displacement (sketch units, scaled metric) per walking step: at least this, or [kProjectorTrustDiagonal] of the
 /// group's diagonal.
-const double kProjectorTrust = 1.0;
-const double kProjectorTrustDiagonal = 0.05;
+const double kProjectorTrust = 2.0;
+const double kProjectorTrustDiagonal = 0.1;
 
 // ---- forward-mode AD over a constraint's local coordinates -----------------------------------------------------------
 
@@ -277,7 +297,7 @@ List<_D>? _residuals(ConstraintDto c, LineEndpoints lines, _P Function(String) p
   }
   if (c is LineDistanceConstraintDto) {
     final (s1, e1) = seg(c.line1Id);
-    final (s2, _) = seg(c.line2Id);
+    final s2 = p(lines(c.line2Id).$1);
     return [_signedPointLine(s2, s1, e1).plus(-c.distance)];
   }
   if (c is PointLineDistanceConstraintDto) {
@@ -600,43 +620,108 @@ SketchProjection projectSketch({
   // failing.
   var radius = trust;
   var stalled = 0;
+  var walks = 0;
+  var rejected = 0;
+  var exit = 'limit';
+  Float64List? prevStep;
+  var omega = 1.0;
   for (var walk = 0; walk < kProjectorNearestMax && rows.isNotEmpty && residualInf <= tolerance; walk++) {
     final n0 = wishDistanceNow();
-    if (n0 < tolerance) break;
+    if (n0 < tolerance) {
+      exit = 'arrived';
+      break;
+    }
     final saved = Float64List.fromList(x);
     final savedRows = rows;
     final y0 = Float64List(n);
     for (var c = 0; c < n; c++) {
       y0[c] = stiff[c] * (wish[c] - x[c]);
     }
-    final f0 = n0 > radius ? radius / n0 : 1.0;
-    final y = _correction(rows, n, stiff, y0, f0);
+    // The pull is NOT limited: most of it may be blocked by the constraints, and what slides along them is what we want.
+    // The step actually taken is capped below.
+    final y = _correction(rows, n, stiff, y0, 1.0);
     var biggest = 0.0;
     for (var c = 0; c < n; c++) {
       biggest = math.max(biggest, (y[c] / stiff[c]).abs());
     }
-    final cap = biggest > radius ? radius / biggest : 1.0;
-    for (var c = 0; c < n; c++) {
-      x[c] += cap * y[c] / stiff[c];
+    // The constraints block the whole pull (it is all normal to the manifold): this is the nearest point.
+    if (biggest < kProjectorArrived * math.max(1.0, diagonal)) {
+      exit = 'arrived';
+      break;
     }
-    rows = evaluate();
-    residualInf = worst(rows);
-    iterations++;
-    for (var k = 0; k < 4 && residualInf > tolerance; k++) {
-      if (!correct()) break;
+    // Step multiplier. Along a curved constraint the plain pull overshoots by (1 + wish distance / curvature radius) and
+    // zigzags; a halved multiplier removes that. On a slow monotone tail (ratio rho of consecutive steps near 1) it is
+    // extrapolated 1/(1-rho) instead (Aitken). Every step must stay feasible AND bring the grabbed point closer to the
+    // wish, else the multiplier is halved (and finally the walk has arrived: nothing improves).
+    var boost = 1.0;
+    if (prevStep != null) {
+      var dot = 0.0, prevNorm = 0.0;
+      for (var c = 0; c < n; c++) {
+        dot += (y[c] / stiff[c]) * prevStep[c];
+        prevNorm += prevStep[c] * prevStep[c];
+      }
+      final rho = prevNorm > 0 ? dot / prevNorm : 0.0;
+      if (rho < -0.3) omega = math.max(kProjectorMinOmega, omega * 0.5);
+      if (rho > 0.5 && rho < 0.999) boost = math.min(kProjectorMaxBoost, 1 / (1 - rho));
     }
-    if (residualInf > tolerance) {
+    var accepted = false;
+    var infeasible = false;
+    for (final attempt in boost > 1.0 ? [omega * boost, omega] : [omega]) {
+      final cap = biggest * attempt > radius ? radius / (biggest * attempt) : 1.0;
+      for (var c = 0; c < n; c++) {
+        x[c] = saved[c] + attempt * cap * y[c] / stiff[c];
+      }
+      rows = evaluate();
+      residualInf = worst(rows);
+      iterations++;
+      for (var k = 0; k < kProjectorCorrectors && residualInf > tolerance; k++) {
+        if (!correct()) break;
+      }
+      if (residualInf <= tolerance && wishDistanceNow() < n0 * (1 - 1e-9)) {
+        accepted = true;
+        break;
+      }
+      if (residualInf > tolerance) infeasible = true;
       x.setAll(0, saved);
       rows = savedRows;
       residualInf = worst(rows);
-      radius *= 0.5;
-      if (++stalled > 5) break;
+    }
+    if (!accepted) {
+      prevStep = null;
+      if (infeasible) {
+        // the step was too long for the curvature here: shrink the trust radius
+        radius *= 0.5;
+        rejected++;
+        if (++stalled > 5) {
+          exit = 'stalled';
+          break;
+        }
+      } else {
+        // feasible but not closer: overshoot (halve) - or, at the floor, this is the nearest point
+        omega *= 0.5;
+        rejected++;
+        if (omega < kProjectorMinOmega) {
+          exit = 'arrived';
+          break;
+        }
+      }
       continue;
     }
+    walks++;
     stalled = 0;
     radius = math.min(trust, radius * 2);
-    final n1 = wishDistanceNow();
-    if (n1 < tolerance || n0 - n1 < 0.02 * math.min(n0, radius)) break; // arrived, or a wall: no way closer
+    // Arrived (the wish is met, or a wall/optimum leaves nowhere to go): the step actually taken is negligible.
+    var moved = 0.0;
+    final step = Float64List(n);
+    for (var c = 0; c < n; c++) {
+      step[c] = x[c] - saved[c];
+      moved = math.max(moved, step[c].abs());
+    }
+    prevStep = step;
+    if (moved < kProjectorArrived * math.max(1.0, diagonal) || wishDistanceNow() < tolerance) {
+      exit = 'arrived';
+      break;
+    }
   }
 
   final out = <String, (double, double)>{
@@ -654,6 +739,9 @@ SketchProjection projectSketch({
     iterations: iterations,
     variablePoints: varIds.length,
     rows: rows.length,
+    walks: walks,
+    rejectedSteps: rejected,
+    exit: exit,
   );
 }
 
