@@ -5,6 +5,11 @@ import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import 'view_preferences.dart' show colorFromHex;
 
+/// Width of the gutter right of the panel's visible edge that hosts the outer half
+/// of the resize handle. It lives inside the ClipRect and Stack bounds because
+/// Flutter hit-testing rejects pointers outside the parent's box.
+const double _handleOverhang = 12;
+
 /// The display name for the Occurrence at [index] in [occurrences] - mirrors
 /// `feature_tree_panel.dart`'s `featureDisplayName` (same "shared between the
 /// tree's own rows and anywhere else that needs to name this the same way"
@@ -296,12 +301,14 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
               curve: Curves.easeOut,
               child: SafeArea(
                 child: SizedBox(
-                  width: panelWidth,
+                  width: panelWidth + _handleOverhang,
                   height: double.infinity,
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
-                      Material(
+                      Padding(
+                        padding: const EdgeInsets.only(right: _handleOverhang),
+                        child: Material(
                         elevation: 2,
                         borderRadius: const BorderRadius.only(
                           topRight: Radius.circular(12),
@@ -386,7 +393,8 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                           },
                         ),
                       ),
-                      Positioned(top: 0, bottom: 0, right: -12, child: _buildDragHandle(totalWidth)),
+                      ),
+                      Positioned(top: 0, bottom: 0, right: 0, child: _buildDragHandle(totalWidth)),
                     ],
                   ),
                 ),

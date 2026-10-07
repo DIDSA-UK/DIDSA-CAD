@@ -1,3 +1,4 @@
+import dataclasses
 import math
 import uuid
 
@@ -274,6 +275,32 @@ def _line_response(sketch: Sketch, line: Line) -> LineResponse:
     )
 
 
+def _own_constraint_ids(entity) -> list[str]:
+    """Every constraint id an entity records on itself (any dataclass field named `*_constraint_id`
+    or `*_constraint_ids`): the constraints `Sketch.add_*` created purely to give the shape its form."""
+    ids: list[str] = []
+    for field in dataclasses.fields(entity):
+        value = getattr(entity, field.name)
+        if field.name.endswith("_constraint_id") and isinstance(value, str) and value:
+            ids.append(value)
+        elif field.name.endswith("_constraint_ids") and isinstance(value, list):
+            ids.extend(item for item in value if isinstance(item, str) and item)
+    return ids
+
+
+def _structural_constraint_ids(sketch: Sketch, entity, *nested_entity_ids: str | None) -> list[str]:
+    """The constraints that only hold [entity] (and any [nested_entity_ids] it is built from, such as a
+    Slot's end-cap Arcs or a Polygon's reference circles) together. A drag treats every other
+    constraint touching the shape as a user constraint it must honour. Ids no longer in the sketch
+    are dropped."""
+    ids = _own_constraint_ids(entity)
+    for nested_id in nested_entity_ids:
+        nested = sketch.entities.get(nested_id) if nested_id is not None else None
+        if nested is not None:
+            ids.extend(_own_constraint_ids(nested))
+    return [constraint_id for constraint_id in dict.fromkeys(ids) if constraint_id in sketch.constraints]
+
+
 def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
     return CircleResponse(
         id=circle.id,
@@ -283,6 +310,7 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
         construction=circle.construction,
         cardinal_point_ids=circle.cardinal_point_ids,
         radius_constraint_id=circle.radius_constraint_id,
+        structural_constraint_ids=_structural_constraint_ids(sketch, circle),
     )
 
 
@@ -295,6 +323,7 @@ def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
         radius=arc.radius(sketch.points),
         construction=arc.construction,
         radius_constraint_id=arc.radius_constraint_id,
+        structural_constraint_ids=_structural_constraint_ids(sketch, arc),
     )
 
 
@@ -314,6 +343,7 @@ def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
         construction=ellipse.construction,
         major_constraint_id=ellipse.major_constraint_id,
         minor_constraint_id=ellipse.minor_constraint_id,
+        structural_constraint_ids=_structural_constraint_ids(sketch, ellipse),
     )
 
 
@@ -331,6 +361,13 @@ def _ellipse_arc_response(sketch: Sketch, ellipse_arc: EllipseArc) -> EllipseArc
         minor_radius=ellipse_arc.minor_radius(sketch.points),
         rotation=ellipse_arc.rotation(sketch.points),
         construction=ellipse_arc.construction,
+        structural_constraint_ids=_structural_constraint_ids(sketch, ellipse_arc),
+    )
+
+
+def _polygon_structural_constraint_ids(sketch: Sketch, polygon: Polygon) -> list[str]:
+    return _structural_constraint_ids(
+        sketch, polygon, polygon.circumscribed_circle_id, polygon.inscribed_circle_id
     )
 
 
@@ -347,6 +384,7 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
         circumscribed_circle_id=polygon.circumscribed_circle_id,
         inscribed_circle_id=polygon.inscribed_circle_id,
         radius_constraint_id=polygon.radius_constraint_id,
+        structural_constraint_ids=_polygon_structural_constraint_ids(sketch, polygon),
     )
 
 
@@ -367,10 +405,11 @@ def _slot_response(sketch: Sketch, slot: Slot) -> SlotResponse:
         radius=slot.radius(sketch.points),
         construction=slot.construction,
         radius_constraint_id=slot.radius_constraint_id,
+        structural_constraint_ids=_structural_constraint_ids(sketch, slot, slot.arc1_id, slot.arc2_id),
     )
 
 
-def _rectangle_response(rectangle: Rectangle) -> RectangleResponse:
+def _rectangle_response(sketch: Sketch, rectangle: Rectangle) -> RectangleResponse:
     return RectangleResponse(
         id=rectangle.id,
         corner_point_ids=rectangle.corner_point_ids,
@@ -380,6 +419,7 @@ def _rectangle_response(rectangle: Rectangle) -> RectangleResponse:
         diagonal_line_id=rectangle.diagonal_line_id,
         diagonal2_line_id=rectangle.diagonal2_line_id,
         construction=rectangle.construction,
+        structural_constraint_ids=_structural_constraint_ids(sketch, rectangle),
     )
 
 
@@ -1288,19 +1328,19 @@ def create_rectangle(sketch_id: str, payload: RectangleCreate) -> RectangleRespo
         raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _rectangle_response(rectangle)
+    return _rectangle_response(sketch, rectangle)
 
 
 @router.get("/sketches/{sketch_id}/rectangles", response_model=list[RectangleResponse])
 def list_rectangles(sketch_id: str) -> list[RectangleResponse]:
     sketch = _get_sketch_or_404(sketch_id)
-    return [_rectangle_response(rectangle) for rectangle in sketch.rectangles()]
+    return [_rectangle_response(sketch, rectangle) for rectangle in sketch.rectangles()]
 
 
 @router.get("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=RectangleResponse)
 def get_rectangle(sketch_id: str, rectangle_id: str) -> RectangleResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    return _rectangle_response(_get_rectangle_or_404(sketch, rectangle_id))
+    return _rectangle_response(sketch, _get_rectangle_or_404(sketch, rectangle_id))
 
 
 @router.patch("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=RectangleResponse)
@@ -1309,7 +1349,7 @@ def update_rectangle(sketch_id: str, rectangle_id: str, payload: RectangleUpdate
     rectangle = _get_rectangle_or_404(sketch, rectangle_id)
     if payload.construction is not None:
         rectangle.construction = payload.construction
-    return _rectangle_response(rectangle)
+    return _rectangle_response(sketch, rectangle)
 
 
 @router.delete("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=DeleteEntityResponse)
@@ -1786,6 +1826,19 @@ def update_constraint_value(
         # the same endpoint the ghost-confirm flow already calls) - clears
         # `provisional` without needing a separate confirm flag/endpoint.
         constraint.provisional = False
+        # A Polygon's circumscribed reference circle owns its own (provisional)
+        # radius constraint between the same two Points as the Polygon's. Keep
+        # any such still-provisional duplicate in step so confirming either one
+        # never leaves a stale twin with a different value behind.
+        for other_id, other in sketch.constraints.items():
+            if (
+                other_id != constraint_id
+                and isinstance(other, DistanceConstraint)
+                and other.provisional
+                and other.orientation == constraint.orientation
+                and {other.point_a_id, other.point_b_id} == {constraint.point_a_id, constraint.point_b_id}
+            ):
+                other.distance = value
     elif isinstance(constraint, LineDistanceConstraint):
         current = _signed_line_distance_value(
             sketch, constraint.line1_start_id, constraint.line1_end_id, constraint.line2_start_id

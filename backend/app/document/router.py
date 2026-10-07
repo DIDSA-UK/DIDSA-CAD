@@ -81,7 +81,7 @@ from app.document.bevel_math import (
     spiral_hand_mismatch_warning,
 )
 from app.document.rack import resolve_rack
-from app.document.loft import resolve_loft, resolve_loft_coarse
+from app.document.loft import loft_seam_handles, resolve_loft, resolve_loft_coarse
 from app.document.loft_surface import resolve_loft_surface
 from app.document.planar_surface import resolve_planar_surface
 from app.document.revolve_surface import resolve_revolve_surface
@@ -325,6 +325,7 @@ from app.document.schemas import (
     KnitSurfaceFeatureUpdate,
     LoftFeatureCreate,
     LoftFeatureResponse,
+    LoftSeamHandleSchema,
     LoftFeatureUpdate,
     LoftSectionSchema,
     LoftSurfaceFeatureCreate,
@@ -529,6 +530,8 @@ def _loft_section_to_domain(schema: LoftSectionSchema) -> LoftSection:
         if schema.alignment_point
         else None,
         edge_ref=_subshape_ref_to_domain(schema.edge_ref) if schema.edge_ref else None,
+        seam_param=schema.seam_param,
+        reverse=schema.reverse,
     )
 
 
@@ -543,6 +546,8 @@ def _loft_section_to_schema(section: LoftSection) -> LoftSectionSchema:
         if section.alignment_point
         else None,
         edge_ref=_subshape_ref_to_schema(section.edge_ref) if section.edge_ref else None,
+        seam_param=section.seam_param,
+        reverse=section.reverse,
     )
 
 
@@ -565,13 +570,17 @@ def _validate_loft_section_shape(sections: list[LoftSection], index_offset: int 
                 detail=f"sections[{index}] must set exactly one of sketch_feature_id or edge_ref",
             )
         if section.edge_ref is not None and (
-            section.profile_refs or section.reference_point is not None or section.alignment_point is not None
+            section.profile_refs
+            or section.reference_point is not None
+            or section.alignment_point is not None
+            or section.seam_param is not None
+            or section.reverse
         ):
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"sections[{index}] is edge_ref-based and cannot also set "
-                    "profile_refs/reference_point/alignment_point"
+                    "profile_refs/reference_point/alignment_point/seam_param/reverse"
                 ),
             )
 
@@ -6412,6 +6421,15 @@ def _get_loft_feature_or_404(part: Part, feature_id: str) -> LoftFeature:
     if not isinstance(feature, LoftFeature):
         raise HTTPException(status_code=404, detail="Loft feature not found")
     return feature
+
+
+@router.get("/parts/{part_id}/loft-features/{feature_id}/seam-handles", response_model=list[LoftSeamHandleSchema | None])
+def get_loft_seam_handles(part_id: str, feature_id: str) -> list[LoftSeamHandleSchema | None]:
+    """Where each closed section of the loft starts, for the viewport's draggable markers."""
+    part = get_part_or_404(part_id)
+    feature = _get_loft_feature_or_404(part, feature_id)
+    handles = loft_seam_handles(part, feature)
+    return [None if handle is None else LoftSeamHandleSchema(**handle) for handle in handles]
 
 
 @router.patch("/parts/{part_id}/loft-features/{feature_id}", response_model=LoftFeatureResponse)

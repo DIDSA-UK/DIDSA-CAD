@@ -2530,6 +2530,10 @@ class _PartScreenState extends State<PartScreen> {
     // is - these sub-modes are only ever entered from inside an already-
     // open LoftPanel session, so `_loftActive` is implicitly already true
     // whenever either fires.
+    if (_loftAlignmentPickIndex != null && _loftPickIsProfile) {
+      if (_profileEntityTypeFor(entity.kind) != null) _setLoftProfile(entity);
+      return;
+    }
     if (_loftAlignmentPickIndex != null && entity.kind == SelectionEntityKind.sketchPoint) {
       _setLoftAlignmentPoint(entity);
       return;
@@ -7055,6 +7059,8 @@ class _PartScreenState extends State<PartScreen> {
     bool thinFromClosedProfile,
     List<String> targetBodyIds,
     List<SketchEntityRefDto?> alignmentPoints,
+    List<double?> seamParams,
+    List<bool> reverseFlags,
     SketchEntityRefDto? guideCurveRef,
   })? _loftEditSnapshot;
 
@@ -7072,11 +7078,31 @@ class _PartScreenState extends State<PartScreen> {
   /// [_loftSections] by [_openLoftPanel]/[_openLoftPanelForEdit].
   List<SketchEntityRefDto?> _loftAlignmentPoints = [];
 
+  /// One slot per [_loftSections] entry - the backend `LoftSection.seam_param`
+  /// (null = automatic start) and `LoftSection.reverse`. Kept the same length
+  /// as [_loftSections] like [_loftAlignmentPoints].
+  List<double?> _loftSeamParams = [];
+  List<bool> _loftReverseFlags = [];
+
+  /// While editing an existing Loft, its stored sections - the panel only edits the alignment
+  /// fields, so everything else on a section (profile refs, a reference point) is carried
+  /// through from here instead of being dropped on the next save. Null for a brand-new Loft.
+  List<LoftSectionDto>? _loftStoredSections;
+
   /// Non-null while picking an `alignment_point` for `_loftSections[index]`
   /// in the 3D viewport - mirrors [_revolveActive]'s own "a dedicated
   /// selection-filter override is live" shape, narrowed to a single
   /// in-flight pick rather than the whole panel session.
   int? _loftAlignmentPickIndex;
+
+  /// True while [_loftAlignmentPickIndex] is picking a section's *profile* (a Line/Circle/Arc/...
+  /// of the loop to loft) instead of its alignment point; both sub-picks share the same
+  /// selection-stash and filter-override plumbing.
+  bool _loftPickIsProfile = false;
+
+  /// Per section: the profile the user picked (`LoftSection.profile_refs`), or null to use the
+  /// stored/default one. Needed when a sketch has several closed loops.
+  List<List<SketchEntityRefDto>?> _loftProfileRefs = [];
 
   /// The picked `guide_curve_refs` entity - this session's own UI
   /// simplification of the backend's ordered chain to a single entity
@@ -7122,6 +7148,20 @@ class _PartScreenState extends State<PartScreen> {
   /// `alignment_point` is always a `POINT` entity in a section's own
   /// Sketch, never a Body vertex - see the backend `LoftSection.
   /// alignment_point`'s own docstring).
+  static const _loftProfilePickSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: true,
+    sketchArc: true,
+    sketchEllipse: true,
+    sketchSpline: true,
+    plane: false,
+  );
+
   static const _loftAlignmentPointSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -7168,6 +7208,10 @@ class _PartScreenState extends State<PartScreen> {
       _loftThickness = null;
       _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = List.filled(sections.length, null);
+      _loftSeamParams = List.filled(sections.length, null);
+      _loftReverseFlags = List.filled(sections.length, false);
+      _loftProfileRefs = List.filled(sections.length, null);
+      _loftStoredSections = null;
       _loftGuideCurveRef = null;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {};
@@ -7193,6 +7237,8 @@ class _PartScreenState extends State<PartScreen> {
     final thinFromClosedProfile = feature.thinFromClosedProfile ?? false;
     final targetBodyIds = feature.targetBodyIds;
     final alignmentPoints = [for (final section in feature.sections) section.alignmentPoint];
+    final seamParams = [for (final section in feature.sections) section.seamParam];
+    final reverseFlags = [for (final section in feature.sections) section.reverse];
     final guideCurveRef = feature.guideCurveRefs.isNotEmpty ? feature.guideCurveRefs.first : null;
 
     setState(() {
@@ -7206,6 +7252,8 @@ class _PartScreenState extends State<PartScreen> {
         thinFromClosedProfile: thinFromClosedProfile,
         targetBodyIds: targetBodyIds,
         alignmentPoints: alignmentPoints,
+        seamParams: seamParams,
+        reverseFlags: reverseFlags,
         guideCurveRef: guideCurveRef,
       );
       _meshBeforeLoft = _bodies;
@@ -7214,6 +7262,10 @@ class _PartScreenState extends State<PartScreen> {
       _loftThickness = thickness;
       _loftThinFromClosedProfile = thinFromClosedProfile;
       _loftAlignmentPoints = alignmentPoints;
+      _loftSeamParams = seamParams;
+      _loftReverseFlags = reverseFlags;
+      _loftStoredSections = feature.sections;
+      _loftProfileRefs = List.filled(feature.sections.length, null);
       _loftGuideCurveRef = guideCurveRef;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {
@@ -7244,10 +7296,7 @@ class _PartScreenState extends State<PartScreen> {
 
     final sections = [
       for (var i = 0; i < _loftSections.length; i++)
-        LoftSectionDto(
-          sketchFeatureId: _loftSections[i].id,
-          alignmentPoint: i < _loftAlignmentPoints.length ? _loftAlignmentPoints[i] : null,
-        ),
+        _loftSectionDto(i),
     ];
     final guideCurveRefs = _loftGuideCurveRef == null ? <SketchEntityRefDto>[] : [_loftGuideCurveRef!];
 
@@ -7312,7 +7361,29 @@ class _PartScreenState extends State<PartScreen> {
       );
     }
     await _refreshMesh();
+    unawaited(_refreshLoftSeamHandles());
   }
+
+  /// The draggable start markers for the loft being edited, refreshed after every preview
+  /// update (the backend decides where an automatic seam landed). Best effort: a failure only
+  /// means the markers don't show.
+  List<LoftSeamHandleDto?> _loftSeamHandles = const [];
+
+  Future<void> _refreshLoftSeamHandles() async {
+    final featureId = _previewLoftFeatureId;
+    if (featureId == null || _loftSections.isEmpty) return;
+    try {
+      final handles = await _api.getLoftSeamHandles(_focusPartId, featureId);
+      // The panel may have closed (or moved on to another loft) while this was in flight.
+      if (!mounted || _previewLoftFeatureId != featureId || _loftSections.isEmpty) return;
+      setState(() => _loftSeamHandles = handles);
+    } catch (_) {
+      // Markers are a convenience; the slider still works.
+    }
+  }
+
+  /// [PartViewport.onLoftSeamChanged]: a start marker was dragged along its profile.
+  void _onLoftSeamDragged(int index, double fraction) => _setLoftSeam(index, fraction.clamp(0.0, 0.999));
 
   /// [LoftPanel.onChanged] - mirrors [_onSweepValuesChanged], plus the
   /// ruled/thickness fields Sweep has no equivalent of.
@@ -7369,6 +7440,11 @@ class _PartScreenState extends State<PartScreen> {
       _loftEditSnapshot = null;
       _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = [];
+      _loftSeamParams = [];
+      _loftReverseFlags = [];
+      _loftSeamHandles = const [];
+      _loftProfileRefs = [];
+      _loftStoredSections = null;
       _loftGuideCurveRef = null;
       // Defensive: abandons an in-flight alignment-point/guide-curve
       // sub-pick if Confirm was pressed without finishing it first - pops
@@ -7377,6 +7453,7 @@ class _PartScreenState extends State<PartScreen> {
       // first).
       if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
         _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
         _loftPickingGuideCurve = false;
         _selectionFilterOverrides.pop();
       }
@@ -7404,6 +7481,7 @@ class _PartScreenState extends State<PartScreen> {
     final meshBefore = _meshBeforeLoft;
     final wasEditing = _editingLoftFeatureId != null;
     final editSnapshot = _loftEditSnapshot;
+    final storedSections = _loftStoredSections;
     setState(() {
       _featureTreeVisible = false;
       _loftSections = [];
@@ -7413,10 +7491,16 @@ class _PartScreenState extends State<PartScreen> {
       _loftEditSnapshot = null;
       _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = [];
+      _loftSeamParams = [];
+      _loftReverseFlags = [];
+      _loftSeamHandles = const [];
+      _loftProfileRefs = [];
+      _loftStoredSections = null;
       _loftGuideCurveRef = null;
       // Mirrors _confirmLoft's own identical defensive cleanup above.
       if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
         _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
         _loftPickingGuideCurve = false;
         _selectionFilterOverrides.pop();
       }
@@ -7437,9 +7521,13 @@ class _PartScreenState extends State<PartScreen> {
         await _runGuarded(() async {
           final revertSections = [
             for (var i = 0; i < sections.length; i++)
-              LoftSectionDto(
-                sketchFeatureId: sections[i].id,
+              (storedSections != null && i < storedSections.length
+                      ? storedSections[i]
+                      : LoftSectionDto(sketchFeatureId: sections[i].id))
+                  .withAlignment(
                 alignmentPoint: i < editSnapshot.alignmentPoints.length ? editSnapshot.alignmentPoints[i] : null,
+                seamParam: i < editSnapshot.seamParams.length ? editSnapshot.seamParams[i] : null,
+                reverse: i < editSnapshot.reverseFlags.length && editSnapshot.reverseFlags[i],
               ),
           ];
           final revertGuideCurveRefs =
@@ -7503,10 +7591,89 @@ class _PartScreenState extends State<PartScreen> {
         );
       }
       _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
       _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
       _entitiesBeforeLoftSubPick = null;
       _selectionFilterOverrides.pop();
     });
+    _scheduleLoftPreview();
+  }
+
+  /// Section [index] as sent to the backend: the stored section (when editing) or a bare one,
+  /// with the panel's current alignment point, seam and direction applied.
+  LoftSectionDto _loftSectionDto(int index) {
+    final stored = _loftStoredSections;
+    final base = stored != null && index < stored.length
+        ? stored[index]
+        : LoftSectionDto(sketchFeatureId: _loftSections[index].id);
+    return base.withAlignment(
+      profileRefs: index < _loftProfileRefs.length ? _loftProfileRefs[index] : null,
+      alignmentPoint: index < _loftAlignmentPoints.length ? _loftAlignmentPoints[index] : null,
+      seamParam: index < _loftSeamParams.length ? _loftSeamParams[index] : null,
+      reverse: index < _loftReverseFlags.length && _loftReverseFlags[index],
+    );
+  }
+
+  /// The backend entity type for a profile-defining Sketch entity [kind], or null when [kind] can't
+  /// name a loop.
+  String? _profileEntityTypeFor(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.sketchLine => 'line',
+        SelectionEntityKind.sketchCircle => 'circle',
+        SelectionEntityKind.sketchArc => 'arc',
+        SelectionEntityKind.sketchEllipse => 'ellipse',
+        SelectionEntityKind.sketchSpline => 'spline',
+        _ => null,
+      };
+
+  /// [LoftPanel.onPickProfile]: pick which closed loop of section [index]'s sketch to loft.
+  void _startLoftProfilePick(int index) {
+    setState(() {
+      _loftAlignmentPickIndex = index;
+      _loftPickIsProfile = true;
+      _entitiesBeforeLoftSubPick = _selectedEntities;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_loftProfilePickSelectionFilter);
+    });
+  }
+
+  /// A tapped Line/Circle/Arc/... becomes the section's profile anchor, as long as it belongs to
+  /// that section's own sketch (a tap on another section's geometry is ignored and the pick stays open).
+  void _setLoftProfile(SelectionEntityRef entity) {
+    final index = _loftAlignmentPickIndex;
+    final type = _profileEntityTypeFor(entity.kind);
+    if (index == null || type == null || index >= _loftSections.length) return;
+    if (entity.sketchFeatureId != _loftSections[index].id) return;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return;
+    setState(() {
+      _loftProfileRefs[index] = [SketchEntityRefDto(sketchId: sketchId, entityType: type, entityId: entity.sketchEntityId)];
+      _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onClearProfile]: back to the section's default profile.
+  void _clearLoftProfile(int index) {
+    if (index >= _loftProfileRefs.length) return;
+    setState(() => _loftProfileRefs[index] = const []);
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onSeamChanged] - null returns that section to automatic alignment.
+  void _setLoftSeam(int index, double? seam) {
+    if (index >= _loftSeamParams.length) return;
+    setState(() => _loftSeamParams[index] = seam);
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onReverseChanged].
+  void _setLoftReverse(int index, bool reverse) {
+    if (index >= _loftReverseFlags.length) return;
+    setState(() => _loftReverseFlags[index] = reverse);
     _scheduleLoftPreview();
   }
 
@@ -7523,6 +7690,7 @@ class _PartScreenState extends State<PartScreen> {
   void _cancelLoftAlignmentPointPick() {
     setState(() {
       _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
       _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
       _entitiesBeforeLoftSubPick = null;
       _selectionFilterOverrides.pop();
@@ -21895,6 +22063,8 @@ class _PartScreenState extends State<PartScreen> {
                 // overlays, not siblings in a Row, so the viewport never
                 // loses space to a hidden panel.
                 PartViewport(
+                  loftSeamHandles: _loftSections.isEmpty ? const [] : _loftSeamHandles,
+                  onLoftSeamChanged: _onLoftSeamDragged,
                   key: _viewportKey,
                   bodies: _visibleBodies,
                   // Assembly support Phase 4 (`docs/assembly-scope.md` §3):
@@ -23290,6 +23460,20 @@ class _PartScreenState extends State<PartScreen> {
                       sectionCount: _loftSections.length,
                       targetBodyCount: _currentLoftTargetBodyIds().length,
                       alignmentPointsSet: [for (final ref in _loftAlignmentPoints) ref != null],
+                      seamParams: _loftSeamParams,
+                      reverseFlags: _loftReverseFlags,
+                      profilePicked: [
+                        for (var i = 0; i < _loftSections.length; i++)
+                          (i < _loftProfileRefs.length ? _loftProfileRefs[i] : null)?.isNotEmpty ??
+                              (_loftStoredSections != null &&
+                                  i < _loftStoredSections!.length &&
+                                  _loftStoredSections![i].profileRefs.isNotEmpty),
+                      ],
+                      pickingProfileIndex: _loftPickIsProfile ? _loftAlignmentPickIndex : null,
+                      onPickProfile: _startLoftProfilePick,
+                      onClearProfile: _clearLoftProfile,
+                      onSeamChanged: _setLoftSeam,
+                      onReverseChanged: _setLoftReverse,
                       guideCurveSet: _loftGuideCurveRef != null,
                       pickingAlignmentPointIndex: _loftAlignmentPickIndex,
                       pickingGuideCurve: _loftPickingGuideCurve,

@@ -30,6 +30,7 @@ import 'section_gizmo.dart';
 import 'section_plane.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
+import 'loft_seam_overlay.dart';
 import 'sketch_constraint_overlay.dart';
 import 'sketch_geometry_3d.dart';
 import 'sketch_orientation_indicator.dart';
@@ -661,6 +662,19 @@ class PartViewport extends StatefulWidget {
   /// only rendered while [sketchPlaneBasis] is non-null.
   final bool sketchPlaneGridVisible;
 
+  /// Whether the midpoint of every Sketch Line is a pickable point (hover and
+  /// tap), reported as a Sketch Point with a `'mid:<lineId>'` id (see
+  /// [kSketchMidpointIdPrefix]). Set by the embedded sketcher in Select and
+  /// Dimension modes; the owner materializes the real Point on pick.
+  final bool sketchMidpointPicking;
+
+  /// The draggable start markers of a loft being created or edited (one per section, null where
+  /// a section has no seam), drawn over the view by [LoftSeamOverlay]. Empty hides them.
+  final List<LoftSeamHandleDto?> loftSeamHandles;
+
+  /// Dragging a loft start marker: section index and the new 0..1 position around its profile.
+  final void Function(int sectionIndex, double fraction)? onLoftSeamChanged;
+
   /// P10: gates a new priority tier ahead of [sketchPlaneBasis]'s own plane
   /// hit, inside [_handleTap] - a tap that would otherwise place new
   /// geometry on the plane instead first checks for a real Body
@@ -1100,6 +1114,9 @@ class PartViewport extends StatefulWidget {
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
     this.sketchPlaneSurfaceOpacity = 0.18,
     this.sketchPlaneGridVisible = false,
+    this.sketchMidpointPicking = false,
+    this.loftSeamHandles = const [],
+    this.onLoftSeamChanged,
     this.preferEntityPick = false,
     this.preferEntityPickIncludesFace = false,
     this.preferEntityPickIncludesEdge = true,
@@ -3665,13 +3682,29 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _sketchPlaneSurfaceNode = null;
       return;
     }
+    // While the grid is shown the fill follows it (same centre and extent), so the grid never
+    // outgrows its own backing surface.
+    var gridSurface = widget.sketchPlaneGridVisible ? _sketchGridSurface : null;
+    if (gridSurface != null) {
+      // Ignore a grid left over from a different plane (the basis just changed).
+      final g = gridSurface.$1;
+      final samePlane = (g.origin - basis.origin).dot(basis.normal).abs() < 1e-6 &&
+          g.normal.dot(basis.normal) > 0.9999 &&
+          g.xAxis.dot(basis.xAxis) > 0.9999;
+      if (!samePlane) gridSurface = null;
+    }
     final node = buildSketchPlaneSurfaceNode(
-      basis,
+      gridSurface?.$1 ?? basis,
       color: vector4FromHex(widget.sketchPlaneSurfaceColourHex, opacity: widget.sketchPlaneSurfaceOpacity),
+      halfExtent: gridSurface?.$2 ?? sketchPlaneSurfaceSize / 2,
     );
     _sketchPlaneSurfaceNode = node;
     scene.add(node);
   }
+
+  /// The centred basis and half extent the current grid was built with, which the plane surface
+  /// reuses (see [_syncSketchPlaneSurfaceNode]); null before the first grid build.
+  (SketchPlaneBasis, double)? _sketchGridSurface;
 
   /// P9: mirrors [_syncSketchPlaneSurfaceNode] for the grid - additionally
   /// gated on [PartViewport.sketchPlaneGridVisible].
@@ -3682,12 +3715,72 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (oldNode != null) scene.remove(oldNode);
     final basis = widget.sketchPlaneBasis;
     if (basis == null || !widget.sketchPlaneGridVisible) {
+      final hadSurface = _sketchGridSurface != null;
       _sketchPlaneGridNode = null;
+      _sketchGridKey = null;
+      _sketchGridSurface = null;
+      if (hadSurface) _syncSketchPlaneSurfaceNode();
       return;
     }
-    final node = buildSketchGridNode(basis);
+    // The grid follows the zoom level and view centre: cell size comes from
+    // the 1-2-5 ladder for the current mm-per-pixel, and the grid is centred
+    // on where the view centre meets the plane, snapped to the cell size.
+    var spacing = 2.5;
+    var centreX = 0.0;
+    var centreY = 0.0;
+    if (!_viewportSize.isEmpty) {
+      final camera = _camera.cameraFor(_viewportSize);
+      final centreRay = _toLocalRay(camera.screenPointToRay(_viewportCenter(), _viewportSize));
+      final hit = hitTestSketchPlane(centreRay, basis);
+      final unitsPerPixel = _camera.isPerspective
+          ? (hit == null ? double.nan : 2 * hit.$2 * math.tan(_camera.fovRadiansY / 2) / _viewportSize.height)
+          : 2 * _camera.halfHeight / _viewportSize.height;
+      spacing = sketchGridSpacingFor(unitsPerPixel);
+      if (hit != null) {
+        final (hitX, hitY) = worldPointToSketch(basis, hit.$1);
+        centreX = snapToGridSpacing(hitX, spacing);
+        centreY = snapToGridSpacing(hitY, spacing);
+      }
+    }
+    _sketchGridKey = (spacing, centreX, centreY);
+    final centredBasis = SketchPlaneBasis(
+      origin: basis.origin + basis.xAxis * centreX + basis.yAxis * centreY,
+      xAxis: basis.xAxis,
+      yAxis: basis.yAxis,
+      normal: basis.normal,
+    );
+    final node = buildSketchGridNode(centredBasis, spacing: spacing, extent: spacing * sketchGridHalfCells);
     _sketchPlaneGridNode = node;
     scene.add(node);
+    _sketchGridSurface = (centredBasis, spacing * sketchGridHalfCells);
+    _syncSketchPlaneSurfaceNode();
+  }
+
+  /// `(spacing, centreX, centreY)` the current grid node was built for -
+  /// [_refreshSketchGridForCamera] rebuilds it only when this changes.
+  (double, double, double)? _sketchGridKey;
+
+  /// Rebuilds the sketch grid when a camera move changed its cell size or
+  /// snapped centre. Called every build, so it must stay cheap when nothing
+  /// changed: one ray/plane hit and a record comparison.
+  void _refreshSketchGridForCamera() {
+    if (_scene == null || _sketchPlaneGridNode == null || _viewportSize.isEmpty) return;
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) return;
+    final camera = _camera.cameraFor(_viewportSize);
+    final hit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(_viewportCenter(), _viewportSize)), basis);
+    final unitsPerPixel = _camera.isPerspective
+        ? (hit == null ? double.nan : 2 * hit.$2 * math.tan(_camera.fovRadiansY / 2) / _viewportSize.height)
+        : 2 * _camera.halfHeight / _viewportSize.height;
+    final spacing = sketchGridSpacingFor(unitsPerPixel);
+    var centreX = 0.0;
+    var centreY = 0.0;
+    if (hit != null) {
+      final (hitX, hitY) = worldPointToSketch(basis, hit.$1);
+      centreX = snapToGridSpacing(hitX, spacing);
+      centreY = snapToGridSpacing(hitY, spacing);
+    }
+    if (_sketchGridKey != (spacing, centreX, centreY)) _syncSketchPlaneGridNode();
   }
 
   /// P17: mirrors [_syncSketchPlaneGridNode]'s remove-then-rebuild shape,
@@ -4722,6 +4815,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            sketchLineMidpoints: widget.sketchMidpointPicking,
             activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             fovRadiansY: _perspectiveFovOf(camera),
@@ -5007,6 +5101,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            sketchLineMidpoints: widget.sketchMidpointPicking,
             activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             fovRadiansY: _perspectiveFovOf(camera),
@@ -6071,6 +6166,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           if (geometry != null && index != -1) {
             (isActiveSketchEntity(entity) ? vertexPositionsActiveSketch : vertexPositions)
                 .add(geometry.points[index]);
+          } else if (geometry != null) {
+            final midpoint = sketchMidpointFor(entity.sketchEntityId, geometry.lineIds, geometry.lineSegments);
+            if (midpoint != null) {
+              (isActiveSketchEntity(entity) ? vertexPositionsActiveSketch : vertexPositions).add(midpoint);
+            }
           }
         case SelectionEntityKind.sketchLine:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
@@ -6367,7 +6467,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
         final index = geometry.pointIds.indexOf(entity.sketchEntityId);
-        if (index == -1) return null;
+        if (index == -1) {
+          final midpoint = sketchMidpointFor(entity.sketchEntityId, geometry.lineIds, geometry.lineSegments);
+          if (midpoint == null) return null;
+          return buildVertexMarkersNode([midpoint], color: color, alwaysOnTop: alwaysOnTop);
+        }
         return buildVertexMarkersNode([geometry.points[index]], color: color, alwaysOnTop: alwaysOnTop);
       case SelectionEntityKind.sketchLine:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
@@ -6559,6 +6663,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _viewportSize = size;
+        _refreshSketchGridForCamera();
         // On-device feedback ("make the origin an asterisk... it should
         // look the same independent of the zoom level"): projected fresh
         // every build, same as every other screen-space overlay below -
@@ -6670,6 +6775,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // swallowing them) - the crosshair itself is IgnorePointer'd
             // regardless of draw order, so this reordering only changes who
             // paints on top, never who receives a tap.
+            if (widget.loftSeamHandles.any((h) => h != null) && widget.onLoftSeamChanged != null)
+              LoftSeamOverlay(
+                camera: _camera.cameraFor(size),
+                viewportSize: size,
+                focusTransform: widget.focusWorldTransformMatrix,
+                handles: widget.loftSeamHandles,
+                onSeamChanged: widget.onLoftSeamChanged!,
+              ),
             if (widget.sketchPlaneBasis != null && widget.constraintOverlayItems.isNotEmpty)
               ConstraintOverlay(
                 camera: _camera.cameraFor(size),

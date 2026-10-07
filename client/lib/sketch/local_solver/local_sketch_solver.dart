@@ -640,8 +640,28 @@ LocalSolveResult solveSketchLocally({
   String? originPointId,
   Set<String> anchorPointIds = const {},
   Set<String> lockedPointIds = const {},
+  Map<String, double> provisionalDistances = const {},
 }) {
   final pinned = {...lockedPointIds, if (originPointId != null) originPointId};
+  // [provisionalDistances]: a shape's own still-unconfirmed size constraints (a Polygon's/Circle's/Slot's
+  // radius, ...) are normally skipped, which leaves the shape free to deform under a drag. A drag that
+  // already knows the size it is proposing for them (see SketchController's hybrid drag) switches them on
+  // at those values for this solve only, so the shape stays rigid while every confirmed constraint still clamps it.
+  constraints = provisionalDistances.isEmpty
+      ? constraints
+      : [
+          for (final c in constraints)
+            if (c is DistanceConstraintDto && c.provisional && provisionalDistances.containsKey(c.id))
+              DistanceConstraintDto(
+                id: c.id,
+                pointAId: c.pointAId,
+                pointBId: c.pointBId,
+                distance: provisionalDistances[c.id]!,
+                orientation: c.orientation,
+              )
+            else
+              c,
+        ];
   var result = _solveOnce(
     bindings: bindings,
     points: points,

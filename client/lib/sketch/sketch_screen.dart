@@ -28,7 +28,7 @@ import '../viewport3d/part_viewport.dart';
 import '../viewport3d/reference_planes.dart';
 import '../viewport3d/render_mode.dart';
 import '../viewport3d/selection_filter.dart' show SelectionFilterState;
-import '../viewport3d/selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef;
+import '../viewport3d/selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef, kSketchMidpointIdPrefix;
 import '../viewport3d/sketch_geometry_3d.dart';
 import '../viewport3d/svg_icon.dart';
 import '../viewport3d/view_prefs_sheets.dart';
@@ -1388,6 +1388,8 @@ class _SketchScreenState extends State<SketchScreen> {
         sketchPlaneSurfaceColourHex: _orbitCanvasColourHex,
         sketchPlaneSurfaceOpacity: _orbitCanvasOpacity,
         sketchPlaneGridVisible: _orbitGridVisible,
+        sketchMidpointPicking:
+            _controller.mode == SketchMode.select || _controller.mode == SketchMode.dimension,
         preferEntityPick: _preferEntityPickOnTap,
         // On-device feedback ("selecting a face brings in all the face
         // edges as lines"): only Convert Entities ever wants a Face hit -
@@ -1657,6 +1659,11 @@ class _SketchScreenState extends State<SketchScreen> {
       _ => null,
     };
     if (kind == null) return;
+    // A line-midpoint hit ('mid:<lineId>') names no stored Point yet: materialize it, then select it.
+    if (entity.kind == SelectionEntityKind.sketchPoint && entity.sketchEntityId.startsWith(kSketchMidpointIdPrefix)) {
+      unawaited(_controller.selectLineMidpoint(entity.sketchEntityId.substring(kSketchMidpointIdPrefix.length)));
+      return;
+    }
     _controller.selectEntity(SketchSelection(kind: kind, id: entity.sketchEntityId));
   }
 

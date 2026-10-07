@@ -4,6 +4,11 @@ import '../api/document_api_client.dart';
 import 'svg_icon.dart';
 import 'tree_multi_select_controller.dart';
 
+/// Width of the gutter right of the panel's visible edge that hosts the outer half
+/// of the resize handle. It lives inside the ClipRect and Stack bounds because
+/// Flutter hit-testing rejects pointers outside the parent's box.
+const double _handleOverhang = 12;
+
 /// `docs/lod-strategy/01-design.md` SS3: every `FeatureDto.type` the
 /// backend's `compute_part_bodies_coarse`/`coarse_eligible_feature_ids`
 /// (`app.document.extrude`) knows how to build a coarse stand-in for -
@@ -533,12 +538,14 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
               curve: Curves.easeOut,
               child: SafeArea(
                 child: SizedBox(
-                  width: panelWidth,
+                  width: panelWidth + _handleOverhang,
                   height: double.infinity,
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
-                      Material(
+                      Padding(
+                        padding: const EdgeInsets.only(right: _handleOverhang),
+                        child: Material(
                         elevation: 2,
                         borderRadius: const BorderRadius.only(
                           topRight: Radius.circular(12),
@@ -625,7 +632,8 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                           ],
                         ),
                       ),
-                      Positioned(top: 0, bottom: 0, right: -12, child: _buildDragHandle(totalWidth)),
+                      ),
+                      Positioned(top: 0, bottom: 0, right: 0, child: _buildDragHandle(totalWidth)),
                     ],
                   ),
                 ),
@@ -660,7 +668,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
   /// viewport. The visible grip itself is now 6x64 - thicker and taller, so
   /// it reads clearly as a draggable affordance rather than a thin divider
   /// line. [build]'s own `Positioned` offsets this by half its new width
-  /// (`right: -12`) to keep it centered straddling the panel's edge.
+  /// (`right: 0` inside the [_handleOverhang] gutter) to keep it centered straddling the panel's edge.
   Widget _buildDragHandle(double totalWidth) {
     return MouseRegion(
       cursor: SystemMouseCursors.resizeLeftRight,

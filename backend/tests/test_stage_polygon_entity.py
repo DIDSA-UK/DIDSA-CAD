@@ -534,3 +534,131 @@ def test_collapse_polygon_not_found_over_the_api():
     sketch = _create_sketch()
     response = client.post(f"/sketch/sketches/{sketch['id']}/polygons/does-not-exist/collapse")
     assert response.status_code == 404
+
+
+def test_polygon_response_lists_structural_constraints_but_not_user_ones():
+    """The client keeps a Polygon on its closed-form drag path only while every constraint
+    touching it is structural, so user constraints must never appear in this list."""
+    from app.sketch.router import _polygon_response
+
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+
+    structural = set(_polygon_response(sketch, polygon).structural_constraint_ids)
+    assert structural == set(sketch.constraints)
+
+    across_flats = sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], 17.3205)
+    horizontal = sketch.add_horizontal_constraint(polygon.line_ids[1])
+    corner_to_corner = sketch.add_distance_constraint(
+        polygon.vertex_point_ids[0], polygon.vertex_point_ids[3], 20.0
+    )
+    structural = set(_polygon_response(sketch, polygon).structural_constraint_ids)
+    assert not structural & {across_flats.id, horizontal.id, corner_to_corner.id}
+
+
+
+def test_circumscribed_reference_circle_shares_the_polygons_radius_constraint():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    circumscribed = sketch.entities[polygon.circumscribed_circle_id]
+
+    # One driving radius, not two constraints on the same pair of Points.
+    assert circumscribed.radius_constraint_id == polygon.radius_constraint_id
+    between = [
+        c
+        for c in sketch.constraints.values()
+        if getattr(c, "point_a_id", None) in {center.id, first_vertex.id}
+        and getattr(c, "point_b_id", None) in {center.id, first_vertex.id}
+        and getattr(c, "orientation", "linear") == "linear"
+    ]
+    assert len(between) == 1
+
+
+def test_deleting_the_circumscribed_circle_keeps_the_polygons_radius_constraint():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+
+    sketch.delete_circle(polygon.circumscribed_circle_id)
+    assert polygon.radius_constraint_id in sketch.constraints
+
+    sketch.delete_polygon(polygon.id)
+    assert polygon.radius_constraint_id not in sketch.constraints
+
+
+def test_confirming_the_circles_radius_resizes_the_polygon():
+    from app.sketch.solver import solve_sketch
+
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    circle = sketch.entities[polygon.circumscribed_circle_id]
+
+    radius = sketch.constraints[circle.radius_constraint_id]
+    radius.distance = 15.0
+    radius.provisional = False
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    for vertex_id in polygon.vertex_point_ids:
+        assert abs(_dist(sketch, center.id, vertex_id) - 15.0) < 1e-6
+
+
+def test_every_closed_form_shape_reports_exactly_its_own_structural_constraints():
+    """A fresh shape has only structural constraints; one user constraint added on top is never listed."""
+    from app.sketch.router import (
+        _arc_response,
+        _circle_response,
+        _ellipse_arc_response,
+        _ellipse_response,
+        _rectangle_response,
+        _slot_response,
+    )
+
+    sketch = Sketch(id="s", plane=Plane.XY)
+
+    def user_constraint():
+        a = sketch.add_point(100.0, 100.0)
+        b = sketch.add_point(110.0, 105.0)
+        return sketch.add_distance_constraint(a.id, b.id, 11.0)
+
+    cases = []
+    c = sketch.add_point(0.0, 0.0)
+    circle = sketch.add_circle(c.id, radius=5.0)
+    cases.append(("circle", _circle_response(sketch, circle).structural_constraint_ids))
+
+    c2 = sketch.add_point(20.0, 0.0)
+    s2 = sketch.add_point(25.0, 0.0)
+    e2 = sketch.add_point(20.0, 5.0)
+    arc = sketch.add_arc(c2.id, s2.id, end_point_id=e2.id)
+    cases.append(("arc", _arc_response(sketch, arc).structural_constraint_ids))
+
+    slot = sketch.add_slot(sketch.add_point(40.0, 0.0).id, sketch.add_point(60.0, 0.0).id, 5.0)
+    cases.append(("slot", _slot_response(sketch, slot).structural_constraint_ids))
+
+    corners = [sketch.add_point(x, y).id for x, y in ((0.0, 30.0), (10.0, 30.0), (10.0, 40.0), (0.0, 40.0))]
+    rect = sketch.add_rectangle(corners)
+    cases.append(("rectangle", _rectangle_response(sketch, rect).structural_constraint_ids))
+
+    ellipse = sketch.add_ellipse(
+        sketch.add_point(80.0, 0.0).id, major_point_id=sketch.add_point(90.0, 0.0).id, minor_radius=4.0
+    )
+    cases.append(("ellipse", _ellipse_response(sketch, ellipse).structural_constraint_ids))
+
+    ellipse_arc = sketch.add_ellipse_arc(
+        sketch.add_point(120.0, 0.0).id, sketch.add_point(130.0, 0.0).id, 4.0, 0.0, 1.5
+    )
+    cases.append(("ellipse_arc", _ellipse_arc_response(sketch, ellipse_arc).structural_constraint_ids))
+
+    for name, ids in cases:
+        assert ids, f"{name} should list its own constraints"
+        assert all(i in sketch.constraints for i in ids), name
+    extra = user_constraint()
+    for name, ids in cases:
+        assert extra.id not in ids, name

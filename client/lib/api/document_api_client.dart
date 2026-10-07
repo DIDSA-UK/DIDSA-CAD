@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:vector_math/vector_math.dart' as vm;
 
 import '../config.dart';
 import 'sketch_api_client.dart' show ApiException;
@@ -396,15 +397,49 @@ class LoftSectionDto {
   /// for helical/herringbone gear teeth and must never change meaning).
   final SketchEntityRefDto? alignmentPoint;
 
+  /// The backend `LoftSection.seam_param`: where this section's closed
+  /// profile starts, as a 0..1 fraction of its length (null = automatic).
+  final double? seamParam;
+
+  /// The backend `LoftSection.reverse`: flips this section's winding direction.
+  final bool reverse;
+
+  /// The backend `LoftSection.edge_ref` of a section that lofts from a Body edge instead of a
+  /// Sketch. Kept as the raw JSON so such a loft round-trips through an edit untouched; its
+  /// [sketchFeatureId] is empty.
+  final Map<String, dynamic>? edgeRef;
+
   const LoftSectionDto({
     required this.sketchFeatureId,
     this.profileRefs = const [],
     this.referencePoint,
     this.alignmentPoint,
+    this.seamParam,
+    this.reverse = false,
+    this.edgeRef,
   });
 
+  /// This section with the editable alignment fields replaced, keeping everything else
+  /// ([profileRefs], [referencePoint], [edgeRef]) the panel has no controls for.
+  LoftSectionDto withAlignment({
+    List<SketchEntityRefDto>? profileRefs,
+    required SketchEntityRefDto? alignmentPoint,
+    required double? seamParam,
+    required bool reverse,
+  }) =>
+      LoftSectionDto(
+        sketchFeatureId: sketchFeatureId,
+        profileRefs: profileRefs ?? this.profileRefs,
+        referencePoint: referencePoint,
+        alignmentPoint: alignmentPoint,
+        seamParam: seamParam,
+        reverse: reverse,
+        edgeRef: edgeRef,
+      );
+
   factory LoftSectionDto.fromJson(Map<String, dynamic> json) => LoftSectionDto(
-        sketchFeatureId: json['sketch_feature_id'] as String,
+        sketchFeatureId: json['sketch_feature_id'] as String? ?? '',
+        edgeRef: json['edge_ref'] as Map<String, dynamic>?,
         profileRefs: (json['profile_refs'] as List?)
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
@@ -415,14 +450,48 @@ class LoftSectionDto {
         alignmentPoint: json['alignment_point'] == null
             ? null
             : SketchEntityRefDto.fromJson(json['alignment_point'] as Map<String, dynamic>),
+        seamParam: (json['seam_param'] as num?)?.toDouble(),
+        reverse: json['reverse'] as bool? ?? false,
       );
 
   Map<String, dynamic> toJson() => {
-        'sketch_feature_id': sketchFeatureId,
+        if (sketchFeatureId.isNotEmpty) 'sketch_feature_id': sketchFeatureId,
+        if (edgeRef != null) 'edge_ref': edgeRef,
         'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
         if (referencePoint != null) 'reference_point': referencePoint!.toJson(),
         if (alignmentPoint != null) 'alignment_point': alignmentPoint!.toJson(),
+        if (seamParam != null) 'seam_param': seamParam,
+        if (reverse) 'reverse': true,
       };
+}
+
+/// The backend's `LoftSeamHandleSchema`: one closed loft section's profile sampled at equal
+/// arc-length fractions from its default start ([points], part frame) plus the seam in force.
+/// Dragging a marker to sample k of N means `seamParam = k / N`.
+class LoftSeamHandleDto {
+  final List<vm.Vector3> points;
+  final double seamParam;
+  final bool reverse;
+
+  /// True when the seam was chosen automatically rather than set on the section.
+  final bool auto;
+
+  const LoftSeamHandleDto({
+    required this.points,
+    required this.seamParam,
+    required this.reverse,
+    required this.auto,
+  });
+
+  factory LoftSeamHandleDto.fromJson(Map<String, dynamic> json) => LoftSeamHandleDto(
+        points: [
+          for (final p in json['points'] as List)
+            vm.Vector3((p[0] as num).toDouble(), (p[1] as num).toDouble(), (p[2] as num).toDouble()),
+        ],
+        seamParam: (json['seam_param'] as num).toDouble(),
+        reverse: json['reverse'] as bool,
+        auto: json['auto'] as bool,
+      );
 }
 
 /// C4: the wire counterpart to the backend's `PointRefSchema` - exactly one
@@ -4267,6 +4336,19 @@ class DocumentApiClient {
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Where each closed section of loft [featureId] starts, one entry per section (null for a
+  /// section with no seam). See [LoftSeamHandleDto].
+  Future<List<LoftSeamHandleDto?>> getLoftSeamHandles(String partId, String featureId) => _send(
+        () => _httpClient.get(
+          _uri('/document/parts/$partId/loft-features/$featureId/seam-handles'),
+          headers: _headers,
+        ),
+        (body) => [
+          for (final entry in body as List)
+            entry == null ? null : LoftSeamHandleDto.fromJson(entry as Map<String, dynamic>),
+        ],
       );
 
   // --- Phase 1 surfacing package -------------------------------------------

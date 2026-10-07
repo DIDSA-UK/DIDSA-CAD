@@ -2042,6 +2042,8 @@ class LoftSectionSchema(BaseModel):
     reference_point: SketchEntityRefSchema | None = None
     alignment_point: SketchEntityRefSchema | None = None
     edge_ref: SubShapeRefSchema | None = None
+    seam_param: float | None = Field(default=None, ge=0.0, lt=1.0)
+    reverse: bool = False
 
 
 class LoftFeatureCreate(BaseModel):
@@ -2090,6 +2092,17 @@ class LoftFeatureUpdate(BaseModel):
     thickness: float | None = None
     thin_from_closed_profile: bool | None = None
     guide_curve_refs: list[SketchOrEdgeRefSchema] | None = None
+
+
+class LoftSeamHandleSchema(BaseModel):
+    """One closed loft section's start marker: its profile sampled at equal arc-length fractions
+    from its default start (`points`, part frame) plus the seam in force. See
+    `app.document.loft.loft_seam_handles`."""
+
+    points: list[list[float]]
+    seam_param: float
+    reverse: bool
+    auto: bool
 
 
 class LoftFeatureResponse(FeatureResponseBase):

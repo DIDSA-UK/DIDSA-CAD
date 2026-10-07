@@ -792,3 +792,247 @@ def test_update_loft_feature_can_clear_guide_curve_refs():
     )
     assert patch_response.status_code == 200, patch_response.json()
     assert patch_response.json()["guide_curve_refs"] == []
+
+
+# --- seam / direction / auto-align ---------------------------------------
+
+
+def _volume(part_id: str) -> float:
+    from OCC.Core.BRepGProp import brepgprop
+    from OCC.Core.GProp import GProp_GProps
+
+    from app.document.extrude import compute_part_bodies
+    from app.document.store import get_part_or_404
+
+    (solid,) = compute_part_bodies(get_part_or_404(part_id)).values()
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(solid, props)
+    return props.Mass()
+
+
+def _square_to_circle_loft(*, seam_param: float | None = None, reverse: bool = False, auto_align: bool = True, monkeypatch=None):
+    """A 10x10 square (first corner at (-5, -5)) lofted 8mm up to a radius-4 circle - the dissimilar
+    case where a start vertex that is off by a corner twists the loft."""
+    import app.document.loft as loft_module
+
+    if not auto_align:
+        monkeypatch.setattr(loft_module, "_wants_auto_align", lambda entry: False)
+    part = _create_part()
+    bottom = _square_sketch(part["id"], size=10.0)
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top_response = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    )
+    assert top_response.status_code == 201, top_response.json()
+    top = top_response.json()
+    center = _add_point(top["sketch_id"], 0, 0)
+    rim = _add_point(top["sketch_id"], 4, 0)
+    circle = client.post(
+        f"/sketch/sketches/{top['sketch_id']}/circles",
+        json={"center_point_id": center["id"], "radius_point_id": rim["id"]},
+    )
+    assert circle.status_code == 201, circle.json()
+    top_section = _section(top)
+    if seam_param is not None:
+        top_section["seam_param"] = seam_param
+    if reverse:
+        top_section["reverse"] = True
+    response = _create_loft(part["id"], [_section(bottom), top_section])
+    return part, response
+
+
+def test_square_to_circle_loft_auto_aligns_the_circle_start_to_a_square_corner(monkeypatch):
+    """OCCT's own default start-vertex search leaves the circle's seam half a corner off (a 45 degree
+    twist), which loses a measurable amount of volume against the untwisted loft."""
+    part, response = _square_to_circle_loft(monkeypatch=monkeypatch)
+    assert response.status_code == 201, response.json()
+    aligned = _volume(part["id"])
+
+    plain_part, plain = _square_to_circle_loft(auto_align=False, monkeypatch=monkeypatch)
+    assert plain.status_code == 201, plain.json()
+    twisted = _volume(plain_part["id"])
+
+    assert aligned > twisted + 20.0
+    # The automatic choice is the best of the explicit seams: the corner at (-5, -5) is 5/8 of the way
+    # round the circle from its own start.
+    best_part, best = _square_to_circle_loft(seam_param=0.625, auto_align=False, monkeypatch=monkeypatch)
+    assert best.status_code == 201, best.json()
+    assert abs(aligned - _volume(best_part["id"])) < 0.5
+
+
+def test_explicit_seam_param_moves_where_the_circle_section_starts(monkeypatch):
+    start_part, start = _square_to_circle_loft(seam_param=0.0, auto_align=False, monkeypatch=monkeypatch)
+    corner_part, corner = _square_to_circle_loft(seam_param=0.625, auto_align=False, monkeypatch=monkeypatch)
+    assert start.status_code == 201 and corner.status_code == 201
+    assert _volume(corner_part["id"]) > _volume(start_part["id"]) + 100.0
+
+
+def test_reverse_flips_the_section_direction_and_still_lofts(monkeypatch):
+    forward_part, forward = _square_to_circle_loft(seam_param=0.625, auto_align=False, monkeypatch=monkeypatch)
+    reversed_part, flipped = _square_to_circle_loft(
+        seam_param=0.625, reverse=True, auto_align=False, monkeypatch=monkeypatch
+    )
+    assert forward.status_code == 201 and flipped.status_code == 201
+    assert _volume(reversed_part["id"]) < _volume(forward_part["id"]) - 50.0
+
+
+def test_seam_and_reverse_round_trip_through_the_api_and_native_format():
+    from app.document.models import LoftSection
+    from app.document.native_format import _loft_section_from_dict, _loft_section_to_dict
+
+    section = LoftSection(sketch_feature_id="s1", seam_param=0.25, reverse=True)
+    assert _loft_section_from_dict(_loft_section_to_dict(section)) == section
+    # Files saved before these fields existed still load, as automatic and forward.
+    legacy = _loft_section_from_dict({"sketch_feature_id": "s1"})
+    assert legacy.seam_param is None and legacy.reverse is False
+
+
+def test_seam_param_outside_zero_to_one_is_rejected():
+    part = _create_part()
+    bottom = _square_sketch(part["id"], size=10.0)
+    response = _create_loft(part["id"], [_section(bottom), {**_section(bottom), "seam_param": 1.5}])
+    assert response.status_code == 422
+
+
+def test_seam_param_on_an_edge_section_is_rejected():
+    part = _create_part()
+    bottom = _square_sketch(part["id"], size=10.0)
+    edge_section = {"edge_ref": {"body_id": "x", "kind": "edge", "index": 0}, "seam_param": 0.5}
+    response = _create_loft(part["id"], [_section(bottom), edge_section])
+    assert response.status_code in (400, 422)
+
+
+def test_three_section_loft_square_circle_square_auto_aligns_each_pair():
+    part = _create_part()
+    bottom = _square_sketch(part["id"], size=10.0)
+    sections = [_section(bottom)]
+    for height, kind in ((6.0, "circle"), (12.0, "square")):
+        plane = _move_sketch_feature_up(part["id"], bottom, height)
+        feature = client.post(
+            f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+        ).json()
+        if kind == "circle":
+            center = _add_point(feature["sketch_id"], 0, 0)
+            rim = _add_point(feature["sketch_id"], 4, 0)
+            client.post(
+                f"/sketch/sketches/{feature['sketch_id']}/circles",
+                json={"center_point_id": center["id"], "radius_point_id": rim["id"]},
+            )
+        else:
+            _add_polygon(feature["sketch_id"], [(5, 5), (-5, 5), (-5, -5), (5, -5)])  # other start, other direction
+        sections.append(_section(feature))
+    response = _create_loft(part["id"], sections)
+    assert response.status_code == 201, response.json()
+    assert _volume(part["id"]) > 700.0  # untwisted: well over the ~540 a half-corner twist loses
+
+
+def test_thin_closed_square_to_circle_loft_builds_a_shell(monkeypatch):
+    import app.document.loft as loft_module  # noqa: F401 - keep the auto-aligned default
+
+    part = _create_part()
+    bottom = _square_sketch(part["id"], size=10.0)
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    ).json()
+    center = _add_point(top["sketch_id"], 0, 0)
+    rim = _add_point(top["sketch_id"], 4, 0)
+    client.post(
+        f"/sketch/sketches/{top['sketch_id']}/circles",
+        json={"center_point_id": center["id"], "radius_point_id": rim["id"]},
+    )
+    response = _create_loft(
+        part["id"], [_section(bottom), _section(top)], thickness=0.5, thin_from_closed_profile=True
+    )
+    assert response.status_code == 201, response.json()
+    assert _volume(part["id"]) > 0
+
+
+def _triangle_to_circle(seam_param=None, monkeypatch=None, auto_align=True):
+    import app.document.loft as loft_module
+
+    if not auto_align:
+        monkeypatch.setattr(loft_module, "_wants_auto_align", lambda entry: False)
+    part = _create_part()
+    bottom = _create_sketch_feature(part["id"])
+    triangle = [(6 * math.cos(math.radians(-90 + 120 * i)), 6 * math.sin(math.radians(-90 + 120 * i))) for i in range(3)]
+    _add_polygon(bottom["sketch_id"], triangle)
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    ).json()
+    center = _add_point(top["sketch_id"], 0, 0)
+    rim = _add_point(top["sketch_id"], 4, 0)
+    client.post(
+        f"/sketch/sketches/{top['sketch_id']}/circles",
+        json={"center_point_id": center["id"], "radius_point_id": rim["id"]},
+    )
+    section = _section(top)
+    if seam_param is not None:
+        section["seam_param"] = seam_param
+    response = _create_loft(part["id"], [_section(bottom), section])
+    assert response.status_code == 201, response.json()
+    return _volume(part["id"])
+
+
+def test_triangle_to_circle_auto_alignment_is_as_good_as_the_best_explicit_seam(monkeypatch):
+    """A triangle needs the circle cut into three equal arcs (not 180/90/90 degrees), and its start
+    on a corner direction: the automatic result should match the best of a sweep of explicit seams."""
+    automatic = _triangle_to_circle()
+    best_explicit = max(_triangle_to_circle(k / 12, monkeypatch, auto_align=False) for k in range(12))
+    assert automatic >= best_explicit - 1.0
+    default_search = _triangle_to_circle(None, monkeypatch, auto_align=False)
+    assert automatic >= default_search - 0.5
+
+
+def test_seam_handles_report_each_sections_profile_and_the_seam_in_force(monkeypatch):
+    part, response = _square_to_circle_loft(monkeypatch=monkeypatch)
+    assert response.status_code == 201, response.json()
+    handles = client.get(f"/document/parts/{part['id']}/loft-features/{response.json()['id']}/seam-handles")
+    assert handles.status_code == 200, handles.json()
+    square, circle = handles.json()
+
+    assert len(square["points"]) == 64 and len(circle["points"]) == 64
+    assert square["points"][0][:2] == [-5.0, -5.0]  # the sketch's own first corner
+    assert square["points"][0][2] == 0.0 and circle["points"][0][2] == 8.0
+    # The bottom square is the reference; the circle's start was moved to match its corner.
+    assert square["seam_param"] == 0.0 and square["auto"] is True
+    assert abs(circle["seam_param"] - 0.625) < 1e-9 and circle["auto"] is True
+    assert circle["reverse"] is False
+
+
+def test_seam_handles_report_an_explicit_seam_as_not_automatic(monkeypatch):
+    part, response = _square_to_circle_loft(seam_param=0.25, monkeypatch=monkeypatch)
+    assert response.status_code == 201, response.json()
+    handles = client.get(
+        f"/document/parts/{part['id']}/loft-features/{response.json()['id']}/seam-handles"
+    ).json()
+    assert handles[1]["seam_param"] == 0.25 and handles[1]["auto"] is False
+
+
+def test_a_sketch_with_two_loops_needs_a_profile_pick_and_lofts_the_picked_one():
+    part = _create_part()
+    bottom = _create_sketch_feature(part["id"])
+    _add_polygon(bottom["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    _add_polygon(bottom["sketch_id"], [(20, 20), (30, 20), (30, 30), (20, 30)])
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    ).json()
+    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+
+    ambiguous = _create_loft(part["id"], [_section(bottom), _section(top)])
+    assert ambiguous.status_code >= 400
+    assert "exactly one profile" in str(ambiguous.json())
+
+    lines = client.get(f"/sketch/sketches/{bottom['sketch_id']}/lines").json()
+    points = {p["id"]: p for p in client.get(f"/sketch/sketches/{bottom['sketch_id']}/points").json()}
+    near_origin = next(
+        line
+        for line in lines
+        if abs(points[line["start_point_id"]]["x"]) <= 5 and abs(points[line["start_point_id"]]["y"]) <= 5
+    )
+    picked = {**_section(bottom), "profile_refs": [_profile_ref(bottom["sketch_id"], near_origin["id"])]}
+    response = _create_loft(part["id"], [picked, _section(top)])
+    assert response.status_code == 201, response.json()
+    assert abs(_volume(part["id"]) - 800.0) < 1.0  # the 10x10 square, straight up 8mm

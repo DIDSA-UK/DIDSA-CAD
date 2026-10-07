@@ -533,6 +533,44 @@ HoverHit? hitTestEdges(
   return best;
 }
 
+/// Id prefix of a synthetic Sketch Point standing for a Line's midpoint. Such a
+/// hit's `sketchEntityId` is `'mid:<lineId>'`; nothing exists in the Sketch until
+/// the picker materializes it (see `SketchController.materializeLineMidpoint`).
+const String kSketchMidpointIdPrefix = 'mid:';
+
+/// [hitTestSketchPoints] over the midpoints of [segments] (a Sketch's own Line
+/// segments, parallel to [lineIds]), tagged with [kSketchMidpointIdPrefix] ids.
+HoverHit? hitTestSketchLineMidpoints(
+  vm.Ray ray,
+  Size viewportSize,
+  String sketchFeatureId,
+  List<(vm.Vector3, vm.Vector3)> segments,
+  List<String> lineIds, {
+  double radiusPixels = kVertexSelectionHitRadiusPixels,
+  double? orthographicHalfHeight,
+  double fovRadiansY = kCameraVerticalFovRadians,
+}) {
+  return hitTestSketchPoints(
+    ray,
+    viewportSize,
+    sketchFeatureId,
+    [for (final segment in segments) (segment.$1 + segment.$2) * 0.5],
+    [for (final id in lineIds) '$kSketchMidpointIdPrefix$id'],
+    radiusPixels: radiusPixels,
+    orthographicHalfHeight: orthographicHalfHeight,
+    fovRadiansY: fovRadiansY,
+  );
+}
+
+/// The world-space midpoint a `'mid:<lineId>'` Sketch Point id names in
+/// [lineIds]/[segments], or null when [pointId] isn't such an id or its Line is gone.
+vm.Vector3? sketchMidpointFor(String pointId, List<String> lineIds, List<(vm.Vector3, vm.Vector3)> segments) {
+  if (!pointId.startsWith(kSketchMidpointIdPrefix)) return null;
+  final index = lineIds.indexOf(pointId.substring(kSketchMidpointIdPrefix.length));
+  if (index == -1) return null;
+  return (segments[index].$1 + segments[index].$2) * 0.5;
+}
+
 /// Prompt C1: [hitTestVertices]' counterpart for a Sketch's own Points -
 /// same nearest-in-range-wins logic, just producing
 /// [SelectionEntityKind.sketchPoint] entities tagged with [sketchFeatureId]/
@@ -1247,6 +1285,7 @@ HoverHit? hitTestBodies({
   // there is nothing rendered to be "behind", so reaching through stays
   // intentional there.
   bool facesOccludeOtherHits = false,
+  bool sketchLineMidpoints = false,
   // Bug fix (on-device feedback: "when editing a sketch, the entities in
   // that sketch should be visible, selectable... it shouldn't be obscured
   // or restricted by bodies"): [facesOccludeOtherHits] above is otherwise
@@ -1371,6 +1410,20 @@ HoverHit? hitTestBodies({
       );
       if (hit != null && (bestVertex == null || _isCloserHit(hit.pixelDistance!, hit.rayT, bestVertex.pixelDistance!, bestVertex.rayT))) {
         bestVertex = hit;
+      }
+      // A real Point always wins over a line midpoint, so a midpoint only
+      // competes where no Point is in range.
+      if (sketchLineMidpoints && bestVertex == null) {
+        bestVertex = hitTestSketchLineMidpoints(
+          ray,
+          viewportSize,
+          entry.key,
+          geometry.lineSegments,
+          geometry.lineIds,
+          radiusPixels: vertexRadiusPixels,
+          orthographicHalfHeight: orthographicHalfHeight,
+          fovRadiansY: fovRadiansY,
+        );
       }
     }
     if (filter.sketchLine) {

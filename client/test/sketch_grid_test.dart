@@ -59,4 +59,37 @@ void main() {
       expect(localY2.abs(), lessThanOrEqualTo(4.0001));
     }
   });
+
+  group('adaptive grid spacing', () {
+    test('walks the 1-2-5 ladder as the scale grows', () {
+      // 24 px minimum cell: 0.1 mm/px -> 2.4 mm target -> 5 mm cells.
+      expect(sketchGridSpacingFor(0.1), 5);
+      expect(sketchGridSpacingFor(1), 50);
+      expect(sketchGridSpacingFor(0.05), 2);
+      expect(sketchGridSpacingFor(10), 500);
+      expect(sketchGridSpacingFor(0.01), 0.5);
+    });
+
+    test('a larger scale never yields a smaller spacing', () {
+      var previous = 0.0;
+      for (var scale = 0.001; scale < 1000; scale *= 1.1) {
+        final spacing = sketchGridSpacingFor(scale);
+        expect(spacing, greaterThanOrEqualTo(previous));
+        expect(spacing / scale, greaterThanOrEqualTo(sketchGridMinCellPixels - 1e-9));
+        previous = spacing;
+      }
+    });
+
+    test('falls back to the legacy spacing for a degenerate scale', () {
+      expect(sketchGridSpacingFor(0), 2.5);
+      expect(sketchGridSpacingFor(double.nan), 2.5);
+      expect(sketchGridSpacingFor(double.infinity), 2.5);
+    });
+
+    test('snapToGridSpacing rounds to the nearest multiple', () {
+      expect(snapToGridSpacing(12.4, 5), 10);
+      expect(snapToGridSpacing(12.6, 5), 15);
+      expect(snapToGridSpacing(-12.6, 5), -15);
+    });
+  });
 }

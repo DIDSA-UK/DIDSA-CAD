@@ -254,6 +254,9 @@ class CircleCreate(BaseModel):
 class CircleResponse(BaseModel):
     type: Literal["circle"] = "circle"
     id: str
+    # The constraints that only hold this shape together (see `_structural_constraint_ids`);
+    # anything else touching it is a user constraint a drag must honour.
+    structural_constraint_ids: list[str] = []
     center_point_id: str
     radius_point_id: str
     radius: float
@@ -307,6 +310,9 @@ class ArcCreate(BaseModel):
 class ArcResponse(BaseModel):
     type: Literal["arc"] = "arc"
     id: str
+    # The constraints that only hold this shape together (see `_structural_constraint_ids`);
+    # anything else touching it is a user constraint a drag must honour.
+    structural_constraint_ids: list[str] = []
     center_point_id: str
     start_point_id: str
     end_point_id: str
@@ -429,6 +435,9 @@ class EllipseCreate(BaseModel):
 class EllipseResponse(BaseModel):
     type: Literal["ellipse"] = "ellipse"
     id: str
+    # The constraints that only hold this shape together (see `_structural_constraint_ids`);
+    # anything else touching it is a user constraint a drag must honour.
+    structural_constraint_ids: list[str] = []
     center_point_id: str
     major_point_id: str
     major_point_neg_id: str
@@ -476,6 +485,9 @@ class EllipseArcCreate(BaseModel):
 class EllipseArcResponse(BaseModel):
     type: Literal["ellipse_arc"] = "ellipse_arc"
     id: str
+    # The constraints that only hold this shape together (see `_structural_constraint_ids`);
+    # anything else touching it is a user constraint a drag must honour.
+    structural_constraint_ids: list[str] = []
     center_point_id: str
     major_point_id: str
     minor_point_id: str
@@ -572,6 +584,12 @@ class PolygonResponse(BaseModel):
     # sketches workstream. Same "confirm via PATCH .../constraints/{id}"
     # mechanism.
     radius_constraint_id: str
+    # Every constraint the polygon (and its reference circles) own purely to hold
+    # the regular shape: radius, equal-radius ties, central angles, the inscribed
+    # tangency and the reference circles' own radius/cardinal pins. Anything else
+    # touching the polygon is a user constraint the client must not bypass when
+    # dragging.
+    structural_constraint_ids: list[str] = []
 
 
 class PolygonUpdate(BaseModel):
@@ -600,6 +618,9 @@ class SlotCreate(BaseModel):
 class SlotResponse(BaseModel):
     type: Literal["slot"] = "slot"
     id: str
+    # The constraints that only hold this shape together (see `_structural_constraint_ids`);
+    # anything else touching it is a user constraint a drag must honour.
+    structural_constraint_ids: list[str] = []
     center1_point_id: str
     center2_point_id: str
     centerline_id: str
@@ -647,6 +668,9 @@ class RectangleCreate(BaseModel):
 class RectangleResponse(BaseModel):
     type: Literal["rectangle"] = "rectangle"
     id: str
+    # The constraints that only hold this shape together (see `_structural_constraint_ids`);
+    # anything else touching it is a user constraint a drag must honour.
+    structural_constraint_ids: list[str] = []
     corner_point_ids: list[str]
     line_ids: list[str]
     axis_aligned: bool

@@ -1419,13 +1419,17 @@ const int _sketchPlaneSurfaceFadeSteps = 8;
 /// already covers the full `[0, 80%]` interior - that band composites to a
 /// constant, near-full alpha - while progressively fewer layers still cover
 /// a point as its radius grows past 80%, tapering only that outer band).
-Node buildSketchPlaneSurfaceNode(SketchPlaneBasis basis, {required vm.Vector4 color}) {
+Node buildSketchPlaneSurfaceNode(
+  SketchPlaneBasis basis, {
+  required vm.Vector4 color,
+  double halfExtent = _sketchPlaneSurfaceHalfSize,
+}) {
   final layerAlpha = color.w / _sketchPlaneSurfaceFadeSteps;
   final primitives = <MeshPrimitive>[
     for (var step = 0; step < _sketchPlaneSurfaceFadeSteps; step++)
       () {
         final t = step / (_sketchPlaneSurfaceFadeSteps - 1);
-        final halfSize = _sketchPlaneSurfaceHalfSize * (0.8 + 0.2 * t);
+        final halfSize = halfExtent * (0.8 + 0.2 * t);
         final material = NormalDepthUnlitMaterial()
           ..alphaMode = AlphaMode.blend
           ..baseColorFactor = vm.Vector4(color.x, color.y, color.z, layerAlpha);
@@ -1477,6 +1481,33 @@ List<(vm.Vector3, vm.Vector3)> sketchGridLinesFrom(
   }
   return segments;
 }
+
+/// Half-width of the adaptive sketch grid, in cells either side of its centre
+/// - the grid always spans `2 * sketchGridHalfCells` cells whatever the zoom,
+/// so its primitive count stays constant.
+const int sketchGridHalfCells = 20;
+
+/// Smallest on-screen cell size, in pixels, the adaptive grid will choose.
+const double sketchGridMinCellPixels = 24;
+
+/// The adaptive grid's cell size for a view where one screen pixel spans
+/// [unitsPerPixel] world units (mm): the smallest 1-2-5 x 10^n value whose
+/// cell is at least [minCellPixels] wide on screen. Falls back to 2.5 for a
+/// degenerate (zero, negative, NaN or infinite) scale.
+double sketchGridSpacingFor(double unitsPerPixel, {double minCellPixels = sketchGridMinCellPixels}) {
+  final target = unitsPerPixel * minCellPixels;
+  if (!target.isFinite || target <= 0) return 2.5;
+  final decade = math.pow(10, (math.log(target) / math.ln10).floor()).toDouble();
+  for (final step in const [1.0, 2.0, 5.0]) {
+    if (step * decade >= target) return step * decade;
+  }
+  return 10 * decade;
+}
+
+/// Snaps [value] to the nearest multiple of [spacing], so a grid recentred
+/// on the view keeps its lines on multiples of the spacing from the sketch
+/// origin and does not appear to slide while panning.
+double snapToGridSpacing(double value, double spacing) => (value / spacing).roundToDouble() * spacing;
 
 /// P9: neutral, subdued grid-line colour and width - deliberately distinct
 /// from [sketchLineColor]/[sketchLineWidth] so grid lines read as backdrop
