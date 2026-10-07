@@ -22,9 +22,9 @@ final bool _bench = Platform.environment['DIDSA_SKETCH_BENCH'] == '1';
 
 String? _hostLibrary() {
   for (final relative in [
-    'native/slvs/build-host/libdidsa_slvs_ffi.dll',
-    'native/slvs/build-host/libdidsa_slvs_ffi.so',
-    'native/slvs/build-host/libdidsa_slvs_ffi.dylib',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.dll',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.so',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.dylib',
   ]) {
     final file = File(relative);
     if (file.existsSync()) return file.absolute.path;

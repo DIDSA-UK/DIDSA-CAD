@@ -2,12 +2,12 @@
 // tests for the SolverBuilder/constraint-dispatch/solveSketch port in
 // lib/sketch/local_solver/, run against the same host-built
 // didsa_slvs_ffi library Milestone B's desktop parity harness already
-// proved matches the real backend (client/native/slvs/build-host/). No
+// proved matches the real backend (tools/solvespace-reference/build-host/). No
 // flutter_scene import here, so unlike part_viewport_test.dart and its
 // relatives this file runs under plain `flutter test` in any environment.
 //
 // Skips (rather than failing outright) if the host library hasn't been
-// built - these tests need client/native/slvs/CMakeLists.txt's host build
+// built - these tests need tools/solvespace-reference/CMakeLists.txt's host build
 // step to have run first (see that file's own header comment for the
 // two-step recipe); that's a real local build artifact, not something
 // `flutter test` can produce on its own.
@@ -23,9 +23,9 @@ import 'support/slvs_reference/slvs_bindings.dart';
 
 String? _findHostLibrary() {
   final candidates = [
-    'native/slvs/build-host/libdidsa_slvs_ffi.dll',
-    'native/slvs/build-host/libdidsa_slvs_ffi.so',
-    'native/slvs/build-host/libdidsa_slvs_ffi.dylib',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.dll',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.so',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.dylib',
   ];
   for (final relative in candidates) {
     final file = File(relative);
@@ -73,7 +73,7 @@ void main() {
       'whose *other* Point is genuinely free lets that other Point move to satisfy the Constraint, '
       'rather than hard-pinning the dragged Point exactly where it was seeded even when that '
       'violates the Constraint (the older, now-retired behaviour a prior version of this test '
-      'asserted directly - see the spike behind this mechanism: client/native/slvs/patches/0001-'
+      'asserted directly - see the spike behind this mechanism: tools/solvespace-reference/patches/0001-'
       'system-solve-dragged-params.patch) - the "if it\'s not anchored, the shape should move" case', () {
     // Mirrors the Circle scenario the soft-drag spike validated directly
     // against the native System class: a=(0,0) starts as a valid centre for
@@ -167,7 +167,7 @@ void main() {
     // dispatch loop skips before it ever reaches the solver - see that
     // fixture's own doc comment). Ground truth (result_code 5, raw dof 0,
     // positions unchanged from their seeded values) captured from a real
-    // py-slvs run on this machine - see client/native/slvs/
+    // py-slvs run on this machine - see tools/solvespace-reference/
     // desktop_parity_harness's own Slot case for the from-scratch version
     // of this same derivation.
     const c1 = (0.0, 0.0), c2 = (20.0, 0.0), radius = 5.0;

@@ -1,0 +1,44 @@
+version = 1
+SPDX-PackageName = "DIDSA-CAD"
+SPDX-PackageDownloadLocation = "https://github.com/DIDSA-UK/DIDSA-CAD"
+
+# Licences by folder. The full texts are in LICENSES/ (SPDX file names); each licensed folder also carries its own LICENSE.
+# Overview and rationale: LICENSING.md
+
+[[annotations]]
+path = "backend/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 DIDSA-UK and contributors"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "client/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 DIDSA-UK and contributors"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "tools/gui_harness/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 DIDSA-UK and contributors"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "tools/solvespace-reference/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 DIDSA-UK and contributors (the vendor/ submodule keeps its own SolveSpace copyright and licence)"
+SPDX-License-Identifier = "GPL-3.0-only"
+
+# Unchanged by the backend/client split: still GPL-3.0-only until the owner decides otherwise (see LICENSING.md, open decisions).
+[[annotations]]
+path = ["browser-relay/**", "tools/motion_smoothness/**", "tools/motion_vectors/**", "docs/**", "README.md", ".github/**", "docker-compose.example.yml", "LICENSING.md", "REUSE.toml", ".gitmodules", "*.png"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 DIDSA-UK and contributors"
+SPDX-License-Identifier = "GPL-3.0-only"
+
+# Third-party fonts: SIL Open Font License 1.1, each with its own OFL text next to the font.
+[[annotations]]
+path = ["client/assets/fonts/**", "backend/app/sketch/fonts/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "see the OFL.txt next to each font"
+SPDX-License-Identifier = "OFL-1.1"

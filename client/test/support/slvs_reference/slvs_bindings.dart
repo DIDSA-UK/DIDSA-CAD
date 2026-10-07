@@ -1,5 +1,5 @@
 // Low-level dart:ffi bindings for the didsa_slvs_ffi shared library built
-// from client/native/slvs/ (see that directory's CMakeLists.txt for the
+// from tools/solvespace-reference/ (see that directory's CMakeLists.txt for the
 // build recipe, and slvs_ffi_shim.h for the exact C API this mirrors).
 //
 // This file only translates native calls into Dart function pointers - it

@@ -56,12 +56,9 @@ jobs:
         run: flutter test
 
       # Debug-signed only (no release keystore configured) - good enough for
-      # sideloading onto a test device, not a Play Store-ready build. No
-      # externalNativeBuild is wired up for client/native/slvs (see its own
-      # CMakeLists.txt header - that's still a separate, partly-manual cross
-      # -compile step), so this APK doesn't bundle the local FFI sketch
-      # solver; the app's own documented network fallback covers that gap,
-      # not a build failure here. Runs only after analyze+test both pass
+      # sideloading onto a test device, not a Play Store-ready build. The app
+      # contains no native solver any more (the drag clamp is pure Dart, see
+      # docs/sketch-drag-projector.md). Runs only after analyze+test both pass
       # (default `if: success()`, unlike the `!cancelled()` steps above).
       - name: Build debug APK
         run: flutter build apk --debug

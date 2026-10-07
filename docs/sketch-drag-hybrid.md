@@ -48,5 +48,5 @@ were never learned counts as having none (plain closed form) - a safe default.
 
 ## Tests
 
-`client/test/sketch_controller_test.dart`, group "hybrid drag" - real solver (host build, see `client/native/slvs/CMakeLists.txt`), one
+`client/test/sketch_controller_test.dart`, group "hybrid drag" - real solver (host build, see `tools/solvespace-reference/CMakeLists.txt`), one
 per shape family; each fails if the hybrid is switched off.

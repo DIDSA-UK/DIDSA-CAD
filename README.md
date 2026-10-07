@@ -8,7 +8,7 @@ DIDSA Design Tools puts a real parametric CAD system — sketching, solid modell
 
 > Built with AI assistance, guided by over a decade of hands-on engineering-software and design-tool experience.
 
-[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+[![Licenses: AGPL v3 backend, Apache 2.0 client](https://img.shields.io/badge/licenses-AGPLv3%20backend%20%7C%20Apache%202.0%20client-blue.svg)](LICENSING.md)
 [![Backend CI](https://github.com/DIDSA-UK/DIDSA-CAD/actions/workflows/backend-verify.yml/badge.svg)](https://github.com/DIDSA-UK/DIDSA-CAD/actions/workflows/backend-verify.yml)
 [![Client CI](https://github.com/DIDSA-UK/DIDSA-CAD/actions/workflows/client-verify.yml/badge.svg)](https://github.com/DIDSA-UK/DIDSA-CAD/actions/workflows/client-verify.yml)
 ![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange)
@@ -127,7 +127,7 @@ This is open source, and the toolset's direction is genuinely shaped by what the
 ## FAQ
 
 **Is there a free CAD app for Android?**
-Yes — the DIDSA client runs natively on Android (and Windows and iOS), and the whole toolset, backend included, is free and open source under GPLv3.
+Yes — the DIDSA client runs natively on Android (and Windows and iOS), and the whole toolset, backend included, is free and open source (backend AGPLv3, client Apache 2.0 - see [LICENSING.md](LICENSING.md)).
 
 **Can I run CAD software on my phone without a separate server?**
 Yes. The backend can run directly on an Android device under Termux + a Debian proot — the phone is both the client and the server, with no network dependency.
@@ -140,7 +140,17 @@ Yes — the AI-Assisted Design module turns a text description, a voice note, or
 
 ## License
 
-Licensed under the [GNU General Public License v3.0](LICENSE) — free to use, study, modify and share, and it always will be.
+This repository has more than one licence, by folder:
+
+| Folder | Licence |
+|---|---|
+| [`backend/`](backend/LICENSE) | [GNU AGPL v3.0](backend/LICENSE) (`AGPL-3.0-only`) |
+| [`client/`](client/LICENSE) | [Apache License 2.0](client/LICENSE) (`Apache-2.0`) |
+| [`tools/solvespace-reference/`](tools/solvespace-reference/LICENSE) | GNU GPL v3.0 (test-only reference solver, not part of the app) |
+| everything else (`docs/`, `browser-relay/`, other `tools/`) | GNU GPL v3.0 for now, see [LICENSING.md](LICENSING.md) |
+
+Free to use, study, modify and share. See [LICENSING.md](LICENSING.md) for what that means in practice (running a modified backend as a
+network service, building the client into your own app, contributing).
 
 ## Learn more
 

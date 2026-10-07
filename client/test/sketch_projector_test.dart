@@ -5,7 +5,7 @@
 //   * against an independent, hand-written residual of the constraint (runs everywhere, no solver needed);
 //   * against the known nearest point (`expected`), where it is easy to state;
 //   * against the real SolveSpace answer for the same input, when the host library is built (see
-//     client/native/slvs/CMakeLists.txt) - the reference the projector replaced.
+//     tools/solvespace-reference/CMakeLists.txt) - the reference the projector replaced.
 import 'dart:ffi' as ffi;
 import 'dart:io';
 import 'dart:math' as math;
@@ -20,9 +20,9 @@ typedef Pt = (double, double);
 
 String? _hostLibrary() {
   for (final relative in [
-    'native/slvs/build-host/libdidsa_slvs_ffi.dll',
-    'native/slvs/build-host/libdidsa_slvs_ffi.so',
-    'native/slvs/build-host/libdidsa_slvs_ffi.dylib',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.dll',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.so',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.dylib',
   ]) {
     final file = File(relative);
     if (file.existsSync()) return file.absolute.path;

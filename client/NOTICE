@@ -1,0 +1,12 @@
+DIDSA-CAD client
+Copyright 2026 DIDSA-UK and contributors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party material bundled with the client:
+  - Fonts under assets/fonts/ are each under the SIL Open Font License 1.1; every font folder carries its own OFL.txt.
+  - Packages listed in pubspec.yaml / pubspec.lock are used under their own licences.
+
+The client contains no GPL or AGPL code. It talks to the DIDSA-CAD backend (AGPL-3.0-only, see ../backend/LICENSE) only over
+HTTP, as a separate program. The SolveSpace reference engine that some optional tests use lives outside this folder, in
+../tools/solvespace-reference (GPL-3.0-only), and is never built into or shipped with the app.
