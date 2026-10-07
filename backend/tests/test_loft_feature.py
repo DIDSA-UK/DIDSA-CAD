@@ -983,3 +983,28 @@ def test_triangle_to_circle_auto_alignment_is_as_good_as_the_best_explicit_seam(
     assert automatic >= best_explicit - 1.0
     default_search = _triangle_to_circle(None, monkeypatch, auto_align=False)
     assert automatic >= default_search - 0.5
+
+
+def test_seam_handles_report_each_sections_profile_and_the_seam_in_force(monkeypatch):
+    part, response = _square_to_circle_loft(monkeypatch=monkeypatch)
+    assert response.status_code == 201, response.json()
+    handles = client.get(f"/document/parts/{part['id']}/loft-features/{response.json()['id']}/seam-handles")
+    assert handles.status_code == 200, handles.json()
+    square, circle = handles.json()
+
+    assert len(square["points"]) == 64 and len(circle["points"]) == 64
+    assert square["points"][0][:2] == [-5.0, -5.0]  # the sketch's own first corner
+    assert square["points"][0][2] == 0.0 and circle["points"][0][2] == 8.0
+    # The bottom square is the reference; the circle's start was moved to match its corner.
+    assert square["seam_param"] == 0.0 and square["auto"] is True
+    assert abs(circle["seam_param"] - 0.625) < 1e-9 and circle["auto"] is True
+    assert circle["reverse"] is False
+
+
+def test_seam_handles_report_an_explicit_seam_as_not_automatic(monkeypatch):
+    part, response = _square_to_circle_loft(seam_param=0.25, monkeypatch=monkeypatch)
+    assert response.status_code == 201, response.json()
+    handles = client.get(
+        f"/document/parts/{part['id']}/loft-features/{response.json()['id']}/seam-handles"
+    ).json()
+    assert handles[1]["seam_param"] == 0.25 and handles[1]["auto"] is False

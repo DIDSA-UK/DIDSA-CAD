@@ -279,6 +279,49 @@ def _resolve_edge_section(bodies_so_far: dict[str, TopoDS_Shape], section: LoftS
     return _ResolvedEdgeSection(wire=wire_maker.Wire())
 
 
+_SEAM_HANDLE_SAMPLES = 64
+
+
+def loft_seam_handles(
+    part: Part, feature: LoftFeature, excluded_feature_ids: frozenset[str] = frozenset()
+) -> list[dict | None]:
+    """What the viewport needs to draw and drag each closed section's start marker: one entry per
+    section (None for an edge-based or open section, which has no seam), holding the profile
+    sampled at equal arc-length fractions from its default start (`points`, part-frame) and the
+    seam in force (`seam_param`, 0..1 along that same walk, `reverse`). `auto` is true when the
+    seam was chosen by `_auto_align_entry` rather than set on the section. Dragging a marker to
+    sample k of N means `seam_param = k / N`."""
+    all_excluded = excluded_feature_ids | {feature.id}
+    bodies = compute_part_bodies(part, all_excluded)
+    if feature.thickness is not None and not feature.thin_from_closed_profile:
+        return [None for _ in feature.sections]  # open-chain sections: no seam
+    resolved = [
+        _resolve_closed_or_edge_section(part, section, bodies, all_excluded, index)
+        for index, section in enumerate(feature.sections)
+    ]
+    # The default-start wires, then the same walk with automatic alignment applied to copies, so the
+    # explicit values the user set are not touched.
+    plain = _wires_from_resolved(
+        [replace(e, seam_param=None, reverse=False) if isinstance(e, _ResolvedClosedSection) else e for e in resolved]
+    )
+    aligned_entries = [replace(e) if isinstance(e, _ResolvedClosedSection) else e for e in resolved]
+    _wires_from_resolved(aligned_entries, auto_align=True)
+    handles: list[dict | None] = []
+    for section, entry, wire, aligned in zip(feature.sections, resolved, plain, aligned_entries):
+        if not isinstance(entry, _ResolvedClosedSection):
+            handles.append(None)
+            continue
+        handles.append(
+            {
+                "points": [list(point) for point in _sample_wire(wire, _SEAM_HANDLE_SAMPLES)],
+                "seam_param": aligned.seam_param or 0.0,
+                "reverse": aligned.reverse,
+                "auto": section.seam_param is None and not section.reverse,
+            }
+        )
+    return handles
+
+
 def _resolve_closed_or_edge_section(
     part: Part,
     section: LoftSection,

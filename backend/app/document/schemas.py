@@ -2094,6 +2094,17 @@ class LoftFeatureUpdate(BaseModel):
     guide_curve_refs: list[SketchOrEdgeRefSchema] | None = None
 
 
+class LoftSeamHandleSchema(BaseModel):
+    """One closed loft section's start marker: its profile sampled at equal arc-length fractions
+    from its default start (`points`, part frame) plus the seam in force. See
+    `app.document.loft.loft_seam_handles`."""
+
+    points: list[list[float]]
+    seam_param: float
+    reverse: bool
+    auto: bool
+
+
 class LoftFeatureResponse(FeatureResponseBase):
     type: Literal["loft"] = "loft"
     id: str
