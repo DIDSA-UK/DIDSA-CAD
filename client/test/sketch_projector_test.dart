@@ -297,6 +297,32 @@ void main() {
   });
 
   group('projector: behaviour', () {
+    test('an unconstrained dragged point simply goes where the hand is (found by the real app: it stayed frozen)', () {
+      final r = projectSketch(
+        points: {'p': (50, 60), 'q': (1, 1)},
+        reference: {'p': (8, 0.4), 'q': (1, 1)},
+        constraints: const <ConstraintDto>[],
+        lineEndpoints: (_) => throw StateError('no lines'),
+        anchorPointIds: {'p'},
+      );
+      expect(r.converged, isTrue);
+      expect(r.points['p'], (50.0, 60.0));
+    });
+
+    test('a point whose only constraints are to pinned points still follows along its free directions', () {
+      final r = projectSketch(
+        points: {'o': (0, 0), 'p': (30, 40)},
+        reference: {'o': (0, 0), 'p': (10, 0)},
+        constraints: [HorizontalConstraintDto(id: 'h', lineId: 'l', pointAId: 'o', pointBId: 'p')],
+        lineEndpoints: (_) => throw StateError('no lines'),
+        anchorPointIds: {'p'},
+        pinnedPointIds: {'o'},
+      );
+      expect(r.converged, isTrue);
+      expect(r.points['p']!.$1, closeTo(30, 1e-4));
+      expect(r.points['p']!.$2, closeTo(0, 1e-6));
+    });
+
     test('only the dragged point\'s connected group is solved', () {
       final r = projectSketch(
         points: {'a': (0, 0), 'd': (10, 3), 'x': (50, 50), 'y': (60, 50)},

@@ -24,3 +24,12 @@ along the ring's pixels (zoom a screenshot with `convert in.png -crop WxH+X+Y -f
 The "Fix"/Float state of the plate can be set with `curl -X PATCH -H 'X-API-Key: test-api-key' -H 'Content-Type: application/json'
 -d '{"fixed": true}' http://127.0.0.1:8000/document/parts/$(cat /tmp/didsa-gui/injected)/occurrences/occ-plate`, then refresh the tree
 (lens toggle twice). Not covered: touch input, real GPU rendering, text input beyond `xdotool type`.
+
+
+## Sketch drag scenarios (option 1, `docs/sketch-drag-projector.md`)
+`fresh.sh` restarts backend + app with `DIDSA_DRAG_LOG=1` and opens "2D Drawing"; `script.sh FILE.py` runs a Python file *inside* the
+server (globals `client` = REST test client, `all_sketches`, `get_document`; output printed) to add constraints / read back state;
+`ring.sh` sweeps the cursor on a ring (drag mode = click, hover, click). `run_all.sh` runs `scenario_{hexagon,circle,slot,shape,arm}.sh`
+(shapes drawn through the UI, dimensions over REST) and prints per-scenario frame / rejected / exception counts; screenshots and
+`app.log` land in `$GUI_WORK` (default `/tmp/didsa-gui`). Coordinates are for 1280x800 and the default fit; scenarios that change
+the view (selection panel) use the shifted coordinates they were recorded with.

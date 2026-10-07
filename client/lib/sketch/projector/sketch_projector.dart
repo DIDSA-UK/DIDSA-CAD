@@ -99,7 +99,7 @@ const double kProjectorMinOmega = 1.0 / 32;
 const double kProjectorMaxBoost = 8.0;
 
 /// Corrector steps after each walking step before it is judged.
-const int kProjectorCorrectors = 6;
+const int kProjectorCorrectors = 4;
 
 /// Constraint-only steps to make the start feasible (a healthy frame needs 0-2).
 const int kProjectorMaxPolish = 10;
@@ -645,6 +645,8 @@ SketchProjection projectSketch({
 
   var residualInf = worst(rows);
   var iterations = 0;
+  // Nothing constrains this group (a free point being dragged): the wish is the answer.
+  if (rows.isEmpty) x.setAll(0, wish);
   final zero = Float64List(n);
   final trust = math.max(kProjectorTrust, kProjectorTrustDiagonal * diagonal);
 

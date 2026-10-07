@@ -214,12 +214,53 @@ redundant from a conflicting row; `residualInf` is exposed for that). Cost: one 
   three prove "the closed form did not run" via `dragStats.frames` instead of "the sibling point stayed put" (the general path now
   legitimately reflows siblings); two force the network fallback with a constraint the projector cannot model (spline tangency).
 
+### Real app, real backend (headless GUI harness)
+
+`tools/gui_harness/` runs the **Linux release build of the real Flutter app** (Impeller on a software Vulkan driver) in Xvfb against
+the **real backend** (OCCT + py-slvs); `xdotool` drives the mouse, ImageMagick takes screenshots, and `DIDSA_DRAG_LOG=1` makes the
+controller print one `[SketchDrag]` line per clamped frame (outcome, µs, system size, iterations) into `app.log`. Shapes are drawn
+through the UI (tool menu + taps; the Horizontal constraint through the selection flyout); user dimensions are added over REST
+(the client re-fetches constraints) via a script hook in `gui_server.py`; drags are click-move-click with the real mouse; the
+backend's state is read back after the drop. Re-run everything with `tools/gui_harness/run_all.sh` (needs `libgtk-3-dev`,
+`mesa-vulkan-drivers`, `xdotool`, a release build; see `tools/gui_harness/README.md`).
+
+This found **three real bugs that 2 600 passing unit tests, the fake-backend controller tests and the benches all missed**:
+
+1. **Every grab on a sketch with a constraint naming an unknown Line threw** (`_pointIdsOf` null check; reached through the new
+   mobility gate). The system builder now skips constraints it cannot resolve. Test: `sketch_drag_gate_test.dart`.
+2. **Every frame of a circle drag was rejected** (a guard bug from the groundwork, not the projector): the real backend gives each
+   circle cardinal-point pins `DistanceConstraint(centre, N/E/S/W point, orientation horizontal|vertical, distance 0)`; the residual
+   guard compared the *Euclidean* distance (the radius) with 0. The fake backend never creates those pins, so the hybrid circle
+   drag could not have worked against the real backend before either. The guard now honours `orientation`. Test: same file.
+3. **A free (unconstrained) point did not follow the cursor at all** - a regression from this branch: a group with zero rows skipped
+   the walk and stayed at its last position. Test: `sketch_projector_test.dart`.
+
+Each fix has a test that fails without it. Results after the fixes, one real mouse sweep each (cursor on a ring beyond what the
+constraints allow), per-frame log + screenshots + backend read-back:
+
+| scenario (drawn in the UI) | frames | rejected / exceptions | per frame | what the screenshots / backend show |
+|---|---|---|---|---|
+| hexagon, H edge applied through the flyout, vertex swept | 66 | 0 / 0 | 0.16-0.5 ms, system 8 pts / 14 rows | stays regular, H edge horizontal, resizes with the cursor distance (rotation blocked by H, as specified); backend after drop: 6 radii equal (spread 0.0) |
+| circle, centre dimensioned (15) to a point | 63 | 0 / 0 | 0.11-0.27 ms, 6 pts / 9 rows | centre slides along the 15-circle; backend: radius 4.0, centre-anchor 15.0, cardinals intact |
+| slot, centre dimensioned (20) | 62 | 0 / 0 | 0.24-0.67 ms, 7 pts / 12 rows | stays a rigid slot, dimension 20.00 holds, **no branch flip** |
+| rectangle, corner dimensioned | 59 | 0 / 0 | 0.09-0.25 ms, 6 pts / 7 rows | stays axis-aligned (V/H badges), 19.65 holds |
+| arc, start point dimensioned | 63 | 0 / 0 | 0.09-0.2 ms, 4 pts / 3 rows | stays a smooth arc, 19.92 holds |
+| 2-link arm, both lengths dimensioned, tip swept beyond reach | 84 | 0 / 0 | 0.1-3.6 ms, 3 pts / 4 rows | tip stops at the wall (reach 9.66) and slides round as the cursor orbits; fully stretched toward the cursor at the end, lengths 4.94 + 4.72 intact |
+
+Observations: a free anchor point a dimension ties to is dragged along by the shape (a "rope"; SolveSpace did the same). The wall
+case is the expensive one (up to ~120 evaluations per frame at the fold of a stretched arm; 0.3 ms per frame in an AOT build
+of this 3-point case); the cap on corrector steps per walking step went 6 → 4 after measuring (3 halves the cost again but doubles
+the tracking error at 20 links; 2 stalls).
+
 ### Not verified / honest gaps
 
-* **No device**: nothing was run on a phone, an iOS device, Windows, or in the real UI. Timings are x86 JIT/AOT in a container.
-* Real-backend end-to-end drag (HTTP, not the fake) was not run; the backend change is covered by TestClient tests.
+* **No phone / iOS / Windows device**: the harness is Linux desktop with a software GPU and a mouse. Touch input (the real
+  phone gesture model, finger offset, scale) and real rendering speed are not covered.
+* The harness drives **drag mode** (click-grab, hover-move, click-drop), not the other grab gestures; the other shape families
+  (ellipse, ellipse arc), the line drag and the undo of a drop were not driven in the real app.
 * Spline-tangent groups are not clamped locally (unchanged from "no local solver" behaviour).
 * The first-order mobility oracle says nothing about a configuration that is momentarily singular (e.g. a perfectly straight arm).
+* The full ~30 minute backend suite was not run (the `test_stage*` files, 1 186 tests, were).
 
 ## Reproduce
 
