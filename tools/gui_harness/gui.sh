@@ -5,7 +5,7 @@ export DISPLAY=${DISPLAY:-:99}
 OUT=${GUI_WORK:-/tmp/didsa-gui}
 mkdir -p "$OUT"
 case $1 in
-  click) xdotool mousemove $2 $3; sleep 0.15; xdotool click 1;;
+  click) xdotool mousemove $2 $3; sleep 0.15; xdotool mousedown 1; sleep 0.1; xdotool mouseup 1;;
   longpress) xdotool mousemove $2 $3; sleep 0.2; xdotool mousedown 1; sleep 1.2; xdotool mouseup 1;;
   drag) steps=${6:-20}; xdotool mousemove $2 $3; sleep 0.2; xdotool mousedown 1
         for i in $(seq 1 $steps); do xdotool mousemove $(( $2 + ($4-$2)*i/steps )) $(( $3 + ($5-$3)*i/steps )); sleep 0.04; done

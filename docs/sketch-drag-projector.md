@@ -270,6 +270,28 @@ the tracking error at 20 links; 2 stalls).
 * The first-order mobility oracle says nothing about a configuration that is momentarily singular (e.g. a perfectly straight arm).
 * The full ~30 minute backend suite was not run (the `test_stage*` files, 1 186 tests, were).
 
+## Ellipses, touch gestures and reference geometry (real-app and live tests)
+
+* **Ellipse / ellipse-arc drags** (GUI harness, `scenario_shape.sh ellipse|ellipse_arc`, plus `scenarios/ellipse_check.py`): centre, axis end and
+  rim grabs all clamp locally; every frame stays on the shape's constraints and the backend agrees after the drop.
+* **Touch-style gestures** (`client/test/live_touch_drag_test.dart`, `DIDSA_LIVE_URL=... flutter test ...`): genuine `PointerDeviceKind.touch`
+  streams through the real `SketchCanvas` against the real backend over HTTP. Tap grabs at the trackpad-style cursor, a 70-move swipe drags,
+  a tap drops. Hexagon with a horizontal edge: 70/70 frames accepted, regular and horizontal on every frame, backend vertices equal the client's
+  after the drop. Circle with its centre dimensioned to a point: 60/60 accepted, the dimension holds to 1e-3 on every frame. This is not a physical
+  touchscreen (Xvfb has none) but it is the code path a phone runs.
+* **Reference geometry** (`scenarios/ref_part.py` builds box + fillet + a sketch holding an external vertex reference, a line to a free point and
+  an 8.00 dimension; the live test `reference sketch: ...` drives it):
+  - grabbing the locked reference point is refused;
+  - the free end orbited 270 degrees and then pulled outwards for 30 frames stays on the 8.00 circle (worst error 9.8e-7), 90/90 frames accepted,
+    1 point / 1 row system, the reference moved by exactly 0;
+  - upstream edit: moving the base sketch's corner (10,10)->(12,13) flags the far-corner reference `lost` (`no_match`, method `signature`) and
+    a neighbouring reference `potentially_moved` (`fingerprint_changed_in_place`); the locked point is NOT silently teleported. The client reads both
+    (`lostReferencePointIds`, `movedReferencePointIds`) and dragging still works around the stale locked point. Raising the extrude height changes
+    no flags. The existing backend reference suites (109 tests) pass.
+* Harness caveat found on the way: a Part-flow GUI scenario right after opening a sketch from the build tree leaves the app unresponsive to
+  hover for tens of seconds (software GL repainting the 3D scene behind the sketch), so scripted grabs there are unreliable; the live widget test
+  replaces it. `gui.sh click` now holds the button for 100 ms, because instantaneous xdotool clicks are sometimes dropped.
+
 ## Reproduce
 
 ```

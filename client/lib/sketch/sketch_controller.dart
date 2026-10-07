@@ -6818,6 +6818,15 @@ class SketchController extends ChangeNotifier {
   /// than a delta from it - would visibly teleport the Point on tap-down,
   /// before the user has dragged at all. See [updatePointDrag].
   bool beginPointDrag(String pointId) {
+    final ok = _beginPointDrag(pointId);
+    if (_dragLogEnabled) {
+      // ignore: avoid_print
+      print('[SketchDrag] beginPointDrag($pointId) -> $ok (busy=$_busy locked=${_isPointDragLocked(pointId)} underConstrained=$isUnderConstrained)');
+    }
+    return ok;
+  }
+
+  bool _beginPointDrag(String pointId) {
     if (_busy || _sketchId == null || !points.containsKey(pointId)) return false;
     if (_draggingLabelId != null || _draggingLineId != null) return false;
     // Defence in depth alongside [_applyClosedFormPositions]'s own origin
@@ -6860,13 +6869,19 @@ class SketchController extends ChangeNotifier {
       // sketch_canvas.dart colors these Points red so this isn't a silent
       // no-op. Checks every red source (see [isPointForcedOverConstrained]),
       // not just [rigidity]'s own structural verdict.
-      if (isPointForcedOverConstrained(pointId)) return false;
+      if (isPointForcedOverConstrained(pointId)) {
+        _logGrabRefused(pointId, 'forced over-constrained (structural/backend flags)');
+        return false;
+      }
       // Bug-fix round: a fully constrained *and* grounded Point (rendered
       // green - see [isPointFullyPinned]'s own doc comment) has nowhere
       // left to move into either, same reasoning as the over-constrained
       // case above but for the opposite ("done", not "broken") reason.
       // Measured, not counted: [_isPointImmobile] asks the constraints' own Jacobian what the Point can still do.
-      if (_isPointImmobile(pointId, structural: isPointFullyPinned)) return false;
+      if (_isPointImmobile(pointId, structural: isPointFullyPinned)) {
+        _logGrabRefused(pointId, 'immobile (mobility oracle / structural fallback)');
+        return false;
+      }
     }
     // Bug fix (on-device feedback, see [_circleDragMode]'s own doc
     // comment): the intact-shape exemption just above is deliberately blind
@@ -6918,6 +6933,7 @@ class SketchController extends ChangeNotifier {
     if (hybridStructural != null) {
       if (isPointForcedOverConstrained(pointId) ||
           _isPointImmobile(pointId, structural: rigidity.isPointFullyConstrained)) {
+        _logGrabRefused(pointId, 'hybrid shape point: over-constrained or immobile');
         return false;
       }
     }
@@ -7261,7 +7277,15 @@ class SketchController extends ChangeNotifier {
     return ok;
   }
 
+  void _logGrabRefused(String pointId, String why) {
+    if (!_dragLogEnabled) return;
+    // ignore: avoid_print
+    print('[SketchDrag] grab of $pointId refused: $why');
+  }
+
   /// `DIDSA_DRAG_LOG=1` in the environment prints one `[SketchDrag]` line per clamped frame (for the headless GUI harness).
+  bool get dragLogEnabled => _dragLogEnabled;
+
   static final bool _dragLogEnabled = (() {
     try {
       return Platform.environment['DIDSA_DRAG_LOG'] == '1';

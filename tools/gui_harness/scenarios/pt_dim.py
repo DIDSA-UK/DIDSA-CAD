@@ -4,6 +4,10 @@ import math
 sid = list(all_sketches())[0]; sk = all_sketches()[sid]; B=f"/sketch/sketches/{sid}"
 if KIND == "rectangle":
     r = sk.rectangles()[0]; target = sk.points[r.corner_point_ids[2]]
+elif KIND == "ellipse":
+    e = sk.ellipses()[0]; target = sk.points[e.major_point_id]
+elif KIND == "ellipse_arc":
+    e = sk.ellipse_arcs()[0]; target = sk.points[e.major_point_id]
 else:
     a_ = sk.arcs()[0]; target = sk.points[a_.start_point_id]
 own = {p.id for p in sk.points.values() if abs(p.x-target.x) < 1e-9 and abs(p.y-target.y) < 1e-9}

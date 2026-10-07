@@ -484,6 +484,11 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   void _dispatchTap(ViewTransform transform) {
     final controller = widget.controller;
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
+    if (controller.dragLogEnabled) {
+      // ignore: avoid_print
+      print('[SketchDrag] tap: mode=${controller.mode.name} dragMode=${controller.dragModeEnabled} grabbed=${controller.isEntityGrabbed} '
+          'cursor=(${controller.cursorX.toStringAsFixed(2)}, ${controller.cursorY.toStringAsFixed(2)})');
+    }
     if (controller.mode == SketchMode.dimension) {
       final hitKey = _ghostKeyAt(controller, transform, cursorScreen);
       if (controller.activeGhostKey != null) {
@@ -673,6 +678,12 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       return controller.beginTextResizeDrag(resizeTextId, controller.cursorX, controller.cursorY);
     }
     final target = controller.dragGrabTargetAt(controller.cursorX, controller.cursorY, hitRadius);
+    if (controller.dragLogEnabled) {
+      // ignore: avoid_print
+      print('[SketchDrag] drag-mode tap at (${controller.cursorX.toStringAsFixed(3)}, ${controller.cursorY.toStringAsFixed(3)}) '
+          'hitRadius=${hitRadius.toStringAsFixed(3)} -> ${target == null ? 'no target' : '${target.kind.name} ${target.id}'} '
+          '(underConstrained=${controller.isUnderConstrained})');
+    }
     if (target == null) return false;
     switch (target.kind) {
       case SelectionKind.point:

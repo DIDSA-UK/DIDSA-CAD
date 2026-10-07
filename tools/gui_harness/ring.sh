@@ -8,6 +8,6 @@ pts=$(awk -v gx=$GX -v gy=$GY -v cx=$CX -v cy=$CY -v r=$R -v sw=$SW -v n=$N 'BEG
   pi=3.14159265358979; a0=atan2(gy-cy, gx-cx);
   m=10; for(i=1;i<=m;i++){t=i/m; k=t*t*t*(10-15*t+6*t*t); printf "%d %d\n", gx+(cx+r*cos(a0)-gx)*k, gy+(cy+r*sin(a0)-gy)*k}
   for(i=1;i<=n;i++){t=i/n; k=t*t*t*(10-15*t+6*t*t); a=a0+sw*pi/180*k; printf "%d %d\n", cx+r*cos(a), cy+r*sin(a)}}')
-xdotool mousemove $GX $GY; sleep 0.3; xdotool click 1; sleep 0.3  # drag mode: click = grab, hover = move, click = drop
+xdotool mousemove $GX $GY; sleep 0.3; xdotool mousedown 1; sleep 0.1; xdotool mouseup 1; sleep 0.3  # drag mode: click = grab, hover = move, click = drop
 echo "$pts" | while read x y; do xdotool mousemove $x $y; sleep $D; done
-sleep 0.3; xdotool click 1
+sleep 0.3; xdotool mousedown 1; sleep 0.1; xdotool mouseup 1
