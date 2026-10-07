@@ -5432,6 +5432,44 @@ void main() {
       await solved.endPointDrag();
     });
 
+    test('an ellipse arc whose major tip is dimensioned to another point keeps its axes perpendicular and its '
+        'end points on the ellipse', () async {
+      solved.selectDrawTool(SketchTool.point);
+      await solved.handleCanvasTap(50, 20);
+      final anchor = solved.points.values.firstWhere((p) => p.x == 50 && p.y == 20);
+
+      solved.selectDrawTool(SketchTool.ellipseArc);
+      await solved.handleCanvasTap(20, 20); // centre
+      await solved.handleCanvasTap(30, 20); // major tip, radius 10
+      await solved.handleCanvasTap(25, 24); // minor radius 4
+      await solved.handleCanvasTap(20, 24); // start
+      await solved.handleCanvasTap(10, 20); // end
+      solved.exitToSelectMode();
+      final arc = solved.ellipseArcs.values.single;
+      solved.constraints['user-distance'] = DistanceConstraintDto(
+        id: 'user-distance',
+        pointAId: arc.majorPointId,
+        pointBId: anchor.id,
+        distance: 20,
+      );
+
+      final major = solved.points[arc.majorPointId]!;
+      solved.cursorX = major.x;
+      solved.cursorY = major.y;
+      expect(solved.beginPointDrag(arc.majorPointId), isTrue);
+      for (final target in [(31.0, 24.0), (32.0, 30.0), (29.0, 36.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+        expect(dist(arc.majorPointId, anchor.id), closeTo(20, 1e-3), reason: 'the dimension drives every frame');
+        final c = solved.points[arc.centerPointId]!;
+        final maj = solved.points[arc.majorPointId]!;
+        final min = solved.points[arc.minorPointId]!;
+        final dot = (maj.x - c.x) * (min.x - c.x) + (maj.y - c.y) * (min.y - c.y);
+        expect(dot.abs(), lessThan(1e-3), reason: 'the axes stay perpendicular');
+      }
+      await solved.endPointDrag();
+      expect(solved.errorMessage, isNull);
+    });
+
     test('a slot whose dragged centre is dimensioned to another point slides around it and keeps its shape', () async {
       solved.selectDrawTool(SketchTool.point);
       await solved.handleCanvasTap(50, 20);
