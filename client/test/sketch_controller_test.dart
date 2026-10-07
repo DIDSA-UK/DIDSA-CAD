@@ -5287,6 +5287,79 @@ void main() {
     expect(cPointAfter.y, closeTo(cPointBefore.y, 1e-9));
   });
 
+  group('confirmed dimensions drive Slot / Ellipse drags instead of being overwritten', () {
+    test('a Slot corner cannot be grabbed once its radius is confirmed', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5); // radius 5
+      controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
+      final radius = controller.constraints.values
+          .whereType<DistanceConstraintDto>()
+          .firstWhere((c) => c.pointAId == slot.center1PointId && c.pointBId == slot.aPointId);
+
+      // Still provisional: the corner resizes the radius, so the grab is allowed.
+      final before = controller.points[slot.aPointId]!;
+      controller.cursorX = before.x;
+      controller.cursorY = before.y;
+      expect(controller.beginPointDrag(slot.aPointId), isTrue);
+      controller.dropGrabbedEntity();
+
+      controller.selectConstraint(radius.id);
+      await controller.updateSelectedConstraintValue(5);
+      controller.exitToSelectMode();
+      expect(controller.beginPointDrag(slot.aPointId), isFalse);
+    });
+
+    test('dragging an Ellipse major tip with a confirmed major radius only turns the axis', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0); // centre
+      await controller.handleCanvasTap(10, 0); // major radius 10
+      await controller.handleCanvasTap(5, 4); // minor radius 4
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+      final major = controller.constraints.values
+          .whereType<DistanceConstraintDto>()
+          .firstWhere((c) => c.pointAId == ellipse.centerPointId && c.pointBId == ellipse.majorPointId);
+      controller.selectConstraint(major.id);
+      await controller.updateSelectedConstraintValue(10);
+      controller.exitToSelectMode();
+
+      final tip = controller.points[ellipse.majorPointId]!;
+      controller.cursorX = tip.x;
+      controller.cursorY = tip.y;
+      expect(controller.beginPointDrag(ellipse.majorPointId), isTrue);
+      await controller.updatePointDrag(0, 30); // far past radius 10, straight up
+      await controller.endPointDrag();
+
+      final center = controller.points[ellipse.centerPointId]!;
+      final moved = controller.points[ellipse.majorPointId]!;
+      expect(math.sqrt(math.pow(moved.x - center.x, 2) + math.pow(moved.y - center.y, 2)), closeTo(10, 1e-6));
+      expect(moved.y, greaterThan(9.9)); // it did turn toward the target
+      final confirmed = controller.constraints.values
+          .whereType<DistanceConstraintDto>()
+          .firstWhere((c) => c.id == major.id);
+      expect(confirmed.distance, closeTo(10, 1e-6));
+    });
+
+    test('an Ellipse minor tip cannot be grabbed once the minor radius is confirmed', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      await controller.handleCanvasTap(5, 4);
+      controller.exitToSelectMode();
+      final ellipse = controller.ellipses.values.single;
+      final minor = controller.constraints.values
+          .whereType<DistanceConstraintDto>()
+          .firstWhere((c) => c.pointAId == ellipse.centerPointId && c.pointBId == ellipse.minorPointId);
+      controller.selectConstraint(minor.id);
+      await controller.updateSelectedConstraintValue(4);
+      controller.exitToSelectMode();
+      expect(controller.beginPointDrag(ellipse.minorPointId), isFalse);
+    });
+  });
+
   group('Circle closed-form drag (on-device feedback: "when dragging a circle it jumps around '
       'instead of moving smoothly. I think it\'s struggling with the solve" - reproduced directly '
       'against the real solver: a freshly-drawn Circle\'s radius DistanceConstraint is provisional, '
@@ -6891,8 +6964,8 @@ void main() {
       expect(end.y, closeTo(endBefore.y, 1e-9));
     });
 
-    test('dropping a minor-axis drag past the major radius PATCHes the already-clamped value, not '
-        'the raw dragged one, once the minor dimension is confirmed', () async {
+    test('a confirmed minor dimension drives: the minor tip cannot be grabbed, so no drag can overwrite '
+        'the dimension (it used to be re-PATCHed with the clamped dragged value)', () async {
       final ellipseArc = await placeArc();
       final center = controller.points[ellipseArc.centerPointId]!;
       final minorConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().firstWhere((c) =>
@@ -6909,13 +6982,11 @@ void main() {
       final minor0 = controller.points[ellipseArc.minorPointId]!;
       controller.cursorX = minor0.x;
       controller.cursorY = minor0.y;
-      expect(controller.beginPointDrag(ellipseArc.minorPointId), isTrue);
-      await controller.updatePointDrag(center.x, center.y + 25); // way past the major radius (10)
-      await controller.endPointDrag();
+      expect(controller.beginPointDrag(ellipseArc.minorPointId), isFalse);
 
-      final reloaded = controller.constraints[minorConstraint.id] as DistanceConstraintDto;
-      expect(reloaded.distance, closeTo(10.0, 1e-6),
-          reason: 'PATCHed with the clamped value (the major radius), never the raw 25 overshoot');
+      final unchanged = controller.constraints[minorConstraint.id] as DistanceConstraintDto;
+      expect(unchanged.distance, closeTo(minorConstraint.distance, 1e-9));
+      expect(center, isNotNull);
     });
 
     test('once a defining Point is gone (no longer intact), dragging the major Point falls back to '

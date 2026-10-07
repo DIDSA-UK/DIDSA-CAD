@@ -5444,6 +5444,33 @@ class SketchController extends ChangeNotifier {
     return polygon;
   }
 
+  /// [constraint]'s value when it is a confirmed (user) dimension, else null: provisional ones are
+  /// only placeholders and never drive.
+  double? _drivingDistance(DistanceConstraintDto? constraint) =>
+      constraint != null && !constraint.provisional ? constraint.distance : null;
+
+  /// Whether a confirmed dimension leaves a drag of [pointId] on [slot] nothing to change: a corner
+  /// drag only ever sets the radius, so a confirmed radius blocks it (the grab is refused up front,
+  /// like a Circle with a pinned centre).
+  bool _slotDragBlocked(SketchSlotView slot, String pointId) {
+    final isCorner = pointId == slot.aPointId ||
+        pointId == slot.bPointId ||
+        pointId == slot.cPointId ||
+        pointId == slot.dPointId;
+    return isCorner && _drivingDistance(_slotRadiusConstraint(slot)) != null;
+  }
+
+  /// [_slotDragBlocked]'s counterpart for an Ellipse: a minor-axis drag only ever sets the minor
+  /// radius (the axis direction comes from the major point), so a confirmed minor radius blocks it.
+  /// A major-axis drag stays allowed - with a confirmed major radius it only rotates the ellipse.
+  bool _ellipseDragBlocked(SketchEllipseView ellipse, String pointId) =>
+      (pointId == ellipse.minorPointId || pointId == ellipse.minorPointNegId) &&
+      _drivingDistance(_ellipseMinorRadiusConstraint(ellipse)) != null;
+
+  /// [_ellipseDragBlocked]'s counterpart for an EllipseArc.
+  bool _ellipseArcDragBlocked(SketchEllipseArcView ellipseArc, String pointId) =>
+      pointId == ellipseArc.minorPointId && _drivingDistance(_ellipseArcMinorRadiusConstraint(ellipseArc)) != null;
+
   /// What dragging [draggedPointId] may do to an intact [polygon], mirroring [_circleDragMode]:
   /// a centre drag translates (blocked when the centre is fully pinned); a vertex drag resizes
   /// unless a confirmed radius dimension drives the size, in which case it only rotates.
@@ -6092,6 +6119,8 @@ class SketchController extends ChangeNotifier {
       majorRadius = math.sqrt(dx * dx + dy * dy);
       if (majorRadius < 1e-9) return null;
       majorAngle = math.atan2(dy, dx);
+      // A confirmed major radius drives: the drag only turns the axis.
+      majorRadius = _drivingDistance(_ellipseMajorRadiusConstraint(ellipse)) ?? majorRadius;
       final minorDx = minorPoint.x - cx;
       final minorDy = minorPoint.y - cy;
       minorRadius = math.sqrt(minorDx * minorDx + minorDy * minorDy);
@@ -6259,7 +6288,9 @@ class SketchController extends ChangeNotifier {
       if (rawMajorRadius < 1e-9) return null;
       newMajorAngle = math.atan2(dy, dx);
       // Clamped, not swapped - see this method's own doc comment.
-      newMajorRadius = math.max(rawMajorRadius, oldMinorRadius);
+      // A confirmed major radius drives: the drag only turns the axis.
+      newMajorRadius = _drivingDistance(_ellipseArcMajorRadiusConstraint(ellipseArc)) ??
+          math.max(rawMajorRadius, oldMinorRadius);
       newMinorRadius = oldMinorRadius;
     } else if (draggedPointId == ellipseArc.minorPointId) {
       if (oldMajorRadius < 1e-9) return null;
@@ -6704,6 +6735,13 @@ class SketchController extends ChangeNotifier {
     if (intactArc != null && _arcDragMode(intactArc, pointId) == ArcDragMode.blocked) {
       return false;
     }
+    // A confirmed dimension that a Slot corner / Ellipse minor-axis drag could only overwrite.
+    final intactSlot = _intactSlotForPoint(pointId);
+    if (intactSlot != null && _slotDragBlocked(intactSlot, pointId)) return false;
+    final intactEllipse = _intactEllipseForPoint(pointId);
+    if (intactEllipse != null && _ellipseDragBlocked(intactEllipse, pointId)) return false;
+    final intactEllipseArc = _intactEllipseArcForPoint(pointId);
+    if (intactEllipseArc != null && _ellipseArcDragBlocked(intactEllipseArc, pointId)) return false;
     // Same reasoning, for a Polygon's own centre specifically (see
     // [_intactPolygonForVertex]'s own doc comment for the bug this closes):
     // unlike a vertex drag (always a resize about whatever position the
