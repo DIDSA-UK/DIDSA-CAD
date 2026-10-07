@@ -139,7 +139,7 @@ Future<_Result> _arm(int links, {required bool solveSpace, int frames = 120}) as
     final p = now[tip]!;
     final err = math.sqrt(math.pow(p.$1 - want.$1, 2) + math.pow(p.$2 - want.$2, 2));
     errSum += err;
-    if (Platform.environment['DIDSA_ARM_TRACE'] == '$links') print('${solveSpace ? 'SS' : 'PJ'} cursor=(${cursor.$1.toStringAsFixed(1)},${cursor.$2.toStringAsFixed(1)}) tip=(${p.$1.toStringAsFixed(2)},${p.$2.toStringAsFixed(2)}) err=${err.toStringAsFixed(2)}');
+    if (Platform.environment['DIDSA_ARM_TRACE'] == '$links') print('${solveSpace ? 'SS' : 'PJ'} cursor=(${cursor.$1.toStringAsFixed(1)},${cursor.$2.toStringAsFixed(1)}) tip=(${p.$1.toStringAsFixed(2)},${p.$2.toStringAsFixed(2)}) err=${err.toStringAsFixed(3)} iters=${c.dragStats.lastIterations}');
     errMax = math.max(errMax, err);
     prev = now;
     prevStep = step;

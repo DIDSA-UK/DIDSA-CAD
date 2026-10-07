@@ -6864,7 +6864,8 @@ class SketchController extends ChangeNotifier {
       // green - see [isPointFullyPinned]'s own doc comment) has nowhere
       // left to move into either, same reasoning as the over-constrained
       // case above but for the opposite ("done", not "broken") reason.
-      if (isPointFullyPinned(pointId)) return false;
+      // Measured, not counted: [_isPointImmobile] asks the constraints' own Jacobian what the Point can still do.
+      if (_isPointImmobile(pointId, structural: isPointFullyPinned)) return false;
     }
     // Bug fix (on-device feedback, see [_circleDragMode]'s own doc
     // comment): the intact-shape exemption just above is deliberately blind
@@ -6914,7 +6915,10 @@ class SketchController extends ChangeNotifier {
     // (The narrower per-point test, not the sketch-wide flag [isPointFullyPinned] ORs in - see [_arcDragMode].)
     final hybridStructural = _hybridStructuralFor(pointId);
     if (hybridStructural != null) {
-      if (isPointForcedOverConstrained(pointId) || rigidity.isPointFullyConstrained(pointId)) return false;
+      if (isPointForcedOverConstrained(pointId) ||
+          _isPointImmobile(pointId, structural: rigidity.isPointFullyConstrained)) {
+        return false;
+      }
     }
     final point = points[pointId]!;
     _dragHybridStructural = hybridStructural;
@@ -7146,6 +7150,23 @@ class SketchController extends ChangeNotifier {
     return wish;
   }
 
+  /// Whether the constraints leave [pointId] no motion at all, *measured* on the constraint Jacobian
+  /// ([analyseSketchMobility]: a rank, so redundant-but-consistent constraints don't fool it and a point pinned by a
+  /// dimension plus a horizontal is found pinned). [structural] (the old union-find count of `dof_analysis.dart`, which is
+  /// wrong both ways on such sketches) is only the fallback when the group holds a constraint the oracle has no model for.
+  bool _isPointImmobile(String pointId, {required bool Function(String) structural}) {
+    final lineEnds = {for (final e in lines.entries) e.key: (e.value.startPointId, e.value.endPointId)};
+    final mobility = analyseSketchMobility(
+      points: {for (final e in points.entries) e.key: (e.value.x, e.value.y)},
+      constraints: constraints.values.toList(),
+      lineEndpoints: (id) => lineEnds[id]!,
+      startIds: {pointId},
+      pinnedPointIds: {..._lockedPointIds, if (_originPointId != null) _originPointId!},
+    );
+    if (mobility.unsupported) return structural(pointId);
+    return mobility.mobilityOf(pointId) == 0;
+  }
+
   /// Set by [_clampDragFrame] when the dragged group holds a constraint the projector has no model for, so a caller can
   /// tell "this frame was rejected" from "this drag cannot be clamped locally at all".
   bool _dragSolveUnsupported = false;
@@ -7186,7 +7207,8 @@ class SketchController extends ChangeNotifier {
       provisionalDistances: provisionalDistances,
       reference: _dragReference,
     );
-    dragStats.recordSystem(projection.variablePoints, projection.rows, projection.iterations);
+    dragStats.recordSystem(projection.variablePoints, projection.rows, projection.iterations,
+        walks: projection.walks, rejectedSteps: projection.rejectedSteps);
     if (projection.unsupported) {
       _dragSolveUnsupported = true;
       return null;

@@ -21,9 +21,16 @@ class SketchDragStats {
   int lastIterations = 0;
   int maxIterations = 0;
 
+  /// Sums over the projected frames (for means): evaluations of the system, accepted walking steps, reverted steps.
+  int projectedFrames = 0;
+  int totalIterations = 0;
+  int totalWalks = 0;
+  int totalRejectedSteps = 0;
+
   void reset() {
     frames = accepted = rejected = unsupported = totalMicros = maxMicros = 0;
     lastVariablePoints = lastRows = lastIterations = maxIterations = 0;
+    projectedFrames = totalIterations = totalWalks = totalRejectedSteps = 0;
   }
 
   double get meanMicros => frames == 0 ? 0 : totalMicros / frames;
@@ -34,16 +41,24 @@ class SketchDragStats {
     if (micros > maxMicros) maxMicros = micros;
   }
 
-  void recordSystem(int variablePoints, int rows, int iterations) {
+  void recordSystem(int variablePoints, int rows, int iterations, {int walks = 0, int rejectedSteps = 0}) {
     lastVariablePoints = variablePoints;
     lastRows = rows;
     lastIterations = iterations;
     if (iterations > maxIterations) maxIterations = iterations;
+    projectedFrames++;
+    totalIterations += iterations;
+    totalWalks += walks;
+    totalRejectedSteps += rejectedSteps;
   }
+
+  double get meanIterations => projectedFrames == 0 ? 0 : totalIterations / projectedFrames;
 
   @override
   String toString() =>
       'frames=$frames accepted=$accepted rejected=$rejected unsupported=$unsupported '
       'mean=${meanMicros.toStringAsFixed(0)}us max=${maxMicros}us '
-      'system=${lastVariablePoints}pts/${lastRows}rows iters(max)=$maxIterations';
+      'system=${lastVariablePoints}pts/${lastRows}rows iters(mean/max)=${meanIterations.toStringAsFixed(1)}/$maxIterations '
+      'walks(mean)=${projectedFrames == 0 ? 0 : (totalWalks / projectedFrames).toStringAsFixed(1)} '
+      'revertedSteps(mean)=${projectedFrames == 0 ? 0 : (totalRejectedSteps / projectedFrames).toStringAsFixed(1)}';
 }

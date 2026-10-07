@@ -77,7 +77,7 @@ class SketchProjection {
 
 /// Stiffness of a point the caller does not care to keep still: corrections land here first (the SolveSpace `dragged[]` idea,
 /// reversed - grabbed and proposal points are stiff, everything else follows).
-const double kProjectorFollowerStiffness = 0.1;
+const double kProjectorFollowerStiffness = 0.01;
 /// Sequential nearest-point steps (pulling towards the wish) before the constraint-only polish.
 const int kProjectorNearestIterations = 3;
 const int kProjectorNearestMax = 24;
@@ -364,6 +364,176 @@ extension on _D {
   }
 }
 
+// ---- the constraint system of a group of points ---------------------------------------------------------------------
+
+/// The active constraints of the group of points reachable from [startIds] through constraints (not crossing pinned points),
+/// with the residual/Jacobian evaluation over that group's free coordinates. Shared by the projector and the mobility oracle.
+class _System {
+  final bool unsupported;
+
+  /// Free points of the group, in variable order (variable `2*i`, `2*i+1` = x, y of `varIds[i]`).
+  final List<String> varIds;
+  final Map<String, int> varOf;
+  final List<ConstraintDto> _active;
+  final List<List<String>> _idsOf;
+  final List<int> _groupList;
+  final Map<String, (double, double)> _points;
+  final LineEndpoints _lines;
+  final _Branches _branches;
+
+  _System._(this.unsupported, this.varIds, this.varOf, this._active, this._idsOf, this._groupList, this._points, this._lines,
+      this._branches);
+
+  factory _System.build({
+    required Map<String, (double, double)> points,
+    required List<ConstraintDto> constraints,
+    required LineEndpoints lineEndpoints,
+    required Set<String> startIds,
+    required Set<String> pinned,
+    required Map<String, double> provisionalDistances,
+    Map<String, (double, double)>? reference,
+  }) {
+    final ref = reference ?? points;
+
+    // 1. active constraints and the point ids each reads.
+    final active = <ConstraintDto>[];
+    final idsOf = <List<String>>[];
+    for (var c in constraints) {
+      if (c is DistanceConstraintDto && c.provisional) {
+        final size = provisionalDistances[c.id];
+        if (size == null) continue; // not yet confirmed: contributes nothing
+        c = DistanceConstraintDto(
+          id: c.id,
+          pointAId: c.pointAId,
+          pointBId: c.pointBId,
+          distance: size,
+          orientation: c.orientation,
+        );
+      }
+      if (c is FixedConstraintDto) continue; // pinned by the caller through [pinned]
+      final ids = _pointIdsOf(c, lineEndpoints);
+      if (ids == null) {
+        // Only an unsupported constraint that touches the group matters; decided after the group is known.
+        active.add(c);
+        idsOf.add(const <String>[]);
+        continue;
+      }
+      if (ids.any((id) => !points.containsKey(id))) continue;
+      active.add(c);
+      idsOf.add(ids);
+    }
+
+    // 2. the group: BFS from the start points over shared non-pinned points.
+    final byPoint = <String, List<int>>{};
+    for (var i = 0; i < active.length; i++) {
+      for (final id in idsOf[i]) {
+        (byPoint[id] ??= <int>[]).add(i);
+      }
+    }
+    final inGroup = <String>{};
+    final groupConstraints = <int>{};
+    final queue = <String>[
+      for (final id in startIds)
+        if (points.containsKey(id) && !pinned.contains(id)) id,
+    ];
+    inGroup.addAll(queue);
+    while (queue.isNotEmpty) {
+      final id = queue.removeLast();
+      for (final ci in byPoint[id] ?? const <int>[]) {
+        if (!groupConstraints.add(ci)) continue;
+        for (final other in idsOf[ci]) {
+          if (!pinned.contains(other) && inGroup.add(other)) queue.add(other);
+        }
+      }
+    }
+    // An unsupported constraint cannot be discovered through its (unknown) point ids: check its type against the group.
+    var unsupported = false;
+    for (var i = 0; i < active.length; i++) {
+      if (_pointIdsOf(active[i], lineEndpoints) == null && _touchesGroup(active[i], inGroup)) unsupported = true;
+    }
+
+    final varOf = <String, int>{};
+    final varIds = <String>[];
+    for (final id in inGroup) {
+      varOf[id] = varIds.length;
+      varIds.add(id);
+    }
+
+    // branch choices from the reference frame
+    double angleBetween(AngleConstraintDto c) {
+      final (s1, e1) = lineEndpoints(c.line1Id);
+      final (s2, e2) = lineEndpoints(c.line2Id);
+      final a1 = ref[s1], a2 = ref[e1], b1 = ref[s2], b2 = ref[e2];
+      if (a1 == null || a2 == null || b1 == null || b2 == null) return 0;
+      final ax = a2.$1 - a1.$1, ay = a2.$2 - a1.$2, bx = b2.$1 - b1.$1, by = b2.$2 - b1.$2;
+      final la = math.sqrt(ax * ax + ay * ay), lb = math.sqrt(bx * bx + by * by);
+      if (la == 0 || lb == 0) return -1;
+      return math.acos(((ax * bx + ay * by) / (la * lb)).clamp(-1.0, 1.0)) * 180 / math.pi;
+    }
+
+    final branches = _Branches(
+      (c) {
+        final current = angleBetween(c);
+        if (current < 0) return false;
+        var target = c.angleDegrees.abs() % 360;
+        target = math.min(target, 360 - target);
+        return ((180.0 - target) - current).abs() < (target - current).abs();
+      },
+      (c) {
+        final pa = ref[c.pointAId], pb = ref[c.pointBId];
+        if (pa == null || pb == null) return 1.0;
+        final d = c.orientation == 'horizontal' ? pb.$1 - pa.$1 : pb.$2 - pa.$2;
+        return d < 0 ? -1.0 : 1.0;
+      },
+    );
+
+    return _System._(unsupported, varIds, varOf, active, idsOf, groupConstraints.toList()..sort(), points, lineEndpoints, branches);
+  }
+
+  /// Residual rows with their sparse Jacobian at the coordinates [x] (the group's free variables).
+  List<_Row> evaluate(Float64List x) {
+    final rows = <_Row>[];
+    for (final ci in _groupList) {
+      final c = _active[ci];
+      final ids = _idsOf[ci];
+      final k = 2 * ids.length;
+      final slot = <String, int>{for (var i = 0; i < ids.length; i++) ids[i]: i};
+      _P local(String id) {
+        final i = slot[id]!;
+        final v = varOf[id];
+        final xv = v != null ? x[2 * v] : _points[id]!.$1;
+        final yv = v != null ? x[2 * v + 1] : _points[id]!.$2;
+        final gx = Float64List(k), gy = Float64List(k);
+        if (v != null) {
+          gx[2 * i] = 1;
+          gy[2 * i + 1] = 1;
+        }
+        return _P(_D(xv, gx), _D(yv, gy));
+      }
+
+      final res = _residuals(c, _lines, local, _branches, k);
+      if (res == null) continue;
+      for (final r in res) {
+        final cols = <int>[];
+        final vals = <double>[];
+        for (var i = 0; i < ids.length; i++) {
+          final v = varOf[ids[i]];
+          if (v == null) continue;
+          for (var d = 0; d < 2; d++) {
+            final g = r.g[2 * i + d];
+            if (g != 0) {
+              cols.add(2 * v + d);
+              vals.add(g);
+            }
+          }
+        }
+        rows.add(_Row(r.v, cols, vals));
+      }
+    }
+    return rows;
+  }
+}
+
 // ---- the projector --------------------------------------------------------------------------------------------------
 
 /// Projects the group of [anchorPointIds] onto [constraints].
@@ -397,65 +567,17 @@ SketchProjection projectSketch({
     variablePoints: 0,
     rows: 0,
   );
-  final ref = reference ?? points;
-
-  // 1. active constraints and the point ids each reads.
-  final active = <ConstraintDto>[];
-  final idsOf = <List<String>>[];
-  for (var c in constraints) {
-    if (c is DistanceConstraintDto && c.provisional) {
-      final size = provisionalDistances[c.id];
-      if (size == null) continue; // not yet confirmed: contributes nothing
-      c = DistanceConstraintDto(
-        id: c.id,
-        pointAId: c.pointAId,
-        pointBId: c.pointBId,
-        distance: size,
-        orientation: c.orientation,
-      );
-    }
-    if (c is FixedConstraintDto) continue; // pinned by the caller through pinnedPointIds
-    final ids = _pointIdsOf(c, lineEndpoints);
-    if (ids == null) {
-      // Only an unsupported constraint that touches the dragged group matters; decided after the group is known.
-      active.add(c);
-      idsOf.add(const <String>[]);
-      continue;
-    }
-    if (ids.any((id) => !points.containsKey(id))) continue;
-    active.add(c);
-    idsOf.add(ids);
-  }
-
-  // 2. the dragged group: BFS from the anchors over shared non-pinned points.
-  final byPoint = <String, List<int>>{};
-  for (var i = 0; i < active.length; i++) {
-    for (final id in idsOf[i]) {
-      (byPoint[id] ??= <int>[]).add(i);
-    }
-  }
-  final inGroup = <String>{};
-  final groupConstraints = <int>{};
-  final queue = <String>[
-    for (final id in anchorPointIds)
-      if (points.containsKey(id) && !pinnedPointIds.contains(id)) id,
-  ];
-  inGroup.addAll(queue);
-  while (queue.isNotEmpty) {
-    final id = queue.removeLast();
-    for (final ci in byPoint[id] ?? const <int>[]) {
-      if (!groupConstraints.add(ci)) continue;
-      for (final other in idsOf[ci]) {
-        if (!pinnedPointIds.contains(other) && inGroup.add(other)) queue.add(other);
-      }
-    }
-  }
-  // An unsupported constraint cannot be discovered through its (unknown) point ids; its type is checked against the group by
-  // looking for any group point it could reference - done conservatively via the per-type reader returning null above.
-  for (var i = 0; i < active.length; i++) {
-    if (_pointIdsOf(active[i], lineEndpoints) == null && _touchesGroup(active[i], inGroup)) return unsupported;
-  }
-  if (inGroup.isEmpty) {
+  final system = _System.build(
+    points: points,
+    constraints: constraints,
+    lineEndpoints: lineEndpoints,
+    startIds: anchorPointIds,
+    pinned: pinnedPointIds,
+    provisionalDistances: provisionalDistances,
+    reference: reference,
+  );
+  if (system.unsupported) return unsupported;
+  if (system.varIds.isEmpty) {
     return const SketchProjection(
       converged: true,
       unsupported: false,
@@ -466,14 +588,9 @@ SketchProjection projectSketch({
       rows: 0,
     );
   }
+  final varIds = system.varIds;
 
-  // 3. variables, bounding box (tolerance scale).
-  final varOf = <String, int>{};
-  final varIds = <String>[];
-  for (final id in inGroup) {
-    varOf[id] = varIds.length;
-    varIds.add(id);
-  }
+  // variables, bounding box (tolerance scale).
   final n = 2 * varIds.length;
   final x = Float64List(n);
   final wish = Float64List(n);
@@ -499,77 +616,7 @@ SketchProjection projectSketch({
   final diagonal = math.sqrt(math.pow(maxX - minX, 2) + math.pow(maxY - minY, 2));
   final tolerance = kProjectorTolerance * math.max(1.0, diagonal);
 
-  // branch choices from the reference frame
-  double angleBetween(AngleConstraintDto c) {
-    final (s1, e1) = lineEndpoints(c.line1Id);
-    final (s2, e2) = lineEndpoints(c.line2Id);
-    final a1 = ref[s1], a2 = ref[e1], b1 = ref[s2], b2 = ref[e2];
-    if (a1 == null || a2 == null || b1 == null || b2 == null) return 0;
-    final ax = a2.$1 - a1.$1, ay = a2.$2 - a1.$2, bx = b2.$1 - b1.$1, by = b2.$2 - b1.$2;
-    final la = math.sqrt(ax * ax + ay * ay), lb = math.sqrt(bx * bx + by * by);
-    if (la == 0 || lb == 0) return -1;
-    return math.acos(((ax * bx + ay * by) / (la * lb)).clamp(-1.0, 1.0)) * 180 / math.pi;
-  }
-
-  final branches = _Branches(
-    (c) {
-      final current = angleBetween(c);
-      if (current < 0) return false;
-      var target = c.angleDegrees.abs() % 360;
-      target = math.min(target, 360 - target);
-      return ((180.0 - target) - current).abs() < (target - current).abs();
-    },
-    (c) {
-      final pa = ref[c.pointAId], pb = ref[c.pointBId];
-      if (pa == null || pb == null) return 1.0;
-      final d = c.orientation == 'horizontal' ? pb.$1 - pa.$1 : pb.$2 - pa.$2;
-      return d < 0 ? -1.0 : 1.0;
-    },
-  );
-
-  // 4. one evaluation = residual rows with sparse Jacobian.
-  final groupList = groupConstraints.toList()..sort();
-  List<_Row> evaluate() {
-    final rows = <_Row>[];
-    for (final ci in groupList) {
-      final c = active[ci];
-      final ids = idsOf[ci];
-      final k = 2 * ids.length;
-      final slot = <String, int>{for (var i = 0; i < ids.length; i++) ids[i]: i};
-      _P local(String id) {
-        final i = slot[id]!;
-        final v = varOf[id];
-        final xv = v != null ? x[2 * v] : points[id]!.$1;
-        final yv = v != null ? x[2 * v + 1] : points[id]!.$2;
-        final gx = Float64List(k), gy = Float64List(k);
-        if (v != null) {
-          gx[2 * i] = 1;
-          gy[2 * i + 1] = 1;
-        }
-        return _P(_D(xv, gx), _D(yv, gy));
-      }
-
-      final res = _residuals(c, lineEndpoints, local, branches, k);
-      if (res == null) continue;
-      for (final r in res) {
-        final cols = <int>[];
-        final vals = <double>[];
-        for (var i = 0; i < ids.length; i++) {
-          final v = varOf[ids[i]];
-          if (v == null) continue;
-          for (var d = 0; d < 2; d++) {
-            final g = r.g[2 * i + d];
-            if (g != 0) {
-              cols.add(2 * v + d);
-              vals.add(g);
-            }
-          }
-        }
-        rows.add(_Row(r.v, cols, vals));
-      }
-    }
-    return rows;
-  }
+  List<_Row> evaluate() => system.evaluate(x);
 
   // 5. sequential nearest-point Gauss-Newton: [kProjectorNearestIterations] steps that also pull towards the wish, then
   // constraint-only polish steps (quadratic convergence) until the residual is within tolerance.
@@ -884,3 +931,213 @@ Float64List _solveSpd(List<Float64List> m, Float64List b) {
   }
   return x;
 }
+
+// ---- mobility oracle ------------------------------------------------------------------------------------------------
+
+/// What the constraints leave free, measured on the same Jacobians the projector uses (first order, at the given positions).
+///
+/// This is a rank computation, not a structural count: redundant-but-consistent constraints (a slot's tangent ring, a
+/// rectangle's doubled parallel) do not fool it, and a point pinned by a dimension plus a horizontal is found pinned even
+/// though no single constraint says so.
+class SketchMobility {
+  /// A constraint in the group has no residual model: nothing was measured.
+  final bool unsupported;
+
+  /// Free points in the analysed group, residual rows, and the rank of the constraint Jacobian.
+  final int variablePoints;
+  final int rows;
+  final int rank;
+
+  /// Degrees of freedom of the group: `2 * variablePoints - rank`.
+  final int dof;
+
+  /// Worst constraint residual at the given positions (large = the positions do not satisfy the constraints).
+  final double residualInf;
+
+  /// Per free point of the group: 0 = cannot move, 1 = slides along one direction, 2 = free.
+  final Map<String, int> pointMobility;
+
+  /// Unit direction of the one permitted motion, for points with mobility 1.
+  final Map<String, (double, double)> direction;
+
+  const SketchMobility({
+    required this.unsupported,
+    required this.variablePoints,
+    required this.rows,
+    required this.rank,
+    required this.dof,
+    required this.residualInf,
+    required this.pointMobility,
+    required this.direction,
+  });
+
+  /// Mobility of [pointId] (2 for a point outside the analysed group's constraints: nothing holds it).
+  int mobilityOf(String pointId) => pointMobility[pointId] ?? 2;
+}
+
+/// Measures the mobility of the group of points reachable from [startIds] through [constraints] (without crossing
+/// [pinnedPointIds]) at the positions in [points]. Provisional dimensions do not count, like in the solver.
+SketchMobility analyseSketchMobility({
+  required Map<String, (double, double)> points,
+  required List<ConstraintDto> constraints,
+  required LineEndpoints lineEndpoints,
+  required Set<String> startIds,
+  Set<String> pinnedPointIds = const {},
+}) {
+  const empty = SketchMobility(
+    unsupported: true,
+    variablePoints: 0,
+    rows: 0,
+    rank: 0,
+    dof: 0,
+    residualInf: double.infinity,
+    pointMobility: <String, int>{},
+    direction: <String, (double, double)>{},
+  );
+  final system = _System.build(
+    points: points,
+    constraints: constraints,
+    lineEndpoints: lineEndpoints,
+    startIds: startIds,
+    pinned: pinnedPointIds,
+    provisionalDistances: const {},
+  );
+  if (system.unsupported) return empty;
+  final varIds = system.varIds;
+  final n = 2 * varIds.length;
+  final x = Float64List(n);
+  for (var i = 0; i < varIds.length; i++) {
+    final (px, py) = points[varIds[i]]!;
+    x[2 * i] = px;
+    x[2 * i + 1] = py;
+  }
+  final rows = [
+    for (final r in system.evaluate(x))
+      if (r.cols.isNotEmpty) r,
+  ];
+  var residualInf = 0.0;
+  for (final r in rows) {
+    residualInf = math.max(residualInf, r.value.abs());
+  }
+
+  // Reduced row echelon form with column-wise partial pivoting.
+  final a = List<Float64List>.generate(rows.length, (i) {
+    final row = Float64List(n);
+    for (var j = 0; j < rows[i].cols.length; j++) {
+      row[rows[i].cols[j]] += rows[i].vals[j];
+    }
+    return row;
+  });
+  var maxAbs = 1.0;
+  for (final row in a) {
+    for (final v in row) {
+      maxAbs = math.max(maxAbs, v.abs());
+    }
+  }
+  final tol = kMobilityPivotTolerance * maxAbs;
+  final pivotCol = <int>[];
+  var r = 0;
+  for (var col = 0; col < n && r < a.length; col++) {
+    var best = r;
+    for (var i = r + 1; i < a.length; i++) {
+      if (a[i][col].abs() > a[best][col].abs()) best = i;
+    }
+    if (a[best][col].abs() <= tol) continue;
+    final tmp = a[r];
+    a[r] = a[best];
+    a[best] = tmp;
+    final inv = 1.0 / a[r][col];
+    for (var c = col; c < n; c++) {
+      a[r][c] *= inv;
+    }
+    for (var i = 0; i < a.length; i++) {
+      if (i == r) continue;
+      final f = a[i][col];
+      if (f == 0) continue;
+      for (var c = col; c < n; c++) {
+        a[i][c] -= f * a[r][c];
+      }
+    }
+    pivotCol.add(col);
+    r++;
+  }
+  final rank = pivotCol.length;
+  final isPivot = List<bool>.filled(n, false);
+  for (final c in pivotCol) {
+    isPivot[c] = true;
+  }
+
+  // Nullspace basis (free column f: x_f = 1, x_pivot = -R[row][f]), orthonormalised so that per-point shares are meaningful.
+  final basis = <Float64List>[];
+  for (var f = 0; f < n; f++) {
+    if (isPivot[f]) continue;
+    final v = Float64List(n);
+    v[f] = 1.0;
+    for (var i = 0; i < pivotCol.length; i++) {
+      v[pivotCol[i]] = -a[i][f];
+    }
+    for (final q in basis) {
+      var dot = 0.0;
+      for (var c = 0; c < n; c++) {
+        dot += v[c] * q[c];
+      }
+      for (var c = 0; c < n; c++) {
+        v[c] -= dot * q[c];
+      }
+    }
+    var norm = 0.0;
+    for (final e in v) {
+      norm += e * e;
+    }
+    norm = math.sqrt(norm);
+    if (norm < 1e-12) continue;
+    for (var c = 0; c < n; c++) {
+      v[c] /= norm;
+    }
+    basis.add(v);
+  }
+
+  final mobility = <String, int>{};
+  final direction = <String, (double, double)>{};
+  for (var i = 0; i < varIds.length; i++) {
+    // G = M Mᵀ for the point's 2 x k block M of the basis.
+    var gxx = 0.0, gxy = 0.0, gyy = 0.0;
+    for (final q in basis) {
+      gxx += q[2 * i] * q[2 * i];
+      gxy += q[2 * i] * q[2 * i + 1];
+      gyy += q[2 * i + 1] * q[2 * i + 1];
+    }
+    final tr = gxx + gyy;
+    final det = gxx * gyy - gxy * gxy;
+    final disc = math.sqrt(math.max(0.0, tr * tr / 4 - det));
+    final l1 = tr / 2 + disc, l2 = tr / 2 - disc;
+    final rank2 = (l1 > kMobilityShareTolerance ? 1 : 0) + (l2 > kMobilityShareTolerance ? 1 : 0);
+    mobility[varIds[i]] = rank2;
+    if (rank2 == 1) {
+      // eigenvector of the larger eigenvalue
+      var dx = gxy, dy = l1 - gxx;
+      if (dx.abs() + dy.abs() < 1e-18) {
+        dx = gxx >= gyy ? 1.0 : 0.0;
+        dy = gxx >= gyy ? 0.0 : 1.0;
+      }
+      final len = math.sqrt(dx * dx + dy * dy);
+      direction[varIds[i]] = (dx / len, dy / len);
+    }
+  }
+  return SketchMobility(
+    unsupported: false,
+    variablePoints: varIds.length,
+    rows: rows.length,
+    rank: rank,
+    dof: n - rank,
+    residualInf: residualInf,
+    pointMobility: mobility,
+    direction: direction,
+  );
+}
+
+/// Pivot threshold of the Jacobian's row reduction, relative to its largest entry.
+const double kMobilityPivotTolerance = 1e-8;
+
+/// A point whose share of the (orthonormal) free-motion basis is below this cannot move.
+const double kMobilityShareTolerance = 1e-9;

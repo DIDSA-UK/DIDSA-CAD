@@ -468,6 +468,122 @@ void main() {
     });
   });
 
+  group('mobility oracle (rank of the constraint Jacobian, per point)', () {
+    // The sketches of docs/constrained-drag-investigation.md B.4, where the structural count (dof_analysis.dart) and py-slvs'
+    // own Dof disagree with the truth.
+    Map<String, Pt> rectPoints() => {'o': (0, 0), 'a': (10, 0), 'b': (10, 6), 'c': (0, 6)};
+    const rectLines = {'l0': ('o', 'a'), 'l1': ('a', 'b'), 'l2': ('b', 'c'), 'l3': ('c', 'o')};
+    List<ConstraintDto> rectSides() => [
+          HorizontalConstraintDto(id: 'h0', lineId: 'l0', pointAId: 'o', pointBId: 'a'),
+          VerticalConstraintDto(id: 'v1', lineId: 'l1', pointAId: 'a', pointBId: 'b'),
+          HorizontalConstraintDto(id: 'h2', lineId: 'l2', pointAId: 'b', pointBId: 'c'),
+          VerticalConstraintDto(id: 'v3', lineId: 'l3', pointAId: 'c', pointBId: 'o'),
+        ];
+    DistanceConstraintDto width() =>
+        DistanceConstraintDto(id: 'w', pointAId: 'o', pointBId: 'a', distance: 10, orientation: 'horizontal');
+
+    SketchMobility analyse(List<ConstraintDto> cs, {Map<String, Pt>? points, Set<String> pinned = const {'o'}, String start = 'a'}) =>
+        analyseSketchMobility(
+          points: points ?? rectPoints(),
+          constraints: cs,
+          lineEndpoints: (id) => rectLines[id]!,
+          startIds: {start},
+          pinnedPointIds: pinned,
+        );
+
+    test('rectangle on the origin with only its width dimensioned: dof 1, the height is the one freedom', () {
+      final m = analyse([...rectSides(), width()]);
+      expect(m.dof, 1);
+      expect(m.mobilityOf('a'), 0, reason: 'x by the dimension, y by the horizontal: pinned (the structural count calls it free)');
+      expect(m.mobilityOf('b'), 1);
+      expect(m.mobilityOf('c'), 1);
+      expect(m.direction['b']!.$1.abs(), closeTo(0, 1e-9));
+      expect(m.direction['b']!.$2.abs(), closeTo(1, 1e-9));
+    });
+
+    test('a fully dimensioned rectangle on the origin has no freedom at all', () {
+      final m = analyse([
+        ...rectSides(),
+        width(),
+        DistanceConstraintDto(id: 'ht', pointAId: 'o', pointBId: 'c', distance: 6, orientation: 'vertical'),
+      ]);
+      expect(m.dof, 0);
+      for (final id in ['a', 'b', 'c']) {
+        expect(m.mobilityOf(id), 0, reason: id);
+      }
+    });
+
+    test('a floating rectangle (nothing pinned) can move everywhere', () {
+      final m = analyse(rectSides(), pinned: const {}, start: 'o');
+      expect(m.dof, 4);
+      for (final id in ['o', 'a', 'b', 'c']) {
+        expect(m.mobilityOf(id), 2, reason: id);
+      }
+    });
+
+    test('a redundant Parallel on top of the sides does not make movable points look fully constrained', () {
+      final m = analyse([
+        ...rectSides(),
+        width(),
+        ParallelConstraintDto(id: 'par', line1Id: 'l0', line2Id: 'l2'),
+      ]);
+      expect(m.dof, 1, reason: 'still just the height; the doubled constraint is redundant, not extra');
+      expect(m.mobilityOf('b'), 1);
+      expect(m.mobilityOf('c'), 1);
+      expect(m.mobilityOf('a'), 0);
+    });
+
+    test('a two-link arm: the middle joint slides on a circle, the tip is free in the plane', () {
+      final m = analyseSketchMobility(
+        points: {'o': (0, 0), 'p1': (30, 0), 'p2': (30, 25)},
+        constraints: [
+          DistanceConstraintDto(id: 'd1', pointAId: 'o', pointBId: 'p1', distance: 30),
+          DistanceConstraintDto(id: 'd2', pointAId: 'p1', pointBId: 'p2', distance: 25),
+        ],
+        lineEndpoints: (_) => throw StateError('no lines'),
+        startIds: {'p2'},
+        pinnedPointIds: {'o'},
+      );
+      expect(m.dof, 2);
+      expect(m.mobilityOf('p1'), 1);
+      expect(m.mobilityOf('p2'), 2);
+      // p1 slides along the tangent of its circle (here vertical)
+      expect(m.direction['p1']!.$1.abs(), closeTo(0, 1e-9));
+    });
+
+    test('a point coincident with a pinned point cannot move; an unconstrained point is free', () {
+      final m = analyseSketchMobility(
+        points: {'o': (0, 0), 'p': (0, 0), 'q': (5, 5)},
+        constraints: [CoincidentConstraintDto(id: 'c', pointAId: 'o', pointBId: 'p')],
+        lineEndpoints: (_) => throw StateError('no lines'),
+        startIds: {'p'},
+        pinnedPointIds: {'o'},
+      );
+      expect(m.mobilityOf('p'), 0);
+      expect(m.mobilityOf('q'), 2, reason: 'not in the analysed group: nothing holds it');
+    });
+
+    test('cost: a 100-point constrained chain is analysed in well under a second', () {
+      final pts = <String, Pt>{'p0': (0, 0)};
+      final cons = <ConstraintDto>[];
+      for (var i = 1; i < 100; i++) {
+        pts['p$i'] = (5.0 * i, 0.2 * math.sin(i.toDouble()));
+        cons.add(DistanceConstraintDto(id: 'c$i', pointAId: 'p${i - 1}', pointBId: 'p$i', distance: 5));
+      }
+      final watch = Stopwatch()..start();
+      final m = analyseSketchMobility(
+        points: pts,
+        constraints: cons,
+        lineEndpoints: (_) => throw StateError('no lines'),
+        startIds: {'p99'},
+        pinnedPointIds: {'p0'},
+      );
+      watch.stop();
+      expect(m.dof, 99 * 2 - 99);
+      expect(watch.elapsedMilliseconds, lessThan(1000));
+    });
+  });
+
   final library = _hostLibrary();
   group('projector vs SolveSpace (reference engine)', () {
     if (library == null) {
