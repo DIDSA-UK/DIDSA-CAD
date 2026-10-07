@@ -6,15 +6,21 @@
 // constrained point slides along the permitted path while the shape keeps changing. The backend remains the authority (the
 // drop sends the result as a wish and the real solve returns the final positions and DOF).
 //
-// Method (same family as lib/motion/local_retraction.dart, the assembly projector):
+// Method (the same family as lib/motion/local_retraction.dart, the assembly projector):
 //   * residuals + exact Jacobians per constraint type via forward-mode automatic differentiation over the 2-D coordinates of
 //     the points a constraint touches (a few doubles per constraint; no finite differences, no solver);
-//   * sequential nearest-point Gauss-Newton: x <- x + y0 - Aᵀ(A Aᵀ + λI)⁻¹(A y0 + r) with A = J W⁻¹ (W = per-coordinate
-//     stiffness), y0 = the (trust-limited) step towards the wish. The minimum-norm correction is what makes redundant but
-//     consistent webs (a slot's tangent/equal-radius ring, a polygon's equal-length chain) harmless: no rank decision, no
-//     wrong-root pick, because the proposal already sits next to the manifold and only a small correction is needed;
+//   * continuation, not a one-shot projection: start from the last accepted frame (which is on the constraint manifold) and
+//     walk towards the wish. Each step pulls towards the wish with the minimum-norm correction
+//     x <- x + y0 - Aᵀ(A Aᵀ + λI)⁻¹(A y0 + r)  (A = J W⁻¹, W = per-coordinate stiffness, y0 = the pull), is capped to a trust
+//     radius, brought back onto the manifold by damped Newton correctors, and is reverted + halved if that fails. So the
+//     answer is always a feasible point, a wish beyond a wall lands on the wall instead of failing, and the branch is kept;
+//   * the min-norm correction makes redundant but consistent webs (a slot's tangent/equal-radius ring, a polygon's chain)
+//     harmless: no rank decision, no wrong-root pick, because the walk never leaves the neighbourhood of the manifold;
+//   * damping: along a curved constraint the plain pull overshoots by (1 + wish distance / curvature radius) and zigzags, so
+//     every step must bring the wish closer (else its multiplier is halved), and a slow monotone tail is extrapolated (Aitken);
 //   * component restricted: only points connected to the dragged point through constraints (without crossing pinned points)
-//     are variables - a 10x10 grid of unconnected rectangles costs one rectangle.
+//     are variables - a 10x10 grid of unconnected rectangles costs one rectangle;
+//   * the same Jacobians give a mobility oracle ([analyseSketchMobility]): rank, DOF and per-point free motion.
 //
 // A constraint type the projector cannot evaluate (cubic-spline tangency) makes the whole call report `unsupported`, and the
 // caller keeps its non-local path for that drag.
@@ -75,11 +81,12 @@ class SketchProjection {
   });
 }
 
-/// Stiffness of a point the caller does not care to keep still: corrections land here first (the SolveSpace `dragged[]` idea,
-/// reversed - grabbed and proposal points are stiff, everything else follows).
+/// Stiffness of a point the caller does not care to keep still: corrections land here first (grabbed and proposal points are
+/// stiff = 1, everything else follows). Small enough that a follower's pull back to where it was costs the grabbed point
+/// ~1e-4 of its tracking.
 const double kProjectorFollowerStiffness = 0.01;
-/// Sequential nearest-point steps (pulling towards the wish) before the constraint-only polish.
-const int kProjectorNearestIterations = 3;
+
+/// Walking steps (pull towards the wish, then correct) per call, at most.
 const int kProjectorNearestMax = 24;
 
 /// A walking step that moves nothing further than this fraction of the group's size has arrived.
@@ -88,20 +95,20 @@ const double kProjectorArrived = 1e-5;
 /// Smallest step multiplier before a walk that cannot get closer to the wish is declared arrived.
 const double kProjectorMinOmega = 1.0 / 32;
 
-/// Upper bound of the extrapolation factor on a walking step.
+/// Upper bound of the (Aitken) extrapolation factor on a walking step.
 const double kProjectorMaxBoost = 8.0;
 
 /// Corrector steps after each walking step before it is judged.
 const int kProjectorCorrectors = 6;
 
-/// Constraint-only steps after the walk (quadratic convergence; a healthy frame needs 1-3).
+/// Constraint-only steps to make the start feasible (a healthy frame needs 0-2).
 const int kProjectorMaxPolish = 10;
 
 /// Absolute residual tolerance is `kProjectorTolerance * max(1, group diagonal)`.
 const double kProjectorTolerance = 1e-6;
 
-/// Wished displacement (sketch units, scaled metric) per walking step: at least this, or [kProjectorTrustDiagonal] of the
-/// group's diagonal.
+/// Largest displacement of one walking step (sketch units): at least [kProjectorTrust], or [kProjectorTrustDiagonal] of the
+/// group's diagonal. A step whose correctors cannot restore feasibility is reverted and the radius halved.
 const double kProjectorTrust = 2.0;
 const double kProjectorTrustDiagonal = 0.1;
 
