@@ -58,6 +58,7 @@ from dataclasses import dataclass, replace
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Section
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
 from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeFace,
@@ -89,7 +90,7 @@ from app.document.extrude import (
     select_profiles,
     wire_for_profile,
 )
-from app.document.loft_seam import locate_seam, reseam_order
+from app.document.loft_seam import best_alignment, locate_seam, reseam_order
 from app.document.models import LoftFeature, LoftSection, Part, ResolvedPlane, SketchFeature
 from app.document.shell_ops import thicken_shell_to_solid
 from app.document.plane_geometry import is_mirrored_basis
@@ -667,7 +668,7 @@ def _mid_section_warnings(solid: TopoDS_Shape, basis_a: ResolvedPlane, basis_b: 
     return []
 
 
-def _wires_from_resolved(resolved: list) -> list[TopoDS_Wire]:
+def _wires_from_resolved(resolved: list, auto_align: bool = False) -> list[TopoDS_Wire]:
     """Shared twist-alignment + wire-building step for both the closed-solid
     and open-thickness paths below: each resolved section's own wire
     (`wire_for_profile` for a closed `_ResolvedClosedSection`,
@@ -692,10 +693,66 @@ def _wires_from_resolved(resolved: list) -> list[TopoDS_Wire]:
         if index > 0 and reference_angle_0 is not None and entry.reference_angle is not None:
             twist = reference_angle_0 - entry.reference_angle
             wire = _rotate_wire(wire, entry.basis, twist)
+        if auto_align and _wants_auto_align(entry) and wires:
+            _auto_align_entry(entry, wire, wires[-1])
         if _is_reseamed(entry):
             wire = _reseam_wire(wire, entry.seam_param, entry.reverse)
         wires.append(wire)
     return wires
+
+
+# How many points around each closed profile `_auto_align_entry` compares.
+_AUTO_ALIGN_SAMPLES = 48
+
+
+def _wants_auto_align(entry) -> bool:
+    """A closed section the user left on automatic: no explicit seam or direction, and no
+    reference point (that older twist control keeps its own rotation behaviour)."""
+    return (
+        isinstance(entry, _ResolvedClosedSection)
+        and entry.seam_param is None
+        and not entry.reverse
+        and entry.reference_angle is None
+    )
+
+
+def _sample_wire(wire: TopoDS_Wire, count: int) -> list[tuple[float, float, float]]:
+    """`count` points at equal arc-length fractions around `wire`, from its current start."""
+    edges = _wire_edges_in_order(wire)
+    lengths = [_edge_length(edge) for edge in edges]
+    total = sum(lengths)
+    samples: list[tuple[float, float, float]] = []
+    for k in range(count):
+        target = k / count * total
+        index = 0
+        while index < len(edges) - 1 and target >= lengths[index]:
+            target -= lengths[index]
+            index += 1
+        t = target / lengths[index] if lengths[index] > 0 else 0.0
+        adaptor = BRepAdaptor_Curve(edges[index])
+        first, last = adaptor.FirstParameter(), adaptor.LastParameter()
+        reversed_in_wire = edges[index].Orientation() == TopAbs_REVERSED
+        parameter = last - t * (last - first) if reversed_in_wire else first + t * (last - first)
+        point = adaptor.Value(parameter)
+        samples.append((point.X(), point.Y(), point.Z()))
+    return samples
+
+
+def _auto_align_entry(entry: _ResolvedClosedSection, wire: TopoDS_Wire, previous_wire: TopoDS_Wire) -> None:
+    """Chooses `entry`'s start vertex and direction so its profile follows `previous_wire`
+    with the least twist (see `loft_seam.best_alignment`), and records them on `entry` so
+    `_reseam_wire` applies them. Best effort: any failure leaves the section on the loft's
+    default correspondence."""
+    try:
+        shift, reverse = best_alignment(
+            _sample_wire(previous_wire, _AUTO_ALIGN_SAMPLES), _sample_wire(wire, _AUTO_ALIGN_SAMPLES)
+        )
+    except Exception:  # noqa: BLE001 - alignment is an improvement, never a reason to fail the loft
+        logger.warning("Loft auto-alignment failed - using the default correspondence", exc_info=True)
+        return
+    if shift or reverse:
+        entry.seam_param = shift / _AUTO_ALIGN_SAMPLES if shift else None
+        entry.reverse = reverse
 
 
 def _is_reseamed(entry) -> bool:
@@ -873,7 +930,7 @@ def resolve_loft_from_bodies(
             _resolve_closed_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
             for index, section in enumerate(feature.sections)
         ]
-        wires = _wires_from_resolved(resolved)
+        wires = _wires_from_resolved(resolved, auto_align=True)
         wires = _apply_alignment_point_translation(
             feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
         )
@@ -886,6 +943,12 @@ def resolve_loft_from_bodies(
         for wire in wires:
             loft_maker.AddWire(wire)
         loft_maker.Build()
+        if not loft_maker.IsDone() and any(_is_reseamed(entry) for entry in resolved):
+            # The explicit start vertices did not loft; let OCCT search for a correspondence instead.
+            loft_maker = BRepOffsetAPI_ThruSections(True, feature.ruled)
+            for wire in wires:
+                loft_maker.AddWire(wire)
+            loft_maker.Build()
         if not loft_maker.IsDone():
             raise _loft_failed("could not loft between the given sections")
         solid = loft_maker.Shape()
@@ -908,7 +971,7 @@ def resolve_loft_from_bodies(
             _resolve_closed_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
             for index, section in enumerate(feature.sections)
         ]
-        wires = _wires_from_resolved(resolved)
+        wires = _wires_from_resolved(resolved, auto_align=True)
         wires = _apply_alignment_point_translation(
             feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
         )
@@ -920,6 +983,11 @@ def resolve_loft_from_bodies(
         for wire in wires:
             loft_maker.AddWire(wire)
         loft_maker.Build()
+        if not loft_maker.IsDone() and any(_is_reseamed(entry) for entry in resolved):
+            loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
+            for wire in wires:
+                loft_maker.AddWire(wire)
+            loft_maker.Build()
         if not loft_maker.IsDone():
             raise _loft_failed("could not loft a surface between the given closed sections")
         shell = loft_maker.Shape()

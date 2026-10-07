@@ -53,3 +53,49 @@ def reseam_order(edge_count: int, index: int, local_t: float, reverse: bool) -> 
     else:
         order = [(index, "second")] + [(edge, "whole") for edge in cyclic[1:]] + [(index, "first")]
     return list(reversed(order)) if reverse else order
+
+
+Point3 = tuple[float, float, float]
+
+
+def _centred(points: list[Point3]) -> list[Point3]:
+    count = len(points)
+    cx = sum(p[0] for p in points) / count
+    cy = sum(p[1] for p in points) / count
+    cz = sum(p[2] for p in points) / count
+    return [(p[0] - cx, p[1] - cy, p[2] - cz) for p in points]
+
+
+def best_alignment(reference: list[Point3], candidate: list[Point3]) -> tuple[int, bool]:
+    """The start offset and direction that make `candidate` follow `reference` most
+    closely, so the loft joins corresponding points and does not twist.
+
+    Both lists are the same number of points sampled at equal arc-length fractions
+    around a closed profile. Each is centred on its own centroid first (the two
+    profiles sit on different planes). Returns `(shift, reverse)`: the aligned
+    candidate is `candidate[(shift + i) % n]` for `reverse=False`, or
+    `candidate[(shift - i) % n]` for `reverse=True`, matched against `reference[i]` -
+    the order `loft._reseam_wire` produces for `seam_param = shift / n`. Ties prefer
+    no shift and no reversal, so an already-aligned loft is left untouched."""
+    count = len(reference)
+    if count == 0 or count != len(candidate):
+        raise ValueError("reference and candidate need the same, non-zero number of samples")
+    ref = _centred(reference)
+    cand = _centred(candidate)
+
+    def cost(shift: int, reverse: bool) -> float:
+        total = 0.0
+        for i in range(count):
+            j = (shift - i) % count if reverse else (shift + i) % count
+            total += sum((a - b) ** 2 for a, b in zip(ref[i], cand[j]))
+        return total
+
+    best = (0, False)
+    best_cost = cost(0, False)
+    for reverse in (False, True):
+        for shift in range(count):
+            candidate_cost = cost(shift, reverse)
+            # A tiny relative margin keeps floating point noise from flipping an exact tie.
+            if candidate_cost < best_cost * (1 - 1e-9) - 1e-12:
+                best, best_cost = (shift, reverse), candidate_cost
+    return best
