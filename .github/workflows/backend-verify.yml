@@ -27,6 +27,15 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
     strategy:
       matrix:
+        # `suite` splits the tests into two parallel legs per platform: the
+        # gear / bevel / rack / planetary tests (pytest marker `gears`, set by
+        # file name in tests/conftest.py - the slowest, real-geometry part of
+        # the suite) and everything else. Wall-clock is now the slower leg
+        # instead of the sum, and a gear-only failure no longer hides behind
+        # (or waits for) the rest of the suite. Same tests overall: every test
+        # is in exactly one of `-m "not gears"` / `-m gears`.
+        platform: [linux/amd64, linux/arm64]
+        suite: [core, gears]
         include:
           - platform: linux/amd64
             runs-on: ubuntu-latest
@@ -45,6 +54,10 @@ jobs:
           platforms: ${{ matrix.platform }}
           tags: didsa-cad-backend:test
           load: true
+          # Four legs build the same two images; share layers between them
+          # (and between runs) so the OCCT/conda layers are not rebuilt each time.
+          cache-from: type=gha,scope=backend-${{ matrix.platform }}
+          cache-to: type=gha,scope=backend-${{ matrix.platform }},mode=max
 
       # Speed: `--dist=worksteal` (vs. the previous default `load`) cut local
       # wall-clock 24:11 -> 15:48 for the same 2049 tests, measured directly
@@ -66,8 +79,14 @@ jobs:
       # both this session. Split out into its own serial invocation so CI
       # stops reporting spurious failures for unrelated PRs - costs ~20s,
       # not worth trading away for parallelism on a file only 8 tests long.
-      - name: Run backend tests inside container
+      - name: Run backend tests inside container (${{ matrix.suite }})
         run: |
+          if [ "${{ matrix.suite }}" = "gears" ]; then
+            # The planetary job-concurrency tests are serial-only (see above).
+            CMD='python -m pytest tests/ -v -m gears -n auto --dist=worksteal --ignore=tests/test_planetary_gear_jobs.py && python -m pytest tests/test_planetary_gear_jobs.py -v'
+          else
+            CMD='python -m pytest tests/ -v -m "not gears" -n auto --dist=worksteal'
+          fi
           docker run --rm --platform ${{ matrix.platform }} \
             didsa-cad-backend:test \
-            bash -c "python -m pytest tests/ -v -n auto --dist=worksteal --ignore=tests/test_planetary_gear_jobs.py && python -m pytest tests/test_planetary_gear_jobs.py -v"
+            bash -c "$CMD"
