@@ -525,6 +525,69 @@ def test_solve_and_refresh_with_anchor_keeps_the_anchored_point_fixed():
     assert points_by_id[a["id"]]["y"] == pytest.approx(4.0)
 
 
+def test_solve_and_refresh_applies_point_updates_before_solving_in_one_request():
+    # The drag drop's wish: positions ride in the solve request instead of one PATCH per point.
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+    b = _create_point(sketch["id"], 10.0, 0.0)
+    client.post(
+        f"/sketch/sketches/{sketch['id']}/constraints",
+        json={"point_a_id": a["id"], "point_b_id": b["id"], "distance": 10.0},
+    )
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/solve-and-refresh",
+        json={
+            "anchor_point_ids": [a["id"]],
+            "point_updates": [{"id": a["id"], "x": 3.0, "y": 4.0}, {"id": b["id"], "x": 3.0, "y": 14.0}],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["solve"]["converged"] is True
+    points_by_id = {p["id"]: p for p in body["points"]}
+    # the anchored point sits exactly where the wish put it; the other settles around it
+    assert points_by_id[a["id"]]["x"] == pytest.approx(3.0)
+    assert points_by_id[a["id"]]["y"] == pytest.approx(4.0)
+    assert math.hypot(
+        points_by_id[b["id"]]["x"] - 3.0, points_by_id[b["id"]]["y"] - 4.0
+    ) == pytest.approx(10.0)
+    # and the positions persist for the next request
+    assert client.get(f"/sketch/sketches/{sketch['id']}/points/{a['id']}").json()["x"] == pytest.approx(3.0)
+
+
+def test_plain_solve_accepts_point_updates_too():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 0.0, 0.0)
+
+    response = client.post(
+        f"/sketch/sketches/{sketch['id']}/solve",
+        json={"anchor_point_ids": [a["id"]], "point_updates": [{"id": a["id"], "x": 7.0, "y": 8.0}]},
+    )
+
+    assert response.status_code == 200
+    assert client.get(f"/sketch/sketches/{sketch['id']}/points/{a['id']}").json()["y"] == pytest.approx(8.0)
+
+
+def test_point_updates_are_all_or_nothing_and_refuse_the_origin():
+    sketch = _create_sketch()
+    a = _create_point(sketch["id"], 1.0, 1.0)
+
+    unknown = client.post(
+        f"/sketch/sketches/{sketch['id']}/solve-and-refresh",
+        json={"point_updates": [{"id": a["id"], "x": 5.0, "y": 5.0}, {"id": "nope", "x": 0.0, "y": 0.0}]},
+    )
+    assert unknown.status_code == 404
+    assert client.get(f"/sketch/sketches/{sketch['id']}/points/{a['id']}").json()["x"] == pytest.approx(1.0)
+
+    origin = client.post(
+        f"/sketch/sketches/{sketch['id']}/solve",
+        json={"point_updates": [{"id": sketch["origin_point_id"], "x": 5.0, "y": 5.0}]},
+    )
+    assert origin.status_code == 400
+
+
 def test_solve_and_refresh_reports_non_convergence_same_as_plain_solve():
     sketch = _create_sketch()
     a = _create_point(sketch["id"], 0.0, 0.0)

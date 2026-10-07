@@ -47,6 +47,14 @@ class PointUpdate(BaseModel):
     y: float
 
 
+class PointPlacement(BaseModel):
+    """One point's wished position, carried by SolveRequest.point_updates."""
+
+    id: str
+    x: float
+    y: float
+
+
 class PointResponse(BaseModel):
     id: str
     x: float
@@ -1290,9 +1298,16 @@ class SolveRequest(BaseModel):
     settles around it, instead of every Point (including the one the user
     was just holding) being equally free to move. Never persisted - each
     solve call is independent, and omitting the body entirely (as every
-    caller did before this field existed) is equivalent to an empty list."""
+    caller did before this field existed) is equivalent to an empty list.
+
+    `point_updates` is the drag drop's *wish*: positions written to the
+    sketch (all-or-nothing, as one atomic step) before the solve runs, so
+    "sync every point the client moved, then solve" is one request instead
+    of one PATCH per point plus the solve. The sketch origin cannot be
+    placed (same rule as PATCH .../points/{id})."""
 
     anchor_point_ids: list[str] = []
+    point_updates: list[PointPlacement] = []
 
 
 class SketchStateResponse(BaseModel):

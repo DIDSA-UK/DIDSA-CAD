@@ -2755,8 +2755,12 @@ class SketchController extends ChangeNotifier {
   /// [_refreshConstraints] triple collapses into this one request, since
   /// [SketchApiClient.solveAndRefresh] already returns the post-solve
   /// Points/Constraints/profile alongside the solve result itself.
-  Future<void> _solveAndTrackDof({List<String> anchorPointIds = const []}) async {
-    final result = await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds);
+  Future<void> _solveAndTrackDof({
+    List<String> anchorPointIds = const [],
+    Map<String, (double, double)> pointUpdates = const {},
+  }) async {
+    final result =
+        await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds, pointUpdates: pointUpdates);
     _dof = result.solve.dof;
     _lastSolveConverged = result.solve.converged;
     _solverReportedFailedConstraintIds = result.solve.solverReportedFailedConstraintIds;
@@ -7129,6 +7133,19 @@ class SketchController extends ChangeNotifier {
   /// Test-only reference engine, see the constructor.
   final SketchClampOverride? _dragClampOverride;
 
+  /// The drop's wish: where every Point the drag's local clamps moved now sits (see [_dragReflowedPointIds]), handed to
+  /// the backend inside the solve request ([SketchApiClient.solveAndRefresh]'s `pointUpdates`) instead of one PATCH per
+  /// Point. Clears the set.
+  Map<String, (double, double)> _takeDragWish() {
+    final wish = <String, (double, double)>{};
+    for (final id in _dragReflowedPointIds) {
+      final p = points[id];
+      if (p != null && id != _originPointId) wish[id] = (p.x, p.y);
+    }
+    _dragReflowedPointIds.clear();
+    return wish;
+  }
+
   /// Set by [_clampDragFrame] when the dragged group holds a constraint the projector has no model for, so a caller can
   /// tell "this frame was rejected" from "this drag cannot be clamped locally at all".
   bool _dragSolveUnsupported = false;
@@ -7471,21 +7488,18 @@ class SketchController extends ChangeNotifier {
       await _runGuarded(() async {
         final startPoints = dragStartPoints ?? const <String, (double, double)>{};
         _pushUndo(() async {
+          // One request: the pre-drag positions are the wish, the solve refreshes the sketch.
+          final restore = <String, (double, double)>{};
           for (final entry in startPoints.entries) {
             final current = points[entry.key];
-            if (current == null || (current.x == entry.value.$1 && current.y == entry.value.$2)) continue;
-            final restored = await _api.updatePoint(_sketchId!, entry.key, entry.value.$1, entry.value.$2);
-            points[entry.key] = SketchPointView(id: restored.id, x: restored.x, y: restored.y);
+            if (current == null || entry.key == _originPointId) continue;
+            if (current.x == entry.value.$1 && current.y == entry.value.$2) continue;
+            restore[entry.key] = entry.value;
           }
-          await _solveAndTrackDof();
+          await _solveAndTrackDof(pointUpdates: restore);
         });
         await _autoCoincideIfNear(pointId, droppedPoint.x, droppedPoint.y);
-        for (final id in _dragReflowedPointIds) {
-          final p = points[id];
-          if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
-        }
-        _dragReflowedPointIds.clear();
-        await _solveAndTrackDof(anchorPointIds: [pointId]);
+        await _solveAndTrackDof(anchorPointIds: [pointId], pointUpdates: _takeDragWish());
       });
       return;
     }
@@ -7569,18 +7583,14 @@ class SketchController extends ChangeNotifier {
       // for all of them sit frozen at their pre-drag values for the whole
       // drag, and this call hands it a single, discontinuous jump instead
       // of a small settle from an already-correct seed.
-      for (final id in _dragReflowedPointIds) {
-        final p = points[id];
-        if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
-      }
-      _dragReflowedPointIds.clear();
+      // (The sync rides in the solve request below as its wish: one request, not one PATCH per Point.)
       // Anchored so the just-dropped Point stays exactly where the user put
       // it and the rest of the Sketch settles around it, instead of every
       // Point (including this one) being equally free to move - Phase 2 of
       // docs/sketcher-overhaul-scope.md. Also gives the auto-coincide above
       // its intuitive result: the *other*, pre-existing Point moves to meet
       // this one, not the other way around.
-      await _solveAndTrackDof(anchorPointIds: [pointId]);
+      await _solveAndTrackDof(anchorPointIds: [pointId], pointUpdates: _takeDragWish());
     });
   }
 
@@ -7782,14 +7792,13 @@ class SketchController extends ChangeNotifier {
         await _autoCoincideIfNear(line.endPointId, droppedEnd.x, droppedEnd.y);
       }
       // Solver-drag-findings fix - mirrors [endPointDrag]'s own sync step.
-      for (final id in _dragReflowedPointIds) {
-        final p = points[id];
-        if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
-      }
-      _dragReflowedPointIds.clear();
+      // The sync rides in the solve request as its wish (see [_takeDragWish]).
       // Both endpoints anchored - mirrors [endPointDrag]'s reasoning, applied
       // to the whole dropped Line rather than a single Point.
-      await _solveAndTrackDof(anchorPointIds: [line.startPointId, line.endPointId]);
+      await _solveAndTrackDof(
+        anchorPointIds: [line.startPointId, line.endPointId],
+        pointUpdates: _takeDragWish(),
+      );
     });
   }
 

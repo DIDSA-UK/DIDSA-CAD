@@ -223,6 +223,18 @@ class _FakeBackend {
     return (arc['center_point_id'] as String, arc['start_point_id'] as String);
   }
 
+  /// The real backend's `SolveRequest.point_updates`: the drop's wish, written before the solve.
+  void _applyPointUpdates(Map<String, dynamic> body) {
+    for (final update in (body['point_updates'] as List<dynamic>? ?? const [])) {
+      final u = update as Map<String, dynamic>;
+      final point = points[u['id']];
+      if (point != null) {
+        point['x'] = (u['x'] as num).toDouble();
+        point['y'] = (u['y'] as num).toDouble();
+      }
+    }
+  }
+
   http.Response handle(http.Request request) {
     final path = request.url.path;
     requestLog.add('${request.method} $path');
@@ -2226,6 +2238,7 @@ class _FakeBackend {
 
     final solveMatch = RegExp(r'^/sketch/sketches/[^/]+/solve$').hasMatch(path);
     if (solveMatch && request.method == 'POST') {
+      _applyPointUpdates(body);
       return _json(_solveResultBody(), 200);
     }
 
@@ -2234,6 +2247,7 @@ class _FakeBackend {
     // POST .../solve-and-refresh (SketchStateResponse).
     final solveAndRefreshMatch = RegExp(r'^/sketch/sketches/[^/]+/solve-and-refresh$').hasMatch(path);
     if (solveAndRefreshMatch && request.method == 'POST') {
+      _applyPointUpdates(body);
       return _json({
         'solve': _solveResultBody(),
         'points': points.values.toList(),
@@ -5335,10 +5349,12 @@ void main() {
       return;
     }
     late SketchController solved;
+    late _FakeBackend solvedBackend;
 
     setUp(() async {
       final bindings = libraryPath == null ? null : SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
       final localBackend = _FakeBackend();
+      solvedBackend = localBackend;
       final localClient = MockClient((request) async => localBackend.handle(request));
       solved = SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
       await solved.ensureSketch();
@@ -5556,6 +5572,38 @@ void main() {
             reason: 'still a rectangle');
       }
       await solved.endPointDrag();
+    });
+
+    test('the drop is one request: the points the drag moved ride in the solve, no PATCH per point', () async {
+      solved.selectDrawTool(SketchTool.polygon);
+      solved.setPolygonSides(6);
+      await solved.handleCanvasTap(20, 20);
+      await solved.handleCanvasTap(30, 20);
+      solved.exitToSelectMode();
+      final polygon = solved.polygons.values.single;
+      final edge = solved.lines[polygon.lineIds[1]]!;
+      solved.constraints['user-horizontal'] = HorizontalConstraintDto(
+        id: 'user-horizontal',
+        pointAId: edge.startPointId,
+        pointBId: edge.endPointId,
+        lineId: edge.id,
+      );
+      final vertexId = polygon.vertexPointIds[0];
+      final start = solved.points[vertexId]!;
+      solved.cursorX = start.x;
+      solved.cursorY = start.y;
+      expect(solved.beginPointDrag(vertexId), isTrue);
+      for (final target in [(32.0, 20.0), (35.0, 20.0), (38.0, 21.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+      }
+      expect(solvedBackend.requestLog.where((r) => r.startsWith('PATCH')), isEmpty,
+          reason: 'no per-frame traffic while the local clamp answers');
+      solvedBackend.requestLog.clear();
+      await solved.endPointDrag();
+      expect(solvedBackend.requestLog.where((r) => r.contains('/points/') && r.startsWith('PATCH')), isEmpty,
+          reason: 'the reflowed points are the solve request\'s wish, not separate PATCHes');
+      expect(solvedBackend.requestLog.where((r) => r.endsWith('/solve-and-refresh')), hasLength(1));
+      expect(solved.errorMessage, isNull);
     });
 
     test('a circle whose centre is dimensioned to another point slides around it, radius unchanged', () async {

@@ -1860,12 +1860,28 @@ def update_constraint_value(
     return _solve_result_response(result)
 
 
+def _apply_point_updates(sketch: Sketch, payload: SolveRequest | None) -> None:
+    """Writes `payload.point_updates` (the drag drop's wish) before a solve.
+    Validated in full first, so a bad id leaves the sketch untouched."""
+    if payload is None or not payload.point_updates:
+        return
+    for update in payload.point_updates:
+        _get_point_or_404(sketch, update.id)
+        if update.id == sketch.origin_point_id:
+            raise HTTPException(status_code=400, detail="Cannot move the sketch's origin point")
+    for update in payload.point_updates:
+        point = sketch.points[update.id]
+        point.x = update.x
+        point.y = update.y
+
+
 @router.post("/sketches/{sketch_id}/solve", response_model=SolveResultResponse)
 def solve(sketch_id: str, payload: SolveRequest | None = None) -> SolveResultResponse:
     """`payload` is optional (defaults to no anchors) so every caller from
     before drag-solve semantics existed - which POSTs no body at all -
     keeps working unchanged; see SolveRequest's own doc comment."""
     sketch = _get_sketch_or_404(sketch_id)
+    _apply_point_updates(sketch, payload)
     anchor_point_ids = frozenset(payload.anchor_point_ids) if payload else frozenset()
     result = solve_sketch(sketch, anchor_point_ids=anchor_point_ids)
     return _solve_result_response(result)
@@ -1879,6 +1895,7 @@ def solve_and_refresh(sketch_id: str, payload: SolveRequest | None = None) -> Sk
     "just finished a mutation" case - same solve semantics as [solve]
     (including `anchor_point_ids`), no new solver behaviour."""
     sketch = _get_sketch_or_404(sketch_id)
+    _apply_point_updates(sketch, payload)
     anchor_point_ids = frozenset(payload.anchor_point_ids) if payload else frozenset()
     result = solve_sketch(sketch, anchor_point_ids=anchor_point_ids)
     return SketchStateResponse(

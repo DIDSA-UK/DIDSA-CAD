@@ -3187,35 +3187,54 @@ class SketchApiClient {
   /// [anchorPointIds] pins those Points for this one solve only (drag-solve
   /// semantics - see the backend's `SolveRequest` doc comment): the Point(s)
   /// the user just dragged stay exactly where dropped while the rest of the
-  /// Sketch settles around them. Omitted (the common case, every call site
-  /// that isn't a drag-drop) sends no body at all, same request the backend
-  /// already handled before this parameter existed.
-  Future<SolveResultDto> solve(String sketchId, {List<String> anchorPointIds = const []}) => _send(
+  /// Sketch settles around them. [pointUpdates] is the drop's *wish*: positions the backend
+  /// writes (atomically) before it solves, so syncing every point a drag moved is part of this
+  /// one request instead of one PATCH per point. Omitting both (the common case, every call
+  /// site that isn't a drag-drop) sends no body at all, same request the backend already
+  /// handled before these parameters existed.
+  Future<SolveResultDto> solve(
+    String sketchId, {
+    List<String> anchorPointIds = const [],
+    Map<String, (double, double)> pointUpdates = const {},
+  }) =>
+      _send(
         () => _httpClient.post(
-              _uri('/sketch/sketches/$sketchId/solve'),
-              headers: _headers,
-              body: anchorPointIds.isEmpty
-                  ? null
-                  : jsonEncode({'anchor_point_ids': anchorPointIds}),
-            ),
+          _uri('/sketch/sketches/$sketchId/solve'),
+          headers: _headers,
+          body: _solveBody(anchorPointIds, pointUpdates),
+        ),
         (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Phase 0 round-trip reduction: same solve semantics as [solve]
-  /// (including [anchorPointIds]'s drag-solve pinning), but returns the
+  /// (including [anchorPointIds]'s drag-solve pinning and [pointUpdates]'s wish), but returns the
   /// post-solve Points/Constraints/profile in the same response instead of
   /// requiring separate [listPoints]/[listConstraints]/[getProfile] calls
   /// afterward - the common "just finished a mutation" case.
-  Future<SketchStateDto> solveAndRefresh(String sketchId, {List<String> anchorPointIds = const []}) => _send(
+  Future<SketchStateDto> solveAndRefresh(
+    String sketchId, {
+    List<String> anchorPointIds = const [],
+    Map<String, (double, double)> pointUpdates = const {},
+  }) =>
+      _send(
         () => _httpClient.post(
-              _uri('/sketch/sketches/$sketchId/solve-and-refresh'),
-              headers: _headers,
-              body: anchorPointIds.isEmpty
-                  ? null
-                  : jsonEncode({'anchor_point_ids': anchorPointIds}),
-            ),
+          _uri('/sketch/sketches/$sketchId/solve-and-refresh'),
+          headers: _headers,
+          body: _solveBody(anchorPointIds, pointUpdates),
+        ),
         (body) => SketchStateDto.fromJson(body as Map<String, dynamic>),
       );
+
+  String? _solveBody(List<String> anchorPointIds, Map<String, (double, double)> pointUpdates) {
+    if (anchorPointIds.isEmpty && pointUpdates.isEmpty) return null;
+    return jsonEncode({
+      'anchor_point_ids': anchorPointIds,
+      if (pointUpdates.isNotEmpty)
+        'point_updates': [
+          for (final entry in pointUpdates.entries) {'id': entry.key, 'x': entry.value.$1, 'y': entry.value.$2},
+        ],
+    });
+  }
 
   Future<ProfileDetectionDto> getProfile(String sketchId) => _send(
         () => _httpClient.get(_uri('/sketch/sketches/$sketchId/profile'), headers: _headers),
