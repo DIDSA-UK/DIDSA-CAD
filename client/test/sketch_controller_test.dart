@@ -4642,9 +4642,9 @@ void main() {
   });
 
   test(
-      'dragging a Polygon edge (via the beginLineDrag redirect) resizes its circumradius '
-      'dimension the same way dragging its vertex directly already does - task #94\'s own '
-      'shape-preserving behaviour, reached through the edge-drag entry point too', () async {
+      'dragging a Polygon edge (via the beginLineDrag redirect) is clamped by a confirmed '
+      'circumradius dimension the same way dragging its vertex directly is - the dimension '
+      'drives, reached through the edge-drag entry point too', () async {
     controller.selectDrawTool(SketchTool.polygon);
     controller.setPolygonSides(6);
     await controller.handleCanvasTap(20, 20); // center
@@ -4675,19 +4675,20 @@ void main() {
     expect(controller.errorMessage, isNull);
     final updatedRadiusConstraint =
         controller.constraints.values.whereType<DistanceConstraintDto>().single;
-    expect(updatedRadiusConstraint.distance, closeTo(25, 1e-6));
+    // The confirmed dimension drives: the radius stays 10, not the dragged 25.
+    expect(updatedRadiusConstraint.distance, closeTo(10, 1e-6));
 
     final center = controller.points[polygon.centerPointId]!;
     for (final id in polygon.vertexPointIds) {
       final vertex = controller.points[id]!;
       final radius = math.sqrt(math.pow(vertex.x - center.x, 2) + math.pow(vertex.y - center.y, 2));
-      expect(radius, closeTo(25, 1e-6));
+      expect(radius, closeTo(10, 1e-6));
     }
   });
 
   test(
-      'task #94: dragging a Polygon vertex resizes its circumradius dimension instead of the '
-      'confirmed DistanceConstraint fighting it back to the old size', () async {
+      'dragging a Polygon vertex is clamped by its confirmed circumradius dimension: the '
+      'polygon rotates but its size stays driven by the dimension', () async {
     controller.selectDrawTool(SketchTool.polygon);
     controller.setPolygonSides(6);
     await controller.handleCanvasTap(20, 20); // center
@@ -4718,53 +4719,53 @@ void main() {
     expect(controller.errorMessage, isNull);
     final updatedRadiusConstraint =
         controller.constraints.values.whereType<DistanceConstraintDto>().single;
-    // The drag grew the circumradius from 10 to 15 - it didn't snap back.
-    expect(updatedRadiusConstraint.distance, closeTo(15, 1e-6));
+    // The drag tried to grow the circumradius from 10 to 15 - the dimension clamps it.
+    expect(updatedRadiusConstraint.distance, closeTo(10, 1e-6));
 
     final center = controller.points[controller.polygons.values.single.centerPointId]!;
     for (final id in controller.polygons.values.single.vertexPointIds) {
       final vertex = controller.points[id]!;
       final radius = math.sqrt(math.pow(vertex.x - center.x, 2) + math.pow(vertex.y - center.y, 2));
-      expect(radius, closeTo(15, 1e-6));
+      expect(radius, closeTo(10, 1e-6));
     }
   });
 
-  test('task #94: undo after a Polygon vertex-drag-as-circumradius-edit restores the original radius',
-      () async {
+  test(
+      'a confirmed circumscribed reference-circle dimension clamps the polygon size while a '
+      'vertex is dragged', () async {
+    controller.togglePolygonReferenceCircles();
     controller.selectDrawTool(SketchTool.polygon);
     controller.setPolygonSides(5);
     await controller.handleCanvasTap(0, 0); // center
     await controller.handleCanvasTap(10, 0); // first vertex - radius 10
 
-    final radiusConstraint = controller.constraints.values.whereType<DistanceConstraintDto>().single;
-    final vertexId = radiusConstraint.pointBId;
-    // Bug fix: only an *already-confirmed* circumradius dimension is
-    // reinterpreted as a drag target (see [updatePointDrag]'s own doc
-    // comment) - a still-provisional one already resizes correctly under
-    // an ordinary drag without needing to be confirmed first, so this test
-    // confirms it explicitly to exercise the actual drag-as-dimension-edit
-    // path being tested here.
+    final polygon = controller.polygons.values.single;
+    final circle = controller.circles[polygon.circumscribedCircleId]!;
+    final radiusConstraint = controller.constraints.values
+        .whereType<DistanceConstraintDto>()
+        .firstWhere((c) => c.pointAId == circle.centerPointId && c.pointBId == circle.radiusPointId);
     controller.selectConstraint(radiusConstraint.id);
     await controller.updateSelectedConstraintValue(10);
     controller.exitToSelectMode();
 
+    final vertexId = polygon.vertexPointIds[0];
     final startVertex = controller.points[vertexId]!;
     controller.cursorX = startVertex.x;
     controller.cursorY = startVertex.y;
     expect(controller.beginPointDrag(vertexId), isTrue);
-    controller.updatePointDrag(20, 0); // 20 units from the (0, 0) center
+    controller.updatePointDrag(20, 0); // would be radius 20
     await controller.endPointDrag();
-    expect(
-      controller.constraints.values.whereType<DistanceConstraintDto>().single.distance,
-      closeTo(20, 1e-6),
-    );
 
-    await controller.undo();
-
-    expect(
-      controller.constraints.values.whereType<DistanceConstraintDto>().single.distance,
-      closeTo(10, 1e-6),
-    );
+    expect(controller.errorMessage, isNull);
+    final center = controller.points[polygon.centerPointId]!;
+    for (final id in polygon.vertexPointIds) {
+      final vertex = controller.points[id]!;
+      final radius = math.sqrt(math.pow(vertex.x - center.x, 2) + math.pow(vertex.y - center.y, 2));
+      expect(radius, closeTo(10, 1e-6));
+    }
+    for (final c in controller.constraints.values.whereType<DistanceConstraintDto>()) {
+      if (!c.provisional) expect(c.distance, closeTo(10, 1e-6));
+    }
   });
 
   test(

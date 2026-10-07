@@ -3683,11 +3683,66 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final basis = widget.sketchPlaneBasis;
     if (basis == null || !widget.sketchPlaneGridVisible) {
       _sketchPlaneGridNode = null;
+      _sketchGridKey = null;
       return;
     }
-    final node = buildSketchGridNode(basis);
+    // The grid follows the zoom level and view centre: cell size comes from
+    // the 1-2-5 ladder for the current mm-per-pixel, and the grid is centred
+    // on where the view centre meets the plane, snapped to the cell size.
+    var spacing = 2.5;
+    var centreX = 0.0;
+    var centreY = 0.0;
+    if (!_viewportSize.isEmpty) {
+      final camera = _camera.cameraFor(_viewportSize);
+      final centreRay = _toLocalRay(camera.screenPointToRay(_viewportCenter(), _viewportSize));
+      final hit = hitTestSketchPlane(centreRay, basis);
+      final unitsPerPixel = _camera.isPerspective
+          ? (hit == null ? double.nan : 2 * hit.$2 * math.tan(_camera.fovRadiansY / 2) / _viewportSize.height)
+          : 2 * _camera.halfHeight / _viewportSize.height;
+      spacing = sketchGridSpacingFor(unitsPerPixel);
+      if (hit != null) {
+        final (hitX, hitY) = worldPointToSketch(basis, hit.$1);
+        centreX = snapToGridSpacing(hitX, spacing);
+        centreY = snapToGridSpacing(hitY, spacing);
+      }
+    }
+    _sketchGridKey = (spacing, centreX, centreY);
+    final centredBasis = SketchPlaneBasis(
+      origin: basis.origin + basis.xAxis * centreX + basis.yAxis * centreY,
+      xAxis: basis.xAxis,
+      yAxis: basis.yAxis,
+      normal: basis.normal,
+    );
+    final node = buildSketchGridNode(centredBasis, spacing: spacing, extent: spacing * sketchGridHalfCells);
     _sketchPlaneGridNode = node;
     scene.add(node);
+  }
+
+  /// `(spacing, centreX, centreY)` the current grid node was built for -
+  /// [_refreshSketchGridForCamera] rebuilds it only when this changes.
+  (double, double, double)? _sketchGridKey;
+
+  /// Rebuilds the sketch grid when a camera move changed its cell size or
+  /// snapped centre. Called every build, so it must stay cheap when nothing
+  /// changed: one ray/plane hit and a record comparison.
+  void _refreshSketchGridForCamera() {
+    if (_scene == null || _sketchPlaneGridNode == null || _viewportSize.isEmpty) return;
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) return;
+    final camera = _camera.cameraFor(_viewportSize);
+    final hit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(_viewportCenter(), _viewportSize)), basis);
+    final unitsPerPixel = _camera.isPerspective
+        ? (hit == null ? double.nan : 2 * hit.$2 * math.tan(_camera.fovRadiansY / 2) / _viewportSize.height)
+        : 2 * _camera.halfHeight / _viewportSize.height;
+    final spacing = sketchGridSpacingFor(unitsPerPixel);
+    var centreX = 0.0;
+    var centreY = 0.0;
+    if (hit != null) {
+      final (hitX, hitY) = worldPointToSketch(basis, hit.$1);
+      centreX = snapToGridSpacing(hitX, spacing);
+      centreY = snapToGridSpacing(hitY, spacing);
+    }
+    if (_sketchGridKey != (spacing, centreX, centreY)) _syncSketchPlaneGridNode();
   }
 
   /// P17: mirrors [_syncSketchPlaneGridNode]'s remove-then-rebuild shape,
@@ -6559,6 +6614,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _viewportSize = size;
+        _refreshSketchGridForCamera();
         // On-device feedback ("make the origin an asterisk... it should
         // look the same independent of the zoom level"): projected fresh
         // every build, same as every other screen-space overlay below -

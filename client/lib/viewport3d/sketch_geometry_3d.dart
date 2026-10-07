@@ -1478,6 +1478,33 @@ List<(vm.Vector3, vm.Vector3)> sketchGridLinesFrom(
   return segments;
 }
 
+/// Half-width of the adaptive sketch grid, in cells either side of its centre
+/// - the grid always spans `2 * sketchGridHalfCells` cells whatever the zoom,
+/// so its primitive count stays constant.
+const int sketchGridHalfCells = 20;
+
+/// Smallest on-screen cell size, in pixels, the adaptive grid will choose.
+const double sketchGridMinCellPixels = 24;
+
+/// The adaptive grid's cell size for a view where one screen pixel spans
+/// [unitsPerPixel] world units (mm): the smallest 1-2-5 x 10^n value whose
+/// cell is at least [minCellPixels] wide on screen. Falls back to 2.5 for a
+/// degenerate (zero, negative, NaN or infinite) scale.
+double sketchGridSpacingFor(double unitsPerPixel, {double minCellPixels = sketchGridMinCellPixels}) {
+  final target = unitsPerPixel * minCellPixels;
+  if (!target.isFinite || target <= 0) return 2.5;
+  final decade = math.pow(10, (math.log(target) / math.ln10).floor()).toDouble();
+  for (final step in const [1.0, 2.0, 5.0]) {
+    if (step * decade >= target) return step * decade;
+  }
+  return 10 * decade;
+}
+
+/// Snaps [value] to the nearest multiple of [spacing], so a grid recentred
+/// on the view keeps its lines on multiples of the spacing from the sketch
+/// origin and does not appear to slide while panning.
+double snapToGridSpacing(double value, double spacing) => (value / spacing).roundToDouble() * spacing;
+
 /// P9: neutral, subdued grid-line colour and width - deliberately distinct
 /// from [sketchLineColor]/[sketchLineWidth] so grid lines read as backdrop
 /// structure, never mistaken for actually-drawn Sketch geometry. [sketchGridLineColor]'s

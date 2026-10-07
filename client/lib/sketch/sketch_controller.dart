@@ -2176,6 +2176,7 @@ class SketchController extends ChangeNotifier {
     _splineThroughPointIds.clear();
     _midpointAnchorX = null;
     _midpointAnchorY = null;
+    _midpointAnchorPointId = null;
     _threePointFirstX = null;
     _threePointFirstY = null;
     _threePointSecondX = null;
@@ -2434,6 +2435,10 @@ class SketchController extends ChangeNotifier {
 
   double? _midpointAnchorX;
   double? _midpointAnchorY;
+
+  /// The existing Point (if any) the first tap of a midpoint-method Line snapped to - the
+  /// Line's midpoint is then tied to it with a native `at_midpoint` constraint on the second tap.
+  String? _midpointAnchorPointId;
 
   /// The first tap's sketch-space location under
   /// [LineConstructionMethod.midpoint] - the line's eventual center, not
@@ -4618,10 +4623,15 @@ class SketchController extends ChangeNotifier {
     final end = points[line.endPointId]!;
     final mx = (start.x + end.x) / 2;
     final my = (start.y + end.y) / 2;
-    for (final existing in points.values) {
-      final dx = existing.x - mx;
-      final dy = existing.y - my;
-      if (dx * dx + dy * dy <= 1e-9) return existing.id;
+    // Reuse only a Point already tied to this line's midpoint. An unrelated
+    // Point (or the origin) that merely happens to sit there is not the
+    // midpoint, and picking it would leave nothing tracking the line.
+    for (final constraint in constraints.values) {
+      if (constraint is AtMidpointConstraintDto &&
+          constraint.lineId == lineId &&
+          points.containsKey(constraint.pointId)) {
+        return constraint.pointId;
+      }
     }
     final created = await _api.createPoint(_sketchId!, mx, my);
     points[created.id] = SketchPointView(id: created.id, x: created.x, y: created.y);
@@ -4633,7 +4643,11 @@ class SketchController extends ChangeNotifier {
     // Midpoint: SLVS_C_AT_MIDPOINT — solver maintains point at geometric
     // midpoint of line as endpoints move
     final midpointConstraint = await _api.createAtMidpointConstraint(_sketchId!, created.id, lineId);
-    _pushUndo(() async => _api.deleteConstraint(_sketchId!, midpointConstraint.id));
+    constraints[midpointConstraint.id] = midpointConstraint;
+    _pushUndo(() async {
+      await _api.deleteConstraint(_sketchId!, midpointConstraint.id);
+      constraints.remove(midpointConstraint.id);
+    });
 
     return created.id;
   }
@@ -5241,11 +5255,35 @@ class SketchController extends ChangeNotifier {
   /// carry the constraint id (the API response only exposes the derived
   /// [PolygonDto.radius] value, not which Constraint produced it).
   DistanceConstraintDto? _polygonRadiusConstraint(SketchPolygonView polygon) {
+    // The circumscribed reference circle's own radius constraint shares these
+    // exact endpoints, so more than one can match - prefer a confirmed
+    // (non-provisional) one, since that is the one a user dimension drives.
+    DistanceConstraintDto? fallback;
     for (final constraint in constraints.values) {
       if (constraint is DistanceConstraintDto &&
           constraint.pointAId == polygon.centerPointId &&
           constraint.pointBId == polygon.vertexPointIds[0]) {
-        return constraint;
+        if (!constraint.provisional) return constraint;
+        fallback ??= constraint;
+      }
+    }
+    return fallback;
+  }
+
+  /// The circumradius a user dimension currently *drives* for [polygon], or
+  /// null when none is confirmed (the Polygon is then free to resize).
+  /// Confirmed means a non-provisional centre-to-vertex-0 distance (the
+  /// Polygon's own radius or the circumscribed reference circle's - they
+  /// share endpoints), or a confirmed inscribed-circle radius, which
+  /// implies `R = inradius / cos(pi / sides)`.
+  double? _confirmedPolygonCircumradius(SketchPolygonView polygon) {
+    final radius = _polygonRadiusConstraint(polygon);
+    if (radius != null && !radius.provisional) return radius.distance;
+    final inscribedCircle = polygon.inscribedCircleId != null ? circles[polygon.inscribedCircleId] : null;
+    if (inscribedCircle != null) {
+      final inscribed = _circleRadiusConstraint(inscribedCircle);
+      if (inscribed != null && !inscribed.provisional) {
+        return inscribed.distance / math.cos(math.pi / polygon.sides);
       }
     }
     return null;
@@ -5473,8 +5511,11 @@ class SketchController extends ChangeNotifier {
     if (index == -1) return null;
     final dx = targetX - center.x;
     final dy = targetY - center.y;
-    final radius = math.sqrt(dx * dx + dy * dy);
-    if (radius < 1e-9) return null;
+    final dragRadius = math.sqrt(dx * dx + dy * dy);
+    if (dragRadius < 1e-9) return null;
+    // A confirmed circumradius (or inscribed radius) drives: the drag then only
+    // rotates the polygon, the size stays clamped to the dimension.
+    final radius = _confirmedPolygonCircumradius(polygon) ?? dragRadius;
     final baseAngle = math.atan2(dy, dx) - 2 * math.pi * index / polygon.sides;
     final result = <String, (double, double)>{};
     for (var i = 0; i < polygon.vertexPointIds.length; i++) {
@@ -6470,7 +6511,8 @@ class SketchController extends ChangeNotifier {
       radiusConstraint = _polygonRadiusConstraint(polygon);
       centerId = polygon.centerPointId;
       rimId = polygon.vertexPointIds[0];
-      dragTranslatesOnly = draggedPointId == polygon.centerPointId;
+      dragTranslatesOnly =
+          draggedPointId == polygon.centerPointId || _confirmedPolygonCircumradius(polygon) != null;
     } else if (slot != null) {
       positions = _closedFormSlotGeometry(slot, draggedPointId, targetX, targetY);
       radiusConstraint = _slotRadiusConstraint(slot);
@@ -14953,8 +14995,13 @@ class SketchController extends ChangeNotifier {
     if (_midpointAnchorX == null) {
       _selectionSet.clear();
       _ribbonVisible = false;
-      _midpointAnchorX = cursorX;
-      _midpointAnchorY = cursorY;
+      // Snap the centre onto an existing Point (the origin included) so the
+      // line's midpoint can be constrained to it on the second tap.
+      final snapId = _existingPointIdNear(cursorX, cursorY);
+      final snapPoint = snapId != null ? points[snapId] : null;
+      _midpointAnchorPointId = snapId;
+      _midpointAnchorX = snapPoint?.x ?? cursorX;
+      _midpointAnchorY = snapPoint?.y ?? cursorY;
       notifyListeners();
       return;
     }
@@ -14985,9 +15032,25 @@ class SketchController extends ChangeNotifier {
       });
       await _applyLineInference(line.id, endAId, inference);
 
+      // Tie the line's midpoint to the Point the first tap snapped to. The
+      // origin is never constrained directly: a fresh Point coincident with
+      // it takes the at_midpoint constraint instead, as [_pointIdAt] does.
+      final anchorId = _midpointAnchorPointId;
+      if (anchorId != null && points.containsKey(anchorId) && anchorId != endAId) {
+        final midpointPointId =
+            anchorId == _originPointId ? await _createPointCoincidentWithExisting(anchorId) : anchorId;
+        final midpointConstraint = await _api.createAtMidpointConstraint(_sketchId!, midpointPointId, line.id);
+        constraints[midpointConstraint.id] = midpointConstraint;
+        _pushUndo(() async {
+          await _api.deleteConstraint(_sketchId!, midpointConstraint.id);
+          constraints.remove(midpointConstraint.id);
+        });
+      }
+
       await _solveAndTrackDof();
       _midpointAnchorX = null;
       _midpointAnchorY = null;
+      _midpointAnchorPointId = null;
     });
   }
 
