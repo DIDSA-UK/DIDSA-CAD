@@ -7080,6 +7080,11 @@ class _PartScreenState extends State<PartScreen> {
   List<double?> _loftSeamParams = [];
   List<bool> _loftReverseFlags = [];
 
+  /// While editing an existing Loft, its stored sections - the panel only edits the alignment
+  /// fields, so everything else on a section (profile refs, a reference point) is carried
+  /// through from here instead of being dropped on the next save. Null for a brand-new Loft.
+  List<LoftSectionDto>? _loftStoredSections;
+
   /// Non-null while picking an `alignment_point` for `_loftSections[index]`
   /// in the 3D viewport - mirrors [_revolveActive]'s own "a dedicated
   /// selection-filter override is live" shape, narrowed to a single
@@ -7178,6 +7183,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftAlignmentPoints = List.filled(sections.length, null);
       _loftSeamParams = List.filled(sections.length, null);
       _loftReverseFlags = List.filled(sections.length, false);
+      _loftStoredSections = null;
       _loftGuideCurveRef = null;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {};
@@ -7230,6 +7236,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftAlignmentPoints = alignmentPoints;
       _loftSeamParams = seamParams;
       _loftReverseFlags = reverseFlags;
+      _loftStoredSections = feature.sections;
       _loftGuideCurveRef = guideCurveRef;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {
@@ -7260,12 +7267,7 @@ class _PartScreenState extends State<PartScreen> {
 
     final sections = [
       for (var i = 0; i < _loftSections.length; i++)
-        LoftSectionDto(
-          sketchFeatureId: _loftSections[i].id,
-          alignmentPoint: i < _loftAlignmentPoints.length ? _loftAlignmentPoints[i] : null,
-          seamParam: i < _loftSeamParams.length ? _loftSeamParams[i] : null,
-          reverse: i < _loftReverseFlags.length && _loftReverseFlags[i],
-        ),
+        _loftSectionDto(i),
     ];
     final guideCurveRefs = _loftGuideCurveRef == null ? <SketchEntityRefDto>[] : [_loftGuideCurveRef!];
 
@@ -7389,6 +7391,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftAlignmentPoints = [];
       _loftSeamParams = [];
       _loftReverseFlags = [];
+      _loftStoredSections = null;
       _loftGuideCurveRef = null;
       // Defensive: abandons an in-flight alignment-point/guide-curve
       // sub-pick if Confirm was pressed without finishing it first - pops
@@ -7424,6 +7427,7 @@ class _PartScreenState extends State<PartScreen> {
     final meshBefore = _meshBeforeLoft;
     final wasEditing = _editingLoftFeatureId != null;
     final editSnapshot = _loftEditSnapshot;
+    final storedSections = _loftStoredSections;
     setState(() {
       _featureTreeVisible = false;
       _loftSections = [];
@@ -7435,6 +7439,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftAlignmentPoints = [];
       _loftSeamParams = [];
       _loftReverseFlags = [];
+      _loftStoredSections = null;
       _loftGuideCurveRef = null;
       // Mirrors _confirmLoft's own identical defensive cleanup above.
       if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
@@ -7459,8 +7464,10 @@ class _PartScreenState extends State<PartScreen> {
         await _runGuarded(() async {
           final revertSections = [
             for (var i = 0; i < sections.length; i++)
-              LoftSectionDto(
-                sketchFeatureId: sections[i].id,
+              (storedSections != null && i < storedSections.length
+                      ? storedSections[i]
+                      : LoftSectionDto(sketchFeatureId: sections[i].id))
+                  .withAlignment(
                 alignmentPoint: i < editSnapshot.alignmentPoints.length ? editSnapshot.alignmentPoints[i] : null,
                 seamParam: i < editSnapshot.seamParams.length ? editSnapshot.seamParams[i] : null,
                 reverse: i < editSnapshot.reverseFlags.length && editSnapshot.reverseFlags[i],
@@ -7532,6 +7539,20 @@ class _PartScreenState extends State<PartScreen> {
       _selectionFilterOverrides.pop();
     });
     _scheduleLoftPreview();
+  }
+
+  /// Section [index] as sent to the backend: the stored section (when editing) or a bare one,
+  /// with the panel's current alignment point, seam and direction applied.
+  LoftSectionDto _loftSectionDto(int index) {
+    final stored = _loftStoredSections;
+    final base = stored != null && index < stored.length
+        ? stored[index]
+        : LoftSectionDto(sketchFeatureId: _loftSections[index].id);
+    return base.withAlignment(
+      alignmentPoint: index < _loftAlignmentPoints.length ? _loftAlignmentPoints[index] : null,
+      seamParam: index < _loftSeamParams.length ? _loftSeamParams[index] : null,
+      reverse: index < _loftReverseFlags.length && _loftReverseFlags[index],
+    );
   }
 
   /// [LoftPanel.onSeamChanged] - null returns that section to automatic alignment.

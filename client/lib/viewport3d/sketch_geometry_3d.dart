@@ -1419,13 +1419,17 @@ const int _sketchPlaneSurfaceFadeSteps = 8;
 /// already covers the full `[0, 80%]` interior - that band composites to a
 /// constant, near-full alpha - while progressively fewer layers still cover
 /// a point as its radius grows past 80%, tapering only that outer band).
-Node buildSketchPlaneSurfaceNode(SketchPlaneBasis basis, {required vm.Vector4 color}) {
+Node buildSketchPlaneSurfaceNode(
+  SketchPlaneBasis basis, {
+  required vm.Vector4 color,
+  double halfExtent = _sketchPlaneSurfaceHalfSize,
+}) {
   final layerAlpha = color.w / _sketchPlaneSurfaceFadeSteps;
   final primitives = <MeshPrimitive>[
     for (var step = 0; step < _sketchPlaneSurfaceFadeSteps; step++)
       () {
         final t = step / (_sketchPlaneSurfaceFadeSteps - 1);
-        final halfSize = _sketchPlaneSurfaceHalfSize * (0.8 + 0.2 * t);
+        final halfSize = halfExtent * (0.8 + 0.2 * t);
         final material = NormalDepthUnlitMaterial()
           ..alphaMode = AlphaMode.blend
           ..baseColorFactor = vm.Vector4(color.x, color.y, color.z, layerAlpha);

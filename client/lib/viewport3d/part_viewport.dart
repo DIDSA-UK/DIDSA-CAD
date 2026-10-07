@@ -3672,13 +3672,29 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _sketchPlaneSurfaceNode = null;
       return;
     }
+    // While the grid is shown the fill follows it (same centre and extent), so the grid never
+    // outgrows its own backing surface.
+    var gridSurface = widget.sketchPlaneGridVisible ? _sketchGridSurface : null;
+    if (gridSurface != null) {
+      // Ignore a grid left over from a different plane (the basis just changed).
+      final g = gridSurface.$1;
+      final samePlane = (g.origin - basis.origin).dot(basis.normal).abs() < 1e-6 &&
+          g.normal.dot(basis.normal) > 0.9999 &&
+          g.xAxis.dot(basis.xAxis) > 0.9999;
+      if (!samePlane) gridSurface = null;
+    }
     final node = buildSketchPlaneSurfaceNode(
-      basis,
+      gridSurface?.$1 ?? basis,
       color: vector4FromHex(widget.sketchPlaneSurfaceColourHex, opacity: widget.sketchPlaneSurfaceOpacity),
+      halfExtent: gridSurface?.$2 ?? sketchPlaneSurfaceSize / 2,
     );
     _sketchPlaneSurfaceNode = node;
     scene.add(node);
   }
+
+  /// The centred basis and half extent the current grid was built with, which the plane surface
+  /// reuses (see [_syncSketchPlaneSurfaceNode]); null before the first grid build.
+  (SketchPlaneBasis, double)? _sketchGridSurface;
 
   /// P9: mirrors [_syncSketchPlaneSurfaceNode] for the grid - additionally
   /// gated on [PartViewport.sketchPlaneGridVisible].
@@ -3689,8 +3705,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (oldNode != null) scene.remove(oldNode);
     final basis = widget.sketchPlaneBasis;
     if (basis == null || !widget.sketchPlaneGridVisible) {
+      final hadSurface = _sketchGridSurface != null;
       _sketchPlaneGridNode = null;
       _sketchGridKey = null;
+      _sketchGridSurface = null;
+      if (hadSurface) _syncSketchPlaneSurfaceNode();
       return;
     }
     // The grid follows the zoom level and view centre: cell size comes from
@@ -3723,6 +3742,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final node = buildSketchGridNode(centredBasis, spacing: spacing, extent: spacing * sketchGridHalfCells);
     _sketchPlaneGridNode = node;
     scene.add(node);
+    _sketchGridSurface = (centredBasis, spacing * sketchGridHalfCells);
+    _syncSketchPlaneSurfaceNode();
   }
 
   /// `(spacing, centreX, centreY)` the current grid node was built for -

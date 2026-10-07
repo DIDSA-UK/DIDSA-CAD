@@ -403,6 +403,11 @@ class LoftSectionDto {
   /// The backend `LoftSection.reverse`: flips this section's winding direction.
   final bool reverse;
 
+  /// The backend `LoftSection.edge_ref` of a section that lofts from a Body edge instead of a
+  /// Sketch. Kept as the raw JSON so such a loft round-trips through an edit untouched; its
+  /// [sketchFeatureId] is empty.
+  final Map<String, dynamic>? edgeRef;
+
   const LoftSectionDto({
     required this.sketchFeatureId,
     this.profileRefs = const [],
@@ -410,10 +415,29 @@ class LoftSectionDto {
     this.alignmentPoint,
     this.seamParam,
     this.reverse = false,
+    this.edgeRef,
   });
 
+  /// This section with the editable alignment fields replaced, keeping everything else
+  /// ([profileRefs], [referencePoint], [edgeRef]) the panel has no controls for.
+  LoftSectionDto withAlignment({
+    required SketchEntityRefDto? alignmentPoint,
+    required double? seamParam,
+    required bool reverse,
+  }) =>
+      LoftSectionDto(
+        sketchFeatureId: sketchFeatureId,
+        profileRefs: profileRefs,
+        referencePoint: referencePoint,
+        alignmentPoint: alignmentPoint,
+        seamParam: seamParam,
+        reverse: reverse,
+        edgeRef: edgeRef,
+      );
+
   factory LoftSectionDto.fromJson(Map<String, dynamic> json) => LoftSectionDto(
-        sketchFeatureId: json['sketch_feature_id'] as String,
+        sketchFeatureId: json['sketch_feature_id'] as String? ?? '',
+        edgeRef: json['edge_ref'] as Map<String, dynamic>?,
         profileRefs: (json['profile_refs'] as List?)
                 ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
@@ -429,7 +453,8 @@ class LoftSectionDto {
       );
 
   Map<String, dynamic> toJson() => {
-        'sketch_feature_id': sketchFeatureId,
+        if (sketchFeatureId.isNotEmpty) 'sketch_feature_id': sketchFeatureId,
+        if (edgeRef != null) 'edge_ref': edgeRef,
         'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
         if (referencePoint != null) 'reference_point': referencePoint!.toJson(),
         if (alignmentPoint != null) 'alignment_point': alignmentPoint!.toJson(),
