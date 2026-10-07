@@ -1320,6 +1320,7 @@ class Sketch:
         radius: float | None = None,
         angle: float | None = None,
         construction: bool = False,
+        shared_radius_constraint_id: str | None = None,
     ) -> Circle:
         """Add a Circle from an existing center Point to either an existing
         radius Point (explicit sharing), a new Point computed from a radius
@@ -1341,6 +1342,12 @@ class Sketch:
         radius value (see DistanceConstraint.provisional), so a freshly
         drawn circle correctly reports as under-constrained rather than
         fully constrained with no user-visible dimension.
+
+        `shared_radius_constraint_id` reuses an existing center-to-radius-Point DistanceConstraint
+        as this Circle's radius instead of creating a second one on the same two Points (a
+        Polygon's circumscribed reference circle shares the Polygon's own radius this way, so
+        there is exactly one driving dimension). The caller owns that constraint: `delete_circle`
+        leaves it in place while a Polygon still uses it.
         """
         center = self.points[center_point_id]
         radius_point_is_north = radius_point_id is None and angle is None
@@ -1364,9 +1371,18 @@ class Sketch:
         if center_point_id == radius_point_id:
             raise ValueError("A circle cannot have the same center and radius point")
 
-        radius_constraint = self.add_distance_constraint(
-            center_point_id, radius_point_id, distance, provisional=True
-        )
+        if shared_radius_constraint_id is not None:
+            shared = self.constraints.get(shared_radius_constraint_id)
+            if not isinstance(shared, DistanceConstraint) or {shared.point_a_id, shared.point_b_id} != {
+                center_point_id,
+                radius_point_id,
+            }:
+                raise ValueError("shared_radius_constraint_id must be a distance between the circle's center and radius Points")
+            radius_constraint = shared
+        else:
+            radius_constraint = self.add_distance_constraint(
+                center_point_id, radius_point_id, distance, provisional=True
+            )
         if radius_point_is_north:
             # North already has its real radius Distance constraint (just
             # created above) - only needs the same axis-alignment pin every
@@ -1861,6 +1877,7 @@ class Sketch:
                 center_point_id=center_point_id,
                 radius_point_id=first_vertex_point_id,
                 construction=True,
+                shared_radius_constraint_id=radius_constraint.id,
             ).id
             inradius = radius * math.cos(math.pi / sides)
             inscribed = self.add_circle(center_point_id=center_point_id, radius=inradius, construction=True)
@@ -2857,7 +2874,13 @@ class Sketch:
             raise KeyError(circle_id)
         candidates = self._entity_defining_point_ids(circle)
         del self.entities[circle_id]
-        self.constraints.pop(circle.radius_constraint_id, None)
+        # A Polygon's circumscribed circle shares the Polygon's own radius constraint; deleting
+        # just the circle must leave that dimension with the Polygon.
+        shared_with_polygon = any(
+            polygon.radius_constraint_id == circle.radius_constraint_id for polygon in self.polygons()
+        )
+        if not shared_with_polygon:
+            self.constraints.pop(circle.radius_constraint_id, None)
         for constraint_id in circle.cardinal_constraint_ids:
             self.constraints.pop(constraint_id, None)
         return self._prune_orphaned_points(candidates)

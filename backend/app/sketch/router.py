@@ -347,7 +347,7 @@ def _polygon_structural_constraint_ids(sketch: Sketch, polygon: Polygon) -> list
         if isinstance(circle, Circle):
             ids.append(circle.radius_constraint_id)
             ids.extend(circle.cardinal_constraint_ids)
-    return [constraint_id for constraint_id in ids if constraint_id in sketch.constraints]
+    return [constraint_id for constraint_id in dict.fromkeys(ids) if constraint_id in sketch.constraints]
 
 
 def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:

@@ -557,3 +557,54 @@ def test_polygon_response_lists_structural_constraints_but_not_user_ones():
     structural = set(_polygon_response(sketch, polygon).structural_constraint_ids)
     assert not structural & {across_flats.id, horizontal.id, corner_to_corner.id}
 
+
+
+def test_circumscribed_reference_circle_shares_the_polygons_radius_constraint():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    circumscribed = sketch.entities[polygon.circumscribed_circle_id]
+
+    # One driving radius, not two constraints on the same pair of Points.
+    assert circumscribed.radius_constraint_id == polygon.radius_constraint_id
+    between = [
+        c
+        for c in sketch.constraints.values()
+        if getattr(c, "point_a_id", None) in {center.id, first_vertex.id}
+        and getattr(c, "point_b_id", None) in {center.id, first_vertex.id}
+        and getattr(c, "orientation", "linear") == "linear"
+    ]
+    assert len(between) == 1
+
+
+def test_deleting_the_circumscribed_circle_keeps_the_polygons_radius_constraint():
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+
+    sketch.delete_circle(polygon.circumscribed_circle_id)
+    assert polygon.radius_constraint_id in sketch.constraints
+
+    sketch.delete_polygon(polygon.id)
+    assert polygon.radius_constraint_id not in sketch.constraints
+
+
+def test_confirming_the_circles_radius_resizes_the_polygon():
+    from app.sketch.solver import solve_sketch
+
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+    circle = sketch.entities[polygon.circumscribed_circle_id]
+
+    radius = sketch.constraints[circle.radius_constraint_id]
+    radius.distance = 15.0
+    radius.provisional = False
+    result = solve_sketch(sketch)
+
+    assert result.converged
+    for vertex_id in polygon.vertex_point_ids:
+        assert abs(_dist(sketch, center.id, vertex_id) - 15.0) < 1e-6

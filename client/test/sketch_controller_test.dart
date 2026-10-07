@@ -1574,7 +1574,7 @@ class _FakeBackend {
       // DistanceConstraint), just inlined rather than reused since that's
       // structured as its own HTTP handler.
       final referenceCircleConstraintIds = <String>[];
-      Map<String, dynamic> makeReferenceCircle(String radiusPointId, double circleRadius) {
+      Map<String, dynamic> makeReferenceCircle(String radiusPointId, double circleRadius, {bool shareRadius = false}) {
         final circleId = _newId('circle');
         final cardinalPointIds = <String>[];
         final cardinalOffsets = <String, (double, double)>{
@@ -1597,20 +1597,24 @@ class _FakeBackend {
           'construction': true,
           'cardinal_point_ids': cardinalPointIds,
         };
-        final constraintId = _newId('constraint');
-        constraints[constraintId] = {
-          'id': constraintId,
-          'point_a_id': body['center_point_id'],
-          'point_b_id': radiusPointId,
-          'distance': circleRadius,
-          'provisional': true,
-        };
-        referenceCircleConstraintIds.add(constraintId);
+        // Mirrors the real backend: the circumscribed circle reuses the Polygon's own radius
+        // constraint (`shared_radius_constraint_id`) instead of adding a second one.
+        if (!shareRadius) {
+          final constraintId = _newId('constraint');
+          constraints[constraintId] = {
+            'id': constraintId,
+            'point_a_id': body['center_point_id'],
+            'point_b_id': radiusPointId,
+            'distance': circleRadius,
+            'provisional': true,
+          };
+          referenceCircleConstraintIds.add(constraintId);
+        }
         return circles[circleId]!;
       }
 
       if (body['reference_circles'] == true) {
-        circumscribedCircleId = makeReferenceCircle(vertexPointIds[0], radius)['id'] as String;
+        circumscribedCircleId = makeReferenceCircle(vertexPointIds[0], radius, shareRadius: true)['id'] as String;
         final inradius = radius * math.cos(math.pi / sides);
         final inscribedRadiusPointId = _newId('point');
         points[inscribedRadiusPointId] = {'id': inscribedRadiusPointId, 'x': cx + inradius, 'y': cy};
