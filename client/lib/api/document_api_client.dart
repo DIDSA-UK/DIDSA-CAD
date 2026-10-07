@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
+import 'package:vector_math/vector_math.dart' as vm;
 
 import '../config.dart';
 import 'sketch_api_client.dart' show ApiException;
@@ -461,6 +462,35 @@ class LoftSectionDto {
         if (seamParam != null) 'seam_param': seamParam,
         if (reverse) 'reverse': true,
       };
+}
+
+/// The backend's `LoftSeamHandleSchema`: one closed loft section's profile sampled at equal
+/// arc-length fractions from its default start ([points], part frame) plus the seam in force.
+/// Dragging a marker to sample k of N means `seamParam = k / N`.
+class LoftSeamHandleDto {
+  final List<vm.Vector3> points;
+  final double seamParam;
+  final bool reverse;
+
+  /// True when the seam was chosen automatically rather than set on the section.
+  final bool auto;
+
+  const LoftSeamHandleDto({
+    required this.points,
+    required this.seamParam,
+    required this.reverse,
+    required this.auto,
+  });
+
+  factory LoftSeamHandleDto.fromJson(Map<String, dynamic> json) => LoftSeamHandleDto(
+        points: [
+          for (final p in json['points'] as List)
+            vm.Vector3((p[0] as num).toDouble(), (p[1] as num).toDouble(), (p[2] as num).toDouble()),
+        ],
+        seamParam: (json['seam_param'] as num).toDouble(),
+        reverse: json['reverse'] as bool,
+        auto: json['auto'] as bool,
+      );
 }
 
 /// C4: the wire counterpart to the backend's `PointRefSchema` - exactly one
@@ -4305,6 +4335,19 @@ class DocumentApiClient {
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Where each closed section of loft [featureId] starts, one entry per section (null for a
+  /// section with no seam). See [LoftSeamHandleDto].
+  Future<List<LoftSeamHandleDto?>> getLoftSeamHandles(String partId, String featureId) => _send(
+        () => _httpClient.get(
+          _uri('/document/parts/$partId/loft-features/$featureId/seam-handles'),
+          headers: _headers,
+        ),
+        (body) => [
+          for (final entry in body as List)
+            entry == null ? null : LoftSeamHandleDto.fromJson(entry as Map<String, dynamic>),
+        ],
       );
 
   // --- Phase 1 surfacing package -------------------------------------------

@@ -7332,7 +7332,29 @@ class _PartScreenState extends State<PartScreen> {
       );
     }
     await _refreshMesh();
+    unawaited(_refreshLoftSeamHandles());
   }
+
+  /// The draggable start markers for the loft being edited, refreshed after every preview
+  /// update (the backend decides where an automatic seam landed). Best effort: a failure only
+  /// means the markers don't show.
+  List<LoftSeamHandleDto?> _loftSeamHandles = const [];
+
+  Future<void> _refreshLoftSeamHandles() async {
+    final featureId = _previewLoftFeatureId;
+    if (featureId == null || _loftSections.isEmpty) return;
+    try {
+      final handles = await _api.getLoftSeamHandles(_focusPartId, featureId);
+      // The panel may have closed (or moved on to another loft) while this was in flight.
+      if (!mounted || _previewLoftFeatureId != featureId || _loftSections.isEmpty) return;
+      setState(() => _loftSeamHandles = handles);
+    } catch (_) {
+      // Markers are a convenience; the slider still works.
+    }
+  }
+
+  /// [PartViewport.onLoftSeamChanged]: a start marker was dragged along its profile.
+  void _onLoftSeamDragged(int index, double fraction) => _setLoftSeam(index, fraction.clamp(0.0, 0.999));
 
   /// [LoftPanel.onChanged] - mirrors [_onSweepValuesChanged], plus the
   /// ruled/thickness fields Sweep has no equivalent of.
@@ -7391,6 +7413,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftAlignmentPoints = [];
       _loftSeamParams = [];
       _loftReverseFlags = [];
+      _loftSeamHandles = const [];
       _loftStoredSections = null;
       _loftGuideCurveRef = null;
       // Defensive: abandons an in-flight alignment-point/guide-curve
@@ -7439,6 +7462,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftAlignmentPoints = [];
       _loftSeamParams = [];
       _loftReverseFlags = [];
+      _loftSeamHandles = const [];
       _loftStoredSections = null;
       _loftGuideCurveRef = null;
       // Mirrors _confirmLoft's own identical defensive cleanup above.
@@ -21954,6 +21978,8 @@ class _PartScreenState extends State<PartScreen> {
                 // overlays, not siblings in a Row, so the viewport never
                 // loses space to a hidden panel.
                 PartViewport(
+                  loftSeamHandles: _loftSections.isEmpty ? const [] : _loftSeamHandles,
+                  onLoftSeamChanged: _onLoftSeamDragged,
                   key: _viewportKey,
                   bodies: _visibleBodies,
                   // Assembly support Phase 4 (`docs/assembly-scope.md` §3):

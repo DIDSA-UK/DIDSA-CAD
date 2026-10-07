@@ -30,6 +30,7 @@ import 'section_gizmo.dart';
 import 'section_plane.dart';
 import 'selection_filter.dart';
 import 'selection_hit_test.dart';
+import 'loft_seam_overlay.dart';
 import 'sketch_constraint_overlay.dart';
 import 'sketch_geometry_3d.dart';
 import 'sketch_orientation_indicator.dart';
@@ -667,6 +668,13 @@ class PartViewport extends StatefulWidget {
   /// Dimension modes; the owner materializes the real Point on pick.
   final bool sketchMidpointPicking;
 
+  /// The draggable start markers of a loft being created or edited (one per section, null where
+  /// a section has no seam), drawn over the view by [LoftSeamOverlay]. Empty hides them.
+  final List<LoftSeamHandleDto?> loftSeamHandles;
+
+  /// Dragging a loft start marker: section index and the new 0..1 position around its profile.
+  final void Function(int sectionIndex, double fraction)? onLoftSeamChanged;
+
   /// P10: gates a new priority tier ahead of [sketchPlaneBasis]'s own plane
   /// hit, inside [_handleTap] - a tap that would otherwise place new
   /// geometry on the plane instead first checks for a real Body
@@ -1107,6 +1115,8 @@ class PartViewport extends StatefulWidget {
     this.sketchPlaneSurfaceOpacity = 0.18,
     this.sketchPlaneGridVisible = false,
     this.sketchMidpointPicking = false,
+    this.loftSeamHandles = const [],
+    this.onLoftSeamChanged,
     this.preferEntityPick = false,
     this.preferEntityPickIncludesFace = false,
     this.preferEntityPickIncludesEdge = true,
@@ -6765,6 +6775,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // swallowing them) - the crosshair itself is IgnorePointer'd
             // regardless of draw order, so this reordering only changes who
             // paints on top, never who receives a tap.
+            if (widget.loftSeamHandles.any((h) => h != null) && widget.onLoftSeamChanged != null)
+              LoftSeamOverlay(
+                camera: _camera.cameraFor(size),
+                viewportSize: size,
+                focusTransform: widget.focusWorldTransformMatrix,
+                handles: widget.loftSeamHandles,
+                onSeamChanged: widget.onLoftSeamChanged!,
+              ),
             if (widget.sketchPlaneBasis != null && widget.constraintOverlayItems.isNotEmpty)
               ConstraintOverlay(
                 camera: _camera.cameraFor(size),
