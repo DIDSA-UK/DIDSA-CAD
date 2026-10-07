@@ -177,6 +177,11 @@ class SketchPolygonView {
   final String? circumscribedCircleId;
   final String? inscribedCircleId;
 
+  /// The constraints that only hold this Polygon's regular shape (see
+  /// `PolygonDto.structuralConstraintIds`). Anything else touching it is a
+  /// user constraint - see [SketchController._polygonHasUserConstraints].
+  final Set<String> structuralConstraintIds;
+
   const SketchPolygonView({
     required this.id,
     required this.centerPointId,
@@ -187,6 +192,7 @@ class SketchPolygonView {
     this.construction = false,
     this.circumscribedCircleId,
     this.inscribedCircleId,
+    this.structuralConstraintIds = const {},
   });
 }
 
@@ -5408,7 +5414,34 @@ class SketchController extends ChangeNotifier {
     for (final lineId in polygon.radialLineIds) {
       if (!lines.containsKey(lineId)) return null;
     }
+    // The closed-form drag only knows the regular-shape formula and the
+    // radius dimensions. A user constraint of any other kind (across-flats,
+    // corner-to-corner, horizontal/vertical or parallel on an edge, a tie to
+    // other geometry, ...) must drive, so the general constraint solver takes
+    // over and the usual over-constrained/pinned gating applies.
+    if (_polygonHasUserConstraints(polygon)) return null;
     return polygon;
+  }
+
+  /// Whether any constraint other than [polygon]'s own structural ones
+  /// (`SketchPolygonView.structuralConstraintIds`) references one of its
+  /// Points, edge/radial Lines or reference-circle Points.
+  bool _polygonHasUserConstraints(SketchPolygonView polygon) {
+    final pointIds = <String>{polygon.centerPointId, ...polygon.vertexPointIds};
+    final lineIds = <String>{...polygon.lineIds, ...polygon.radialLineIds};
+    for (final circleId in [polygon.circumscribedCircleId, polygon.inscribedCircleId]) {
+      final circle = circleId == null ? null : circles[circleId];
+      if (circle == null) continue;
+      pointIds
+        ..add(circle.radiusPointId)
+        ..addAll(circle.cardinalPointIds);
+    }
+    for (final constraint in constraints.values) {
+      if (polygon.structuralConstraintIds.contains(constraint.id)) continue;
+      final refs = _constraintReferences(constraint);
+      if (refs.pointIds.any(pointIds.contains) || refs.lineIds.any(lineIds.contains)) return true;
+    }
+    return false;
   }
 
   /// [_intactPolygonForVertex]'s counterpart for Slot - true "intact"ness
@@ -9845,6 +9878,9 @@ class SketchController extends ChangeNotifier {
         radialLineIds: created.radialLineIds,
         sides: created.sides,
         construction: created.construction,
+        circumscribedCircleId: created.circumscribedCircleId,
+        inscribedCircleId: created.inscribedCircleId,
+        structuralConstraintIds: created.structuralConstraintIds.toSet(),
       );
       for (var i = 0; i < created.lineIds.length; i++) {
         lines[created.lineIds[i]] = SketchLineView(
@@ -14420,6 +14456,9 @@ class SketchController extends ChangeNotifier {
         radialLineIds: polygon.radialLineIds,
         sides: polygon.sides,
         construction: polygon.construction,
+        circumscribedCircleId: polygon.circumscribedCircleId,
+        inscribedCircleId: polygon.inscribedCircleId,
+        structuralConstraintIds: polygon.structuralConstraintIds.toSet(),
       );
     }
     for (final slot in await _api.listSlots(sketchId)) {
@@ -15335,6 +15374,7 @@ class SketchController extends ChangeNotifier {
         construction: polygon.construction,
         circumscribedCircleId: polygon.circumscribedCircleId,
         inscribedCircleId: polygon.inscribedCircleId,
+        structuralConstraintIds: polygon.structuralConstraintIds.toSet(),
       );
       for (var i = 0; i < polygon.lineIds.length; i++) {
         lines[polygon.lineIds[i]] = SketchLineView(

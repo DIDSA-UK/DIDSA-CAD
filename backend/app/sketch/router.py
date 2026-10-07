@@ -334,6 +334,22 @@ def _ellipse_arc_response(sketch: Sketch, ellipse_arc: EllipseArc) -> EllipseArc
     )
 
 
+def _polygon_structural_constraint_ids(sketch: Sketch, polygon: Polygon) -> list[str]:
+    ids = [
+        polygon.radius_constraint_id,
+        *polygon.equal_radius_constraint_ids,
+        *polygon.angle_constraint_ids,
+    ]
+    if polygon.inscribed_tangent_constraint_id is not None:
+        ids.append(polygon.inscribed_tangent_constraint_id)
+    for circle_id in (polygon.circumscribed_circle_id, polygon.inscribed_circle_id):
+        circle = sketch.entities.get(circle_id) if circle_id is not None else None
+        if isinstance(circle, Circle):
+            ids.append(circle.radius_constraint_id)
+            ids.extend(circle.cardinal_constraint_ids)
+    return [constraint_id for constraint_id in ids if constraint_id in sketch.constraints]
+
+
 def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
     return PolygonResponse(
         id=polygon.id,
@@ -347,6 +363,7 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
         circumscribed_circle_id=polygon.circumscribed_circle_id,
         inscribed_circle_id=polygon.inscribed_circle_id,
         radius_constraint_id=polygon.radius_constraint_id,
+        structural_constraint_ids=_polygon_structural_constraint_ids(sketch, polygon),
     )
 
 
@@ -1786,6 +1803,19 @@ def update_constraint_value(
         # the same endpoint the ghost-confirm flow already calls) - clears
         # `provisional` without needing a separate confirm flag/endpoint.
         constraint.provisional = False
+        # A Polygon's circumscribed reference circle owns its own (provisional)
+        # radius constraint between the same two Points as the Polygon's. Keep
+        # any such still-provisional duplicate in step so confirming either one
+        # never leaves a stale twin with a different value behind.
+        for other_id, other in sketch.constraints.items():
+            if (
+                other_id != constraint_id
+                and isinstance(other, DistanceConstraint)
+                and other.provisional
+                and other.orientation == constraint.orientation
+                and {other.point_a_id, other.point_b_id} == {constraint.point_a_id, constraint.point_b_id}
+            ):
+                other.distance = value
     elif isinstance(constraint, LineDistanceConstraint):
         current = _signed_line_distance_value(
             sketch, constraint.line1_start_id, constraint.line1_end_id, constraint.line2_start_id

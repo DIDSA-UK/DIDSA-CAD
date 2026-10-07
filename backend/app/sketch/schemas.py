@@ -572,6 +572,12 @@ class PolygonResponse(BaseModel):
     # sketches workstream. Same "confirm via PATCH .../constraints/{id}"
     # mechanism.
     radius_constraint_id: str
+    # Every constraint the polygon (and its reference circles) own purely to hold
+    # the regular shape: radius, equal-radius ties, central angles, the inscribed
+    # tangency and the reference circles' own radius/cardinal pins. Anything else
+    # touching the polygon is a user constraint the client must not bypass when
+    # dragging.
+    structural_constraint_ids: list[str] = []
 
 
 class PolygonUpdate(BaseModel):

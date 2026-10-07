@@ -534,3 +534,26 @@ def test_collapse_polygon_not_found_over_the_api():
     sketch = _create_sketch()
     response = client.post(f"/sketch/sketches/{sketch['id']}/polygons/does-not-exist/collapse")
     assert response.status_code == 404
+
+
+def test_polygon_response_lists_structural_constraints_but_not_user_ones():
+    """The client keeps a Polygon on its closed-form drag path only while every constraint
+    touching it is structural, so user constraints must never appear in this list."""
+    from app.sketch.router import _polygon_response
+
+    sketch = Sketch(id="s", plane=Plane.XY)
+    center = sketch.add_point(0.0, 0.0)
+    first_vertex = sketch.add_point(10.0, 0.0)
+    polygon = sketch.add_polygon(center.id, first_vertex.id, 6, reference_circles=True)
+
+    structural = set(_polygon_response(sketch, polygon).structural_constraint_ids)
+    assert structural == set(sketch.constraints)
+
+    across_flats = sketch.add_line_distance_constraint(polygon.line_ids[0], polygon.line_ids[3], 17.3205)
+    horizontal = sketch.add_horizontal_constraint(polygon.line_ids[1])
+    corner_to_corner = sketch.add_distance_constraint(
+        polygon.vertex_point_ids[0], polygon.vertex_point_ids[3], 20.0
+    )
+    structural = set(_polygon_response(sketch, polygon).structural_constraint_ids)
+    assert not structural & {across_flats.id, horizontal.id, corner_to_corner.id}
+

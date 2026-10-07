@@ -599,6 +599,12 @@ class PolygonDto {
   /// comment). Same nullable-for-compatibility reasoning as that field.
   final String? radiusConstraintId;
 
+  /// Every constraint the Polygon (and its reference circles) own purely to
+  /// hold the regular shape - see the backend's `PolygonResponse.
+  /// structural_constraint_ids`. Any other constraint touching the Polygon
+  /// is a user constraint that dragging must honour.
+  final List<String> structuralConstraintIds;
+
   PolygonDto({
     required this.id,
     required this.centerPointId,
@@ -611,6 +617,7 @@ class PolygonDto {
     this.circumscribedCircleId,
     this.inscribedCircleId,
     this.radiusConstraintId,
+    this.structuralConstraintIds = const [],
   });
 
   factory PolygonDto.fromJson(Map<String, dynamic> json) => PolygonDto(
@@ -625,6 +632,8 @@ class PolygonDto {
         circumscribedCircleId: json['circumscribed_circle_id'] as String?,
         inscribedCircleId: json['inscribed_circle_id'] as String?,
         radiusConstraintId: json['radius_constraint_id'] as String?,
+        structuralConstraintIds:
+            (json['structural_constraint_ids'] as List?)?.cast<String>() ?? const [],
       );
 }
 

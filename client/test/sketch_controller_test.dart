@@ -1573,6 +1573,7 @@ class _FakeBackend {
       // handler above (same shape: cardinal points + a provisional radius
       // DistanceConstraint), just inlined rather than reused since that's
       // structured as its own HTTP handler.
+      final referenceCircleConstraintIds = <String>[];
       Map<String, dynamic> makeReferenceCircle(String radiusPointId, double circleRadius) {
         final circleId = _newId('circle');
         final cardinalPointIds = <String>[];
@@ -1604,6 +1605,7 @@ class _FakeBackend {
           'distance': circleRadius,
           'provisional': true,
         };
+        referenceCircleConstraintIds.add(constraintId);
         return circles[circleId]!;
       }
 
@@ -1626,6 +1628,10 @@ class _FakeBackend {
         'construction': body['construction'] as bool? ?? false,
         'circumscribed_circle_id': circumscribedCircleId,
         'inscribed_circle_id': inscribedCircleId,
+        // Mirrors the real PolygonResponse.structural_constraint_ids: the
+        // constraints that only hold the regular shape (and the reference
+        // circles' own radius constraints).
+        'structural_constraint_ids': [...constraintIds, ...referenceCircleConstraintIds],
         // Not part of the real API response - kept only so this fake's own
         // DELETE handler above knows which Constraints to cascade, mirroring
         // the real backend's Sketch.delete_polygon.
