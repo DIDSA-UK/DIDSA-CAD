@@ -32,6 +32,23 @@ String? _findHostSlvsLibrary() {
   return null;
 }
 
+/// A constraint the local projector has no model for (a spline tangency): any drag whose group touches it is not clamped
+/// locally and takes the network fallback - the path a platform without a local clamp used to take for every drag.
+void _blockLocalClamp(SketchController controller, String pointId) {
+  controller.constraints['block-local-clamp'] = SplineTangentConstraintDto(
+    id: 'block-local-clamp',
+    splineId: 'none',
+    segmentAP0: pointId,
+    segmentAP1: pointId,
+    segmentAP2: pointId,
+    segmentAP3: pointId,
+    segmentBP0: pointId,
+    segmentBP1: pointId,
+    segmentBP2: pointId,
+    segmentBP3: pointId,
+  );
+}
+
 /// A tiny in-memory fake of the backend's `/sketch` API (point/line/circle
 /// creation, constraints, get, solve) good enough to exercise the
 /// controller's chaining and dimension-ghost-confirmation logic without any
@@ -2865,7 +2882,7 @@ void main() {
       // doc comment) - exactly what [_intactRectangleForPoint]'s live
       // points-map check reads, with no other side effects.
       controller.points.remove(rectangle.centerPointId);
-      final corner1Before = controller.points[rectangle.cornerPointIds[1]]!;
+      final oppositeBefore = controller.points[rectangle.cornerPointIds[2]]!;
 
       final corner0Id = rectangle.cornerPointIds[0];
       final corner0 = controller.points[corner0Id]!;
@@ -2874,11 +2891,13 @@ void main() {
       expect(controller.beginPointDrag(corner0Id), isTrue);
       await controller.updatePointDrag(0, 0);
 
-      // The closed-form path (which would have moved it instantly, per the
-      // test above) didn't run - corner 1 never moved.
-      final corner1After = controller.points[rectangle.cornerPointIds[1]]!;
-      expect(corner1After.x, closeTo(corner1Before.x, 1e-9));
-      expect(corner1After.y, closeTo(corner1Before.y, 1e-9));
+      // The closed-form path (which resizes about the centre and never touches the constraint clamp) didn't run:
+      // the general path clamped this frame, and the opposite corner - which a centre-based resize would have moved -
+      // stayed where it was.
+      expect(controller.dragStats.frames, 1);
+      final oppositeAfter = controller.points[rectangle.cornerPointIds[2]]!;
+      expect(oppositeAfter.x, closeTo(oppositeBefore.x, 1e-9));
+      expect(oppositeAfter.y, closeTo(oppositeBefore.y, 1e-9));
     });
   });
 
@@ -7083,19 +7102,15 @@ void main() {
       // exercised. Removing the Point directly from the local cache is
       // exactly what that check reads, with no other side effects.
       controller.points.remove(ellipse.minorPointNegId);
-      final majorBefore = controller.points[ellipse.majorPointId]!;
-
       final center0 = controller.points[ellipse.centerPointId]!;
       controller.cursorX = center0.x;
       controller.cursorY = center0.y;
       expect(controller.beginPointDrag(ellipse.centerPointId), isTrue);
       await controller.updatePointDrag(30, 30);
 
-      // The closed-form path (which would have translated it instantly, per
-      // the test above) didn't run - the major Point never moved.
-      final majorAfter = controller.points[ellipse.majorPointId]!;
-      expect(majorAfter.x, closeTo(majorBefore.x, 1e-9));
-      expect(majorAfter.y, closeTo(majorBefore.y, 1e-9));
+      // The closed-form path (which translates the whole shape and never touches the constraint clamp) didn't run:
+      // this frame went through the general clamp instead.
+      expect(controller.dragStats.frames, 1);
     });
   });
 
@@ -7300,19 +7315,15 @@ void main() {
         'the ordinary drag path instead of the closed-form one', () async {
       final ellipseArc = await placeArc();
       controller.points.remove(ellipseArc.startPointId);
-      final minorBefore = controller.points[ellipseArc.minorPointId]!;
-
       final major0 = controller.points[ellipseArc.majorPointId]!;
       controller.cursorX = major0.x;
       controller.cursorY = major0.y;
       expect(controller.beginPointDrag(ellipseArc.majorPointId), isTrue);
       await controller.updatePointDrag(major0.x, major0.y + 20);
 
-      // The closed-form path (which would have rotated it instantly, per
-      // the test above) didn't run - the minor Point never moved.
-      final minorAfter = controller.points[ellipseArc.minorPointId]!;
-      expect(minorAfter.x, closeTo(minorBefore.x, 1e-9));
-      expect(minorAfter.y, closeTo(minorBefore.y, 1e-9));
+      // The closed-form path (which rotates the whole shape and never touches the constraint clamp) didn't run:
+      // this frame went through the general clamp instead.
+      expect(controller.dragStats.frames, 1);
     });
   });
 
@@ -11153,6 +11164,7 @@ void main() {
     // relative to it rather than snapping the Point to the raw touch
     // position - see beginPointDrag's doc comment.
     controller.beginPointDrag(pointId);
+    _blockLocalClamp(controller, pointId); // not clampable locally: the network fallback under test
 
     backend.dof = 7; // would surface in isUnderConstrained if a solve ran
     await controller.updatePointDrag(17, 34);
@@ -11484,6 +11496,7 @@ void main() {
     // of this Line.
     final pointId = controller.lines.values.last.endPointId;
     controller.beginPointDrag(pointId);
+    _blockLocalClamp(controller, pointId); // not clampable locally: the network fallback under test
     await controller.updatePointDrag(12, 34); // lands at (12, 34): 10 + (12 - 10), 0 + (34 - 0)
 
     backend.dof = 0; // simulates the drop settling the sketch fully
