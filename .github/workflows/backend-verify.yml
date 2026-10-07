@@ -27,15 +27,18 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
     strategy:
       matrix:
-        # `suite` splits the tests into two parallel legs per platform: the
-        # gear / bevel / rack / planetary tests (pytest marker `gears`, set by
-        # file name in tests/conftest.py - the slowest, real-geometry part of
-        # the suite) and everything else. Wall-clock is now the slower leg
-        # instead of the sum, and a gear-only failure no longer hides behind
-        # (or waits for) the rest of the suite. Same tests overall: every test
-        # is in exactly one of `-m "not gears"` / `-m gears`.
+        # `suite` splits the tests into three parallel legs per platform:
+        #   core        everything that is not a gear test (`-m "not gears"`)
+        #   gears       gear / bevel / rack / planetary tests except the bevel pair
+        #               modules (`-m "gears and not bevel_pair"`, plus the serial
+        #               planetary job tests)
+        #   bevel_pair  the bevel pair modules (`-m bevel_pair`): meshing-phase
+        #               searches, some 100-280 s each, the slowest tests by far
+        # Markers are set by file name in tests/conftest.py. Wall-clock is the
+        # slowest leg instead of the sum, and a failure in one group no longer
+        # hides behind (or waits for) the others. Every test is in exactly one leg.
         platform: [linux/amd64, linux/arm64]
-        suite: [core, gears]
+        suite: [core, gears, bevel_pair]
         include:
           - platform: linux/amd64
             runs-on: ubuntu-latest
@@ -54,7 +57,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           tags: didsa-cad-backend:test
           load: true
-          # Four legs build the same two images; share layers between them
+          # Six legs build the same two images; share layers between them
           # (and between runs) so the OCCT/conda layers are not rebuilt each time.
           cache-from: type=gha,scope=backend-${{ matrix.platform }}
           cache-to: type=gha,scope=backend-${{ matrix.platform }},mode=max
@@ -81,12 +84,15 @@ jobs:
       # not worth trading away for parallelism on a file only 8 tests long.
       - name: Run backend tests inside container (${{ matrix.suite }})
         run: |
-          if [ "${{ matrix.suite }}" = "gears" ]; then
-            # The planetary job-concurrency tests are serial-only (see above).
-            CMD='python -m pytest tests/ -v -m gears -n auto --dist=worksteal --ignore=tests/test_planetary_gear_jobs.py && python -m pytest tests/test_planetary_gear_jobs.py -v'
-          else
-            CMD='python -m pytest tests/ -v -m "not gears" -n auto --dist=worksteal'
-          fi
+          case "${{ matrix.suite }}" in
+            gears)
+              # The planetary job-concurrency tests are serial-only (see above).
+              CMD='python -m pytest tests/ -v -m "gears and not bevel_pair" -n auto --dist=worksteal --ignore=tests/test_planetary_gear_jobs.py && python -m pytest tests/test_planetary_gear_jobs.py -v' ;;
+            bevel_pair)
+              CMD='python -m pytest tests/ -v -m bevel_pair -n auto --dist=worksteal' ;;
+            *)
+              CMD='python -m pytest tests/ -v -m "not gears" -n auto --dist=worksteal' ;;
+          esac
           docker run --rm --platform ${{ matrix.platform }} \
             didsa-cad-backend:test \
             bash -c "$CMD"
