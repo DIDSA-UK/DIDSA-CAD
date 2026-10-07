@@ -11,9 +11,9 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
-import 'package:didsa_cad_client/sketch/local_solver/local_sketch_solver.dart';
-import 'package:didsa_cad_client/sketch/local_solver/sketch_projector.dart';
-import 'package:didsa_cad_client/sketch/local_solver/slvs_bindings.dart';
+import 'support/slvs_reference/local_sketch_solver.dart';
+import 'package:didsa_cad_client/sketch/projector/sketch_projector.dart';
+import 'support/slvs_reference/slvs_bindings.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 typedef Pt = (double, double);
@@ -52,8 +52,6 @@ class _Case {
   final Pt? expected;
   const _Case(this.name, this.points, this.lines, this.constraints, this.wish, this.residuals, {this.expected});
 }
-
-const _l1 = ('a', 'b');
 
 final List<_Case> _cases = [
   _Case(

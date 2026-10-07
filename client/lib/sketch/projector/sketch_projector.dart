@@ -26,6 +26,17 @@ import '../../api/sketch_api_client.dart';
 /// Resolves a Line id to its (start, end) Point ids.
 typedef LineEndpoints = (String startId, String endId) Function(String lineId);
 
+/// What a drag frame hands to its constraint step, for a caller that wants to replace [projectSketch] (tests use it to run
+/// the real SolveSpace as a reference engine; the app never does). Returns the placed points, or null to reject the frame.
+typedef SketchClampOverride = Map<String, (double, double)>? Function({
+  required Map<String, (double, double)> points,
+  required List<ConstraintDto> constraints,
+  required LineEndpoints lineEndpoints,
+  required Set<String> anchors,
+  required Set<String> pinned,
+  required Map<String, double> provisionalDistances,
+});
+
 /// Outcome of one projection.
 class SketchProjection {
   /// The constraints hold at [points] (worst residual <= tolerance).

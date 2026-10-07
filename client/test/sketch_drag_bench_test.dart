@@ -11,7 +11,8 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
-import 'package:didsa_cad_client/sketch/local_solver/slvs_bindings.dart';
+import 'support/slvs_reference/slvs_bindings.dart';
+import 'support/slvs_reference/solvespace_clamp.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -44,7 +45,7 @@ Future<SketchController> _controller({required bool solveSpace}) async {
   });
   SlvsNativeBindings? bindings;
   if (solveSpace) bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(_hostLibrary()!));
-  final controller = SketchController(api: SketchApiClient(httpClient: client), localSolverBindings: bindings);
+  final controller = SketchController(api: SketchApiClient(httpClient: client), dragClampOverride: solveSpaceDragClamp(bindings));
   await controller.ensureSketch();
   controller.points['origin-1'] = const SketchPointView(id: 'origin-1', x: 0, y: 0);
   controller.debugSetBackendDof(5);

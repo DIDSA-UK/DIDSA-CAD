@@ -10,7 +10,8 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
-import 'package:didsa_cad_client/sketch/local_solver/slvs_bindings.dart';
+import 'support/slvs_reference/slvs_bindings.dart';
+import 'support/slvs_reference/solvespace_clamp.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/view_transform.dart';
@@ -5339,7 +5340,7 @@ void main() {
       final bindings = libraryPath == null ? null : SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
       final localBackend = _FakeBackend();
       final localClient = MockClient((request) async => localBackend.handle(request));
-      solved = SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+      solved = SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
       await solved.ensureSketch();
     });
 
@@ -5610,7 +5611,7 @@ void main() {
       final bindings = solveSpace ? SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath)) : null;
       final fake = _FakeBackend();
       final client = MockClient((request) async => fake.handle(request));
-      final c = SketchController(api: SketchApiClient(httpClient: client), localSolverBindings: bindings);
+      final c = SketchController(api: SketchApiClient(httpClient: client), dragClampOverride: solveSpaceDragClamp(bindings));
       await c.ensureSketch();
       return c;
     }
@@ -6317,7 +6318,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     localController.selectDrawTool(SketchTool.slot);
@@ -6373,7 +6374,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     localController.selectDrawTool(SketchTool.polygon);
@@ -11389,7 +11390,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     localController.selectDrawTool(SketchTool.line);
@@ -11456,7 +11457,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     // Third Point created *before* the Line, not after - beginLineDrag
@@ -11529,7 +11530,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     // Third Point first, same drag-start-cursor reasoning as the passing
@@ -11613,7 +11614,7 @@ void main() {
     final localBackend = _FakeBackend();
     final localClient = MockClient((request) async => localBackend.handle(request));
     final localController =
-        SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+        SketchController(api: SketchApiClient(httpClient: localClient), dragClampOverride: solveSpaceDragClamp(bindings));
     await localController.ensureSketch();
 
     localController.selectDrawTool(SketchTool.point);

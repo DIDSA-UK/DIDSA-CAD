@@ -6,10 +6,8 @@ import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 
 import '../api/sketch_api_client.dart';
 import 'dof_analysis.dart';
-import 'local_solver/local_sketch_solver.dart';
-import 'local_solver/sketch_drag_stats.dart';
-import 'local_solver/sketch_projector.dart';
-import 'local_solver/slvs_bindings.dart';
+import 'projector/sketch_drag_stats.dart';
+import 'projector/sketch_projector.dart';
 import 'pattern_mirror_expansion.dart';
 import 'view_transform.dart';
 
@@ -1508,13 +1506,11 @@ class SketchController extends ChangeNotifier {
   /// one.
   SketchApiClient get api => _api;
 
-  /// [localSolverBindings] lets a test inject an already-loaded SolveSpace build (the host library under
-  /// client/native/slvs/build-host/) as a reference engine: with it, [_trySolveDuringDragLocally] clamps every drag frame
-  /// with that solver instead of the bundled [projectSketch], so tests can pin the projector against the real solver.
-  /// Production never passes this - the client has no SolveSpace in it.
-  SketchController({SketchApiClient? api, SlvsNativeBindings? localSolverBindings})
+  /// [dragClampOverride] replaces the per-frame constraint step ([projectSketch]) - tests use it to run the real SolveSpace as a
+  /// reference engine. Production never passes it: the client has no constraint solver in it.
+  SketchController({SketchApiClient? api, SketchClampOverride? dragClampOverride})
       : _api = api ?? SketchApiClient(),
-        _localSolverBindings = localSolverBindings;
+        _dragClampOverride = dragClampOverride;
 
   /// Touch drag moves the cursor relatively, scaled by this factor - not
   /// 1:1 with finger position, per the project brief's interaction model.
@@ -5234,13 +5230,11 @@ class SketchController extends ChangeNotifier {
   /// the backend (that's deliberate - no network round trip on the hot
   /// per-frame path), so without this the backend's own stored positions
   /// for every reflowed point sit frozen at their pre-drag values for the
-  /// whole drag. Since soft-drag (see [solveSketchLocally]'s own doc
-  /// comment), this now also includes the dragged Point itself whenever its
-  /// own solved position differs from the raw value [updatePointDrag]
-  /// separately PATCHed it to moments earlier - the live-clamp/resistance
-  /// behaviour that mechanism exists to produce, not a bug: the backend
-  /// needs that corrected value synced too, same as every other reflowed
-  /// Point. [endPointDrag]'s final solve
+  /// whole drag. It also includes the dragged Point itself whenever its
+  /// clamped position differs from the raw cursor value (the live clamp of
+  /// [projectSketch]: a constrained point slides along the permitted path) -
+  /// not a bug: the backend needs that corrected value synced too, same as
+  /// every other reflowed Point. [endPointDrag]'s final solve
   /// would then hand the backend a single, discontinuous jump ("everything
   /// at rest" straight to "the dropped shape") - exactly the condition a
   /// Newton solver has no protection against (see this session's own
@@ -6958,9 +6952,8 @@ class SketchController extends ChangeNotifier {
   /// and-forget PATCH otherwise. The dragged Point itself shows the raw
   /// dragged position, exactly under the touch, *unless* the local solve
   /// succeeds and a live Constraint genuinely requires it to sit somewhere
-  /// else - the soft-drag/live-clamp behaviour [solveSketchLocally] exists
-  /// to produce (see its own doc comment) - in which case it tracks that
-  /// clamped position instead. Every *other* Point is periodically
+  /// else - the live clamp [projectSketch] exists to produce - in which
+  /// case it tracks that clamped position instead. Every *other* Point is periodically
   /// re-solved into place as the drag continues (throttled - see
   /// [_maybeSolveDuringDrag]), rather than staying frozen until
   /// [endPointDrag]'s single final solve - the fix for constraint systems
@@ -7134,7 +7127,7 @@ class SketchController extends ChangeNotifier {
   }
 
   /// Test-only reference engine, see the constructor.
-  final SlvsNativeBindings? _localSolverBindings;
+  final SketchClampOverride? _dragClampOverride;
 
   /// Set by [_clampDragFrame] when the dragged group holds a constraint the projector has no model for, so a caller can
   /// tell "this frame was rejected" from "this drag cannot be clamped locally at all".
@@ -7146,7 +7139,7 @@ class SketchController extends ChangeNotifier {
 
   /// The one per-frame constraint step of a drag: [pointXY] is the wish (cursor / closed-form proposal over the current
   /// positions); returns every point the clamp placed, or null when it could not (no result, did not converge, or the group
-  /// is not supported). The default engine is [projectSketch] (no solver); a test may inject SolveSpace as a reference.
+  /// is not supported). The engine is [projectSketch] (no solver); a test may replace it via [SketchController.dragClampOverride].
   Map<String, (double, double)>? _clampDragFrame({
     required Map<String, (double, double)> pointXY,
     required Map<String, (String, String)> lineEndpoints,
@@ -7155,18 +7148,16 @@ class SketchController extends ChangeNotifier {
     required Map<String, double> provisionalDistances,
   }) {
     final pinned = {..._lockedPointIds, if (_originPointId != null) _originPointId!};
-    final native = _localSolverBindings;
-    if (native != null) {
-      return solveSketchLocally(
-        bindings: native,
+    final override = _dragClampOverride;
+    if (override != null) {
+      return override(
         points: pointXY,
         constraints: constraints.values.toList(),
         lineEndpoints: (id) => lineEndpoints[id]!,
-        originPointId: _originPointId,
-        anchorPointIds: anchors,
-        lockedPointIds: _lockedPointIds,
+        anchors: anchors,
+        pinned: pinned,
         provisionalDistances: provisionalDistances,
-      ).solvedPoints;
+      );
     }
     final projection = projectSketch(
       points: pointXY,
@@ -7194,19 +7185,16 @@ class SketchController extends ChangeNotifier {
     };
   }
 
-  /// Attempts the in-process local solve for [updatePointDrag]'s/
-  /// [updateLineDrag]'s mid-drag reflow - returns false (never partially
-  /// applied) if the native library isn't loadable or the solve itself
-  /// throws, so the caller can fall back to the server round trip
-  /// unconditionally. [anchorPointIds] must already be seeded in [points]
-  /// with the caller's own raw drag target *before* this is called (both
-  /// callers now write it directly, no network round trip) - this is what
-  /// [solveSketchLocally] soft-drags, and (on success) what gets written
-  /// back into [points], possibly softly clamped - see that function's own
-  /// doc comment.
-  /// [seed] overrides the positions the solve starts from (the hybrid drag's closed-form proposal);
+  /// Clamps one drag frame to the sketch's constraints, in process, for [updatePointDrag]'s/
+  /// [updateLineDrag]'s mid-drag reflow - returns false (never partially applied) if the projector cannot place the
+  /// frame (it does not converge, a guard below rejects it, or the group holds a constraint it has no model for), so
+  /// the caller can fall back to the server round trip. [anchorPointIds] must already be seeded in [points] with the
+  /// caller's own raw drag target *before* this is called (both callers write it directly, no network round trip):
+  /// it is the wish [projectSketch] walks towards, and (on success) what gets written back into [points], possibly
+  /// clamped to the permitted path.
+  /// [seed] overrides the positions of the wish (the hybrid drag's closed-form proposal);
   /// [provisionalDistances] switches a shape's own unconfirmed size constraints on at the given values
-  /// for this solve only - see [solveSketchLocally]'s `provisionalDistances`.
+  /// for this frame only - see [projectSketch]'s `provisionalDistances`.
   bool _trySolveDuringDragLocally(
     List<String> anchorPointIds, {
     Map<String, (double, double)> seed = const {},
@@ -7253,17 +7241,13 @@ class SketchController extends ChangeNotifier {
       if (solved == null) return false;
       final result = (solvedPoints: solved);
       final anchorSet = anchorPointIds.toSet();
-      // No anchor-drift check here any more (there used to be one - see git
-      // history if you're looking for it): [solveSketchLocally] now
-      // soft-drags [anchorPointIds] via SolveSpace's own `dragged[]`
-      // mechanism (see that function's own doc comment) rather than
-      // hard-pinning them into the fixed group, so a solved anchor position
-      // that differs from its raw pre-solve seed is no longer a solver bug
-      // to reject - it's the intended "clamp to what the Constraints
-      // actually allow" behaviour this mechanism exists to produce (e.g.
-      // sliding along an Arc's own tangency, or snapping back to the
-      // nearest valid point once a confirmed dimension leaves no freedom in
-      // the dragged direction).
+      // No anchor-drift check here (there used to be one - see git history):
+      // the dragged points are walked towards the wish, not hard-pinned, so a
+      // solved anchor position that differs from its raw value is the intended
+      // "clamp to what the Constraints actually allow" behaviour (e.g. sliding
+      // along an Arc's own tangency, or stopping at the nearest valid point
+      // once a confirmed dimension leaves no freedom in the dragged
+      // direction), not something to reject.
       //
       // Blow-up guard (on-device feedback: dragging a Slot corner produced a
       // visibly broken shape - a cusp where a smooth tangent arc should be).
@@ -7380,14 +7364,10 @@ class SketchController extends ChangeNotifier {
           if ((distOf(c.pointAId, c.pointBId) - c.distance).abs() > residualTolerance) return false;
         }
       }
-      // Writes every solved Point back, including the dragged one(s) - see
-      // [solveSketchLocally]'s own doc comment for why a soft-dragged
-      // Point's solved position can legitimately differ from the raw value
-      // [updatePointDrag] PATCHed it to moments earlier (the live-clamp
-      // behaviour that mechanism exists to produce), and this file's own
-      // [_dragReflowedPointIds] doc comment for why that clamped position
-      // needs syncing back to the backend too, same as any other reflowed
-      // Point.
+      // Writes every solved Point back, including the dragged one(s): a clamped
+      // dragged Point legitimately differs from the raw cursor value, and
+      // [_dragReflowedPointIds]'s doc comment says why that position needs
+      // syncing back to the backend too, same as any other reflowed Point.
       for (final entry in result.solvedPoints.entries) {
         final (x, y) = entry.value;
         final before = pointXY[entry.key];
