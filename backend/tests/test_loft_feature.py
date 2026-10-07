@@ -1008,3 +1008,31 @@ def test_seam_handles_report_an_explicit_seam_as_not_automatic(monkeypatch):
         f"/document/parts/{part['id']}/loft-features/{response.json()['id']}/seam-handles"
     ).json()
     assert handles[1]["seam_param"] == 0.25 and handles[1]["auto"] is False
+
+
+def test_a_sketch_with_two_loops_needs_a_profile_pick_and_lofts_the_picked_one():
+    part = _create_part()
+    bottom = _create_sketch_feature(part["id"])
+    _add_polygon(bottom["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    _add_polygon(bottom["sketch_id"], [(20, 20), (30, 20), (30, 30), (20, 30)])
+    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+    top = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    ).json()
+    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+
+    ambiguous = _create_loft(part["id"], [_section(bottom), _section(top)])
+    assert ambiguous.status_code >= 400
+    assert "exactly one profile" in str(ambiguous.json())
+
+    lines = client.get(f"/sketch/sketches/{bottom['sketch_id']}/lines").json()
+    points = {p["id"]: p for p in client.get(f"/sketch/sketches/{bottom['sketch_id']}/points").json()}
+    near_origin = next(
+        line
+        for line in lines
+        if abs(points[line["start_point_id"]]["x"]) <= 5 and abs(points[line["start_point_id"]]["y"]) <= 5
+    )
+    picked = {**_section(bottom), "profile_refs": [_profile_ref(bottom["sketch_id"], near_origin["id"])]}
+    response = _create_loft(part["id"], [picked, _section(top)])
+    assert response.status_code == 201, response.json()
+    assert abs(_volume(part["id"]) - 800.0) < 1.0  # the 10x10 square, straight up 8mm

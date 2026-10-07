@@ -58,6 +58,7 @@ enum LoftMode {
 /// a direct API call.
 void _ignoreSeam(int index, double? seam) {}
 void _ignoreReverse(int index, bool reverse) {}
+void _ignoreIndex(int index) {}
 
 class LoftPanel extends StatefulWidget {
   /// 'Loft' when creating a brand-new Feature (default), 'Edit Loft' when
@@ -97,6 +98,13 @@ class LoftPanel extends StatefulWidget {
   final List<bool> reverseFlags;
   final void Function(int sectionIndex, double? seam) onSeamChanged;
   final void Function(int sectionIndex, bool reverse) onReverseChanged;
+
+  /// Per section: whether a specific closed loop of its sketch is chosen (needed when the sketch
+  /// holds several), the section currently being picked in the viewport, and the pick callbacks.
+  final List<bool> profilePicked;
+  final int? pickingProfileIndex;
+  final void Function(int sectionIndex) onPickProfile;
+  final void Function(int sectionIndex) onClearProfile;
 
   /// Whether a `guide_curve_refs` entity is currently picked.
   final bool guideCurveSet;
@@ -140,6 +148,10 @@ class LoftPanel extends StatefulWidget {
     this.reverseFlags = const [],
     this.onSeamChanged = _ignoreSeam,
     this.onReverseChanged = _ignoreReverse,
+    this.profilePicked = const [],
+    this.pickingProfileIndex,
+    this.onPickProfile = _ignoreIndex,
+    this.onClearProfile = _ignoreIndex,
     this.guideCurveSet = false,
     this.pickingAlignmentPointIndex,
     this.pickingGuideCurve = false,
@@ -255,6 +267,34 @@ class _LoftPanelState extends State<LoftPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          ListTile(
+            key: ValueKey('loft-profile-row-$i'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: Text('Section ${i + 1} profile'),
+            subtitle: Text(
+              widget.pickingProfileIndex == i
+                  ? 'Tap one of its lines or curves in the viewport…'
+                  : (i < widget.profilePicked.length && widget.profilePicked[i] ? 'Picked' : 'Default (only loop)'),
+            ),
+            trailing: widget.pickingProfileIndex == i
+                ? null
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      TextButton(
+                        onPressed: widget.pickingProfileIndex == null ? () => widget.onPickProfile(i) : null,
+                        child: Text(i < widget.profilePicked.length && widget.profilePicked[i] ? 'Change' : 'Pick'),
+                      ),
+                      if (i < widget.profilePicked.length && widget.profilePicked[i])
+                        IconButton(
+                          tooltip: 'Use the default profile',
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () => widget.onClearProfile(i),
+                        ),
+                    ],
+                  ),
+          ),
           Row(
             children: [
               Expanded(

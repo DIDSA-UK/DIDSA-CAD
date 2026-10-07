@@ -2530,6 +2530,10 @@ class _PartScreenState extends State<PartScreen> {
     // is - these sub-modes are only ever entered from inside an already-
     // open LoftPanel session, so `_loftActive` is implicitly already true
     // whenever either fires.
+    if (_loftAlignmentPickIndex != null && _loftPickIsProfile) {
+      if (_profileEntityTypeFor(entity.kind) != null) _setLoftProfile(entity);
+      return;
+    }
     if (_loftAlignmentPickIndex != null && entity.kind == SelectionEntityKind.sketchPoint) {
       _setLoftAlignmentPoint(entity);
       return;
@@ -7091,6 +7095,15 @@ class _PartScreenState extends State<PartScreen> {
   /// in-flight pick rather than the whole panel session.
   int? _loftAlignmentPickIndex;
 
+  /// True while [_loftAlignmentPickIndex] is picking a section's *profile* (a Line/Circle/Arc/...
+  /// of the loop to loft) instead of its alignment point; both sub-picks share the same
+  /// selection-stash and filter-override plumbing.
+  bool _loftPickIsProfile = false;
+
+  /// Per section: the profile the user picked (`LoftSection.profile_refs`), or null to use the
+  /// stored/default one. Needed when a sketch has several closed loops.
+  List<List<SketchEntityRefDto>?> _loftProfileRefs = [];
+
   /// The picked `guide_curve_refs` entity - this session's own UI
   /// simplification of the backend's ordered chain to a single entity
   /// (see [LoftPanel]'s own doc comment for why) - sent as a one-element
@@ -7135,6 +7148,20 @@ class _PartScreenState extends State<PartScreen> {
   /// `alignment_point` is always a `POINT` entity in a section's own
   /// Sketch, never a Body vertex - see the backend `LoftSection.
   /// alignment_point`'s own docstring).
+  static const _loftProfilePickSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: true,
+    sketchArc: true,
+    sketchEllipse: true,
+    sketchSpline: true,
+    plane: false,
+  );
+
   static const _loftAlignmentPointSelectionFilter = SelectionFilterState(
     vertex: false,
     edge: false,
@@ -7183,6 +7210,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftAlignmentPoints = List.filled(sections.length, null);
       _loftSeamParams = List.filled(sections.length, null);
       _loftReverseFlags = List.filled(sections.length, false);
+      _loftProfileRefs = List.filled(sections.length, null);
       _loftStoredSections = null;
       _loftGuideCurveRef = null;
       _entitiesBeforeLoft = _selectedEntities;
@@ -7237,6 +7265,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftSeamParams = seamParams;
       _loftReverseFlags = reverseFlags;
       _loftStoredSections = feature.sections;
+      _loftProfileRefs = List.filled(feature.sections.length, null);
       _loftGuideCurveRef = guideCurveRef;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {
@@ -7414,6 +7443,7 @@ class _PartScreenState extends State<PartScreen> {
       _loftSeamParams = [];
       _loftReverseFlags = [];
       _loftSeamHandles = const [];
+      _loftProfileRefs = [];
       _loftStoredSections = null;
       _loftGuideCurveRef = null;
       // Defensive: abandons an in-flight alignment-point/guide-curve
@@ -7423,6 +7453,7 @@ class _PartScreenState extends State<PartScreen> {
       // first).
       if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
         _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
         _loftPickingGuideCurve = false;
         _selectionFilterOverrides.pop();
       }
@@ -7463,11 +7494,13 @@ class _PartScreenState extends State<PartScreen> {
       _loftSeamParams = [];
       _loftReverseFlags = [];
       _loftSeamHandles = const [];
+      _loftProfileRefs = [];
       _loftStoredSections = null;
       _loftGuideCurveRef = null;
       // Mirrors _confirmLoft's own identical defensive cleanup above.
       if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
         _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
         _loftPickingGuideCurve = false;
         _selectionFilterOverrides.pop();
       }
@@ -7558,6 +7591,7 @@ class _PartScreenState extends State<PartScreen> {
         );
       }
       _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
       _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
       _entitiesBeforeLoftSubPick = null;
       _selectionFilterOverrides.pop();
@@ -7573,10 +7607,60 @@ class _PartScreenState extends State<PartScreen> {
         ? stored[index]
         : LoftSectionDto(sketchFeatureId: _loftSections[index].id);
     return base.withAlignment(
+      profileRefs: index < _loftProfileRefs.length ? _loftProfileRefs[index] : null,
       alignmentPoint: index < _loftAlignmentPoints.length ? _loftAlignmentPoints[index] : null,
       seamParam: index < _loftSeamParams.length ? _loftSeamParams[index] : null,
       reverse: index < _loftReverseFlags.length && _loftReverseFlags[index],
     );
+  }
+
+  /// The backend entity type for a profile-defining Sketch entity [kind], or null when [kind] can't
+  /// name a loop.
+  String? _profileEntityTypeFor(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.sketchLine => 'line',
+        SelectionEntityKind.sketchCircle => 'circle',
+        SelectionEntityKind.sketchArc => 'arc',
+        SelectionEntityKind.sketchEllipse => 'ellipse',
+        SelectionEntityKind.sketchSpline => 'spline',
+        _ => null,
+      };
+
+  /// [LoftPanel.onPickProfile]: pick which closed loop of section [index]'s sketch to loft.
+  void _startLoftProfilePick(int index) {
+    setState(() {
+      _loftAlignmentPickIndex = index;
+      _loftPickIsProfile = true;
+      _entitiesBeforeLoftSubPick = _selectedEntities;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_loftProfilePickSelectionFilter);
+    });
+  }
+
+  /// A tapped Line/Circle/Arc/... becomes the section's profile anchor, as long as it belongs to
+  /// that section's own sketch (a tap on another section's geometry is ignored and the pick stays open).
+  void _setLoftProfile(SelectionEntityRef entity) {
+    final index = _loftAlignmentPickIndex;
+    final type = _profileEntityTypeFor(entity.kind);
+    if (index == null || type == null || index >= _loftSections.length) return;
+    if (entity.sketchFeatureId != _loftSections[index].id) return;
+    final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+    if (sketchId == null) return;
+    setState(() {
+      _loftProfileRefs[index] = [SketchEntityRefDto(sketchId: sketchId, entityType: type, entityId: entity.sketchEntityId)];
+      _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
+      _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
+      _entitiesBeforeLoftSubPick = null;
+      _selectionFilterOverrides.pop();
+    });
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onClearProfile]: back to the section's default profile.
+  void _clearLoftProfile(int index) {
+    if (index >= _loftProfileRefs.length) return;
+    setState(() => _loftProfileRefs[index] = const []);
+    _scheduleLoftPreview();
   }
 
   /// [LoftPanel.onSeamChanged] - null returns that section to automatic alignment.
@@ -7606,6 +7690,7 @@ class _PartScreenState extends State<PartScreen> {
   void _cancelLoftAlignmentPointPick() {
     setState(() {
       _loftAlignmentPickIndex = null;
+      _loftPickIsProfile = false;
       _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
       _entitiesBeforeLoftSubPick = null;
       _selectionFilterOverrides.pop();
@@ -23377,6 +23462,16 @@ class _PartScreenState extends State<PartScreen> {
                       alignmentPointsSet: [for (final ref in _loftAlignmentPoints) ref != null],
                       seamParams: _loftSeamParams,
                       reverseFlags: _loftReverseFlags,
+                      profilePicked: [
+                        for (var i = 0; i < _loftSections.length; i++)
+                          (i < _loftProfileRefs.length ? _loftProfileRefs[i] : null)?.isNotEmpty ??
+                              (_loftStoredSections != null &&
+                                  i < _loftStoredSections!.length &&
+                                  _loftStoredSections![i].profileRefs.isNotEmpty),
+                      ],
+                      pickingProfileIndex: _loftPickIsProfile ? _loftAlignmentPickIndex : null,
+                      onPickProfile: _startLoftProfilePick,
+                      onClearProfile: _clearLoftProfile,
                       onSeamChanged: _setLoftSeam,
                       onReverseChanged: _setLoftReverse,
                       guideCurveSet: _loftGuideCurveRef != null,

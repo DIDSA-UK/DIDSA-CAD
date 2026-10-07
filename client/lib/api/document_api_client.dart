@@ -422,13 +422,14 @@ class LoftSectionDto {
   /// This section with the editable alignment fields replaced, keeping everything else
   /// ([profileRefs], [referencePoint], [edgeRef]) the panel has no controls for.
   LoftSectionDto withAlignment({
+    List<SketchEntityRefDto>? profileRefs,
     required SketchEntityRefDto? alignmentPoint,
     required double? seamParam,
     required bool reverse,
   }) =>
       LoftSectionDto(
         sketchFeatureId: sketchFeatureId,
-        profileRefs: profileRefs,
+        profileRefs: profileRefs ?? this.profileRefs,
         referencePoint: referencePoint,
         alignmentPoint: alignmentPoint,
         seamParam: seamParam,
