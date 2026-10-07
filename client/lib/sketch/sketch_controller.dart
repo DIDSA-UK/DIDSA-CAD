@@ -7,6 +7,8 @@ import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 import '../api/sketch_api_client.dart';
 import 'dof_analysis.dart';
 import 'local_solver/local_sketch_solver.dart';
+import 'local_solver/sketch_drag_stats.dart';
+import 'local_solver/sketch_projector.dart';
 import 'local_solver/slvs_bindings.dart';
 import 'pattern_mirror_expansion.dart';
 import 'view_transform.dart';
@@ -1506,12 +1508,10 @@ class SketchController extends ChangeNotifier {
   /// one.
   SketchApiClient get api => _api;
 
-  /// [localSolverBindings] lets a test inject an already-loaded native
-  /// library (e.g. the host desktop build under client/native/slvs/
-  /// build-host/) so the in-process solve path itself - not just its
-  /// server-round-trip fallback - can be exercised deterministically off
-  /// Android. Production code never passes this; [_trySolveDuringDragLocally]
-  /// lazily loads the real bundled library on first use instead.
+  /// [localSolverBindings] lets a test inject an already-loaded SolveSpace build (the host library under
+  /// client/native/slvs/build-host/) as a reference engine: with it, [_trySolveDuringDragLocally] clamps every drag frame
+  /// with that solver instead of the bundled [projectSketch], so tests can pin the projector against the real solver.
+  /// Production never passes this - the client has no SolveSpace in it.
   SketchController({SketchApiClient? api, SlvsNativeBindings? localSolverBindings})
       : _api = api ?? SketchApiClient(),
         _localSolverBindings = localSolverBindings;
@@ -2522,6 +2522,11 @@ class SketchController extends ChangeNotifier {
   /// is offered whenever *something* in the sketch still has slack, not
   /// verified against the specific Point being dragged.
   int _dof = 0;
+
+  /// Test hook: pretend the backend's last solve reported [dof] degrees of freedom (a sketch built straight into the maps
+  /// has had no solve, and a converged 0 would read as "fully constrained" and refuse every grab).
+  @visibleForTesting
+  void debugSetBackendDof(int dof) => _dof = dof;
 
   /// Bug-fix round 2: whether the most recent solve actually converged.
   /// `dof` is only meaningful when it did - py-slvs can (and does, for a
@@ -5454,10 +5459,6 @@ class SketchController extends ChangeNotifier {
     // constraint of any other kind (across-flats, corner-to-corner, horizontal/vertical or parallel on
     // an edge, a tie to other geometry, ...) must drive. With a local solver that is the hybrid drag
     // (see [_hybridStructuralFor]); without one, fall back to the general path via the backend.
-    if (_ensureLocalSolver() == null &&
-        _polygonHasUserConstraints(polygon, centreDrag: pointId == polygon.centerPointId)) {
-      return null;
-    }
     return polygon;
   }
 
@@ -5511,7 +5512,6 @@ class SketchController extends ChangeNotifier {
   /// there; a centre drag counts them. Shapes whose structural ids were never learned count as having
   /// none, which keeps the plain closed-form drag.
   Set<String>? _hybridStructuralFor(String pointId) {
-    if (_ensureLocalSolver() == null) return null;
     final polygon = _intactPolygonForVertex(pointId);
     if (polygon != null) {
       final centre = pointId == polygon.centerPointId;
@@ -5619,7 +5619,12 @@ class SketchController extends ChangeNotifier {
         }
       }
     }
-    _trySolveDuringDragLocally([draggedId], seed: positions, provisionalDistances: sizes);
+    if (!_trySolveDuringDragLocally([draggedId], seed: positions, provisionalDistances: sizes) &&
+        _dragSolveUnsupported) {
+      // A constraint in the group has no local model (a spline tangency): nothing can clamp the proposal, so it is
+      // applied as the plain closed-form drag (the old no-solver behaviour) and the drop's backend solve settles it.
+      unawaited(_applyClosedFormPositions(positions, sync: false));
+    }
   }
 
   /// What dragging [draggedPointId] may do to an intact [polygon], mirroring [_circleDragMode]:
@@ -6925,6 +6930,7 @@ class SketchController extends ChangeNotifier {
     _dragOriginPointY = point.y;
     _lastDragSolveAt = null;
     _dragReflowedPointIds.clear();
+    _dragReference = {for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y)};
     notifyListeners();
     return true;
   }
@@ -7127,8 +7133,58 @@ class SketchController extends ChangeNotifier {
     }));
   }
 
-  SlvsNativeBindings? _localSolverBindings;
-  bool _localSolverUnavailable = false;
+  /// Test-only reference engine, see the constructor.
+  final SlvsNativeBindings? _localSolverBindings;
+
+  /// Set by [_clampDragFrame] when the dragged group holds a constraint the projector has no model for, so a caller can
+  /// tell "this frame was rejected" from "this drag cannot be clamped locally at all".
+  bool _dragSolveUnsupported = false;
+
+  /// Last accepted frame's positions for the current drag (null outside one): the projector takes its branch choices from
+  /// here (angle supplement, side of a horizontal/vertical dimension), not from the frame's proposal.
+  Map<String, (double, double)>? _dragReference;
+
+  /// The one per-frame constraint step of a drag: [pointXY] is the wish (cursor / closed-form proposal over the current
+  /// positions); returns every point the clamp placed, or null when it could not (no result, did not converge, or the group
+  /// is not supported). The default engine is [projectSketch] (no solver); a test may inject SolveSpace as a reference.
+  Map<String, (double, double)>? _clampDragFrame({
+    required Map<String, (double, double)> pointXY,
+    required Map<String, (String, String)> lineEndpoints,
+    required Set<String> anchors,
+    required Set<String> stiff,
+    required Map<String, double> provisionalDistances,
+  }) {
+    final pinned = {..._lockedPointIds, if (_originPointId != null) _originPointId!};
+    final native = _localSolverBindings;
+    if (native != null) {
+      return solveSketchLocally(
+        bindings: native,
+        points: pointXY,
+        constraints: constraints.values.toList(),
+        lineEndpoints: (id) => lineEndpoints[id]!,
+        originPointId: _originPointId,
+        anchorPointIds: anchors,
+        lockedPointIds: _lockedPointIds,
+        provisionalDistances: provisionalDistances,
+      ).solvedPoints;
+    }
+    final projection = projectSketch(
+      points: pointXY,
+      constraints: constraints.values.toList(),
+      lineEndpoints: (id) => lineEndpoints[id]!,
+      anchorPointIds: anchors,
+      stiffPointIds: stiff,
+      pinnedPointIds: pinned,
+      provisionalDistances: provisionalDistances,
+      reference: _dragReference,
+    );
+    dragStats.recordSystem(projection.variablePoints, projection.rows, projection.iterations);
+    if (projection.unsupported) {
+      _dragSolveUnsupported = true;
+      return null;
+    }
+    return projection.converged ? projection.points : null;
+  }
 
   /// Attempts the in-process local solve for [updatePointDrag]'s/
   /// [updateLineDrag]'s mid-drag reflow - returns false (never partially
@@ -7140,21 +7196,6 @@ class SketchController extends ChangeNotifier {
   /// [solveSketchLocally] soft-drags, and (on success) what gets written
   /// back into [points], possibly softly clamped - see that function's own
   /// doc comment.
-  /// The local solver library, loading it on first use; null where it isn't available (everywhere
-  /// but Android, unless a test injected one), after which this stops trying.
-  SlvsNativeBindings? _ensureLocalSolver() {
-    var bindings = _localSolverBindings;
-    if (bindings == null && !_localSolverUnavailable) {
-      try {
-        bindings = loadSlvsBindings();
-        _localSolverBindings = bindings;
-      } catch (_) {
-        _localSolverUnavailable = true;
-      }
-    }
-    return bindings;
-  }
-
   /// [seed] overrides the positions the solve starts from (the hybrid drag's closed-form proposal);
   /// [provisionalDistances] switches a shape's own unconfirmed size constraints on at the given values
   /// for this solve only - see [solveSketchLocally]'s `provisionalDistances`.
@@ -7163,9 +7204,28 @@ class SketchController extends ChangeNotifier {
     Map<String, (double, double)> seed = const {},
     Map<String, double> provisionalDistances = const {},
   }) {
-    final bindings = _ensureLocalSolver();
-    if (bindings == null) return false;
+    final watch = Stopwatch()..start();
+    final ok = _trySolveDuringDragFrame(anchorPointIds, seed, provisionalDistances);
+    dragStats.recordTime(watch.elapsedMicroseconds);
+    if (ok) {
+      dragStats.accepted++;
+    } else if (_dragSolveUnsupported) {
+      dragStats.unsupported++;
+    } else {
+      dragStats.rejected++;
+    }
+    return ok;
+  }
 
+  /// Per-frame cost and rejection counters of the drag clamp (see [SketchDragStats]).
+  final SketchDragStats dragStats = SketchDragStats();
+
+  bool _trySolveDuringDragFrame(
+    List<String> anchorPointIds,
+    Map<String, (double, double)> seed,
+    Map<String, double> provisionalDistances,
+  ) {
+    _dragSolveUnsupported = false;
     try {
       final pointXY = <String, (double, double)>{
         for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y),
@@ -7175,16 +7235,15 @@ class SketchController extends ChangeNotifier {
       final lineEndpoints = <String, (String, String)>{
         for (final entry in lines.entries) entry.key: (entry.value.startPointId, entry.value.endPointId),
       };
-      final result = solveSketchLocally(
-        bindings: bindings,
-        points: pointXY,
-        constraints: constraints.values.toList(),
-        lineEndpoints: (id) => lineEndpoints[id]!,
-        originPointId: _originPointId,
-        anchorPointIds: anchorPointIds.toSet(),
-        lockedPointIds: _lockedPointIds,
+      final solved = _clampDragFrame(
+        pointXY: pointXY,
+        lineEndpoints: lineEndpoints,
+        anchors: anchorPointIds.toSet(),
+        stiff: seed.keys.toSet(),
         provisionalDistances: provisionalDistances,
       );
+      if (solved == null) return false;
+      final result = (solvedPoints: solved);
       final anchorSet = anchorPointIds.toSet();
       // No anchor-drift check here any more (there used to be one - see git
       // history if you're looking for it): [solveSketchLocally] now
@@ -7323,8 +7382,13 @@ class SketchController extends ChangeNotifier {
       // Point.
       for (final entry in result.solvedPoints.entries) {
         final (x, y) = entry.value;
+        final before = pointXY[entry.key];
+        // The group the projector solved includes points that did not move; only a moved one (or a dragged one, whose
+        // raw position may differ from the backend's) needs syncing at the drop.
+        final moved = before == null || (x - before.$1).abs() > 1e-9 || (y - before.$2).abs() > 1e-9;
         points[entry.key] = SketchPointView(id: entry.key, x: x, y: y);
-        _dragReflowedPointIds.add(entry.key);
+        _dragReference?[entry.key] = (x, y);
+        if (moved || anchorSet.contains(entry.key)) _dragReflowedPointIds.add(entry.key);
       }
       notifyListeners();
       return true;
@@ -7608,6 +7672,7 @@ class SketchController extends ChangeNotifier {
     _dragOriginLineEndY = end.y;
     _lastDragSolveAt = null;
     _dragReflowedPointIds.clear();
+    _dragReference = {for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y)};
     notifyListeners();
     return true;
   }

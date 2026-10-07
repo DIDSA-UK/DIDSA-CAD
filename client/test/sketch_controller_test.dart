@@ -5305,19 +5305,19 @@ void main() {
     expect(cPointAfter.y, closeTo(cPointBefore.y, 1e-9));
   });
 
-  group('hybrid drag: the formula proposes, the local solver clamps to the user constraints', () {
-    // These need the real solver; skip the whole group (like local_solver_test.dart) where the host
-    // library hasn't been built - a skip inside setUp would still run the test bodies.
-    final libraryPath = _findHostSlvsLibrary();
-    if (libraryPath == null) {
-      test('hybrid drag (skipped - host didsa_slvs_ffi library not built, see client/native/slvs/CMakeLists.txt)', () {},
-          skip: true);
+  // Every case runs on the bundled projector (no solver); where the host SolveSpace build exists it also runs on it as the
+  // reference engine, so the two are pinned to the same behaviour (see client/native/slvs/CMakeLists.txt).
+  for (final engine in ['projector', 'solvespace']) {
+  group('hybrid drag ($engine): the formula proposes, the constraints clamp', () {
+    final libraryPath = engine == 'solvespace' ? _findHostSlvsLibrary() : null;
+    if (engine == 'solvespace' && libraryPath == null) {
+      test('hybrid drag on SolveSpace (skipped - host didsa_slvs_ffi library not built)', () {}, skip: true);
       return;
     }
     late SketchController solved;
 
     setUp(() async {
-      final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+      final bindings = libraryPath == null ? null : SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
       final localBackend = _FakeBackend();
       final localClient = MockClient((request) async => localBackend.handle(request));
       solved = SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
@@ -5570,6 +5570,7 @@ void main() {
       await solved.endPointDrag();
     });
   });
+  }
 
   group('confirmed dimensions drive Slot / Ellipse drags instead of being overwritten', () {
     test('a Slot corner cannot be grabbed once its radius is confirmed', () async {
