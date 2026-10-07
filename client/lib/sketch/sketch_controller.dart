@@ -4902,6 +4902,20 @@ class SketchController extends ChangeNotifier {
     return _existingPointIdNear(cursorX, cursorY);
   }
 
+  /// Picks the midpoint of [lineId] from outside the 2D canvas (the embedded 3D
+  /// sketcher's `'mid:<lineId>'` hits): materializes the Point tied to the line by
+  /// an `at_midpoint` constraint (or reuses the one already there) and selects it,
+  /// exactly what a Select/Dimension tap on the midpoint does in 2D.
+  Future<void> selectLineMidpoint(String lineId) async {
+    if (!lines.containsKey(lineId) || _busy) return;
+    String? pointId;
+    await _runGuarded(() async {
+      pointId = await _materializeMidpoint(lineId);
+    });
+    final id = pointId;
+    if (id != null) selectEntity(SketchSelection(kind: SelectionKind.point, id: id));
+  }
+
   /// The resolved tap target for [SketchMode.select]/[SketchMode.dimension]:
   /// a direct Point/Line/Circle hit, or - if the tap instead landed on a
   /// Line's midpoint - a real Point materialized there on the spot (new

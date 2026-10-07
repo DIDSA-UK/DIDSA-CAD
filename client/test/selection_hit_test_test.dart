@@ -223,6 +223,34 @@ void main() {
     });
   });
 
+  group('hitTestSketchLineMidpoints', () {
+    // A segment from (-1, 0, 10) to (1.1, 0, 10): midpoint (0.05, 0, 10), 0.05 world units off the ray.
+    final segments = [(vm.Vector3(-1, 0, 10), vm.Vector3(1.1, 0, 10))];
+
+    test('a Line midpoint within the vertex pixel radius is hit as a mid:<lineId> Sketch Point', () {
+      final hit = hitTestSketchLineMidpoints(straightDownZ, viewportSize, 'feature-1', segments, ['line-a']);
+      expect(
+        hit?.entity,
+        const SelectionEntityRef(
+          kind: SelectionEntityKind.sketchPoint,
+          sketchFeatureId: 'feature-1',
+          sketchEntityId: 'mid:line-a',
+        ),
+      );
+    });
+
+    test('the Line itself is not a midpoint hit away from its middle', () {
+      final offCentre = [(vm.Vector3(0.5, 0, 10), vm.Vector3(2, 0, 10))];
+      expect(hitTestSketchLineMidpoints(straightDownZ, viewportSize, 'feature-1', offCentre, ['line-a']), isNull);
+    });
+
+    test('sketchMidpointFor resolves only mid: ids of known Lines', () {
+      expect(sketchMidpointFor('mid:line-a', ['line-a'], segments), vm.Vector3(0.05, 0, 10));
+      expect(sketchMidpointFor('mid:line-b', ['line-a'], segments), isNull);
+      expect(sketchMidpointFor('point-a', ['line-a'], segments), isNull);
+    });
+  });
+
   group('Prompt C1: hitTestSketchLines', () {
     test('a segment whose closest point to the ray is within radius is hit, tagged with the Feature id', () {
       final hit = hitTestSketchLines(

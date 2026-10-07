@@ -661,6 +661,12 @@ class PartViewport extends StatefulWidget {
   /// only rendered while [sketchPlaneBasis] is non-null.
   final bool sketchPlaneGridVisible;
 
+  /// Whether the midpoint of every Sketch Line is a pickable point (hover and
+  /// tap), reported as a Sketch Point with a `'mid:<lineId>'` id (see
+  /// [kSketchMidpointIdPrefix]). Set by the embedded sketcher in Select and
+  /// Dimension modes; the owner materializes the real Point on pick.
+  final bool sketchMidpointPicking;
+
   /// P10: gates a new priority tier ahead of [sketchPlaneBasis]'s own plane
   /// hit, inside [_handleTap] - a tap that would otherwise place new
   /// geometry on the plane instead first checks for a real Body
@@ -1100,6 +1106,7 @@ class PartViewport extends StatefulWidget {
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
     this.sketchPlaneSurfaceOpacity = 0.18,
     this.sketchPlaneGridVisible = false,
+    this.sketchMidpointPicking = false,
     this.preferEntityPick = false,
     this.preferEntityPickIncludesFace = false,
     this.preferEntityPickIncludesEdge = true,
@@ -4777,6 +4784,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            sketchLineMidpoints: widget.sketchMidpointPicking,
             activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             fovRadiansY: _perspectiveFovOf(camera),
@@ -5062,6 +5070,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             patternMirrorSketchFeatureId: widget.patternMirrorSketchFeatureId,
             filter: widget.selectionFilter,
             facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+            sketchLineMidpoints: widget.sketchMidpointPicking,
             activeSketchFeatureId: widget.activeSketchFeatureId,
             orthographicHalfHeight: _orthographicHalfHeightOf(camera),
             fovRadiansY: _perspectiveFovOf(camera),
@@ -6126,6 +6135,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           if (geometry != null && index != -1) {
             (isActiveSketchEntity(entity) ? vertexPositionsActiveSketch : vertexPositions)
                 .add(geometry.points[index]);
+          } else if (geometry != null) {
+            final midpoint = sketchMidpointFor(entity.sketchEntityId, geometry.lineIds, geometry.lineSegments);
+            if (midpoint != null) {
+              (isActiveSketchEntity(entity) ? vertexPositionsActiveSketch : vertexPositions).add(midpoint);
+            }
           }
         case SelectionEntityKind.sketchLine:
           final geometry = widget.sketchGeometries[entity.sketchFeatureId];
@@ -6422,7 +6436,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
         if (geometry == null) return null;
         final index = geometry.pointIds.indexOf(entity.sketchEntityId);
-        if (index == -1) return null;
+        if (index == -1) {
+          final midpoint = sketchMidpointFor(entity.sketchEntityId, geometry.lineIds, geometry.lineSegments);
+          if (midpoint == null) return null;
+          return buildVertexMarkersNode([midpoint], color: color, alwaysOnTop: alwaysOnTop);
+        }
         return buildVertexMarkersNode([geometry.points[index]], color: color, alwaysOnTop: alwaysOnTop);
       case SelectionEntityKind.sketchLine:
         final geometry = widget.sketchGeometries[entity.sketchFeatureId];
