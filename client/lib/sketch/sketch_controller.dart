@@ -1458,6 +1458,13 @@ enum CircleDragMode { resize, translate, blocked }
 /// [SketchController._arcDragMode]'s own doc comment.
 enum ArcDragMode { resize, translate, blocked }
 
+/// [CircleDragMode]'s counterpart for a regular Polygon, decided before a drag starts (see
+/// [SketchController._polygonDragMode]): `resize` (no driving dimension, the corner sets the
+/// size), `rotateOnly` (a confirmed circumradius or inscribed radius drives the size, so the
+/// corner only turns the polygon) or `blocked` (the centre is fully pinned, so a centre drag
+/// has nowhere to go).
+enum PolygonDragMode { resize, rotateOnly, blocked }
+
 /// A client-side-only preview of a dimension that doesn't exist as a real
 /// Constraint yet (or whose existing value hasn't been confirmed for
 /// editing yet) - Stage 13 item 5. Nothing here is sent to the backend
@@ -5437,6 +5444,16 @@ class SketchController extends ChangeNotifier {
     return polygon;
   }
 
+  /// What dragging [draggedPointId] may do to an intact [polygon], mirroring [_circleDragMode]:
+  /// a centre drag translates (blocked when the centre is fully pinned); a vertex drag resizes
+  /// unless a confirmed radius dimension drives the size, in which case it only rotates.
+  PolygonDragMode _polygonDragMode(SketchPolygonView polygon, String draggedPointId) {
+    if (draggedPointId == polygon.centerPointId) {
+      return isPointFullyPinned(polygon.centerPointId) ? PolygonDragMode.blocked : PolygonDragMode.resize;
+    }
+    return _confirmedPolygonCircumradius(polygon) != null ? PolygonDragMode.rotateOnly : PolygonDragMode.resize;
+  }
+
   /// Whether any constraint other than [polygon]'s own structural ones
   /// (`SketchPolygonView.structuralConstraintIds`) references one of its
   /// Points, edge/radial Lines or reference-circle Points.
@@ -6558,8 +6575,8 @@ class SketchController extends ChangeNotifier {
       radiusConstraint = _polygonRadiusConstraint(polygon);
       centerId = polygon.centerPointId;
       rimId = polygon.vertexPointIds[0];
-      dragTranslatesOnly =
-          draggedPointId == polygon.centerPointId || _confirmedPolygonCircumradius(polygon) != null;
+      dragTranslatesOnly = draggedPointId == polygon.centerPointId ||
+          _polygonDragMode(polygon, draggedPointId) == PolygonDragMode.rotateOnly;
     } else if (slot != null) {
       positions = _closedFormSlotGeometry(slot, draggedPointId, targetX, targetY);
       radiusConstraint = _slotRadiusConstraint(slot);
@@ -6685,7 +6702,7 @@ class SketchController extends ChangeNotifier {
     // centre is pinned), a centre drag is a translate, which has nowhere
     // to go at all once the centre itself is fully pinned/grounded.
     final intactPolygon = _intactPolygonForVertex(pointId);
-    if (intactPolygon != null && pointId == intactPolygon.centerPointId && isPointFullyPinned(pointId)) {
+    if (intactPolygon != null && _polygonDragMode(intactPolygon, pointId) == PolygonDragMode.blocked) {
       return false;
     }
     final point = points[pointId]!;
