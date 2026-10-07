@@ -56,6 +56,9 @@ enum LoftMode {
 /// principle a multi-segment chain) - a deliberate v1 narrowing, not a
 /// backend limitation; a multi-segment guide curve is still reachable via
 /// a direct API call.
+void _ignoreSeam(int index, double? seam) {}
+void _ignoreReverse(int index, bool reverse) {}
+
 class LoftPanel extends StatefulWidget {
   /// 'Loft' when creating a brand-new Feature (default), 'Edit Loft' when
   /// [PartScreen] opened this to edit an already-existing one instead -
@@ -85,6 +88,15 @@ class LoftPanel extends StatefulWidget {
   /// Whether each of [sectionCount] sections currently has an
   /// `alignment_point` picked - same length as [sectionCount].
   final List<bool> alignmentPointsSet;
+
+  /// Per section: where its closed profile starts (0..1 fraction of its
+  /// length; null = automatic) and whether its winding is reversed. Together
+  /// they choose how the loft connects one section to the next, replacing the
+  /// need to sketch a reference point on each profile.
+  final List<double?> seamParams;
+  final List<bool> reverseFlags;
+  final void Function(int sectionIndex, double? seam) onSeamChanged;
+  final void Function(int sectionIndex, bool reverse) onReverseChanged;
 
   /// Whether a `guide_curve_refs` entity is currently picked.
   final bool guideCurveSet;
@@ -124,6 +136,10 @@ class LoftPanel extends StatefulWidget {
     required this.sectionCount,
     required this.targetBodyCount,
     this.alignmentPointsSet = const [],
+    this.seamParams = const [],
+    this.reverseFlags = const [],
+    this.onSeamChanged = _ignoreSeam,
+    this.onReverseChanged = _ignoreReverse,
     this.guideCurveSet = false,
     this.pickingAlignmentPointIndex,
     this.pickingGuideCurve = false,
@@ -228,6 +244,52 @@ class _LoftPanelState extends State<LoftPanel> {
     return text.isEmpty ? null : double.tryParse(text);
   }
 
+  /// One section's connection controls: a slider for where its closed profile
+  /// starts (as a fraction of its length - the loft joins each section's start
+  /// to the next one's), an "Auto" reset, and a reverse-direction switch.
+  Widget _buildSeamRow(int i) {
+    final seam = i < widget.seamParams.length ? widget.seamParams[i] : null;
+    final reversed = i < widget.reverseFlags.length && widget.reverseFlags[i];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Section ${i + 1} start: ${seam == null ? 'auto' : '${(seam * 100).round()}%'}',
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              if (seam != null)
+                TextButton(
+                  onPressed: () => widget.onSeamChanged(i, null),
+                  child: const Text('Auto'),
+                ),
+            ],
+          ),
+          Slider(
+            key: ValueKey('loft-seam-slider-$i'),
+            value: (seam ?? 0).clamp(0.0, 0.999).toDouble(),
+            max: 0.999,
+            divisions: 100,
+            onChanged: (value) => widget.onSeamChanged(i, value),
+          ),
+          SwitchListTile(
+            key: ValueKey('loft-reverse-switch-$i'),
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+            title: const Text('Reverse direction'),
+            value: reversed,
+            onChanged: (value) => widget.onReverseChanged(i, value),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ResizableToolPanel(
@@ -319,6 +381,18 @@ class _LoftPanelState extends State<LoftPanel> {
               ),
             ),
           const SizedBox(height: 4),
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Connection point & direction', style: TextStyle(fontSize: 13)),
+              subtitle: const Text('Rotate where each profile starts to remove twist', style: TextStyle(fontSize: 11)),
+              childrenPadding: EdgeInsets.zero,
+              children: [
+                for (var i = 0; i < widget.sectionCount; i++) _buildSeamRow(i),
+              ],
+            ),
+          ),
           Theme(
             data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
             child: ExpansionTile(

@@ -922,6 +922,8 @@ def _loft_section_to_dict(section: LoftSection) -> dict:
         if section.alignment_point
         else None,
         "edge_ref": _subshape_ref_to_dict(section.edge_ref) if section.edge_ref else None,
+        "seam_param": section.seam_param,
+        "reverse": section.reverse,
     }
 
 
@@ -936,6 +938,8 @@ def _loft_section_from_dict(data: dict) -> LoftSection:
         if data.get("alignment_point")
         else None,
         edge_ref=_subshape_ref_from_dict(data["edge_ref"]) if data.get("edge_ref") else None,
+        seam_param=data.get("seam_param"),
+        reverse=bool(data.get("reverse", False)),
     )
 
 

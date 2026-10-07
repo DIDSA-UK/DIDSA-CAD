@@ -74,7 +74,7 @@ from OCC.Core.Geom import Geom_BezierCurve
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.gp import gp_Ax1, gp_Circ, gp_Dir, gp_Elips, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TColgp import TColgp_Array1OfPnt
-from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_REVERSED, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import TopoDS_Edge, TopoDS_Shape, TopoDS_Wire, topods
 
@@ -89,6 +89,7 @@ from app.document.extrude import (
     select_profiles,
     wire_for_profile,
 )
+from app.document.loft_seam import locate_seam, reseam_order
 from app.document.models import LoftFeature, LoftSection, Part, ResolvedPlane, SketchFeature
 from app.document.shell_ops import thicken_shell_to_solid
 from app.document.plane_geometry import is_mirrored_basis
@@ -163,6 +164,8 @@ class _ResolvedClosedSection:
     profile: Profile
     reference_angle: float | None
     alignment_local: tuple[float, float] | None
+    seam_param: float | None = None
+    reverse: bool = False
 
 
 def _resolve_closed_section(
@@ -229,6 +232,8 @@ def _resolve_closed_section(
         profile=profile,
         reference_angle=reference_angle,
         alignment_local=alignment_local,
+        seam_param=section.seam_param,
+        reverse=section.reverse,
     )
 
 
@@ -687,8 +692,43 @@ def _wires_from_resolved(resolved: list) -> list[TopoDS_Wire]:
         if index > 0 and reference_angle_0 is not None and entry.reference_angle is not None:
             twist = reference_angle_0 - entry.reference_angle
             wire = _rotate_wire(wire, entry.basis, twist)
+        if _is_reseamed(entry):
+            wire = _reseam_wire(wire, entry.seam_param, entry.reverse)
         wires.append(wire)
     return wires
+
+
+def _is_reseamed(entry) -> bool:
+    """Whether `entry` (a resolved section) opted into an explicit seam or reversed winding -
+    only closed sections can; edge and open-chain sections have no seam."""
+    return isinstance(entry, _ResolvedClosedSection) and (entry.seam_param is not None or entry.reverse)
+
+
+def _reseam_wire(wire: TopoDS_Wire, seam_param: float | None, reverse: bool) -> TopoDS_Wire:
+    """Rebuilds the closed `wire` so it starts at `seam_param` (a 0..1 fraction of its arc
+    length from its current start; None keeps the start) and, if `reverse`, runs the other
+    way. The edge holding the seam is split at that point (same curve, two parameter
+    sub-ranges, as in `_split_edge_in_half`), so a circle becomes two arcs meeting at the seam.
+    Each piece keeps the direction the wire traversed it in; see `app.document.loft_seam` for
+    the order bookkeeping."""
+    edges = _wire_edges_in_order(wire)
+    index, local_t = locate_seam([_edge_length(edge) for edge in edges], seam_param or 0.0)
+    pieces: list[TopoDS_Edge] = []
+    for edge_index, part in reseam_order(len(edges), index, local_t, reverse):
+        edge = edges[edge_index]
+        curve, first, last = BRep_Tool.Curve(edge)
+        reversed_in_wire = edge.Orientation() == TopAbs_REVERSED
+        start, end = (last, first) if reversed_in_wire else (first, last)
+        split = start + local_t * (end - start)
+        low, high = {"whole": (start, end), "second": (split, end), "first": (start, split)}[part]
+        piece = BRepBuilderAPI_MakeEdge(curve, min(low, high), max(low, high)).Edge()
+        if reversed_in_wire != reverse:
+            piece = topods.Edge(piece.Reversed())
+        pieces.append(piece)
+    wire_maker = BRepBuilderAPI_MakeWire()
+    for piece in pieces:
+        wire_maker.Add(piece)
+    return wire_maker.Wire()
 
 
 def _wire_edges_in_order(wire: TopoDS_Wire) -> list[TopoDS_Edge]:
@@ -840,6 +880,9 @@ def resolve_loft_from_bodies(
         wires = _harmonize_section_wire_edge_counts(wires)
 
         loft_maker = BRepOffsetAPI_ThruSections(True, feature.ruled)
+        if any(_is_reseamed(entry) for entry in resolved):
+            # An explicit seam/direction fixes the vertex correspondence; the default search would undo it.
+            loft_maker.CheckCompatibility(False)
         for wire in wires:
             loft_maker.AddWire(wire)
         loft_maker.Build()
@@ -872,6 +915,8 @@ def resolve_loft_from_bodies(
         wires = _harmonize_section_wire_edge_counts(wires)
 
         loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
+        if any(_is_reseamed(entry) for entry in resolved):
+            loft_maker.CheckCompatibility(False)
         for wire in wires:
             loft_maker.AddWire(wire)
         loft_maker.Build()

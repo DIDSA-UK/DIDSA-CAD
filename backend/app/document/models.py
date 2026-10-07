@@ -1965,6 +1965,13 @@ class LoftSection:
     reference_point: SketchEntityRef | None = None
     alignment_point: SketchEntityRef | None = None
     edge_ref: SubShapeRef | None = None
+    # Where this section's closed profile starts and which way it runs, so the user
+    # picks the loft's connection point instead of sketching a reference point.
+    # `seam_param` is a fraction (0..1) of the wire's arc length from its default
+    # start; None leaves the start to the automatic alignment. `reverse` flips the
+    # winding direction.
+    seam_param: float | None = None
+    reverse: bool = False
 
 
 @dataclass

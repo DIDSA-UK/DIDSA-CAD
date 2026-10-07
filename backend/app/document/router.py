@@ -529,6 +529,8 @@ def _loft_section_to_domain(schema: LoftSectionSchema) -> LoftSection:
         if schema.alignment_point
         else None,
         edge_ref=_subshape_ref_to_domain(schema.edge_ref) if schema.edge_ref else None,
+        seam_param=schema.seam_param,
+        reverse=schema.reverse,
     )
 
 
@@ -543,6 +545,8 @@ def _loft_section_to_schema(section: LoftSection) -> LoftSectionSchema:
         if section.alignment_point
         else None,
         edge_ref=_subshape_ref_to_schema(section.edge_ref) if section.edge_ref else None,
+        seam_param=section.seam_param,
+        reverse=section.reverse,
     )
 
 
@@ -565,13 +569,17 @@ def _validate_loft_section_shape(sections: list[LoftSection], index_offset: int 
                 detail=f"sections[{index}] must set exactly one of sketch_feature_id or edge_ref",
             )
         if section.edge_ref is not None and (
-            section.profile_refs or section.reference_point is not None or section.alignment_point is not None
+            section.profile_refs
+            or section.reference_point is not None
+            or section.alignment_point is not None
+            or section.seam_param is not None
+            or section.reverse
         ):
             raise HTTPException(
                 status_code=400,
                 detail=(
                     f"sections[{index}] is edge_ref-based and cannot also set "
-                    "profile_refs/reference_point/alignment_point"
+                    "profile_refs/reference_point/alignment_point/seam_param/reverse"
                 ),
             )
 

@@ -2042,6 +2042,8 @@ class LoftSectionSchema(BaseModel):
     reference_point: SketchEntityRefSchema | None = None
     alignment_point: SketchEntityRefSchema | None = None
     edge_ref: SubShapeRefSchema | None = None
+    seam_param: float | None = Field(default=None, ge=0.0, lt=1.0)
+    reverse: bool = False
 
 
 class LoftFeatureCreate(BaseModel):

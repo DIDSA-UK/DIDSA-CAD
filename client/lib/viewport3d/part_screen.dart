@@ -7055,6 +7055,8 @@ class _PartScreenState extends State<PartScreen> {
     bool thinFromClosedProfile,
     List<String> targetBodyIds,
     List<SketchEntityRefDto?> alignmentPoints,
+    List<double?> seamParams,
+    List<bool> reverseFlags,
     SketchEntityRefDto? guideCurveRef,
   })? _loftEditSnapshot;
 
@@ -7071,6 +7073,12 @@ class _PartScreenState extends State<PartScreen> {
   /// picked (see [_startLoftAlignmentPointPick]). Kept the same length as
   /// [_loftSections] by [_openLoftPanel]/[_openLoftPanelForEdit].
   List<SketchEntityRefDto?> _loftAlignmentPoints = [];
+
+  /// One slot per [_loftSections] entry - the backend `LoftSection.seam_param`
+  /// (null = automatic start) and `LoftSection.reverse`. Kept the same length
+  /// as [_loftSections] like [_loftAlignmentPoints].
+  List<double?> _loftSeamParams = [];
+  List<bool> _loftReverseFlags = [];
 
   /// Non-null while picking an `alignment_point` for `_loftSections[index]`
   /// in the 3D viewport - mirrors [_revolveActive]'s own "a dedicated
@@ -7168,6 +7176,8 @@ class _PartScreenState extends State<PartScreen> {
       _loftThickness = null;
       _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = List.filled(sections.length, null);
+      _loftSeamParams = List.filled(sections.length, null);
+      _loftReverseFlags = List.filled(sections.length, false);
       _loftGuideCurveRef = null;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {};
@@ -7193,6 +7203,8 @@ class _PartScreenState extends State<PartScreen> {
     final thinFromClosedProfile = feature.thinFromClosedProfile ?? false;
     final targetBodyIds = feature.targetBodyIds;
     final alignmentPoints = [for (final section in feature.sections) section.alignmentPoint];
+    final seamParams = [for (final section in feature.sections) section.seamParam];
+    final reverseFlags = [for (final section in feature.sections) section.reverse];
     final guideCurveRef = feature.guideCurveRefs.isNotEmpty ? feature.guideCurveRefs.first : null;
 
     setState(() {
@@ -7206,6 +7218,8 @@ class _PartScreenState extends State<PartScreen> {
         thinFromClosedProfile: thinFromClosedProfile,
         targetBodyIds: targetBodyIds,
         alignmentPoints: alignmentPoints,
+        seamParams: seamParams,
+        reverseFlags: reverseFlags,
         guideCurveRef: guideCurveRef,
       );
       _meshBeforeLoft = _bodies;
@@ -7214,6 +7228,8 @@ class _PartScreenState extends State<PartScreen> {
       _loftThickness = thickness;
       _loftThinFromClosedProfile = thinFromClosedProfile;
       _loftAlignmentPoints = alignmentPoints;
+      _loftSeamParams = seamParams;
+      _loftReverseFlags = reverseFlags;
       _loftGuideCurveRef = guideCurveRef;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {
@@ -7247,6 +7263,8 @@ class _PartScreenState extends State<PartScreen> {
         LoftSectionDto(
           sketchFeatureId: _loftSections[i].id,
           alignmentPoint: i < _loftAlignmentPoints.length ? _loftAlignmentPoints[i] : null,
+          seamParam: i < _loftSeamParams.length ? _loftSeamParams[i] : null,
+          reverse: i < _loftReverseFlags.length && _loftReverseFlags[i],
         ),
     ];
     final guideCurveRefs = _loftGuideCurveRef == null ? <SketchEntityRefDto>[] : [_loftGuideCurveRef!];
@@ -7369,6 +7387,8 @@ class _PartScreenState extends State<PartScreen> {
       _loftEditSnapshot = null;
       _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = [];
+      _loftSeamParams = [];
+      _loftReverseFlags = [];
       _loftGuideCurveRef = null;
       // Defensive: abandons an in-flight alignment-point/guide-curve
       // sub-pick if Confirm was pressed without finishing it first - pops
@@ -7413,6 +7433,8 @@ class _PartScreenState extends State<PartScreen> {
       _loftEditSnapshot = null;
       _loftThinFromClosedProfile = false;
       _loftAlignmentPoints = [];
+      _loftSeamParams = [];
+      _loftReverseFlags = [];
       _loftGuideCurveRef = null;
       // Mirrors _confirmLoft's own identical defensive cleanup above.
       if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
@@ -7440,6 +7462,8 @@ class _PartScreenState extends State<PartScreen> {
               LoftSectionDto(
                 sketchFeatureId: sections[i].id,
                 alignmentPoint: i < editSnapshot.alignmentPoints.length ? editSnapshot.alignmentPoints[i] : null,
+                seamParam: i < editSnapshot.seamParams.length ? editSnapshot.seamParams[i] : null,
+                reverse: i < editSnapshot.reverseFlags.length && editSnapshot.reverseFlags[i],
               ),
           ];
           final revertGuideCurveRefs =
@@ -7507,6 +7531,20 @@ class _PartScreenState extends State<PartScreen> {
       _entitiesBeforeLoftSubPick = null;
       _selectionFilterOverrides.pop();
     });
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onSeamChanged] - null returns that section to automatic alignment.
+  void _setLoftSeam(int index, double? seam) {
+    if (index >= _loftSeamParams.length) return;
+    setState(() => _loftSeamParams[index] = seam);
+    _scheduleLoftPreview();
+  }
+
+  /// [LoftPanel.onReverseChanged].
+  void _setLoftReverse(int index, bool reverse) {
+    if (index >= _loftReverseFlags.length) return;
+    setState(() => _loftReverseFlags[index] = reverse);
     _scheduleLoftPreview();
   }
 
@@ -23290,6 +23328,10 @@ class _PartScreenState extends State<PartScreen> {
                       sectionCount: _loftSections.length,
                       targetBodyCount: _currentLoftTargetBodyIds().length,
                       alignmentPointsSet: [for (final ref in _loftAlignmentPoints) ref != null],
+                      seamParams: _loftSeamParams,
+                      reverseFlags: _loftReverseFlags,
+                      onSeamChanged: _setLoftSeam,
+                      onReverseChanged: _setLoftReverse,
                       guideCurveSet: _loftGuideCurveRef != null,
                       pickingAlignmentPointIndex: _loftAlignmentPickIndex,
                       pickingGuideCurve: _loftPickingGuideCurve,

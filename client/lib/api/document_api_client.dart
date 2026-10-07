@@ -396,11 +396,20 @@ class LoftSectionDto {
   /// for helical/herringbone gear teeth and must never change meaning).
   final SketchEntityRefDto? alignmentPoint;
 
+  /// The backend `LoftSection.seam_param`: where this section's closed
+  /// profile starts, as a 0..1 fraction of its length (null = automatic).
+  final double? seamParam;
+
+  /// The backend `LoftSection.reverse`: flips this section's winding direction.
+  final bool reverse;
+
   const LoftSectionDto({
     required this.sketchFeatureId,
     this.profileRefs = const [],
     this.referencePoint,
     this.alignmentPoint,
+    this.seamParam,
+    this.reverse = false,
   });
 
   factory LoftSectionDto.fromJson(Map<String, dynamic> json) => LoftSectionDto(
@@ -415,6 +424,8 @@ class LoftSectionDto {
         alignmentPoint: json['alignment_point'] == null
             ? null
             : SketchEntityRefDto.fromJson(json['alignment_point'] as Map<String, dynamic>),
+        seamParam: (json['seam_param'] as num?)?.toDouble(),
+        reverse: json['reverse'] as bool? ?? false,
       );
 
   Map<String, dynamic> toJson() => {
@@ -422,6 +433,8 @@ class LoftSectionDto {
         'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
         if (referencePoint != null) 'reference_point': referencePoint!.toJson(),
         if (alignmentPoint != null) 'alignment_point': alignmentPoint!.toJson(),
+        if (seamParam != null) 'seam_param': seamParam,
+        if (reverse) 'reverse': true,
       };
 }
 
