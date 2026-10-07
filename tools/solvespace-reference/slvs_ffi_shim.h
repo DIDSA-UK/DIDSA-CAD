@@ -1,5 +1,5 @@
 // Production dart:ffi shim over the SolveSpace fork's System C++ class
-// (client/native/slvs/vendor/src/swig/slvs_swig.hpp). One thin extern "C"
+// (tools/solvespace-reference/vendor/src/swig/slvs_swig.hpp). One thin extern "C"
 // forwarding function per System method backend/app/sketch/solver.py and
 // constraints.py actually call (see docs/sketcher-spikes-ffi-and-plane-
 // sketch.md's Track 1 verdict for how this set was derived) - this is not
@@ -121,7 +121,7 @@ DIDSA_SLVS_API int slvs_solve(SlvsSystemHandle sys, Slvs_hGroup group, int repor
 // array+length pair (dart:ffi can call this with no pointer allocation on
 // the Dart side, at the cost of a fixed small ceiling matching
 // Slvs_System.dragged's own [4] - the same ceiling either shape would have).
-// Requires the vendor build to include client/native/slvs/patches/0001-
+// Requires the vendor build to include tools/solvespace-reference/patches/0001-
 // system-solve-dragged-params.patch (see that file, and this shim's own
 // build recipe in CMakeLists.txt) - without it, System::solve has no
 // `dragged` parameter to forward into and this function cannot be

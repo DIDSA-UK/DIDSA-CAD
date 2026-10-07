@@ -17,15 +17,15 @@ import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/view_transform.dart';
 
 /// Milestone B/E's host-built didsa_slvs_ffi library, if it's been built
-/// (see client/native/slvs/CMakeLists.txt's own header comment for the
+/// (see tools/solvespace-reference/CMakeLists.txt's own header comment for the
 /// two-step recipe) - lets the tests below exercise the actual in-process
 /// solve path engaging during a drag, not just its server-round-trip
 /// fallback (which every other drag test in this file already covers).
 String? _findHostSlvsLibrary() {
   for (final relative in [
-    'native/slvs/build-host/libdidsa_slvs_ffi.dll',
-    'native/slvs/build-host/libdidsa_slvs_ffi.so',
-    'native/slvs/build-host/libdidsa_slvs_ffi.dylib',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.dll',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.so',
+    '../tools/solvespace-reference/build-host/libdidsa_slvs_ffi.dylib',
   ]) {
     final file = File(relative);
     if (file.existsSync()) return file.absolute.path;
@@ -5340,7 +5340,7 @@ void main() {
   });
 
   // Every case runs on the bundled projector (no solver); where the host SolveSpace build exists it also runs on it as the
-  // reference engine, so the two are pinned to the same behaviour (see client/native/slvs/CMakeLists.txt).
+  // reference engine, so the two are pinned to the same behaviour (see tools/solvespace-reference/CMakeLists.txt).
   for (final engine in ['projector', 'solvespace']) {
   group('hybrid drag ($engine): the formula proposes, the constraints clamp', () {
     final libraryPath = engine == 'solvespace' ? _findHostSlvsLibrary() : null;
@@ -6359,7 +6359,7 @@ void main() {
       'ever seeing it, since the anchors themselves land exactly where pinned)', () async {
     final libraryPath = _findHostSlvsLibrary();
     if (libraryPath == null) {
-      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      markTestSkipped('host didsa_slvs_ffi library not built - see tools/solvespace-reference/CMakeLists.txt');
       return;
     }
     final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
@@ -6415,7 +6415,7 @@ void main() {
       () async {
     final libraryPath = _findHostSlvsLibrary();
     if (libraryPath == null) {
-      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      markTestSkipped('host didsa_slvs_ffi library not built - see tools/solvespace-reference/CMakeLists.txt');
       return;
     }
     final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
@@ -11431,7 +11431,7 @@ void main() {
       'reflowing the other Point to satisfy a live DistanceConstraint', () async {
     final libraryPath = _findHostSlvsLibrary();
     if (libraryPath == null) {
-      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      markTestSkipped('host didsa_slvs_ffi library not built - see tools/solvespace-reference/CMakeLists.txt');
       return;
     }
     final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
@@ -11498,7 +11498,7 @@ void main() {
       () async {
     final libraryPath = _findHostSlvsLibrary();
     if (libraryPath == null) {
-      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      markTestSkipped('host didsa_slvs_ffi library not built - see tools/solvespace-reference/CMakeLists.txt');
       return;
     }
     final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
@@ -11571,7 +11571,7 @@ void main() {
       'server round trip needed', () async {
     final libraryPath = _findHostSlvsLibrary();
     if (libraryPath == null) {
-      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      markTestSkipped('host didsa_slvs_ffi library not built - see tools/solvespace-reference/CMakeLists.txt');
       return;
     }
     final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
@@ -11655,7 +11655,7 @@ void main() {
       'can\'t save it either)', () async {
     final libraryPath = _findHostSlvsLibrary();
     if (libraryPath == null) {
-      markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+      markTestSkipped('host didsa_slvs_ffi library not built - see tools/solvespace-reference/CMakeLists.txt');
       return;
     }
     final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));

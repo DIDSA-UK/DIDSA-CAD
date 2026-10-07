@@ -1,4 +1,4 @@
-// Test-only: the real SolveSpace (host build of client/native/slvs) as a drop-in for the drag clamp, so tests can pin the
+// Test-only: the real SolveSpace (host build of tools/solvespace-reference) as a drop-in for the drag clamp, so tests can pin the
 // bundled projector (lib/sketch/projector) against the solver it replaced. The app never loads any of this.
 import 'package:didsa_cad_client/sketch/projector/sketch_projector.dart';
 

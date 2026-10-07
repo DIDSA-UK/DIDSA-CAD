@@ -4,7 +4,7 @@ description: >
   didsa_slvs_ffi shared library and reproduces the spike's on-device parity
   cases against the real backend's solve_sketch output - Milestone B of the
   sketcher restructure plan's Phase 1 rollout. Not shipped app code; see
-  client/native/slvs/CMakeLists.txt for how the library itself is built.
+  tools/solvespace-reference/CMakeLists.txt for how the library itself is built.
 publish_to: 'none'
 environment:
   sdk: ^3.6.0

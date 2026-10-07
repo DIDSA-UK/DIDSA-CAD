@@ -78,7 +78,7 @@ the dragged group placed at the weighted-nearest feasible point to the wish.
 Host: x86 Linux container. **Timings in the tables are Dart JIT inside `flutter test`** (not release speed); the AOT column in the
 chain table is `dart compile exe` of the same projector. No phone, iOS device or Windows machine was available, so nothing here says
 how fast a phone is - on-device timing is still unmeasured. SolveSpace = the real solver through the host build of
-`client/native/slvs` (patched fork, as the old engine used it).
+`tools/solvespace-reference` (patched fork, as the old engine used it).
 
 ### Cost vs sketch size - why the group restriction matters
 
@@ -299,13 +299,13 @@ the tracking error at 20 links; 2 stalls).
 cd client && flutter test test/sketch_projector_test.dart test/sketch_drag_gate_test.dart test/sketch_controller_test.dart
 
 # reference engine (test only): needs cmake + g++
-git submodule update --init client/native/slvs/vendor
-git -C client/native/slvs/vendor apply ../patches/0001-system-solve-dragged-params.patch
-cmake -B /tmp/slvs/vendor -S client/native/slvs/vendor -DBUILD_PYTHON=OFF -DENABLE_GUI=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release
+git submodule update --init tools/solvespace-reference/vendor
+git -C tools/solvespace-reference/vendor apply ../patches/0001-system-solve-dragged-params.patch
+cmake -B /tmp/slvs/vendor -S tools/solvespace-reference/vendor -DBUILD_PYTHON=OFF -DENABLE_GUI=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_BUILD_TYPE=Release
 cmake --build /tmp/slvs/vendor --target slvs_static
-cmake -B /tmp/slvs/shim -S client/native/slvs -DSLVS_VENDOR_BUILD_DIR=/tmp/slvs/vendor && cmake --build /tmp/slvs/shim
-mkdir -p client/native/slvs/build-host && cp /tmp/slvs/shim/libdidsa_slvs_ffi.so client/native/slvs/build-host/
-git -C client/native/slvs/vendor apply -R ../patches/0001-system-solve-dragged-params.patch   # keep the submodule clean
+cmake -B /tmp/slvs/shim -S tools/solvespace-reference -DSLVS_VENDOR_BUILD_DIR=/tmp/slvs/vendor && cmake --build /tmp/slvs/shim
+mkdir -p tools/solvespace-reference/build-host && cp /tmp/slvs/shim/libdidsa_slvs_ffi.so tools/solvespace-reference/build-host/
+git -C tools/solvespace-reference/vendor apply -R ../patches/0001-system-solve-dragged-params.patch   # keep the submodule clean
 
 # the tables above
 cd client && DIDSA_SKETCH_BENCH=1 flutter test test/sketch_drag_bench_test.dart
@@ -318,7 +318,7 @@ DIDSA_ARM_TRACE=20 DIDSA_SKETCH_BENCH=1 flutter test test/sketch_drag_bench_test
 1. **Merge-readiness**: the branch changes the drag gate, the drop protocol and the backend `SolveRequest`; a human should drive a
    few real drags on a device (hexagon with a horizontal edge, slot with a dimension, rectangle, a chain with a wall) before
    merging. Remove `client/android/.gitignore`'s and `client-verify.yml`'s stale `didsa_slvs_ffi` comments and decide whether
-   `client/native/slvs` stays in the repo as test tooling (it must not be built into releases; the submodule is GPL).
+   `tools/solvespace-reference` stays in the repo as test tooling (it must not be built into releases; the submodule is GPL).
 2. **Scale beyond ~100 coupled points**: (a) factor `AAᵀ` as a sparse/banded Cholesky with reverse Cuthill-McKee (a chain becomes
    O(m)); (b) reuse the factorisation for the correctors of one walking step (chord method, 3-6 factorisations → 1); (c) stop
    building the constraint index and copying the point map once per drag instead of once per frame (the 0.4-0.8 ms floor on the 100-rectangle grid). Together I expect the 100-link case under

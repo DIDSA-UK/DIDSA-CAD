@@ -105,7 +105,7 @@ app improve on what it does today?
 | Sketch DOF/nullspace | **Ran** on 8 sketches built with the backend's own `Sketch` model (library import, unmodified); py-slvs `dof` from `solve_sketch`; structural verdict from the **real `dof_analysis.dart`** run under Dart 3.14 (`SketchRigidity.analyze`). |
 | Sketch backend-fallback drag stream | **Ran** over HTTP on a 3-point arm (call pattern read from `updatePointDrag`/`_maybeSolveDuringDrag`). |
 | Solve cost vs size | **Ran** (x86 Xeon 2.1 GHz, pure py-slvs, no Dart/FFI). |
-| Local FFI solver behaviour (`solveDragged` soft drag), Android timings, Windows/iOS solver availability | **Not run.** The vendored SolveSpace fork (`client/native/slvs/vendor`) is an empty submodule here and the pip wheel's `System.solve()` does not expose `dragged[]`. Windows/iOS unavailability is **inferred** from `loadSlvsBindings()` + no CMake/Gradle/Pods reference. |
+| Local FFI solver behaviour (`solveDragged` soft drag), Android timings, Windows/iOS solver availability | **Not run.** The vendored SolveSpace fork (`tools/solvespace-reference/vendor`) is an empty submodule here and the pip wheel's `System.solve()` does not expose `dragged[]`. Windows/iOS unavailability is **inferred** from `loadSlvsBindings()` + no CMake/Gradle/Pods reference. |
 | VR code paths, `project_motion` behaviour | **Read** on branch `ccr-5fcefc91-t2tc6f`; Godot is not installed so VR tests were **not run** (the projector math was ported to numpy and exercised instead). |
 | Multi-body, 3D sketch, weighted retraction, group projection | **Toy prototypes** with hand-written residuals (flagged where used); not validated against a real backend implementation. |
 | On-device / real-network timings | **Not measurable here** — see §H for how to measure. |
@@ -702,7 +702,7 @@ Client-side capability discovery: presence/echo of `schema` in the first respons
 | Windows/iOS actually using the backend for drag | log once whether `loadSlvsBindings()` threw; count `_api.updatePoint` and `_api.solve` calls per drag (both are single call sites: `updatePointDrag`, `_solveDuringDrag`). |
 | Real RTT/jitter to a Pi/phone-hosted backend | time `updateOccurrenceTransform`/`solveForOccurrence`/`getAssemblyMesh` in `DocumentApiClient._send` (`document_api_client.dart:1603`); the sim in `a_strategies.py` takes `rtt_ms` and `proc_ms` as inputs — feed real values. |
 | Mate solve cost on real, multi-face assemblies | `mate-motion` p50/p95 on a real document (my numbers are two boxes/cylinders; `_free_motion` does 12 residual evaluations per solve). |
-| Soft-drag (`dragged[]`) behaviour vs nearest-solution | build `client/native/slvs` (`git submodule update --init`), run `client/test/local_solver_test.dart` against it; compare a drag replayed through `solveSketchLocally` with the prototype's `b_http_drag.py` stream. |
+| Soft-drag (`dragged[]`) behaviour vs nearest-solution | build `tools/solvespace-reference` (`git submodule update --init`), run `client/test/local_solver_test.dart` against it; compare a drag replayed through `solveSketchLocally` with the prototype's `b_http_drag.py` stream. |
 | VR frame stability | run `tests/e2e_mates_motion.gd` in Godot against the motion backend; add the screw/L changes behind a flag and diff. |
 
 ---
