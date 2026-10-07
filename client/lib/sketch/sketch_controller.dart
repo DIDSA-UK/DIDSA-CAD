@@ -5215,6 +5215,12 @@ class SketchController extends ChangeNotifier {
   double? _dragOriginPointX;
   double? _dragOriginPointY;
 
+  /// While a hybrid drag is in progress (see [_hybridStructuralFor]): the dragged shape's structural
+  /// constraint ids, and every Point's position when the drag began (for one undo entry that restores
+  /// the lot). Both null otherwise.
+  Set<String>? _dragHybridStructural;
+  Map<String, (double, double)>? _dragStartPoints;
+
   /// Every Point id [_trySolveDuringDragLocally] has reflowed locally since
   /// the current drag began (cleared by [beginPointDrag]/[beginLineDrag]) -
   /// closes the dominant bug behind "dragging still looks broken after the
@@ -5389,6 +5395,15 @@ class SketchController extends ChangeNotifier {
     return null;
   }
 
+  /// Per shape entity id (circle, arc, slot, ellipse, ellipse arc, rectangle): the constraints that
+  /// only hold that shape together, as reported by the backend (`structural_constraint_ids`).
+  /// Anything else touching the shape is a user constraint, and a drag must honour it - see
+  /// [_shapeHasUserConstraints]. An id with no entry here (a shape created by a path that never saw
+  /// its DTO) is treated as unknown, which keeps the plain closed-form drag.
+  final Map<String, Set<String>> _structuralConstraintIds = {};
+
+  void _noteStructural(String entityId, List<String> ids) => _structuralConstraintIds[entityId] = ids.toSet();
+
   /// The still-*intact* Polygon [pointId] belongs to - as a vertex *or* as
   /// its own centre - or null. "Intact" - every Line this Polygon's own
   /// [SketchApiClient.createPolygon] call created is still present,
@@ -5435,12 +5450,14 @@ class SketchController extends ChangeNotifier {
     for (final lineId in polygon.radialLineIds) {
       if (!lines.containsKey(lineId)) return null;
     }
-    // The closed-form drag only knows the regular-shape formula and the
-    // radius dimensions. A user constraint of any other kind (across-flats,
-    // corner-to-corner, horizontal/vertical or parallel on an edge, a tie to
-    // other geometry, ...) must drive, so the general constraint solver takes
-    // over and the usual over-constrained/pinned gating applies.
-    if (_polygonHasUserConstraints(polygon, centreDrag: pointId == polygon.centerPointId)) return null;
+    // The closed-form drag only knows the regular-shape formula and the radius dimensions. A user
+    // constraint of any other kind (across-flats, corner-to-corner, horizontal/vertical or parallel on
+    // an edge, a tie to other geometry, ...) must drive. With a local solver that is the hybrid drag
+    // (see [_hybridStructuralFor]); without one, fall back to the general path via the backend.
+    if (_ensureLocalSolver() == null &&
+        _polygonHasUserConstraints(polygon, centreDrag: pointId == polygon.centerPointId)) {
+      return null;
+    }
     return polygon;
   }
 
@@ -5470,6 +5487,140 @@ class SketchController extends ChangeNotifier {
   /// [_ellipseDragBlocked]'s counterpart for an EllipseArc.
   bool _ellipseArcDragBlocked(SketchEllipseArcView ellipseArc, String pointId) =>
       pointId == ellipseArc.minorPointId && _drivingDistance(_ellipseArcMinorRadiusConstraint(ellipseArc)) != null;
+
+  /// Whether any constraint outside [structural] references one of [pointIds] / [lineIds]: a user
+  /// constraint (an across-flats dimension, a horizontal or parallel tie, a coincidence with other
+  /// geometry, ...) that a drag of the shape must honour.
+  bool _shapeHasUserConstraints(Set<String> structural, Set<String> pointIds, Set<String> lineIds) {
+    for (final constraint in constraints.values) {
+      if (structural.contains(constraint.id)) continue;
+      final refs = _constraintReferences(constraint);
+      if (refs.pointIds.any(pointIds.contains) || refs.lineIds.any(lineIds.contains)) return true;
+    }
+    return false;
+  }
+
+  /// The hybrid drag: for an intact closed-form shape that a user constraint touches (and where a local
+  /// solver exists), each drag frame is the shape's formula proposing a position, then the solver
+  /// clamping that proposal to what the constraints allow - so the shape stays rigid and regular, a
+  /// constrained point slides along the permitted path, and nothing needs the cursor to be allowed.
+  /// Returns the shape's structural constraint ids (the placeholders to switch on during the solve)
+  /// when this drag is hybrid, else null (a plain closed-form drag, or the general path).
+  ///
+  /// A vertex/rim drag never moves the centre, so constraints that only involve the centre don't count
+  /// there; a centre drag counts them. Shapes whose structural ids were never learned count as having
+  /// none, which keeps the plain closed-form drag.
+  Set<String>? _hybridStructuralFor(String pointId) {
+    if (_ensureLocalSolver() == null) return null;
+    final polygon = _intactPolygonForVertex(pointId);
+    if (polygon != null) {
+      final centre = pointId == polygon.centerPointId;
+      return _polygonHasUserConstraints(polygon, centreDrag: centre) ? {...polygon.structuralConstraintIds} : null;
+    }
+    final slot = _intactSlotForPoint(pointId);
+    if (slot != null) {
+      final structural = _structuralConstraintIds[slot.id];
+      if (structural == null) return null;
+      final centre = pointId == slot.center1PointId || pointId == slot.center2PointId;
+      final points = {
+        slot.aPointId,
+        slot.bPointId,
+        slot.cPointId,
+        slot.dPointId,
+        if (centre) ...[slot.center1PointId, slot.center2PointId],
+      };
+      final lines = {slot.line1Id, slot.line2Id, if (centre) slot.centerlineId};
+      return _shapeHasUserConstraints(structural, points, lines) ? structural : null;
+    }
+    final circle = _intactCircleForPoint(pointId);
+    if (circle != null) {
+      final structural = _structuralConstraintIds[circle.id];
+      if (structural == null) return null;
+      final centre = pointId == circle.centerPointId;
+      final points = {circle.radiusPointId, ...circle.cardinalPointIds, if (centre) circle.centerPointId};
+      return _shapeHasUserConstraints(structural, points, const {}) ? structural : null;
+    }
+    final arc = _intactArcForPoint(pointId);
+    if (arc != null) {
+      final structural = _structuralConstraintIds[arc.id];
+      if (structural == null) return null;
+      final centre = pointId == arc.centerPointId;
+      final points = {arc.startPointId, arc.endPointId, if (centre) arc.centerPointId};
+      return _shapeHasUserConstraints(structural, points, const {}) ? structural : null;
+    }
+    final ellipse = _intactEllipseForPoint(pointId);
+    if (ellipse != null) {
+      final structural = _structuralConstraintIds[ellipse.id];
+      if (structural == null) return null;
+      final centre = pointId == ellipse.centerPointId;
+      final points = {
+        ellipse.majorPointId,
+        ellipse.majorPointNegId,
+        ellipse.minorPointId,
+        ellipse.minorPointNegId,
+        if (centre) ellipse.centerPointId,
+      };
+      final lines = {ellipse.majorAxisLineId, ellipse.minorAxisLineId};
+      return _shapeHasUserConstraints(structural, points, lines) ? structural : null;
+    }
+    final ellipseArc = _intactEllipseArcForPoint(pointId);
+    if (ellipseArc != null) {
+      final structural = _structuralConstraintIds[ellipseArc.id];
+      if (structural == null) return null;
+      final centre = pointId == ellipseArc.centerPointId;
+      final points = {
+        ellipseArc.majorPointId,
+        ellipseArc.minorPointId,
+        ellipseArc.startPointId,
+        ellipseArc.endPointId,
+        if (centre) ellipseArc.centerPointId,
+      };
+      final lines = {ellipseArc.majorAxisLineId, ellipseArc.minorAxisLineId};
+      return _shapeHasUserConstraints(structural, points, lines) ? structural : null;
+    }
+    final rectangle = _intactRectangleForPoint(pointId);
+    if (rectangle != null) {
+      final structural = _structuralConstraintIds[rectangle.id];
+      if (structural == null) return null;
+      final points = {...rectangle.cornerPointIds, if (rectangle.centerPointId != null) rectangle.centerPointId!};
+      final lines = {
+        ...rectangle.lineIds,
+        if (rectangle.diagonalLineId != null) rectangle.diagonalLineId!,
+        if (rectangle.diagonal2LineId != null) rectangle.diagonal2LineId!,
+      };
+      return _shapeHasUserConstraints(structural, points, lines) ? structural : null;
+    }
+    return null;
+  }
+
+  /// One hybrid drag frame: [positions] is the formula's proposal for the shape's Points. The shape's
+  /// unconfirmed size constraints (those in [structural]) are switched on at the sizes [positions] implies,
+  /// then the local solver clamps the proposal to the confirmed constraints, soft-dragging [draggedId] so
+  /// it slides along whatever the constraints permit. A frame the solver (or its guards) rejects is
+  /// dropped: the shape stays where the last good frame left it rather than jumping.
+  ///
+  /// The clamp step is the one place this depends on the local solver ([_trySolveDuringDragLocally]); a
+  /// different per-frame constraint projector can replace it without touching the shape formulas.
+  void _runHybridDragFrame(Map<String, (double, double)> positions, String draggedId, Set<String> structural) {
+    (double, double)? at(String id) {
+      final proposed = positions[id];
+      if (proposed != null) return proposed;
+      final existing = points[id];
+      return existing == null ? null : (existing.x, existing.y);
+    }
+
+    final sizes = <String, double>{};
+    for (final constraint in constraints.values) {
+      if (constraint is DistanceConstraintDto && constraint.provisional && structural.contains(constraint.id)) {
+        final a = at(constraint.pointAId);
+        final b = at(constraint.pointBId);
+        if (a != null && b != null) {
+          sizes[constraint.id] = math.sqrt(math.pow(b.$1 - a.$1, 2) + math.pow(b.$2 - a.$2, 2));
+        }
+      }
+    }
+    _trySolveDuringDragLocally([draggedId], seed: positions, provisionalDistances: sizes);
+  }
 
   /// What dragging [draggedPointId] may do to an intact [polygon], mirroring [_circleDragMode]:
   /// a centre drag translates (blocked when the centre is fully pinned); a vertex drag resizes
@@ -6754,7 +6905,19 @@ class SketchController extends ChangeNotifier {
     if (intactPolygon != null && _polygonDragMode(intactPolygon, pointId) == PolygonDragMode.blocked) {
       return false;
     }
+    // A shape a user constraint touches is dragged hybrid (see [_hybridStructuralFor]). Unlike a plain
+    // closed-form drag, such a point can genuinely have nowhere to go, so the pre-grab rules apply:
+    // refuse over-constrained and fully-constrained points rather than start a drag that can't move.
+    // (The narrower per-point test, not the sketch-wide flag [isPointFullyPinned] ORs in - see [_arcDragMode].)
+    final hybridStructural = _hybridStructuralFor(pointId);
+    if (hybridStructural != null) {
+      if (isPointForcedOverConstrained(pointId) || rigidity.isPointFullyConstrained(pointId)) return false;
+    }
     final point = points[pointId]!;
+    _dragHybridStructural = hybridStructural;
+    _dragStartPoints = hybridStructural == null
+        ? null
+        : {for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y)};
     _draggingPointId = pointId;
     _dragOriginCursorX = cursorX;
     _dragOriginCursorY = cursorY;
@@ -6896,7 +7059,12 @@ class SketchController extends ChangeNotifier {
         positions = _closedFormRectangleGeometry(intactRectangle!, pointId, newX, newY);
       }
       if (positions != null) {
-        unawaited(_applyClosedFormPositions(positions, sync: false));
+        final hybrid = _dragHybridStructural;
+        if (hybrid != null) {
+          _runHybridDragFrame(positions, pointId, hybrid);
+        } else {
+          unawaited(_applyClosedFormPositions(positions, sync: false));
+        }
       }
       return;
     }
@@ -6972,7 +7140,9 @@ class SketchController extends ChangeNotifier {
   /// [solveSketchLocally] soft-drags, and (on success) what gets written
   /// back into [points], possibly softly clamped - see that function's own
   /// doc comment.
-  bool _trySolveDuringDragLocally(List<String> anchorPointIds) {
+  /// The local solver library, loading it on first use; null where it isn't available (everywhere
+  /// but Android, unless a test injected one), after which this stops trying.
+  SlvsNativeBindings? _ensureLocalSolver() {
     var bindings = _localSolverBindings;
     if (bindings == null && !_localSolverUnavailable) {
       try {
@@ -6982,11 +7152,25 @@ class SketchController extends ChangeNotifier {
         _localSolverUnavailable = true;
       }
     }
+    return bindings;
+  }
+
+  /// [seed] overrides the positions the solve starts from (the hybrid drag's closed-form proposal);
+  /// [provisionalDistances] switches a shape's own unconfirmed size constraints on at the given values
+  /// for this solve only - see [solveSketchLocally]'s `provisionalDistances`.
+  bool _trySolveDuringDragLocally(
+    List<String> anchorPointIds, {
+    Map<String, (double, double)> seed = const {},
+    Map<String, double> provisionalDistances = const {},
+  }) {
+    final bindings = _ensureLocalSolver();
     if (bindings == null) return false;
 
     try {
       final pointXY = <String, (double, double)>{
         for (final entry in points.entries) entry.key: (entry.value.x, entry.value.y),
+        for (final entry in seed.entries)
+          if (points.containsKey(entry.key)) entry.key: entry.value,
       };
       final lineEndpoints = <String, (String, String)>{
         for (final entry in lines.entries) entry.key: (entry.value.startPointId, entry.value.endPointId),
@@ -6999,6 +7183,7 @@ class SketchController extends ChangeNotifier {
         originPointId: _originPointId,
         anchorPointIds: anchorPointIds.toSet(),
         lockedPointIds: _lockedPointIds,
+        provisionalDistances: provisionalDistances,
       );
       final anchorSet = anchorPointIds.toSet();
       // No anchor-drift check here any more (there used to be one - see git
@@ -7211,6 +7396,10 @@ class SketchController extends ChangeNotifier {
     final originX = _dragOriginPointX!;
     final originY = _dragOriginPointY!;
     final droppedPoint = points[pointId]!;
+    final hybridStructural = _dragHybridStructural;
+    final dragStartPoints = _dragStartPoints;
+    _dragHybridStructural = null;
+    _dragStartPoints = null;
     _draggingPointId = null;
     _dragOriginCursorX = null;
     _dragOriginCursorY = null;
@@ -7223,6 +7412,32 @@ class SketchController extends ChangeNotifier {
     // undo go through the exact same [_settleClosedFormShapeDrag] path,
     // just targeting the dropped vs. the original position, so undo can't
     // reintroduce a wrong root either.
+    // A hybrid drag (see [_hybridStructuralFor]) has already solved every frame against the shape's
+    // constraints, so its drop is the general one: sync what the local solves moved (the wish), then the
+    // backend solve returns the authoritative result and DOF. One undo entry restores every Point.
+    if (hybridStructural != null) {
+      await _runGuarded(() async {
+        final startPoints = dragStartPoints ?? const <String, (double, double)>{};
+        _pushUndo(() async {
+          for (final entry in startPoints.entries) {
+            final current = points[entry.key];
+            if (current == null || (current.x == entry.value.$1 && current.y == entry.value.$2)) continue;
+            final restored = await _api.updatePoint(_sketchId!, entry.key, entry.value.$1, entry.value.$2);
+            points[entry.key] = SketchPointView(id: restored.id, x: restored.x, y: restored.y);
+          }
+          await _solveAndTrackDof();
+        });
+        await _autoCoincideIfNear(pointId, droppedPoint.x, droppedPoint.y);
+        for (final id in _dragReflowedPointIds) {
+          final p = points[id];
+          if (p != null) await _api.updatePoint(_sketchId!, id, p.x, p.y);
+        }
+        _dragReflowedPointIds.clear();
+        await _solveAndTrackDof(anchorPointIds: [pointId]);
+      });
+      return;
+    }
+
     final intactPolygon = _intactPolygonForVertex(pointId);
     final intactSlot = intactPolygon == null ? _intactSlotForPoint(pointId) : null;
     final intactCircle = intactPolygon == null && intactSlot == null ? _intactCircleForPoint(pointId) : null;
@@ -9796,6 +10011,7 @@ class SketchController extends ChangeNotifier {
         construction: circle.construction,
       );
       idMap[circle.id] = created.id;
+      _noteStructural(created.id, created.structuralConstraintIds);
       circles[created.id] = SketchCircleView(
         id: created.id,
         centerPointId: created.centerPointId,
@@ -9820,6 +10036,7 @@ class SketchController extends ChangeNotifier {
         construction: arc.construction,
       );
       idMap[arc.id] = created.id;
+      _noteStructural(created.id, created.structuralConstraintIds);
       arcs[created.id] = SketchArcView(
         id: created.id,
         centerPointId: created.centerPointId,
@@ -9837,6 +10054,7 @@ class SketchController extends ChangeNotifier {
         construction: ellipse.construction,
       );
       idMap[ellipse.id] = created.id;
+      _noteStructural(created.id, created.structuralConstraintIds);
       ellipses[created.id] = SketchEllipseView(
         id: created.id,
         centerPointId: created.centerPointId,
@@ -9910,6 +10128,7 @@ class SketchController extends ChangeNotifier {
         construction: ellipseArc.construction,
       );
       idMap[ellipseArc.id] = created.id;
+      _noteStructural(created.id, created.structuralConstraintIds);
       ellipseArcs[created.id] = SketchEllipseArcView(
         id: created.id,
         centerPointId: created.centerPointId,
@@ -9995,6 +10214,7 @@ class SketchController extends ChangeNotifier {
         construction: slot.construction,
       );
       idMap[slot.id] = created.id;
+      _noteStructural(created.id, created.structuralConstraintIds);
       slots[created.id] = SketchSlotView(
         id: created.id,
         center1PointId: created.center1PointId,
@@ -10048,6 +10268,7 @@ class SketchController extends ChangeNotifier {
         construction: rectangle.construction,
       );
       idMap[rectangle.id] = created.id;
+      _noteStructural(created.id, created.structuralConstraintIds);
       rectangles[created.id] = SketchRectangleView(
         id: created.id,
         cornerPointIds: created.cornerPointIds,
@@ -10383,6 +10604,7 @@ class SketchController extends ChangeNotifier {
         );
       case SelectionKind.circle:
         final updated = await _api.updateCircle(_sketchId!, target.id, construction: construction);
+        _noteStructural(updated.id, updated.structuralConstraintIds);
         circles[target.id] = SketchCircleView(
           id: updated.id,
           centerPointId: updated.centerPointId,
@@ -10392,6 +10614,7 @@ class SketchController extends ChangeNotifier {
         );
       case SelectionKind.arc:
         final updated = await _api.updateArc(_sketchId!, target.id, construction: construction);
+        _noteStructural(updated.id, updated.structuralConstraintIds);
         arcs[target.id] = SketchArcView(
           id: updated.id,
           centerPointId: updated.centerPointId,
@@ -10401,6 +10624,7 @@ class SketchController extends ChangeNotifier {
         );
       case SelectionKind.ellipse:
         final updated = await _api.updateEllipse(_sketchId!, target.id, construction: construction);
+        _noteStructural(updated.id, updated.structuralConstraintIds);
         ellipses[target.id] = SketchEllipseView(
           id: updated.id,
           centerPointId: updated.centerPointId,
@@ -10415,6 +10639,7 @@ class SketchController extends ChangeNotifier {
         );
       case SelectionKind.ellipseArc:
         final updated = await _api.updateEllipseArc(_sketchId!, target.id, construction: construction);
+        _noteStructural(updated.id, updated.structuralConstraintIds);
         ellipseArcs[target.id] = SketchEllipseArcView(
           id: updated.id,
           centerPointId: updated.centerPointId,
@@ -12643,6 +12868,7 @@ class SketchController extends ChangeNotifier {
             keptPointId,
             construction: originalConstruction,
           );
+          _noteStructural(restored.id, restored.structuralConstraintIds);
           arcs[restored.id] = SketchArcView(
             id: restored.id,
             centerPointId: restored.centerPointId,
@@ -12690,6 +12916,7 @@ class SketchController extends ChangeNotifier {
       for (final pointId in result.prunedPointIds) {
         points.remove(pointId);
       }
+      _noteStructural(arcDto.id, arcDto.structuralConstraintIds);
       arcs[arcDto.id] = SketchArcView(
         id: arcDto.id,
         centerPointId: arcDto.centerPointId,
@@ -12707,6 +12934,7 @@ class SketchController extends ChangeNotifier {
           radiusPointId,
           construction: originalConstruction,
         );
+        _noteStructural(restored.id, restored.structuralConstraintIds);
         circles[restored.id] = SketchCircleView(
           id: restored.id,
           centerPointId: restored.centerPointId,
@@ -12752,6 +12980,7 @@ class SketchController extends ChangeNotifier {
       for (final pointId in result.prunedPointIds) {
         points.remove(pointId);
       }
+      _noteStructural(ellipseArcDto.id, ellipseArcDto.structuralConstraintIds);
       ellipseArcs[ellipseArcDto.id] = SketchEllipseArcView(
         id: ellipseArcDto.id,
         centerPointId: ellipseArcDto.centerPointId,
@@ -12789,6 +13018,7 @@ class SketchController extends ChangeNotifier {
           minorRadius,
           construction: originalConstruction,
         );
+        _noteStructural(restored.id, restored.structuralConstraintIds);
         ellipses[restored.id] = SketchEllipseView(
           id: restored.id,
           centerPointId: restored.centerPointId,
@@ -13301,6 +13531,7 @@ class SketchController extends ChangeNotifier {
     final arc = result.arc;
     if (arc != null) {
       if (arcs.containsKey(arc.id)) return SketchSelection(kind: SelectionKind.arc, id: arc.id);
+      _noteStructural(arc.id, arc.structuralConstraintIds);
       arcs[arc.id] = SketchArcView(
         id: arc.id,
         centerPointId: arc.centerPointId,
@@ -13347,6 +13578,7 @@ class SketchController extends ChangeNotifier {
     final circle = result.circle;
     if (circle != null) {
       if (circles.containsKey(circle.id)) return SketchSelection(kind: SelectionKind.circle, id: circle.id);
+      _noteStructural(circle.id, circle.structuralConstraintIds);
       circles[circle.id] = SketchCircleView(
         id: circle.id,
         centerPointId: circle.centerPointId,
@@ -13558,6 +13790,7 @@ class SketchController extends ChangeNotifier {
       }
       final newArcIds = <String>[];
       for (final a in result.arcs) {
+        _noteStructural(a.id, a.structuralConstraintIds);
         arcs[a.id] = SketchArcView(
           id: a.id,
           centerPointId: a.centerPointId,
@@ -14482,6 +14715,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final circle in await _api.listCircles(sketchId)) {
+      _noteStructural(circle.id, circle.structuralConstraintIds);
       circles[circle.id] = SketchCircleView(
         id: circle.id,
         centerPointId: circle.centerPointId,
@@ -14491,6 +14725,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final arc in await _api.listArcs(sketchId)) {
+      _noteStructural(arc.id, arc.structuralConstraintIds);
       arcs[arc.id] = SketchArcView(
         id: arc.id,
         centerPointId: arc.centerPointId,
@@ -14500,6 +14735,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final ellipse in await _api.listEllipses(sketchId)) {
+      _noteStructural(ellipse.id, ellipse.structuralConstraintIds);
       ellipses[ellipse.id] = SketchEllipseView(
         id: ellipse.id,
         centerPointId: ellipse.centerPointId,
@@ -14514,6 +14750,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final ellipseArc in await _api.listEllipseArcs(sketchId)) {
+      _noteStructural(ellipseArc.id, ellipseArc.structuralConstraintIds);
       ellipseArcs[ellipseArc.id] = SketchEllipseArcView(
         id: ellipseArc.id,
         centerPointId: ellipseArc.centerPointId,
@@ -14542,6 +14779,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final slot in await _api.listSlots(sketchId)) {
+      _noteStructural(slot.id, slot.structuralConstraintIds);
       slots[slot.id] = SketchSlotView(
         id: slot.id,
         center1PointId: slot.center1PointId,
@@ -14559,6 +14797,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final rectangle in await _api.listRectangles(sketchId)) {
+      _noteStructural(rectangle.id, rectangle.structuralConstraintIds);
       rectangles[rectangle.id] = SketchRectangleView(
         id: rectangle.id,
         cornerPointIds: rectangle.cornerPointIds,
@@ -15081,6 +15320,7 @@ class SketchController extends ChangeNotifier {
       final arcEndId = sweptClockwise ? startId : endPoint.id;
 
       final arc = await _api.createArc(_sketchId!, center.id, arcStartId, arcEndId);
+      _noteStructural(arc.id, arc.structuralConstraintIds);
       arcs[arc.id] = SketchArcView(
         id: arc.id,
         centerPointId: arc.centerPointId,
@@ -15273,6 +15513,7 @@ class SketchController extends ChangeNotifier {
       }
 
       final circle = await _api.createCircleWithVerticalRadius(_sketchId!, _circleCenterPointId!, radius);
+      _noteStructural(circle.id, circle.structuralConstraintIds);
       circles[circle.id] = SketchCircleView(
         id: circle.id,
         centerPointId: circle.centerPointId,
@@ -15382,6 +15623,7 @@ class SketchController extends ChangeNotifier {
       final arcEndId = sweptClockwise ? startId : endPoint.id;
 
       final arc = await _api.createArc(_sketchId!, centerId, arcStartId, arcEndId);
+      _noteStructural(arc.id, arc.structuralConstraintIds);
       arcs[arc.id] = SketchArcView(
         id: arc.id,
         centerPointId: arc.centerPointId,
@@ -15508,6 +15750,7 @@ class SketchController extends ChangeNotifier {
         final allCircles = await _api.listCircles(_sketchId!);
         for (final circle in allCircles) {
           if (!createdCircleIds.contains(circle.id)) continue;
+          _noteStructural(circle.id, circle.structuralConstraintIds);
           circles[circle.id] = SketchCircleView(
             id: circle.id,
             centerPointId: circle.centerPointId,
@@ -15588,6 +15831,7 @@ class SketchController extends ChangeNotifier {
       }
 
       final slot = await _api.createSlot(_sketchId!, c1Id, c2Id, radius);
+      _noteStructural(slot.id, slot.structuralConstraintIds);
       slots[slot.id] = SketchSlotView(
         id: slot.id,
         center1PointId: slot.center1PointId,
@@ -15722,6 +15966,7 @@ class SketchController extends ChangeNotifier {
       }
 
       final ellipse = await _api.createEllipse(_sketchId!, centerId, majorId, minorRadius);
+      _noteStructural(ellipse.id, ellipse.structuralConstraintIds);
       ellipses[ellipse.id] = SketchEllipseView(
         id: ellipse.id,
         centerPointId: ellipse.centerPointId,
@@ -15873,6 +16118,7 @@ class SketchController extends ChangeNotifier {
         createStartAngle,
         createEndAngle,
       );
+      _noteStructural(ellipseArc.id, ellipseArc.structuralConstraintIds);
       ellipseArcs[ellipseArc.id] = SketchEllipseArcView(
         id: ellipseArc.id,
         centerPointId: ellipseArc.centerPointId,
@@ -16178,6 +16424,7 @@ class SketchController extends ChangeNotifier {
       });
 
       final circle = await _api.createCircle(_sketchId!, centerPoint.id, radiusPoint.id);
+      _noteStructural(circle.id, circle.structuralConstraintIds);
       circles[circle.id] = SketchCircleView(
         id: circle.id,
         centerPointId: circle.centerPointId,
@@ -16402,6 +16649,7 @@ class SketchController extends ChangeNotifier {
     final cornerIds = [p0, p1, p2, p3];
 
     final rectangle = await _api.createRectangle(_sketchId!, cornerIds, axisAligned: axisAligned);
+    _noteStructural(rectangle.id, rectangle.structuralConstraintIds);
     rectangles[rectangle.id] = SketchRectangleView(
       id: rectangle.id,
       cornerPointIds: rectangle.cornerPointIds,

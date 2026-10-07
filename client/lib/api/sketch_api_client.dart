@@ -376,6 +376,10 @@ class EllipseTrimResultDto {
 }
 
 class CircleDto {
+  /// The constraints that only hold this shape together (the backend's `structural_constraint_ids`);
+  /// any other constraint touching it is a user constraint a drag must honour.
+  final List<String> structuralConstraintIds;
+
   final String id;
   final String centerPointId;
   final String radiusPointId;
@@ -399,6 +403,7 @@ class CircleDto {
   final String? radiusConstraintId;
 
   CircleDto({
+    this.structuralConstraintIds = const [],
     required this.id,
     required this.centerPointId,
     required this.radiusPointId,
@@ -409,6 +414,7 @@ class CircleDto {
   });
 
   factory CircleDto.fromJson(Map<String, dynamic> json) => CircleDto(
+        structuralConstraintIds: (json['structural_constraint_ids'] as List?)?.cast<String>() ?? const [],
         id: json['id'] as String,
         centerPointId: json['center_point_id'] as String,
         radiusPointId: json['radius_point_id'] as String,
@@ -422,6 +428,10 @@ class CircleDto {
 }
 
 class ArcDto {
+  /// The constraints that only hold this shape together (the backend's `structural_constraint_ids`);
+  /// any other constraint touching it is a user constraint a drag must honour.
+  final List<String> structuralConstraintIds;
+
   final String id;
   final String centerPointId;
   final String startPointId;
@@ -435,6 +445,7 @@ class ArcDto {
   final String? radiusConstraintId;
 
   ArcDto({
+    this.structuralConstraintIds = const [],
     required this.id,
     required this.centerPointId,
     required this.startPointId,
@@ -445,6 +456,7 @@ class ArcDto {
   });
 
   factory ArcDto.fromJson(Map<String, dynamic> json) => ArcDto(
+        structuralConstraintIds: (json['structural_constraint_ids'] as List?)?.cast<String>() ?? const [],
         id: json['id'] as String,
         centerPointId: json['center_point_id'] as String,
         startPointId: json['start_point_id'] as String,
@@ -456,6 +468,10 @@ class ArcDto {
 }
 
 class EllipseDto {
+  /// The constraints that only hold this shape together (the backend's `structural_constraint_ids`);
+  /// any other constraint touching it is a user constraint a drag must honour.
+  final List<String> structuralConstraintIds;
+
   final String id;
   final String centerPointId;
   final String majorPointId;
@@ -477,6 +493,7 @@ class EllipseDto {
   final String? minorConstraintId;
 
   EllipseDto({
+    this.structuralConstraintIds = const [],
     required this.id,
     required this.centerPointId,
     required this.majorPointId,
@@ -494,6 +511,7 @@ class EllipseDto {
   });
 
   factory EllipseDto.fromJson(Map<String, dynamic> json) => EllipseDto(
+        structuralConstraintIds: (json['structural_constraint_ids'] as List?)?.cast<String>() ?? const [],
         id: json['id'] as String,
         centerPointId: json['center_point_id'] as String,
         majorPointId: json['major_point_id'] as String,
@@ -518,6 +536,10 @@ class EllipseDto {
 /// (unlike [EllipseDto]) - a partial ellipse's natural drag handles are
 /// its own [startPointId]/[endPointId] instead.
 class EllipseArcDto {
+  /// The constraints that only hold this shape together (the backend's `structural_constraint_ids`);
+  /// any other constraint touching it is a user constraint a drag must honour.
+  final List<String> structuralConstraintIds;
+
   final String id;
   final String centerPointId;
   final String majorPointId;
@@ -532,6 +554,7 @@ class EllipseArcDto {
   final bool construction;
 
   EllipseArcDto({
+    this.structuralConstraintIds = const [],
     required this.id,
     required this.centerPointId,
     required this.majorPointId,
@@ -547,6 +570,7 @@ class EllipseArcDto {
   });
 
   factory EllipseArcDto.fromJson(Map<String, dynamic> json) => EllipseArcDto(
+        structuralConstraintIds: (json['structural_constraint_ids'] as List?)?.cast<String>() ?? const [],
         id: json['id'] as String,
         centerPointId: json['center_point_id'] as String,
         majorPointId: json['major_point_id'] as String,
@@ -638,6 +662,10 @@ class PolygonDto {
 }
 
 class SlotDto {
+  /// The constraints that only hold this shape together (the backend's `structural_constraint_ids`);
+  /// any other constraint touching it is a user constraint a drag must honour.
+  final List<String> structuralConstraintIds;
+
   final String id;
   final String center1PointId;
   final String center2PointId;
@@ -660,6 +688,7 @@ class SlotDto {
   final String? radiusConstraintId;
 
   SlotDto({
+    this.structuralConstraintIds = const [],
     required this.id,
     required this.center1PointId,
     required this.center2PointId,
@@ -678,6 +707,7 @@ class SlotDto {
   });
 
   factory SlotDto.fromJson(Map<String, dynamic> json) => SlotDto(
+        structuralConstraintIds: (json['structural_constraint_ids'] as List?)?.cast<String>() ?? const [],
         id: json['id'] as String,
         center1PointId: json['center1_point_id'] as String,
         center2PointId: json['center2_point_id'] as String,
@@ -697,6 +727,10 @@ class SlotDto {
 }
 
 class RectangleDto {
+  /// The constraints that only hold this shape together (the backend's `structural_constraint_ids`);
+  /// any other constraint touching it is a user constraint a drag must honour.
+  final List<String> structuralConstraintIds;
+
   final String id;
   final List<String> cornerPointIds;
   final List<String> lineIds;
@@ -707,6 +741,7 @@ class RectangleDto {
   final bool construction;
 
   RectangleDto({
+    this.structuralConstraintIds = const [],
     required this.id,
     required this.cornerPointIds,
     required this.lineIds,
@@ -718,6 +753,7 @@ class RectangleDto {
   });
 
   factory RectangleDto.fromJson(Map<String, dynamic> json) => RectangleDto(
+        structuralConstraintIds: (json['structural_constraint_ids'] as List?)?.cast<String>() ?? const [],
         id: json['id'] as String,
         cornerPointIds: (json['corner_point_ids'] as List).cast<String>(),
         lineIds: (json['line_ids'] as List).cast<String>(),

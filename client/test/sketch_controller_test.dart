@@ -1142,6 +1142,7 @@ class _FakeBackend {
         'distance': requestedRadius,
         'provisional': true,
       };
+      circle['structural_constraint_ids'] = [constraintId];
       return _json(circle, 201);
     }
     if (circlesCollectionMatch && request.method == 'GET') {
@@ -1181,6 +1182,7 @@ class _FakeBackend {
         'center2_point_id': body['center_point_id'],
         'radius2_point_id': body['end_point_id'],
       };
+      arc['structural_constraint_ids'] = [startConstraintId, endConstraintId];
       return _json(arc, 201);
     }
     if (arcsCollectionMatch && request.method == 'GET') {
@@ -1296,6 +1298,13 @@ class _FakeBackend {
         'line1_id': majorAxisLineId,
         'line2_id': minorAxisLineId,
       };
+      ellipse['structural_constraint_ids'] = [
+        majorConstraintId,
+        minorConstraintId,
+        majorMidpointConstraintId,
+        minorMidpointConstraintId,
+        perpendicularConstraintId,
+      ];
       return _json(ellipse, 201);
     }
     if (ellipsesCollectionMatch && request.method == 'GET') {
@@ -1471,6 +1480,13 @@ class _FakeBackend {
         'major_point_id': body['major_point_id'],
         'minor_point_id': minorPointId,
       };
+      ellipseArc['structural_constraint_ids'] = [
+        majorConstraintId,
+        minorConstraintId,
+        perpendicularConstraintId,
+        startOnEllipseConstraintId,
+        endOnEllipseConstraintId,
+      ];
       return _json(ellipseArc, 201);
     }
     if (ellipseArcsCollectionMatch && request.method == 'GET') {
@@ -1771,6 +1787,7 @@ class _FakeBackend {
         'construction': body['construction'] as bool? ?? false,
         // Not part of the real API response - kept only so this fake's own
         // DELETE handler knows which Constraints to cascade.
+        'structural_constraint_ids': constraintIds,
         '_constraint_ids': constraintIds,
       };
       slots[id] = slot;
@@ -1889,6 +1906,7 @@ class _FakeBackend {
         'construction': body['construction'] as bool? ?? false,
         // Not part of the real API response - kept only so this fake's own
         // DELETE handler knows which Constraints to cascade.
+        'structural_constraint_ids': constraintIds,
         '_constraint_ids': constraintIds,
       };
       rectangles[id] = rectangle;
@@ -5285,6 +5303,231 @@ void main() {
     final cPointAfter = controller.points[cId]!;
     expect(cPointAfter.x, closeTo(cPointBefore.x, 1e-9));
     expect(cPointAfter.y, closeTo(cPointBefore.y, 1e-9));
+  });
+
+  group('hybrid drag: the formula proposes, the local solver clamps to the user constraints', () {
+    late SketchController solved;
+
+    setUp(() async {
+      final libraryPath = _findHostSlvsLibrary();
+      if (libraryPath == null) {
+        markTestSkipped('host didsa_slvs_ffi library not built - see client/native/slvs/CMakeLists.txt');
+        return;
+      }
+      final bindings = SlvsNativeBindings(ffi.DynamicLibrary.open(libraryPath));
+      final localBackend = _FakeBackend();
+      final localClient = MockClient((request) async => localBackend.handle(request));
+      solved = SketchController(api: SketchApiClient(httpClient: localClient), localSolverBindings: bindings);
+      await solved.ensureSketch();
+    });
+
+    double dist(String a, String b) {
+      final pa = solved.points[a]!;
+      final pb = solved.points[b]!;
+      return math.sqrt(math.pow(pb.x - pa.x, 2) + math.pow(pb.y - pa.y, 2));
+    }
+
+    test('a regular hexagon with a horizontal edge stays regular and keeps that edge horizontal while a corner is dragged',
+        () async {
+      solved.selectDrawTool(SketchTool.polygon);
+      solved.setPolygonSides(6);
+      await solved.handleCanvasTap(20, 20); // centre
+      await solved.handleCanvasTap(30, 20); // first vertex, radius 10
+      solved.exitToSelectMode();
+      final polygon = solved.polygons.values.single;
+      final edge = solved.lines[polygon.lineIds[1]]!;
+      solved.constraints['user-horizontal'] = HorizontalConstraintDto(
+        id: 'user-horizontal',
+        pointAId: edge.startPointId,
+        pointBId: edge.endPointId,
+        lineId: edge.id,
+      );
+
+      final vertexId = polygon.vertexPointIds[0];
+      final start = solved.points[vertexId]!;
+      solved.cursorX = start.x;
+      solved.cursorY = start.y;
+      expect(solved.beginPointDrag(vertexId), isTrue);
+      for (final target in [(31.0, 24.0), (32.0, 28.0), (30.0, 33.0), (26.0, 36.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+
+        final a = solved.points[edge.startPointId]!;
+        final b = solved.points[edge.endPointId]!;
+        expect((b.y - a.y).abs(), lessThan(1e-4), reason: 'the horizontal edge must hold at every frame');
+        final radii = [for (final id in polygon.vertexPointIds) dist(polygon.centerPointId, id)];
+        for (final r in radii) {
+          expect(r, closeTo(radii.first, 1e-4), reason: 'still a regular polygon at every frame');
+        }
+      }
+      await solved.endPointDrag();
+      expect(solved.errorMessage, isNull);
+    });
+
+    test('an arc whose start point is dimensioned to another point slides around it, still on its own circle',
+        () async {
+      solved.selectDrawTool(SketchTool.point);
+      await solved.handleCanvasTap(60, 20);
+      final anchor = solved.points.values.firstWhere((p) => p.x == 60 && p.y == 20);
+
+      solved.selectDrawTool(SketchTool.arc);
+      await solved.handleCanvasTap(40, 20); // centre
+      await solved.handleCanvasTap(50, 20); // start, radius 10
+      await solved.handleCanvasTap(40, 30); // end
+      solved.exitToSelectMode();
+      final arc = solved.arcs.values.single;
+      solved.constraints['user-distance'] = DistanceConstraintDto(
+        id: 'user-distance',
+        pointAId: arc.startPointId,
+        pointBId: anchor.id,
+        distance: 10,
+      );
+
+      final start = solved.points[arc.startPointId]!;
+      solved.cursorX = start.x;
+      solved.cursorY = start.y;
+      expect(solved.beginPointDrag(arc.startPointId), isTrue);
+      for (final target in [(51.0, 25.0), (53.0, 31.0), (50.0, 38.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+        expect(dist(arc.startPointId, anchor.id), closeTo(10, 1e-3), reason: 'the dimension drives every frame');
+        expect(dist(arc.centerPointId, arc.startPointId), closeTo(dist(arc.centerPointId, arc.endPointId), 1e-3),
+            reason: 'start and end stay on the same circle');
+      }
+      await solved.endPointDrag();
+    });
+
+    test('an ellipse whose major tip is dimensioned to another point keeps its axes perpendicular', () async {
+      solved.selectDrawTool(SketchTool.point);
+      await solved.handleCanvasTap(60, 20);
+      final anchor = solved.points.values.firstWhere((p) => p.x == 60 && p.y == 20);
+
+      solved.selectDrawTool(SketchTool.ellipse);
+      await solved.handleCanvasTap(40, 20); // centre
+      await solved.handleCanvasTap(50, 20); // major, radius 10
+      await solved.handleCanvasTap(45, 24); // minor radius 4
+      solved.exitToSelectMode();
+      final ellipse = solved.ellipses.values.single;
+      solved.constraints['user-distance'] = DistanceConstraintDto(
+        id: 'user-distance',
+        pointAId: ellipse.majorPointId,
+        pointBId: anchor.id,
+        distance: 10,
+      );
+
+      final major = solved.points[ellipse.majorPointId]!;
+      solved.cursorX = major.x;
+      solved.cursorY = major.y;
+      expect(solved.beginPointDrag(ellipse.majorPointId), isTrue);
+      for (final target in [(51.0, 24.0), (52.0, 30.0), (49.0, 36.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+        expect(dist(ellipse.majorPointId, anchor.id), closeTo(10, 1e-3), reason: 'the dimension drives every frame');
+        final c = solved.points[ellipse.centerPointId]!;
+        final maj = solved.points[ellipse.majorPointId]!;
+        final min = solved.points[ellipse.minorPointId]!;
+        final dot = (maj.x - c.x) * (min.x - c.x) + (maj.y - c.y) * (min.y - c.y);
+        expect(dot.abs(), lessThan(1e-3), reason: 'the axes stay perpendicular');
+      }
+      await solved.endPointDrag();
+    });
+
+    test('a slot whose dragged centre is dimensioned to another point slides around it and keeps its shape', () async {
+      solved.selectDrawTool(SketchTool.point);
+      await solved.handleCanvasTap(50, 20);
+      final anchor = solved.points.values.firstWhere((p) => p.x == 50 && p.y == 20);
+
+      solved.selectDrawTool(SketchTool.slot);
+      await solved.handleCanvasTap(10, 20);
+      await solved.handleCanvasTap(30, 20);
+      await solved.handleCanvasTap(20, 25); // radius 5
+      solved.exitToSelectMode();
+      final slot = solved.slots.values.single;
+      solved.constraints['user-distance'] = DistanceConstraintDto(
+        id: 'user-distance',
+        pointAId: slot.center2PointId,
+        pointBId: anchor.id,
+        distance: 20,
+      );
+
+      final c2 = solved.points[slot.center2PointId]!;
+      solved.cursorX = c2.x;
+      solved.cursorY = c2.y;
+      expect(solved.beginPointDrag(slot.center2PointId), isTrue);
+      for (final target in [(34.0, 22.0), (36.0, 28.0), (32.0, 36.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+        expect(dist(slot.center2PointId, anchor.id), closeTo(20, 1e-3), reason: 'the dimension drives every frame');
+        // The slot is still a slot: every corner sits one radius from its own end's centre.
+        expect(dist(slot.center1PointId, slot.aPointId), closeTo(5, 1e-3));
+        expect(dist(slot.center1PointId, slot.bPointId), closeTo(5, 1e-3));
+        expect(dist(slot.center2PointId, slot.cPointId), closeTo(5, 1e-3));
+        expect(dist(slot.center2PointId, slot.dPointId), closeTo(5, 1e-3));
+      }
+      await solved.endPointDrag();
+    });
+
+    test('a rectangle with a corner dimensioned to a point stays rectangular and keeps the dimension', () async {
+      solved.selectDrawTool(SketchTool.point);
+      await solved.handleCanvasTap(0, 60);
+      final anchor = solved.points.values.firstWhere((p) => p.x == 0 && p.y == 60);
+
+      solved.selectDrawTool(SketchTool.rectangle);
+      await solved.handleCanvasTap(10, 10);
+      await solved.handleCanvasTap(30, 25);
+      solved.exitToSelectMode();
+      final rectangle = solved.rectangles.values.single;
+      final opposite = rectangle.cornerPointIds[2];
+      final fixedGap = dist(opposite, anchor.id);
+      solved.constraints['user-distance'] = DistanceConstraintDto(
+        id: 'user-distance',
+        pointAId: opposite,
+        pointBId: anchor.id,
+        distance: fixedGap,
+      );
+
+      final far = solved.points[opposite]!;
+      solved.cursorX = far.x;
+      solved.cursorY = far.y;
+      expect(solved.beginPointDrag(opposite), isTrue);
+      for (final target in [(34.0, 30.0), (38.0, 36.0), (44.0, 40.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+        expect(dist(opposite, anchor.id), closeTo(fixedGap, 1e-3), reason: 'the dimension drives every frame');
+        final pts = [for (final id in rectangle.cornerPointIds) solved.points[id]!];
+        // Axis-aligned: consecutive corners share an x or a y.
+        expect((pts[0].y - pts[1].y).abs() < 1e-3 && (pts[1].x - pts[2].x).abs() < 1e-3, isTrue,
+            reason: 'still a rectangle');
+      }
+      await solved.endPointDrag();
+    });
+
+    test('a circle whose centre is dimensioned to another point slides around it, radius unchanged', () async {
+      solved.selectDrawTool(SketchTool.point);
+      await solved.handleCanvasTap(60, 20);
+      final anchor = solved.points.values.firstWhere((p) => p.x == 60 && p.y == 20);
+
+      solved.selectDrawTool(SketchTool.circle);
+      await solved.handleCanvasTap(40, 20); // centre, 20 from the anchor
+      await solved.handleCanvasTap(50, 20); // radius 10
+      solved.exitToSelectMode();
+      final circle = solved.circles.values.single;
+      solved.constraints['user-distance'] = DistanceConstraintDto(
+        id: 'user-distance',
+        pointAId: circle.centerPointId,
+        pointBId: anchor.id,
+        distance: 20,
+      );
+
+      final centre = solved.points[circle.centerPointId]!;
+      solved.cursorX = centre.x;
+      solved.cursorY = centre.y;
+      expect(solved.beginPointDrag(circle.centerPointId), isTrue);
+      // Drag the centre well away from where the dimension allows: it must slide along the 20-radius ring.
+      for (final target in [(40.0, 26.0), (42.0, 34.0), (46.0, 44.0)]) {
+        await solved.updatePointDrag(target.$1, target.$2);
+        expect(dist(circle.centerPointId, anchor.id), closeTo(20, 1e-3), reason: 'the dimension drives every frame');
+        expect(dist(circle.centerPointId, circle.radiusPointId), closeTo(10, 1e-3), reason: 'the circle keeps its size');
+      }
+      final moved = solved.points[circle.centerPointId]!;
+      expect(moved.y, greaterThan(26), reason: 'it did follow the cursor along the permitted path');
+      await solved.endPointDrag();
+    });
   });
 
   group('confirmed dimensions drive Slot / Ellipse drags instead of being overwritten', () {
