@@ -5312,6 +5312,28 @@ void main() {
       expect(controller.beginPointDrag(slot.aPointId), isFalse);
     });
 
+    test('a Slot end-cap centre is dragged by the Slot\'s own rules, not an ordinary Arc centre\'s '
+        '(its first centre sits on the origin, which grounds the sketch, but not this centre)', () async {
+      controller.selectDrawTool(SketchTool.slot);
+      await controller.handleCanvasTap(0, 0); // first centre on the origin
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(10, 5);
+      controller.exitToSelectMode();
+      final slot = controller.slots.values.single;
+      final radius = controller.constraints.values
+          .whereType<DistanceConstraintDto>()
+          .firstWhere((c) => c.pointAId == slot.center1PointId && c.pointBId == slot.aPointId);
+      controller.selectConstraint(radius.id);
+      await controller.updateSelectedConstraintValue(5);
+      controller.exitToSelectMode();
+
+      final centre = controller.points[slot.center2PointId]!;
+      controller.cursorX = centre.x;
+      controller.cursorY = centre.y;
+      expect(controller.beginPointDrag(slot.center2PointId), isTrue);
+      controller.dropGrabbedEntity();
+    });
+
     test('dragging an Ellipse major tip with a confirmed major radius only turns the axis', () async {
       controller.selectDrawTool(SketchTool.ellipse);
       await controller.handleCanvasTap(0, 0); // centre
@@ -9767,6 +9789,62 @@ void main() {
     // directly - origin + line's own start Point + line's end Point +
     // midpoint, no extra.
     expect(controller.points.length, 4);
+  });
+
+  group('midpoint-method Line tool ties its midpoint to what the first tap snapped to', () {
+    Iterable<AtMidpointConstraintDto> atMidpoints() => controller.constraints.values.whereType<AtMidpointConstraintDto>();
+
+    test('a first tap on the origin adds an at_midpoint constraint on a Point coincident with it', () async {
+      controller.selectDrawTool(SketchTool.line);
+      controller.setLineConstructionMethod(LineConstructionMethod.midpoint);
+      await controller.handleCanvasTap(0, 0); // the line's centre, on the origin
+      await controller.handleCanvasTap(10, 0); // one end
+
+      expect(controller.errorMessage, isNull);
+      final line = controller.lines.values.firstWhere((l) => !l.construction);
+      final constraint = atMidpoints().single;
+      expect(constraint.lineId, line.id);
+      // Never the origin itself, but a Point at the same place.
+      expect(constraint.pointId, isNot(controller.originPointId));
+      expect(controller.points[constraint.pointId]!.x, closeTo(0, 1e-9));
+      expect(controller.points[constraint.pointId]!.y, closeTo(0, 1e-9));
+      // The mirrored end sits opposite the tapped one.
+      final ends = [controller.points[line.startPointId]!, controller.points[line.endPointId]!];
+      expect(ends.map((p) => p.x).reduce((a, b) => a + b), closeTo(0, 1e-9));
+    });
+
+    test('a first tap on an existing Point snaps the centre onto it and constrains that Point', () async {
+      controller.selectDrawTool(SketchTool.point);
+      await controller.handleCanvasTap(30, 10);
+      final anchor = controller.points.values.firstWhere((p) => p.x == 30 && p.y == 10);
+
+      controller.selectDrawTool(SketchTool.line);
+      controller.setLineConstructionMethod(LineConstructionMethod.midpoint);
+      await controller.handleCanvasTap(30.05, 10.05); // within snapRadius of the Point
+      expect(controller.midpointAnchorX, 30);
+      expect(controller.midpointAnchorY, 10);
+      await controller.handleCanvasTap(40, 10);
+
+      expect(atMidpoints().single.pointId, anchor.id);
+    });
+
+    test('a first tap on another Line\'s midpoint materializes it and constrains the new line to it', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(20, 0);
+      await controller.handleCanvasTap(30, 0);
+      controller.finishChain();
+      final existing = controller.lines.values.firstWhere((l) => !l.construction);
+
+      controller.setLineConstructionMethod(LineConstructionMethod.midpoint);
+      await controller.handleCanvasTap(25.05, 0.05); // that line's midpoint (25, 0)
+      expect(controller.midpointAnchorX, closeTo(25, 1e-9));
+      await controller.handleCanvasTap(25, 10); // the new line runs vertically through it
+
+      final constraints = atMidpoints().toList();
+      expect(constraints, hasLength(2), reason: 'one tying the midpoint Point to the old line, one to the new');
+      final materialized = constraints.firstWhere((c) => c.lineId == existing.id).pointId;
+      expect(constraints.firstWhere((c) => c.lineId != existing.id).pointId, materialized);
+    });
   });
 
   // --- New work package items 3 & 4: constraint selection/delete/edit -------

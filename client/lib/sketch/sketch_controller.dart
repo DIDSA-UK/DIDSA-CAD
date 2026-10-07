@@ -6724,19 +6724,22 @@ class SketchController extends ChangeNotifier {
     // Circle's for that point: a pinned centre blocks a Circle rim drag, but a Polygon corner can
     // still rotate about it.
     final intactPolygon = _intactPolygonForVertex(pointId);
-    final intactCircle = intactPolygon == null ? _intactCircleForPoint(pointId) : null;
+    // The drag paths ([updatePointDrag], [endPointDrag]) give Polygon, then Slot, precedence over
+    // Circle and Arc, so the pre-grab rules must too: a Slot's end-cap Arc centre is not an
+    // ordinary Arc centre (the Slot's own rules, below, govern it).
+    final intactSlot = intactPolygon == null ? _intactSlotForPoint(pointId) : null;
+    final intactCircle = intactPolygon == null && intactSlot == null ? _intactCircleForPoint(pointId) : null;
     if (intactCircle != null && _circleDragMode(intactCircle, pointId) == CircleDragMode.blocked) {
       return false;
     }
     // Same reasoning, for Arc (see [_arcDragMode]'s own doc comment for the
     // bug this closes - an Arc with a confirmed radius dimension and a
     // fully-pinned centre had nowhere to go, but wasn't refusing the grab).
-    final intactArc = intactPolygon == null ? _intactArcForPoint(pointId) : null;
+    final intactArc = intactPolygon == null && intactSlot == null ? _intactArcForPoint(pointId) : null;
     if (intactArc != null && _arcDragMode(intactArc, pointId) == ArcDragMode.blocked) {
       return false;
     }
     // A confirmed dimension that a Slot corner / Ellipse minor-axis drag could only overwrite.
-    final intactSlot = _intactSlotForPoint(pointId);
     if (intactSlot != null && _slotDragBlocked(intactSlot, pointId)) return false;
     final intactEllipse = _intactEllipseForPoint(pointId);
     if (intactEllipse != null && _ellipseDragBlocked(intactEllipse, pointId)) return false;
@@ -15113,8 +15116,18 @@ class SketchController extends ChangeNotifier {
       _ribbonVisible = false;
       // Snap the centre onto an existing Point (the origin included) so the
       // line's midpoint can be constrained to it on the second tap.
-      final snapId = _existingPointIdNear(cursorX, cursorY);
-      final snapPoint = snapId != null ? points[snapId] : null;
+      var snapId = _existingPointIdNear(cursorX, cursorY);
+      if (snapId == null) {
+        // Or onto another Line's midpoint (or a Slot cap apex / Text handle): materialize it so the
+        // new line's midpoint can be tied to it like any other Point.
+        final construction = _nearestConstructionSnapAt(cursorX, cursorY, snapRadius);
+        if (construction != null) {
+          await _runGuarded(() async {
+            snapId = await construction.materialize();
+          });
+        }
+      }
+      final snapPoint = snapId != null ? points[snapId!] : null;
       _midpointAnchorPointId = snapId;
       _midpointAnchorX = snapPoint?.x ?? cursorX;
       _midpointAnchorY = snapPoint?.y ?? cursorY;
