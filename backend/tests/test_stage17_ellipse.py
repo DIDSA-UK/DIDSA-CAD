@@ -718,3 +718,23 @@ def test_extruding_a_rotated_ellipse_profile_produces_a_non_empty_computed_mesh(
     bodies = response.json()
     assert len(bodies) == 1
     assert len(bodies[0]["mesh"]["vertices"]) > 0
+
+
+def test_editing_one_ellipse_axis_leaves_the_other_axis_alone():
+    """A fresh ellipse's two radii are both provisional, so the first PATCH used to be the "first dimension scales the
+    whole sketch" case: major 20 -> 30 turned minor 10 into 15. An axis edit now moves only its own tip."""
+    sketch = _create_sketch()
+    center = _create_point(sketch["id"], 0.0, 0.0)
+    major = _create_point(sketch["id"], 20.0, 0.0)
+    ellipse = client.post(
+        f"/sketch/sketches/{sketch['id']}/ellipses",
+        json={"center_point_id": center["id"], "major_point_id": major["id"], "minor_radius": 10.0},
+    ).json()
+    response = client.patch(
+        f"/sketch/sketches/{sketch['id']}/constraints/{_major_constraint_id(sketch['id'], ellipse['id'])}",
+        json={"value": 30.0},
+    )
+    assert response.status_code == 200
+    updated = client.get(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}").json()
+    assert updated["major_radius"] == pytest.approx(30.0)
+    assert updated["minor_radius"] == pytest.approx(10.0)

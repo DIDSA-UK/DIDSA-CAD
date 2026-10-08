@@ -1829,6 +1829,13 @@ def _signed_line_distance_value(sketch: Sketch, line1_start_id: str, line1_end_i
     )
 
 
+def _is_ellipse_axis_constraint(sketch: Sketch, constraint_id: str) -> bool:
+    return any(
+        constraint_id in (e.major_constraint_id, e.minor_constraint_id)
+        for e in (*sketch.ellipses(), *sketch.ellipse_arcs())
+    )
+
+
 def _clamp_ellipse_arc_axis_value(sketch: Sketch, constraint_id: str, value: float) -> float:
     """Unlike a plain Ellipse (see its own doc comment), an EllipseArc can't
     let its major/minor axes swap roles when dragged past each other - its
@@ -1856,7 +1863,10 @@ def update_constraint_value(
         has_other_dimension = any(
             cid != constraint_id and _is_length_dimension(other) for cid, other in sketch.constraints.items()
         )
-        if has_other_dimension:
+        # An Ellipse / EllipseArc axis is one of two independent sizes of the same entity: "the first dimension sizes
+        # the whole freehand sketch" would also rescale the other axis (major 20 -> 30 turned minor 10 into 15), so an
+        # axis edit only ever moves its own tip.
+        if has_other_dimension or _is_ellipse_axis_constraint(sketch, constraint_id):
             _reseed_distance_constraint_free_point(sketch, constraint, value)
         else:
             _scale_sketch_for_first_dimension(sketch, constraint, value)

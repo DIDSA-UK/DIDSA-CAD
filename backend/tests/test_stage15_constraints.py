@@ -1528,12 +1528,10 @@ def _minor_constraint_id(sketch_id: str, ellipse_id: str) -> str:
     )
 
 
-def test_ellipse_style_provisional_sibling_dimension_stays_in_sync_after_first_scale():
-    """An Ellipse's minor-axis DistanceConstraint being confirmed as the
-    sketch's first real dimension must scale the still-provisional
-    major-axis DistanceConstraint's own recorded value along with the Point
-    that just moved under it - otherwise the major axis silently goes
-    stale (reports its old, pre-scale length) the next time it's read."""
+def test_ellipse_axis_edit_leaves_the_provisional_sibling_axis_unscaled_and_consistent():
+    """An Ellipse axis is one of two independent sizes of the same entity, so confirming one as the sketch's first
+    dimension must not rescale the other (it used to: minor 3 -> 5 turned major 9 into 15). The still-provisional
+    major-axis DistanceConstraint's recorded value must also still match the geometry."""
     sketch = _create_sketch()
     center = _create_point(sketch["id"], 0.0, 0.0)
     major = _create_point(sketch["id"], 9.0, 0.0)
@@ -1554,10 +1552,10 @@ def test_ellipse_style_provisional_sibling_dimension_stays_in_sync_after_first_s
     )
 
     constraints = {c["id"]: c for c in client.get(f"/sketch/sketches/{sketch['id']}/constraints").json()}
-    # 9.0 * (5.0 / 3.0) = 15.0 - scaled by the same factor as the minor axis.
-    assert constraints[major_constraint_id]["distance"] == pytest.approx(15.0)
+    assert constraints[major_constraint_id]["distance"] == pytest.approx(9.0)
     updated_ellipse = client.get(f"/sketch/sketches/{sketch['id']}/ellipses/{ellipse['id']}").json()
-    assert updated_ellipse["major_radius"] == pytest.approx(15.0)
+    assert updated_ellipse["major_radius"] == pytest.approx(9.0)
+    assert updated_ellipse["minor_radius"] == pytest.approx(5.0)
 
 
 # --- Prompt B item B5: solve response DOF ---------------------------------
