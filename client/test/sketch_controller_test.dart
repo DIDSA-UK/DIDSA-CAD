@@ -9013,8 +9013,8 @@ void main() {
 
       expect(freshController.referenceDimensions, hasLength(1));
       expect(freshController.dimensionSelection, isEmpty);
-      final a = freshController.points[first!]!;
-      final b = freshController.points[second!]!;
+      final a = freshController.points[first]!;
+      final b = freshController.points[second]!;
       final expected = math.sqrt(math.pow(b.x - a.x, 2) + math.pow(b.y - a.y, 2));
       expect(freshController.referenceDimensions.single.value, closeTo(expected, 1e-9));
       final label = freshController.referenceDimensionLabels.single;
