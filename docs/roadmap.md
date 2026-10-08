@@ -804,3 +804,14 @@ Anything promoted out of this list should get its own scoping doc before it is b
   layouts, since this sandbox has no display/GPU. Worth a real on-device
   glance before fully trusting the clamp-fallback behavior looks right at
   a variety of screen sizes/panel heights.
+
+## Candidate: Delete Face that cannot heal (surface bodies / Delete and Fill)
+
+Today Delete Face is fail-closed: where `BRepAlgoAPI_Defeaturing` cannot heal the gap (a plain wall of a box or cylinder), the route returns `delete_face_failed` (see `app/document/delete_face.py`). Other CAD tools treat the non-healing result as an explicit mode, never the silent fallback: SolidWorks offers Delete / Delete and Patch / Delete and Fill, Fusion and Onshape have a heal option. A solid that quietly becomes a surface body is a known source of confusion, because Fillet, Shell, Boolean, volume, mesh and export all assume solids.
+
+Order of work:
+1. Keep the current fail-closed default (done, with a clear message in DIDSA-VR).
+2. **Delete and Fill** first: cap a hole or pocket opening with a planar / filled face so the body stays solid. Covers many real cases at low cost.
+3. **Delete without healing -> surface body** only as an explicit per-feature option, as its own project: a non-solid body kind in the document model, a visible "surface" marker in the Build tree and the Parts list, downstream features (Fillet, Shell, Mirror, Pattern, Boolean, Split, Merge, scale) refusing it with a clear named error, and export / volume behaviour decided. Needs a decision on how a surface body is meshed and picked in the VR table.
+
+Not started; the community-practice notes above are background knowledge, not a sourced survey.
