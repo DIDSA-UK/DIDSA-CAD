@@ -4511,6 +4511,15 @@ def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCre
     return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
 
+def _drop_constraints_between_pinned_points(sketch, constraint_ids: list[str]) -> None:
+    """A converted Circle / Arc is pinned in every Point (a live reference or a Fix), so the provisional radius / cardinal-point constraints `add_circle` /
+    `add_arc` made for it only relate pinned Points to each other. Each is redundant by construction, and py-slvs reports that as result_code 5, which then
+    stops it trusting `converged` for any constraint outside its allowlist (an `at_midpoint` on a neighbouring pinned edge was refused for exactly this).
+    Dropping them leaves the shape exactly as pinned and the system with no redundancy. The entity keeps its (now unused) ids: every reader tolerates a missing one."""
+    for constraint_id in constraint_ids:
+        sketch.constraints.pop(constraint_id, None)
+
+
 @router.post(
     "/parts/{part_id}/features/sketch/{feature_id}/convert-entities/edge",
     response_model=ConvertEdgeResponse,
@@ -4589,6 +4598,24 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         center_point = sketch.add_or_reuse_external_vertex_reference(
             center_x, center_y, _new_circle_centre_reference(part, sketch, bodies, excluded, payload.body_id, payload.edge_index)
         )
+        existing_circle = next((c for c in sketch.circles() if c.center_point_id == center_point.id), None)
+        if existing_circle is not None:
+            # Idempotent per edge, as `convert_body_vertex` is: the same rim converted again answers with the Circle already made (R-E).
+            centre_existing = PointResponse(id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True)
+            return ConvertEdgeResponse(
+                circle=CircleResponse(
+                    id=existing_circle.id,
+                    center_point_id=existing_circle.center_point_id,
+                    radius_point_id=existing_circle.radius_point_id,
+                    radius=existing_circle.radius(sketch.points),
+                    construction=existing_circle.construction,
+                    cardinal_point_ids=existing_circle.cardinal_point_ids,
+                    radius_constraint_id=existing_circle.radius_constraint_id,
+                ),
+                start_point=centre_existing,
+                end_point=centre_existing,
+                center_point=centre_existing,
+            )
         circle = sketch.add_circle(center_point.id, radius=radius, construction=payload.construction)
         # On-device feedback ("converted edges... the converted entities
         # should be projected onto the sketch plane and locked at that
@@ -4603,6 +4630,7 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         # alone isn't enough to freeze the Circle as a whole, every Point
         # that defines it needs to be.
         sketch.add_fixed_constraint(circle.id)
+        _drop_constraints_between_pinned_points(sketch, [circle.radius_constraint_id, *circle.cardinal_constraint_ids])
         center_response = PointResponse(
             id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True
         )
@@ -4640,13 +4668,23 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         center_point = sketch.add_or_reuse_external_vertex_reference(
             center_x, center_y, _new_circle_centre_reference(part, sketch, bodies, excluded, payload.body_id, payload.edge_index)
         )
-        arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
+        existing_arc = next(
+            (
+                a
+                for a in sketch.arcs()
+                if a.center_point_id == center_point.id and {a.start_point_id, a.end_point_id} == {arc_start_point.id, arc_end_point.id}
+            ),
+            None,
+        )
+        arc = existing_arc if existing_arc is not None else sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
         # An Arc's start / end Points are vertex references and (since the reference-identity overhaul) its centre is a circle-centre reference, so every
         # Point of it is already pinned by `external_references`.
-        try:
-            sketch.add_fixed_constraint(arc.id)
-        except ValueError:
-            pass  # every Point of the Arc is a live reference now (start, end and, since the overhaul, the centre): nothing left to pin
+        if existing_arc is None:
+            try:
+                sketch.add_fixed_constraint(arc.id)
+            except ValueError:
+                pass  # every Point of the Arc is a live reference now (start, end and, since the overhaul, the centre): nothing left to pin
+            _drop_constraints_between_pinned_points(sketch, [arc.radius_constraint_id, arc.end_radius_constraint_id])
         return ConvertEdgeResponse(
             arc=ArcResponse(
                 id=arc.id,
@@ -4666,7 +4704,10 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             center_point=PointResponse(id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True),
         )
 
-    line = sketch.add_line(start_point.id, end_point.id, construction=payload.construction)
+    line = next(
+        (l for l in sketch.lines() if {l.start_point_id, l.end_point_id} == {start_point.id, end_point.id}),
+        None,
+    ) or sketch.add_line(start_point.id, end_point.id, construction=payload.construction)
     return ConvertEdgeResponse(
         line=LineResponse(
             id=line.id,
