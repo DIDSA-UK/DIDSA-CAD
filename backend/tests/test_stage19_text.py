@@ -444,3 +444,20 @@ def test_extruding_a_rotated_offset_text_entity_produces_a_non_empty_computed_me
     bodies = response.json()
     assert len(bodies) == 1
     assert len(bodies[0]["mesh"]["vertices"]) > 0
+
+
+def test_text_contour_walk_is_the_same_on_every_call_for_a_font_with_overlapping_contours():
+    """Roboto's glyphs have overlapping contours, so OCCT gives several Faces per letter and their Compound order is not
+    stable between calls. `text_to_polygons` (profile classification) and `text_contour_wire` (the extruded solid) run in
+    different calls and index the same walk, so a different order made extruding "AB" in Roboto fail intermittently with
+    "No hole 0 on text contour 0" (a 500 on the mesh route). Both now walk a canonical order."""
+    from app.sketch.text_geometry import text_contour_wire, text_to_polygons
+
+    first = [len(holes) for _, holes in text_to_polygons("AB", "Roboto", 20.0)]
+    for _ in range(12):
+        polygons = text_to_polygons("AB", "Roboto", 20.0)
+        assert [len(holes) for _, holes in polygons] == first
+        for contour_index, (_, holes) in enumerate(polygons):
+            text_contour_wire("AB", "Roboto", 20.0, contour_index, None)
+            for hole_index in range(len(holes)):
+                text_contour_wire("AB", "Roboto", 20.0, contour_index, hole_index)
