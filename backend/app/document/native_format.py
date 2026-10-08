@@ -747,6 +747,8 @@ def sketch_to_dict(sketch: Sketch) -> dict:
         # Sketcher-roadmap Phase 4.3 v1.
         # Reference-identity overhaul: `signature` / `lineage` are written only when present, and a file without them loads exactly as before.
         "external_references": [_external_reference_to_dict(point_id, ref) for point_id, ref in sketch.external_references.items()],
+        # DIDSA-VR plan, phase 2: the Points / entities that are only reference helpers. Written only when there are some; a file without it loads as before.
+        **({"reference_ids": sorted(sketch.reference_ids)} if sketch.reference_ids else {}),
         # A converted Arc/Circle centre's own pin (On-device feedback:
         # "converted edges... should be... locked at that projection
         # point") is a `FixedConstraint` now, not a separate field - it
@@ -787,6 +789,7 @@ def sketch_from_dict(data: dict) -> Sketch:
     # flip/rotation_quarter_turns above.
     for ref_data in data.get("external_references", []):
         sketch.external_references[ref_data["point_id"]] = _external_reference_from_dict(ref_data)
+    sketch.reference_ids = set(data.get("reference_ids", []))
     # Backward compatibility: a file saved before `pinned_point_ids` was
     # replaced by `FixedConstraint` still has that key, naming Points a
     # converted Arc/Circle centre pinned in the old, non-Constraint way

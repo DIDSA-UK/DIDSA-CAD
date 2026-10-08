@@ -68,6 +68,9 @@ class PointResponse(BaseModel):
     # for this). The client uses this to exclude such a Point from drag
     # targeting, the same way it already excludes the sketch origin.
     is_locked: bool = False
+    # DIDSA-VR plan, phase 2: a Point made only to point the sketch at the part's own geometry (`Sketch.reference_ids`). Clients draw it quietly and do not offer it for
+    # selection or deletion. Additive: older clients ignore it.
+    is_reference: bool = False
 
 
 class DeleteEntityResponse(BaseModel):
@@ -128,6 +131,7 @@ class LineResponse(BaseModel):
     end_point_id: str
     length: float
     construction: bool = False
+    is_reference: bool = False  # see PointResponse.is_reference
 
 
 class LineTrimRequest(BaseModel):
@@ -269,6 +273,7 @@ class CircleResponse(BaseModel):
     radius_point_id: str
     radius: float
     construction: bool = False
+    is_reference: bool = False  # see PointResponse.is_reference
     # [north, east, south, west] - see the backend's Circle.cardinal_point_ids
     # docstring for how each is solver-locked.
     cardinal_point_ids: list[str]
@@ -326,6 +331,7 @@ class ArcResponse(BaseModel):
     end_point_id: str
     radius: float
     construction: bool = False
+    is_reference: bool = False  # see PointResponse.is_reference
     # See CircleResponse.radius_constraint_id's own doc comment.
     radius_constraint_id: str
 

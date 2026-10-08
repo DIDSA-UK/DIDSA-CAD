@@ -164,6 +164,7 @@ from app.document.scale_body import resolve_scale_body
 from app.document.shell import resolve_shell
 from app.document.solid_from_surfaces import resolve_solid_from_surfaces
 from app.document.thicken import resolve_thicken
+from app.document.face_reference import classify_face, face_axis, face_line
 from app.document.schemas import (
     BevelGearFeatureResponse,
     BevelPairFeatureResponse,
@@ -208,6 +209,8 @@ from app.document.schemas import (
     ChamferFeatureUpdate,
     ConvertEdgeCreate,
     ConvertEdgeResponse,
+    ConvertFaceCreate,
+    ConvertFaceResponse,
     ConvertVertexCreate,
     CreatePlaneFeatureCreate,
     CreatePlaneFeatureResponse,
@@ -4470,6 +4473,16 @@ def create_external_edge_reference(
     status_code=201,
 )
 def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCreate) -> PointResponse:
+    """Convert Entities' vertex route (see `_convert_body_vertex`), plus the Phase 2.1 reference flag on the Point."""
+    sketch = get_sketch_or_404(_get_sketch_feature_or_404(get_part_or_404(part_id), feature_id).sketch_id)
+    before_points = set(sketch.points)
+    response = _convert_body_vertex(part_id, feature_id, payload)
+    _flag_converted(sketch, payload.reference, before_points, set(), [response.id], [])
+    response.is_reference = sketch.is_reference(response.id)
+    return response
+
+
+def _convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCreate) -> PointResponse:
     """Sketcher-roadmap Phase 9 v2 (Convert Entities): materializes
     `payload` (a Body vertex) as a real, *associative* Point in this
     SketchFeature's own Sketch - reuses `create_external_vertex_reference`'s
@@ -4520,12 +4533,88 @@ def _drop_constraints_between_pinned_points(sketch, constraint_ids: list[str]) -
         sketch.constraints.pop(constraint_id, None)
 
 
+def _flag_converted(sketch, reference: bool, before_points: set, before_entities: set, point_ids: list[str], entity_ids: list[str]) -> None:
+    """Phase 2.1: a `reference: true` convert flags what it MADE (Points and entities that were not in the Sketch before the call); something that was already there
+    keeps whatever flag it had. An ordinary convert (`reference` false) makes everything it touched real geometry again: it takes a flagged helper over."""
+    if reference:
+        sketch.mark_reference(*[i for i in point_ids if i not in before_points], *[i for i in entity_ids if i not in before_entities])
+    else:
+        sketch.unmark_reference(*point_ids, *entity_ids)
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/convert-entities/face",
+    response_model=ConvertFaceResponse,
+    status_code=201,
+)
+def convert_body_face(part_id: str, feature_id: str, payload: ConvertFaceCreate) -> ConvertFaceResponse:
+    """DIDSA-VR plan, phase 2.2: makes a FACE of the part usable in this sketch (see `app.document.face_reference`). A flat face perpendicular to the sketch plane
+    becomes a pinned line between its two extreme corners (live vertex references; idempotent, an existing line between the same two Points is reused); a round
+    face whose axis is perpendicular to the sketch plane becomes a live centre (`circle_centre` reference of one of its circular edges, no shape). Anything else
+    is a structured 422 (`face_not_perpendicular`, `face_axis_not_perpendicular`, `unsupported_face`, `face_has_no_circular_edge`, `degenerate_face`)."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    basis = basis_for_sketch(part, sketch, bodies, excluded)
+    before_points, before_entities = set(sketch.points), set(sketch.entities)
+    kind = classify_face(bodies, payload.body_id, payload.face_index, basis)
+    if kind == "centre":
+        axis = face_axis(bodies, payload.body_id, payload.face_index, basis)
+        centre = sketch.add_or_reuse_external_vertex_reference(
+            axis.xy[0], axis.xy[1], _new_circle_centre_reference(part, sketch, bodies, excluded, payload.body_id, axis.edge_index)
+        )
+        _flag_converted(sketch, payload.reference, before_points, before_entities, [centre.id], [])
+        return ConvertFaceResponse(
+            kind="centre",
+            center_point=PointResponse(id=centre.id, x=centre.x, y=centre.y, is_locked=True, is_reference=sketch.is_reference(centre.id)),
+        )
+    face = face_line(bodies, payload.body_id, payload.face_index, basis)
+    start_ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, face.start_vertex)
+    start_point = sketch.add_or_reuse_external_vertex_reference(face.start_xy[0], face.start_xy[1], start_ref)
+    end_ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, face.end_vertex)
+    end_point = sketch.add_or_reuse_external_vertex_reference(face.end_xy[0], face.end_xy[1], end_ref)
+    line = next((l for l in sketch.lines() if {l.start_point_id, l.end_point_id} == {start_point.id, end_point.id}), None)
+    if line is None:
+        line = sketch.add_line(start_point.id, end_point.id, construction=payload.construction)
+    _flag_converted(sketch, payload.reference, before_points, before_entities, [start_point.id, end_point.id], [line.id])
+    return ConvertFaceResponse(
+        kind="line",
+        line=LineResponse(
+            id=line.id,
+            start_point_id=line.start_point_id,
+            end_point_id=line.end_point_id,
+            length=line.length(sketch.points),
+            construction=line.construction,
+            is_reference=sketch.is_reference(line.id),
+        ),
+        start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y, is_locked=True, is_reference=sketch.is_reference(start_point.id)),
+        end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y, is_locked=True, is_reference=sketch.is_reference(end_point.id)),
+    )
+
+
 @router.post(
     "/parts/{part_id}/features/sketch/{feature_id}/convert-entities/edge",
     response_model=ConvertEdgeResponse,
     status_code=201,
 )
 def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
+    """Convert Entities' edge route (see `_convert_body_edge` for what it makes), plus the Phase 2.1 reference flag on the Points and the Line / Circle / Arc."""
+    sketch = get_sketch_or_404(_get_sketch_feature_or_404(get_part_or_404(part_id), feature_id).sketch_id)
+    before_points, before_entities = set(sketch.points), set(sketch.entities)
+    response = _convert_body_edge(part_id, feature_id, payload)
+    shape = response.line or response.arc or response.circle
+    points = [p for p in (response.start_point, response.end_point, response.center_point) if p is not None]
+    _flag_converted(sketch, payload.reference, before_points, before_entities, [p.id for p in points], [shape.id] if shape is not None else [])
+    for p in points:
+        p.is_reference = sketch.is_reference(p.id)
+    if shape is not None:
+        shape.is_reference = sketch.is_reference(shape.id)
+    return response
+
+
+def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
     """Convert Entities' edge-shaped sibling to `convert_body_vertex` (v2) -
     mirrors `create_external_edge_reference`'s own "resolve both endpoint
     vertices" shape. Its two endpoint Points are associative

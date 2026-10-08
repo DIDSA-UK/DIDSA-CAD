@@ -506,6 +506,9 @@ class ConvertVertexCreate(BaseModel):
 
     body_id: str
     vertex_index: int
+    # DIDSA-VR plan, phase 2: true when the client wants the Point only to point the sketch at the part's own corner (it is flagged in `Sketch.reference_ids`, and
+    # cleaned up once nothing depends on it). False (the default, every earlier client) makes ordinary geometry, and takes a flagged Point over as real.
+    reference: bool = False
 
 
 class ConvertEdgeCreate(BaseModel):
@@ -525,6 +528,19 @@ class ConvertEdgeCreate(BaseModel):
     body_id: str
     edge_index: int
     construction: bool = False
+    # See `ConvertVertexCreate.reference`: the Points and the Line / Circle / Arc made (or reused, if not yet real) are flagged as reference helpers.
+    reference: bool = False
+
+
+class ConvertFaceCreate(BaseModel):
+    """DIDSA-VR plan, phase 2.2: a flat face of the part standing perpendicular to the sketch plane (its edge-on view is a line), or a round face (cylinder / cone /
+    sphere / torus) whose axis is perpendicular to the sketch plane (a hole's wall seen from above, even a blind one whose rim is not in the plane), as something
+    the sketch can dimension to. `reference` is as on `ConvertEdgeCreate`."""
+
+    body_id: str
+    face_index: int
+    construction: bool = True
+    reference: bool = False
 
 
 class ConvertEdgeResponse(BaseModel):
@@ -567,6 +583,18 @@ class ConvertEdgeResponse(BaseModel):
     circle: CircleResponse | None = None
     start_point: PointResponse
     end_point: PointResponse
+    center_point: PointResponse | None = None
+
+
+class ConvertFaceResponse(BaseModel):
+    """`kind == "line"`: the face stands perpendicular to the sketch plane and `line` runs between its two extreme corners, projected (`start_point` / `end_point` are
+    live vertex references). `kind == "centre"`: a round face whose axis is perpendicular to the sketch plane; `center_point` is a live `circle_centre` reference
+    at the axis, taken from one of the face's circular edges (so it follows and is flagged like any other reference); no shape is made."""
+
+    kind: Literal["line", "centre"]
+    line: LineResponse | None = None
+    start_point: PointResponse | None = None
+    end_point: PointResponse | None = None
     center_point: PointResponse | None = None
 
 
