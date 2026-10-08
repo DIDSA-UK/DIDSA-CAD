@@ -536,13 +536,13 @@ tried on a real Quest. Items marked **backend** land in this repo.
 1. **Quest hardening (blocks trust in everything else).** Standalone APK export and sideload never tested; cleartext HTTP on Android unresolved (needs a TLS or tunnel
    URL); performance on Quest 2 / 3 / 3S unmeasured (everything so far is PCVR via Virtual Desktop). Not a feature, but every feature below is unproven until this is done.
    Not scoped in detail.
-2. **References and dimensioning (design table).** Scoped: `DIDSA-VR/docs/scope-references-and-dimensioning.md`. Seven pieces: R-A at-midpoint refused next to a converted
-   hole (**backend**, solver); R-B driven dimensions that persist (**backend** + flat app; two designs compared, a separate reference-dimension list recommended over a
-   `driven` flag because an older client would enforce a flagged dimension); R-C faces as references (**backend** `convert-entities/face`); R-D re-attach for non-sketch
-   features and one-call edge re-attach (**backend**); R-E make `convert-entities/edge` idempotent (**backend**); R-F ellipse edges (with Ellipse); R-G headset tuning.
-3. **Modelling depth (design table).** Scoped: `DIDSA-VR/docs/scope-modelling-depth.md`. The backend already has routes for almost all of it, so this is mostly VR client work:
-   Pattern, Boolean / Merge / Split, Create Plane, Sweep, Loft, direct edit (Move / Delete Face, Move / Scale / Delete Body), the Trim / Offset / Ellipse / Spline / Text
-   sketch tools, a preview before Apply, redo for features, and Build-tree edit and sections. Step 0 is a per-feature interface so adding a tool stops growing one 1,400-line file.
+2. **References and dimensioning (design table).** Scoped, decisions recorded: `DIDSA-VR/docs/scope-references-and-dimensioning.md`. Centres, edges and vertices all usable in sketches, with the
+   linking mechanism silent so a dimension feels attached to the part's own edge, point or centre, and robustness as the acceptance bar (R-C). Also: R-A at-midpoint refused next to a
+   converted hole (**backend**, solver); R-B persistent reference dimensions as a separate list, decided over a `driven` flag (**backend** + flat app); R-D re-attach for non-sketch features and
+   one-call edge re-attach (**backend**); R-E make `convert-entities/edge` idempotent (**backend**); R-F ellipse edges (with Ellipse); R-G headset tuning.
+3. **Modelling depth (design table).** Scoped, decisions recorded: `DIDSA-VR/docs/scope-modelling-depth.md`. Order: a per-feature interface and a docked properties panel first (M0), then
+   Create Plane, **Loft, Sweep**, then Pattern / Boolean / Merge / Split, Trim / Offset and direct edit, then Ellipse / Spline / Text. Preview uses both mechanisms (coarse-preview for Pattern
+   and Loft, create-then-PATCH for the rest); redo covers features only. The backend already has routes for almost all of it, so this is mostly VR client work.
 4. **Mate parity with the flat app.** Editing an existing mate's value or flip is not built (create, list, delete only); mates through sub-assemblies are not checked or
    enforced (G14); a mated, enforced part cannot be carried onto the table (G15, workaround exists); sub-assemblies are refused and New part cannot be made inside one (G16).
    Needs a nested-solve decision in the **backend**. Not scoped in detail.
@@ -553,6 +553,10 @@ tried on a real Quest. Items marked **backend** land in this repo.
    exist on the wrist tablet today.
 7. **Smaller VR items.** Dragging a row out of the assembly tree into world space; "DIDSA-CAD as a flat window" (blocked on the Flutter client gaining a web build, though
    the browser relay might serve it once it has one); keeping the VR docs honest (gap-list item 7 still names Point as missing; it is already built).
+8. **Design-table deck layout and human factors (VR).** The deck's visual style is good; its layout is not good enough, and its use of space and colour needs a human-factors pass
+   (reach and reading distance at arm's length, how much sits in the primary view, grouping, size and contrast of targets, colour meaning and accessibility including colour-blind
+   safety). Lands together with the docked properties panel (item 3), which needs a place on the console. Scope: audit the current deck against a headset session, propose a layout, then
+   rebuild. Not scoped yet; needs its own scoping doc. (Assumed to mean the design-table deck; if the wrist tablet is meant, the same pass applies.)
 
 ### Brainstorm (not committed; sources noted)
 
