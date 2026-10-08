@@ -242,6 +242,7 @@ from app.document.schemas import (
     ShellFeatureResponse,
     ShellFeatureUpdate,
     ExternalEdgeReferenceResponse,
+    ExternalEdgeReattach,
     ExternalReferenceReattach,
     ExternalReferenceStatus,
     ExternalVertexReferenceCreate,
@@ -4299,13 +4300,66 @@ def reattach_external_reference(
         return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
     if payload.vertex_index is None:
         raise HTTPException(status_code=422, detail={"type": "vertex_required", "point_id": point_id})
-    reference = make_external_vertex_reference(bodies, payload.body_id, payload.vertex_index)
-    reference = dataclasses.replace(reference, lineage=history_for_part(part, excluded).lineage_for(payload.body_id, payload.vertex_index))
+    _reattach_vertex_point(part, sketch, point_id, payload.body_id, payload.vertex_index, bodies, excluded)
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+
+
+def _reattach_vertex_point(part, sketch, point_id: str, body_id: str, vertex_index: int, bodies: dict, excluded) -> None:
+    """Points the vertex-following external-reference Point `point_id` at Body vertex `vertex_index` (re-captured signature and lineage, moved to where it is)."""
+    reference = make_external_vertex_reference(bodies, body_id, vertex_index)
+    reference = dataclasses.replace(reference, lineage=history_for_part(part, excluded).lineage_for(body_id, vertex_index))
     x, y = resolve_external_vertex_position(part, sketch, reference, bodies, excluded)
     sketch.external_references[point_id] = reference
     sketch.external_reference_decisions.pop(point_id, None)
+    point = sketch.points[point_id]
     point.x, point.y = x, y
-    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/external-references/reattach-edge",
+    response_model=list[PointResponse],
+)
+def reattach_external_edge(part_id: str, feature_id: str, payload: ExternalEdgeReattach) -> list[PointResponse]:
+    """DIDSA-VR plan, phase 4.1: one pick mends both corners of an edge. `point_ids` are the two external-reference (vertex) Points of one converted / referenced
+    edge (a pinned line's ends); `body_id` + `edge_index` the replacement edge. The two Points are matched to the replacement's two end vertices by where they
+    are now (the pairing with the smaller total distance, so a line keeps its direction), and each is re-attached exactly as `.../{point_id}/reattach` does
+    (the Point and everything built on it keep their ids). All or nothing: if either end cannot be re-attached nothing changes. 422 `degenerate_edge` for an edge
+    whose two ends are one vertex; 404 for a Point that is not a vertex reference of this Sketch."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    if len(set(payload.point_ids)) != 2:
+        raise HTTPException(status_code=422, detail={"type": "two_points_required"})
+    for point_id in payload.point_ids:
+        existing = sketch.external_references.get(point_id)
+        if existing is None or point_id not in sketch.points or existing.kind != "vertex":
+            raise HTTPException(status_code=404, detail=f"{point_id} is not a vertex reference of this Sketch")
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    start_ref, end_ref = edge_endpoint_vertex_refs(bodies, SubShapeRef(body_id=payload.body_id, shape_type=SubShapeType.EDGE, index=payload.edge_index))
+    if start_ref.index == end_ref.index:
+        raise HTTPException(status_code=422, detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index})
+    positions = []
+    for ref in (start_ref, end_ref):
+        vertex = make_external_vertex_reference(bodies, payload.body_id, ref.index)
+        positions.append(resolve_external_vertex_position(part, sketch, vertex, bodies, excluded))
+    first, second = (sketch.points[i] for i in payload.point_ids)
+
+    def cost(a, b) -> float:
+        return math.dist((first.x, first.y), a) + math.dist((second.x, second.y), b)
+
+    swapped = cost(positions[1], positions[0]) < cost(positions[0], positions[1])
+    vertex_for = {payload.point_ids[0]: (end_ref if swapped else start_ref).index, payload.point_ids[1]: (start_ref if swapped else end_ref).index}
+    saved = {i: (sketch.external_references[i], sketch.points[i].x, sketch.points[i].y) for i in payload.point_ids}
+    try:
+        for point_id, vertex_index in vertex_for.items():
+            _reattach_vertex_point(part, sketch, point_id, payload.body_id, vertex_index, bodies, excluded)
+    except HTTPException:
+        for point_id, (ref, x, y) in saved.items():
+            sketch.external_references[point_id] = ref
+            sketch.points[point_id].x, sketch.points[point_id].y = x, y
+        raise
+    return [PointResponse(id=i, x=sketch.points[i].x, y=sketch.points[i].y, is_locked=True) for i in payload.point_ids]
 
 
 @router.post(

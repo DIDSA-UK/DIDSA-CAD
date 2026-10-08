@@ -464,6 +464,15 @@ class ExternalReferenceReattach(BaseModel):
     edge_index: int | None = None
 
 
+class ExternalEdgeReattach(BaseModel):
+    """DIDSA-VR plan, phase 4.1: re-attach the two corner references of ONE edge in a single call: `point_ids` the two vertex-following external-reference Points
+    (a pinned line's ends), `body_id` + `edge_index` the replacement edge."""
+
+    point_ids: list[str]
+    body_id: str
+    edge_index: int
+
+
 class ExternalEdgeReferenceCreate(BaseModel):
     """Sketcher-roadmap Phase 4.3 v2: the payload for the materialize-a-
     body-edge endpoint - same "deliberately its own small schema, not

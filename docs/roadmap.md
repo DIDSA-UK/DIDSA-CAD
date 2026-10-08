@@ -545,8 +545,11 @@ tried on a real Quest. Items marked **backend** land in this repo.
    R-E **done** (`convert-entities/edge` returns the existing Circle / Arc / Line for the same edge); R-C **done for corners, edges, rims and faces**: `reference: true` on the convert
    routes, `Sketch.reference_ids` / `is_reference` (additive in the responses, the export and the native file), `convert-entities/face` (a flat face square to the sketch plane as a pinned
    line, a round face with its axis square to it as a live centre: a blind hole works), clean-up of helpers nothing depends on (`tests/test_reference_helpers.py`); the flat app draws helpers
-   quietly in both renderings and excludes them from hit-testing, with `ensureReferenceFace` and the API call in place but **no face-picking UI yet**. R-B, R-D, R-F, R-G: see the
-   phase entries below as they close.
+   quietly in both renderings and excludes them from hit-testing, with `ensureReferenceFace` and the API call in place but **no face-picking UI yet**. R-B **done**: `Sketch.reference_dimensions`
+   (separate list, value computed on read, solver untouched), `POST / GET / PATCH / DELETE .../reference-dimensions`, values in `solve-and-refresh`, export and the native file (additive); the flat app
+   draws them in brackets in 2D and in the 3D overlay and adds / removes them from the Dimension bar (`tests/test_reference_dimensions.py`, `client/test/sketch_reference_dimension_overlay_test.dart`).
+   R-D **done** (backend): PATCH on fillet / chamfer / shell / mirror / pattern accepts new references and clears the lost / moved flags; `POST .../external-references/reattach-edge` re-picks both ends of an edge
+   (`tests/test_reference_reattach_features.py`). Pattern re-attach is not tested; the flat app has no UI for either. R-F, R-G: see the phase entries below as they close.
 3. **Modelling depth (design table).** Scoped, decisions recorded: `DIDSA-VR/docs/scope-modelling-depth.md`. Order: a per-feature interface and a docked properties panel first (M0), then
    Create Plane, **Loft, Sweep**, then Pattern / Boolean / Merge / Split, Trim / Offset and direct edit, then Ellipse / Spline / Text. Preview uses both mechanisms (coarse-preview for Pattern
    and Loft, create-then-PATCH for the rest); redo covers features only. The backend already has routes for almost all of it, so this is mostly VR client work.
