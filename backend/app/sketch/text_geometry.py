@@ -25,11 +25,13 @@ from pathlib import Path
 
 from OCC.Core.Addons import Font_FA_Regular, register_font, text_to_brep
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+from OCC.Core.BRepBndLib import brepbndlib
+from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepTools import BRepTools_WireExplorer, breptools
 from OCC.Core.GCPnts import GCPnts_UniformDeflection
 from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_WIRE
 from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Wire, topods
+from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, TopoDS_Wire, topods
 
 from app.sketch.text_fonts import FONT_ALLOWLIST
 
@@ -127,6 +129,39 @@ def _tessellate_wire(wire: TopoDS_Wire) -> list[tuple[float, float]]:
     return points
 
 
+def _bbox_key(shape: TopoDS_Shape) -> tuple[float, float, float, float]:
+    box = Bnd_Box()
+    brepbndlib.Add(shape, box)
+    x_min, y_min, _, x_max, y_max, _ = box.Get()
+    return (round(x_min, 4), round(y_min, 4), round(x_max, 4), round(y_max, 4))
+
+
+def _ordered_faces(shape: TopoDS_Shape) -> list[TopoDS_Face]:
+    """The glyph Faces of `shape` in a canonical order (by bounding box, left to right then bottom to top).
+    OCCT's own Compound order is NOT stable between two `text_to_shape` calls for a font whose glyphs have overlapping
+    contours (Roboto: several Faces per letter, the one carrying the hole at a different index on different calls),
+    and `text_to_polygons` / `text_contour_wire` run in different calls but index into the same walk - so both go
+    through this order, never the raw explorer's."""
+    faces: list[TopoDS_Face] = []
+    face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while face_explorer.More():
+        faces.append(topods.Face(face_explorer.Current()))
+        face_explorer.Next()
+    return sorted(faces, key=_bbox_key)
+
+
+def _ordered_hole_wires(face: TopoDS_Face, outer_wire: TopoDS_Wire) -> list[TopoDS_Wire]:
+    """Every wire of `face` except its outer one, in the same canonical (bounding box) order for the same reason."""
+    holes: list[TopoDS_Wire] = []
+    wire_explorer = TopExp_Explorer(face, TopAbs_WIRE)
+    while wire_explorer.More():
+        wire = topods.Wire(wire_explorer.Current())
+        if not wire.IsSame(outer_wire):
+            holes.append(wire)
+        wire_explorer.Next()
+    return sorted(holes, key=_bbox_key)
+
+
 def text_to_polygons(
     content: str, font: str, size: float
 ) -> list[tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]]:
@@ -149,20 +184,11 @@ def text_to_polygons(
     """
     shape = text_to_shape(content, font, size)
     contours: list[tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]] = []
-    face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
-    while face_explorer.More():
-        face = topods.Face(face_explorer.Current())
+    for face in _ordered_faces(shape):
         outer_wire = breptools.OuterWire(face)
         outer = _tessellate_wire(outer_wire)
-        holes: list[list[tuple[float, float]]] = []
-        wire_explorer = TopExp_Explorer(face, TopAbs_WIRE)
-        while wire_explorer.More():
-            wire = topods.Wire(wire_explorer.Current())
-            if not wire.IsSame(outer_wire):
-                holes.append(_tessellate_wire(wire))
-            wire_explorer.Next()
+        holes = [_tessellate_wire(wire) for wire in _ordered_hole_wires(face, outer_wire)]
         contours.append((outer, holes))
-        face_explorer.Next()
     return contours
 
 
@@ -173,8 +199,8 @@ def text_contour_wire(
     `contour_index` (`hole_index=None`), or its `hole_index`-th hole wire -
     re-derives a fresh `text_to_shape` call and walks to the requested
     Face/wire by index, mirroring `text_to_polygons`'s own face/wire walk
-    exactly so the two can never disagree about ordering (both use the
-    same `TopExp_Explorer`-over-`TopAbs_FACE`-then-`TopAbs_WIRE` walk).
+    exactly so the two can never disagree about ordering (both go through
+    `_ordered_faces` / `_ordered_hole_wires`).
     Used by `app.document.extrude.wire_for_profile` to build the actual
     extruded solid's geometry from the real curve - `text_to_polygons`'s
     own tessellated version exists only for nesting classification/
@@ -192,21 +218,11 @@ def text_contour_wire(
     follows, just paid multiple times here instead of once).
     """
     shape = text_to_shape(content, font, size)
-    face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
-    for _ in range(contour_index):
-        face_explorer.Next()
-    face = topods.Face(face_explorer.Current())
+    face = _ordered_faces(shape)[contour_index]
     outer_wire = breptools.OuterWire(face)
     if hole_index is None:
         return outer_wire
-
-    wire_explorer = TopExp_Explorer(face, TopAbs_WIRE)
-    seen_holes = 0
-    while wire_explorer.More():
-        wire = topods.Wire(wire_explorer.Current())
-        if not wire.IsSame(outer_wire):
-            if seen_holes == hole_index:
-                return wire
-            seen_holes += 1
-        wire_explorer.Next()
+    holes = _ordered_hole_wires(face, outer_wire)
+    if hole_index < len(holes):
+        return holes[hole_index]
     raise IndexError(f"No hole {hole_index} on text contour {contour_index}")
