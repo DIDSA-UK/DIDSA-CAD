@@ -421,6 +421,36 @@ class ConstraintLabelItem extends ConstraintOverlayItem {
   int get hashCode => Object.hash(constraintId, selected, anchorA, anchorB, text, labelOffset, plainBlackText);
 }
 
+/// DIDSA-VR plan, phase 3: a persistent REFERENCE (driven) dimension, drawn as a bracketed value such as `(12.5)` at the middle of what it measures
+/// ([anchorA]-[anchorB]); it never drives anything, so it has no dimension line to drag. [constraintId] is `reference:<id>` (never a real constraint id).
+/// [SketchCanvas] draws the same label in the 2D view from [SketchController.referenceDimensionLabels]; keeping both renderings in step is why this is an
+/// overlay item and not a one-off.
+class ReferenceDimensionItem extends ConstraintOverlayItem {
+  final (double, double) anchorA;
+  final (double, double) anchorB;
+  final String text;
+
+  const ReferenceDimensionItem({
+    required super.constraintId,
+    required super.selected,
+    required this.anchorA,
+    required this.anchorB,
+    required this.text,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is ReferenceDimensionItem &&
+      other.constraintId == constraintId &&
+      other.selected == selected &&
+      other.anchorA == anchorA &&
+      other.anchorB == anchorB &&
+      other.text == text;
+
+  @override
+  int get hashCode => Object.hash(constraintId, selected, anchorA, anchorB, text);
+}
+
 /// A point-to-point (or Ellipse-axis) linear dimension - mirrors
 /// `sketch_canvas.dart`'s own `_paintDistanceDimension`. [orientation] is
 /// `DistanceConstraintDto.orientation` verbatim ('vertical'/'horizontal'/
@@ -1758,6 +1788,150 @@ class SketchController extends ChangeNotifier {
   /// instead keeps it authoritative without touching any of those.
   final Set<String> _lockedPointIds = {};
 
+  /// DIDSA-VR plan, phase 2: the ids of the Points, Lines, Circles and Arcs the backend made only so this Sketch can point at the part's own geometry
+  /// (`Sketch.reference_ids`: made by [ensureReferencePoint] / [ensureReferenceEdge] / [ensureReferenceFace], flagged `is_reference` on the wire). They are
+  /// drawn quietly ([isReferenceHelper]), never offered for selection ([_entityAt]) or deletion, and cleaned up by the backend once nothing depends on
+  /// them. A dedicated `Set` for the same reason as [_lockedPointIds].
+  final Set<String> _referenceIds = {};
+
+  /// Whether [id] (a Point, Line, Circle or Arc) is a reference helper (see [_referenceIds]).
+  bool isReferenceHelper(String id) => _referenceIds.contains(id);
+
+  /// DIDSA-VR plan, phase 3: the sketch's persistent reference (driven) dimensions with their current values, as the backend last said (every solve brings them
+  /// fresh, so a value follows the part when the part is edited). They measure and never drive: nothing here reaches the solver.
+  List<ReferenceDimensionDto> _referenceDimensions = const [];
+  List<ReferenceDimensionDto> get referenceDimensions => List.unmodifiable(_referenceDimensions);
+
+  static const Map<SelectionKind, String> _referenceDimensionTypes = {
+    SelectionKind.point: 'point',
+    SelectionKind.line: 'line',
+    SelectionKind.circle: 'circle',
+    SelectionKind.arc: 'arc',
+  };
+
+  /// Which kinds of reference dimension the Dimension tool's current picks can make: `distance` for two points, a point and a line, one line or two parallel
+  /// lines; `horizontal` / `vertical` for two points or a line; `radius` / `diameter` for a circle or an arc; `angle` for two lines. Empty for anything else.
+  List<String> get referenceDimensionKinds {
+    final types = [for (final s in _dimensionSelection) _referenceDimensionTypes[s.kind]];
+    if (types.isEmpty || types.contains(null)) return const [];
+    final shape = types.join('+');
+    return switch (shape) {
+      'point+point' => const ['distance', 'horizontal', 'vertical'],
+      'point+line' || 'line+point' => const ['distance'],
+      'line' => const ['distance', 'horizontal', 'vertical'],
+      'line+line' => const ['angle', 'distance'],
+      'circle' || 'arc' => const ['radius', 'diameter'],
+      _ => const [],
+    };
+  }
+
+  /// Adds a reference dimension of [kind] to what the Dimension tool has picked (see [referenceDimensionKinds]), then clears the picks. The backend answers
+  /// an identical one that already exists instead of a second; a refusal (two lines that are not parallel have no distance) lands in [errorMessage].
+  /// No undo entry: removing it is [deleteReferenceDimension].
+  Future<bool> addReferenceDimension(String kind) async {
+    final sketchId = _sketchId;
+    if (sketchId == null || !referenceDimensionKinds.contains(kind)) return false;
+    final refs = [for (final s in _dimensionSelection) (_referenceDimensionTypes[s.kind]!, s.id)];
+    var made = false;
+    await _runGuarded(() async {
+      final dimension = await _api.createReferenceDimension(sketchId, kind, refs);
+      _referenceDimensions = [..._referenceDimensions.where((d) => d.id != dimension.id), dimension];
+      _dimensionSelection.clear();
+      made = true;
+    });
+    if (made) notifyListeners();
+    return made;
+  }
+
+  /// Removes a reference dimension; a reference helper only it kept alive goes with it (the backend cleans up). The sketch is solved and read again so the local
+  /// picture drops what went.
+  Future<void> deleteReferenceDimension(String dimensionId) async {
+    final sketchId = _sketchId;
+    if (sketchId == null) return;
+    await _runGuarded(() async {
+      await _api.deleteReferenceDimension(sketchId, dimensionId);
+      _referenceDimensions = [for (final d in _referenceDimensions) if (d.id != dimensionId) d];
+      await _solveAndTrackDof();
+    });
+  }
+
+  /// The anchors a reference dimension's bracketed label is drawn between, in sketch coordinates: the two points, a point and the foot of its perpendicular on the
+  /// line, a line's ends, two lines' middles, a circle's centre and rim. Null when something it names is not (or no longer) here.
+  ((double, double), (double, double))? _referenceDimensionAnchors(ReferenceDimensionDto d) {
+    (double, double)? at(String id) => points[id] == null ? null : (points[id]!.x, points[id]!.y);
+    ((double, double), (double, double))? ends(String lineId) {
+      final line = lines[lineId];
+      if (line == null) return null;
+      final a = at(line.startPointId);
+      final b = at(line.endPointId);
+      return a == null || b == null ? null : (a, b);
+    }
+
+    (double, double) mid(((double, double), (double, double)) e) => ((e.$1.$1 + e.$2.$1) / 2, (e.$1.$2 + e.$2.$2) / 2);
+    final types = [for (final r in d.refs) r.$1];
+    final ids = [for (final r in d.refs) r.$2];
+    switch (types.join('+')) {
+      case 'point+point':
+        final a = at(ids[0]);
+        final b = at(ids[1]);
+        return a == null || b == null ? null : (a, b);
+      case 'line':
+        return ends(ids[0]);
+      case 'point+line' || 'line+point':
+        final p = at(ids[types.indexOf('point')]);
+        final e = ends(ids[types.indexOf('line')]);
+        if (p == null || e == null) return null;
+        final dx = e.$2.$1 - e.$1.$1;
+        final dy = e.$2.$2 - e.$1.$2;
+        final length2 = dx * dx + dy * dy;
+        final t = length2 < 1e-12 ? 0.0 : ((p.$1 - e.$1.$1) * dx + (p.$2 - e.$1.$2) * dy) / length2;
+        return (p, (e.$1.$1 + dx * t, e.$1.$2 + dy * t));
+      case 'line+line':
+        final e1 = ends(ids[0]);
+        final e2 = ends(ids[1]);
+        return e1 == null || e2 == null ? null : (mid(e1), mid(e2));
+      case 'circle':
+        final circle = circles[ids[0]];
+        final c = circle == null ? null : at(circle.centerPointId);
+        final r = circle == null ? null : at(circle.radiusPointId);
+        return c == null || r == null ? null : (c, r);
+      case 'arc':
+        final arc = arcs[ids[0]];
+        final c = arc == null ? null : at(arc.centerPointId);
+        final r = arc == null ? null : at(arc.startPointId);
+        return c == null || r == null ? null : (c, r);
+    }
+    return null;
+  }
+
+  /// The label a reference dimension shows: the value in brackets, `(12.5)`, `(R6)`, `(⌀12)`, `(45°)`; `(?)` when the geometry has no such value.
+  String _referenceDimensionText(ReferenceDimensionDto d) {
+    final value = d.value;
+    if (value == null) return '(?)';
+    final number = value == value.roundToDouble() ? value.toStringAsFixed(0) : value.toStringAsFixed(2).replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+    return switch (d.kind) {
+      'radius' => '(R$number)',
+      'diameter' => '(⌀$number)',
+      'angle' => '($number°)',
+      _ => '($number)',
+    };
+  }
+
+  /// The bracketed text of one reference dimension (by id), for the Dimension bar's chips; empty for an unknown id.
+  String referenceDimensionLabelText(String dimensionId) {
+    for (final d in _referenceDimensions) {
+      if (d.id == dimensionId) return _referenceDimensionText(d);
+    }
+    return '';
+  }
+
+  /// The reference dimensions as bracketed labels in sketch coordinates, for the 2D canvas: id, text and the two anchors (the label sits at their middle).
+  List<({String id, String text, (double, double) anchorA, (double, double) anchorB})> get referenceDimensionLabels => [
+        for (final d in _referenceDimensions)
+          if (_referenceDimensionAnchors(d) case (final a, final b))
+            (id: d.id, text: _referenceDimensionText(d), anchorA: a, anchorB: b),
+      ];
+
   final Map<String, SketchLineView> lines = {};
   final Map<String, SketchCircleView> circles = {};
   final Map<String, SketchArcView> arcs = {};
@@ -2772,6 +2946,23 @@ class SketchController extends ChangeNotifier {
     _lockedPointIds
       ..clear()
       ..addAll(result.points.where((p) => p.isLocked).map((p) => p.id));
+    _referenceDimensions = result.referenceDimensions;
+    // A helper the backend cleaned up (nothing depended on it any more) takes its shape out of the local picture too.
+    _referenceIds.removeWhere((id) => points.containsKey(id) == false && !lines.containsKey(id) && !circles.containsKey(id) && !arcs.containsKey(id));
+    for (final id in _referenceIds.where((id) => lines.containsKey(id)).toList()) {
+      final line = lines[id]!;
+      if (!points.containsKey(line.startPointId) || !points.containsKey(line.endPointId)) {
+        lines.remove(id);
+        _referenceIds.remove(id);
+      }
+    }
+    for (final p in result.points) {
+      if (p.isReference) {
+        _referenceIds.add(p.id);
+      } else {
+        _referenceIds.remove(p.id);
+      }
+    }
     constraints
       ..clear()
       ..addEntries(result.constraints.map((c) => MapEntry(c.id, c)));
@@ -4303,6 +4494,7 @@ class SketchController extends ChangeNotifier {
     }
 
     for (final line in lines.values) {
+      if (_referenceIds.contains(line.id)) continue;
       final start = points[line.startPointId];
       final end = points[line.endPointId];
       if (start == null || end == null) continue;
@@ -4314,6 +4506,7 @@ class SketchController extends ChangeNotifier {
     }
 
     for (final circle in circles.values) {
+      if (_referenceIds.contains(circle.id)) continue;
       final center = points[circle.centerPointId];
       final radiusPoint = points[circle.radiusPointId];
       if (center == null || radiusPoint == null) continue;
@@ -4325,6 +4518,7 @@ class SketchController extends ChangeNotifier {
     }
 
     for (final arc in arcs.values) {
+      if (_referenceIds.contains(arc.id)) continue;
       final center = points[arc.centerPointId];
       final start = points[arc.startPointId];
       final end = points[arc.endPointId];
@@ -8925,6 +9119,9 @@ class SketchController extends ChangeNotifier {
     if (current.id == _originPointId) {
       return "Can't delete the sketch's origin point";
     }
+    if (_referenceIds.contains(current.id)) {
+      return "That is the part's own corner: it goes by itself once nothing in the sketch uses it";
+    }
     return null;
   }
 
@@ -13265,9 +13462,10 @@ class SketchController extends ChangeNotifier {
 
     String? pointId;
     await _runGuarded(() async {
-      final point = await _api.convertBodyVertex(partId, sketchFeatureId, bodyId, vertexIndex);
+      final point = await _api.convertBodyVertex(partId, sketchFeatureId, bodyId, vertexIndex, reference: true);
       points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       if (point.isLocked) _lockedPointIds.add(point.id);
+      if (point.isReference) _referenceIds.add(point.id);
       _externalReferencePointIds[cacheKey] = point.id;
       pointId = point.id;
     });
@@ -13289,6 +13487,40 @@ class SketchController extends ChangeNotifier {
     await _runGuarded(() async {
       selection = await _convertBodyEdgeToLocalState(bodyId, edgeIndex, construction: true, undoable: false);
       _externalReferenceEdgeSelections[cacheKey] = selection!;
+    });
+    return selection;
+  }
+
+  /// DIDSA-VR plan, phase 2.2: [ensureReferencePoint]'s face-shaped sibling - a FACE of the part as something to dimension to (the backend's
+  /// `convert-entities/face`): a flat face square to the sketch plane becomes a pinned line ([SelectionKind.line]), a round face whose axis is square to it
+  /// (a blind hole's wall, whose rim is not in the sketch plane) a live centre ([SelectionKind.point]). Idempotent, flagged as a reference helper, no undo
+  /// entry. Null when the Sketch is not on a Part or the backend refuses (a face that is neither shape: the reason lands in [errorMessage]).
+  Future<SketchSelection?> ensureReferenceFace(String bodyId, int faceIndex) async {
+    final partId = _documentPartId;
+    final sketchFeatureId = _documentSketchFeatureId;
+    final sketchId = _sketchId;
+    if (sketchId == null || partId == null || sketchFeatureId == null) return null;
+    SketchSelection? selection;
+    await _runGuarded(() async {
+      final result = await _api.convertBodyFace(partId, sketchFeatureId, bodyId, faceIndex, reference: true);
+      for (final p in [result.startPoint, result.endPoint, result.centerPoint]) {
+        if (p == null) continue;
+        points.putIfAbsent(p.id, () => SketchPointView(id: p.id, x: p.x, y: p.y));
+        if (p.isLocked) _lockedPointIds.add(p.id);
+        if (p.isReference) _referenceIds.add(p.id);
+      }
+      final line = result.line;
+      if (result.kind == 'centre' && result.centerPoint != null) {
+        selection = SketchSelection(kind: SelectionKind.point, id: result.centerPoint!.id);
+      } else if (line != null) {
+        lines.putIfAbsent(
+          line.id,
+          () => SketchLineView(id: line.id, startPointId: line.startPointId, endPointId: line.endPointId, construction: line.construction),
+        );
+        if (line.isReference) _referenceIds.add(line.id);
+        selection = SketchSelection(kind: SelectionKind.line, id: line.id);
+      }
+      await _solveAndTrackDof();
     });
     return selection;
   }
@@ -13654,13 +13886,18 @@ class SketchController extends ChangeNotifier {
       if (undoable) _pushUndo(undo);
     }
 
-    final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex, construction: construction);
+    // An implicit reference ([ensureReferenceEdge]) asks the backend to flag what it makes as a reference helper (drawn quietly, not selectable).
+    final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex, construction: construction, reference: !undoable);
     final newPointIds = <String>[];
     for (final p in [result.startPoint, result.endPoint, if (result.centerPoint case final c?) c]) {
+      if (p.isReference) _referenceIds.add(p.id);
       if (points.containsKey(p.id)) continue;
       points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
       newPointIds.add(p.id);
     }
+    if (result.line case final l? when l.isReference) _referenceIds.add(l.id);
+    if (result.arc case final a? when a.isReference) _referenceIds.add(a.id);
+    if (result.circle case final c? when c.isReference) _referenceIds.add(c.id);
     final sketchId = _sketchId!;
 
     final arc = result.arc;
@@ -14837,11 +15074,15 @@ class SketchController extends ChangeNotifier {
   }
 
   Future<void> _loadExistingContent(String sketchId) async {
+    _referenceIds.clear();
+    _referenceDimensions = await _api.listReferenceDimensions(sketchId);
     for (final point in await _api.listPoints(sketchId)) {
       points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       if (point.isLocked) _lockedPointIds.add(point.id);
+      if (point.isReference) _referenceIds.add(point.id);
     }
     for (final line in await _api.listLines(sketchId)) {
+      if (line.isReference) _referenceIds.add(line.id);
       lines[line.id] = SketchLineView(
         id: line.id,
         startPointId: line.startPointId,
@@ -14850,6 +15091,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final circle in await _api.listCircles(sketchId)) {
+      if (circle.isReference) _referenceIds.add(circle.id);
       _noteStructural(circle.id, circle.structuralConstraintIds);
       circles[circle.id] = SketchCircleView(
         id: circle.id,
@@ -14860,6 +15102,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final arc in await _api.listArcs(sketchId)) {
+      if (arc.isReference) _referenceIds.add(arc.id);
       _noteStructural(arc.id, arc.structuralConstraintIds);
       arcs[arc.id] = SketchArcView(
         id: arc.id,
@@ -17307,7 +17550,17 @@ class SketchController extends ChangeNotifier {
   /// drawing. See that type's own doc comment for why this stays
   /// renderer-agnostic (no screen-space math here at all).
   List<ConstraintOverlayItem> constraintOverlayItems() {
-    final items = <ConstraintOverlayItem>[];
+    final items = <ConstraintOverlayItem>[
+      // DIDSA-VR plan, phase 3: the reference (driven) dimensions, bracketed (see [ReferenceDimensionItem]).
+      for (final label in referenceDimensionLabels)
+        ReferenceDimensionItem(
+          constraintId: 'reference:${label.id}',
+          selected: false,
+          anchorA: label.anchorA,
+          anchorB: label.anchorB,
+          text: label.text,
+        ),
+    ];
     for (final entry in constraints.entries) {
       final isSelected = selectionSet.any((s) => s.kind == SelectionKind.constraint && s.id == entry.key);
       final labelOffset = labelOffsetFor(entry.key);

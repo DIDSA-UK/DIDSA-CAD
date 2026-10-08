@@ -540,6 +540,13 @@ tried on a real Quest. Items marked **backend** land in this repo.
    linking mechanism silent so a dimension feels attached to the part's own edge, point or centre, and robustness as the acceptance bar (R-C). Also: R-A at-midpoint refused next to a
    converted hole (**backend**, solver); R-B persistent reference dimensions as a separate list, decided over a `driven` flag (**backend** + flat app); R-D re-attach for non-sketch features and
    one-call edge re-attach (**backend**); R-E make `convert-entities/edge` idempotent (**backend**); R-F ellipse edges (with Ellipse); R-G headset tuning.
+   **Progress (2026-10-08, branch `ccr-b3b16f97-0i1850`, headless / real-backend, not headset-verified):** R-A **done** (a converted circle / arc no longer carries constraints that are
+   redundant with its pinned points, and `add_fixed_constraint` fixes each point once; the at-midpoint next to a hole converges: `tests/test_reference_convert_edge_robustness.py`);
+   R-E **done** (`convert-entities/edge` returns the existing Circle / Arc / Line for the same edge); R-C **done for corners, edges, rims and faces**: `reference: true` on the convert
+   routes, `Sketch.reference_ids` / `is_reference` (additive in the responses, the export and the native file), `convert-entities/face` (a flat face square to the sketch plane as a pinned
+   line, a round face with its axis square to it as a live centre: a blind hole works), clean-up of helpers nothing depends on (`tests/test_reference_helpers.py`); the flat app draws helpers
+   quietly in both renderings and excludes them from hit-testing, with `ensureReferenceFace` and the API call in place but **no face-picking UI yet**. R-B, R-D, R-F, R-G: see the
+   phase entries below as they close.
 3. **Modelling depth (design table).** Scoped, decisions recorded: `DIDSA-VR/docs/scope-modelling-depth.md`. Order: a per-feature interface and a docked properties panel first (M0), then
    Create Plane, **Loft, Sweep**, then Pattern / Boolean / Merge / Split, Trim / Offset and direct edit, then Ellipse / Spline / Text. Preview uses both mechanisms (coarse-preview for Pattern
    and Loft, create-then-PATCH for the rest); redo covers features only. The backend already has routes for almost all of it, so this is mostly VR client work.

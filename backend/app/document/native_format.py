@@ -137,6 +137,7 @@ from app.sketch.models import (
     ExternalVertexReference,
     Line,
     Plane,
+    ReferenceDimension,
     Point,
     Polygon,
     Rectangle,
@@ -749,6 +750,12 @@ def sketch_to_dict(sketch: Sketch) -> dict:
         "external_references": [_external_reference_to_dict(point_id, ref) for point_id, ref in sketch.external_references.items()],
         # DIDSA-VR plan, phase 2: the Points / entities that are only reference helpers. Written only when there are some; a file without it loads as before.
         **({"reference_ids": sorted(sketch.reference_ids)} if sketch.reference_ids else {}),
+        # DIDSA-VR plan, phase 3: persistent reference (driven) dimensions (the value is computed on read, not stored). Written only when there are some.
+        **(
+            {"reference_dimensions": [{"id": d.id, "kind": d.kind, "refs": [{"type": t, "id": i} for t, i in d.refs]} for d in sketch.reference_dimensions.values()]}
+            if sketch.reference_dimensions
+            else {}
+        ),
         # A converted Arc/Circle centre's own pin (On-device feedback:
         # "converted edges... should be... locked at that projection
         # point") is a `FixedConstraint` now, not a separate field - it
@@ -790,6 +797,13 @@ def sketch_from_dict(data: dict) -> Sketch:
     for ref_data in data.get("external_references", []):
         sketch.external_references[ref_data["point_id"]] = _external_reference_from_dict(ref_data)
     sketch.reference_ids = set(data.get("reference_ids", []))
+    for dimension_data in data.get("reference_dimensions", []):
+        dimension = ReferenceDimension(
+            id=dimension_data["id"],
+            kind=dimension_data["kind"],
+            refs=tuple((ref["type"], ref["id"]) for ref in dimension_data["refs"]),
+        )
+        sketch.reference_dimensions[dimension.id] = dimension
     # Backward compatibility: a file saved before `pinned_point_ids` was
     # replaced by `FixedConstraint` still has that key, naming Points a
     # converted Arc/Circle centre pinned in the old, non-Constraint way

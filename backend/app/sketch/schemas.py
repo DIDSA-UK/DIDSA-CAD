@@ -27,6 +27,36 @@ class SketchResponse(BaseModel):
     rotation_quarter_turns: int = 0
 
 
+class ReferenceDimensionRef(BaseModel):
+    """One thing a reference dimension measures: a Point, Line, Circle or Arc of the Sketch."""
+
+    type: Literal["point", "line", "circle", "arc"]
+    id: str
+
+
+class ReferenceDimensionCreate(BaseModel):
+    """DIDSA-VR plan, phase 3: `POST .../reference-dimensions`. See `app.sketch.models.ReferenceDimension` for which kinds take which entities."""
+
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle"]
+    refs: list[ReferenceDimensionRef]
+
+
+class ReferenceDimensionUpdate(BaseModel):
+    """`PATCH .../reference-dimensions/{id}`: a new kind and / or new entities (what is not sent stays)."""
+
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle"] | None = None
+    refs: list[ReferenceDimensionRef] | None = None
+
+
+class ReferenceDimensionResponse(BaseModel):
+    id: str
+    kind: str
+    refs: list[ReferenceDimensionRef]
+    # Computed from where the Points are now (null when the geometry has no such value: two lines that are not parallel have no distance between them).
+    # Millimetres, or degrees for an angle. Follows the part when the part is edited, because what it measures does.
+    value: float | None = None
+
+
 class SketchOrientationUpdate(BaseModel):
     """Sketcher-roadmap Phase 5: the request body for `PATCH .../orientation`
     - both fields required (not optional-and-partial like most other PATCH
@@ -1329,6 +1359,8 @@ class SketchStateResponse(BaseModel):
     points: list[PointResponse]
     constraints: list[ConstraintResponse]
     profile: ProfileDetectionResponse
+    # DIDSA-VR plan, phase 3: the persistent reference (driven) dimensions with their current values. Additive: an older client ignores it.
+    reference_dimensions: list[ReferenceDimensionResponse] = []
 
 
 # --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror ---------------------------

@@ -11,7 +11,8 @@ import '../sketch/sketch_controller.dart'
         ConstraintLabelItem,
         ConstraintLineDistanceDimensionItem,
         ConstraintLinearDimensionItem,
-        ConstraintRadialDimensionItem;
+        ConstraintRadialDimensionItem,
+        ReferenceDimensionItem;
 import 'screen_projection.dart';
 import 'sketch_geometry_3d.dart' show SketchPlaneBasis, sketchPointToWorld;
 
@@ -385,8 +386,21 @@ class _ConstraintOverlayPainter extends CustomPainter {
           _paintRadialDimension(canvas, it, color);
         case ConstraintAngleDimensionItem it:
           _paintAngleDimension(canvas, it, color);
+        case ReferenceDimensionItem it:
+          _paintReferenceDimension(canvas, it);
       }
     }
+  }
+
+  /// DIDSA-VR plan, phase 3: a reference (driven) dimension: a thin quiet leader between what it measures and the bracketed value at its middle (`(12.5)`).
+  /// [SketchCanvas] draws the same in 2D.
+  void _paintReferenceDimension(Canvas canvas, ReferenceDimensionItem item) {
+    final a = _project(item.anchorA);
+    final b = _project(item.anchorB);
+    if (a == null || b == null) return;
+    const quiet = Color(0xFF6B8AA6);
+    canvas.drawLine(a, b, Paint()..color = quiet..strokeWidth = _dimensionStrokeWidth * 0.8);
+    _drawDimensionLabel(canvas, _pairGlyphMidpoint(a, b), item.text, quiet, plainBlackText: true);
   }
 
   void _paintLabel(Canvas canvas, ConstraintLabelItem item, Color color) {
@@ -1064,6 +1078,9 @@ Offset? constraintOverlayItemLabelCenter(
       worldToScreenFocused(camera, viewportSize, focusTransform, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
 
   switch (item) {
+    case ReferenceDimensionItem():
+      return null; // a reference dimension is not picked on the canvas: it is removed from the Dimension bar, so it takes no taps
+
     case ConstraintLabelItem it:
       final a = project(it.anchorA);
       final b = project(it.anchorB);

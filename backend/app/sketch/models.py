@@ -99,6 +99,26 @@ class ExternalVertexReference:
     kind: str = "vertex"
 
 
+REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle")
+
+
+@dataclass(frozen=True)
+class ReferenceDimension:
+    """DIDSA-VR plan, phase 3: a persistent REFERENCE (driven) dimension of a Sketch: a measurement the sketch shows and keeps, that never drives anything.
+    Two pinned things (two corners, a corner and an edge, a hole and the origin) cannot be driven by a dimension, so nothing could say how far apart they are;
+    this does, and it follows the part when the part is edited because what it measures does. A separate list, not a flag on a constraint: the solver never
+    sees it, and a client that does not know the list ignores it (it cannot enforce, so cannot over-constrain or move a sketch).
+
+    `kind` is one of `REFERENCE_DIMENSION_KINDS`; `refs` are the Sketch entities it measures, `(entity_type, entity_id)` with `entity_type` "point", "line",
+    "circle" or "arc": distance = two points, a point and a line (perpendicular distance), a line (its length) or two parallel lines; horizontal / vertical = two
+    points or one line (the x / y extent); radius / diameter = one circle or arc; angle = two lines (degrees, 0-180). The value is computed on read
+    (`Sketch.reference_dimension_value`), never stored."""
+
+    id: str
+    kind: str
+    refs: tuple[tuple[str, str], ...]
+
+
 @dataclass
 class SketchEntity(ABC):
     """Base type for anything that can live in a Sketch's entity collection.
@@ -1171,6 +1191,8 @@ class Sketch:
     # or deletion; `prune_unused_reference_helpers` removes them once nothing else depends on them. Persisted (additive: an older file has none, an older
     # client ignores it).
     reference_ids: set[str] = field(default_factory=set)
+    # DIDSA-VR plan, phase 3: persistent reference (driven) dimensions, see `ReferenceDimension`. Persisted (additive).
+    reference_dimensions: dict[str, ReferenceDimension] = field(default_factory=dict)
     _origin_point_id: str | None = field(default=None, repr=False)
     # Sketcher-roadmap Phase 7 (2D Pattern/Mirror, §2.9 Option 2): lightweight,
     # non-solved instances - see SketchPatternInstance/SketchMirrorInstance's
@@ -4264,17 +4286,20 @@ class Sketch:
         a coincident...: the constraints that only hold the shape together, such as a converted circle's own Fix and radius constraints, do not count) or while any
         other entity, flagged or not, shares one of its Points. A flagged Point is used while any entity or constraint holds it. Nothing unflagged is ever removed,
         and a Sketch with no flagged ids is untouched, so this is safe to call after any deletion. Run to a fixed point: removing one helper can free the next."""
+        from app.sketch.reference_dimensions import used_ids as measured_ids
+
         removed_entities: list[str] = []
         removed_points: list[str] = []
         changed = True
         while changed and self.reference_ids:
             changed = False
+            measured = measured_ids(self) if self.reference_dimensions else set()  # a reference dimension keeps what it measures (and the Points it stands on)
             for entity_id in [i for i in self.reference_ids if i in self.entities]:
                 entity = self.entities[entity_id]
                 if not isinstance(entity, (Line, Circle, Arc)):
                     continue
                 own_points = set(self._entity_defining_point_ids(entity))
-                if self._reference_helper_in_use(entity, own_points):
+                if entity_id in measured or own_points & measured or self._reference_helper_in_use(entity, own_points):
                     continue
                 internal = [cid for cid, c in self.constraints.items() if c.point_ids() and set(c.point_ids()) <= own_points]
                 for constraint_id in internal:
@@ -4285,7 +4310,7 @@ class Sketch:
                 changed = True
             flagged_points = [pid for pid in self.reference_ids if pid in self.points]
             for point_id in flagged_points:
-                if self._point_deletion_blocker(point_id) is None:
+                if point_id not in measured and self._point_deletion_blocker(point_id) is None:
                     del self.points[point_id]
                     self.external_references.pop(point_id, None)
                     self.reference_ids.discard(point_id)

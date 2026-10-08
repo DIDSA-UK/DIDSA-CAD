@@ -108,6 +108,32 @@ class _FakeBackend {
   /// P48's edge-shaped sibling to [convertVertexRequestCount].
   int convertEdgeRequestCount = 0;
 
+  /// DIDSA-VR plan, phase 2.2: how many `convert-entities/face` calls the fake has seen.
+  int convertFaceRequestCount = 0;
+
+  /// DIDSA-VR plan, phase 3: the reference dimensions the fake holds (id -> {id, kind, refs}).
+  final Map<String, Map<String, dynamic>> referenceDimensions = {};
+
+  List<Map<String, dynamic>> _referenceDimensionBodies() => [
+        for (final d in referenceDimensions.values)
+          {
+            ...d,
+            'value': () {
+              final refs = d['refs'] as List<dynamic>;
+              if (refs.length == 2 && refs.every((r) => r['type'] == 'point')) {
+                final a = points[refs[0]['id']];
+                final b = points[refs[1]['id']];
+                if (a == null || b == null) return null;
+                final dx = (b['x'] as num) - (a['x'] as num);
+                final dy = (b['y'] as num) - (a['y'] as num);
+                return math.sqrt(dx * dx + dy * dy);
+              }
+              return 0.0;
+            }(),
+          },
+      ];
+  final Map<String, Map<String, dynamic>> _convertedFaces = {};
+
   /// Reference-identity overhaul: what `GET .../external-references` reports (the unhealthy references of the adopted sketch), the re-attach /
   /// confirm calls the fake has seen as `"<point id>:<body id>:<vertex|edge>:<index>"` / `"<point id>"`, and whether `convert-entities/edge` should behave
   /// like the real backend and reuse its endpoint Points (it always makes a new Line, which is what the client's duplicate check is for).
@@ -672,6 +698,8 @@ class _FakeBackend {
         // `PointResponse.is_locked` for a converted (associative,
         // external-reference) Point.
         'is_locked': true,
+        // DIDSA-VR plan, phase 2: the real route flags a Point a `reference: true` convert makes.
+        if (body['reference'] == true) 'is_reference': true,
       };
       points[id] = point;
       _convertedVertexPointIds[key] = id;
@@ -697,8 +725,21 @@ class _FakeBackend {
       // associative endpoints and (`Sketch.pinned_point_ids`) its centre/
       // cardinal Points alike - see on-device feedback "converted
       // edges... should be... locked at that projection point".
-      final startPoint = {'id': startId, 'x': bodyId.length.toDouble(), 'y': edgeIndex, 'is_locked': true};
-      final endPoint = {'id': endId, 'x': bodyId.length.toDouble() + 10, 'y': edgeIndex, 'is_locked': true};
+      final asReference = body['reference'] == true; // DIDSA-VR plan, phase 2: flags everything the route makes
+      final startPoint = {
+        'id': startId,
+        'x': bodyId.length.toDouble(),
+        'y': edgeIndex,
+        'is_locked': true,
+        if (asReference) 'is_reference': true,
+      };
+      final endPoint = {
+        'id': endId,
+        'x': bodyId.length.toDouble() + 10,
+        'y': edgeIndex,
+        'is_locked': true,
+        if (asReference) 'is_reference': true,
+      };
       points[startId] = startPoint;
       points[endId] = endPoint;
       // On-device feedback ("when I offset a curved edge it creates a
@@ -780,9 +821,54 @@ class _FakeBackend {
         'end_point_id': endId,
         'length': 10.0,
         'construction': construction,
+        if (asReference) 'is_reference': true,
       };
       lines[lineId] = line;
       return _json({'line': line, 'start_point': startPoint, 'end_point': endPoint}, 201);
+    }
+
+    // DIDSA-VR plan, phase 2.2: the face route. Face 0 of any body is a flat face square to the sketch (a line between two corners); face 1 is a round face
+    // (a live centre); anything else is the real route's `face_not_perpendicular` 422.
+    final convertFaceMatch = RegExp(
+      r'^/document/parts/[^/]+/features/sketch/[^/]+/convert-entities/face$',
+    ).hasMatch(path);
+    if (convertFaceMatch && request.method == 'POST') {
+      convertFaceRequestCount++;
+      final bodyId = body['body_id'] as String;
+      final faceIndex = (body['face_index'] as num).toInt();
+      final asReference = body['reference'] == true;
+      final faceKey = '$bodyId:$faceIndex';
+      final already = _convertedFaces[faceKey]; // idempotent per face, like the real route
+      if (already != null) return _json(already, 201);
+      Map<String, dynamic> pointAt(double x, double y) {
+        final id = _newId('point');
+        final point = {'id': id, 'x': x, 'y': y, 'is_locked': true, if (asReference) 'is_reference': true};
+        points[id] = point;
+        return point;
+      }
+
+      if (faceIndex == 0) {
+        final startPoint = pointAt(bodyId.length.toDouble(), 0);
+        final endPoint = pointAt(bodyId.length.toDouble() + 20, 0);
+        final lineId = _newId('line');
+        final line = {
+          'id': lineId,
+          'start_point_id': startPoint['id'],
+          'end_point_id': endPoint['id'],
+          'length': 20.0,
+          'construction': true,
+          if (asReference) 'is_reference': true,
+        };
+        lines[lineId] = line;
+        return _json(
+          _convertedFaces[faceKey] = {'kind': 'line', 'line': line, 'start_point': startPoint, 'end_point': endPoint},
+          201,
+        );
+      }
+      if (faceIndex == 1) {
+        return _json(_convertedFaces[faceKey] = {'kind': 'centre', 'center_point': pointAt(7, 8)}, 201);
+      }
+      return http.Response(jsonEncode({'detail': {'type': 'face_not_perpendicular'}}), 422, headers: {'content-type': 'application/json'});
     }
 
     // P49 (Sketcher-roadmap Phase 9 v1, Offset Entities): a new, real Line
@@ -2253,7 +2339,25 @@ class _FakeBackend {
         'points': points.values.toList(),
         'constraints': constraints.values.toList(),
         'profile': _profileBody(),
+        'reference_dimensions': _referenceDimensionBodies(),
       }, 200);
+    }
+
+    // DIDSA-VR plan, phase 3: the reference (driven) dimensions. The value is a point-to-point distance (the only shape these tests make) or 0.
+    final referenceDimensionsMatch = RegExp(r'^/sketch/sketches/[^/]+/reference-dimensions$').hasMatch(path);
+    if (referenceDimensionsMatch && request.method == 'GET') return _jsonList(_referenceDimensionBodies(), 200);
+    if (referenceDimensionsMatch && request.method == 'POST') {
+      final refs = [for (final r in body['refs'] as List<dynamic>) {'type': r['type'], 'id': r['id']}];
+      final existing = referenceDimensions.values.where((d) => d['kind'] == body['kind'] && jsonEncode(d['refs']) == jsonEncode(refs));
+      if (existing.isNotEmpty) return _json(existing.first, 201);
+      final id = _newId('refdim');
+      referenceDimensions[id] = {'id': id, 'kind': body['kind'], 'refs': refs};
+      return _json(_referenceDimensionBodies().firstWhere((d) => d['id'] == id), 201);
+    }
+    final referenceDimensionMatch = RegExp(r'^/sketch/sketches/[^/]+/reference-dimensions/([^/]+)$').firstMatch(path);
+    if (referenceDimensionMatch != null && request.method == 'DELETE') {
+      referenceDimensions.remove(referenceDimensionMatch.group(1));
+      return http.Response('', 204);
     }
 
     final profileMatch = RegExp(r'^/sketch/sketches/[^/]+/profile$').hasMatch(path);
@@ -8830,6 +8934,122 @@ void main() {
       expect(freshController.points.containsKey(first), isTrue);
       expect(freshController.mode, isNot(SketchMode.convert));
       expect(freshController.canUndo, isFalse); // a reference is not something the user drew
+    });
+
+    test('a reference the sketch makes silently is a helper: flagged, not offered for selection, drawn by the canvas quietly', () async {
+      final (freshController, _) = await adoptedController();
+
+      final pointId = await freshController.ensureReferencePoint('body-1', 3);
+      final edge = await freshController.ensureReferenceEdge('body-1', 0);
+
+      expect(freshController.isReferenceHelper(pointId!), isTrue);
+      expect(freshController.isReferenceHelper(edge!.id), isTrue);
+      final point = freshController.points[pointId]!;
+      // a helper corner is still the part's own corner, and is picked the way a ghost corner is (aimed at, then tapped exactly on it); it is never deletable
+      freshController.exitToSelectMode();
+      await freshController.handleCanvasTap(point.x, point.y);
+      expect(freshController.selectionSet.map((s) => s.id), [pointId]);
+      expect(freshController.selectedPointDeleteBlockedReason, isNotNull);
+      final line = freshController.lines[edge.id]!;
+      final start = freshController.points[line.startPointId]!;
+      final end = freshController.points[line.endPointId]!;
+      expect(freshController.hasEntityNear((start.x + end.x) / 2, (start.y + end.y) / 2, 0.5), isFalse);
+    });
+
+    test('an ordinary Convert Entities pick is real geometry, not a helper', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+
+      await freshController.pickConvertEntityEdge('body-1', 0);
+
+      expect(freshController.lines, hasLength(1));
+      expect(freshController.isReferenceHelper(freshController.lines.keys.single), isFalse);
+      expect(freshController.lines.values.single.construction, isFalse); // real geometry, not construction
+    });
+
+    test('ensureReferenceFace: a flat face square to the sketch is a pinned line, a round face a live centre, both helpers, asked once', () async {
+      final (freshController, freshBackend) = await adoptedController();
+
+      final flat = await freshController.ensureReferenceFace('body-1', 0);
+      final flatAgain = await freshController.ensureReferenceFace('body-1', 0);
+      final round = await freshController.ensureReferenceFace('body-1', 1);
+
+      expect(flat!.kind, SelectionKind.line);
+      expect(freshController.isReferenceHelper(flat.id), isTrue);
+      expect(flatAgain!.id, flat.id); // the real route is idempotent; the controller does not stack a second view of it
+      expect(freshController.lines, hasLength(1));
+      expect(round!.kind, SelectionKind.point);
+      expect(freshController.isReferenceHelper(round.id), isTrue);
+      expect(freshController.canUndo, isFalse);
+      expect(freshBackend.convertFaceRequestCount, 3);
+    });
+
+    test('a face the backend refuses leaves nothing behind and says why', () async {
+      final (freshController, _) = await adoptedController();
+      final pointsBefore = freshController.points.length;
+
+      final refused = await freshController.ensureReferenceFace('body-1', 7);
+
+      expect(refused, isNull);
+      expect(freshController.points.length, pointsBefore);
+      expect(freshController.lines, isEmpty);
+      expect(freshController.errorMessage, isNotNull);
+    });
+
+    test('a reference dimension of two picked corners: offered, made, shown in brackets, survives a solve, removable, and a helper it holds stays', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+      final first = await freshController.ensureReferencePoint('body-1', 0);
+      final second = await freshController.ensureReferencePoint('body-1', 3);
+      // what a tap on each ghost corner does in Dimension mode: ensure the pinned point, then tap exactly on it
+      for (final id in [first!, second!]) {
+        final p = freshController.points[id]!;
+        await freshController.handleCanvasTap(p.x, p.y);
+      }
+      expect(freshController.dimensionSelection, hasLength(2));
+      expect(freshController.referenceDimensionKinds, ['distance', 'horizontal', 'vertical']);
+
+      expect(await freshController.addReferenceDimension('distance'), isTrue);
+
+      expect(freshController.referenceDimensions, hasLength(1));
+      expect(freshController.dimensionSelection, isEmpty);
+      final a = freshController.points[first!]!;
+      final b = freshController.points[second!]!;
+      final expected = math.sqrt(math.pow(b.x - a.x, 2) + math.pow(b.y - a.y, 2));
+      expect(freshController.referenceDimensions.single.value, closeTo(expected, 1e-9));
+      final label = freshController.referenceDimensionLabels.single;
+      expect(label.text, startsWith('('));
+      expect(label.text, endsWith(')'));
+      expect({label.anchorA, label.anchorB}, {(a.x, a.y), (b.x, b.y)});
+      expect(freshController.constraintOverlayItems().whereType<ReferenceDimensionItem>(), hasLength(1)); // the 3D overlay gets it too
+      expect(freshController.constraints, isEmpty); // nothing reached the solver
+      expect(freshBackend.referenceDimensions, hasLength(1));
+      // the same dimension again is the same one
+      freshController.enterDimensionMode();
+      for (final id in [first, second]) {
+        final p = freshController.points[id]!;
+        await freshController.handleCanvasTap(p.x, p.y);
+      }
+      await freshController.addReferenceDimension('distance');
+      expect(freshController.referenceDimensions, hasLength(1));
+
+      await freshController.deleteReferenceDimension(freshController.referenceDimensions.single.id);
+
+      expect(freshController.referenceDimensions, isEmpty);
+      expect(freshBackend.referenceDimensions, isEmpty);
+      expect(freshController.referenceDimensionLabels, isEmpty);
+    });
+
+    test('a bare sketch cannot make a reference dimension, and a pick that makes no dimension offers none', () async {
+      expect(await controller.addReferenceDimension('distance'), isFalse);
+      final (freshController, _) = await adoptedController();
+      freshController.enterDimensionMode();
+      expect(freshController.referenceDimensionKinds, isEmpty);
+      final only = await freshController.ensureReferencePoint('body-1', 0);
+      final p = freshController.points[only!]!;
+      await freshController.handleCanvasTap(p.x, p.y);
+      expect(freshController.dimensionSelection, hasLength(1));
+      expect(freshController.referenceDimensionKinds, isEmpty); // one corner alone is nothing to measure
     });
 
     test('ensureReferencePoint is a no-op for a bare, non-Part sketch', () async {

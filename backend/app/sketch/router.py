@@ -50,6 +50,10 @@ from app.sketch.models import (
 )
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
+    ReferenceDimensionCreate,
+    ReferenceDimensionRef,
+    ReferenceDimensionResponse,
+    ReferenceDimensionUpdate,
     AngleConstraintCreate,
     AngleConstraintResponse,
     ArcCreate,
@@ -167,6 +171,7 @@ from app.sketch.schemas import (
 from app.session_context import bind_session_id
 from app.sketch.solver import SolveResult, solve_sketch
 from app.sketch.store import add_sketch as _add_sketch
+from app.sketch import reference_dimensions
 from app.sketch.store import all_sketches
 from app.sketch.store import create_sketch as _create_sketch
 from app.sketch.store import get_sketch_or_404 as _get_sketch_or_404
@@ -632,6 +637,24 @@ def _solve_result_response(result: SolveResult) -> SolveResultResponse:
         solver_reported_failed_constraint_ids=result.solver_reported_failed_constraint_ids,
         detail=result.detail,
     )
+
+
+def _reference_dimension_response(sketch: Sketch, dimension) -> ReferenceDimensionResponse:
+    try:
+        value = reference_dimensions.measure(sketch, dimension.kind, list(dimension.refs))
+    except reference_dimensions.ReferenceDimensionError:
+        value = None
+    return ReferenceDimensionResponse(
+        id=dimension.id,
+        kind=dimension.kind,
+        refs=[ReferenceDimensionRef(type=t, id=i) for t, i in dimension.refs],
+        value=value,
+    )
+
+
+def _reference_dimension_responses(sketch: Sketch) -> list[ReferenceDimensionResponse]:
+    reference_dimensions.drop_dangling(sketch)  # something it measured was deleted
+    return [_reference_dimension_response(sketch, d) for d in sketch.reference_dimensions.values()]
 
 
 def _sketch_response(sketch: Sketch) -> SketchResponse:
@@ -1919,7 +1942,52 @@ def solve_and_refresh(sketch_id: str, payload: SolveRequest | None = None) -> Sk
         points=[_point_response(sketch, point) for point in sketch.points.values()],
         constraints=[_constraint_response(constraint) for constraint in sketch.constraints.values()],
         profile=_profile_detection_response(sketch),
+        reference_dimensions=_reference_dimension_responses(sketch),
     )
+
+
+# --- DIDSA-VR plan, phase 3: reference (driven) dimensions that persist --------------------------------------
+
+
+@router.post("/sketches/{sketch_id}/reference-dimensions", response_model=ReferenceDimensionResponse, status_code=201)
+def create_reference_dimension(sketch_id: str, payload: ReferenceDimensionCreate) -> ReferenceDimensionResponse:
+    """A measurement the sketch shows and keeps that never drives anything (and so never touches the solver): `kind` with the entities it measures. An identical
+    one already there is returned instead of a second. 400 with a reason when the entities do not make that kind of dimension."""
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        dimension = reference_dimensions.add(sketch, payload.kind, [(r.type, r.id) for r in payload.refs])
+    except reference_dimensions.ReferenceDimensionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _reference_dimension_response(sketch, dimension)
+
+
+@router.get("/sketches/{sketch_id}/reference-dimensions", response_model=list[ReferenceDimensionResponse])
+def list_reference_dimensions(sketch_id: str) -> list[ReferenceDimensionResponse]:
+    return _reference_dimension_responses(_get_sketch_or_404(sketch_id))
+
+
+@router.patch("/sketches/{sketch_id}/reference-dimensions/{dimension_id}", response_model=ReferenceDimensionResponse)
+def update_reference_dimension(sketch_id: str, dimension_id: str, payload: ReferenceDimensionUpdate) -> ReferenceDimensionResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    if dimension_id not in sketch.reference_dimensions:
+        raise HTTPException(status_code=404, detail="Reference dimension not found")
+    try:
+        dimension = reference_dimensions.replace(
+            sketch, dimension_id, payload.kind, [(r.type, r.id) for r in payload.refs] if payload.refs is not None else None
+        )
+    except reference_dimensions.ReferenceDimensionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _reference_dimension_response(sketch, dimension)
+
+
+@router.delete("/sketches/{sketch_id}/reference-dimensions/{dimension_id}", status_code=204, dependencies=[Depends(_prune_reference_helpers_after)])
+def delete_reference_dimension(sketch_id: str, dimension_id: str) -> None:
+    """Removes the dimension; a reference helper only it depended on goes with it (the same clean-up as deleting the last constraint)."""
+    sketch = _get_sketch_or_404(sketch_id)
+    if dimension_id not in sketch.reference_dimensions:
+        raise HTTPException(status_code=404, detail="Reference dimension not found")
+    del sketch.reference_dimensions[dimension_id]
+    sketch.prune_unused_reference_helpers()
 
 
 # --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror ---------------------------
