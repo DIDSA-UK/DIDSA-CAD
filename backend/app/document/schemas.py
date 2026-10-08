@@ -25,7 +25,7 @@ from app.document.models import (
     ThicknessDirection,
 )
 from app.sketch.models import Plane, SketchEntityType
-from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
+from app.sketch.schemas import ArcResponse, CircleResponse, EllipseResponse, LineResponse, PointResponse
 
 
 class PartCreate(BaseModel):
@@ -590,6 +590,7 @@ class ConvertEdgeResponse(BaseModel):
     line: LineResponse | None = None
     arc: ArcResponse | None = None
     circle: CircleResponse | None = None
+    ellipse: EllipseResponse | None = None  # reference-overhaul R-F: a full elliptical edge lying in the sketch plane
     start_point: PointResponse
     end_point: PointResponse
     center_point: PointResponse | None = None

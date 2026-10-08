@@ -40,6 +40,7 @@ from app.document.extrude import (
     edge_endpoint_vertex_refs,
     resolve_circular_edge_arc,
     resolve_full_circular_edge,
+    resolve_full_elliptical_edge,
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
@@ -4658,14 +4659,42 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
     sketch = get_sketch_or_404(_get_sketch_feature_or_404(get_part_or_404(part_id), feature_id).sketch_id)
     before_points, before_entities = set(sketch.points), set(sketch.entities)
     response = _convert_body_edge(part_id, feature_id, payload)
-    shape = response.line or response.arc or response.circle
+    shape = response.line or response.arc or response.circle or response.ellipse
     points = [p for p in (response.start_point, response.end_point, response.center_point) if p is not None]
-    _flag_converted(sketch, payload.reference, before_points, before_entities, [p.id for p in points], [shape.id] if shape is not None else [])
+    extra_points: list[str] = []
+    if response.ellipse is not None:
+        e = response.ellipse
+        extra_points = [e.major_point_id, e.major_point_neg_id, e.minor_point_id, e.minor_point_neg_id]
+    _flag_converted(sketch, payload.reference, before_points, before_entities, [p.id for p in points] + extra_points, [shape.id] if shape is not None else [])
     for p in points:
         p.is_reference = sketch.is_reference(p.id)
     if shape is not None:
         shape.is_reference = sketch.is_reference(shape.id)
     return response
+
+
+def _convert_elliptical_edge(sketch, params: tuple[float, float, float, float, float], construction: bool) -> ConvertEdgeResponse:
+    """Reference-overhaul R-F: a full elliptical Body edge lying in the sketch plane becomes a real Ellipse, pinned (every Point of it Fixed, so the shape stays where the part's edge is). v1 limit,
+    spelled out like the circular Arc's was: its centre is a plain pinned Point, not a live reference, so it does not follow a later change to the part (a hole is followed because circles are
+    `circle_centre` references; there is no such reference kind for an ellipse yet). Idempotent per edge: an ellipse already pinned at the same centre with the same radii is answered again."""
+    from app.sketch.router import _ellipse_response  # function-local: the sketch router is not imported at module level here
+
+    centre_x, centre_y, major, minor, angle = params
+    for existing in sketch.entities.values():
+        if existing.type == "ellipse":
+            c = sketch.points[existing.center_point_id]
+            if abs(c.x - centre_x) < 1e-6 and abs(c.y - centre_y) < 1e-6 and abs(existing.major_radius(sketch.points) - major) < 1e-6 and abs(existing.minor_radius(sketch.points) - minor) < 1e-6:
+                centre = PointResponse(id=c.id, x=c.x, y=c.y, is_locked=True)
+                return ConvertEdgeResponse(ellipse=_ellipse_response(sketch, existing), start_point=centre, end_point=centre, center_point=centre)
+    centre_point = sketch.add_point(centre_x, centre_y)
+    ellipse = sketch.add_ellipse(centre_point.id, major_radius=major, angle=angle, minor_radius=minor, construction=construction)
+    sketch.add_fixed_constraint(ellipse.id)
+    _drop_constraints_between_pinned_points(
+        sketch,
+        [ellipse.major_constraint_id, ellipse.minor_constraint_id, ellipse.major_midpoint_constraint_id, ellipse.minor_midpoint_constraint_id, ellipse.perpendicular_constraint_id],
+    )
+    centre = PointResponse(id=centre_point.id, x=centre_point.x, y=centre_point.y, is_locked=True)
+    return ConvertEdgeResponse(ellipse=_ellipse_response(sketch, ellipse), start_point=centre, end_point=centre, center_point=centre)
 
 
 def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
@@ -4731,10 +4760,13 @@ def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate
         basis = basis_for_sketch(part, sketch, bodies, excluded)
         circle_params = resolve_full_circular_edge(bodies, edge_ref, basis)
         if circle_params is None:
-            raise HTTPException(
-                status_code=422,
-                detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
-            )
+            ellipse_params = resolve_full_elliptical_edge(bodies, edge_ref, basis)
+            if ellipse_params is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
+                )
+            return _convert_elliptical_edge(sketch, ellipse_params, payload.construction)
         center_x, center_y, radius = circle_params
         # Reference-identity overhaul: the centre is a live reference to the circular edge (`kind="circle_centre"`), so the Circle follows its hole / boss when an
         # upstream edit moves it or changes its diameter - and is flagged, like any reference, when the edge is gone.

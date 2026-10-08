@@ -493,6 +493,7 @@ class EllipseResponse(BaseModel):
     minor_radius: float
     rotation: float
     construction: bool = False
+    is_reference: bool = False  # a helper made by a reference convert (reference-overhaul R-F)
     # `major_radius`/`minor_radius`'s own backing DistanceConstraint ids
     # (`Sketch.add_ellipse`'s own doc comment) - CircleResponse.
     # radius_constraint_id's Ellipse-shaped sibling, added alongside AI
