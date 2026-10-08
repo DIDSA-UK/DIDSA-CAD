@@ -27,6 +27,36 @@ class SketchResponse(BaseModel):
     rotation_quarter_turns: int = 0
 
 
+class ReferenceDimensionRef(BaseModel):
+    """One thing a reference dimension measures: a Point, Line, Circle or Arc of the Sketch."""
+
+    type: Literal["point", "line", "circle", "arc"]
+    id: str
+
+
+class ReferenceDimensionCreate(BaseModel):
+    """DIDSA-VR plan, phase 3: `POST .../reference-dimensions`. See `app.sketch.models.ReferenceDimension` for which kinds take which entities."""
+
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle"]
+    refs: list[ReferenceDimensionRef]
+
+
+class ReferenceDimensionUpdate(BaseModel):
+    """`PATCH .../reference-dimensions/{id}`: a new kind and / or new entities (what is not sent stays)."""
+
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle"] | None = None
+    refs: list[ReferenceDimensionRef] | None = None
+
+
+class ReferenceDimensionResponse(BaseModel):
+    id: str
+    kind: str
+    refs: list[ReferenceDimensionRef]
+    # Computed from where the Points are now (null when the geometry has no such value: two lines that are not parallel have no distance between them).
+    # Millimetres, or degrees for an angle. Follows the part when the part is edited, because what it measures does.
+    value: float | None = None
+
+
 class SketchOrientationUpdate(BaseModel):
     """Sketcher-roadmap Phase 5: the request body for `PATCH .../orientation`
     - both fields required (not optional-and-partial like most other PATCH
@@ -68,6 +98,9 @@ class PointResponse(BaseModel):
     # for this). The client uses this to exclude such a Point from drag
     # targeting, the same way it already excludes the sketch origin.
     is_locked: bool = False
+    # DIDSA-VR plan, phase 2: a Point made only to point the sketch at the part's own geometry (`Sketch.reference_ids`). Clients draw it quietly and do not offer it for
+    # selection or deletion. Additive: older clients ignore it.
+    is_reference: bool = False
 
 
 class DeleteEntityResponse(BaseModel):
@@ -128,6 +161,7 @@ class LineResponse(BaseModel):
     end_point_id: str
     length: float
     construction: bool = False
+    is_reference: bool = False  # see PointResponse.is_reference
 
 
 class LineTrimRequest(BaseModel):
@@ -269,6 +303,7 @@ class CircleResponse(BaseModel):
     radius_point_id: str
     radius: float
     construction: bool = False
+    is_reference: bool = False  # see PointResponse.is_reference
     # [north, east, south, west] - see the backend's Circle.cardinal_point_ids
     # docstring for how each is solver-locked.
     cardinal_point_ids: list[str]
@@ -326,6 +361,7 @@ class ArcResponse(BaseModel):
     end_point_id: str
     radius: float
     construction: bool = False
+    is_reference: bool = False  # see PointResponse.is_reference
     # See CircleResponse.radius_constraint_id's own doc comment.
     radius_constraint_id: str
 
@@ -457,6 +493,7 @@ class EllipseResponse(BaseModel):
     minor_radius: float
     rotation: float
     construction: bool = False
+    is_reference: bool = False  # a helper made by a reference convert (reference-overhaul R-F)
     # `major_radius`/`minor_radius`'s own backing DistanceConstraint ids
     # (`Sketch.add_ellipse`'s own doc comment) - CircleResponse.
     # radius_constraint_id's Ellipse-shaped sibling, added alongside AI
@@ -1323,6 +1360,8 @@ class SketchStateResponse(BaseModel):
     points: list[PointResponse]
     constraints: list[ConstraintResponse]
     profile: ProfileDetectionResponse
+    # DIDSA-VR plan, phase 3: the persistent reference (driven) dimensions with their current values. Additive: an older client ignores it.
+    reference_dimensions: list[ReferenceDimensionResponse] = []
 
 
 # --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror ---------------------------

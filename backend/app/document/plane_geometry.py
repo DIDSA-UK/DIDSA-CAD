@@ -276,6 +276,29 @@ def resolve_planar_circle(
     return (center_x, center_y, circle_radius)
 
 
+def resolve_planar_ellipse(
+    basis: ResolvedPlane,
+    *,
+    centre: Vector3,
+    axis: Vector3,
+    x_direction: Vector3,
+    major_radius: float,
+    minor_radius: float,
+    tolerance: float = 1e-4,
+) -> tuple[float, float, float, float, float] | None:
+    """`resolve_planar_circle`'s sibling for an ELLIPTICAL Body edge (reference-overhaul R-F): whether the ellipse lies in `basis`'s own plane (its normal parallel to the plane's and its
+    centre on the plane) and, if so, its centre in the sketch's (x, y), its two radii and the angle (radians from the sketch's +x) of its major axis. None when it is not flat in this plane."""
+    normal = _normalized(axis)
+    if abs(abs(_dot(normal, basis.normal)) - 1.0) > tolerance:
+        return None
+    if abs(signed_distance_to_plane(basis, centre)) > tolerance:
+        return None
+    centre_x, centre_y = world_point_to_basis(basis, centre)
+    direction = _normalized(x_direction)
+    angle = math.atan2(_dot(direction, basis.y_axis), _dot(direction, basis.x_axis))
+    return (centre_x, centre_y, major_radius, minor_radius, angle)
+
+
 def resolve_ccw_arc_endpoints(
     center_xy: tuple[float, float],
     start_xy: tuple[float, float],

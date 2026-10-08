@@ -99,6 +99,26 @@ class ExternalVertexReference:
     kind: str = "vertex"
 
 
+REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle")
+
+
+@dataclass(frozen=True)
+class ReferenceDimension:
+    """DIDSA-VR plan, phase 3: a persistent REFERENCE (driven) dimension of a Sketch: a measurement the sketch shows and keeps, that never drives anything.
+    Two pinned things (two corners, a corner and an edge, a hole and the origin) cannot be driven by a dimension, so nothing could say how far apart they are;
+    this does, and it follows the part when the part is edited because what it measures does. A separate list, not a flag on a constraint: the solver never
+    sees it, and a client that does not know the list ignores it (it cannot enforce, so cannot over-constrain or move a sketch).
+
+    `kind` is one of `REFERENCE_DIMENSION_KINDS`; `refs` are the Sketch entities it measures, `(entity_type, entity_id)` with `entity_type` "point", "line",
+    "circle" or "arc": distance = two points, a point and a line (perpendicular distance), a line (its length) or two parallel lines; horizontal / vertical = two
+    points or one line (the x / y extent); radius / diameter = one circle or arc; angle = two lines (degrees, 0-180). The value is computed on read
+    (`Sketch.reference_dimension_value`), never stored."""
+
+    id: str
+    kind: str
+    refs: tuple[tuple[str, str], ...]
+
+
 @dataclass
 class SketchEntity(ABC):
     """Base type for anything that can live in a Sketch's entity collection.
@@ -1166,6 +1186,13 @@ class Sketch:
     # Transient (never persisted, recomputed by every `refresh_external_references`): Point id -> what that refresh decided about the reference
     # (ok / followed / potentially_moved / lost, and why). Read by the feature response and the external-references status route.
     external_reference_decisions: dict[str, ReferenceDecision] = field(default_factory=dict, repr=False, compare=False)
+    # DIDSA-VR plan, phase 2: ids of the Points / entities a client made only so the sketch can point at the part's own geometry (a corner, an edge, a hole's
+    # centre): the convert-entities routes mark what they create when asked (`reference: true`). A client draws them quietly and does not offer them for selection
+    # or deletion; `prune_unused_reference_helpers` removes them once nothing else depends on them. Persisted (additive: an older file has none, an older
+    # client ignores it).
+    reference_ids: set[str] = field(default_factory=set)
+    # DIDSA-VR plan, phase 3: persistent reference (driven) dimensions, see `ReferenceDimension`. Persisted (additive).
+    reference_dimensions: dict[str, ReferenceDimension] = field(default_factory=dict)
     _origin_point_id: str | None = field(default=None, repr=False)
     # Sketcher-roadmap Phase 7 (2D Pattern/Mirror, §2.9 Option 2): lightweight,
     # non-solved instances - see SketchPatternInstance/SketchMirrorInstance's
@@ -4240,6 +4267,72 @@ class Sketch:
                 removed.append(point_id)
         return removed
 
+    def is_reference(self, item_id: str) -> bool:
+        """Whether a Point or an entity is a reference helper (see `reference_ids`)."""
+        return item_id in self.reference_ids
+
+    def mark_reference(self, *item_ids: str) -> None:
+        """Marks Points / entities as reference helpers."""
+        self.reference_ids.update(item_ids)
+
+    def unmark_reference(self, *item_ids: str) -> None:
+        """Real geometry took one of these over (a non-reference convert reused it): it is no longer a helper."""
+        self.reference_ids.difference_update(item_ids)
+
+    def prune_unused_reference_helpers(self) -> tuple[list[str], list[str]]:
+        """Removes every reference helper nothing depends on any more, and returns (removed entity ids, removed Point ids).
+
+        A flagged Line / Circle / Arc is *used* while a constraint reaches any of its Points from outside the shape (a dimension, an at-midpoint, a point-on-line,
+        a coincident...: the constraints that only hold the shape together, such as a converted circle's own Fix and radius constraints, do not count) or while any
+        other entity, flagged or not, shares one of its Points. A flagged Point is used while any entity or constraint holds it. Nothing unflagged is ever removed,
+        and a Sketch with no flagged ids is untouched, so this is safe to call after any deletion. Run to a fixed point: removing one helper can free the next."""
+        from app.sketch.reference_dimensions import used_ids as measured_ids
+
+        removed_entities: list[str] = []
+        removed_points: list[str] = []
+        changed = True
+        while changed and self.reference_ids:
+            changed = False
+            measured = measured_ids(self) if self.reference_dimensions else set()  # a reference dimension keeps what it measures (and the Points it stands on)
+            for entity_id in [i for i in self.reference_ids if i in self.entities]:
+                entity = self.entities[entity_id]
+                if not isinstance(entity, (Line, Circle, Arc)):
+                    continue
+                own_points = set(self._entity_defining_point_ids(entity))
+                if entity_id in measured or own_points & measured or self._reference_helper_in_use(entity, own_points):
+                    continue
+                internal = [cid for cid, c in self.constraints.items() if c.point_ids() and set(c.point_ids()) <= own_points]
+                for constraint_id in internal:
+                    del self.constraints[constraint_id]
+                del self.entities[entity_id]
+                self.reference_ids.discard(entity_id)
+                removed_entities.append(entity_id)
+                changed = True
+            flagged_points = [pid for pid in self.reference_ids if pid in self.points]
+            for point_id in flagged_points:
+                if point_id not in measured and self._point_deletion_blocker(point_id) is None:
+                    del self.points[point_id]
+                    self.external_references.pop(point_id, None)
+                    self.reference_ids.discard(point_id)
+                    removed_points.append(point_id)
+                    changed = True
+        self.reference_ids.intersection_update(set(self.points) | set(self.entities))
+        return removed_entities, removed_points
+
+    def _reference_helper_in_use(self, helper, own_points: set[str]) -> bool:
+        for constraint in self.constraints.values():
+            constraint_points = set(constraint.point_ids())
+            if constraint_points & own_points and not constraint_points <= own_points:
+                return True
+        for other in self.entities.values():
+            if other.id == helper.id:
+                continue
+            if other.id in self.reference_ids:
+                continue  # another helper sharing a Point (two converted edges meeting at a corner) is not a reason to keep this one
+            if set(self._entity_defining_point_ids(other)) & own_points:
+                return True
+        return False
+
     def delete_point(self, point_id: str) -> None:
         if point_id not in self.points:
             raise KeyError(point_id)
@@ -4811,7 +4904,8 @@ class Sketch:
             if not point_ids:
                 raise ValueError(f"{entity_id} has no Points of its own to fix")
 
-        new_point_ids = [pid for pid in point_ids if not self.is_point_locked(pid)]
+        # One entry per Point: a Circle's radius Point is also its East cardinal Point, and pinning the same Point twice is a redundancy py-slvs reports as result_code 5.
+        new_point_ids = [pid for pid in dict.fromkeys(point_ids) if not self.is_point_locked(pid)]
         if not new_point_ids:
             raise ValueError("Every point of this entity is already fixed or externally referenced")
 

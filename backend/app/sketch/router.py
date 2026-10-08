@@ -50,6 +50,10 @@ from app.sketch.models import (
 )
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
+    ReferenceDimensionCreate,
+    ReferenceDimensionRef,
+    ReferenceDimensionResponse,
+    ReferenceDimensionUpdate,
     AngleConstraintCreate,
     AngleConstraintResponse,
     ArcCreate,
@@ -167,6 +171,8 @@ from app.sketch.schemas import (
 from app.session_context import bind_session_id
 from app.sketch.solver import SolveResult, solve_sketch
 from app.sketch.store import add_sketch as _add_sketch
+from app.sketch import reference_dimensions
+from app.sketch.store import all_sketches
 from app.sketch.store import create_sketch as _create_sketch
 from app.sketch.store import get_sketch_or_404 as _get_sketch_or_404
 from app.sketch.text_geometry import place_local_point, text_to_polygons
@@ -254,6 +260,15 @@ def _get_text_or_404(sketch: Sketch, text_id: str) -> TextEntity:
     return entity
 
 
+def _prune_reference_helpers_after(sketch_id: str):
+    """A deletion may have freed a reference helper (a pinned corner / edge / hole made only to point the sketch at the part, `Sketch.reference_ids`): once the
+    response is built, remove the ones nothing depends on any more. A sketch with no helpers is untouched; a sketch that no longer exists is ignored."""
+    yield
+    sketch = all_sketches().get(sketch_id)
+    if sketch is not None:
+        sketch.prune_unused_reference_helpers()
+
+
 def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
     constraint = sketch.constraints.get(constraint_id)
     if constraint is None:
@@ -262,7 +277,7 @@ def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
 
 
 def _point_response(sketch: Sketch, point: Point) -> PointResponse:
-    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id), is_reference=sketch.is_reference(point.id))
 
 
 def _line_response(sketch: Sketch, line: Line) -> LineResponse:
@@ -272,6 +287,7 @@ def _line_response(sketch: Sketch, line: Line) -> LineResponse:
         end_point_id=line.end_point_id,
         length=line.length(sketch.points),
         construction=line.construction,
+        is_reference=sketch.is_reference(line.id),
     )
 
 
@@ -308,6 +324,7 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
         radius_point_id=circle.radius_point_id,
         radius=circle.radius(sketch.points),
         construction=circle.construction,
+        is_reference=sketch.is_reference(circle.id),
         cardinal_point_ids=circle.cardinal_point_ids,
         radius_constraint_id=circle.radius_constraint_id,
         structural_constraint_ids=_structural_constraint_ids(sketch, circle),
@@ -322,6 +339,7 @@ def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
         end_point_id=arc.end_point_id,
         radius=arc.radius(sketch.points),
         construction=arc.construction,
+        is_reference=sketch.is_reference(arc.id),
         radius_constraint_id=arc.radius_constraint_id,
         structural_constraint_ids=_structural_constraint_ids(sketch, arc),
     )
@@ -621,6 +639,24 @@ def _solve_result_response(result: SolveResult) -> SolveResultResponse:
     )
 
 
+def _reference_dimension_response(sketch: Sketch, dimension) -> ReferenceDimensionResponse:
+    try:
+        value = reference_dimensions.measure(sketch, dimension.kind, list(dimension.refs))
+    except reference_dimensions.ReferenceDimensionError:
+        value = None
+    return ReferenceDimensionResponse(
+        id=dimension.id,
+        kind=dimension.kind,
+        refs=[ReferenceDimensionRef(type=t, id=i) for t, i in dimension.refs],
+        value=value,
+    )
+
+
+def _reference_dimension_responses(sketch: Sketch) -> list[ReferenceDimensionResponse]:
+    reference_dimensions.drop_dangling(sketch)  # something it measured was deleted
+    return [_reference_dimension_response(sketch, d) for d in sketch.reference_dimensions.values()]
+
+
 def _sketch_response(sketch: Sketch) -> SketchResponse:
     return SketchResponse(
         id=sketch.id,
@@ -740,7 +776,7 @@ def update_point(sketch_id: str, point_id: str, payload: PointUpdate) -> PointRe
     return _point_response(sketch, point)
 
 
-@router.delete("/sketches/{sketch_id}/points/{point_id}", status_code=204)
+@router.delete("/sketches/{sketch_id}/points/{point_id}", status_code=204, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_point(sketch_id: str, point_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_point_or_404(sketch, point_id)
@@ -780,7 +816,7 @@ def get_line(sketch_id: str, line_id: str) -> LineResponse:
     return _line_response(sketch, _get_line_or_404(sketch, line_id))
 
 
-@router.delete("/sketches/{sketch_id}/lines/{line_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/lines/{line_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_line(sketch_id: str, line_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_line_or_404(sketch, line_id)
@@ -947,7 +983,7 @@ def update_circle(sketch_id: str, circle_id: str, payload: CircleUpdate) -> Circ
     return _circle_response(sketch, circle)
 
 
-@router.delete("/sketches/{sketch_id}/circles/{circle_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/circles/{circle_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_circle(sketch_id: str, circle_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_circle_or_404(sketch, circle_id)
@@ -1032,7 +1068,7 @@ def update_arc(sketch_id: str, arc_id: str, payload: ArcUpdate) -> ArcResponse:
     return _arc_response(sketch, arc)
 
 
-@router.delete("/sketches/{sketch_id}/arcs/{arc_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/arcs/{arc_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_arc(sketch_id: str, arc_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_arc_or_404(sketch, arc_id)
@@ -1122,7 +1158,7 @@ def update_ellipse(sketch_id: str, ellipse_id: str, payload: EllipseUpdate) -> E
     return _ellipse_response(sketch, ellipse)
 
 
-@router.delete("/sketches/{sketch_id}/ellipses/{ellipse_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/ellipses/{ellipse_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_ellipse(sketch_id: str, ellipse_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_ellipse_or_404(sketch, ellipse_id)
@@ -1191,7 +1227,7 @@ def update_ellipse_arc(sketch_id: str, ellipse_arc_id: str, payload: EllipseArcU
     return _ellipse_arc_response(sketch, ellipse_arc)
 
 
-@router.delete("/sketches/{sketch_id}/ellipse-arcs/{ellipse_arc_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/ellipse-arcs/{ellipse_arc_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_ellipse_arc(sketch_id: str, ellipse_arc_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_ellipse_arc_or_404(sketch, ellipse_arc_id)
@@ -1238,7 +1274,7 @@ def update_polygon(sketch_id: str, polygon_id: str, payload: PolygonUpdate) -> P
     return _polygon_response(sketch, polygon)
 
 
-@router.delete("/sketches/{sketch_id}/polygons/{polygon_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/polygons/{polygon_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_polygon(sketch_id: str, polygon_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_polygon_or_404(sketch, polygon_id)
@@ -1298,7 +1334,7 @@ def update_slot(sketch_id: str, slot_id: str, payload: SlotUpdate) -> SlotRespon
     return _slot_response(sketch, slot)
 
 
-@router.delete("/sketches/{sketch_id}/slots/{slot_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/slots/{slot_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_slot(sketch_id: str, slot_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_slot_or_404(sketch, slot_id)
@@ -1352,7 +1388,7 @@ def update_rectangle(sketch_id: str, rectangle_id: str, payload: RectangleUpdate
     return _rectangle_response(sketch, rectangle)
 
 
-@router.delete("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/rectangles/{rectangle_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_rectangle(sketch_id: str, rectangle_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_rectangle_or_404(sketch, rectangle_id)
@@ -1402,7 +1438,7 @@ def update_spline(sketch_id: str, spline_id: str, payload: SplineUpdate) -> Spli
     return _spline_response(spline)
 
 
-@router.delete("/sketches/{sketch_id}/splines/{spline_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/splines/{spline_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_spline(sketch_id: str, spline_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_spline_or_404(sketch, spline_id)
@@ -1458,7 +1494,7 @@ def update_text(sketch_id: str, text_id: str, payload: TextUpdate) -> TextRespon
     return _text_response(text)
 
 
-@router.delete("/sketches/{sketch_id}/texts/{text_id}", response_model=DeleteEntityResponse)
+@router.delete("/sketches/{sketch_id}/texts/{text_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_text(sketch_id: str, text_id: str) -> DeleteEntityResponse:
     sketch = _get_sketch_or_404(sketch_id)
     _get_text_or_404(sketch, text_id)
@@ -1614,11 +1650,14 @@ def list_constraints(sketch_id: str) -> list[ConstraintResponse]:
     return [_constraint_response(constraint) for constraint in sketch.constraints.values()]
 
 
-@router.delete("/sketches/{sketch_id}/constraints/{constraint_id}", status_code=204)
+@router.delete("/sketches/{sketch_id}/constraints/{constraint_id}", status_code=204, dependencies=[Depends(_prune_reference_helpers_after)])
 def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_constraint_or_404(sketch, constraint_id)
     del sketch.constraints[constraint_id]
+    # Phase 2.3: the last dimension / constraint on a reference helper (a pinned corner, edge or hole made only to point the sketch at the part) takes the
+    # helper with it, so nothing orphaned is left behind. A sketch with no helpers is untouched.
+    sketch.prune_unused_reference_helpers()
 
 
 def _is_length_dimension(constraint: Constraint) -> bool:
@@ -1790,6 +1829,13 @@ def _signed_line_distance_value(sketch: Sketch, line1_start_id: str, line1_end_i
     )
 
 
+def _is_ellipse_axis_constraint(sketch: Sketch, constraint_id: str) -> bool:
+    return any(
+        constraint_id in (e.major_constraint_id, e.minor_constraint_id)
+        for e in (*sketch.ellipses(), *sketch.ellipse_arcs())
+    )
+
+
 def _clamp_ellipse_arc_axis_value(sketch: Sketch, constraint_id: str, value: float) -> float:
     """Unlike a plain Ellipse (see its own doc comment), an EllipseArc can't
     let its major/minor axes swap roles when dragged past each other - its
@@ -1817,7 +1863,10 @@ def update_constraint_value(
         has_other_dimension = any(
             cid != constraint_id and _is_length_dimension(other) for cid, other in sketch.constraints.items()
         )
-        if has_other_dimension:
+        # An Ellipse / EllipseArc axis is one of two independent sizes of the same entity: "the first dimension sizes
+        # the whole freehand sketch" would also rescale the other axis (major 20 -> 30 turned minor 10 into 15), so an
+        # axis edit only ever moves its own tip.
+        if has_other_dimension or _is_ellipse_axis_constraint(sketch, constraint_id):
             _reseed_distance_constraint_free_point(sketch, constraint, value)
         else:
             _scale_sketch_for_first_dimension(sketch, constraint, value)
@@ -1903,7 +1952,52 @@ def solve_and_refresh(sketch_id: str, payload: SolveRequest | None = None) -> Sk
         points=[_point_response(sketch, point) for point in sketch.points.values()],
         constraints=[_constraint_response(constraint) for constraint in sketch.constraints.values()],
         profile=_profile_detection_response(sketch),
+        reference_dimensions=_reference_dimension_responses(sketch),
     )
+
+
+# --- DIDSA-VR plan, phase 3: reference (driven) dimensions that persist --------------------------------------
+
+
+@router.post("/sketches/{sketch_id}/reference-dimensions", response_model=ReferenceDimensionResponse, status_code=201)
+def create_reference_dimension(sketch_id: str, payload: ReferenceDimensionCreate) -> ReferenceDimensionResponse:
+    """A measurement the sketch shows and keeps that never drives anything (and so never touches the solver): `kind` with the entities it measures. An identical
+    one already there is returned instead of a second. 400 with a reason when the entities do not make that kind of dimension."""
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        dimension = reference_dimensions.add(sketch, payload.kind, [(r.type, r.id) for r in payload.refs])
+    except reference_dimensions.ReferenceDimensionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _reference_dimension_response(sketch, dimension)
+
+
+@router.get("/sketches/{sketch_id}/reference-dimensions", response_model=list[ReferenceDimensionResponse])
+def list_reference_dimensions(sketch_id: str) -> list[ReferenceDimensionResponse]:
+    return _reference_dimension_responses(_get_sketch_or_404(sketch_id))
+
+
+@router.patch("/sketches/{sketch_id}/reference-dimensions/{dimension_id}", response_model=ReferenceDimensionResponse)
+def update_reference_dimension(sketch_id: str, dimension_id: str, payload: ReferenceDimensionUpdate) -> ReferenceDimensionResponse:
+    sketch = _get_sketch_or_404(sketch_id)
+    if dimension_id not in sketch.reference_dimensions:
+        raise HTTPException(status_code=404, detail="Reference dimension not found")
+    try:
+        dimension = reference_dimensions.replace(
+            sketch, dimension_id, payload.kind, [(r.type, r.id) for r in payload.refs] if payload.refs is not None else None
+        )
+    except reference_dimensions.ReferenceDimensionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _reference_dimension_response(sketch, dimension)
+
+
+@router.delete("/sketches/{sketch_id}/reference-dimensions/{dimension_id}", status_code=204, dependencies=[Depends(_prune_reference_helpers_after)])
+def delete_reference_dimension(sketch_id: str, dimension_id: str) -> None:
+    """Removes the dimension; a reference helper only it depended on goes with it (the same clean-up as deleting the last constraint)."""
+    sketch = _get_sketch_or_404(sketch_id)
+    if dimension_id not in sketch.reference_dimensions:
+        raise HTTPException(status_code=404, detail="Reference dimension not found")
+    del sketch.reference_dimensions[dimension_id]
+    sketch.prune_unused_reference_helpers()
 
 
 # --- Sketcher-roadmap Phase 7: 2D Pattern/Mirror ---------------------------

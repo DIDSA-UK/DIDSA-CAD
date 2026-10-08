@@ -40,6 +40,7 @@ from app.document.extrude import (
     edge_endpoint_vertex_refs,
     resolve_circular_edge_arc,
     resolve_full_circular_edge,
+    resolve_full_elliptical_edge,
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
@@ -164,6 +165,7 @@ from app.document.scale_body import resolve_scale_body
 from app.document.shell import resolve_shell
 from app.document.solid_from_surfaces import resolve_solid_from_surfaces
 from app.document.thicken import resolve_thicken
+from app.document.face_reference import classify_face, face_axis, face_line
 from app.document.schemas import (
     BevelGearFeatureResponse,
     BevelPairFeatureResponse,
@@ -208,6 +210,8 @@ from app.document.schemas import (
     ChamferFeatureUpdate,
     ConvertEdgeCreate,
     ConvertEdgeResponse,
+    ConvertFaceCreate,
+    ConvertFaceResponse,
     ConvertVertexCreate,
     CreatePlaneFeatureCreate,
     CreatePlaneFeatureResponse,
@@ -239,6 +243,7 @@ from app.document.schemas import (
     ShellFeatureResponse,
     ShellFeatureUpdate,
     ExternalEdgeReferenceResponse,
+    ExternalEdgeReattach,
     ExternalReferenceReattach,
     ExternalReferenceStatus,
     ExternalVertexReferenceCreate,
@@ -4296,13 +4301,66 @@ def reattach_external_reference(
         return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
     if payload.vertex_index is None:
         raise HTTPException(status_code=422, detail={"type": "vertex_required", "point_id": point_id})
-    reference = make_external_vertex_reference(bodies, payload.body_id, payload.vertex_index)
-    reference = dataclasses.replace(reference, lineage=history_for_part(part, excluded).lineage_for(payload.body_id, payload.vertex_index))
+    _reattach_vertex_point(part, sketch, point_id, payload.body_id, payload.vertex_index, bodies, excluded)
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+
+
+def _reattach_vertex_point(part, sketch, point_id: str, body_id: str, vertex_index: int, bodies: dict, excluded) -> None:
+    """Points the vertex-following external-reference Point `point_id` at Body vertex `vertex_index` (re-captured signature and lineage, moved to where it is)."""
+    reference = make_external_vertex_reference(bodies, body_id, vertex_index)
+    reference = dataclasses.replace(reference, lineage=history_for_part(part, excluded).lineage_for(body_id, vertex_index))
     x, y = resolve_external_vertex_position(part, sketch, reference, bodies, excluded)
     sketch.external_references[point_id] = reference
     sketch.external_reference_decisions.pop(point_id, None)
+    point = sketch.points[point_id]
     point.x, point.y = x, y
-    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/external-references/reattach-edge",
+    response_model=list[PointResponse],
+)
+def reattach_external_edge(part_id: str, feature_id: str, payload: ExternalEdgeReattach) -> list[PointResponse]:
+    """DIDSA-VR plan, phase 4.1: one pick mends both corners of an edge. `point_ids` are the two external-reference (vertex) Points of one converted / referenced
+    edge (a pinned line's ends); `body_id` + `edge_index` the replacement edge. The two Points are matched to the replacement's two end vertices by where they
+    are now (the pairing with the smaller total distance, so a line keeps its direction), and each is re-attached exactly as `.../{point_id}/reattach` does
+    (the Point and everything built on it keep their ids). All or nothing: if either end cannot be re-attached nothing changes. 422 `degenerate_edge` for an edge
+    whose two ends are one vertex; 404 for a Point that is not a vertex reference of this Sketch."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    if len(set(payload.point_ids)) != 2:
+        raise HTTPException(status_code=422, detail={"type": "two_points_required"})
+    for point_id in payload.point_ids:
+        existing = sketch.external_references.get(point_id)
+        if existing is None or point_id not in sketch.points or existing.kind != "vertex":
+            raise HTTPException(status_code=404, detail=f"{point_id} is not a vertex reference of this Sketch")
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    start_ref, end_ref = edge_endpoint_vertex_refs(bodies, SubShapeRef(body_id=payload.body_id, shape_type=SubShapeType.EDGE, index=payload.edge_index))
+    if start_ref.index == end_ref.index:
+        raise HTTPException(status_code=422, detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index})
+    positions = []
+    for ref in (start_ref, end_ref):
+        vertex = make_external_vertex_reference(bodies, payload.body_id, ref.index)
+        positions.append(resolve_external_vertex_position(part, sketch, vertex, bodies, excluded))
+    first, second = (sketch.points[i] for i in payload.point_ids)
+
+    def cost(a, b) -> float:
+        return math.dist((first.x, first.y), a) + math.dist((second.x, second.y), b)
+
+    swapped = cost(positions[1], positions[0]) < cost(positions[0], positions[1])
+    vertex_for = {payload.point_ids[0]: (end_ref if swapped else start_ref).index, payload.point_ids[1]: (start_ref if swapped else end_ref).index}
+    saved = {i: (sketch.external_references[i], sketch.points[i].x, sketch.points[i].y) for i in payload.point_ids}
+    try:
+        for point_id, vertex_index in vertex_for.items():
+            _reattach_vertex_point(part, sketch, point_id, payload.body_id, vertex_index, bodies, excluded)
+    except HTTPException:
+        for point_id, (ref, x, y) in saved.items():
+            sketch.external_references[point_id] = ref
+            sketch.points[point_id].x, sketch.points[point_id].y = x, y
+        raise
+    return [PointResponse(id=i, x=sketch.points[i].x, y=sketch.points[i].y, is_locked=True) for i in payload.point_ids]
 
 
 @router.post(
@@ -4470,6 +4528,16 @@ def create_external_edge_reference(
     status_code=201,
 )
 def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCreate) -> PointResponse:
+    """Convert Entities' vertex route (see `_convert_body_vertex`), plus the Phase 2.1 reference flag on the Point."""
+    sketch = get_sketch_or_404(_get_sketch_feature_or_404(get_part_or_404(part_id), feature_id).sketch_id)
+    before_points = set(sketch.points)
+    response = _convert_body_vertex(part_id, feature_id, payload)
+    _flag_converted(sketch, payload.reference, before_points, set(), [response.id], [])
+    response.is_reference = sketch.is_reference(response.id)
+    return response
+
+
+def _convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCreate) -> PointResponse:
     """Sketcher-roadmap Phase 9 v2 (Convert Entities): materializes
     `payload` (a Body vertex) as a real, *associative* Point in this
     SketchFeature's own Sketch - reuses `create_external_vertex_reference`'s
@@ -4511,12 +4579,125 @@ def convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCre
     return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
 
+def _drop_constraints_between_pinned_points(sketch, constraint_ids: list[str]) -> None:
+    """A converted Circle / Arc is pinned in every Point (a live reference or a Fix), so the provisional radius / cardinal-point constraints `add_circle` /
+    `add_arc` made for it only relate pinned Points to each other. Each is redundant by construction, and py-slvs reports that as result_code 5, which then
+    stops it trusting `converged` for any constraint outside its allowlist (an `at_midpoint` on a neighbouring pinned edge was refused for exactly this).
+    Dropping them leaves the shape exactly as pinned and the system with no redundancy. The entity keeps its (now unused) ids: every reader tolerates a missing one."""
+    for constraint_id in constraint_ids:
+        sketch.constraints.pop(constraint_id, None)
+
+
+def _flag_converted(sketch, reference: bool, before_points: set, before_entities: set, point_ids: list[str], entity_ids: list[str]) -> None:
+    """Phase 2.1: a `reference: true` convert flags what it MADE (Points and entities that were not in the Sketch before the call); something that was already there
+    keeps whatever flag it had. An ordinary convert (`reference` false) makes everything it touched real geometry again: it takes a flagged helper over."""
+    if reference:
+        sketch.mark_reference(*[i for i in point_ids if i not in before_points], *[i for i in entity_ids if i not in before_entities])
+    else:
+        sketch.unmark_reference(*point_ids, *entity_ids)
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/convert-entities/face",
+    response_model=ConvertFaceResponse,
+    status_code=201,
+)
+def convert_body_face(part_id: str, feature_id: str, payload: ConvertFaceCreate) -> ConvertFaceResponse:
+    """DIDSA-VR plan, phase 2.2: makes a FACE of the part usable in this sketch (see `app.document.face_reference`). A flat face perpendicular to the sketch plane
+    becomes a pinned line between its two extreme corners (live vertex references; idempotent, an existing line between the same two Points is reused); a round
+    face whose axis is perpendicular to the sketch plane becomes a live centre (`circle_centre` reference of one of its circular edges, no shape). Anything else
+    is a structured 422 (`face_not_perpendicular`, `face_axis_not_perpendicular`, `unsupported_face`, `face_has_no_circular_edge`, `degenerate_face`)."""
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    basis = basis_for_sketch(part, sketch, bodies, excluded)
+    before_points, before_entities = set(sketch.points), set(sketch.entities)
+    kind = classify_face(bodies, payload.body_id, payload.face_index, basis)
+    if kind == "centre":
+        axis = face_axis(bodies, payload.body_id, payload.face_index, basis)
+        centre = sketch.add_or_reuse_external_vertex_reference(
+            axis.xy[0], axis.xy[1], _new_circle_centre_reference(part, sketch, bodies, excluded, payload.body_id, axis.edge_index)
+        )
+        _flag_converted(sketch, payload.reference, before_points, before_entities, [centre.id], [])
+        return ConvertFaceResponse(
+            kind="centre",
+            center_point=PointResponse(id=centre.id, x=centre.x, y=centre.y, is_locked=True, is_reference=sketch.is_reference(centre.id)),
+        )
+    face = face_line(bodies, payload.body_id, payload.face_index, basis)
+    start_ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, face.start_vertex)
+    start_point = sketch.add_or_reuse_external_vertex_reference(face.start_xy[0], face.start_xy[1], start_ref)
+    end_ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, face.end_vertex)
+    end_point = sketch.add_or_reuse_external_vertex_reference(face.end_xy[0], face.end_xy[1], end_ref)
+    line = next((l for l in sketch.lines() if {l.start_point_id, l.end_point_id} == {start_point.id, end_point.id}), None)
+    if line is None:
+        line = sketch.add_line(start_point.id, end_point.id, construction=payload.construction)
+    _flag_converted(sketch, payload.reference, before_points, before_entities, [start_point.id, end_point.id], [line.id])
+    return ConvertFaceResponse(
+        kind="line",
+        line=LineResponse(
+            id=line.id,
+            start_point_id=line.start_point_id,
+            end_point_id=line.end_point_id,
+            length=line.length(sketch.points),
+            construction=line.construction,
+            is_reference=sketch.is_reference(line.id),
+        ),
+        start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y, is_locked=True, is_reference=sketch.is_reference(start_point.id)),
+        end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y, is_locked=True, is_reference=sketch.is_reference(end_point.id)),
+    )
+
+
 @router.post(
     "/parts/{part_id}/features/sketch/{feature_id}/convert-entities/edge",
     response_model=ConvertEdgeResponse,
     status_code=201,
 )
 def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
+    """Convert Entities' edge route (see `_convert_body_edge` for what it makes), plus the Phase 2.1 reference flag on the Points and the Line / Circle / Arc."""
+    sketch = get_sketch_or_404(_get_sketch_feature_or_404(get_part_or_404(part_id), feature_id).sketch_id)
+    before_points, before_entities = set(sketch.points), set(sketch.entities)
+    response = _convert_body_edge(part_id, feature_id, payload)
+    shape = response.line or response.arc or response.circle or response.ellipse
+    points = [p for p in (response.start_point, response.end_point, response.center_point) if p is not None]
+    extra_points: list[str] = []
+    if response.ellipse is not None:
+        e = response.ellipse
+        extra_points = [e.major_point_id, e.major_point_neg_id, e.minor_point_id, e.minor_point_neg_id]
+    _flag_converted(sketch, payload.reference, before_points, before_entities, [p.id for p in points] + extra_points, [shape.id] if shape is not None else [])
+    for p in points:
+        p.is_reference = sketch.is_reference(p.id)
+    if shape is not None:
+        shape.is_reference = sketch.is_reference(shape.id)
+    return response
+
+
+def _convert_elliptical_edge(sketch, params: tuple[float, float, float, float, float], construction: bool) -> ConvertEdgeResponse:
+    """Reference-overhaul R-F: a full elliptical Body edge lying in the sketch plane becomes a real Ellipse, pinned (every Point of it Fixed, so the shape stays where the part's edge is). v1 limit,
+    spelled out like the circular Arc's was: its centre is a plain pinned Point, not a live reference, so it does not follow a later change to the part (a hole is followed because circles are
+    `circle_centre` references; there is no such reference kind for an ellipse yet). Idempotent per edge: an ellipse already pinned at the same centre with the same radii is answered again."""
+    from app.sketch.router import _ellipse_response  # function-local: the sketch router is not imported at module level here
+
+    centre_x, centre_y, major, minor, angle = params
+    for existing in sketch.entities.values():
+        if existing.type == "ellipse":
+            c = sketch.points[existing.center_point_id]
+            if abs(c.x - centre_x) < 1e-6 and abs(c.y - centre_y) < 1e-6 and abs(existing.major_radius(sketch.points) - major) < 1e-6 and abs(existing.minor_radius(sketch.points) - minor) < 1e-6:
+                centre = PointResponse(id=c.id, x=c.x, y=c.y, is_locked=True)
+                return ConvertEdgeResponse(ellipse=_ellipse_response(sketch, existing), start_point=centre, end_point=centre, center_point=centre)
+    centre_point = sketch.add_point(centre_x, centre_y)
+    ellipse = sketch.add_ellipse(centre_point.id, major_radius=major, angle=angle, minor_radius=minor, construction=construction)
+    sketch.add_fixed_constraint(ellipse.id)
+    _drop_constraints_between_pinned_points(
+        sketch,
+        [ellipse.major_constraint_id, ellipse.minor_constraint_id, ellipse.major_midpoint_constraint_id, ellipse.minor_midpoint_constraint_id, ellipse.perpendicular_constraint_id],
+    )
+    centre = PointResponse(id=centre_point.id, x=centre_point.x, y=centre_point.y, is_locked=True)
+    return ConvertEdgeResponse(ellipse=_ellipse_response(sketch, ellipse), start_point=centre, end_point=centre, center_point=centre)
+
+
+def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
     """Convert Entities' edge-shaped sibling to `convert_body_vertex` (v2) -
     mirrors `create_external_edge_reference`'s own "resolve both endpoint
     vertices" shape. Its two endpoint Points are associative
@@ -4579,16 +4760,37 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         basis = basis_for_sketch(part, sketch, bodies, excluded)
         circle_params = resolve_full_circular_edge(bodies, edge_ref, basis)
         if circle_params is None:
-            raise HTTPException(
-                status_code=422,
-                detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
-            )
+            ellipse_params = resolve_full_elliptical_edge(bodies, edge_ref, basis)
+            if ellipse_params is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
+                )
+            return _convert_elliptical_edge(sketch, ellipse_params, payload.construction)
         center_x, center_y, radius = circle_params
         # Reference-identity overhaul: the centre is a live reference to the circular edge (`kind="circle_centre"`), so the Circle follows its hole / boss when an
         # upstream edit moves it or changes its diameter - and is flagged, like any reference, when the edge is gone.
         center_point = sketch.add_or_reuse_external_vertex_reference(
             center_x, center_y, _new_circle_centre_reference(part, sketch, bodies, excluded, payload.body_id, payload.edge_index)
         )
+        existing_circle = next((c for c in sketch.circles() if c.center_point_id == center_point.id), None)
+        if existing_circle is not None:
+            # Idempotent per edge, as `convert_body_vertex` is: the same rim converted again answers with the Circle already made (R-E).
+            centre_existing = PointResponse(id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True)
+            return ConvertEdgeResponse(
+                circle=CircleResponse(
+                    id=existing_circle.id,
+                    center_point_id=existing_circle.center_point_id,
+                    radius_point_id=existing_circle.radius_point_id,
+                    radius=existing_circle.radius(sketch.points),
+                    construction=existing_circle.construction,
+                    cardinal_point_ids=existing_circle.cardinal_point_ids,
+                    radius_constraint_id=existing_circle.radius_constraint_id,
+                ),
+                start_point=centre_existing,
+                end_point=centre_existing,
+                center_point=centre_existing,
+            )
         circle = sketch.add_circle(center_point.id, radius=radius, construction=payload.construction)
         # On-device feedback ("converted edges... the converted entities
         # should be projected onto the sketch plane and locked at that
@@ -4603,6 +4805,7 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         # alone isn't enough to freeze the Circle as a whole, every Point
         # that defines it needs to be.
         sketch.add_fixed_constraint(circle.id)
+        _drop_constraints_between_pinned_points(sketch, [circle.radius_constraint_id, *circle.cardinal_constraint_ids])
         center_response = PointResponse(
             id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True
         )
@@ -4640,13 +4843,23 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
         center_point = sketch.add_or_reuse_external_vertex_reference(
             center_x, center_y, _new_circle_centre_reference(part, sketch, bodies, excluded, payload.body_id, payload.edge_index)
         )
-        arc = sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
+        existing_arc = next(
+            (
+                a
+                for a in sketch.arcs()
+                if a.center_point_id == center_point.id and {a.start_point_id, a.end_point_id} == {arc_start_point.id, arc_end_point.id}
+            ),
+            None,
+        )
+        arc = existing_arc if existing_arc is not None else sketch.add_arc(center_point.id, arc_start_point.id, arc_end_point.id, construction=payload.construction)
         # An Arc's start / end Points are vertex references and (since the reference-identity overhaul) its centre is a circle-centre reference, so every
         # Point of it is already pinned by `external_references`.
-        try:
-            sketch.add_fixed_constraint(arc.id)
-        except ValueError:
-            pass  # every Point of the Arc is a live reference now (start, end and, since the overhaul, the centre): nothing left to pin
+        if existing_arc is None:
+            try:
+                sketch.add_fixed_constraint(arc.id)
+            except ValueError:
+                pass  # every Point of the Arc is a live reference now (start, end and, since the overhaul, the centre): nothing left to pin
+            _drop_constraints_between_pinned_points(sketch, [arc.radius_constraint_id, arc.end_radius_constraint_id])
         return ConvertEdgeResponse(
             arc=ArcResponse(
                 id=arc.id,
@@ -4666,7 +4879,10 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
             center_point=PointResponse(id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True),
         )
 
-    line = sketch.add_line(start_point.id, end_point.id, construction=payload.construction)
+    line = next(
+        (l for l in sketch.lines() if {l.start_point_id, l.end_point_id} == {start_point.id, end_point.id}),
+        None,
+    ) or sketch.add_line(start_point.id, end_point.id, construction=payload.construction)
     return ConvertEdgeResponse(
         line=LineResponse(
             id=line.id,

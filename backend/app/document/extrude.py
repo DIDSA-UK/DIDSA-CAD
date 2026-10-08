@@ -26,7 +26,7 @@ from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_DraftAngle
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.Geom import Geom_BezierCurve
-from OCC.Core.GeomAbs import GeomAbs_BSplineSurface, GeomAbs_Circle
+from OCC.Core.GeomAbs import GeomAbs_BSplineSurface, GeomAbs_Circle, GeomAbs_Ellipse
 from OCC.Core.gp import gp_Ax1, gp_Ax2, gp_Circ, gp_Dir, gp_Elips, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.ShapeUpgrade import ShapeUpgrade_ShapeConvertToBezier, ShapeUpgrade_UnifySameDomain
@@ -41,6 +41,7 @@ from app.document.reference_history import ReShapeHistory
 from app.document.graph import base_feature_id, build_feature_graph, topological_order
 from app.document.shell_ops import thicken_capped_solid_to_solid, thicken_shell_to_solid
 from app.document.plane_geometry import (
+    resolve_planar_ellipse,
     is_mirrored_basis,
     resolve_ccw_arc_endpoints,
     resolve_planar_circle,
@@ -3446,6 +3447,31 @@ def resolve_circular_edge_arc(
 
     resolved_start, resolved_end = resolve_ccw_arc_endpoints((center_x, center_y), start_xy, mid_xy, end_xy)
     return (center_x, center_y, radius, resolved_start, resolved_end)
+
+
+def resolve_full_elliptical_edge(
+    bodies: dict[str, TopoDS_Shape],
+    ref: SubShapeRef,
+    basis: ResolvedPlane,
+) -> tuple[float, float, float, float, float] | None:
+    """Reference-overhaul R-F: `resolve_full_circular_edge`'s sibling for a full ELLIPTICAL Body edge (an elliptical hole's rim, a cut through a cone...): (centre x, centre y, major radius,
+    minor radius, major-axis angle) in `basis`'s sketch frame when the ellipse lies flat in the sketch plane, else None (not an ellipse, or not in this plane)."""
+    edge = topods.Edge(resolve_subshape_from_bodies(bodies, ref))
+    adaptor = BRepAdaptor_Curve(edge)
+    if adaptor.GetType() != GeomAbs_Ellipse:
+        return None
+    ellipse = adaptor.Ellipse()
+    centre = ellipse.Location()
+    axis = ellipse.Axis().Direction()
+    x_direction = ellipse.XAxis().Direction()
+    return resolve_planar_ellipse(
+        basis,
+        centre=(centre.X(), centre.Y(), centre.Z()),
+        axis=(axis.X(), axis.Y(), axis.Z()),
+        x_direction=(x_direction.X(), x_direction.Y(), x_direction.Z()),
+        major_radius=ellipse.MajorRadius(),
+        minor_radius=ellipse.MinorRadius(),
+    )
 
 
 def resolve_full_circular_edge(

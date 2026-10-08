@@ -2247,6 +2247,10 @@ class _SketchPainter extends CustomPainter {
   /// from solid geometry at a glance.
   static const Color _constructionColor = Color(0xFF4A90D9);
 
+  /// DIDSA-VR plan, phase 2: the colour of a reference helper (the sketch's plumbing to the part's own corner / edge / hole, [SketchController.isReferenceHelper]):
+  /// the part's own geometry lit a little, thin and solid, with no handles. Shared with the 3D overlay so the two renderings agree.
+  static const Color referenceHelperColor = Color(0xFF8CCBFF);
+
   /// Phase 3 (3.1): a Line/Circle/Point whose defining Points are all fully
   /// constrained (see [SketchController.rigidity]/[SketchController.
   /// isFullyConstrained]) - deliberately a darker green than
@@ -2517,6 +2521,18 @@ class _SketchPainter extends CustomPainter {
   /// a Distance/Angle value yet (the backend has no PATCH endpoint for
   /// constraint values), so these are display-only, dispatched by runtime
   /// type since [ConstraintDto] isn't a sealed hierarchy.
+  /// DIDSA-VR plan, phase 3: the sketch's persistent reference (driven) dimensions: a thin quiet leader between what each measures and its value in brackets
+  /// at the middle, `(12.5)`. They never drive, so nothing here is draggable. The 3D overlay draws the same ([ReferenceDimensionItem]).
+  void _paintReferenceDimensions(Canvas canvas) {
+    const quiet = Color(0xFF6B8AA6);
+    for (final label in controller.referenceDimensionLabels) {
+      final a = transform.sketchToScreen(label.anchorA.$1, label.anchorA.$2);
+      final b = transform.sketchToScreen(label.anchorB.$1, label.anchorB.$2);
+      canvas.drawLine(a, b, Paint()..color = quiet..strokeWidth = _lineStrokeWidth * 0.5);
+      _drawDimensionLabel(canvas, (a + b) / 2, label.text, quiet, plainBlackText: true);
+    }
+  }
+
   void _paintDimensionOverlays(Canvas canvas) {
     final selectionSet = controller.selectionSet;
     for (final entry in controller.constraints.entries) {
@@ -4156,10 +4172,18 @@ class _SketchPainter extends CustomPainter {
         (kind == SelectionKind.line && constraintReferencedLineIds.contains(id)) ||
         (kind == SelectionKind.point && constraintReferencedPointIds.contains(id));
 
+    final referencePaint = Paint()
+      ..color = referenceHelperColor
+      ..strokeWidth = _lineStrokeWidth * 0.8
+      ..style = PaintingStyle.stroke;
     for (final line in controller.lines.values) {
       final start = controller.points[line.startPointId];
       final end = controller.points[line.endPointId];
       if (start == null || end == null) continue;
+      if (controller.isReferenceHelper(line.id)) {
+        canvas.drawLine(transform.sketchToScreen(start.x, start.y), transform.sketchToScreen(end.x, end.y), referencePaint);
+        continue;
+      }
       final lineIsGrabbed = controller.draggingLineId == line.id;
       final lineIsSelected = isSelected(SelectionKind.line, line.id);
       final isHovered = hovered?.kind == SelectionKind.line && hovered!.id == line.id;
@@ -4210,6 +4234,10 @@ class _SketchPainter extends CustomPainter {
       final radius = math.sqrt(
         math.pow(radiusPoint.x - center.x, 2) + math.pow(radiusPoint.y - center.y, 2),
       );
+      if (controller.isReferenceHelper(circle.id)) {
+        canvas.drawCircle(transform.sketchToScreen(center.x, center.y), radius * transform.pixelsPerUnit, referencePaint);
+        continue;
+      }
       final circleIsSelected = isSelected(SelectionKind.circle, circle.id) ||
           constraintReferencedPointIds.contains(circle.centerPointId) ||
           constraintReferencedPointIds.contains(circle.radiusPointId);
@@ -4252,6 +4280,15 @@ class _SketchPainter extends CustomPainter {
       final end = controller.points[arc.endPointId];
       if (center == null || start == null || end == null) continue;
       final radius = math.sqrt(math.pow(start.x - center.x, 2) + math.pow(start.y - center.y, 2));
+      if (controller.isReferenceHelper(arc.id)) {
+        final centreScreen = transform.sketchToScreen(center.x, center.y);
+        final startAngle = math.atan2(-(start.y - center.y), start.x - center.x);
+        final endAngle = math.atan2(-(end.y - center.y), end.x - center.x);
+        var sweep = startAngle - endAngle; // the arc runs counter-clockwise in the sketch, which is clockwise on a y-down screen: from the end back to the start
+        if (sweep <= 0) sweep += 2 * math.pi;
+        canvas.drawArc(Rect.fromCircle(center: centreScreen, radius: radius * transform.pixelsPerUnit), endAngle, sweep, false, referencePaint);
+        continue;
+      }
       final arcIsSelected = isSelected(SelectionKind.arc, arc.id) ||
           constraintReferencedPointIds.contains(arc.centerPointId) ||
           constraintReferencedPointIds.contains(arc.startPointId) ||
@@ -4721,6 +4758,11 @@ class _SketchPainter extends CustomPainter {
     final revealedShapeCenterId = controller.revealedShapeCenterPointId;
     for (final point in controller.points.values) {
       if (point.id == originId) continue; // Drawn separately above, as a square marker.
+      if (controller.isReferenceHelper(point.id)) {
+        // the part's own corner / hole centre the sketch uses: lit quietly, no handle
+        canvas.drawCircle(transform.sketchToScreen(point.x, point.y), _pointRadius * 0.9, Paint()..color = referenceHelperColor);
+        continue;
+      }
       final isChainStart = controller.chainInProgress && point.id == chainFirstId;
       final isCircleCenter = controller.circleInProgress && point.id == circleCenterId;
       final isArcAnchor = controller.arcInProgress && (point.id == arcCenterId || point.id == arcStartId);
@@ -4780,7 +4822,10 @@ class _SketchPainter extends CustomPainter {
 
     _paintFlaggedReferencePoints(canvas);
     _paintPolygonGuideCircles(canvas);
-    if (labelsVisible) _paintDimensionOverlays(canvas);
+    if (labelsVisible) {
+      _paintDimensionOverlays(canvas);
+      _paintReferenceDimensions(canvas);
+    }
     _paintGhosts(canvas);
     _paintInProgressConstructionPicks(canvas);
     _paintMidpointSnapIndicator(canvas);

@@ -11425,10 +11425,19 @@ class _PartScreenState extends State<PartScreen> {
       try {
         final basis = await _sketchPlaneBasisFor(feature);
         if (basis == null) continue;
-        final rawPoints = await _sketchApi.listPoints(sketchId);
-        final rawLines = await _sketchApi.listLines(sketchId);
-        final rawCircles = await _sketchApi.listCircles(sketchId);
-        final rawArcs = await _sketchApi.listArcs(sketchId);
+        // DIDSA-VR plan, phase 2: a reference helper (the sketch's plumbing to the part's own corner / edge / hole, flagged `is_reference`) is not drawn here
+        // either: the part's own edge is on screen already, and the 2D canvas draws the helper quietly ([SketchCanvas.referenceHelperColor]); keeping both
+        // renderings in step means neither shows a second copy of the part's geometry.
+        final rawLines = (await _sketchApi.listLines(sketchId)).where((l) => !l.isReference).toList();
+        final rawCircles = (await _sketchApi.listCircles(sketchId)).where((c) => !c.isReference).toList();
+        final rawArcs = (await _sketchApi.listArcs(sketchId)).where((a) => !a.isReference).toList();
+        // a helper Point is dropped too, unless a real shape of the sketch still stands on it (a line the user drew from a part corner)
+        final standingOn = <String>{
+          for (final l in rawLines) ...[l.startPointId, l.endPointId],
+          for (final c in rawCircles) ...[c.centerPointId, c.radiusPointId, ...c.cardinalPointIds],
+          for (final a in rawArcs) ...[a.centerPointId, a.startPointId, a.endPointId],
+        };
+        final rawPoints = (await _sketchApi.listPoints(sketchId)).where((p) => !p.isReference || standingOn.contains(p.id)).toList();
         final rawEllipses = await _sketchApi.listEllipses(sketchId);
         final rawEllipseArcs = await _sketchApi.listEllipseArcs(sketchId);
         final splines = await _sketchApi.listSplines(sketchId);

@@ -78,13 +78,18 @@ class PointDto {
   /// keeps compiling unchanged.
   final bool isLocked;
 
-  PointDto({required this.id, required this.x, required this.y, this.isLocked = false});
+  /// DIDSA-VR plan, phase 2: whether the backend made this Point only so the sketch can point at the part's own geometry (`Sketch.reference_ids`). The
+  /// sketch draws such a Point quietly and does not offer it for selection or deletion. Defaults `false` (an older backend does not say).
+  final bool isReference;
+
+  PointDto({required this.id, required this.x, required this.y, this.isLocked = false, this.isReference = false});
 
   factory PointDto.fromJson(Map<String, dynamic> json) => PointDto(
         id: json['id'] as String,
         x: (json['x'] as num).toDouble(),
         y: (json['y'] as num).toDouble(),
         isLocked: json['is_locked'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
       );
 }
 
@@ -95,12 +100,16 @@ class LineDto {
   final double length;
   final bool construction;
 
+  /// See [PointDto.isReference].
+  final bool isReference;
+
   LineDto({
     required this.id,
     required this.startPointId,
     required this.endPointId,
     required this.length,
     this.construction = false,
+    this.isReference = false,
   });
 
   factory LineDto.fromJson(Map<String, dynamic> json) => LineDto(
@@ -109,6 +118,7 @@ class LineDto {
         endPointId: json['end_point_id'] as String,
         length: (json['length'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
       );
 }
 
@@ -216,6 +226,26 @@ class ConvertEdgeResultDto {
         endPoint: PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
         centerPoint:
             json['center_point'] == null ? null : PointDto.fromJson(json['center_point'] as Map<String, dynamic>),
+      );
+}
+
+/// DIDSA-VR plan, phase 2.2: the backend's `ConvertFaceResponse`. [kind] is `"line"` (a flat face square to the sketch plane: [line] between [startPoint] and
+/// [endPoint]) or `"centre"` (a round face whose axis is square to it: [centerPoint] is a live reference at the axis, no shape).
+class ConvertFaceResultDto {
+  final String kind;
+  final LineDto? line;
+  final PointDto? startPoint;
+  final PointDto? endPoint;
+  final PointDto? centerPoint;
+
+  ConvertFaceResultDto({required this.kind, this.line, this.startPoint, this.endPoint, this.centerPoint});
+
+  factory ConvertFaceResultDto.fromJson(Map<String, dynamic> json) => ConvertFaceResultDto(
+        kind: json['kind'] as String,
+        line: json['line'] == null ? null : LineDto.fromJson(json['line'] as Map<String, dynamic>),
+        startPoint: json['start_point'] == null ? null : PointDto.fromJson(json['start_point'] as Map<String, dynamic>),
+        endPoint: json['end_point'] == null ? null : PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
+        centerPoint: json['center_point'] == null ? null : PointDto.fromJson(json['center_point'] as Map<String, dynamic>),
       );
 }
 
@@ -386,6 +416,9 @@ class CircleDto {
   final double radius;
   final bool construction;
 
+  /// See [PointDto.isReference].
+  final bool isReference;
+
   /// `[north, east, south, west]` - see the backend's
   /// `Circle.cardinal_point_ids` docstring for how each is solver-locked.
   final List<String> cardinalPointIds;
@@ -409,6 +442,7 @@ class CircleDto {
     required this.radiusPointId,
     required this.radius,
     this.construction = false,
+    this.isReference = false,
     this.cardinalPointIds = const [],
     this.radiusConstraintId,
   });
@@ -420,6 +454,7 @@ class CircleDto {
         radiusPointId: json['radius_point_id'] as String,
         radius: (json['radius'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
         cardinalPointIds: (json['cardinal_point_ids'] as List<dynamic>? ?? const [])
             .map((e) => e as String)
             .toList(),
@@ -439,6 +474,9 @@ class ArcDto {
   final double radius;
   final bool construction;
 
+  /// See [PointDto.isReference].
+  final bool isReference;
+
   /// [CircleDto.radiusConstraintId]'s Arc-shaped sibling - `radius`'s own
   /// backing `DistanceConstraint` id (`Sketch.add_arc`'s own doc comment).
   /// Same nullable-for-compatibility reasoning as that field.
@@ -452,6 +490,7 @@ class ArcDto {
     required this.endPointId,
     required this.radius,
     this.construction = false,
+    this.isReference = false,
     this.radiusConstraintId,
   });
 
@@ -463,6 +502,7 @@ class ArcDto {
         endPointId: json['end_point_id'] as String,
         radius: (json['radius'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
         radiusConstraintId: json['radius_constraint_id'] as String?,
       );
 }
@@ -1568,17 +1608,42 @@ class ProfileDetectionDto {
 /// the current [ProfileDetectionDto], in one response instead of the
 /// separate `solve` + `listPoints` + `listConstraints` + `getProfile` calls
 /// the common "just finished a mutation" case used to need.
+/// DIDSA-VR plan, phase 3: a persistent REFERENCE (driven) dimension (the backend's `ReferenceDimensionResponse`): [kind] ("distance" | "horizontal" |
+/// "vertical" | "radius" | "diameter" | "angle") of the entities in [refs] (`(type, id)` with type "point" | "line" | "circle" | "arc"), and its current [value]
+/// (millimetres, degrees for an angle; null when the geometry has no such value). It measures, it never drives: the solver does not see it.
+class ReferenceDimensionDto {
+  final String id;
+  final String kind;
+  final List<(String, String)> refs;
+  final double? value;
+
+  ReferenceDimensionDto({required this.id, required this.kind, required this.refs, this.value});
+
+  factory ReferenceDimensionDto.fromJson(Map<String, dynamic> json) => ReferenceDimensionDto(
+        id: json['id'] as String,
+        kind: json['kind'] as String,
+        refs: [
+          for (final r in json['refs'] as List<dynamic>) ((r as Map<String, dynamic>)['type'] as String, r['id'] as String),
+        ],
+        value: (json['value'] as num?)?.toDouble(),
+      );
+}
+
 class SketchStateDto {
   final SolveResultDto solve;
   final List<PointDto> points;
   final List<ConstraintDto> constraints;
   final ProfileDetectionDto profile;
 
+  /// The sketch's reference dimensions with their current values (empty from an older backend).
+  final List<ReferenceDimensionDto> referenceDimensions;
+
   SketchStateDto({
     required this.solve,
     required this.points,
     required this.constraints,
     required this.profile,
+    this.referenceDimensions = const [],
   });
 
   factory SketchStateDto.fromJson(Map<String, dynamic> json) => SketchStateDto(
@@ -1590,6 +1655,9 @@ class SketchStateDto {
             .map((c) => ConstraintDto.fromJson(c as Map<String, dynamic>))
             .toList(),
         profile: ProfileDetectionDto.fromJson(json['profile'] as Map<String, dynamic>),
+        referenceDimensions: (json['reference_dimensions'] as List<dynamic>? ?? const [])
+            .map((d) => ReferenceDimensionDto.fromJson(d as Map<String, dynamic>))
+            .toList(),
       );
 }
 
@@ -1889,13 +1957,14 @@ class SketchApiClient {
     String partId,
     String sketchFeatureId,
     String bodyId,
-    int vertexIndex,
-  ) =>
+    int vertexIndex, {
+    bool reference = false,
+  }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/convert-entities/vertex'),
               headers: _headers,
-              body: jsonEncode({'body_id': bodyId, 'vertex_index': vertexIndex}),
+              body: jsonEncode({'body_id': bodyId, 'vertex_index': vertexIndex, if (reference) 'reference': true}),
             ),
         (body) => PointDto.fromJson(body as Map<String, dynamic>),
       );
@@ -1920,14 +1989,44 @@ class SketchApiClient {
     String bodyId,
     int edgeIndex, {
     bool construction = false,
+    bool reference = false,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/convert-entities/edge'),
               headers: _headers,
-              body: jsonEncode({'body_id': bodyId, 'edge_index': edgeIndex, 'construction': construction}),
+              body: jsonEncode({
+                'body_id': bodyId,
+                'edge_index': edgeIndex,
+                'construction': construction,
+                if (reference) 'reference': true,
+              }),
             ),
         (body) => ConvertEdgeResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// DIDSA-VR plan, phase 2.2: a FACE of the part as something to dimension to (see the backend's `convert_body_face`): a flat face square to the sketch plane
+  /// becomes a pinned line, a round face whose axis is square to it a live centre. Idempotent. A face that is neither is a 422 (`face_not_perpendicular`, ...).
+  Future<ConvertFaceResultDto> convertBodyFace(
+    String partId,
+    String sketchFeatureId,
+    String bodyId,
+    int faceIndex, {
+    bool construction = true,
+    bool reference = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/convert-entities/face'),
+              headers: _headers,
+              body: jsonEncode({
+                'body_id': bodyId,
+                'face_index': faceIndex,
+                'construction': construction,
+                if (reference) 'reference': true,
+              }),
+            ),
+        (body) => ConvertFaceResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   Future<List<PointDto>> listPoints(String sketchId) => _send(
@@ -3223,6 +3322,31 @@ class SketchApiClient {
           body: _solveBody(anchorPointIds, pointUpdates),
         ),
         (body) => SketchStateDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// DIDSA-VR plan, phase 3: the reference (driven) dimensions of a sketch, with their current values.
+  Future<List<ReferenceDimensionDto>> listReferenceDimensions(String sketchId) => _send(
+        () => _httpClient.get(_uri('/sketch/sketches/$sketchId/reference-dimensions'), headers: _headers),
+        (body) => (body as List).map((e) => ReferenceDimensionDto.fromJson(e as Map<String, dynamic>)).toList(),
+      );
+
+  /// Adds a reference dimension ([kind] of the [refs], each `(type, id)`); the backend returns an identical existing one instead of a second, and a 400 with a
+  /// reason when the entities do not make that kind of dimension.
+  Future<ReferenceDimensionDto> createReferenceDimension(String sketchId, String kind, List<(String, String)> refs) => _send(
+        () => _httpClient.post(
+          _uri('/sketch/sketches/$sketchId/reference-dimensions'),
+          headers: _headers,
+          body: jsonEncode({
+            'kind': kind,
+            'refs': [for (final r in refs) {'type': r.$1, 'id': r.$2}],
+          }),
+        ),
+        (body) => ReferenceDimensionDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  Future<void> deleteReferenceDimension(String sketchId, String dimensionId) => _send(
+        () => _httpClient.delete(_uri('/sketch/sketches/$sketchId/reference-dimensions/$dimensionId'), headers: _headers),
+        (_) {},
       );
 
   String? _solveBody(List<String> anchorPointIds, Map<String, (double, double)> pointUpdates) {

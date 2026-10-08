@@ -32,6 +32,37 @@ class SketchDimensionBar extends StatelessWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // DIDSA-VR plan, phase 3: a reference dimension of what is picked (when the picks make one) and the ones the sketch already has, each removable.
+                  if (controller.referenceDimensionKinds.isNotEmpty || controller.referenceDimensions.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            for (final kind in controller.referenceDimensionKinds)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ActionChip(
+                                  key: ValueKey('reference-dimension-add-$kind'),
+                                  avatar: const Icon(Icons.straighten, size: 16),
+                                  label: Text('Reference $kind'),
+                                  onPressed: () => controller.addReferenceDimension(kind),
+                                ),
+                              ),
+                            for (final dimension in controller.referenceDimensions)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: InputChip(
+                                  key: ValueKey('reference-dimension-${dimension.id}'),
+                                  label: Text(controller.referenceDimensionLabelText(dimension.id)),
+                                  onDeleted: () => controller.deleteReferenceDimension(dimension.id),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
                   Row(
                     children: [
                       Expanded(

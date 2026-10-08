@@ -524,6 +524,71 @@ So the heuristic in this section (a geometric signature checked on every refresh
 `Modified()` / `Generated()` history is the thorough fix. The flat app's picking flow (Dimension mode's ghost vertices and edges, plus a separate Convert
 mode) should then be made implicit, as the VR design table now does: aiming at a part corner or edge in any tool makes the reference on demand.
 
+## DIDSA-VR: next-work candidates (added 2026-10-08)
+
+Built from a read of the DIDSA-VR README, `docs/vision-brief.md`, `docs/status.md` and `docs/design-table-gaps.md`, and this repo's README, roadmap and
+`docs/didsa-longterm-vision-and-model.md`. There is no usage data and the issue trackers are empty, so the order below is **inferred from the docs, not from
+measured demand**. Milestones 0, 1 and 4 of the VR client are done and 2 and 3 mostly so, all headless- and backend-verified; almost none of it has been
+tried on a real Quest. Items marked **backend** land in this repo.
+
+### Items
+
+1. **Quest hardening (blocks trust in everything else).** Standalone APK export and sideload never tested; cleartext HTTP on Android unresolved (needs a TLS or tunnel
+   URL); performance on Quest 2 / 3 / 3S unmeasured (everything so far is PCVR via Virtual Desktop). Not a feature, but every feature below is unproven until this is done.
+   Not scoped in detail.
+2. **References and dimensioning (design table).** Scoped, decisions recorded: `DIDSA-VR/docs/scope-references-and-dimensioning.md`. Centres, edges and vertices all usable in sketches, with the
+   linking mechanism silent so a dimension feels attached to the part's own edge, point or centre, and robustness as the acceptance bar (R-C). Also: R-A at-midpoint refused next to a
+   converted hole (**backend**, solver); R-B persistent reference dimensions as a separate list, decided over a `driven` flag (**backend** + flat app); R-D re-attach for non-sketch features and
+   one-call edge re-attach (**backend**); R-E make `convert-entities/edge` idempotent (**backend**); R-F ellipse edges (with Ellipse); R-G headset tuning.
+   **Progress (2026-10-08, branch `ccr-b3b16f97-0i1850`, headless / real-backend, not headset-verified):** R-A **done** (a converted circle / arc no longer carries constraints that are
+   redundant with its pinned points, and `add_fixed_constraint` fixes each point once; the at-midpoint next to a hole converges: `tests/test_reference_convert_edge_robustness.py`);
+   R-E **done** (`convert-entities/edge` returns the existing Circle / Arc / Line for the same edge); R-C **done for corners, edges, rims and faces**: `reference: true` on the convert
+   routes, `Sketch.reference_ids` / `is_reference` (additive in the responses, the export and the native file), `convert-entities/face` (a flat face square to the sketch plane as a pinned
+   line, a round face with its axis square to it as a live centre: a blind hole works), clean-up of helpers nothing depends on (`tests/test_reference_helpers.py`); the flat app draws helpers
+   quietly in both renderings and excludes them from hit-testing, with `ensureReferenceFace` and the API call in place but **no face-picking UI yet**. R-B **done**: `Sketch.reference_dimensions`
+   (separate list, value computed on read, solver untouched), `POST / GET / PATCH / DELETE .../reference-dimensions`, values in `solve-and-refresh`, export and the native file (additive); the flat app
+   draws them in brackets in 2D and in the 3D overlay and adds / removes them from the Dimension bar (`tests/test_reference_dimensions.py`, `client/test/sketch_reference_dimension_overlay_test.dart`).
+   R-D **done** (backend): PATCH on fillet / chamfer / shell / mirror / pattern accepts new references and clears the lost / moved flags; `POST .../external-references/reattach-edge` re-picks both ends of an edge
+   (`tests/test_reference_reattach_features.py`). Pattern re-attach is not tested; the flat app has no UI for either. R-F **done** (backend + VR): `convert-entities/edge` turns a full elliptical edge lying in the sketch plane into a pinned Ellipse (`tests/test_reference_ellipse_edge.py`); mesh edge kinds name `"ellipse"`; its centre is a plain pinned point, not a live reference. R-G (headset tuning) is open. The VR modelling tools of DIDSA-VR Phase 6 (Create Plane, Loft, Sweep, Pattern, Boolean, Merge, Split, Trim, Offset, Ellipse, Ellipse Arc, Spline, Text, Modify) use the existing routes unchanged, with one backend change found by them: editing an Ellipse / EllipseArc radius no longer rescales the other radius (it used to, via the "first dimension scales the whole sketch" rule; `test_stage15_constraints` was rewritten to the new rule, revert `_is_ellipse_axis_constraint` in `sketch/router.py` if the old scaling is wanted). Delete Face on a plain primitive wall stays a fail-closed `delete_face_failed` by design (nothing to heal into).
+3. **Modelling depth (design table).** Scoped, decisions recorded: `DIDSA-VR/docs/scope-modelling-depth.md`. Order: a per-feature interface and a docked properties panel first (M0), then
+   Create Plane, **Loft, Sweep**, then Pattern / Boolean / Merge / Split, Trim / Offset and direct edit, then Ellipse / Spline / Text. Preview uses both mechanisms (coarse-preview for Pattern
+   and Loft, create-then-PATCH for the rest); redo covers features only. The backend already has routes for almost all of it, so this is mostly VR client work.
+4. **Mate parity with the flat app.** Editing an existing mate's value or flip is not built (create, list, delete only); mates through sub-assemblies are not checked or
+   enforced (G14); a mated, enforced part cannot be carried onto the table (G15, workaround exists); sub-assemblies are refused and New part cannot be made inside one (G16).
+   Needs a nested-solve decision in the **backend**. Not scoped in detail.
+5. **Shared storage and multi-file assembly composition.** Already tracked under "Other open items" below (placeholder, needs its own scoping doc reopening decisions #4 and #6 in
+   `docs/assembly-scope.md`). Cheapest first step: a version check on write so a stale save is rejected. Also the prerequisite for multiplayer stage 1.
+6. **Analysis and MBD data in VR.** Centre of gravity, the hole tool and the material database (see "Analysis tools" and "MBD part-data compliance" above) have no VR
+   counterpart; when they land in the **backend** they are cheap to expose as a VR "Inspect" category (the deck already defines an accent colour for it). Measure and Section
+   exist on the wrist tablet today.
+7. **Smaller VR items.** Dragging a row out of the assembly tree into world space; "DIDSA-CAD as a flat window" (blocked on the Flutter client gaining a web build, though
+   the browser relay might serve it once it has one); keeping the VR docs honest (gap-list item 7 still names Point as missing; it is already built).
+8. **Design-table dock (properties panel): layout and human factors (VR).** The dock is the docked properties panel that holds the active tool's settings (item 3). Its visual style is
+   good; its layout is not good enough, and its use of space and colour needs a human-factors pass (reach and reading distance at arm's length, how much sits in the primary view,
+   grouping, size and contrast of targets, colour meaning and accessibility including colour-blind safety). It replaces the deck's single options row of six buttons plus More. Scope: audit
+   the current deck against a headset session, propose a layout, then rebuild. Not scoped yet; needs its own scoping doc.
+
+### Brainstorm (not committed; sources noted)
+
+From the VR vision brief's parked list: AI-assisted modelling by voice or from a sketch on an easel (the AI module already ships in the flat app, so this is mostly plumbing and
+microphone capture); a Bluetooth pen for sketching on a real table (hardware question first); multiplayer with per-user design tables, in two stages (shared files, then live presence,
+which is a separate backend project: session and document split, persistence, a push channel, per-user identity); an environment library (hangar, warehouse, paved area,
+laboratory, clean room; open-source availability is an open research question); Pico, Steam Frame, Galaxy and Apple builds.
+
+From this repo's README ("Future ideas"): **VR design review and manipulation** is already listed there. A review mode could be a distinct, smaller product: open a model, walk it,
+mark it up, no authoring tools.
+
+New suggestions, not from any doc, flagged as such:
+- **Review markup:** pin comments or spatial annotations on parts, saved with the file and visible in the flat app.
+- **Exploded view / assembly animation:** drive mates through a range and record it for review.
+- **Gear Design in VR:** parametric gear generation as a table feature, since the backend is complete; a gear next to its mate in true scale is a good demo of why VR helps.
+- **2D drawing / DXF in a floating window** once the DXF work (`docs/dxf-io/`) lands, shown through the browser relay or as a flat panel.
+- **Capture:** screenshots or a turntable video of the current view for sharing; a related earlier idea is the Cast option under "Other open items".
+- **Hand tracking** as an alternative to controllers (the current spike turns it off on purpose).
+- **Reference photo on an easel** as a backdrop for sketching to scale.
+
+Anything promoted out of this list should get its own scoping doc before it is built, as the two above did.
+
 ## Other open items
 
 - **Shared network storage + server-side assembly composition for a
@@ -739,3 +804,14 @@ mode) should then be made implicit, as the VR design table now does: aiming at a
   layouts, since this sandbox has no display/GPU. Worth a real on-device
   glance before fully trusting the clamp-fallback behavior looks right at
   a variety of screen sizes/panel heights.
+
+## Candidate: Delete Face that cannot heal (surface bodies / Delete and Fill)
+
+Today Delete Face is fail-closed: where `BRepAlgoAPI_Defeaturing` cannot heal the gap (a plain wall of a box or cylinder), the route returns `delete_face_failed` (see `app/document/delete_face.py`). Other CAD tools treat the non-healing result as an explicit mode, never the silent fallback: SolidWorks offers Delete / Delete and Patch / Delete and Fill, Fusion and Onshape have a heal option. A solid that quietly becomes a surface body is a known source of confusion, because Fillet, Shell, Boolean, volume, mesh and export all assume solids.
+
+Order of work:
+1. Keep the current fail-closed default (done, with a clear message in DIDSA-VR).
+2. **Delete and Fill** first: cap a hole or pocket opening with a planar / filled face so the body stays solid. Covers many real cases at low cost.
+3. **Delete without healing -> surface body** only as an explicit per-feature option, as its own project: a non-solid body kind in the document model, a visible "surface" marker in the Build tree and the Parts list, downstream features (Fillet, Shell, Mirror, Pattern, Boolean, Split, Merge, scale) refusing it with a clear named error, and export / volume behaviour decided. Needs a decision on how a surface body is meshed and picked in the VR table.
+
+Not started; the community-practice notes above are background knowledge, not a sourced survey.
