@@ -568,6 +568,37 @@ tried on a real Quest. Items marked **backend** land in this repo.
    grouping, size and contrast of targets, colour meaning and accessibility including colour-blind safety). It replaces the deck's single options row of six buttons plus More. Scope: audit
    the current deck against a headset session, propose a layout, then rebuild. Not scoped yet; needs its own scoping doc.
 
+### DIDSA-VR: parity gap review and rollout order (added 2026-10-12)
+
+A code-level comparison of DIDSA-VR against this repo's flat app and backend (read from source; nothing run, nothing seen in a headset). **The items above are partly
+stale:** since 2026-10-08 VR has built Create Plane, Loft, Sweep, Pattern, Boolean, Merge, Split, the five direct-edit (Modify) tools, and Trim, Offset, Ellipse, Ellipse Arc,
+Spline and Text (`DIDSA-VR/scripts/design_table/table_tools.gd`), and mate edit (value / flip / rotation lock / suppress). `DIDSA-VR/docs/scope-modelling-depth.md`,
+`design-table.md` ("Not built") and the item-7 line of `design-table-gaps.md` still say otherwise and need updating. What remains is mostly **option-level depth** plus a few whole families.
+
+**Where VR is already at parity:** sketch constraints (19 of the backend's 21; missing `point_on_ellipse` and `spline_tangent`) and the five mate types (the backend has no others).
+Advanced mates (tangent, gear, slider, hinge, path, symmetry, width, limit) exist in no client or the backend; that is new backend work and a product decision, not VR parity.
+
+**Rollout order (agreed 2026-10-12):**
+
+1. **Finish what is there (all backend-ready, VR client work).**
+   - Extrude: symmetric / two-sided (`start_distance`), thin wall + `thickness_direction`, `draft_angle`, profile selection (`profile_refs`).
+   - Chamfer: per-edge distance-angle and flip (`edge_options`).
+   - Create Plane: the seven other construction methods (VR does offset-from-face only), starting with midplane, three points, normal-to-edge-through-vertex.
+   - Move Face: direction mode. Pattern: `skip_indices`, `orientation_mode`, patterning a feature (`source_feature_ids`). Mirror: features as well as bodies. Loft: guide curves, thin wall.
+   - Sketch: construction methods (3-point circle, centre-corner and 3-point rectangle, midpoint line) and the `point_on_ellipse` constraint.
+2. **Sub-assemblies via the table or a "room" (idea, not yet scoped).** Edit a sub-assembly on the design table, or in a separate room, while the parent assembly stays in the world.
+   Covers G14 (mates through sub-assemblies), G15 (carrying a mated part) and G16 (New part inside one); needs a nested-solve decision in the backend and its own scoping doc before building.
+   Component patterns (linear / circular, skipped instances; backend and flat app have them, VR does not) belong with this step, as do component rename and multi-file external references.
+3. **Gears on the table.** Generate gears as table features; the backend is complete (gear, rack, chain, planetary, bevel, bevel pair) and the flat app has the design screens.
+   A gear next to its mate at true scale is the natural demo.
+4. **Sketch ergonomics (moved up from fifth to fourth).** Constrained drag of sketch entities, auto-constraint inference while drawing (parallel, perpendicular, tangent, collinear, point-on-curve;
+   VR has axis inference only), sketch-level Pattern / Mirror instances, offset of a whole chain, explode polygon / slot / rectangle, DOF and open-profile feedback.
+5. **Surfacing and curves.** Start with Thicken, Offset Surface and Helix, then the rest of the 11 surface feature types and Intersection curve, with the Planes / Surfaces / Curves Build-tree sections alongside.
+6. **Inspect and output.** Materials and mass properties, STEP / STL / OBJ / GLB export from VR, then AI modelling. Hole tool, centre of gravity and DXF remain unbuilt in every client (see above).
+
+**Caveats:** found by grep and reading, so a feature built through an unusual path could be missed; whether the VR Build tree's Edit covers the newer features, and whether VR displays the `dof` it stores, were not checked.
+Each item still gets its own scoping doc before it is built, as the earlier VR scopes did.
+
 ### Brainstorm (not committed; sources noted)
 
 From the VR vision brief's parked list: AI-assisted modelling by voice or from a sketch on an easel (the AI module already ships in the flat app, so this is mostly plumbing and
