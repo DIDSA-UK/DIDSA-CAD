@@ -580,7 +580,7 @@ Advanced mates (tangent, gear, slider, hinge, path, symmetry, width, limit) exis
 
 **Rollout order (agreed 2026-10-12):**
 
-1. **Finish what is there (all backend-ready, VR client work).**
+1. **Finish what is there (all backend-ready, VR client work). Planned as Phase 7 in `DIDSA-VR/docs/phase-7-plan.md`** (7.0 panel sections, 7.1 Extrude depth, 7.2 small tool options, 7.3 Create Plane types, 7.4 sketch construction methods; no backend change needed).
    - Extrude: symmetric / two-sided (`start_distance`), thin wall + `thickness_direction`, `draft_angle`, profile selection (`profile_refs`).
    - Chamfer: per-edge distance-angle and flip (`edge_options`).
    - Create Plane: the seven other construction methods (VR does offset-from-face only), starting with midplane, three points, normal-to-edge-through-vertex.
@@ -591,8 +591,12 @@ Advanced mates (tangent, gear, slider, hinge, path, symmetry, width, limit) exis
    Component patterns (linear / circular, skipped instances; backend and flat app have them, VR does not) belong with this step, as do component rename and multi-file external references.
 3. **Gears on the table.** Generate gears as table features; the backend is complete (gear, rack, chain, planetary, bevel, bevel pair) and the flat app has the design screens.
    A gear next to its mate at true scale is the natural demo.
-4. **Sketch ergonomics (moved up from fifth to fourth).** Constrained drag of sketch entities, auto-constraint inference while drawing (parallel, perpendicular, tangent, collinear, point-on-curve;
-   VR has axis inference only), sketch-level Pattern / Mirror instances, offset of a whole chain, explode polygon / slot / rectangle, DOF and open-profile feedback.
+4. **Sketch ergonomics and picks (moved up from fifth to fourth; widened 2026-10-12 with the items Phase 7 deferred).**
+   - Sketch: constrained drag of sketch entities, auto-constraint inference while drawing (parallel, perpendicular, tangent, collinear, point-on-curve; VR has axis inference only), sketch-level Pattern / Mirror
+     instances, offset of a whole chain, explode polygon / slot / rectangle, DOF and open-profile feedback, `spline_tangent`.
+   - Feature picks: Mirror and Pattern of **features** (`source_feature_ids`; needs a "pick a feature" mode in the Build tree and viewport), Loft **guide curves** (`guide_curve_refs`), Pattern ghost-tap to skip instances.
+   - Create Plane from sketch things: `normal_to_line_at_point`, `normal_to_curve_at_point` (sketch line or arc plus a sketch point), sketch points in `three_points`; `normal_to_curve_feature_at_parameter` waits for the curves work in step 5.
+   - Direct edit leftovers: per-edge chamfer overrides, Move Face by `delta`, Move Body rotation and copy-along.
 5. **Surfacing and curves.** Start with Thicken, Offset Surface and Helix, then the rest of the 11 surface feature types and Intersection curve, with the Planes / Surfaces / Curves Build-tree sections alongside.
 6. **Inspect and output.** Materials and mass properties, STEP / STL / OBJ / GLB export from VR, then AI modelling. Hole tool, centre of gravity and DXF remain unbuilt in every client (see above).
 
