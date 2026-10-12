@@ -1036,3 +1036,31 @@ def test_a_sketch_with_two_loops_needs_a_profile_pick_and_lofts_the_picked_one()
     response = _create_loft(part["id"], [picked, _section(top)])
     assert response.status_code == 201, response.json()
     assert abs(_volume(part["id"]) - 800.0) < 1.0  # the 10x10 square, straight up 8mm
+
+
+def test_update_loft_feature_explicit_null_thickness_turns_the_wall_off_and_omitting_keeps_it():
+    """Between two closed squares a thin loft (`thin_from_closed_profile`) is a hollow tube. PATCHing `thickness: null` makes it solid again;
+    a PATCH that does not mention `thickness` leaves the wall alone."""
+    part = _create_part()
+    bottom = _square_sketch(part["id"])
+    plane = _move_sketch_feature_up(part["id"], bottom, 5.0)
+    top_response = client.post(
+        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+    )
+    top = top_response.json()
+    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
+    create_response = _create_loft(
+        part["id"], [_section(bottom), _section(top)], thickness=1.0, thin_from_closed_profile=True
+    )
+    assert create_response.status_code == 201, create_response.json()
+    assert create_response.json()["thickness"] == 1.0
+    feature_id = create_response.json()["id"]
+    url = f"/document/parts/{part['id']}/loft-features/{feature_id}"
+
+    kept = client.patch(url, json={"ruled": True})
+    assert kept.status_code == 200, kept.json()
+    assert kept.json()["thickness"] == 1.0
+
+    cleared = client.patch(url, json={"thickness": None})
+    assert cleared.status_code == 200, cleared.json()
+    assert cleared.json()["thickness"] is None
