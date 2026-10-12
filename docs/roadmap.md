@@ -580,7 +580,7 @@ Advanced mates (tangent, gear, slider, hinge, path, symmetry, width, limit) exis
 
 **Rollout order (agreed 2026-10-12):**
 
-1. **Finish what is there (all backend-ready, VR client work). Planned as Phase 7 in `DIDSA-VR/docs/phase-7-plan.md`** (7.0 panel density (two columns, smaller rows), 7.1 Extrude depth, 7.2 small tool options, 7.3 Create Plane types, 7.4 sketch construction methods; no backend change needed).
+1. **Finish what is there. DONE 2026-10-12 as Phase 7 (`DIDSA-VR/docs/phase-7-plan.md`, `docs/status.md`): tests and real-backend runs, nothing seen in a headset or opened in the flat app; Extrude profile selection and plane Edit were not built.** Original scope (all backend-ready, VR client work; one small backend change was needed, Loft wall clearing): (7.0 panel density (two columns, smaller rows), 7.1 Extrude depth, 7.2 small tool options, 7.3 Create Plane types, 7.4 sketch construction methods; no backend change needed).
    - Extrude: symmetric / two-sided (`start_distance`), thin wall + `thickness_direction`, `draft_angle`, profile selection (`profile_refs`).
    - Chamfer: per-edge distance-angle and flip (`edge_options`).
    - Create Plane: the seven other construction methods (VR does offset-from-face only), starting with midplane, three points, normal-to-edge-through-vertex.
