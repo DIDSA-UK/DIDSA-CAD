@@ -562,7 +562,7 @@ tried on a real Quest. Items marked **backend** land in this repo.
    counterpart; when they land in the **backend** they are cheap to expose as a VR "Inspect" category (the deck already defines an accent colour for it). Measure and Section
    exist on the wrist tablet today.
 7. **Smaller VR items.** Dragging a row out of the assembly tree into world space; "DIDSA-CAD as a flat window" (blocked on the Flutter client gaining a web build, though
-   the browser relay might serve it once it has one); keeping the VR docs honest (gap-list item 7 still names Point as missing; it is already built).
+   the browser relay might serve it once it has one); keeping the VR docs honest (done 2026-10-12: gap-list item 7, `design-table.md`, the README and `scope-modelling-depth.md` now match the code).
 8. **Design-table dock (properties panel): layout and human factors (VR).** The dock is the docked properties panel that holds the active tool's settings (item 3). Its visual style is
    good; its layout is not good enough, and its use of space and colour needs a human-factors pass (reach and reading distance at arm's length, how much sits in the primary view,
    grouping, size and contrast of targets, colour meaning and accessibility including colour-blind safety). It replaces the deck's single options row of six buttons plus More. Scope: audit
