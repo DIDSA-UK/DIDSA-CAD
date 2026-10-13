@@ -6602,7 +6602,8 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
     new_target_body_ids = (
         payload.target_body_ids if payload.target_body_ids is not None else feature.target_body_ids
     )
-    new_thickness = payload.thickness if payload.thickness is not None else feature.thickness
+    # An explicit `thickness: null` turns the thin wall off (the Extrude update's own convention); omitting it keeps the current value.
+    new_thickness = payload.thickness if "thickness" in payload.model_fields_set else feature.thickness
     new_thin_from_closed_profile = (
         payload.thin_from_closed_profile
         if payload.thin_from_closed_profile is not None

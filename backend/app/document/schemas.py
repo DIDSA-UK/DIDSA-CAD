@@ -2114,10 +2114,11 @@ class LoftFeatureCreate(BaseModel):
 class LoftFeatureUpdate(BaseModel):
     """Partial update for live-preview re-solves, same omitted-vs-current-
     value convention as `SweepFeatureUpdate` - including for `thickness`:
-    omitting it (`None`) keeps the Feature's current value (which may
-    itself be `None`, i.e. closed-profile mode), the same "can't null a
-    real value back out via Update" limitation every other Optional field
-    here already has (e.g. `RackFeatureUpdate.backing_height`). `guide_
+    omitting it keeps the Feature's current value (which may itself be
+    `None`, i.e. closed-profile mode), and an explicit `null` turns the thin
+    wall off again (the same omitted-vs-null convention
+    `ExtrudeFeatureUpdate.thickness` uses; `model_fields_set` tells them
+    apart). `guide_
     curve_refs` follows the same convention: `None` (the default) keeps
     whatever the Feature already has; passing `[]` explicitly clears it
     back to "no guide curve" (an empty list is itself a real, meaningful
