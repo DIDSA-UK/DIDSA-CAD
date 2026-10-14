@@ -9709,6 +9709,39 @@ class _PartScreenState extends State<PartScreen> {
   bool get _canPersistFilePathForReuse =>
       widget.canPersistFilePathForReuse ?? (Platform.isWindows || Platform.isLinux || Platform.isMacOS);
 
+  /// The client-only state that lives in the *root* Part's file next to the
+  /// backend's own export (`hidden_feature_ids`, `section_planes` - see
+  /// [_buildNativeExportBytes] for why they ride along at all). Root Part
+  /// only, never whichever Part is focused (Assembly support Phase 20's
+  /// deliberate v1 scope limit). Passed as `extras` to every
+  /// `AssemblyDocumentClient.savePart` of the root Part, so a project-mode
+  /// save no longer drops them.
+  Map<String, dynamic> _rootClientExtras() => {
+    'hidden_feature_ids': (_hiddenFeatureIdsByPart[_part!.id] ?? const <String>{}).toList(),
+    'section_planes': [for (final s in _sectionPlanesByPart[_part!.id] ?? const <SectionPlane>[]) s.toJson()],
+  };
+
+  /// [_rootClientExtras] when [partId] is the session's root Part, else none.
+  Map<String, dynamic>? _extrasFor(String partId) => partId == _part?.id ? _rootClientExtras() : null;
+
+  /// Reads `hidden_feature_ids`/`section_planes` back out of a file's
+  /// top-level keys. Tolerant of a single corrupt section entry (skips just
+  /// that one, per [SectionPlane.fromJson]'s own doc comment) rather than
+  /// failing the whole Open over one typo in a hand-edited file.
+  ({List<String> hiddenFeatureIds, List<SectionPlane> sectionPlanes}) _parseClientExtras(Map<String, dynamic> data) {
+    final hiddenFeatureIds = (data['hidden_feature_ids'] as List?)?.cast<String>() ?? const <String>[];
+    final sectionPlanes = <SectionPlane>[];
+    for (final raw in (data['section_planes'] as List?) ?? const []) {
+      if (raw is! Map<String, dynamic>) continue;
+      try {
+        sectionPlanes.add(SectionPlane.fromJson(raw));
+      } catch (_) {
+        // Skip just this malformed entry.
+      }
+    }
+    return (hiddenFeatureIds: hiddenFeatureIds, sectionPlanes: sectionPlanes);
+  }
+
   /// Shared by [_saveNativeFile]/[_saveAsNativeFile]: exports the whole
   /// Document (every Part's ordered Feature list, plus every Sketch it
   /// references - no cached mesh/geometry) as this app's own native
@@ -9728,14 +9761,7 @@ class _PartScreenState extends State<PartScreen> {
     // focused sub-Part's own hidden-features/section-planes accumulated
     // only this session are a deliberate v1 scope limit, not persisted
     // across a save (see `docs/assembly-scope.md`'s own Phase 20 write-up).
-    data['hidden_feature_ids'] = (_hiddenFeatureIdsByPart[_part!.id] ?? const {}).toList();
-    // Sectioning Tool: same client-only stash technique, one key over -
-    // the backend's own `import_native` has no concept of a section at all
-    // (see `section_plane.dart`'s own doc comment for why: it's transient
-    // VIEW state, never a Feature/Body-tree entry), so this is the only
-    // place a section's placement survives a Save/Load round trip. Root
-    // Part only, same reasoning as `hidden_feature_ids` immediately above.
-    data['section_planes'] = [for (final s in _sectionPlanesByPart[_part!.id] ?? const []) s.toJson()];
+    data.addAll(_rootClientExtras());
     return Uint8List.fromList(utf8.encode(jsonEncode(data)));
   }
 
@@ -9783,78 +9809,253 @@ class _PartScreenState extends State<PartScreen> {
     return true;
   }
 
-  /// Native Save: on-device feedback fix - a plain Save used to always go
-  /// through the same save-file dialog as Save As, even for a Part that had
-  /// already been saved/opened once this session. On desktop, where
-  /// [_lastSavedFilePath] is a real, trustworthy path (see
-  /// [_canPersistFilePathForReuse]), this now writes straight to it via
-  /// `dart:io` with no dialog at all. On mobile, [_lastSavedFilePath] is
-  /// never set in the first place (same reasoning), so this always falls
-  /// through to the dialog (via [_saveNativeFileViaDialog], re-suggesting
-  /// [_lastSavedFileName]) - still an improvement over a bare "Save" doing
-  /// nothing, but not the silent overwrite desktop gets; true silent
-  /// overwrite on mobile would need this app to hold onto a persisted
-  /// Storage Access Framework/security-scoped-bookmark permission instead
-  /// of a plain path string, which nothing here does yet.
+  /// Native Save. Convention (bug report 2026-10-14, item 2): if the document
+  /// has a known location, overwrite it silently; otherwise behave exactly
+  /// like Save As.
   ///
-  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
-  /// §3.3): this whole-session flat-dump body is now only for a session
-  /// with no [_projectRoot] yet - a lone Part with nowhere else to live.
-  /// Once a Project exists, plain Save means something narrower
-  /// ([_saveFocusedPart]): write back just the Part currently being edited,
-  /// not the entire loaded session (that's [_onSaveAllPressed]'s job) -
-  /// same "Save is the active document, Save All is everything" split real
-  /// CAD tools already draw.
+  /// Three cases, by what kind of session this is:
+  ///  * **Project session** ([_projectRoot] != null - anything that came from
+  ///    Open, or has been saved once): [_saveFocusedPart] writes back just the
+  ///    Part being edited through [StorageService.writeFile] (the SAF
+  ///    implementation overwrites the existing document in place), never the
+  ///    whole session - that is [_onSaveAllPressed]'s job.
+  ///  * **Legacy whole-session bundle** (opened from a multi-Part-in-one-file
+  ///    bundle, [_isLegacyBundleSession]): [_saveBundleSession], the old
+  ///    flat dump.
+  ///  * **A fresh Part with no file yet**: [_firstSaveIntoProject] - folder
+  ///    (asked once, then remembered), name, write, and the session becomes
+  ///    project-backed so every later Save is the silent overwrite above.
+  ///
+  /// `FilePicker.saveFile` is no longer used for native saves on mobile: on
+  /// Android it is `ACTION_CREATE_DOCUMENT`, which can never overwrite, so
+  /// picking the same name produced `Frame_A (1)`, `(2)`, ... and the session
+  /// never learned where it lived.
   Future<void> _saveNativeFile() async {
     setState(() => _toolbarOpen = false);
     if (_projectRoot != null) {
       await _saveFocusedPart();
       return;
     }
-    await _runGuarded(() async {
-      final bytes = await _buildNativeExportBytes();
-      final knownPath = _lastSavedFilePath;
-      if (knownPath != null) {
-        try {
-          await File(knownPath).writeAsBytes(bytes);
-          setState(() => _isDirty = false);
-          return;
-        } catch (_) {
-          // Falls through to the dialog below.
-        }
-      }
-      final saved = await _saveNativeFileViaDialog(_lastSavedFileName ?? '${_part?.name ?? 'part'}$kNativeFileExtension', bytes);
-      if (saved) setState(() => _isDirty = false);
-    });
+    if (_isLegacyBundleSession) {
+      await _saveBundleSession(isSaveAs: false);
+      return;
+    }
+    await _firstSaveIntoProject(isSaveAs: false);
   }
 
-  /// Native Save As: always suggests a fresh, generic name and always goes
-  /// through the save dialog - the deliberate difference from plain Save,
-  /// which skips the dialog entirely once a path is known (see
-  /// [_saveNativeFile]'s own doc comment).
-  ///
-  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
-  /// §3.3): this whole-session flat-dump body is now only for a session
-  /// with no [_projectRoot] yet, mirroring [_saveNativeFile]'s own split -
-  /// once a Project exists, Save As means renaming/relocating just the
-  /// currently focused Part's own file ([_saveFocusedPartAs]).
+  /// Native Save As: always prompts, and on success the open document
+  /// *becomes* the new file (title, the path later Saves use, and - see item
+  /// 3 - its identity). Same three-way split as [_saveNativeFile]:
+  /// [_saveFocusedPartAs] once a Project exists, [_saveBundleSession] for a
+  /// legacy bundle, [_firstSaveIntoProject] for a Part with no file yet.
   Future<void> _saveAsNativeFile() async {
     setState(() => _toolbarOpen = false);
     if (_projectRoot != null) {
       await _saveFocusedPartAs();
       return;
     }
-    // Bug report 2026-10-14, item 3: the Save As copy is written with fresh
-    // document/Part/sketch ids so it never shares identity with the file it
-    // was copied from, and the session then reopens *that* file
-    // ([_openBundlePayload], the same push-replacement Open uses) so the
-    // in-session ids match what is on disk - otherwise the very next Save
-    // would write the old ids over the new file again. Saving to the path the
-    // session already lives at is just a Save: the original bytes go back
-    // and nothing is reopened.
+    if (_isLegacyBundleSession) {
+      await _saveBundleSession(isSaveAs: true);
+      return;
+    }
+    await _firstSaveIntoProject(isSaveAs: true);
+  }
+
+  /// True for a session opened from a legacy bundle-shaped file (several
+  /// Parts in one file): [PartScreen.initialFileName] is seeded only by
+  /// [_openBundlePayload]. Everything else is project-shaped.
+  bool get _isLegacyBundleSession => widget.initialFileName != null;
+
+  /// The first Save of a Part that has no file yet (a New session, or the
+  /// first launch): picks where it lives, writes it with
+  /// [AssemblyDocumentClient.savePart], and makes the session project-backed
+  /// ([_projectRoot] + [_relativePathByPartId]) so every later Save is
+  /// [_saveFocusedPart]'s silent overwrite and every later Save As is
+  /// [_saveFocusedPartAs]. No identity re-mint: nothing else carries this
+  /// Part's ids yet.
+  ///
+  /// Mobile: [_ensureProjectRoot] (the remembered folder if its grant is
+  /// still held, otherwise the SAF folder picker - asked once), then the name
+  /// prompt with Change Folder. Desktop: the native save dialog is used only
+  /// to *pick the path* (it writes nothing itself), then the write goes
+  /// through the same `savePart` as everywhere else. Cancelling either step
+  /// changes nothing: no state, [_isDirty] as it was, and a folder that was
+  /// only just granted for this attempt is not kept as the session's root.
+  Future<void> _firstSaveIntoProject({required bool isSaveAs}) async {
+    final part = _part;
+    if (part == null) return;
+
+    final hadRoot = _projectRoot != null;
+    final ProjectRoot root;
+    final String path;
+    if (_canPersistFilePathForReuse) {
+      final picked = await FilePicker.platform.saveFile(
+        dialogTitle: isSaveAs ? 'Save Project As' : 'Save Project',
+        fileName: '${part.name}$kNativeFileExtension',
+      );
+      if (picked == null || !mounted) return;
+      final withExtension = withDefaultExtension(picked);
+      root = DesktopProjectRoot(p.dirname(withExtension));
+      path = p.basename(withExtension);
+    } else {
+      final ensured = await _ensureProjectRoot();
+      if (ensured == null || !mounted) return;
+      var chosenRoot = ensured;
+      final prompted = await showRelativePathPromptDialog(
+        context,
+        title: 'Save "${part.name}" as…',
+        initialValue: part.name,
+        storageService: _storageService,
+        root: ensured,
+        confirmText: isSaveAs ? 'Save As' : 'Save',
+        onRootChanged: (newRoot) {
+          chosenRoot = newRoot;
+          if (mounted) setState(() => _projectRoot = newRoot);
+        },
+      );
+      if (prompted == null || !mounted) {
+        if (!hadRoot && mounted) setState(() => _projectRoot = null);
+        return;
+      }
+      root = chosenRoot;
+      path = prompted;
+    }
+
+    var written = false;
+    await _runGuarded(() async {
+      try {
+        await _assemblyDocumentClient.savePart(root, part.id, path, extras: _rootClientExtras());
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = "Couldn't write $path: ${e.message}");
+        return;
+      }
+      written = true;
+      setState(() {
+        _projectRoot = root;
+        _relativePathByPartId = {..._relativePathByPartId, part.id: path};
+        _isDirty = false;
+      });
+    });
+    if (!written && !hadRoot && mounted) setState(() => _projectRoot = null);
+    if (written && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved to $path')));
+    }
+  }
+
+  /// A Save that could not write (the folder grant was revoked, or the file
+  /// was deleted or moved since): tells the user why, drops a root that is no
+  /// longer reachable (so [_ensureProjectRoot] re-prompts for the folder
+  /// instead of failing again), and falls back to the Save As flow. Never
+  /// fails silently, and [_isDirty] stays true until a write really succeeds.
+  Future<void> _recoverFromFailedSave(String relativePath, String reason) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Couldn't write $relativePath: $reason. Choose where to save it.")),
+    );
+    // `lastUsedProjectRoot` re-validates the grant with a real stat; null
+    // means the current root can't be trusted any more.
+    ProjectRoot? stillValid;
+    try {
+      stillValid = await _storageService.lastUsedProjectRoot();
+    } on StorageException {
+      stillValid = null;
+    }
+    if (!mounted) return;
+    if (stillValid == null) setState(() => _projectRoot = null);
+    await _saveFocusedPartAs();
+  }
+
+  /// Save / Save As for a legacy whole-session bundle (several Parts in one
+  /// file) - the old flat dump, kept only for sessions opened from such a
+  /// file. Desktop: straight back to the known path, or the native dialog.
+  /// Mobile: through the persisted project-folder grant like every other
+  /// native save ([_ensureProjectRoot] + [StorageService.writeFile], which
+  /// overwrites in place), never `FilePicker.saveFile`.
+  ///
+  /// Save As writes the bundle under fresh document/Part/sketch ids and
+  /// reopens it (item 3), exactly as [_saveFocusedPartAs] does for a project.
+  Future<void> _saveBundleSession({required bool isSaveAs}) async {
     Map<String, dynamic>? reminted;
     String? reopenFileName;
     String? reopenFilePath;
+
+    if (!_canPersistFilePathForReuse) {
+      final root = await _ensureProjectRoot();
+      if (root == null || !mounted) return;
+      var writeRoot = root;
+      var path = _lastSavedFileName;
+      if (isSaveAs || path == null) {
+        path = await showRelativePathPromptDialog(
+          context,
+          title: 'Save "${_part?.name ?? 'part'}" as…',
+          initialValue: stripNativeExtension(path ?? _part?.name ?? 'part'),
+          storageService: _storageService,
+          root: root,
+          confirmText: isSaveAs ? 'Save As' : 'Save',
+          onRootChanged: (newRoot) {
+            writeRoot = newRoot;
+            if (mounted) setState(() => _projectRoot = newRoot);
+          },
+        );
+        if (path == null || !mounted) return;
+      }
+      final targetPath = path;
+      var failure = false;
+      await _runGuarded(() async {
+        final originalBytes = await _buildNativeExportBytes();
+        var bytes = originalBytes;
+        final isNewFile = isSaveAs && targetPath != _lastSavedFileName;
+        if (isNewFile) {
+          reminted = remintNativeIdentity(jsonDecode(utf8.decode(originalBytes)) as Map<String, dynamic>);
+          bytes = Uint8List.fromList(utf8.encode(jsonEncode(reminted)));
+        }
+        try {
+          await _storageService.writeFile(writeRoot, targetPath, bytes);
+        } on StorageException catch (e) {
+          failure = true;
+          reminted = null;
+          setState(() => _errorMessage = "Couldn't write $targetPath: ${e.message}");
+          return;
+        }
+        _lastSavedFileName = targetPath;
+        setState(() => _isDirty = false);
+        reopenFileName = targetPath;
+      });
+      if (failure) return;
+      final toReopen = reminted;
+      if (toReopen != null && mounted) {
+        await _openBundlePayload(toReopen, fileName: reopenFileName, filePath: null);
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved $targetPath')));
+      }
+      return;
+    }
+
+    // Desktop.
+    if (!isSaveAs) {
+      await _runGuarded(() async {
+        final bytes = await _buildNativeExportBytes();
+        final knownPath = _lastSavedFilePath;
+        if (knownPath != null) {
+          try {
+            await File(knownPath).writeAsBytes(bytes);
+            setState(() => _isDirty = false);
+            return;
+          } catch (_) {
+            // Falls through to the dialog below.
+          }
+        }
+        final saved = await _saveNativeFileViaDialog(
+          _lastSavedFileName ?? '${_part?.name ?? 'part'}$kNativeFileExtension',
+          bytes,
+        );
+        if (saved) setState(() => _isDirty = false);
+      });
+      return;
+    }
+    // Save As: fresh identity, reopen the written file. Saving to the path the
+    // session already lives at is just a Save: the original bytes go back and
+    // nothing is reopened.
     await _runGuarded(() async {
       final originalBytes = await _buildNativeExportBytes();
       final previousPath = _lastSavedFilePath;
@@ -9900,6 +10101,8 @@ class _PartScreenState extends State<PartScreen> {
     final root = _projectRoot;
     if (focusPartId == null || root == null) return;
 
+    String? failedPath;
+    String? failureReason;
     await _runGuarded(() async {
       final fullSessionExport = await _api.exportNative();
       final stamped = stampExternalRefs(
@@ -9916,9 +10119,12 @@ class _PartScreenState extends State<PartScreen> {
       }
 
       try {
-        await _assemblyDocumentClient.savePart(root, focusPartId, relativePath);
+        await _assemblyDocumentClient.savePart(root, focusPartId, relativePath, extras: _extrasFor(focusPartId));
       } on StorageException catch (e) {
-        setState(() => _errorMessage = 'Failed to save: ${e.message}');
+        // [_isDirty] stays true (set by [_runGuarded]) until a write really
+        // succeeds; [_recoverFromFailedSave] explains and offers Save As.
+        failedPath = relativePath;
+        failureReason = e.message;
         return;
       }
       setState(() => _isDirty = false);
@@ -9926,6 +10132,8 @@ class _PartScreenState extends State<PartScreen> {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
       }
     });
+    final failed = failedPath;
+    if (failed != null) await _recoverFromFailedSave(failed, failureReason ?? 'unknown error');
   }
 
   /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
@@ -9950,8 +10158,11 @@ class _PartScreenState extends State<PartScreen> {
   /// honest, safe outcome here, never a silent data loss.
   Future<void> _saveFocusedPartAs() async {
     final focusPartId = _focusStack?.current ?? _part?.id;
-    final initialRoot = _projectRoot;
-    if (focusPartId == null || initialRoot == null) return;
+    if (focusPartId == null) return;
+    // A root cleared by [_recoverFromFailedSave] (its grant is gone) is asked
+    // for again here; cancelling the folder picker aborts the Save As.
+    final initialRoot = _projectRoot ?? await _ensureProjectRoot();
+    if (initialRoot == null || !mounted) return;
     var root = initialRoot;
 
     var partName = 'part';
@@ -9968,6 +10179,7 @@ class _PartScreenState extends State<PartScreen> {
       initialValue: currentPath ?? partName,
       storageService: _storageService,
       root: root,
+      confirmText: 'Save As',
       onRootChanged: (newRoot) {
         root = newRoot;
         if (mounted) setState(() => _projectRoot = newRoot);
@@ -10012,10 +10224,16 @@ class _PartScreenState extends State<PartScreen> {
           await _api.importNative(stamped);
           for (final entry in _relativePathByPartId.entries) {
             if (entry.key == focusPartId) continue;
-            await _assemblyDocumentClient.savePart(root, entry.key, entry.value);
+            await _assemblyDocumentClient.savePart(root, entry.key, entry.value, extras: _extrasFor(entry.key));
           }
         }
-        await _assemblyDocumentClient.savePart(root, focusPartId, newPath, remintIdentity: true);
+        await _assemblyDocumentClient.savePart(
+          root,
+          focusPartId,
+          newPath,
+          remintIdentity: true,
+          extras: _extrasFor(focusPartId),
+        );
       } on StorageException catch (e) {
         setState(() => _errorMessage = 'Failed to save: ${e.message}');
         return;
@@ -10234,18 +10452,9 @@ class _PartScreenState extends State<PartScreen> {
     // hand-edited file is the only realistic way this key would ever be
     // malformed, and losing every section over one typo in one of them
     // would be a needlessly harsh failure mode.
-    final hiddenFeatureIds = (decoded['hidden_feature_ids'] as List?)?.cast<String>() ?? const [];
-    final sectionPlanesRaw = (decoded['section_planes'] as List?) ?? const [];
-    final sectionPlanes = <SectionPlane>[];
-    for (final raw in sectionPlanesRaw) {
-      if (raw is! Map<String, dynamic>) continue;
-      try {
-        sectionPlanes.add(SectionPlane.fromJson(raw));
-      } catch (_) {
-        // Skip just this one malformed entry - see this block's own doc
-        // comment above.
-      }
-    }
+    final extras = _parseClientExtras(decoded);
+    final hiddenFeatureIds = extras.hiddenFeatureIds;
+    final sectionPlanes = extras.sectionPlanes;
 
     NativeImportResultDto? imported;
     await _runGuarded(() async {
@@ -10292,6 +10501,7 @@ class _PartScreenState extends State<PartScreen> {
     });
     final result = opened;
     if (result == null || !mounted) return;
+    final extras = _parseClientExtras(result.rootClientExtras);
 
     await Navigator.of(context).pushReplacement(
       MaterialPageRoute(
@@ -10304,6 +10514,8 @@ class _PartScreenState extends State<PartScreen> {
           initialPartId: result.rootPartId,
           initialProjectRoot: root,
           initialRelativePathByPartId: result.relativePathByPartId,
+          initialHiddenFeatureIds: extras.hiddenFeatureIds,
+          initialSectionPlanes: extras.sectionPlanes,
         ),
       ),
     );
@@ -12422,7 +12634,12 @@ class _PartScreenState extends State<PartScreen> {
 
     SaveAllResult? result;
     await _runGuarded(() async {
-      result = await _assemblyDocumentClient.saveAll(root, exported, relativePathByPartId);
+      result = await _assemblyDocumentClient.saveAll(
+        root,
+        exported,
+        relativePathByPartId,
+        extrasByPartId: {if (_part != null) _part!.id: _rootClientExtras()},
+      );
     });
     if (!mounted) return;
     final saveResult = result;

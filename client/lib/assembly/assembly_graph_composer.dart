@@ -30,7 +30,13 @@ class ComposedAssemblyGraph {
     required this.documentPayload,
     required this.relativePathByPartId,
     required this.staleRelativePaths,
+    this.rootClientExtras = const {},
   });
+
+  /// The root file's client-only top-level keys (`hidden_feature_ids`,
+  /// `section_planes`) - never part of [documentPayload]'s Parts, kept so the
+  /// screen can restore them the way a legacy bundle Open does.
+  final Map<String, dynamic> rootClientExtras;
 
   /// The `id` of the root file's own Part, inside [documentPayload] - what
   /// to call `DocumentApiClient.getAssemblyMesh`/`.../mesh` with after
@@ -98,6 +104,7 @@ class AssemblyGraphComposer {
     final partIdByPath = <String, String>{};
     final sketchesById = <String, Map<String, dynamic>>{};
     final stalePaths = <String>{};
+    var rootClientExtras = <String, dynamic>{};
 
     Future<Map<String, dynamic>> readAndDecode(String relativePath) async {
       try {
@@ -163,6 +170,13 @@ class AssemblyGraphComposer {
         payload = remintNativeIdentity(payload);
       }
 
+      if (ancestorPath.isEmpty) {
+        rootClientExtras = {
+          for (final key in const ['hidden_feature_ids', 'section_planes'])
+            if (payload[key] != null) key: payload[key],
+        };
+      }
+
       final documentData = payload['document'] as Map<String, dynamic>;
       final parts = (documentData['parts'] as List).cast<Map<String, dynamic>>();
       final partDict = parts.single;
@@ -207,6 +221,7 @@ class AssemblyGraphComposer {
       },
       relativePathByPartId: {for (final entry in partIdByPath.entries) entry.value: entry.key},
       staleRelativePaths: stalePaths,
+      rootClientExtras: rootClientExtras,
     );
   }
 }

@@ -224,6 +224,42 @@ void main() {
     expect((((plain['document'] as Map)['parts'] as List).single as Map)['id'], 'part-top');
   });
 
+  test('savePart with extras merges them at the top level; saveAll passes them for the root only', () async {
+    final storage = _FakeStorageService();
+    final documentApiClient = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path.endsWith('/import/native')) {
+          return _jsonResponse({'document_id': 'd', 'part_ids': ['part-top']});
+        }
+        return _jsonResponse(_singlePartPayload(id: request.url.queryParameters['part_id'] ?? 'part-top', name: 'X'));
+      }),
+    );
+    final client = AssemblyDocumentClient(storageService: storage, documentApiClient: documentApiClient);
+    final extras = {
+      'hidden_feature_ids': ['f1'],
+      'section_planes': [
+        {'k': 1},
+      ],
+    };
+
+    await client.savePart(root, 'part-top', 'top.didsa', extras: extras);
+    final written = jsonDecode(utf8.decode(storage.files['top.didsa']!)) as Map<String, dynamic>;
+    expect(written['hidden_feature_ids'], ['f1']);
+    expect(written['section_planes'], hasLength(1));
+    expect(written['document'], isNotNull);
+
+    await client.saveAll(
+      root,
+      _singlePartPayload(id: 'part-top', name: 'Top'),
+      {'part-top': 'a.didsa', 'part-2': 'b.didsa'},
+      extrasByPartId: {'part-top': extras},
+    );
+    final rootFile = jsonDecode(utf8.decode(storage.files['a.didsa']!)) as Map<String, dynamic>;
+    final childFile = jsonDecode(utf8.decode(storage.files['b.didsa']!)) as Map<String, dynamic>;
+    expect(rootFile['hidden_feature_ids'], ['f1']);
+    expect(childFile.containsKey('hidden_feature_ids'), isFalse);
+  });
+
   test('savePart exports one Part and writes it to the given relative path', () async {
     final storage = _FakeStorageService();
     String? capturedPartIdParam;

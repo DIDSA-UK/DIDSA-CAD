@@ -19,9 +19,14 @@ class OpenedAssembly {
     required this.rootPartId,
     required this.relativePathByPartId,
     required this.staleRelativePaths,
+    this.rootClientExtras = const {},
   });
 
   final String rootPartId;
+
+  /// The root file's client-only top-level keys (`hidden_feature_ids`,
+  /// `section_planes`), for the caller to restore - the backend ignores them.
+  final Map<String, dynamic> rootClientExtras;
   final Map<String, String> relativePathByPartId;
   final Set<String> staleRelativePaths;
 }
@@ -61,6 +66,7 @@ class AssemblyDocumentClient {
       rootPartId: composed.rootPartId,
       relativePathByPartId: composed.relativePathByPartId,
       staleRelativePaths: composed.staleRelativePaths,
+      rootClientExtras: composed.rootClientExtras,
     );
   }
 
@@ -78,6 +84,9 @@ class AssemblyDocumentClient {
   /// `StorageService.writeFile`. Never touches any other Part's file, even
   /// ones this Part references or is referenced by.
   ///
+  /// [extras] are merged into the top-level payload before encoding (see
+  /// below); callers pass them only for the session's root Part.
+  ///
   /// [remintIdentity] (Save As to a *new* file, bug report 2026-10-14 item
   /// 3): writes the copy with a fresh document id, Part id and sketch ids
   /// (`remintNativeIdentity`) so it never shares identity with the file it
@@ -89,9 +98,16 @@ class AssemblyDocumentClient {
     String partId,
     String relativePath, {
     bool remintIdentity = false,
+    Map<String, dynamic>? extras,
   }) async {
     var exported = await _documentApiClient.exportNative(partId: partId);
     if (remintIdentity) exported = remintNativeIdentity(exported);
+    // Client-only state the backend's export knows nothing about
+    // (`hidden_feature_ids`, `section_planes` - see
+    // `PartScreen._rootClientExtras`), merged at the top level so the
+    // backend's `import_native` ignores it and `_openComposedProject` reads
+    // it back. Without this a project-mode save silently dropped it.
+    if (extras != null && extras.isNotEmpty) exported = {...exported, ...extras};
     final bytes = utf8.encode(jsonEncode(exported));
     await _storageService.writeFile(root, relativePath, bytes);
   }
@@ -116,8 +132,9 @@ class AssemblyDocumentClient {
   Future<SaveAllResult> saveAll(
     ProjectRoot root,
     Map<String, dynamic> fullSessionExport,
-    Map<String, String> relativePathByPartId,
-  ) async {
+    Map<String, String> relativePathByPartId, {
+    Map<String, Map<String, dynamic>> extrasByPartId = const {},
+  }) async {
     final stamped = stampExternalRefs(
       documentPayload: fullSessionExport,
       relativePathByPartId: relativePathByPartId,
@@ -128,7 +145,7 @@ class AssemblyDocumentClient {
     final failures = <PartSaveFailure>[];
     for (final entry in relativePathByPartId.entries) {
       try {
-        await savePart(root, entry.key, entry.value);
+        await savePart(root, entry.key, entry.value, extras: extrasByPartId[entry.key]);
         saved.add(entry.value);
       } on StorageException catch (e) {
         failures.add(PartSaveFailure(partId: entry.key, relativePath: entry.value, message: e.message));

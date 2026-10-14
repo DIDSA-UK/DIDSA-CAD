@@ -90,7 +90,13 @@ Future<String?> showRelativePathPromptDialog(
   required ProjectRoot root,
   bool skippable = false,
   ValueChanged<ProjectRoot>? onRootChanged,
+  String confirmText = 'Save',
 }) async {
+  // [confirmText] names the confirm button after the action ("Save",
+  // "Save As", ...). The dialog also shows which folder it will write into,
+  // so a remembered folder reused silently is visible and "Change Folder"
+  // makes sense.
+  //
   // [onRootChanged], when given, adds a "Change Folder" button: the picked
   // root is reported to the caller (which must save relative to it) and used
   // for this dialog's own collision check. Omitted by flows that write many
@@ -132,6 +138,10 @@ Future<String?> showRelativePathPromptDialog(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text('Folder: ${currentRoot.displayName}', style: Theme.of(context).textTheme.bodySmall),
+            ),
             TextFormField(
               initialValue: value,
               autofocus: true,
@@ -193,7 +203,7 @@ Future<String?> showRelativePathPromptDialog(
             onPressed: validationError == null
                 ? () => Navigator.of(context).pop(withDefaultExtension(value))
                 : null,
-            child: const Text('Save'),
+            child: Text(confirmText),
           ),
         ],
       ),

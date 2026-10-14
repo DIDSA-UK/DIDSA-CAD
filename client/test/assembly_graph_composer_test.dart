@@ -236,6 +236,25 @@ void main() {
     expect(result.rootPartId, 'part-top');
   });
 
+  test('the root file\'s client-only extras are carried out; a child\'s are not', () async {
+    storage.put('bolt.didsa', {
+      ..._singlePartPayload(id: 'part-bolt', name: 'Bolt'),
+      'hidden_feature_ids': ['child-hidden'],
+    });
+    storage.put('top.didsa', {
+      ..._singlePartPayload(id: 'part-top', name: 'Top', occurrences: [_occurrence('occ-1', 'bolt.didsa')]),
+      'hidden_feature_ids': ['f1'],
+      'section_planes': [
+        {'k': 1},
+      ],
+    });
+
+    final result = await composer.compose(root, 'top.didsa');
+
+    expect(result.rootClientExtras['hidden_feature_ids'], ['f1']);
+    expect(result.rootClientExtras['section_planes'], hasLength(1));
+  });
+
   // Bug report 2026-10-14, item 3: two files sharing a Part id (a Save As copy
   // that was then edited) used to collapse into one Part, with the sketches
   // and the save-back path map taken from whichever was read last.

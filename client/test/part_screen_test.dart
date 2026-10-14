@@ -813,9 +813,18 @@ class _FakeStorageService implements StorageService {
   /// ._ensureProjectRoot`'s new `lastUsedProjectRoot`-first path.
   ProjectRoot? presetLastUsedRoot;
 
+  /// Item 2: simulates the user cancelling the SAF folder picker (the real
+  /// services signal cancel by throwing, never by returning null).
+  bool pickerCancels = false;
+
+  /// Item 2: relative paths whose [writeFile] throws [StorageException] - a
+  /// revoked grant, or a file deleted/moved since the last Save.
+  final Set<String> failOnWrite = {};
+
   @override
   Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async {
     pickOrCreateProjectRootCallCount++;
+    if (pickerCancels) throw StorageException('No folder was selected');
     return root;
   }
 
@@ -833,6 +842,7 @@ class _FakeStorageService implements StorageService {
 
   @override
   Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+    if (failOnWrite.contains(relativePath)) throw StorageException('Permission denied');
     files[relativePath] = bytes;
     writeCounts[relativePath] = (writeCounts[relativePath] ?? 0) + 1;
     return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
@@ -6206,7 +6216,7 @@ void main() {
       await tester.enterText(find.byType(TextFormField), 'renamed-top.DIDSAprt');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save As'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -6288,7 +6298,7 @@ void main() {
       await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save As'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -6301,6 +6311,154 @@ void main() {
         partIds.firstMatch(utf8.decode(storage.files['top.DIDSAprt']!))!.group(1),
         partIds.firstMatch(originalBytes)!.group(1),
       );
+    });
+  });
+
+  // Bug report 2026-10-14, item 2: on Android a Save with no known file fell
+  // back to `FilePicker.saveFile` (ACTION_CREATE_DOCUMENT, which can never
+  // overwrite), so every Save was a Save As and `Frame_A (1)`, `(2)` piled up.
+  // Now every native Save on mobile goes through the persisted folder grant.
+  // `canPersistFilePathForReuse: false` selects the mobile branch.
+  group('item 2: first Save goes through the project folder', () {
+    Future<PartToolbar Function()> pumpFresh(
+      WidgetTester tester,
+      _FakeStorageService storage, {
+      _FakeDocumentBackend? backend,
+    }) async {
+      final fake = backend ?? _FakeDocumentBackend();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => fake.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+            canPersistFilePathForReuse: false,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      return () => tester.widget<PartToolbar>(find.byType(PartToolbar));
+    }
+
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    Future<void> answerNamePrompt(WidgetTester tester, String name, {String button = 'Save'}) async {
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField), name);
+      await settle(tester);
+      await tester.tap(find.widgetWithText(FilledButton, button));
+      await settle(tester);
+    }
+
+    testWidgets('no remembered folder: picks the folder once, asks the name once, writes once; re-Save is silent', (
+      tester,
+    ) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      // The prompt shows which folder it will write into.
+      expect(find.textContaining('Folder: '), findsOneWidget);
+      await answerNamePrompt(tester, 'Frame 1.5m');
+
+      expect(storage.pickOrCreateProjectRootCallCount, 1);
+      // A dotted name still gets the native extension (item 9).
+      expect(storage.files.keys, ['Frame 1.5m.didsa']);
+      expect(storage.writeCounts['Frame 1.5m.didsa'], 1);
+      expect(find.text('Saved to Frame 1.5m.didsa'), findsOneWidget);
+      // The title follows the new file (item 1).
+      expect(find.text('Frame 1.5m'), findsOneWidget);
+
+      // Second Save: no picker, no prompt, the same file overwritten.
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      toolbar().onSaveNative!();
+      await settle(tester);
+      expect(find.text('Save "Part 1" as…'), findsNothing);
+      expect(storage.pickOrCreateProjectRootCallCount, 1);
+      expect(storage.writeCounts['Frame 1.5m.didsa'], 2);
+      expect(storage.files, hasLength(1));
+    });
+
+    testWidgets('a remembered folder skips the picker and only asks for the name', (tester) async {
+      final storage = _FakeStorageService();
+      storage.presetLastUsedRoot = storage.root;
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await answerNamePrompt(tester, 'bracket');
+
+      expect(storage.pickOrCreateProjectRootCallCount, 0);
+      expect(storage.files.keys, ['bracket.didsa']);
+    });
+
+    testWidgets('cancelling the folder picker writes nothing and changes nothing', (tester) async {
+      final storage = _FakeStorageService()..pickerCancels = true;
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+
+      expect(find.text('Save "Part 1" as…'), findsNothing);
+      expect(storage.files, isEmpty);
+    });
+
+    testWidgets('cancelling the name prompt writes nothing and does not keep the folder as the root', (tester) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await settle(tester);
+      expect(storage.files, isEmpty);
+
+      // The next Save asks again (a stale root would auto-name it silently).
+      toolbar().onSaveNative!();
+      await settle(tester);
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+    });
+
+    testWidgets('the written file carries the root Part\'s client-only extras', (tester) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await answerNamePrompt(tester, 'extras');
+
+      final written = jsonDecode(utf8.decode(storage.files['extras.didsa']!)) as Map<String, dynamic>;
+      expect(written, containsPair('hidden_feature_ids', isA<List>()));
+      expect(written, containsPair('section_planes', isA<List>()));
+    });
+
+    testWidgets('a failed overwrite shows the error, keeps the Part dirty and falls back to Save As', (tester) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await answerNamePrompt(tester, 'Frame');
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      storage.failOnWrite.add('Frame.didsa');
+      toolbar().onSaveNative!();
+      await settle(tester);
+
+      expect(find.textContaining("Couldn't write Frame.didsa"), findsOneWidget);
+      // The Save As flow is offered, with the folder re-validated.
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+      expect(toolbar().hasUnsavedChanges, isTrue);
     });
   });
 

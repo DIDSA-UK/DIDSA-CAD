@@ -16,14 +16,16 @@ rest are UI-only.
 
 ## Progress
 
-The implementation session updates this table as each PR merges.
+The implementation session updates this table as each PR merges. All work so far
+lives on one branch (`ccr-da374b15-ocwsse`, PR #296) at the tester's request, so
+the items below share a PR number until they are split or merged.
 
 | Item | Summary | Status | PR |
 |---|---|---|---|
-| 3 | Part/sketch id collision after Save As (assembly lengths) | Not started | |
-| 9 | `.didsa` extension migration (`.DIDSAprt`/`.didsacad` read-only) | Not started | |
-| 1 | Title from the file path after Open | Not started | |
-| 2 | Android Save overwrites through the project folder | Not started | |
+| 3 | Part/sketch id collision after Save As (assembly lengths) | Done (not yet merged) | #296 |
+| 9 | `.didsa` extension migration (`.DIDSAprt`/`.didsacad` read-only) | Done (not yet merged) | #296 |
+| 1 | Title from the file path after Open | Done (not yet merged) | #296 |
+| 2 | Android Save overwrites through the project folder | Done (not yet merged) | #296 |
 | 5 | Mate pick occlusion on component instances | Not started | |
 | 6 | Close buttons on the selection drawers | Not started | |
 | 8 | Clear selection in Add Mate | Not started | |
