@@ -242,7 +242,7 @@ bottom 18–40 % of the tree's rows sit under the sheet and can't be tapped.
 The sheet's list of selected rows also repeats information the tree already
 shows with its checkmarks.
 
-**Options (tester asked for options; pick one before implementing):**
+**Options considered:**
 
 | | Option | Pros | Cons |
 |---|---|---|---|
@@ -251,8 +251,7 @@ shows with its checkmarks.
 | C | **Shift the sheet right of the tree** (`left: treePanelWidth`). | No overlap and no tree change. | On a portrait phone (66 % tree width, minus the 72 px FAB clearance) the sheet is about 50 px wide, which is unusable. Works only on tablet or landscape. |
 | D | **Collapse the sheet to the action bar only** (no item list), with `maxChildSize` equal to the bar's height. | Trivial. | Reduces the overlap (about 56 px) but doesn't remove it. The last row or two still needs a scroll that isn't padded. |
 
-Recommendation: **A**, or B as a quick interim fix. Default to A unless the
-tester picks otherwise.
+**Decision (tester, 2026-10-14): Option A.** Implement A; B is not needed.
 
 **Tests.** A widget test with a tree long enough to reach the bottom of the
 screen: in multi-select mode, tapping the last visible row toggles its
