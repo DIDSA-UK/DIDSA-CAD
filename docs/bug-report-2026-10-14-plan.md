@@ -30,7 +30,7 @@ the items below share a PR number until they are split or merged.
 | 6 | Close buttons on the selection drawers | Done (not yet merged) | #296 |
 | 8 | Clear selection in Add Mate | Done (not yet merged) | #296 |
 | 4 | Multi-select action bar in the tree header | Done (not yet merged) | #296 |
-| 7 | Fully-constrained status in the assembly tree | Not started | |
+| 7 | Fully-constrained status in the assembly tree | Done (not yet merged) | #296 |
 
 ---
 

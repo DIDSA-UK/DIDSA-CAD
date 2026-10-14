@@ -1670,6 +1670,28 @@ bool _doubleListEquals(List<double> a, List<double> b) {
   return true;
 }
 
+/// One occurrence's row of `GET /parts/{id}/constraint-status`.
+enum ConstraintState { fixed, fullyConstrained, underConstrained, overConstrained }
+
+class ConstraintStatusDto {
+  final ConstraintState state;
+
+  /// The occurrence's own mobility (0 for fixed / fully constrained).
+  final int dof;
+
+  const ConstraintStatusDto({required this.state, required this.dof});
+
+  factory ConstraintStatusDto.fromJson(Map<String, dynamic> json) => ConstraintStatusDto(
+        state: switch (json['status'] as String) {
+          'fixed' => ConstraintState.fixed,
+          'fully_constrained' => ConstraintState.fullyConstrained,
+          'over_constrained' => ConstraintState.overConstrained,
+          _ => ConstraintState.underConstrained,
+        },
+        dof: (json['dof'] as num?)?.toInt() ?? 0,
+      );
+}
+
 /// One unique Part's own local-space geometry within a [GetAssemblyMesh]
 /// response - see `app.document.schemas.AssemblyBodyGeometry`'s own
 /// docstring. Computed once per Part id regardless of how many
@@ -5104,6 +5126,17 @@ class DocumentApiClient {
   Future<List<OccurrenceDto>> listOccurrences(String partId) => _send(
         () => _httpClient.get(_uri('/document/parts/$partId/occurrences'), headers: _headers),
         (body) => (body as List).map((o) => OccurrenceDto.fromJson(o as Map<String, dynamic>)).toList(),
+      );
+
+  /// Bug report 2026-10-14, item 7: `GET /document/parts/{part_id}/constraint-status`
+  /// - the Assembly tree's per-row constraint badge. An occurrence whose mates
+  /// the backend could not resolve is simply absent from the map.
+  Future<Map<String, ConstraintStatusDto>> getConstraintStatus(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/constraint-status'), headers: _headers),
+        (body) => {
+          for (final entry in (body as Map<String, dynamic>).entries)
+            entry.key: ConstraintStatusDto.fromJson(entry.value as Map<String, dynamic>),
+        },
       );
 
   /// Assembly support Phase 5: `PATCH /document/parts/{part_id}/occurrences/

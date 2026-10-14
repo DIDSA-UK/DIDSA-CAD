@@ -791,4 +791,71 @@ void main() {
       expect(toggled, ['o40']);
     });
   });
+
+  // Bug report 2026-10-14, item 7: one status-icon slot per row.
+  group('constraint badge (item 7)', () {
+    Widget panelWith(List<OccurrenceDto> occurrences, Map<String, ConstraintStatusDto> status) => _wrap(
+      AssemblyTreePanel(
+        visible: true,
+        occurrences: occurrences,
+        mates: const [],
+        selectedOccurrenceId: null,
+        onOccurrenceTap: (_) {},
+        onOccurrenceLongPress: (_) {},
+        onClose: () {},
+        constraintStatusByOccurrenceId: status,
+      ),
+    );
+
+    testWidgets('fully constrained shows a lock, under-constrained an open lock naming the dof, over a warning', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        panelWith(
+          [_occurrence('a', nameOverride: 'A'), _occurrence('b', nameOverride: 'B'), _occurrence('c', nameOverride: 'C')],
+          const {
+            'a': ConstraintStatusDto(state: ConstraintState.fullyConstrained, dof: 0),
+            'b': ConstraintStatusDto(state: ConstraintState.underConstrained, dof: 3),
+            'c': ConstraintStatusDto(state: ConstraintState.overConstrained, dof: 0),
+          },
+        ),
+      );
+
+      expect(find.byIcon(Icons.lock_outline), findsOneWidget);
+      expect(find.byIcon(Icons.lock_open), findsOneWidget);
+      expect(find.byIcon(Icons.warning_amber_rounded), findsOneWidget);
+      expect(find.byTooltip('Fully constrained'), findsOneWidget);
+      expect(find.byTooltip('Under-constrained - 3 degrees of freedom'), findsOneWidget);
+      expect(find.byTooltip('Over-constrained - mates conflict'), findsOneWidget);
+    });
+
+    testWidgets('a fixed occurrence keeps the push-pin, whether or not a status was fetched', (tester) async {
+      await tester.pumpWidget(
+        panelWith([_occurrence('a', nameOverride: 'A', fixed: true), _occurrence('b', nameOverride: 'B', fixed: true)], const {
+          'a': ConstraintStatusDto(state: ConstraintState.fixed, dof: 0),
+        }),
+      );
+      expect(find.byIcon(Icons.push_pin), findsNWidgets(2));
+    });
+
+    testWidgets('with no status at all, a free occurrence shows no badge', (tester) async {
+      await tester.pumpWidget(panelWith([_occurrence('a', nameOverride: 'A')], const {}));
+      expect(find.byIcon(Icons.lock_outline), findsNothing);
+      expect(find.byIcon(Icons.lock_open), findsNothing);
+      expect(find.byIcon(Icons.push_pin), findsNothing);
+    });
+
+    testWidgets('on a portrait phone the badge, colour disc and visibility toggle fit without overflow', (tester) async {
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = const Size(360, 640);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        panelWith([_occurrence('a', nameOverride: 'A Fairly Long Component Name')], const {
+          'a': ConstraintStatusDto(state: ConstraintState.underConstrained, dof: 6),
+        }),
+      );
+      expect(tester.takeException(), isNull);
+      expect(find.byIcon(Icons.lock_open), findsOneWidget);
+    });
+  });
 }

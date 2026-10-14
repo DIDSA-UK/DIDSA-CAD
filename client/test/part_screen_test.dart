@@ -122,6 +122,11 @@ class _FakeDocumentBackend {
   /// `ComponentPatternDto.fromJson`'s own wire shape.
   final List<Map<String, dynamic>> mates;
   final List<Map<String, dynamic>> componentPatterns;
+
+  /// `GET .../constraint-status` for `part-1` (item 7) and how often it was
+  /// asked - the tree refreshes it next to the occurrence list.
+  final Map<String, dynamic> constraintStatus = {};
+  int constraintStatusRequests = 0;
   int _nextMateId = 1;
   int _nextPatternId = 1;
 
@@ -599,6 +604,13 @@ class _FakeDocumentBackend {
     final occurrencesGetMatch = RegExp(r'^/document/parts/([^/]+)/occurrences$').firstMatch(path);
     if (occurrencesGetMatch != null && method == 'GET') {
       return _json(occurrencesGetMatch.group(1) == 'part-1' ? occurrences : <dynamic>[], 200);
+    }
+    // Item 7: the Assembly tree's constraint badge. Scripted by tests via
+    // [constraintStatus]; empty by default (no badge, plain fixed pin).
+    final constraintStatusMatch = RegExp(r'^/document/parts/([^/]+)/constraint-status$').firstMatch(path);
+    if (constraintStatusMatch != null && method == 'GET') {
+      constraintStatusRequests++;
+      return _json(constraintStatusMatch.group(1) == 'part-1' ? constraintStatus : <String, dynamic>{}, 200);
     }
     final matesGetMatch = RegExp(r'^/document/parts/([^/]+)/mates$').firstMatch(path);
     if (matesGetMatch != null && method == 'GET') {
@@ -4354,6 +4366,32 @@ void main() {
         expect(panel.occurrences.single.id, 'occ-1');
       },
     );
+
+    testWidgets('item 7: the tree fetches constraint-status with the occurrence list and passes it to the panel', (
+      tester,
+    ) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1')]);
+      backend.constraintStatus['occ-1'] = {'status': 'under_constrained', 'dof': 3};
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.constraintStatusRequests, greaterThan(0));
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.constraintStatusByOccurrenceId['occ-1']?.state, ConstraintState.underConstrained);
+      expect(panel.constraintStatusByOccurrenceId['occ-1']?.dof, 3);
+    });
 
     testWidgets('item 4: multi-select shows the action bar in the tree header, with no bottom sheet over the tree', (
       tester,

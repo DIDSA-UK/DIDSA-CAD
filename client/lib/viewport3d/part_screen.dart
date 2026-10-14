@@ -3057,6 +3057,10 @@ class _PartScreenState extends State<PartScreen> {
   /// space - revealed via [_toolbarOpen]'s "Show Feature Tree" action.
   bool _featureTreeVisible = false;
 
+  /// Item 7: `GET .../constraint-status` for the occurrences [_occurrences]
+  /// lists, refreshed with them in [_refreshAssemblyTree].
+  Map<String, ConstraintStatusDto> _constraintStatusByOccurrenceId = const {};
+
   /// True when entering a tree multi-select session had to open the tree
   /// panel itself (its header hosts the action bar - item 4); the matching
   /// exit then closes it again. See [_enterMultiSelect].
@@ -10780,11 +10784,23 @@ class _PartScreenState extends State<PartScreen> {
     final occurrences = await _api.listOccurrences(focusPartId);
     final mates = await _api.listMates(focusPartId);
     final patterns = await _api.listComponentPatterns(focusPartId);
+    // Item 7: the constraint badge is decoration, so a failed fetch (an
+    // older backend, an unresolvable mate) must never break the tree refresh -
+    // the rows just fall back to the plain fixed pin. Fetched here, next to
+    // the lists it annotates, because this already runs after every mate add/
+    // delete/edit and every move.
+    Map<String, ConstraintStatusDto> constraintStatus = const {};
+    try {
+      constraintStatus = await _api.getConstraintStatus(focusPartId);
+    } on ApiException {
+      constraintStatus = const {};
+    }
     if (!mounted) return;
     setState(() {
       _occurrences = occurrences;
       _mates = mates;
       _componentPatterns = patterns;
+      _constraintStatusByOccurrenceId = constraintStatus;
       if (_selectedOccurrenceId != null && !occurrences.any((o) => o.id == _selectedOccurrenceId)) {
         _selectedOccurrenceId = null;
         // Bug fix ("selecting a component doesn't highlight it in 3D"): a
@@ -23100,6 +23116,7 @@ class _PartScreenState extends State<PartScreen> {
                       _assemblyMultiSelectAnchor = occurrence;
                       _enterMultiSelect(_assemblyMultiSelect, occurrence.id);
                     },
+                    constraintStatusByOccurrenceId: _constraintStatusByOccurrenceId,
                     isMultiSelectMode: _assemblyMultiSelect.active,
                     selectedMultiSelectIds: _assemblyMultiSelect.selectedIds,
                     onMultiSelectToggle: (id) => _toggleMultiSelectMember(_assemblyMultiSelect, id),

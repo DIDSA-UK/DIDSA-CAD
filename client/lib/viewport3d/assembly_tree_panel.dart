@@ -217,6 +217,13 @@ class AssemblyTreePanel extends StatefulWidget {
   /// id. Unused (and may be left null) outside multi-select mode.
   final void Function(String occurrenceId)? onMultiSelectToggle;
 
+  /// Bug report 2026-10-14, item 7: each occurrence's constraint state, from
+  /// `GET /parts/{id}/constraint-status`. Drives a single status-icon slot in
+  /// the row's trailing cluster (it replaces the old push-pin rather than
+  /// adding a fifth badge - see the trailing-width note on the row). An
+  /// occurrence absent from the map falls back to the plain `fixed` pin.
+  final Map<String, ConstraintStatusDto> constraintStatusByOccurrenceId;
+
   /// Bug report 2026-10-14, item 4: while non-null (a tree multi-select
   /// session is active), replaces the panel's normal title row (the title and
   /// the Close button) at the top of the panel, inside the panel's own
@@ -255,6 +262,7 @@ class AssemblyTreePanel extends StatefulWidget {
     this.isMultiSelectMode = false,
     this.selectedMultiSelectIds = const {},
     this.onMultiSelectToggle,
+    this.constraintStatusByOccurrenceId = const {},
     this.multiSelectHeader,
     this.motionSummary,
   });
@@ -567,6 +575,36 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     );
   }
 
+  /// The constraint-state icon (item 7): the push-pin for `fixed`, a lock for
+  /// fully constrained, a hollow open lock (tooltip: the degrees of freedom
+  /// left) for under-constrained, a warning for over-constrained (mates that
+  /// contradict each other). One slot, not a new badge: the trailing cluster is
+  /// already scaled down to fit a narrow panel.
+  Widget _buildConstraintBadge(BuildContext context, OccurrenceDto occurrence) {
+    final status = widget.constraintStatusByOccurrenceId[occurrence.id];
+    if (status == null) {
+      return occurrence.fixed ? const Icon(Icons.push_pin, size: 18) : const SizedBox.shrink();
+    }
+    final scheme = Theme.of(context).colorScheme;
+    final (IconData icon, Color? color, String message) = switch (status.state) {
+      ConstraintState.fixed => (Icons.push_pin, null, 'Fixed'),
+      ConstraintState.fullyConstrained => (Icons.lock_outline, scheme.primary, 'Fully constrained'),
+      ConstraintState.underConstrained => (
+        Icons.lock_open,
+        scheme.onSurfaceVariant,
+        'Under-constrained - ${status.dof} degree${status.dof == 1 ? '' : 's'} of freedom',
+      ),
+      ConstraintState.overConstrained => (Icons.warning_amber_rounded, scheme.error, 'Over-constrained - mates conflict'),
+    };
+    return Tooltip(
+      message: message,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 4),
+        child: Icon(icon, size: 18, color: color, semanticLabel: message),
+      ),
+    );
+  }
+
   Widget _buildOccurrenceTile(BuildContext context, int index) {
     final occurrence = widget.occurrences[index];
     final selected = occurrence.id == widget.selectedOccurrenceId;
@@ -637,7 +675,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
               // own row now shows at a glance which component the Move/Rotate
               // gizmo won't target (`component_context_menu.dart`'s Fix/Float
               // entry is the only way to change it).
-              if (occurrence.fixed) const Icon(Icons.push_pin, size: 18),
+              _buildConstraintBadge(context, occurrence),
               // Bug report (assembly testing): the colour disc - see
               // [_buildColorDisc]'s own doc comment.
               _buildColorDisc(context, occurrence, enabled: !multiSelectMode),
