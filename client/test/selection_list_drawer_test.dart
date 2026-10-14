@@ -78,4 +78,41 @@ void main() {
     expect((padding.padding as EdgeInsets).right, 72);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('item 6: no clear-all button unless onClearAll is given', (tester) async {
+    await tester.pumpWidget(
+      _hostedDrawer(
+        SelectionListDrawer(
+          selectedEntities: {const SelectionEntityRef(kind: SelectionEntityKind.face, id: 1)},
+          onRemove: (_) {},
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(find.byTooltip('Clear selection'), findsNothing);
+  });
+
+  testWidgets('item 6: the clear-all X sits next to the drag handle and fires onClearAll', (tester) async {
+    var cleared = 0;
+    await tester.pumpWidget(
+      _hostedDrawer(
+        SelectionListDrawer(
+          selectedEntities: {
+            const SelectionEntityRef(kind: SelectionEntityKind.face, id: 1),
+            const SelectionEntityRef(kind: SelectionEntityKind.face, id: 2),
+          },
+          onRemove: (_) {},
+          onClearAll: () => cleared++,
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byTooltip('Clear selection'), findsOneWidget);
+    // Clearing all is distinct from the per-row "Remove from selection" X.
+    expect(find.byTooltip('Remove from selection'), findsNWidgets(2));
+    await tester.tap(find.byTooltip('Clear selection'));
+    await tester.pump();
+    expect(cleared, 1);
+  });
 }

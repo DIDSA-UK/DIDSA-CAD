@@ -26,9 +26,9 @@ the items below share a PR number until they are split or merged.
 | 9 | `.didsa` extension migration (`.DIDSAprt`/`.didsacad` read-only) | Done (not yet merged) | #296 |
 | 1 | Title from the file path after Open | Done (not yet merged) | #296 |
 | 2 | Android Save overwrites through the project folder | Done (not yet merged) | #296 |
-| 5 | Mate pick occlusion on component instances | Not started | |
-| 6 | Close buttons on the selection drawers | Not started | |
-| 8 | Clear selection in Add Mate | Not started | |
+| 5 | Mate pick occlusion on component instances | Done (not yet merged) | #296 |
+| 6 | Close buttons on the selection drawers | Done (not yet merged) | #296 |
+| 8 | Clear selection in Add Mate | Done (not yet merged) | #296 |
 | 4 | Multi-select action bar in the tree header | Not started | |
 | 7 | Fully-constrained status in the assembly tree | Not started | |
 

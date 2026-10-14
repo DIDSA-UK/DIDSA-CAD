@@ -21818,6 +21818,17 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// The close (X) button on the selection drawers (bug report 2026-10-14,
+  /// item 6): clears the mesh selection and the selected component, matching
+  /// what an empty-space tap does. Both drawers are shown only while one of
+  /// these is set, so clearing them closes the drawer.
+  void _clearSelectionFromDrawer() {
+    setState(() {
+      _selectedOccurrenceId = null;
+      _selectedEntities = {};
+    });
+  }
+
   /// Assembly-audit gap `[27]` (`docs/assembly-scope.md`): `Component
   /// ContextMenuAction.delete`'s own handler - the first way to remove a
   /// placed component from an assembly at all. Mirrors [_confirmDeleteMate]'s
@@ -22790,6 +22801,7 @@ class _PartScreenState extends State<PartScreen> {
                     child: SelectionListDrawer(
                       selectedEntities: _selectedEntities,
                       onRemove: _toggleSelectedEntity,
+                      onClearAll: _clearSelectionFromDrawer,
                       header: SelectionContextPanel(
                         selectedEntities: _selectedEntities,
                         isPointOnLine: _isPointOnLine,
@@ -22857,6 +22869,7 @@ class _PartScreenState extends State<PartScreen> {
                         }),
                         onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
                         onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
+                        onClose: _clearSelectionFromDrawer,
                       );
                     },
                   ),
@@ -23354,6 +23367,16 @@ class _PartScreenState extends State<PartScreen> {
                           ? _confirmMate
                           : null,
                       onCancel: _closeMate,
+                      onClearSelection: () {
+                        setState(() => _selectedEntities = {});
+                        // Same pattern every other mate-panel callback uses:
+                        // the ghost preview must reset with the selection.
+                        unawaited(_scheduleMatePreview());
+                      },
+                      onRemoveEntity: (entity) {
+                        setState(() => _selectedEntities = Set.of(_selectedEntities)..remove(entity));
+                        unawaited(_scheduleMatePreview());
+                      },
                     ),
                   ),
                 if (_componentPatternPanelActive)

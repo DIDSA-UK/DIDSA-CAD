@@ -20,6 +20,7 @@ void main() {
     VoidCallback? onMove,
     VoidCallback? onFixFloat,
     VoidCallback? onDelete,
+    VoidCallback? onClose,
   }) async {
     tester.view.devicePixelRatio = 1.0;
     tester.view.physicalSize = const Size(800, 1000);
@@ -35,6 +36,7 @@ void main() {
                 onMove: onMove ?? () {},
                 onFixFloat: onFixFloat ?? () {},
                 onDelete: onDelete ?? () {},
+                onClose: onClose,
               ),
             ],
           ),
@@ -97,5 +99,48 @@ void main() {
     await pumpDrawer(tester, _occurrence(nameOverride: 'Bracket'));
 
     expect(find.byType(DraggableScrollableSheet), findsOneWidget);
+  });
+
+  // Bug report 2026-10-14, item 6: the only way out used to be tapping empty
+  // space.
+  testWidgets('has no close button unless onClose is given', (tester) async {
+    await pumpDrawer(tester, _occurrence());
+    expect(find.byTooltip('Clear selection'), findsNothing);
+  });
+
+  testWidgets('the close button fires onClose, and a host that clears its selection drops the drawer', (tester) async {
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(800, 1000);
+    addTearDown(tester.view.reset);
+    String? selectedId = 'o1';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) => Stack(
+              children: [
+                // Mirrors PartScreen: shown only while a component is selected.
+                if (selectedId != null)
+                  AssemblyComponentSelectionDrawer(
+                    selectedComponent: _occurrence(),
+                    onMove: () {},
+                    onFixFloat: () {},
+                    onDelete: () {},
+                    onClose: () => setState(() => selectedId = null),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(AssemblyComponentSelectionDrawer), findsOneWidget);
+
+    await tester.tap(find.widgetWithIcon(IconButton, Icons.close));
+    await tester.pumpAndSettle();
+
+    expect(selectedId, isNull);
+    expect(find.byType(AssemblyComponentSelectionDrawer), findsNothing);
   });
 }

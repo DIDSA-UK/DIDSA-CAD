@@ -1665,6 +1665,129 @@ void main() {
           rotationAngleDegrees: 0,
         );
 
+    // Bug report 2026-10-14, item 5: mate authoring picks on placed instances
+    // through this function, which chose vertex/edge purely by screen-space
+    // distance and never compared depth with the nearest face.
+    group('face occlusion (item 5)', () {
+      AssemblyBodyGeometryDto plainFace(String partId) => AssemblyBodyGeometryDto(
+            partId: partId,
+            bodies: [
+              BodyMeshDto(
+                bodyId: 'front',
+                source: 'computed',
+                mesh: MeshDto(
+                  vertices: const [
+                    [-1, -1, 0],
+                    [1, -1, 0],
+                    [0, 1, 0],
+                  ],
+                  normals: const [],
+                  triangleIndices: const [
+                    [0, 1, 2],
+                  ],
+                  faceIds: const [11],
+                ),
+              ),
+            ],
+          );
+
+      // A face at local z=0 plus a topology vertex 2 units BEHIND it (further
+      // along the ray) that projects almost exactly onto the cursor.
+      AssemblyBodyGeometryDto faceWithFarVertex(String partId) => AssemblyBodyGeometryDto(
+            partId: partId,
+            bodies: [
+              BodyMeshDto(
+                bodyId: 'b1',
+                source: 'computed',
+                mesh: MeshDto(
+                  vertices: const [
+                    [-1, -1, 0],
+                    [1, -1, 0],
+                    [0, 1, 0],
+                  ],
+                  normals: const [],
+                  triangleIndices: const [
+                    [0, 1, 2],
+                  ],
+                  faceIds: const [7],
+                  topologyVertices: const [
+                    [0.01, 0, 2],
+                  ],
+                  topologyVertexIds: const [3],
+                ),
+              ),
+            ],
+          );
+
+      AssemblyOccurrenceInstanceDto at(String occ, String partId, double z) =>
+          AssemblyOccurrenceInstanceDto(occurrencePath: [occ], partId: partId, worldTransform: translatedZ(z));
+
+      test('stacked instances: the front face wins over a back instance\'s vertex near the cursor', () {
+        final hit = hitTestComponentInstanceEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          instances: [at('front', 'partFront', 3), at('back', 'partBack', 8)],
+          geometry: [plainFace('partFront'), partGeometry('partBack')],
+          selectableOccurrencePaths: const {'front', 'back'},
+          facesOccludeOtherHits: true,
+        );
+        expect(hit?.entity.kind, SelectionEntityKind.face);
+        expect(hit?.entity.occurrenceId, 'front');
+        expect(hit?.rayT, closeTo(3, 1e-9));
+      });
+
+      test('same instance: a vertex on the far side of its own face is occluded', () {
+        final hit = hitTestComponentInstanceEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          instances: [at('occ-1', 'partA', 1)],
+          geometry: [faceWithFarVertex('partA')],
+          selectableOccurrencePaths: const {'occ-1'},
+          facesOccludeOtherHits: true,
+        );
+        expect(hit?.entity.kind, SelectionEntityKind.face);
+        expect(hit?.entity.id, 7);
+      });
+
+      test('wireframe (facesOccludeOtherHits: false) keeps the old behaviour: the far vertex wins', () {
+        final hit = hitTestComponentInstanceEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          instances: [at('occ-1', 'partA', 1)],
+          geometry: [faceWithFarVertex('partA')],
+          selectableOccurrencePaths: const {'occ-1'},
+        );
+        expect(hit?.entity.kind, SelectionEntityKind.vertex);
+        expect(hit?.entity.id, 3);
+      });
+
+      test('a non-selectable instance in front still blocks picks on the part behind it', () {
+        final hit = hitTestComponentInstanceEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          instances: [at('front', 'partFront', 3), at('back', 'partBack', 8)],
+          geometry: [plainFace('partFront'), partGeometry('partBack')],
+          selectableOccurrencePaths: const {'back'},
+          facesOccludeOtherHits: true,
+        );
+        expect(hit, isNull);
+      });
+
+      test('a selectable vertex/edge in FRONT of a face is still picked', () {
+        // The vertex sits at z=5, the face behind it at z=8.
+        final hit = hitTestComponentInstanceEntities(
+          ray: straightDownZ,
+          viewportSize: viewportSize,
+          instances: [at('near', 'partNear', 5), at('far', 'partFar', 8)],
+          geometry: [partGeometry('partNear'), plainFace('partFar')],
+          selectableOccurrencePaths: const {'near', 'far'},
+          facesOccludeOtherHits: true,
+        );
+        expect(hit?.entity.kind, SelectionEntityKind.vertex);
+        expect(hit?.entity.occurrenceId, 'near');
+      });
+    });
+
     test('a vertex hit on a placed instance carries occurrenceId alongside bodyId/id', () {
       final instance = AssemblyOccurrenceInstanceDto(
         occurrencePath: const ['occ-1'],

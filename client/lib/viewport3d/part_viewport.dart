@@ -4876,7 +4876,21 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // no filter conflict, since [meshHit] only ever sees [widget.bodies]
     // (the root Part's own geometry) while this only ever sees placed
     // instances.
-    final componentEntityHit = _hoverHitTestComponentEntities(ray, camera);
+    var componentEntityHit = _hoverHitTestComponentEntities(ray, camera);
+    // Item 5 (2026-10-14 bug report): the root Part's own drawn geometry also
+    // occludes. [hitTestComponentInstanceEntities] only sees placed
+    // instances, so a vertex/edge on one of them that lies behind the root
+    // Part's nearest hit along the same ray is dropped here, by the same
+    // epsilon rule [hitTestBodies] uses for its own vertex/edge-vs-face case.
+    if (meshHit != null &&
+        componentEntityHit != null &&
+        widget.renderMode.showsFilledFaces &&
+        !widget.bodiesHidden &&
+        (componentEntityHit.entity.kind == SelectionEntityKind.vertex ||
+            componentEntityHit.entity.kind == SelectionEntityKind.edge) &&
+        componentEntityHit.rayT > meshHit.rayT + kFaceOcclusionEpsilon) {
+      componentEntityHit = null;
+    }
     final candidates =
         [meshHit, planeHit, componentHit, componentEntityHit].whereType<HoverHit>().toList();
     if (candidates.isEmpty) {
@@ -5023,6 +5037,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       filter: widget.selectionFilter,
       orthographicHalfHeight: _orthographicHalfHeightOf(camera),
       fovRadiansY: _perspectiveFovOf(camera),
+      facesOccludeOtherHits: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
     );
   }
 

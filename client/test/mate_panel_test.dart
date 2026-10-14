@@ -339,5 +339,87 @@ void main() {
 
       expect(changedTo, 'concentric');
     });
+
+    // Bug report 2026-10-14, item 8.
+    group('clearing the selection', () {
+      MatePanel panel(
+        Set<SelectionEntityRef> selected, {
+        VoidCallback? onClear,
+        ValueChanged<SelectionEntityRef>? onRemove,
+        VoidCallback? onConfirm,
+      }) =>
+          MatePanel(
+            selectedEntities: selected,
+            bodyNames: const {},
+            mateType: 'coincident',
+            value: null,
+            flipped: false,
+            onMateTypeChanged: (_) {},
+            onValueChanged: (_) {},
+            onFlippedChanged: (_) {},
+            allowRotation: false,
+            onAllowRotationChanged: (_) {},
+            saving: false,
+            error: null,
+            onConfirm: onConfirm,
+            onCancel: () {},
+            onClearSelection: onClear,
+            onRemoveEntity: onRemove,
+          );
+
+      const faceA = SelectionEntityRef(kind: SelectionEntityKind.face, id: 1, bodyId: 'b');
+      const faceB = SelectionEntityRef(kind: SelectionEntityKind.face, id: 2, bodyId: 'b');
+
+      testWidgets('no Clear selection button while nothing is selected', (tester) async {
+        await tester.pumpWidget(wrap(panel(const {}, onClear: () {})));
+        expect(find.text('Clear selection'), findsNothing);
+      });
+
+      testWidgets('with two references, Clear selection empties the list and Confirm disables', (tester) async {
+        var selected = <SelectionEntityRef>{faceA, faceB};
+        await tester.pumpWidget(
+          wrap(
+            StatefulBuilder(
+              builder: (context, setState) => panel(
+                selected,
+                onClear: () => setState(() => selected = {}),
+                onConfirm: selected.length == 2 ? () {} : null,
+              ),
+            ),
+          ),
+        );
+        expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNotNull);
+        expect(find.text('Clear selection'), findsOneWidget);
+
+        await tester.tap(find.text('Clear selection'));
+        await tester.pump();
+
+        expect(selected, isEmpty);
+        expect(find.text('Clear selection'), findsNothing);
+        expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull);
+      });
+
+      testWidgets('the per-row X removes just that reference', (tester) async {
+        var selected = <SelectionEntityRef>{faceA, faceB};
+        await tester.pumpWidget(
+          wrap(
+            StatefulBuilder(
+              builder: (context, setState) => panel(
+                selected,
+                onClear: () => setState(() => selected = {}),
+                onRemove: (e) => setState(() => selected = {...selected}..remove(e)),
+              ),
+            ),
+          ),
+        );
+        expect(find.byTooltip('Remove from selection'), findsNWidgets(2));
+
+        await tester.tap(find.byTooltip('Remove from selection').first);
+        await tester.pump();
+
+        expect(selected, hasLength(1));
+        expect(find.byTooltip('Remove from selection'), findsOneWidget);
+      });
+    });
   });
 }

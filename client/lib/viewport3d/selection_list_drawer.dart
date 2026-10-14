@@ -56,6 +56,13 @@ class SelectionListDrawer extends StatelessWidget {
   /// while this list is empty.
   final List<SelectionListDrawerItem>? items;
 
+  /// Bug report 2026-10-14, item 6: when non-null, an X ("Clear selection") at
+  /// the top-right of the sheet, next to the drag handle, clears the whole
+  /// selection (which closes the drawer, since [PartScreen] shows it only
+  /// while something is selected). Previously the only way out was tapping
+  /// empty space.
+  final VoidCallback? onClearAll;
+
   /// Clears the bottom-right FAB column (each FAB is 56dp wide with 16dp of
   /// margin from the Scaffold edge) - matches the brief's example value.
   static const double _fabColumnClearance = 72;
@@ -67,6 +74,7 @@ class SelectionListDrawer extends StatelessWidget {
     this.header,
     this.bodyNames = const {},
     this.items,
+    this.onClearAll,
   });
 
   @override
@@ -160,11 +168,24 @@ class SelectionListDrawer extends StatelessWidget {
                 // the header out of view instead.
                 controller: scrollController,
                 slivers: [
-                  const SliverToBoxAdapter(
-                    child: Padding(
-                      padding: EdgeInsets.symmetric(vertical: 6),
-                      child: _DragHandle(),
-                    ),
+                  SliverToBoxAdapter(
+                    child: onClearAll == null
+                        ? const Padding(padding: EdgeInsets.symmetric(vertical: 6), child: _DragHandle())
+                        : Stack(
+                            alignment: Alignment.center,
+                            children: [
+                              const Padding(padding: EdgeInsets.symmetric(vertical: 6), child: _DragHandle()),
+                              Positioned(
+                                right: 4,
+                                child: IconButton(
+                                  tooltip: 'Clear selection',
+                                  icon: const Icon(Icons.close, size: 20),
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: onClearAll,
+                                ),
+                              ),
+                            ],
+                          ),
                   ),
                   if (header != null) SliverToBoxAdapter(child: header),
                   SliverList.builder(itemCount: itemCount, itemBuilder: itemBuilder),
