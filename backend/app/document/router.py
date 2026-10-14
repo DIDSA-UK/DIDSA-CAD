@@ -4046,8 +4046,17 @@ def _commit_group(part: Part, result: GroupSolveResult) -> None:
         by_id[occurrence_id].transform = pose
 
 
+def _minimal_movement_frozen(part: Part, occurrence_id: str, minimal_movement: bool) -> frozenset[str]:
+    """Minimal movement mode: every OTHER occurrence is frozen where it is, so the driven one alone takes the smallest
+    move that satisfies its mates and nothing already placed can slide or turn. Empty (the default group solve, where
+    mated neighbours may move as their mates allow) when the mode is off."""
+    if not minimal_movement:
+        return frozenset()
+    return frozenset(o.id for o in part.occurrences if o.id != occurrence_id)
+
+
 @router.post("/parts/{part_id}/occurrences/{occurrence_id}/solve", response_model=OccurrenceResponse)
-def solve_for_occurrence(part_id: str, occurrence_id: str) -> OccurrenceResponse:
+def solve_for_occurrence(part_id: str, occurrence_id: str, minimal_movement: bool = False) -> OccurrenceResponse:
     """Snaps `occurrence_id` (and, only as its mates require, the occurrences
     mated to it) onto the nearest mate-satisfying configuration
     (`assembly_group.solve_group`, the whole mate-graph component - no longer the
@@ -4058,12 +4067,20 @@ def solve_for_occurrence(part_id: str, occurrence_id: str) -> OccurrenceResponse
     Kept as the gizmo's post-drag / post-`create_mate` snap: the raw dragged pose
     is already stored on the occurrence, so the solve's wish is its stored pose.
     The response is the driven occurrence; followers that moved are visible on
-    the next fetch."""
+    the next fetch.
+
+    `minimal_movement=true` freezes every other occurrence, so only the driven
+    one moves (the smallest move that satisfies its mates). If the mates cannot
+    be met by moving it alone the answer is the same 422 - nothing else is
+    moved to make it work; retry without the flag to let neighbours follow."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     if occurrence.fixed:
         raise _occurrence_is_fixed(occurrence_id)
-    result = solve_group(get_document(), part, occurrence_id, None, with_jump=False)
+    result = solve_group(
+        get_document(), part, occurrence_id, None,
+        also_frozen=_minimal_movement_frozen(part, occurrence_id, minimal_movement), with_jump=False,
+    )
     if not result.converged:
         raise _mate_solve_did_not_converge(occurrence_id, result)
     _commit_group(part, result)
@@ -4157,7 +4174,7 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
     response_model=MateSolvePreviewResponse,
 )
 def preview_mate_solve_endpoint(
-    part_id: str, occurrence_id: str, payload: MateCreate
+    part_id: str, occurrence_id: str, payload: MateCreate, minimal_movement: bool = False
 ) -> MateSolvePreviewResponse:
     """Test report item 3 (New Mate ghost preview): a dry-run counterpart to
     `solve_for_occurrence` - solves `payload` (the same shape `POST
@@ -4195,7 +4212,10 @@ def preview_mate_solve_endpoint(
             flipped=payload.flipped,
             allow_rotation=payload.allow_rotation,
         )
-        result = solve_group(get_document(), part, occurrence_id, None, extra_mates=(extra_mate,), with_jump=False)
+        result = solve_group(
+            get_document(), part, occurrence_id, None, extra_mates=(extra_mate,), with_jump=False,
+            also_frozen=_minimal_movement_frozen(part, occurrence_id, minimal_movement),
+        )
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)
     if not result.converged:

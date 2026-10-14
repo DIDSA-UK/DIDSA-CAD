@@ -3603,6 +3603,10 @@ class _PartScreenState extends State<PartScreen> {
   /// authoring/editing a concentric Mate - defaults `true` (free spin,
   /// [mateTypeHasAllowRotation]'s own docstring), meaningless otherwise.
   bool _mateAllowRotation = true;
+
+  /// Minimal movement mode for the Mate being authored: solve with every other occurrence frozen so only the mated
+  /// one moves. A preference - kept between mates, not reset when the panel reopens.
+  bool _mateMinimalMovement = false;
   bool _mateSaving = false;
 
   /// Test report item 3 (New Mate ghost preview): [_scheduleMatePreview]'s
@@ -3755,6 +3759,7 @@ class _PartScreenState extends State<PartScreen> {
         value: _mateValue,
         flipped: _mateFlipped,
         allowRotation: _mateAllowRotation,
+        minimalMovement: _mateMinimalMovement,
       );
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
@@ -3808,7 +3813,7 @@ class _PartScreenState extends State<PartScreen> {
       // could legally move, so none is attempted.
       final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
       if (drivenOccurrenceId != null) {
-        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId);
+        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId, minimalMovement: _mateMinimalMovement);
       }
       if (!mounted) return;
       setState(() {
@@ -23008,6 +23013,11 @@ class _PartScreenState extends State<PartScreen> {
                       },
                       onAllowRotationChanged: (allow) {
                         setState(() => _mateAllowRotation = allow);
+                        unawaited(_scheduleMatePreview());
+                      },
+                      minimalMovement: _mateMinimalMovement,
+                      onMinimalMovementChanged: (minimal) {
+                        setState(() => _mateMinimalMovement = minimal);
                         unawaited(_scheduleMatePreview());
                       },
                       saving: _mateSaving,

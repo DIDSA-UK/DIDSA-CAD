@@ -623,6 +623,24 @@ def _fixed_workplane(system: slvs.System, plane: ResolvedPlane) -> int:
     return system.addWorkplane(origin, normal, group=_FIXED_GROUP)
 
 
+def _effective_mate(mate: Mate, driven: _ResolvedGeometry, fixed: _ResolvedGeometry) -> Mate:
+    """A COINCIDENT between two axis references (straight or circular Edges, cylindrical Faces) means "the two lines
+    coincide" - exactly CONCENTRIC's axis-to-axis lock (parallel + driven axis origin on the fixed line; spin about and
+    slide along the shared line stay free). Read as such wherever a mate is built, checked or differentiated, so the
+    three solver paths and the exported constraint model can never disagree about it."""
+    if (
+        mate.type == MateType.COINCIDENT
+        and driven.plane is None
+        and fixed.plane is None
+        and driven.axis_origin is not None
+        and driven.direction is not None
+        and fixed.axis_origin is not None
+        and fixed.direction is not None
+    ):
+        return replace(mate, type=MateType.CONCENTRIC, allow_rotation=True)
+    return mate
+
+
 def _add_mate_constraints(
     system: slvs.System,
     builder: _DrivenGeometryBuilder,
@@ -640,6 +658,7 @@ def _add_mate_constraints(
     fault) for a reference-kind/`MateType` mismatch this module doesn't
     support (see this module's own docstring for the documented v1 gaps)."""
     ref_placeholder = driven_ref
+    mate = _effective_mate(mate, driven, fixed)
 
     if mate.type == MateType.COINCIDENT:
         if driven.plane is not None and fixed.plane is not None:
@@ -848,6 +867,7 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
     means the constraints were built successfully, so a missing point/plane/
     axis here can only mean the solve genuinely left it unset, a real
     non-convergence rather than an ambiguous one."""
+    mate = _effective_mate(mate, driven_world, fixed)
     if mate.type == MateType.COINCIDENT:
         if driven_world.plane is not None and fixed.plane is not None:
             return _point_plane_distance(
@@ -974,6 +994,7 @@ def _mate_residual_vector(mate: Mate, driven_world: _ResolvedGeometry, fixed: _R
     own sibling docstring: "does not distinguish [a genuinely redundant
     equation] ... it reports 0 even while a real ... degree of freedom ...
     remains")."""
+    mate = _effective_mate(mate, driven_world, fixed)
     if mate.type == MateType.COINCIDENT:
         if driven_world.plane is not None and fixed.plane is not None:
             offset = _vec_sub(driven_world.plane.origin, fixed.plane.origin)
