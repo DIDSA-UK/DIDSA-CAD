@@ -20,6 +20,7 @@ import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
+import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
@@ -4353,6 +4354,22 @@ void main() {
         expect(panel.occurrences.single.id, 'occ-1');
       },
     );
+
+    testWidgets('item 4: multi-select shows the action bar in the tree header, with no bottom sheet over the tree', (
+      tester,
+    ) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final inPanel = find.descendant(of: find.byType(AssemblyTreePanel), matching: find.byType(MultiSelectActionBar));
+      expect(inPanel, findsOneWidget);
+      expect(find.byType(DraggableScrollableSheet), findsNothing);
+      expect(find.text('1 selected'), findsOneWidget);
+    });
 
     testWidgets('Hide PATCHes hidden:true and the tree reflects it after refetch', (tester) async {
       final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);

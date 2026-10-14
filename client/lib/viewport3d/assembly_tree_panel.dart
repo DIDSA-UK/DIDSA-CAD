@@ -217,6 +217,16 @@ class AssemblyTreePanel extends StatefulWidget {
   /// id. Unused (and may be left null) outside multi-select mode.
   final void Function(String occurrenceId)? onMultiSelectToggle;
 
+  /// Bug report 2026-10-14, item 4: while non-null (a tree multi-select
+  /// session is active), replaces the panel's normal title row (the title and
+  /// the Close button) at the top of the panel, inside the panel's own
+  /// Material, and the row list keeps the rest of the height. Replaces the
+  /// old bottom `SelectionListDrawer`, a sheet 18-40% of the screen tall
+  /// stacked *above* the tree that covered its lowest rows so they couldn't
+  /// be tapped. Closing the panel still ends the session (the screen's
+  /// `onClose` calls `_exitMultiSelect`).
+  final Widget? multiSelectHeader;
+
   /// Plan S8: one line about the selected component's mate group ("Group: 5 DOF", "not grounded", why it can't
   /// move) - shown under the parent row while the Move/Rotate gizmo is on a mated component. `null` = nothing to show.
   final String? motionSummary;
@@ -245,6 +255,7 @@ class AssemblyTreePanel extends StatefulWidget {
     this.isMultiSelectMode = false,
     this.selectedMultiSelectIds = const {},
     this.onMultiSelectToggle,
+    this.multiSelectHeader,
     this.motionSummary,
   });
 
@@ -332,6 +343,22 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                             );
                             return Column(
                               children: [
+                                if (widget.multiSelectHeader != null)
+                                  Container(
+                                    color: headerColor,
+                                    padding: const EdgeInsets.only(top: 4),
+                                    // The action bar's own text/icon colours are
+                                    // theme-based, so give them the lens-accent
+                                    // foreground the title row uses.
+                                    child: IconTheme.merge(
+                                      data: IconThemeData(color: onHeaderColor),
+                                      child: DefaultTextStyle.merge(
+                                        style: TextStyle(color: onHeaderColor),
+                                        child: widget.multiSelectHeader!,
+                                      ),
+                                    ),
+                                  )
+                                else
                                 Container(
                                   color: headerColor,
                                   padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),

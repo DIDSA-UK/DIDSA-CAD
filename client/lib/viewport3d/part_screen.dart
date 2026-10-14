@@ -3056,6 +3056,11 @@ class _PartScreenState extends State<PartScreen> {
   /// The Feature tree is hidden by default so the 3D viewport gets full
   /// space - revealed via [_toolbarOpen]'s "Show Feature Tree" action.
   bool _featureTreeVisible = false;
+
+  /// True when entering a tree multi-select session had to open the tree
+  /// panel itself (its header hosts the action bar - item 4); the matching
+  /// exit then closes it again. See [_enterMultiSelect].
+  bool _treeOpenedForMultiSelect = false;
   bool _toolbarOpen = false;
 
   /// Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
@@ -13943,6 +13948,10 @@ class _PartScreenState extends State<PartScreen> {
     final wasAssembly = _assemblyMultiSelect.active;
     if (!_buildMultiSelect.active && !wasAssembly) return;
     setState(() {
+      // Close the tree again if entering the session is what opened it (see
+      // [_enterMultiSelect]); a tree the user had open stays open.
+      if (_treeOpenedForMultiSelect) _featureTreeVisible = false;
+      _treeOpenedForMultiSelect = false;
       _buildMultiSelect.exit();
       _assemblyMultiSelect.exit();
       // The Assembly session mirrors its selection into [_selectedEntities]
@@ -13958,6 +13967,12 @@ class _PartScreenState extends State<PartScreen> {
     if (_busy) return;
     _exitAllPickerAndSelectModes();
     setState(() {
+      // The action bar lives in the tree panel's header (item 4), so the
+      // panel must be on screen for the session to be usable at all. Rows are
+      // only long-pressable from the open panel in practice; this guards the
+      // rest (a programmatic entry, a panel closed by a tool in between).
+      _treeOpenedForMultiSelect = !_featureTreeVisible;
+      _featureTreeVisible = true;
       controller.enter(key);
       if (identical(controller, _assemblyMultiSelect)) _syncAssemblyMultiSelectHighlight();
     });
@@ -14308,61 +14323,6 @@ class _PartScreenState extends State<PartScreen> {
       final occurrence = index != -1 ? _occurrences[index] : (anchor?.id == id ? anchor : null);
       if (occurrence != null) await _onOccurrenceLongPress(occurrence);
     }
-  }
-
-  /// The drawer's rows for the active session, in selection order.
-  List<SelectionListDrawerItem> _multiSelectDrawerItems() {
-    final controller = _activeMultiSelect;
-    if (controller == null) return const [];
-    final items = <SelectionListDrawerItem>[];
-    for (final key in controller.selectedIds) {
-      void remove() => _toggleMultiSelectMember(controller, key);
-      if (identical(controller, _assemblyMultiSelect)) {
-        final index = _occurrences.indexWhere((o) => o.id == key);
-        items.add(SelectionListDrawerItem(
-          key: key,
-          icon: const Icon(Icons.view_in_ar_outlined),
-          title: index == -1 ? 'Component' : occurrenceDisplayName(_occurrences, index),
-          onRemove: remove,
-        ));
-        continue;
-      }
-      final featureId = TreeMultiSelectKeys.featureIdOf(key);
-      final bodyId = TreeMultiSelectKeys.bodyIdOf(key);
-      final surfaceId = TreeMultiSelectKeys.surfaceIdOf(key);
-      final curveId = TreeMultiSelectKeys.curveIdOf(key);
-      if (featureId != null) {
-        final index = _features.indexWhere((f) => f.id == featureId);
-        items.add(SelectionListDrawerItem(
-          key: key,
-          icon: const SvgIcon('assets/icons/feature/feature_tree.svg'),
-          title: index == -1 ? 'Feature' : featureDisplayName(_features, index),
-          onRemove: remove,
-        ));
-      } else if (bodyId != null) {
-        items.add(SelectionListDrawerItem(
-          key: key,
-          icon: const SvgIcon('assets/icons/viewport/selection_body.svg'),
-          title: _bodyNames[bodyId] ?? 'Body',
-          onRemove: remove,
-        ));
-      } else if (surfaceId != null) {
-        items.add(SelectionListDrawerItem(
-          key: key,
-          icon: const SvgIcon('assets/icons/feature/feature_surface.svg'),
-          title: _surfaceNames[surfaceId] ?? 'Surface',
-          onRemove: remove,
-        ));
-      } else if (curveId != null) {
-        items.add(SelectionListDrawerItem(
-          key: key,
-          icon: const SvgIcon('assets/icons/viewport/selection_edge.svg'),
-          title: _curveNames[curveId] ?? 'Curve',
-          onRemove: remove,
-        ));
-      }
-    }
-    return items;
   }
 
   /// Feature 1 (tree multi-select): no longer the tree row's long-press
@@ -22888,6 +22848,17 @@ class _PartScreenState extends State<PartScreen> {
                 Positioned.fill(
                   child: FeatureTreePanel(
                     visible: _featureTreePanelVisible,
+                    multiSelectHeader: _activeMultiSelect == null
+                        ? null
+                        : MultiSelectActionBar(
+                            count: _activeMultiSelect!.count,
+                            allHidden: _multiSelectAllHidden,
+                            busy: _busy || _multiSelectBusy,
+                            onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
+                            onDelete: () => unawaited(_multiSelectDelete()),
+                            onCancel: _exitMultiSelect,
+                            onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
+                          ),
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
                     hiddenFeatureIds: _viewportHiddenFeatureIds,
@@ -23108,6 +23079,17 @@ class _PartScreenState extends State<PartScreen> {
                 Positioned.fill(
                   child: AssemblyTreePanel(
                     motionSummary: _motionStatusText,
+                    multiSelectHeader: _activeMultiSelect == null
+                        ? null
+                        : MultiSelectActionBar(
+                            count: _activeMultiSelect!.count,
+                            allHidden: _multiSelectAllHidden,
+                            busy: _busy || _multiSelectBusy,
+                            onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
+                            onDelete: () => unawaited(_multiSelectDelete()),
+                            onCancel: _exitMultiSelect,
+                            onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
+                          ),
                     visible: _featureTreePanelVisible,
                     occurrences: _displayOccurrences,
                     mates: _mates,
@@ -23153,23 +23135,9 @@ class _PartScreenState extends State<PartScreen> {
                 // tree panels (unlike SelectionListDrawer) since the tree is
                 // always open during a session and would otherwise cover
                 // this drawer's left side.
-                if (_activeMultiSelect != null)
-                  Positioned.fill(
-                    child: SelectionListDrawer(
-                      selectedEntities: const {},
-                      onRemove: (_) {},
-                      items: _multiSelectDrawerItems(),
-                      header: MultiSelectActionBar(
-                        count: _activeMultiSelect!.count,
-                        allHidden: _multiSelectAllHidden,
-                        busy: _busy || _multiSelectBusy,
-                        onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
-                        onDelete: () => unawaited(_multiSelectDelete()),
-                        onCancel: _exitMultiSelect,
-                        onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
-                      ),
-                    ),
-                  ),
+                // Item 4: the multi-select action bar now lives in the tree
+                // panel's header (`multiSelectHeader`); the bottom sheet that
+                // used to cover the tree's lowest rows is gone.
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,

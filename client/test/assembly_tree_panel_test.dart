@@ -726,4 +726,69 @@ void main() {
     expect(tile.onTap, isNull);
     expect(tile.onLongPress, isNull);
   });
+
+  // Bug report 2026-10-14, item 4: the multi-select bar used to sit in a bottom
+  // sheet stacked over the tree, covering its lowest rows so they could not be
+  // tapped. It now replaces the panel's title row.
+  group('multiSelectHeader (item 4)', () {
+    testWidgets('replaces the title row (title and Close), in the panel itself', (tester) async {
+      await tester.pumpWidget(
+        _wrap(
+          AssemblyTreePanel(
+            visible: true,
+            occurrences: [_occurrence('o1')],
+            mates: const [],
+            selectedOccurrenceId: null,
+            onOccurrenceTap: (_) {},
+            onOccurrenceLongPress: (_) {},
+            onClose: () {},
+            isMultiSelectMode: true,
+            selectedMultiSelectIds: const {'o1'},
+            onMultiSelectToggle: (_) {},
+            multiSelectHeader: const Text('bar-marker'),
+          ),
+        ),
+      );
+
+      expect(find.text('bar-marker'), findsOneWidget);
+      expect(find.text('Assembly Tree'), findsNothing);
+      expect(find.byTooltip('Close'), findsNothing);
+    });
+
+    testWidgets('with a tree taller than the screen, the last visible row can still be tapped to toggle', (
+      tester,
+    ) async {
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.physicalSize = const Size(800, 600);
+      addTearDown(tester.view.reset);
+      final toggled = <String>[];
+      final occurrences = [for (var i = 1; i <= 40; i++) _occurrence('o$i', nameOverride: 'Part $i')];
+      await tester.pumpWidget(
+        _wrap(
+          AssemblyTreePanel(
+            visible: true,
+            occurrences: occurrences,
+            mates: const [],
+            selectedOccurrenceId: null,
+            onOccurrenceTap: (_) {},
+            onOccurrenceLongPress: (_) {},
+            onClose: () {},
+            isMultiSelectMode: true,
+            selectedMultiSelectIds: const {'o1'},
+            onMultiSelectToggle: toggled.add,
+            multiSelectHeader: const SizedBox(height: 48, child: Text('bar-marker')),
+          ),
+        ),
+      );
+
+      // Scroll the list to its end, then tap the bottom-most row on screen:
+      // nothing is stacked over it any more.
+      await tester.drag(find.byType(ListView).first, const Offset(0, -5000));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Part 40'));
+      await tester.pump();
+
+      expect(toggled, ['o40']);
+    });
+  });
 }
