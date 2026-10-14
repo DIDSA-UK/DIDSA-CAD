@@ -35,6 +35,7 @@ import numpy as np
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 
+from app.document.assembly import top_level_occurrence_id
 from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
     _axis_perpendicular,
@@ -130,7 +131,8 @@ def discover_component(
     mates = [*_live_mates(part), *(m for m in extra_mates if len(m.references) == 2)]
     adjacency: dict[str, set[str]] = {}
     for mate in mates:
-        a, b = mate.references[0].occurrence_id, mate.references[1].occurrence_id
+        a = top_level_occurrence_id(mate.references[0].occurrence_id)
+        b = top_level_occurrence_id(mate.references[1].occurrence_id)
         if a == b or a in frozen or b in frozen:
             continue
         adjacency.setdefault(a, set()).add(b)
@@ -150,7 +152,7 @@ def discover_component(
     used: list[Mate] = []
     touched_frozen: set[str] = set()
     for mate in mates:
-        ids = [r.occurrence_id for r in mate.references]
+        ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
         if ids[0] == ids[1] or not any(i in seen for i in ids):
             continue
         used.append(mate)
@@ -245,18 +247,29 @@ def build_group_model(
     bodies_cache: dict[str, dict] = {}
 
     def side(ref) -> _Side:
-        target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
+        # A reference into a sub-assembly (`outer/inner`) is carried by its
+        # top-level Occurrence `outer`: the geometry is lifted into `outer`'s
+        # own local frame so it moves with `outer` (a member) or sits at
+        # `outer`'s fixed transform (a frozen peer).
+        top_id = top_level_occurrence_id(ref.occurrence_id)
+        top_part, top_transform = _target_part_and_transform(document, part, top_id)
+        target, inner = _target_part_and_transform(document, top_part, ref.occurrence_id[len(top_id) + 1 :])
         if target.id not in bodies_cache:
             bodies_cache[target.id] = compute_part_bodies(target)
         geometry = _resolve_local_geometry(target, bodies_cache[target.id], ref)
-        return _Side(ref.occurrence_id, geometry, None if ref.occurrence_id in members else transform)
+        if inner is not None:
+            geometry = _place_in_world(geometry, inner)
+        return _Side(top_id, geometry, None if top_id in members else top_transform)
 
     sides = []
     for mate in component.mates:
         first, second = mate.references
         # Orient like `_applicable_mates`: the movable side is "driven" when
         # the other side is frozen (the residual is only sign-asymmetric).
-        if first.occurrence_id not in members and second.occurrence_id in members:
+        if (
+            top_level_occurrence_id(first.occurrence_id) not in members
+            and top_level_occurrence_id(second.occurrence_id) in members
+        ):
             first, second = second, first
         if mate.type == MateType.ANGLE and mate.flipped and mate.value is not None:
             # `_mate_residual_vector` ignores `flipped`; py-slvs' `addAngle`

@@ -13,7 +13,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
-from app.document.assembly import compose_chain, expand_component_pattern_instances
+from app.document.assembly import compose_chain, expand_component_pattern_instances, top_level_occurrence_id
 from app.document.assembly_group import GroupSolveResult, constraint_status, solve_group, validate_mate_geometry
 from app.document.assembly_solver import _quaternion_from_axis_angle
 from app.document.bevel_pair import resolve_member_profile_shifts
@@ -3639,7 +3639,9 @@ def delete_occurrence(part_id: str, occurrence_id: str) -> Response:
     walk is needed here either."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
-    part.mates = [m for m in part.mates if not any(r.occurrence_id == occurrence_id for r in m.references)]
+    part.mates = [
+        m for m in part.mates if not any(top_level_occurrence_id(r.occurrence_id) == occurrence_id for r in m.references)
+    ]
     part.component_patterns = [
         p for p in part.component_patterns if occurrence_id not in p.source_occurrence_ids
     ]
@@ -3674,11 +3676,22 @@ def _validate_mate_entity_ref(part: Part, ref: MateEntityRefResponse) -> None:
         )
     if ref.occurrence_id == "":
         return
-    if not any(occurrence.id == ref.occurrence_id for occurrence in part.occurrences):
-        raise HTTPException(
-            status_code=422,
-            detail={"type": "occurrence_not_found", "occurrence_id": ref.occurrence_id},
-        )
+    # A `/`-joined path names an Occurrence nested inside a sub-assembly
+    # (`outer/inner`, the same key the client reads off assembly-mesh
+    # instances). Every segment must exist in the Part the previous one
+    # placed; only the *last* one may point at a not-yet-resolved target
+    # (the top-level case has always been allowed to).
+    current: Part | None = part
+    segments = ref.occurrence_id.split("/")
+    for index, segment in enumerate(segments):
+        occurrence = next((o for o in current.occurrences if o.id == segment), None) if current else None
+        if occurrence is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"type": "occurrence_not_found", "occurrence_id": ref.occurrence_id},
+            )
+        if index < len(segments) - 1:
+            current = get_document().parts.get(occurrence.part_id) if occurrence.part_id else None
 
 
 def _validate_mate_create(part: Part, payload: MateCreate) -> None:
@@ -3692,7 +3705,12 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     for ref in payload.references:
         _validate_mate_entity_ref(part, ref)
-    if payload.references[0].occurrence_id == payload.references[1].occurrence_id:
+    first_top = top_level_occurrence_id(payload.references[0].occurrence_id)
+    second_top = top_level_occurrence_id(payload.references[1].occurrence_id)
+    if first_top == second_top:
+        # Compares the top-level Occurrence each reference belongs to, not the
+        # full path: two faces inside the same sub-assembly can never be
+        # mated here (the whole sub-assembly moves as one rigid body).
         raise HTTPException(status_code=422, detail="A Mate's two references must name different occurrences")
     if payload.type in ("distance", "angle") and payload.value is None:
         raise HTTPException(

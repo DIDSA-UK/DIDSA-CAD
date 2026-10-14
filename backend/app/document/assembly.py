@@ -127,6 +127,18 @@ def compose_chain(transforms: list[RigidTransform]) -> RigidTransform:
     return result
 
 
+def top_level_occurrence_id(occurrence_id: str) -> str:
+    """The first segment of an Occurrence reference. A Mate (or Measure/
+    Section target) reference into a sub-assembly names its Occurrence by
+    the same `/`-joined path the client and `GET .../assembly-mesh` already
+    use (`outer_occurrence_id/inner_occurrence_id/...`); the first segment is
+    the top-level Occurrence of the currently-open Part that carries the
+    whole chain, i.e. the one that actually moves when the chain is driven.
+    `""` (the open Part's own root content) and a plain id are their own
+    top-level id."""
+    return occurrence_id.split("/", 1)[0]
+
+
 def resolve_occurrence_target(document: Document, part: Part, occurrence_id: str) -> tuple[Part, RigidTransform | None]:
     """The Part `occurrence_id` places, plus that Occurrence's own current
     `transform` - `None` for the special `""` ("this Part's own root
@@ -140,20 +152,34 @@ def resolve_occurrence_target(document: Document, part: Part, occurrence_id: str
     has no reason to import the much heavier `py_slvs`-dependent
     `assembly_solver` module just for this).
 
+    `occurrence_id` may be a `/`-joined path into nested sub-assemblies
+    (`outer/inner`): each segment is looked up in the Part the previous one
+    placed, and the returned transform is the whole chain composed
+    (`compose`, outermost first) - i.e. the leaf's placement relative to
+    `part`'s own frame, exactly what the assembly-mesh walk reports as that
+    instance's world transform. A bug report (Table_Top mated to a face of
+    Frame_A inside the Frame sub-assembly) hit a 422 here because only a
+    bare top-level id used to resolve.
+
     Raises `KeyError(occurrence_id)` - never a framework-specific HTTP
     exception, since this module has no HTTP dependency of its own - for an
-    `occurrence_id` that isn't a top-level Occurrence of `part` with an
-    already-resolved target Part; each caller wraps that into its own 422
-    shape (`assembly_solver._unresolved_mate_occurrence`, `measure.
-    _missing_occurrence`)."""
+    `occurrence_id` with any segment that isn't an Occurrence of the Part
+    reached so far with an already-resolved target Part; each caller wraps
+    that into its own 422 shape (`assembly_solver._unresolved_mate_
+    occurrence`, `measure._missing_occurrence`)."""
     if occurrence_id == "":
         return part, None
-    for occurrence in part.occurrences:
-        if occurrence.id == occurrence_id:
-            if occurrence.part_id is None or occurrence.part_id not in document.parts:
-                raise KeyError(occurrence_id)
-            return document.parts[occurrence.part_id], occurrence.transform
-    raise KeyError(occurrence_id)
+    current = part
+    chain: list[RigidTransform] = []
+    for segment in occurrence_id.split("/"):
+        occurrence = next((o for o in current.occurrences if o.id == segment), None)
+        if occurrence is None or occurrence.part_id is None or occurrence.part_id not in document.parts:
+            raise KeyError(occurrence_id)
+        chain.append(occurrence.transform)
+        current = document.parts[occurrence.part_id]
+    if len(chain) == 1:
+        return current, chain[0]
+    return current, compose_chain(chain)
 
 
 def apply_transform_to_point(transform: RigidTransform, point: Vec3) -> Vec3:

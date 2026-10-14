@@ -3704,7 +3704,9 @@ class _PartScreenState extends State<PartScreen> {
   /// 2's own fix: mating to a `fixed` part must never try to drive the
   /// fixed side just because it happened to be picked/listed first).
   String? _drivableOccurrenceId(Iterable<String> occurrenceIds) {
-    for (final id in occurrenceIds) {
+    for (final reference in occurrenceIds) {
+      // A reference into a sub-assembly (`outer/inner`) is driven by moving `outer`.
+      final id = topLevelOccurrenceId(reference);
       if (id.isEmpty) continue;
       final index = _occurrences.indexWhere((o) => o.id == id);
       final isFixed = index != -1 && _occurrences[index].fixed;
@@ -10220,6 +10222,15 @@ class _PartScreenState extends State<PartScreen> {
     //    pointing at the original; repointing the Occurrence at the copy
     //    (SolidWorks "replace component") is a possible follow-up.
     final isRootPart = focusPartId == _part?.id;
+    // A component made in place (Create Component) has an auto-assigned path
+    // but no file behind it yet. Saving it under a chosen name is the first
+    // save of that component - it takes the name, not "a copy next to a
+    // placeholder that is still linked to a file that never existed".
+    if (!isRootPart && (currentPath == null || await _storageService.resolve(root, currentPath) == null)) {
+      if (!mounted) return;
+      await _saveNeverSavedComponentAs(root, focusPartId, partName, currentPath, newPath);
+      return;
+    }
     final wasDirty = _isDirty;
     var saved = false;
     await _runGuarded(() async {
@@ -10259,6 +10270,56 @@ class _PartScreenState extends State<PartScreen> {
     // marks every guarded action dirty).
     setState(() => _isDirty = wasDirty);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved a copy as $newPath')));
+  }
+
+  /// First save of a component that has no file on disk yet (made by Create
+  /// Component, or added with an auto-assigned path), under the name the user
+  /// picked in Save As. Writes it at [newPath] keeping its identity (nothing
+  /// else references a file that never existed, so no re-mint and no copy),
+  /// moves the session's path for it there, and - only if it still carries its
+  /// auto-generated name - renames the Part and its placeholder Occurrence(s)
+  /// to match the file, so the assembly shows "Table_Top" instead of
+  /// "Component 2". The parent assembly's own file still needs a Save (or Save
+  /// All) to record the new `external_ref`, so the session stays dirty.
+  Future<void> _saveNeverSavedComponentAs(
+    ProjectRoot root,
+    String partId,
+    String partName,
+    String? oldPath,
+    String newPath,
+  ) async {
+    final newName = stripNativeExtension(newPath.split('/').last);
+    final oldAutoName = oldPath == null ? null : stripNativeExtension(oldPath.split('/').last);
+    final hadAutoName = partName == oldAutoName;
+    var saved = false;
+    await _runGuarded(() async {
+      if (hadAutoName && newName.trim().isNotEmpty && newName != partName) {
+        final session = await _api.exportNative();
+        await _api.updatePart(partId, name: newName);
+        for (final partRaw in ((session['document'] as Map?)?['parts'] as List?) ?? const []) {
+          if (partRaw is! Map) continue;
+          for (final occurrenceRaw in (partRaw['occurrences'] as List?) ?? const []) {
+            if (occurrenceRaw is Map &&
+                occurrenceRaw['resolved_part_id'] == partId &&
+                occurrenceRaw['name_override'] == partName) {
+              await _api.updateOccurrenceName(partRaw['id'] as String, occurrenceRaw['id'] as String, newName);
+            }
+          }
+        }
+      }
+      try {
+        await _assemblyDocumentClient.savePart(root, partId, newPath, extras: _extrasFor(partId));
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = 'Failed to save: ${e.message}');
+        return;
+      }
+      setState(() => _relativePathByPartId = {..._relativePathByPartId, partId: newPath});
+      saved = true;
+    });
+    if (!saved || !mounted) return;
+    await _refreshAssemblyTree();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved as $newPath')));
   }
 
   /// File > New: starts a brand-new, blank Part - the same "always start
@@ -10875,7 +10936,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Whether [occurrenceId] takes part in at least one active mate of the focused Part (the only case that
   /// goes through `mate-motion`; everything else keeps the raw PATCH path).
   bool _isMated(String occurrenceId) => _mates.any(
-        (m) => !m.suppressed && m.references.any((r) => r.occurrenceId == occurrenceId),
+        (m) => !m.suppressed && m.references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrenceId),
       );
 
   RigidTransformDto _localOfWorld(RigidTransformDto world) {
@@ -14308,7 +14369,7 @@ class _PartScreenState extends State<PartScreen> {
     final targets = _assemblyMultiSelectOccurrences;
     if (targets.isEmpty) return;
     final targetIds = {for (final o in targets) o.id};
-    final mateCount = _mates.where((m) => m.references.any((r) => targetIds.contains(r.occurrenceId))).length;
+    final mateCount = _mates.where((m) => m.references.any((r) => targetIds.contains(topLevelOccurrenceId(r.occurrenceId)))).length;
     final patternCount =
         _componentPatterns.where((p) => p.sourceOccurrenceIds.any(targetIds.contains)).length;
     final n = targets.length;
@@ -21862,7 +21923,7 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || focusPartId == null) return;
     final affectedMates = <MateDto>[];
     for (var i = 0; i < _mates.length; i++) {
-      if (_mates[i].references.any((r) => r.occurrenceId == occurrence.id)) {
+      if (_mates[i].references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrence.id)) {
         affectedMates.add(_mates[i]);
       }
     }
