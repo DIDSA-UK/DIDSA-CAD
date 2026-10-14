@@ -2,7 +2,7 @@ import '../assembly/relative_path.dart';
 import 'project_root.dart';
 import 'storage_service.dart';
 
-/// Every native project file under [ProjectRoot] - current `.DIDSAprt` and legacy `.didsa` (see
+/// Every native project file under [ProjectRoot] - current `.didsa` and the legacy `.DIDSAprt`/`.didsacad` (see
 /// [isNativeProjectFileName]). Lists unfiltered and filters here because [StorageService.listFiles] takes one
 /// extension and its iOS implementation filters in native code.
 extension NativeFileListing on StorageService {

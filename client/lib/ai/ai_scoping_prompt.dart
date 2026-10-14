@@ -618,7 +618,7 @@ that is none of these three.
   name_override?} - places a brand-new component by inserting an
   already-existing project file (never one you invent). relative_path must
   be one of the exact paths listed under "Available Component Files" below,
-  copied verbatim (forward slashes, e.g. "parts/bracket.DIDSAprt");
+  copied verbatim (forward slashes, e.g. "parts/bracket.didsa");
   name_override is an optional display name for the new component. If
   nothing suitable is listed (or no "Available Component Files" section
   appears at all), say so plainly rather than inventing a path. This step's

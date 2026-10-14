@@ -106,8 +106,8 @@ Here is the plan.
 
 /// Phase E's own assembly plan - an `add_component` step per part saved by
 /// the two preceding cycles, referencing the exact `relative_path`s those
-/// cycles' own save-confirm dialogs produce below (`PLATE_001.DIDSAprt`/
-/// `TUBE_001.DIDSAprt`). No `mate` step here - `_runAssemblyCycle` treats
+/// cycles' own save-confirm dialogs produce below (`PLATE_001.didsa`/
+/// `TUBE_001.didsa`). No `mate` step here - `_runAssemblyCycle` treats
 /// `add_component`/`mate` identically (both are ordinary `PlanStep`s,
 /// unchanged from Phase D's own translator call), so this keeps the fixture
 /// backend small without weakening what this test actually exercises: the
@@ -117,8 +117,8 @@ const _assemblyPlanText = '''
 Here is the assembly plan.
 ```json
 {"version": 1, "steps": [
-  {"local_id": "ac1", "kind": "add_component", "relative_path": "PLATE_001.DIDSAprt"},
-  {"local_id": "ac2", "kind": "add_component", "relative_path": "TUBE_001.DIDSAprt"}
+  {"local_id": "ac1", "kind": "add_component", "relative_path": "PLATE_001.didsa"},
+  {"local_id": "ac2", "kind": "add_component", "relative_path": "TUBE_001.didsa"}
 ]}
 ```''';
 
@@ -349,7 +349,7 @@ void main() {
       expect(find.textContaining('ASSEMBLY_001'), findsOneWidget);
       expect(
         storage.writtenFiles.keys,
-        containsAll(['PLATE_001.DIDSAprt', 'TUBE_001.DIDSAprt', 'ASSEMBLY_001.DIDSAprt']),
+        containsAll(['PLATE_001.didsa', 'TUBE_001.didsa', 'ASSEMBLY_001.didsa']),
       );
 
       final dismissButton = tester.widget<FilledButton>(find.byKey(const Key('aiModellingOrchestrationDismiss')));
@@ -376,9 +376,9 @@ void main() {
       expect(pushedScreen.initialLens, AssemblyLens.assembly);
       expect(pushedScreen.initialProjectRoot, root);
       expect(pushedScreen.initialRelativePathByPartId, {
-        'part-1': 'PLATE_001.DIDSAprt',
-        'part-2': 'TUBE_001.DIDSAprt',
-        'part-3': 'ASSEMBLY_001.DIDSAprt',
+        'part-1': 'PLATE_001.didsa',
+        'part-2': 'TUBE_001.didsa',
+        'part-3': 'ASSEMBLY_001.didsa',
       });
     },
   );
@@ -716,7 +716,7 @@ I found one distinct part.
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
 
-    expect(storage.writtenFiles.keys, contains('PLATE_001.DIDSAprt'));
+    expect(storage.writtenFiles.keys, contains('PLATE_001.didsa'));
   });
 
 

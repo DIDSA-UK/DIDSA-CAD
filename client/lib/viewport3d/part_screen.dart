@@ -48,6 +48,7 @@ import '../motion/mate_motion_bridge.dart';
 import '../motion/se3.dart' show weightedDist;
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
+import '../storage/native_file_listing.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
@@ -368,7 +369,7 @@ class PartScreen extends StatefulWidget {
   /// Opened) Part - remembered as [_PartScreenState._lastSavedFileName]'s
   /// own starting point, so a subsequent plain Save on the fresh screen
   /// re-suggests the same file instead of falling back to a generic
-  /// "&lt;Part name&gt;.DIDSAprt" default.
+  /// "&lt;Part name&gt;.didsa" default.
   final String? initialFileName;
 
   /// Native Load/Save: the full filesystem path Open just read this Part
@@ -1757,7 +1758,7 @@ class _PartScreenState extends State<PartScreen> {
   /// this session (see [PartScreen.initialFileName]'s own doc comment for
   /// why a fresh Open-triggered screen starts with one already) - the
   /// default [_saveNativeFile] suggests, so a quick re-save doesn't fall
-  /// back to a generic "&lt;Part name&gt;.DIDSAprt" name every time.
+  /// back to a generic "&lt;Part name&gt;.didsa" name every time.
   /// [_saveAsNativeFile] always ignores this for its own initial suggestion
   /// (a deliberate fresh prompt), but still updates it from whatever the
   /// user actually saves to, same as a plain Save does.
@@ -9822,7 +9823,7 @@ class _PartScreenState extends State<PartScreen> {
           // Falls through to the dialog below.
         }
       }
-      final saved = await _saveNativeFileViaDialog(_lastSavedFileName ?? '${_part?.name ?? 'part'}.DIDSAprt', bytes);
+      final saved = await _saveNativeFileViaDialog(_lastSavedFileName ?? '${_part?.name ?? 'part'}$kNativeFileExtension', bytes);
       if (saved) setState(() => _isDirty = false);
     });
   }
@@ -9859,7 +9860,7 @@ class _PartScreenState extends State<PartScreen> {
       final previousPath = _lastSavedFilePath;
       reminted = remintNativeIdentity(jsonDecode(utf8.decode(originalBytes)) as Map<String, dynamic>);
       final remintedBytes = Uint8List.fromList(utf8.encode(jsonEncode(reminted)));
-      final saved = await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', remintedBytes);
+      final saved = await _saveNativeFileViaDialog('${_part?.name ?? 'part'}$kNativeFileExtension', remintedBytes);
       if (!saved) {
         reminted = null;
         return;
@@ -10087,7 +10088,7 @@ class _PartScreenState extends State<PartScreen> {
   /// separate File-menu entries - a legacy whole-session Bundle Open (this
   /// method's own former home, `_openNativeFile`) and a Project-only
   /// "Open Project…" (`_onOpenProjectPressed`). The user never had a
-  /// reliable way to know up front which one a given `.DIDSAprt` file
+  /// reliable way to know up front which one a given native file
   /// actually needed - this reads the file first and picks correctly:
   /// `isBundleShapedNativeFile` mirrors [AssemblyGraphComposer.compose]'s
   /// own "exactly one Part per file" rule to tell a legacy
@@ -10122,7 +10123,7 @@ class _PartScreenState extends State<PartScreen> {
   /// `ProjectRoot` is silently derived from the picked file's own parent
   /// directory (`DesktopProjectRoot(p.dirname(pickedPath))`) rather than a
   /// separate folder-grant step, since plain `dart:io` access has no
-  /// scoped permission to negotiate. `FileType.any` (not a `.DIDSAprt`
+  /// scoped permission to negotiate. `FileType.any` (not an extension
   /// allow-list) for the same on-device reason `_openNativeFile` always
   /// used it: Android has no MIME mapping for a made-up extension, so a
   /// saved file shows up greyed out/unselectable in the picker even though
@@ -12354,9 +12355,23 @@ class _PartScreenState extends State<PartScreen> {
     String baseName,
     Map<String, String> alreadyAssigned,
   ) async {
+    // Collisions are compared by [nativeBaseNameKey] against a real listing,
+    // not by exact name: `Bracket.didsa` and a legacy `Bracket.DIDSAprt` in
+    // the same folder would look like duplicates in the Open list, and one
+    // `resolve` call can't see the other extension. A failing listing falls
+    // back to `resolve` on the exact name.
+    List<String> existing;
+    try {
+      existing = await _storageService.listNativeFiles(root);
+    } on StorageException {
+      existing = const [];
+    }
+    bool taken(String candidate) =>
+        findNativeNameCollision(candidate, [...alreadyAssigned.values, ...existing]) != null;
+
     var candidate = withDefaultExtension(baseName);
     var suffix = 2;
-    while (alreadyAssigned.containsValue(candidate) || await _storageService.resolve(root, candidate) != null) {
+    while (taken(candidate) || await _storageService.resolve(root, candidate) != null) {
       candidate = withDefaultExtension('$baseName ($suffix)');
       suffix++;
     }
@@ -21796,7 +21811,10 @@ class _PartScreenState extends State<PartScreen> {
         final oldPath = _relativePathByPartId[partId];
         final root = _projectRoot;
         if (oldPath != null && root != null) {
-          final newFileName = withDefaultExtension(newName);
+          // Keep the file's own extension (a legacy `.DIDSAprt` stays one):
+          // silently converting on rename would be surprising, and nothing
+          // else should change a file's extension implicitly.
+          final newFileName = hasNativeExtension(newName) ? newName : '$newName${nativeExtensionOf(oldPath)}';
           try {
             await _storageService.renameFile(root, oldPath, newFileName);
             final newPath = siblingRelativePath(oldPath, newFileName);
@@ -22087,12 +22105,26 @@ class _PartScreenState extends State<PartScreen> {
   /// not the backend `Part.name` - every brand-new Part is created with the
   /// same hardcoded `'Part 1'` server-side (see `_loadPart`), so without
   /// this the banner would say "Part 1" forever regardless of what the user
-  /// names their save file. Falls back to `_part?.name` only when nothing's
-  /// been saved/opened yet this session.
+  /// names their save file.
+  ///
+  /// Precedence (bug report 2026-10-14, item 1):
+  ///  1. In a project session ([_projectRoot] != null) the basename of the
+  ///     **root** Part's own file ([_relativePathByPartId]), without its
+  ///     native extension. Every single-Part file, including every file Open
+  ///     takes through [_openComposedProject], is project-shaped and never
+  ///     seeds [_lastSavedFileName], so this is what names them. It also
+  ///     follows Save As, which rewrites that map.
+  ///  2. Otherwise [_lastSavedFileName] (a legacy whole-session bundle).
+  ///  3. Otherwise `_part?.name` - nothing saved/opened yet.
   String get _displayPartName {
+    final rootId = _part?.id;
+    if (_projectRoot != null && rootId != null) {
+      final rootPath = _relativePathByPartId[rootId];
+      if (rootPath != null) return stripNativeExtension(p.basename(rootPath));
+    }
     final savedName = _lastSavedFileName;
     if (savedName == null) return _part?.name ?? 'Part';
-    return savedName.replaceFirst(RegExp(r'\.(didsaprt|didsa)$', caseSensitive: false), '');
+    return stripNativeExtension(savedName);
   }
 
   Widget _buildScaffold(BuildContext context) {

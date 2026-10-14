@@ -5539,7 +5539,59 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
 
         expect(find.text('Saved 2 file(s)'), findsOneWidget);
-        expect(storage.files.keys, containsAll(['Part 1.DIDSAprt', 'Component 1.DIDSAprt']));
+        expect(storage.files.keys, containsAll(['Part 1.didsa', 'Component 1.didsa']));
+      },
+    );
+
+    testWidgets(
+      'an auto-assigned path treats a legacy X.DIDSAprt in the folder as the same name (item 9)',
+      (tester) async {
+        final backend = _FakeDocumentBackend();
+        final storage = _FakeStorageService()
+          ..files['Component 1.DIDSAprt'] = Uint8List.fromList(utf8.encode('{}'));
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tester.tap(find.byTooltip('Assembly tree'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.byTooltip('Add'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Create Component…'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Save All'));
+        await tester.pump();
+        await tester.tap(find.text('Save All'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // `Component 1.didsa` would look like a duplicate of the legacy file
+        // in the Open list, so the next free name is used instead.
+        expect(storage.files.keys, containsAll(['Component 1 (2).didsa', 'Part 1.didsa']));
+        expect(storage.files.keys, isNot(contains('Component 1.didsa')));
       },
     );
 
@@ -5920,6 +5972,7 @@ void main() {
 
         expect(backend.occurrences.single['name_override'], 'Left Bracket');
         expect(backend.extraParts['part-2']!['name'], 'Left Bracket');
+        // Item 9: rename keeps the file's own (here legacy, typed) extension.
         expect(storage.files.keys, contains('Left Bracket.DIDSAprt'));
         expect(storage.files.keys, isNot(contains('bracket.DIDSAprt')));
       },
@@ -6180,6 +6233,8 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
       }
       await _pumpUntil(tester, () => find.byType(PartToolbar).evaluate().length == 1);
+      // Item 1: the title follows the new file.
+      expect(find.text('renamed-top'), findsOneWidget);
       tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveNative!();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6246,6 +6301,50 @@ void main() {
         partIds.firstMatch(utf8.decode(storage.files['top.DIDSAprt']!))!.group(1),
         partIds.firstMatch(originalBytes)!.group(1),
       );
+    });
+  });
+
+  // Bug report 2026-10-14, item 1: Open on a single-Part (project-shaped) file
+  // never seeded `initialFileName`, so the title fell back to the backend Part
+  // name, always "Part 1".
+  group('title follows the root Part\'s file (item 1)', () {
+    Future<void> pumpOpened(
+      WidgetTester tester,
+      _FakeDocumentBackend backend,
+      String rootPath,
+    ) async {
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+            initialPartId: 'part-1',
+            initialProjectRoot: storage.root,
+            initialRelativePathByPartId: {'part-1': rootPath},
+          ),
+        ),
+      );
+    }
+
+    String appBarTitle(WidgetTester tester) =>
+        tester.widget<Text>(find.descendant(of: find.byType(AppBar), matching: find.byType(Text)).last).data!;
+
+    testWidgets('a legacy .DIDSAprt file shows its base name, not "Part 1"', (tester) async {
+      final backend = _FakeDocumentBackend();
+      await pumpOpened(tester, backend, 'sub/Frame_A.DIDSAprt');
+      await _pumpUntil(tester, () => find.text('Frame_A').evaluate().isNotEmpty);
+      expect(appBarTitle(tester), 'Frame_A');
+    });
+
+    testWidgets('a current .didsa file shows its base name too', (tester) async {
+      final backend = _FakeDocumentBackend();
+      await pumpOpened(tester, backend, 'sub/Frame_C.didsa');
+      await _pumpUntil(tester, () => find.text('Frame_C').evaluate().isNotEmpty);
+      expect(appBarTitle(tester), 'Frame_C');
     });
   });
 
