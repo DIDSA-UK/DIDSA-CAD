@@ -6,7 +6,7 @@ attached files, `Frame_A.DIDSAprt` (800 mm 60x60 box section, mitred ends) and
 editing it).
 
 This doc is written for a **follow-up implementation session**. Each item has
-the root cause (with code pointers as of `b4ca653`), the planned fix, and the
+the root cause (with code pointers checked against `main` at `43d2fd2`), the planned fix, and the
 tests to add. Line numbers drift; search for the named symbol if a line is off.
 
 Suggested order: **3 → 1 → 2 → 5 → 4 → 6 → 8 → 7**. Item 3 can corrupt
@@ -32,7 +32,9 @@ Project-mode Save As (`_saveFocusedPartAs`) also never updates the title.
 - Change `_displayPartName` to this precedence:
   1. If `_projectRoot != null`, use the basename of
      `_relativePathByPartId[_part!.id]` (the **root** Part's file), without the
-     `.DIDSAprt` extension.
+     `.DIDSAprt` extension. Strip the legacy `.didsa` extension too, as
+     `main` now does for `_lastSavedFileName` (`isNativeProjectFileName`
+     in `assembly/relative_path.dart` accepts both).
   2. Otherwise use `_lastSavedFileName`, as today.
   3. Otherwise use `_part?.name ?? 'Part'`.
 - With that change, project-mode Save As updates the title automatically,
