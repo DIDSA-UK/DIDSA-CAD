@@ -26,6 +26,10 @@
 /// `StorageService`-backed one could.
 library;
 
+import 'dart:convert';
+
+import 'remint_identity.dart';
+
 /// Raised for anything that stops [mergeComponentIntoDocument] from
 /// producing a usable merged payload - never a partial/corrupt result.
 class AddComponentException implements Exception {
@@ -35,6 +39,169 @@ class AddComponentException implements Exception {
 
   @override
   String toString() => 'AddComponentException: $message';
+}
+
+/// What [_prepareComponent] decided about an incoming component payload.
+class _PreparedComponent {
+  _PreparedComponent({
+    required this.parts,
+    required this.sketches,
+    required this.rootPartId,
+    required this.reusesExistingPart,
+  });
+
+  /// The component's Parts (re-minted if a collision was healed).
+  final List<Map<String, dynamic>> parts;
+  final List<Map<String, dynamic>> sketches;
+
+  /// The Part id the new/relinked Occurrence should resolve to.
+  final String rootPartId;
+
+  /// True when the file is already in the session under an earlier-minted
+  /// copy: nothing from [parts]/[sketches] should be merged, just pointed at.
+  final bool reusesExistingPart;
+}
+
+/// A canonical (key-sorted) JSON string, so two structurally equal maps
+/// compare equal regardless of key order.
+String _canonicalJson(Object? node) {
+  Object? canonical(Object? value) {
+    if (value is Map) {
+      final keys = value.keys.map((k) => k as String).toList()..sort();
+      return {for (final key in keys) key: canonical(value[key])};
+    }
+    if (value is List) return [for (final item in value) canonical(item)];
+    return value;
+  }
+
+  return jsonEncode(canonical(node));
+}
+
+/// A Part's content minus the one field that legitimately differs between
+/// "the file" and "the live session's copy of it": an Occurrence's
+/// `resolved_part_id` (the composer pairs it with whichever Part it resolved
+/// to in *that* payload, so a file read straight off disk carries none).
+String _comparablePart(Map<String, dynamic> part) {
+  final occurrences = ((part['occurrences'] as List?) ?? const []).cast<Map<String, dynamic>>();
+  return _canonicalJson({
+    ...part,
+    'occurrences': [
+      for (final occurrence in occurrences)
+        {
+          for (final entry in occurrence.entries)
+            if (entry.key != 'resolved_part_id') entry.key: entry.value,
+        },
+    ],
+  });
+}
+
+/// True when [componentParts]/[componentSketches] carry a Part or sketch id
+/// the session already holds with *different* content - two different files
+/// sharing an id (typically a pre-fix "Save As" copy), where dedup-by-id
+/// would silently drop one of them. An id that matches with identical content
+/// is just the same Part again, which is the ordinary, correct dedup.
+bool _hasIdentityCollision({
+  required List<Map<String, dynamic>> currentParts,
+  required List<Map<String, dynamic>> componentParts,
+  required List<Map<String, dynamic>> currentSketches,
+  required List<Map<String, dynamic>> componentSketches,
+}) {
+  final currentPartById = {for (final part in currentParts) part['id'] as String: part};
+  for (final part in componentParts) {
+    final existing = currentPartById[part['id']];
+    if (existing != null && _comparablePart(existing) != _comparablePart(part)) return true;
+  }
+  final currentSketchById = {for (final sketch in currentSketches) sketch['id'] as String: sketch};
+  for (final sketch in componentSketches) {
+    final existing = currentSketchById[sketch['id']];
+    if (existing != null && _canonicalJson(existing) != _canonicalJson(sketch)) return true;
+  }
+  return false;
+}
+
+/// Part ids that existing Occurrences with this exact `external_ref` already
+/// resolve to - "this file is already in the session", which is also how a
+/// previously re-minted copy of a colliding file is found again.
+List<String> _resolvedPartIdsForRef(List<Map<String, dynamic>> currentParts, String? externalRef) {
+  if (externalRef == null) return const [];
+  final found = <String>[];
+  for (final part in currentParts) {
+    for (final occurrence in ((part['occurrences'] as List?) ?? const []).cast<Map<String, dynamic>>()) {
+      final resolved = occurrence['resolved_part_id'] as String?;
+      if (occurrence['external_ref'] == externalRef && resolved != null && !found.contains(resolved)) {
+        found.add(resolved);
+      }
+    }
+  }
+  return found;
+}
+
+/// Identity collision handling shared by [mergeComponentIntoDocument] and
+/// [relocateOccurrenceInDocument] (bug report 2026-10-14, item 3). The merge
+/// dedups by Part id and sketch id, which is only right when the same id
+/// really means the same file. Two different files can share ids (a pre-fix
+/// "Save As" copy, then edited), and dedup would silently drop the second one
+/// - the Part the user asked for never shows up and its Occurrence points at
+/// the other file's geometry. So:
+///  * an id the session already holds with *identical* content is the same
+///    Part again - the ordinary dedup, unchanged;
+///  * the same [externalRef] already resolved in the session (or recorded in
+///    [relativePathByPartId] for that Part) means "this file is already
+///    here", possibly as a copy re-minted on an earlier add - the existing
+///    Part is reused and nothing is merged;
+///  * otherwise the incoming payload is re-minted before merging, so both
+///    files end up as distinct Parts.
+///
+/// The self-reference check runs *after* that, on purpose: a Save-As copy of
+/// the open Part carries the open Part's id but different content, and is a
+/// legitimate thing to insert once re-minted. What still equals [rootPartId]
+/// here is genuinely the open Part itself.
+_PreparedComponent _prepareComponent({
+  required Map<String, dynamic> componentPayload,
+  required List<Map<String, dynamic>> componentParts,
+  required String componentRootPartId,
+  required List<Map<String, dynamic>> currentParts,
+  required List<Map<String, dynamic>> currentSketches,
+  required String rootPartId,
+  required String? externalRef,
+  required Map<String, String>? relativePathByPartId,
+  required String selfReferenceMessage,
+}) {
+  var parts = componentParts;
+  var sketches = ((componentPayload['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
+  var rootId = componentRootPartId;
+  String? reuse;
+
+  final sameRefPartIds = _resolvedPartIdsForRef(currentParts, externalRef);
+  final knownPath = relativePathByPartId?[componentRootPartId];
+  final sameSource = sameRefPartIds.contains(componentRootPartId) || (externalRef != null && knownPath == externalRef);
+  if (!sameSource &&
+      _hasIdentityCollision(
+        currentParts: currentParts,
+        componentParts: parts,
+        currentSketches: currentSketches,
+        componentSketches: sketches,
+      )) {
+    if (sameRefPartIds.isNotEmpty) {
+      reuse = sameRefPartIds.first;
+    } else {
+      final reminted = remintNativeIdentity(componentPayload);
+      final remintedDocument = reminted['document'] as Map<String, dynamic>;
+      parts = (remintedDocument['parts'] as List).cast<Map<String, dynamic>>();
+      sketches = ((reminted['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
+      rootId = remintedDocument['root_part_id'] as String? ?? parts.first['id'] as String;
+    }
+  }
+
+  if (reuse == null && rootId == rootPartId) {
+    throw AddComponentException(selfReferenceMessage);
+  }
+  return _PreparedComponent(
+    parts: parts,
+    sketches: sketches,
+    rootPartId: reuse ?? rootId,
+    reusesExistingPart: reuse != null,
+  );
 }
 
 /// Merges [componentPayload] (a picked file's own `export_native` JSON,
@@ -53,9 +220,16 @@ class AddComponentException implements Exception {
 /// behaviour even without a `ProjectRoot`-relative-path identity to key off
 /// here.
 ///
+/// That dedup only applies when the id really means the same file. A
+/// colliding id with *different* content (a pre-fix Save-As copy, edited) is
+/// re-minted instead of silently dropped - see [_prepareComponent].
+/// [relativePathByPartId] (the session's Part id -> project-relative path)
+/// lets a Part already known to come from [externalRef] count as the same
+/// file.
+///
 /// Throws [AddComponentException] for a `schema_version` mismatch, a file
-/// with no Parts at all, a self-reference (the picked file's own root Part
-/// id already equals [rootPartId] - inserting a Part into itself), or
+/// with no Parts at all, a self-reference (the picked file is the open Part
+/// itself: same root Part id *and* same content - inserting a Part into itself), or
 /// [rootPartId] not actually being present in [currentPayload] (should
 /// never happen in practice - the currently-open Part always exports
 /// itself - but fails loudly rather than silently dropping the new
@@ -67,6 +241,7 @@ Map<String, dynamic> mergeComponentIntoDocument({
   required String occurrenceId,
   String? externalRef,
   String? nameOverride,
+  Map<String, String>? relativePathByPartId,
 }) {
   final currentSchema = currentPayload['schema_version'];
   final componentSchema = componentPayload['schema_version'];
@@ -86,10 +261,6 @@ Map<String, dynamic> mergeComponentIntoDocument({
   final componentRootPartId =
       componentDocument['root_part_id'] as String? ?? componentParts.first['id'] as String;
 
-  if (componentRootPartId == rootPartId) {
-    throw AddComponentException('Cannot insert a Part into itself');
-  }
-
   final currentDocument = currentPayload['document'];
   if (currentDocument is! Map) {
     throw AddComponentException('Current session has no document to add to');
@@ -100,11 +271,26 @@ Map<String, dynamic> mergeComponentIntoDocument({
     throw AddComponentException('Current Part is missing from its own session snapshot');
   }
   final currentPartIds = {for (final part in currentParts) part['id'] as String};
+  final currentSketches = ((currentPayload['sketches'] as List?) ?? const [])
+      .cast<Map<String, dynamic>>();
+
+  final prepared = _prepareComponent(
+    componentPayload: componentPayload,
+    componentParts: componentParts,
+    componentRootPartId: componentRootPartId,
+    currentParts: currentParts,
+    currentSketches: currentSketches,
+    rootPartId: rootPartId,
+    externalRef: externalRef,
+    relativePathByPartId: relativePathByPartId,
+    selfReferenceMessage: 'Cannot insert a Part into itself',
+  );
 
   final mergedParts = [
     ...currentParts,
-    for (final part in componentParts)
-      if (!currentPartIds.contains(part['id'])) part,
+    if (!prepared.reusesExistingPart)
+      for (final part in prepared.parts)
+        if (!currentPartIds.contains(part['id'])) part,
   ];
 
   // Bug fix: `export_native`'s `sketches` list (`native_format.py`) lives
@@ -118,15 +304,12 @@ Map<String, dynamic> mergeComponentIntoDocument({
   // `get_sketch_or_404`, so the new Occurrence shows up in the tree (parts
   // merged fine) but never renders (its geometry can't be computed).
   // Deduped by sketch id, same convention as [mergedParts] above.
-  final currentSketches = ((currentPayload['sketches'] as List?) ?? const [])
-      .cast<Map<String, dynamic>>();
-  final componentSketches = ((componentPayload['sketches'] as List?) ?? const [])
-      .cast<Map<String, dynamic>>();
   final currentSketchIds = {for (final sketch in currentSketches) sketch['id'] as String};
   final mergedSketches = [
     ...currentSketches,
-    for (final sketch in componentSketches)
-      if (!currentSketchIds.contains(sketch['id'])) sketch,
+    if (!prepared.reusesExistingPart)
+      for (final sketch in prepared.sketches)
+        if (!currentSketchIds.contains(sketch['id'])) sketch,
   ];
 
   // Bug report (assembly testing): "The first part added to an assembly
@@ -143,7 +326,7 @@ Map<String, dynamic> mergeComponentIntoDocument({
   final newOccurrence = <String, dynamic>{
     'id': occurrenceId,
     'external_ref': externalRef,
-    'resolved_part_id': componentRootPartId,
+    'resolved_part_id': prepared.rootPartId,
     'name_override': nameOverride,
     'transform': null,
     'suppressed': false,
@@ -199,6 +382,7 @@ Map<String, dynamic> relocateOccurrenceInDocument({
   required String rootPartId,
   required String occurrenceId,
   String? newExternalRef,
+  Map<String, String>? relativePathByPartId,
 }) {
   final currentSchema = currentPayload['schema_version'];
   final componentSchema = componentPayload['schema_version'];
@@ -218,10 +402,6 @@ Map<String, dynamic> relocateOccurrenceInDocument({
   final componentRootPartId =
       componentDocument['root_part_id'] as String? ?? componentParts.first['id'] as String;
 
-  if (componentRootPartId == rootPartId) {
-    throw AddComponentException('Cannot link a Part to itself');
-  }
-
   final currentDocument = currentPayload['document'];
   if (currentDocument is! Map) {
     throw AddComponentException('Current session has no document to add to');
@@ -237,19 +417,32 @@ Map<String, dynamic> relocateOccurrenceInDocument({
   }
   final currentPartIds = {for (final part in currentParts) part['id'] as String};
 
+  final currentSketches = ((currentPayload['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
+  final prepared = _prepareComponent(
+    componentPayload: componentPayload,
+    componentParts: componentParts,
+    componentRootPartId: componentRootPartId,
+    currentParts: currentParts,
+    currentSketches: currentSketches,
+    rootPartId: rootPartId,
+    externalRef: newExternalRef,
+    relativePathByPartId: relativePathByPartId,
+    selfReferenceMessage: 'Cannot link a Part to itself',
+  );
+
   final mergedParts = [
     ...currentParts,
-    for (final part in componentParts)
-      if (!currentPartIds.contains(part['id'])) part,
+    if (!prepared.reusesExistingPart)
+      for (final part in prepared.parts)
+        if (!currentPartIds.contains(part['id'])) part,
   ];
 
-  final currentSketches = ((currentPayload['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
-  final componentSketches = ((componentPayload['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
   final currentSketchIds = {for (final sketch in currentSketches) sketch['id'] as String};
   final mergedSketches = [
     ...currentSketches,
-    for (final sketch in componentSketches)
-      if (!currentSketchIds.contains(sketch['id'])) sketch,
+    if (!prepared.reusesExistingPart)
+      for (final sketch in prepared.sketches)
+        if (!currentSketchIds.contains(sketch['id'])) sketch,
   ];
 
   final updatedParts = [
@@ -263,7 +456,7 @@ Map<String, dynamic> relocateOccurrenceInDocument({
                 {
                   ...occurrence,
                   'external_ref': newExternalRef ?? occurrence['external_ref'],
-                  'resolved_part_id': componentRootPartId,
+                  'resolved_part_id': prepared.rootPartId,
                 }
               else
                 occurrence,

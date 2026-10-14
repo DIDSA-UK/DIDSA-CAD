@@ -90,7 +90,13 @@ Future<String?> showRelativePathPromptDialog(
   required ProjectRoot root,
   bool skippable = false,
   ValueChanged<ProjectRoot>? onRootChanged,
+  String confirmText = 'Save',
 }) async {
+  // [confirmText] names the confirm button after the action ("Save",
+  // "Save As", ...). The dialog also shows which folder it will write into,
+  // so a remembered folder reused silently is visible and "Change Folder"
+  // makes sense.
+  //
   // [onRootChanged], when given, adds a "Change Folder" button: the picked
   // root is reported to the caller (which must save relative to it) and used
   // for this dialog's own collision check. Omitted by flows that write many
@@ -100,15 +106,26 @@ Future<String?> showRelativePathPromptDialog(
   String value = initialValue;
   String? validationError = validateProjectRelativePath(value);
   bool checkingCollision = false;
-  bool collisionWarning = false;
+  // The existing file the typed name would collide with (null: none). Named
+  // in the warning, because it can differ from what was typed: `Bracket`
+  // collides with a legacy `Bracket.DIDSAprt` as well as with `Bracket.didsa`.
+  String? collidingFile;
 
   Future<void> checkCollision(void Function(void Function()) setDialogState) async {
     final path = withDefaultExtension(value);
     setDialogState(() => checkingCollision = true);
-    final existing = await storageService.resolve(currentRoot, path);
+    // Compared by `nativeBaseNameKey` against a listing, because a single
+    // `resolve` call on the exact name can't see the other extension.
+    String? collision;
+    try {
+      collision = findNativeNameCollision(path, await storageService.listNativeFiles(currentRoot));
+    } on StorageException {
+      collision = null;
+    }
+    if (collision == null && await storageService.resolve(currentRoot, path) != null) collision = path;
     setDialogState(() {
       checkingCollision = false;
-      collisionWarning = existing != null;
+      collidingFile = collision;
     });
   }
 
@@ -121,6 +138,10 @@ Future<String?> showRelativePathPromptDialog(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text('Folder: ${currentRoot.displayName}', style: Theme.of(context).textTheme.bodySmall),
+            ),
             TextFormField(
               initialValue: value,
               autofocus: true,
@@ -133,7 +154,7 @@ Future<String?> showRelativePathPromptDialog(
                 setDialogState(() {
                   value = text;
                   validationError = validateProjectRelativePath(value);
-                  collisionWarning = false;
+                  collidingFile = null;
                 });
                 if (validationError == null) {
                   unawaited(checkCollision(setDialogState));
@@ -145,12 +166,12 @@ Future<String?> showRelativePathPromptDialog(
                 padding: EdgeInsets.only(top: 8),
                 child: LinearProgressIndicator(),
               ),
-            if (collisionWarning)
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
+            if (collidingFile != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
                 child: Text(
-                  'A file already exists at this path - Save All will overwrite it.',
-                  style: TextStyle(color: Colors.orange),
+                  '${collidingFile!.split('/').last} already exists and will be replaced.',
+                  style: const TextStyle(color: Colors.orange),
                 ),
               ),
           ],
@@ -171,7 +192,7 @@ Future<String?> showRelativePathPromptDialog(
                 currentRoot = newRoot;
                 onRootChanged(newRoot);
                 if (!context.mounted) return;
-                setDialogState(() => collisionWarning = false);
+                setDialogState(() => collidingFile = null);
                 if (validationError == null) {
                   unawaited(checkCollision(setDialogState));
                 }
@@ -182,7 +203,7 @@ Future<String?> showRelativePathPromptDialog(
             onPressed: validationError == null
                 ? () => Navigator.of(context).pop(withDefaultExtension(value))
                 : null,
-            child: const Text('Save'),
+            child: Text(confirmText),
           ),
         ],
       ),
@@ -198,7 +219,7 @@ Future<String?> showRelativePathPromptDialog(
 /// own save-target collision check).
 ///
 /// Save/project overhaul Phase 5 (`docs/save-project-overhaul-scope.md`
-/// §3.5): now backed by [StorageService.listFiles] - every `.DIDSAprt` file
+/// §3.5): now backed by [StorageService.listFiles] - every native file (`.didsa`, legacy `.DIDSAprt`/`.didsacad`)
 /// already under [root] is shown as a tappable row (confirmed on tap, no
 /// extra "Open" press needed), replacing what used to be a bare "type the
 /// exact relative path" text field with nothing to check it against. The

@@ -2034,13 +2034,12 @@ HoverHit? hitTestComponentInstances({
 /// [instance.partId] into [geometry] and transform each Body's local mesh
 /// into world space via [matrix4FromRigidTransform] before ray-testing) -
 /// just testing vertex/edge/face per Body instead of [hitTestFaces] alone.
-/// Deliberately does not implement [hitTestBodies]' own `facesOccludeOtherHits`/
-/// Sketch-geometry handling - neither concept exists for placed-instance
-/// geometry today (no Sketch is ever rendered against another Part's own
-/// Occurrence, and [hitTestComponentInstances] itself never occludes one
-/// instance's hit against another's either) - so this stays exactly as
-/// broad as the capability actually needed, matching this codebase's
-/// standing "don't build for hypothetical future requirements" convention.
+/// Sketch-geometry handling does not exist for placed-instance geometry (no
+/// Sketch is ever rendered against another Part's own Occurrence). Face
+/// occlusion does, as of the 2026-10-14 bug report (item 5): see
+/// [facesOccludeOtherHits] - without it a vertex/edge on the far side of the
+/// same part, or on another part behind it, that projected near the cursor
+/// beat the face being looked at.
 ///
 /// Not yet wired into [PartViewport]'s live hover/tap pipeline - no picking
 /// mode needs sub-entity granularity on assembly-instance geometry until
@@ -2061,22 +2060,54 @@ HoverHit? hitTestComponentInstanceEntities({
   double vertexRadiusPixels = kVertexSelectionHitRadiusPixels,
   double? orthographicHalfHeight,
   double fovRadiansY = kCameraVerticalFovRadians,
+  // Bug report 2026-10-14, item 5: same meaning as [hitTestBodies]' parameter
+  // of the same name. When true (faces are drawn filled), a vertex or edge
+  // sitting behind the nearest drawn face along the ray is dropped, so the
+  // face you are looking at wins over a far-side vertex/edge that merely
+  // projects near the cursor. Wireframe keeps the old behaviour (everything
+  // is visible through everything).
+  bool facesOccludeOtherHits = false,
 }) {
   HoverHit? bestVertex;
   HoverHit? bestEdge;
   HoverHit? bestFace;
   String? bestFaceOccurrenceKey;
   String? bestFaceBodyId;
+  // Depth of the nearest drawn face over EVERY rendered instance - selectable
+  // or not - used only as an occluder. [bestFace] below is selectable-only, so
+  // without this a dimmed/non-selectable part in front would not block a pick
+  // on the part behind it.
+  double? nearestOccluderRayT;
 
   for (final instance in instances) {
     if (instance.occurrencePath.isEmpty) continue;
     final occurrenceKey = instance.occurrencePath.join('/');
-    if (!selectableOccurrencePaths.contains(occurrenceKey)) continue;
+    final selectable = selectableOccurrencePaths.contains(occurrenceKey);
+    if (!selectable && !facesOccludeOtherHits) continue;
     final transform = matrix4FromRigidTransform(instance.worldTransform);
     for (final partGeometry in geometry) {
       if (partGeometry.partId != instance.partId) continue;
       for (final body in partGeometry.bodies) {
         final mesh = body.mesh;
+        if (facesOccludeOtherHits && (!selectable || !(filter.face || filter.body))) {
+          // Occluder-only pass (a non-selectable instance, or a filter with no
+          // face/body kind): only the nearest face depth is needed.
+          final occluder = hitTestFaces(
+            ray,
+            [
+              for (final t in trianglesFromMesh(mesh))
+                (transform.transformed3(t.$1), transform.transformed3(t.$2), transform.transformed3(t.$3)),
+            ],
+            mesh.faceIds,
+            viewportSize: viewportSize,
+            orthographicHalfHeight: orthographicHalfHeight,
+            fovRadiansY: fovRadiansY,
+          );
+          if (occluder != null && (nearestOccluderRayT == null || occluder.rayT < nearestOccluderRayT)) {
+            nearestOccluderRayT = occluder.rayT;
+          }
+          if (!selectable) continue;
+        }
         if (filter.vertex) {
           final worldVertices = [
             for (final v in topologyVerticesFromMesh(mesh)) transform.transformed3(v),
@@ -2149,9 +2180,27 @@ HoverHit? hitTestComponentInstanceEntities({
             bestFaceOccurrenceKey = occurrenceKey;
             bestFaceBodyId = body.bodyId;
           }
+          if (facesOccludeOtherHits && hit != null && (nearestOccluderRayT == null || hit.rayT < nearestOccluderRayT)) {
+            nearestOccluderRayT = hit.rayT;
+          }
         }
       }
     }
+  }
+
+  // Occlusion (item 5): the root Part's [hitTestBodies] already drops a
+  // vertex/edge whose `rayT` is beyond the nearest face by
+  // [kFaceOcclusionEpsilon]; the component-instance path never got that port,
+  // so `bestVertex`/`bestEdge` were chosen by screen-space pixel distance
+  // alone and a far-side vertex/edge projecting near the cursor beat the face
+  // in front. Done BEFORE the face-local-size tie-break below so that
+  // tie-break only ever compares hits that are actually visible. A selectable
+  // face that is itself behind a nearer (non-selectable) one is blocked too.
+  if (facesOccludeOtherHits && nearestOccluderRayT != null) {
+    final limit = nearestOccluderRayT + kFaceOcclusionEpsilon;
+    if (bestVertex != null && bestVertex.rayT > limit) bestVertex = null;
+    if (bestEdge != null && bestEdge.rayT > limit) bestEdge = null;
+    if (bestFace != null && bestFace.rayT > limit) bestFace = null;
   }
 
   // Bug fix ("user tries to select a face but is only offered an edge") -

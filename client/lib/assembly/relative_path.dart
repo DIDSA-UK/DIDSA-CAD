@@ -36,31 +36,104 @@ String? validateProjectRelativePath(String raw) {
   return null;
 }
 
-/// The extension every native project file round-trips through today
-/// (`PartScreen._saveAsNativeFile`'s own suggested filename,
-/// `_displayPartName`'s strip regex) - `.didsa`/`.didsacad` are this
-/// project's own documentation shorthand for "a native file" in general,
-/// never what's actually written to disk.
-const String kNativeFileExtension = '.DIDSAprt';
+/// The native project file extension: `.didsa` is the **current** format and
+/// the only extension the app ever *writes* (Save, Save As, auto-assigned
+/// component paths, tree Rename of a file with no native extension, AI-created
+/// files). It replaced `.DIDSAprt` once part and assembly files were known to
+/// be one file format (one Part that can hold both Features and Occurrences,
+/// `docs/assembly-scope.md`). DIDSA-VR also writes `.didsa`.
+///
+/// See [kLegacyNativeFileExtensions] for what is still *read*. Decision record:
+/// `docs/bug-report-2026-10-14-plan.md` item 9.
+const String kNativeFileExtension = '.didsa';
 
-/// True when [name] looks like a native project file: the current `.DIDSAprt`, or the legacy `.didsa` older saves (and
-/// DIDSA-VR's Save) wrote, case-insensitively, optionally with the ` (1)`/`_1` suffix a download or copy adds after
-/// the extension. Only [kNativeFileExtension] is ever *written* by the flat app; this is what *lists/opens* accept.
+/// Legacy native extensions: **read-only**, never created. `.DIDSAprt` is what
+/// the flat app wrote before the migration; `.didsacad` is the pre-July name
+/// (`docs/status.md`). All three hold byte-for-byte the same `schema_version: 1`
+/// JSON, so the extension only decides whether a file is *listed and
+/// recognised*, never how it is parsed.
+///
+/// An existing file always keeps its own path and extension on Save: other
+/// assemblies' `external_ref`s point at that exact path, so nothing renames it
+/// implicitly.
+const List<String> kLegacyNativeFileExtensions = ['.DIDSAprt', '.didsacad'];
+
+/// Every extension that is recognised as a native file, current first.
+const List<String> _allNativeFileExtensions = [kNativeFileExtension, ...kLegacyNativeFileExtensions];
+
+/// True when [name] looks like a native project file: the current `.didsa` or
+/// a legacy extension, case-insensitively, optionally with the ` (1)`/`_1`
+/// suffix a download or copy adds after the extension. This is what
+/// lists/opens accept; only [kNativeFileExtension] is ever written.
 bool isNativeProjectFileName(String name) => _nativeFileNamePattern.hasMatch(name.trim());
 
-final RegExp _nativeFileNamePattern = RegExp(r'\.(didsaprt|didsa)(_\d+| \(\d+\))?$', caseSensitive: false);
+final RegExp _nativeFileNamePattern = RegExp(
+  '(${_allNativeFileExtensions.map(RegExp.escape).join('|')})(_\\d+| \\(\\d+\\))?\$',
+  caseSensitive: false,
+);
 
-/// Appends [kNativeFileExtension] to [raw] if it has no extension at all -
-/// lenient, not a hard requirement, matching `_openNativeFile`'s own
-/// `FileType.any` posture (an unusual extension is never rejected, only a
-/// bare name with none is helped along).
+String _lowerExtensionMatch(String name) {
+  final lower = name.trim().toLowerCase();
+  for (final extension in _allNativeFileExtensions) {
+    if (lower.endsWith(extension.toLowerCase())) return extension;
+  }
+  return '';
+}
+
+/// True when [name] ends with a native extension (current or legacy,
+/// case-insensitive). Unlike [isNativeProjectFileName] this does not accept the
+/// ` (1)`/`_1` copy suffix: it answers "does this name already carry a native
+/// extension", which is what [withDefaultExtension] needs.
+bool hasNativeExtension(String name) => _lowerExtensionMatch(name).isNotEmpty;
+
+/// [name] without its native extension (any of the three, any case), or
+/// unchanged if it has none. Use this for every display or base name instead
+/// of an inline regex.
+String stripNativeExtension(String name) {
+  final extension = _lowerExtensionMatch(name);
+  if (extension.isEmpty) return name;
+  final trimmed = name.trim();
+  return trimmed.substring(0, trimmed.length - extension.length);
+}
+
+/// A collision key for [path]: lower-cased with any native extension removed,
+/// so `Bracket.didsa` and `bracket.DIDSAprt` in one folder compare equal. A
+/// single `StorageService.resolve` call can't see the other extension, so
+/// collision checks compare this against `listNativeFiles` instead.
+String nativeBaseNameKey(String path) => stripNativeExtension(path).toLowerCase();
+
+/// The extension to keep when producing a sibling name for [existingPath]:
+/// its own native extension (so `Bracket.DIDSAprt` stays `.DIDSAprt` on
+/// rename), else [kNativeFileExtension].
+String nativeExtensionOf(String existingPath) {
+  final extension = _lowerExtensionMatch(existingPath);
+  if (extension.isEmpty) return kNativeFileExtension;
+  final trimmed = existingPath.trim();
+  return trimmed.substring(trimmed.length - extension.length);
+}
+
+/// Appends [kNativeFileExtension] unless [raw] already **ends with a native
+/// extension** (current or legacy, case-insensitive) - not merely "contains a
+/// dot": `Frame 1.5m` becomes `Frame 1.5m.didsa`, `bracket.txt` becomes
+/// `bracket.txt.didsa`, while `bracket.DIDSAprt` is left as typed (a legacy
+/// extension typed on purpose). A file is never written without a native
+/// extension, because [isNativeProjectFileName] would then hide it from every
+/// Open dialog and listing.
 String withDefaultExtension(String raw) {
   final trimmed = raw.trim();
-  final lastSegment = trimmed.split(RegExp(r'[/\\]')).last;
-  if (lastSegment.contains('.')) {
-    return trimmed;
-  }
+  if (hasNativeExtension(trimmed)) return trimmed;
   return '$trimmed$kNativeFileExtension';
+}
+
+/// The first file in [existingFiles] that [candidatePath] would collide with
+/// under [nativeBaseNameKey] (same folder, same base name, either extension),
+/// or `null`. Exact-name matches count too.
+String? findNativeNameCollision(String candidatePath, Iterable<String> existingFiles) {
+  final key = nativeBaseNameKey(candidatePath);
+  for (final file in existingFiles) {
+    if (nativeBaseNameKey(file) == key) return file;
+  }
+  return null;
 }
 
 /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`

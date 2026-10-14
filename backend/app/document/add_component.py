@@ -20,6 +20,65 @@ client it is, is responsible for getting the component's own
 
 from __future__ import annotations
 
+import json
+
+from app.document.remint_identity import remint_native_identity
+
+
+def _comparable_part(part: dict) -> str:
+    """A Part's content with the one field that legitimately differs between
+    "the file" and "the live session's copy of it" stripped:
+    an Occurrence's `resolved_part_id` (the composer/import pairs it with
+    whichever Part it resolved to in *that* payload, so a file read straight
+    off disk carries none)."""
+    stripped = {
+        **part,
+        "occurrences": [
+            {key: value for key, value in occurrence.items() if key != "resolved_part_id"}
+            for occurrence in (part.get("occurrences") or [])
+        ],
+    }
+    return json.dumps(stripped, sort_keys=True)
+
+
+def _has_identity_collision(
+    current_parts: list[dict],
+    component_parts: list[dict],
+    current_sketches: list[dict],
+    component_sketches: list[dict],
+) -> bool:
+    """True when the component carries a Part or sketch id the session already
+    holds but with *different* content - i.e. two different files sharing an
+    id (typically a pre-fix "Save As" copy), where dedup-by-id would silently
+    drop one of them. An id that matches with identical content is just the
+    same Part again, which is the ordinary, correct dedup."""
+    current_part_by_id = {part["id"]: part for part in current_parts}
+    for part in component_parts:
+        existing = current_part_by_id.get(part["id"])
+        if existing is not None and _comparable_part(existing) != _comparable_part(part):
+            return True
+    current_sketch_by_id = {sketch["id"]: sketch for sketch in current_sketches}
+    for sketch in component_sketches:
+        existing = current_sketch_by_id.get(sketch["id"])
+        if existing is not None and json.dumps(existing, sort_keys=True) != json.dumps(sketch, sort_keys=True):
+            return True
+    return False
+
+
+def _resolved_part_ids_for_ref(current_parts: list[dict], external_ref: str | None) -> list[str]:
+    """Part ids that existing Occurrences with this exact `external_ref`
+    already resolve to - i.e. "this file is already in the session", which is
+    how a previously re-minted copy of a colliding file is found again."""
+    if external_ref is None:
+        return []
+    found: list[str] = []
+    for part in current_parts:
+        for occurrence in part.get("occurrences") or []:
+            resolved = occurrence.get("resolved_part_id")
+            if occurrence.get("external_ref") == external_ref and resolved and resolved not in found:
+                found.append(resolved)
+    return found
+
 
 class AddComponentError(ValueError):
     """Raised for anything that stops `merge_component_into_document` from
@@ -50,9 +109,13 @@ def merge_component_into_document(
     behaviour never quietly diverges. See that file's own docstring for the
     full rationale behind each of these.
 
+    Part/sketch id collisions between different files are healed by
+    re-minting the incoming payload (see the comment on the collision
+    handling below and `app.document.remint_identity`).
+
     Raises `AddComponentError` for a `schema_version` mismatch, a file with
-    no Parts at all, a self-reference (the component's own root Part id
-    already equals `root_part_id`), or `root_part_id` not actually being
+    no Parts at all, a self-reference (the component *is* the open Part - same
+    root Part id and same content), or `root_part_id` not actually being
     present in `current_payload`."""
     current_schema = current_payload.get("schema_version")
     component_schema = component_payload.get("schema_version")
@@ -65,32 +128,66 @@ def merge_component_into_document(
     component_parts = component_document.get("parts")
     if not isinstance(component_parts, list) or not component_parts:
         raise AddComponentError("File contains no Parts")
-    component_root_part_id = component_document.get("root_part_id") or component_parts[0]["id"]
-
-    if component_root_part_id == root_part_id:
-        raise AddComponentError("Cannot insert a Part into itself")
-
     current_document = current_payload.get("document")
     if not isinstance(current_document, dict):
         raise AddComponentError("Current session has no document to add to")
     current_parts: list[dict] = current_document.get("parts") or []
     if not any(part.get("id") == root_part_id for part in current_parts):
         raise AddComponentError("Current Part is missing from its own session snapshot")
-    current_part_ids = {part["id"] for part in current_parts}
-
-    merged_parts = list(current_parts) + [part for part in component_parts if part["id"] not in current_part_ids]
-
-    # Bug fix ported from `add_component.dart` (same reasoning applies here):
-    # `sketches` lives alongside `document`, not inside it - dropping the
-    # component's own sketches leaves any SketchFeature on the newly-merged
-    # Part pointing at a sketch id this session's store never received, so
-    # the new Occurrence would show up in the tree but never render.
     current_sketches: list[dict] = current_payload.get("sketches") or []
+
+    component_root_part_id = component_document.get("root_part_id") or component_parts[0]["id"]
     component_sketches: list[dict] = component_payload.get("sketches") or []
-    current_sketch_ids = {sketch["id"] for sketch in current_sketches}
-    merged_sketches = list(current_sketches) + [
-        sketch for sketch in component_sketches if sketch["id"] not in current_sketch_ids
-    ]
+
+    # Identity collision handling (bug report 2026-10-14, item 3). The merge
+    # below dedups by Part id and sketch id, which is only right when the same
+    # id really means the same file. Two different files can share ids (a
+    # pre-fix "Save As" copy of a Part, then edited), and dedup would then
+    # silently drop the second one - the Part the user asked for never shows
+    # up and its occurrence points at the other file's geometry. So:
+    #   * an id the session already holds with *identical* content is the same
+    #     Part again - the ordinary dedup, unchanged;
+    #   * the same `external_ref` already resolved in the session means "this
+    #     file is already here" (possibly as a copy re-minted on an earlier
+    #     add) - reuse that Part, merge nothing;
+    #   * otherwise the incoming payload is re-minted before merging, so both
+    #     files end up as distinct Parts.
+    same_ref_part_ids = _resolved_part_ids_for_ref(current_parts, external_ref)
+    reuse_part_id: str | None = None
+    if component_root_part_id not in same_ref_part_ids and _has_identity_collision(
+        current_parts, component_parts, current_sketches, component_sketches
+    ):
+        if same_ref_part_ids:
+            reuse_part_id = same_ref_part_ids[0]
+        else:
+            component_payload = remint_native_identity(component_payload)
+            component_document = component_payload["document"]
+            component_parts = component_document["parts"]
+            component_sketches = component_payload.get("sketches") or []
+            component_root_part_id = component_document.get("root_part_id") or component_parts[0]["id"]
+
+    # Checked after the collision handling above on purpose: a Save-As copy of
+    # the open Part carries the open Part's id but different content, and is a
+    # legitimate thing to insert once re-minted. What is left equal here is
+    # genuinely the open Part itself.
+    if reuse_part_id is None and component_root_part_id == root_part_id:
+        raise AddComponentError("Cannot insert a Part into itself")
+
+    current_part_ids = {part["id"] for part in current_parts}
+    merged_parts = list(current_parts)
+    merged_sketches = list(current_sketches)
+    if reuse_part_id is not None:
+        component_root_part_id = reuse_part_id
+    else:
+        merged_parts += [part for part in component_parts if part["id"] not in current_part_ids]
+        # Bug fix ported from `add_component.dart` (same reasoning applies
+        # here): `sketches` lives alongside `document`, not inside it -
+        # dropping the component's own sketches leaves any SketchFeature on
+        # the newly-merged Part pointing at a sketch id this session's store
+        # never received, so the new Occurrence would show up in the tree but
+        # never render.
+        current_sketch_ids = {sketch["id"] for sketch in current_sketches}
+        merged_sketches += [sketch for sketch in component_sketches if sketch["id"] not in current_sketch_ids]
 
     # A Mate-driven placement is only ever meaningful relative to at least
     # one fixed reference - ported from `add_component.dart`'s own

@@ -1054,4 +1054,28 @@ void main() {
       expect(find.byIcon(Icons.blur_off), findsNothing);
     },
   );
+
+  testWidgets('item 4: multiSelectHeader replaces the title row (Build Tree + Close) while set', (tester) async {
+    await tester.pumpWidget(
+      _wrap(
+        FeatureTreePanel(
+          visible: true,
+          features: [_sketch('s1')],
+          selectedFeatureId: null,
+          onFeatureTap: (_) {},
+          onFeatureLongPress: (_) {},
+          onClose: () {},
+          onBodyTap: (_) {},
+          isMultiSelectMode: true,
+          multiSelectHeader: const Text('bar-marker'),
+        ),
+      ),
+    );
+
+    expect(find.text('bar-marker'), findsOneWidget);
+    expect(find.text('Build Tree'), findsNothing);
+    expect(find.byTooltip('Close'), findsNothing);
+    // The rows keep the rest of the panel.
+    expect(find.text('Features'), findsOneWidget);
+  });
 }

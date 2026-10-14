@@ -93,7 +93,7 @@ abstract class StorageService {
   /// Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
   /// §3.2): the assembly tree's own Rename action - renames the file at
   /// `relativePath` to `newFileName` (a bare file name, e.g.
-  /// `"Bracket.DIDSAprt"` - never a further relative path/subdirectory of
+  /// `"Bracket.didsa"` - never a further relative path/subdirectory of
   /// its own), keeping it in the same directory. Same-directory-only is a
   /// deliberate scope limit, not an oversight: every real call site (this
   /// Rename action, a Create-Component auto-path collision fallback) only

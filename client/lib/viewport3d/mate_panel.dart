@@ -83,6 +83,14 @@ class MatePanel extends StatelessWidget {
   final VoidCallback? onConfirm;
   final VoidCallback onCancel;
 
+  /// Bug report 2026-10-14, item 8: the only way to reset the references used
+  /// to be the undiscoverable "a third distinct tap starts fresh" rule. When
+  /// given, a "Clear selection" button appears under the references (only
+  /// while something is selected), and [onRemoveEntity] adds a per-row X so
+  /// one wrong pick can be undone without losing the other.
+  final VoidCallback? onClearSelection;
+  final ValueChanged<SelectionEntityRef>? onRemoveEntity;
+
   const MatePanel({
     super.key,
     required this.selectedEntities,
@@ -101,6 +109,8 @@ class MatePanel extends StatelessWidget {
     required this.error,
     required this.onConfirm,
     required this.onCancel,
+    this.onClearSelection,
+    this.onRemoveEntity,
   });
 
   String? get _tooltip => switch (selectedEntities.length) {
@@ -119,6 +129,15 @@ class MatePanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (selectedEntities.isNotEmpty) ..._selectionRows(context),
+          if (selectedEntities.isNotEmpty && onClearSelection != null)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: saving ? null : onClearSelection,
+                icon: const Icon(Icons.clear_all, size: 18),
+                label: const Text('Clear selection'),
+              ),
+            ),
           const SizedBox(height: 8),
           DropdownButtonFormField<String>(
             initialValue: mateType,
@@ -207,6 +226,15 @@ class MatePanel extends StatelessWidget {
                     style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 13),
                   ),
                 ),
+                if (onRemoveEntity != null)
+                  IconButton(
+                    tooltip: 'Remove from selection',
+                    icon: const Icon(Icons.close, size: 16),
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    padding: EdgeInsets.zero,
+                    onPressed: saving ? null : () => onRemoveEntity!(entity),
+                  ),
               ],
             ),
           ),

@@ -9,14 +9,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/assembly/assembly_document_client.dart';
+import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
 import 'package:didsa_cad_client/assembly/relative_path.dart';
+import 'package:didsa_cad_client/storage/file_cache.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
+import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
@@ -33,6 +37,21 @@ import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
 /// Part/Feature/mesh to drive [PartScreen] without a real network call.
 /// Locking is simulated the same way the real backend enforces it: every
 /// Feature except the most-recently-added one is locked.
+/// A `FileCache` that never touches `path_provider` or the real filesystem:
+/// real async I/O does not settle inside `testWidgets`' fake-async pump loop
+/// (`docs/flutter-widget-test-lessons.md`), and the composer writes to the
+/// cache on every read.
+class _NoopFileCache extends FileCache {
+  @override
+  Future<void> put(ProjectRoot root, String relativePath, Uint8List bytes, {DateTime? lastKnownModified}) async {}
+
+  @override
+  Future<CachedFile?> get(ProjectRoot root, String relativePath) async => null;
+
+  @override
+  Future<void> evict(ProjectRoot root, String relativePath) async {}
+}
+
 class _FakeDocumentBackend {
   late int _nextFeatureId;
   final List<Map<String, dynamic>> features;
@@ -103,6 +122,11 @@ class _FakeDocumentBackend {
   /// `ComponentPatternDto.fromJson`'s own wire shape.
   final List<Map<String, dynamic>> mates;
   final List<Map<String, dynamic>> componentPatterns;
+
+  /// `GET .../constraint-status` for `part-1` (item 7) and how often it was
+  /// asked - the tree refreshes it next to the occurrence list.
+  final Map<String, dynamic> constraintStatus = {};
+  int constraintStatusRequests = 0;
   int _nextMateId = 1;
   int _nextPatternId = 1;
 
@@ -581,6 +605,13 @@ class _FakeDocumentBackend {
     if (occurrencesGetMatch != null && method == 'GET') {
       return _json(occurrencesGetMatch.group(1) == 'part-1' ? occurrences : <dynamic>[], 200);
     }
+    // Item 7: the Assembly tree's constraint badge. Scripted by tests via
+    // [constraintStatus]; empty by default (no badge, plain fixed pin).
+    final constraintStatusMatch = RegExp(r'^/document/parts/([^/]+)/constraint-status$').firstMatch(path);
+    if (constraintStatusMatch != null && method == 'GET') {
+      constraintStatusRequests++;
+      return _json(constraintStatusMatch.group(1) == 'part-1' ? constraintStatus : <String, dynamic>{}, 200);
+    }
     final matesGetMatch = RegExp(r'^/document/parts/([^/]+)/mates$').firstMatch(path);
     if (matesGetMatch != null && method == 'GET') {
       return _json(matesGetMatch.group(1) == 'part-1' ? mates : <dynamic>[], 200);
@@ -795,9 +826,18 @@ class _FakeStorageService implements StorageService {
   /// ._ensureProjectRoot`'s new `lastUsedProjectRoot`-first path.
   ProjectRoot? presetLastUsedRoot;
 
+  /// Item 2: simulates the user cancelling the SAF folder picker (the real
+  /// services signal cancel by throwing, never by returning null).
+  bool pickerCancels = false;
+
+  /// Item 2: relative paths whose [writeFile] throws [StorageException] - a
+  /// revoked grant, or a file deleted/moved since the last Save.
+  final Set<String> failOnWrite = {};
+
   @override
   Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async {
     pickOrCreateProjectRootCallCount++;
+    if (pickerCancels) throw StorageException('No folder was selected');
     return root;
   }
 
@@ -815,6 +855,7 @@ class _FakeStorageService implements StorageService {
 
   @override
   Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+    if (failOnWrite.contains(relativePath)) throw StorageException('Permission denied');
     files[relativePath] = bytes;
     writeCounts[relativePath] = (writeCounts[relativePath] ?? 0) + 1;
     return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
@@ -4326,6 +4367,48 @@ void main() {
       },
     );
 
+    testWidgets('item 7: the tree fetches constraint-status with the occurrence list and passes it to the panel', (
+      tester,
+    ) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1')]);
+      backend.constraintStatus['occ-1'] = {'status': 'under_constrained', 'dof': 3};
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.constraintStatusRequests, greaterThan(0));
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.constraintStatusByOccurrenceId['occ-1']?.state, ConstraintState.underConstrained);
+      expect(panel.constraintStatusByOccurrenceId['occ-1']?.dof, 3);
+    });
+
+    testWidgets('item 4: multi-select shows the action bar in the tree header, with no bottom sheet over the tree', (
+      tester,
+    ) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final inPanel = find.descendant(of: find.byType(AssemblyTreePanel), matching: find.byType(MultiSelectActionBar));
+      expect(inPanel, findsOneWidget);
+      expect(find.byType(DraggableScrollableSheet), findsNothing);
+      expect(find.text('1 selected'), findsOneWidget);
+    });
+
     testWidgets('Hide PATCHes hidden:true and the tree reflects it after refetch', (tester) async {
       final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
 
@@ -5521,7 +5604,59 @@ void main() {
         await tester.pump(const Duration(milliseconds: 250));
 
         expect(find.text('Saved 2 file(s)'), findsOneWidget);
-        expect(storage.files.keys, containsAll(['Part 1.DIDSAprt', 'Component 1.DIDSAprt']));
+        expect(storage.files.keys, containsAll(['Part 1.didsa', 'Component 1.didsa']));
+      },
+    );
+
+    testWidgets(
+      'an auto-assigned path treats a legacy X.DIDSAprt in the folder as the same name (item 9)',
+      (tester) async {
+        final backend = _FakeDocumentBackend();
+        final storage = _FakeStorageService()
+          ..files['Component 1.DIDSAprt'] = Uint8List.fromList(utf8.encode('{}'));
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async => backend.handle(request)),
+        );
+        final sketchBackend = _FakeSketchBackend();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: PartScreen(
+              documentApi: documentApi,
+              sketchApiFactory: () =>
+                  SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+            ),
+          ),
+        );
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+        await tester.tap(find.byTooltip('Assembly tree'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.byTooltip('Add'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Create Component…'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        await tester.tap(find.byTooltip('Open toolbar'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Save All'));
+        await tester.pump();
+        await tester.tap(find.text('Save All'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        // `Component 1.didsa` would look like a duplicate of the legacy file
+        // in the Open list, so the next free name is used instead.
+        expect(storage.files.keys, containsAll(['Component 1 (2).didsa', 'Part 1.didsa']));
+        expect(storage.files.keys, isNot(contains('Component 1.didsa')));
       },
     );
 
@@ -5902,6 +6037,7 @@ void main() {
 
         expect(backend.occurrences.single['name_override'], 'Left Bracket');
         expect(backend.extraParts['part-2']!['name'], 'Left Bracket');
+        // Item 9: rename keeps the file's own (here legacy, typed) extension.
         expect(storage.files.keys, contains('Left Bracket.DIDSAprt'));
         expect(storage.files.keys, isNot(contains('bracket.DIDSAprt')));
       },
@@ -6084,6 +6220,11 @@ void main() {
             documentApi: documentApi,
             sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
             storageService: storage,
+            assemblyDocumentClient: AssemblyDocumentClient(
+              storageService: storage,
+              documentApiClient: documentApi,
+              composer: AssemblyGraphComposer(storageService: storage, fileCache: _NoopFileCache()),
+            ),
           ),
         ),
       );
@@ -6130,23 +6271,293 @@ void main() {
       await tester.enterText(find.byType(TextFormField), 'renamed-top.DIDSAprt');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save As'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      expect(find.text('Saved as renamed-top.DIDSAprt'), findsOneWidget);
       expect(storage.files.keys, contains('renamed-top.DIDSAprt'));
       // The old file is left in place (no delete primitive exists) rather
       // than silently discarded.
       expect(storage.files.keys, contains('top.DIDSAprt'));
 
-      // A later plain Save now targets the new path, not the old one.
-      toolbar.onSaveNative!();
+      // Bug report 2026-10-14, item 3: the copy was written under a fresh
+      // identity, so it can never collide with the original in an assembly.
+      Map<String, dynamic> read(String path) => jsonDecode(utf8.decode(storage.files[path]!)) as Map<String, dynamic>;
+      String partIdIn(Map<String, dynamic> payload) =>
+          (((payload['document'] as Map)['parts'] as List).first as Map)['id'] as String;
+      final originalId = partIdIn(read('top.DIDSAprt'));
+      final copyId = partIdIn(read('renamed-top.DIDSAprt'));
+      expect(copyId, isNot(originalId));
+      expect((read('renamed-top.DIDSAprt')['document'] as Map)['root_part_id'], copyId);
+
+      // Root Part: the session *became* the new file (it was reopened), so
+      // a later plain Save targets the new path, not the old one.
+      // The reopened screen replaces this one (page transition, then its own
+      // load) - wait for exactly one screen to be left before driving it.
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+      await _pumpUntil(tester, () => find.byType(PartToolbar).evaluate().length == 1);
+      // Item 1: the title follows the new file.
+      expect(find.text('renamed-top'), findsOneWidget);
+      tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveNative!();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(storage.writeCounts['renamed-top.DIDSAprt'], 2);
       expect(storage.writeCounts['top.DIDSAprt'], 1);
+    });
+
+    testWidgets('Save As to the path the Part already lives at is a plain Save: no re-mint, no reopen', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Save All'));
+      await tester.pump();
+      await tester.tap(find.text('Save All'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      final originalBytes = utf8.decode(storage.files['top.DIDSAprt']!);
+
+      tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveAsNative!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save As'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Saved'), findsOneWidget);
+      expect(storage.files.keys, hasLength(1));
+      expect(storage.writeCounts['top.DIDSAprt'], 2);
+      // Same ids as before: nothing was re-minted over the original.
+      final partIds = RegExp(r'"id":"([^"]+)"');
+      expect(
+        partIds.firstMatch(utf8.decode(storage.files['top.DIDSAprt']!))!.group(1),
+        partIds.firstMatch(originalBytes)!.group(1),
+      );
+    });
+  });
+
+  // Bug report 2026-10-14, item 2: on Android a Save with no known file fell
+  // back to `FilePicker.saveFile` (ACTION_CREATE_DOCUMENT, which can never
+  // overwrite), so every Save was a Save As and `Frame_A (1)`, `(2)` piled up.
+  // Now every native Save on mobile goes through the persisted folder grant.
+  // `canPersistFilePathForReuse: false` selects the mobile branch.
+  group('item 2: first Save goes through the project folder', () {
+    Future<PartToolbar Function()> pumpFresh(
+      WidgetTester tester,
+      _FakeStorageService storage, {
+      _FakeDocumentBackend? backend,
+    }) async {
+      final fake = backend ?? _FakeDocumentBackend();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => fake.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+            canPersistFilePathForReuse: false,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      return () => tester.widget<PartToolbar>(find.byType(PartToolbar));
+    }
+
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    Future<void> answerNamePrompt(WidgetTester tester, String name, {String button = 'Save'}) async {
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+      await tester.enterText(find.byType(TextFormField), name);
+      await settle(tester);
+      await tester.tap(find.widgetWithText(FilledButton, button));
+      await settle(tester);
+    }
+
+    testWidgets('no remembered folder: picks the folder once, asks the name once, writes once; re-Save is silent', (
+      tester,
+    ) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      // The prompt shows which folder it will write into.
+      expect(find.textContaining('Folder: '), findsOneWidget);
+      await answerNamePrompt(tester, 'Frame 1.5m');
+
+      expect(storage.pickOrCreateProjectRootCallCount, 1);
+      // A dotted name still gets the native extension (item 9).
+      expect(storage.files.keys, ['Frame 1.5m.didsa']);
+      expect(storage.writeCounts['Frame 1.5m.didsa'], 1);
+      expect(find.text('Saved to Frame 1.5m.didsa'), findsOneWidget);
+      // The title follows the new file (item 1).
+      expect(find.text('Frame 1.5m'), findsOneWidget);
+
+      // Second Save: no picker, no prompt, the same file overwritten.
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      toolbar().onSaveNative!();
+      await settle(tester);
+      expect(find.text('Save "Part 1" as…'), findsNothing);
+      expect(storage.pickOrCreateProjectRootCallCount, 1);
+      expect(storage.writeCounts['Frame 1.5m.didsa'], 2);
+      expect(storage.files, hasLength(1));
+    });
+
+    testWidgets('a remembered folder skips the picker and only asks for the name', (tester) async {
+      final storage = _FakeStorageService();
+      storage.presetLastUsedRoot = storage.root;
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await answerNamePrompt(tester, 'bracket');
+
+      expect(storage.pickOrCreateProjectRootCallCount, 0);
+      expect(storage.files.keys, ['bracket.didsa']);
+    });
+
+    testWidgets('cancelling the folder picker writes nothing and changes nothing', (tester) async {
+      final storage = _FakeStorageService()..pickerCancels = true;
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+
+      expect(find.text('Save "Part 1" as…'), findsNothing);
+      expect(storage.files, isEmpty);
+    });
+
+    testWidgets('cancelling the name prompt writes nothing and does not keep the folder as the root', (tester) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
+      await settle(tester);
+      expect(storage.files, isEmpty);
+
+      // The next Save asks again (a stale root would auto-name it silently).
+      toolbar().onSaveNative!();
+      await settle(tester);
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+    });
+
+    testWidgets('the written file carries the root Part\'s client-only extras', (tester) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await answerNamePrompt(tester, 'extras');
+
+      final written = jsonDecode(utf8.decode(storage.files['extras.didsa']!)) as Map<String, dynamic>;
+      expect(written, containsPair('hidden_feature_ids', isA<List>()));
+      expect(written, containsPair('section_planes', isA<List>()));
+    });
+
+    testWidgets('a failed overwrite shows the error, keeps the Part dirty and falls back to Save As', (tester) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpFresh(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await answerNamePrompt(tester, 'Frame');
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+
+      storage.failOnWrite.add('Frame.didsa');
+      toolbar().onSaveNative!();
+      await settle(tester);
+
+      expect(find.textContaining("Couldn't write Frame.didsa"), findsOneWidget);
+      // The Save As flow is offered, with the folder re-validated.
+      expect(find.text('Save "Part 1" as…'), findsOneWidget);
+      expect(toolbar().hasUnsavedChanges, isTrue);
+    });
+  });
+
+  // Bug report 2026-10-14, item 1: Open on a single-Part (project-shaped) file
+  // never seeded `initialFileName`, so the title fell back to the backend Part
+  // name, always "Part 1".
+  group('title follows the root Part\'s file (item 1)', () {
+    Future<void> pumpOpened(
+      WidgetTester tester,
+      _FakeDocumentBackend backend,
+      String rootPath,
+    ) async {
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+            initialPartId: 'part-1',
+            initialProjectRoot: storage.root,
+            initialRelativePathByPartId: {'part-1': rootPath},
+          ),
+        ),
+      );
+    }
+
+    String appBarTitle(WidgetTester tester) =>
+        tester.widget<Text>(find.descendant(of: find.byType(AppBar), matching: find.byType(Text)).last).data!;
+
+    testWidgets('a legacy .DIDSAprt file shows its base name, not "Part 1"', (tester) async {
+      final backend = _FakeDocumentBackend();
+      await pumpOpened(tester, backend, 'sub/Frame_A.DIDSAprt');
+      await _pumpUntil(tester, () => find.text('Frame_A').evaluate().isNotEmpty);
+      expect(appBarTitle(tester), 'Frame_A');
+    });
+
+    testWidgets('a current .didsa file shows its base name too', (tester) async {
+      final backend = _FakeDocumentBackend();
+      await pumpOpened(tester, backend, 'sub/Frame_C.didsa');
+      await _pumpUntil(tester, () => find.text('Frame_C').evaluate().isNotEmpty);
+      expect(appBarTitle(tester), 'Frame_C');
     });
   });
 

@@ -14,7 +14,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances
-from app.document.assembly_group import GroupSolveResult, solve_group, validate_mate_geometry
+from app.document.assembly_group import GroupSolveResult, constraint_status, solve_group, validate_mate_geometry
 from app.document.assembly_solver import _quaternion_from_axis_angle
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -191,6 +191,7 @@ from app.document.schemas import (
     MateMotionMember,
     MateMotionQuality,
     MateMotionRequest,
+    ConstraintStatusEntry,
     MateMotionResponse,
     MateSolvePreviewResponse,
     MateUpdate,
@@ -3454,6 +3455,22 @@ def list_occurrences(part_id: str) -> list[OccurrenceResponse]:
     same Part at once (decision #2)."""
     part = get_part_or_404(part_id)
     return [_occurrence_response(occurrence) for occurrence in part.occurrences]
+
+
+@router.get("/parts/{part_id}/constraint-status", response_model=dict[str, ConstraintStatusEntry])
+def get_constraint_status(part_id: str) -> dict[str, ConstraintStatusEntry]:
+    """Bug report 2026-10-14, item 7: a per-occurrence constraint state for the
+    Assembly tree's badge - `{occurrence_id: {status, dof}}` with `status` one
+    of `fixed | fully_constrained | under_constrained | over_constrained` (see
+    `assembly_group.constraint_status` for the exact rules). Read-only; one
+    group analysis per mate-graph component, so it is meant to be fetched on a
+    tree refresh, never per frame. An occurrence whose mates cannot be resolved
+    is simply absent."""
+    part = get_part_or_404(part_id)
+    return {
+        occurrence_id: ConstraintStatusEntry(status=status, dof=dof)
+        for occurrence_id, (status, dof) in constraint_status(get_document(), part).items()
+    }
 
 
 @router.get("/parts/{part_id}/mates", response_model=list[MateResponse])

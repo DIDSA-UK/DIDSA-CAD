@@ -235,4 +235,105 @@ void main() {
     expect(parts.map((p) => p['id']).toSet(), {'part-top', 'part-sub', 'part-leaf'});
     expect(result.rootPartId, 'part-top');
   });
+
+  test('the root file\'s client-only extras are carried out; a child\'s are not', () async {
+    storage.put('bolt.didsa', {
+      ..._singlePartPayload(id: 'part-bolt', name: 'Bolt'),
+      'hidden_feature_ids': ['child-hidden'],
+    });
+    storage.put('top.didsa', {
+      ..._singlePartPayload(id: 'part-top', name: 'Top', occurrences: [_occurrence('occ-1', 'bolt.didsa')]),
+      'hidden_feature_ids': ['f1'],
+      'section_planes': [
+        {'k': 1},
+      ],
+    });
+
+    final result = await composer.compose(root, 'top.didsa');
+
+    expect(result.rootClientExtras['hidden_feature_ids'], ['f1']);
+    expect(result.rootClientExtras['section_planes'], hasLength(1));
+  });
+
+  // Bug report 2026-10-14, item 3: two files sharing a Part id (a Save As copy
+  // that was then edited) used to collapse into one Part, with the sketches
+  // and the save-back path map taken from whichever was read last.
+  group('id collisions between different files', () {
+    Map<String, dynamic> sharedIdFile(String name, {double depth = 10}) => {
+      'schema_version': 1,
+      'document': {
+        'id': 'doc-shared',
+        'root_part_id': 'part-shared',
+        'parts': [
+          {
+            'id': 'part-shared',
+            'name': name,
+            'features': [
+              {'id': 'f-sketch', 'type': 'sketch', 'sketch_id': 'sk-shared'},
+              {'id': 'f-extrude', 'type': 'extrude', 'end_distance': depth},
+            ],
+            'occurrences': <Map<String, dynamic>>[],
+            'mates': [],
+          },
+        ],
+      },
+      'sketches': [
+        {'id': 'sk-shared', 'entities': [], 'constraints': [], 'plane': null, 'depth_marker': depth},
+      ],
+    };
+
+    test('two files with the same Part id at different paths compose to two Parts', () async {
+      storage.put('a.didsa', sharedIdFile('A', depth: 800));
+      storage.put('b.didsa', sharedIdFile('B', depth: 1600));
+      storage.put(
+        'top.didsa',
+        _singlePartPayload(
+          id: 'part-top',
+          name: 'Top',
+          occurrences: [_occurrence('occ-a', 'a.didsa'), _occurrence('occ-b', 'b.didsa')],
+        ),
+      );
+
+      final result = await composer.compose(root, 'top.didsa');
+
+      final parts = (result.documentPayload['document']['parts'] as List).cast<Map<String, dynamic>>();
+      expect(parts, hasLength(3));
+      expect(result.relativePathByPartId, hasLength(3));
+      final idForA = result.relativePathByPartId.entries.firstWhere((e) => e.value == 'a.didsa').key;
+      final idForB = result.relativePathByPartId.entries.firstWhere((e) => e.value == 'b.didsa').key;
+      expect(idForA, isNot(idForB));
+      final top = parts.firstWhere((p) => p['id'] == 'part-top');
+      final resolved = [for (final o in top['occurrences'] as List) (o as Map)['resolved_part_id']];
+      expect(resolved, [idForA, idForB]);
+      // Each Part keeps its own content, and its sketch feature points at a
+      // sketch that exists in the payload with that Part's own content.
+      final sketches = (result.documentPayload['sketches'] as List).cast<Map<String, dynamic>>();
+      expect(sketches, hasLength(2));
+      for (final entry in {idForA: 800, idForB: 1600}.entries) {
+        final part = parts.firstWhere((p) => p['id'] == entry.key);
+        final extrude = (part['features'] as List).cast<Map<String, dynamic>>().last;
+        expect(extrude['end_distance'], entry.value);
+        final sketchFeature = (part['features'] as List).cast<Map<String, dynamic>>().first;
+        final sketch = sketches.firstWhere((s) => s['id'] == sketchFeature['sketch_id']);
+        expect(sketch['depth_marker'], entry.value);
+      }
+    });
+
+    test('the same file reached twice is still a plain dedup, not a re-mint', () async {
+      storage.put('a.didsa', sharedIdFile('A'));
+      storage.put(
+        'top.didsa',
+        _singlePartPayload(
+          id: 'part-top',
+          name: 'Top',
+          occurrences: [_occurrence('occ-1', 'a.didsa'), _occurrence('occ-2', 'a.didsa')],
+        ),
+      );
+
+      final result = await composer.compose(root, 'top.didsa');
+
+      expect(result.relativePathByPartId['part-shared'], 'a.didsa');
+      expect((result.documentPayload['document']['parts'] as List), hasLength(2));
+    });
+  });
 }

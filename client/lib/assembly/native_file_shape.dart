@@ -7,7 +7,7 @@
 /// helpers.
 library;
 
-/// Whether `decoded` (an already-parsed `.DIDSAprt` file's own top-level
+/// Whether `decoded` (an already-parsed native (`.didsa`) file's own top-level
 /// JSON) is shaped like a legacy whole-session Bundle - more than one Part
 /// embedded in the same file - rather than a Project's own one-Part-per-
 /// file shape `AssemblyGraphComposer.compose` expects. Mirrors that

@@ -16,6 +16,11 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
   final VoidCallback onFixFloat;
   final VoidCallback onDelete;
 
+  /// Bug report 2026-10-14, item 6: the only way out used to be tapping empty
+  /// space. When non-null, an X ("Clear selection") closes the drawer by
+  /// clearing the selection.
+  final VoidCallback? onClose;
+
   static const double _fabColumnClearance = 72;
 
   const AssemblyComponentSelectionDrawer({
@@ -25,6 +30,7 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
     required this.onMove,
     required this.onFixFloat,
     required this.onDelete,
+    this.onClose,
   });
 
   @override
@@ -70,6 +76,13 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
+                              if (onClose != null)
+                                IconButton(
+                                  tooltip: 'Clear selection',
+                                  icon: const Icon(Icons.close, size: 20),
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: onClose,
+                                ),
                             ],
                           ),
                           const SizedBox(height: 12),

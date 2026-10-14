@@ -2557,10 +2557,11 @@ implementations are exposed to (`DesktopStorageService._fullPath`'s bare
 leading slash, any `..` segment, a Windows drive-letter prefix - while
 staying lenient on everything else (no folder browser exists yet,
 `StorageService.listFiles` is Phase 18's own scope). `withDefaultExtension`
-auto-appends `.DIDSAprt` (confirmed the actual round-tripped extension,
-`part_screen.dart`'s own Save As suggestion/display-name strip regex - not
-the doc-prose `.didsa` shorthand this document itself often uses) only when
-none is given, matching `_openNativeFile`'s own lenient `FileType.any`
+auto-appends the native extension when none is given. (As first written this
+note said the actual extension was `.DIDSAprt` and `.didsa` was "doc-prose
+shorthand" - that was backwards. `.didsa` is the current extension and the
+only one written; `.DIDSAprt` and `.didsacad` are legacy and read-only. See
+`docs/bug-report-2026-10-14-plan.md` item 9.) Matching `_openNativeFile`'s own lenient `FileType.any`
 posture. New `client/lib/viewport3d/relative_path_dialog.dart` reuses
 `_openMateEdit`'s own `AlertDialog`+`StatefulBuilder`+`TextFormField`+
 disabled-until-valid-`FilledButton` shape (the closest real precedent in

@@ -154,7 +154,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Open'));
       await tester.pumpAndSettle();
 
-      expect(await pendingResult, 'other-project.DIDSAprt');
+      expect(await pendingResult, 'other-project.didsa');
     });
 
     testWidgets('shows a "no files found" message and still accepts typed input when the folder is empty', (
@@ -171,7 +171,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Open'));
       await tester.pumpAndSettle();
 
-      expect(await pendingResult, 'top.DIDSAprt');
+      expect(await pendingResult, 'top.didsa');
     });
 
     testWidgets('falls back to the text field alone when listFiles fails, with an explanatory note', (
@@ -188,7 +188,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Open'));
       await tester.pumpAndSettle();
 
-      expect(await pendingResult, 'top.DIDSAprt');
+      expect(await pendingResult, 'top.didsa');
     });
 
     testWidgets('Cancel resolves null', (tester) async {
@@ -355,12 +355,12 @@ void main() {
 
       await tester.tap(find.widgetWithText(FilledButton, 'Save'));
       await tester.pumpAndSettle();
-      expect(await pendingResult, 'part.DIDSAprt');
+      expect(await pendingResult, 'part.didsa');
     });
 
     testWidgets('Change Folder reports the new root and re-checks collisions against it', (tester) async {
       const newRoot = DesktopProjectRoot('/other/folder');
-      final storage = _FakeStorageService(pickResult: newRoot, existingPaths: {'part.DIDSAprt'});
+      final storage = _FakeStorageService(pickResult: newRoot, existingPaths: {'part.didsa'});
       ProjectRoot? reported;
       await openSaveDialog(tester, storage, onRootChanged: (r) => reported = r);
 
@@ -372,6 +372,27 @@ void main() {
       expect(find.textContaining('already exists'), findsOneWidget);
       // Dialog is still open (Change Folder does not dismiss it).
       expect(find.widgetWithText(FilledButton, 'Save'), findsOneWidget);
+    });
+
+    testWidgets('warns when the typed name collides with a legacy-extension file, naming it', (tester) async {
+      // `part` becomes `part.didsa`, but `part.DIDSAprt` is already there: a
+      // single `resolve` on the exact name can't see it, the listing can.
+      await openSaveDialog(tester, _FakeStorageService(files: ['sub/other.didsa', 'part.DIDSAprt']));
+
+      await tester.enterText(find.byType(TextFormField), 'partx');
+      await tester.enterText(find.byType(TextFormField), 'part');
+      await tester.pumpAndSettle();
+
+      expect(find.text('part.DIDSAprt already exists and will be replaced.'), findsOneWidget);
+    });
+
+    testWidgets('no warning when nothing in the folder shares the base name', (tester) async {
+      await openSaveDialog(tester, _FakeStorageService(files: ['other.DIDSAprt']));
+
+      await tester.enterText(find.byType(TextFormField), 'part');
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('already exists'), findsNothing);
     });
   });
 }

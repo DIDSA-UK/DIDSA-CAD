@@ -852,3 +852,68 @@ def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_a
         if e >= _MAX_STEP_MIN_E:
             max_step = d * math.sqrt(_MAX_STEP_TOL / e)
     return jump, max_step
+
+
+# ---- per-occurrence constraint status (assembly tree badge) -------------------
+
+# A group whose stored poses leave a larger residual than this has mates that
+# contradict each other (a redundant-but-consistent mate stays ~1e-12; the
+# contradicting-distance case in the tests is > 1). Looser than `_SOLVE_TOL`
+# because stored poses went through JSON and a solve, not a Gauss-Newton polish.
+_STATUS_RESIDUAL_TOL = 1e-5
+
+STATUS_FIXED = "fixed"
+STATUS_FULLY_CONSTRAINED = "fully_constrained"
+STATUS_UNDER_CONSTRAINED = "under_constrained"
+STATUS_OVER_CONSTRAINED = "over_constrained"
+
+
+def constraint_status(document: Document, part: Part) -> dict[str, tuple[str, int]]:
+    """`{occurrence_id: (status, dof)}` for every occurrence of `part`, for the
+    Assembly tree's constraint badge. No new maths: it reuses the group
+    analysis (`build_group_model` + `analyze_model`) once per mate-graph
+    component, not once per occurrence.
+
+    * `fixed` - `occurrence.fixed` (dof 0).
+    * `fully_constrained` - the member's mobility is 0 AND its component is
+      grounded (some mate ties it to a fixed occurrence / the part itself) AND
+      the mates are consistent. The grounded condition matters: a group can
+      have every member at mobility 0 relative to the others and still float
+      as one rigid body, which is *under*-constrained.
+    * `over_constrained` - the stored poses leave a residual (the mates
+      contradict each other); dof is the member's mobility.
+    * `under_constrained` - anything else, `dof` = the member's mobility. An
+      unmated, unfixed occurrence is under-constrained with dof 6.
+
+    A component whose geometry cannot be resolved (an unresolved reference, an
+    unsupported face pairing) is left out of the result: the client then shows
+    no badge for it, rather than a status that would be a guess.
+    """
+    from fastapi import HTTPException  # local: this module is otherwise HTTP-free
+
+    result: dict[str, tuple[str, int]] = {}
+    visited: set[str] = set()
+    for occurrence in part.occurrences:
+        if occurrence.fixed:
+            result[occurrence.id] = (STATUS_FIXED, 0)
+            visited.add(occurrence.id)
+    for occurrence in part.occurrences:
+        if occurrence.id in visited:
+            continue
+        component = discover_component(part, occurrence.id)
+        visited.update(component.member_ids)
+        try:
+            model = build_group_model(document, part, occurrence.id)
+            analysis = analyze_model(model, bounding_radius(document, part, occurrence.id))
+        except (GroupError, HTTPException):
+            continue
+        contradictory = analysis.quality.residual_inf > _STATUS_RESIDUAL_TOL
+        for member_id in analysis.member_ids:
+            mobility = analysis.mobility[member_id]
+            if contradictory:
+                result[member_id] = (STATUS_OVER_CONSTRAINED, mobility)
+            elif mobility == 0 and analysis.grounded:
+                result[member_id] = (STATUS_FULLY_CONSTRAINED, 0)
+            else:
+                result[member_id] = (STATUS_UNDER_CONSTRAINED, mobility)
+    return result

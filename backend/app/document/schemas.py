@@ -3464,6 +3464,13 @@ class MateMotionChart(BaseModel):
     lever_arm: float
 
 
+class ConstraintStatusEntry(BaseModel):
+    """One occurrence's row of `GET /parts/{id}/constraint-status`."""
+
+    status: Literal["fixed", "fully_constrained", "under_constrained", "over_constrained"]
+    dof: int  # the occurrence's own mobility (0 for fixed / fully constrained)
+
+
 class MateMotionQuality(BaseModel):
     residual_inf: float
     sigma_min: float | None = None  # null at rank 0

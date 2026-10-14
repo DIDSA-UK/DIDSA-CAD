@@ -1,6 +1,10 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/assembly/add_component.dart';
+import 'package:didsa_cad_client/assembly/remint_identity.dart';
 
 Map<String, dynamic> _documentPayload({
   required List<Map<String, dynamic>> parts,
@@ -363,4 +367,198 @@ void main() {
       });
     });
   });
+
+    // Bug report 2026-10-14, item 3: Frame_B is a Save As copy of Frame_A
+    // (same document, Part and sketch ids) edited to 1600 mm. Adding A then B
+    // used to dedup B away, leaving both Occurrences on A's 800 mm Part.
+    group('id collisions between different files', () {
+      Map<String, dynamic> fixture(String name) =>
+          jsonDecode(File('test/fixtures/$name').readAsStringSync()) as Map<String, dynamic>;
+
+      Map<String, dynamic> emptySession() => _documentPayload(parts: [_part('root')], rootPartId: 'root');
+
+      double bossEnd(Map<String, dynamic> payload, String partId) {
+        final parts = ((payload['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>();
+        final part = parts.firstWhere((p) => p['id'] == partId);
+        final extrude = (part['features'] as List).cast<Map<String, dynamic>>().firstWhere(
+          (f) => f['type'] == 'extrude',
+        );
+        return (extrude['end_distance'] as num).toDouble();
+      }
+
+      Map<String, dynamic> add(Map<String, dynamic> session, Map<String, dynamic> file, String ref, String occ) =>
+          mergeComponentIntoDocument(
+            currentPayload: session,
+            componentPayload: file,
+            rootPartId: 'root',
+            occurrenceId: occ,
+            externalRef: ref,
+          );
+
+      List<Map<String, dynamic>> occurrencesOf(Map<String, dynamic> payload) {
+        final parts = ((payload['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>();
+        return (parts.firstWhere((p) => p['id'] == 'root')['occurrences'] as List).cast<Map<String, dynamic>>();
+      }
+
+      test('adding A then B gives two distinct Parts with 800 mm and 1600 mm bosses', () {
+        final a = fixture('frame_a_save_as_source.DIDSAprt');
+        final b = fixture('frame_b_save_as_copy.DIDSAprt');
+
+        var session = add(emptySession(), a, 'Frame_A.DIDSAprt', 'occ-a');
+        session = add(session, b, 'Frame_B.DIDSAprt', 'occ-b');
+
+        final occurrences = occurrencesOf(session);
+        final resolved = [for (final o in occurrences) o['resolved_part_id'] as String];
+        expect(resolved[0], isNot(resolved[1]));
+        expect(bossEnd(session, resolved[0]), 800.0);
+        expect(bossEnd(session, resolved[1]), 1600.0);
+        final parts = ((session['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>();
+        expect(parts, hasLength(3)); // root + A + re-minted B
+        // The re-minted B's sketches came along under its new ids.
+        final sketchIds = {for (final s in session['sketches'] as List) (s as Map)['id']};
+        final newPart = parts.firstWhere((p) => p['id'] == resolved[1]);
+        for (final f in (newPart['features'] as List).cast<Map<String, dynamic>>()) {
+          if (f['type'] == 'sketch') expect(sketchIds, contains(f['sketch_id']));
+        }
+        expect(sketchIds, hasLength(6));
+      });
+
+      test('adding A twice still dedups to one Part', () {
+        final a = fixture('frame_a_save_as_source.DIDSAprt');
+        var session = add(emptySession(), a, 'Frame_A.DIDSAprt', 'occ-1');
+        session = add(session, a, 'Frame_A.DIDSAprt', 'occ-2');
+        final resolved = {for (final o in occurrencesOf(session)) o['resolved_part_id']};
+        expect(resolved, hasLength(1));
+        expect(((session['document'] as Map)['parts'] as List), hasLength(2));
+      });
+
+      test('adding the colliding file twice reuses its re-minted copy', () {
+        final a = fixture('frame_a_save_as_source.DIDSAprt');
+        final b = fixture('frame_b_save_as_copy.DIDSAprt');
+        var session = add(emptySession(), a, 'A.didsa', 'occ-1');
+        session = add(session, b, 'B.didsa', 'occ-2');
+        session = add(session, b, 'B.didsa', 'occ-3');
+        final resolved = [for (final o in occurrencesOf(session)) o['resolved_part_id']];
+        expect(resolved[1], resolved[2]);
+        expect(resolved[0], isNot(resolved[1]));
+        expect(((session['document'] as Map)['parts'] as List), hasLength(3));
+      });
+
+      test('a Part the session already knows to come from that path counts as the same file', () {
+        final a = fixture('frame_a_save_as_source.DIDSAprt');
+        final partId = (((a['document'] as Map)['parts'] as List).single as Map)['id'] as String;
+        final edited = {
+          ...a,
+          'document': {
+            ...(a['document'] as Map<String, dynamic>),
+            'parts': [
+              {...(((a['document'] as Map)['parts'] as List).single as Map<String, dynamic>), 'name': 'edited'},
+            ],
+          },
+        };
+        final session = {
+          ...emptySession(),
+          'document': {
+            ...(emptySession()['document'] as Map<String, dynamic>),
+            'parts': [_part('root'), ((edited['document'] as Map)['parts'] as List).single],
+          },
+        };
+        final merged = mergeComponentIntoDocument(
+          currentPayload: session,
+          componentPayload: a,
+          rootPartId: 'root',
+          occurrenceId: 'occ-1',
+          externalRef: 'sub/Frame_A.DIDSAprt',
+          relativePathByPartId: {partId: 'sub/Frame_A.DIDSAprt'},
+        );
+        // Dedup (the live, edited Part wins) rather than a re-mint.
+        expect(occurrencesOf(merged).single['resolved_part_id'], partId);
+        expect(((merged['document'] as Map)['parts'] as List), hasLength(2));
+      });
+
+      test('a Save As copy of the open Part is insertable once re-minted, not a self-reference', () {
+        final a = fixture('frame_a_save_as_source.DIDSAprt');
+        final b = fixture('frame_b_save_as_copy.DIDSAprt');
+        final openPartId = (((a['document'] as Map)['parts'] as List).single as Map)['id'] as String;
+
+        final merged = mergeComponentIntoDocument(
+          currentPayload: a,
+          componentPayload: b,
+          rootPartId: openPartId,
+          occurrenceId: 'occ-1',
+          externalRef: 'Frame_B.DIDSAprt',
+        );
+
+        final parts = ((merged['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>();
+        final root = parts.firstWhere((p) => p['id'] == openPartId);
+        final resolved = ((root['occurrences'] as List).single as Map)['resolved_part_id'] as String;
+        expect(resolved, isNot(openPartId));
+        expect(bossEnd(merged, resolved), 1600.0);
+        expect(bossEnd(merged, openPartId), 800.0);
+      });
+
+      test('inserting the open Part into itself is still rejected', () {
+        final a = fixture('frame_a_save_as_source.DIDSAprt');
+        final openPartId = (((a['document'] as Map)['parts'] as List).single as Map)['id'] as String;
+        expect(
+          () => mergeComponentIntoDocument(
+            currentPayload: a,
+            componentPayload: a,
+            rootPartId: openPartId,
+            occurrenceId: 'occ-1',
+          ),
+          throwsA(isA<AddComponentException>()),
+        );
+      });
+
+      test('relocateOccurrenceInDocument heals a colliding file the same way', () {
+        final a = fixture('frame_a_save_as_source.DIDSAprt');
+        final b = fixture('frame_b_save_as_copy.DIDSAprt');
+        var session = add(emptySession(), a, 'Frame_A.DIDSAprt', 'occ-a');
+        // A second, unresolved Occurrence the user is now re-linking to B.
+        final parts = ((session['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>();
+        session = {
+          ...session,
+          'document': {
+            ...Map<String, dynamic>.from(session['document'] as Map),
+            'parts': [
+              for (final p in parts)
+                if (p['id'] == 'root')
+                  {
+                    ...p,
+                    'occurrences': [
+                      ...(p['occurrences'] as List),
+                      {'id': 'occ-b', 'external_ref': 'gone.didsa', 'resolved_part_id': null, 'fixed': false},
+                    ],
+                  }
+                else
+                  p,
+            ],
+          },
+        };
+
+        final relinked = relocateOccurrenceInDocument(
+          currentPayload: session,
+          componentPayload: b,
+          rootPartId: 'root',
+          occurrenceId: 'occ-b',
+          newExternalRef: 'Frame_B.DIDSAprt',
+        );
+
+        final occurrences = occurrencesOf(relinked);
+        final resolved = [for (final o in occurrences) o['resolved_part_id'] as String];
+        expect(resolved[0], isNot(resolved[1]));
+        expect(bossEnd(relinked, resolved[0]), 800.0);
+        expect(bossEnd(relinked, resolved[1]), 1600.0);
+      });
+
+      test('remintNativeIdentity output of a file never collides with the file itself', () {
+        final a = fixture('frame_a_save_as_source.DIDSAprt');
+        final copy = remintNativeIdentity(a);
+        var session = add(emptySession(), a, 'A.didsa', 'occ-1');
+        session = add(session, copy, 'A copy.didsa', 'occ-2');
+        final resolved = [for (final o in occurrencesOf(session)) o['resolved_part_id']];
+        expect(resolved[0], isNot(resolved[1]));
+      });
+    });
 }

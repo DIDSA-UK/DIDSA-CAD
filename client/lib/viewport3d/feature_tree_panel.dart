@@ -457,6 +457,16 @@ class FeatureTreePanel extends StatefulWidget {
   /// multi-select mode.
   final void Function(String key)? onMultiSelectToggle;
 
+  /// Bug report 2026-10-14, item 4: while non-null (a tree multi-select
+  /// session is active), replaces the panel's normal title row (the title and
+  /// the Close button) at the top of the panel, inside the panel's own
+  /// Material, and the row list keeps the rest of the height. Replaces the
+  /// old bottom `SelectionListDrawer`, a sheet 18-40% of the screen tall
+  /// stacked *above* the tree that covered its lowest rows so they couldn't
+  /// be tapped. Closing the panel still ends the session (the screen's
+  /// `onClose` calls `_exitMultiSelect`).
+  final Widget? multiSelectHeader;
+
   const FeatureTreePanel({
     super.key,
     required this.visible,
@@ -495,6 +505,7 @@ class FeatureTreePanel extends StatefulWidget {
     this.isMultiSelectMode = false,
     this.selectedMultiSelectIds = const {},
     this.onMultiSelectToggle,
+    this.multiSelectHeader,
   });
 
   @override
@@ -553,6 +564,9 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                         ),
                         child: Column(
                           children: [
+                            if (widget.multiSelectHeader != null)
+                              Padding(padding: const EdgeInsets.only(top: 4), child: widget.multiSelectHeader)
+                            else
                             Padding(
                               padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
                               child: Row(

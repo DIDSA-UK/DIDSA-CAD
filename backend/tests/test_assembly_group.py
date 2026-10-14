@@ -18,6 +18,7 @@ from app.document.assembly_group import (
     analyze_group,
     bounding_radius,
     build_group_model,
+    constraint_status,
     discover_component,
 )
 from app.document.store import get_document
@@ -348,3 +349,88 @@ def test_timing_k_1_3_8(capsys):
         for k, n, a, b in rows:
             print(f"  k={k}: {n:2d} vars  build {a:7.2f}  analyze {b:7.2f}")
     assert all(b < 5000 for *_r, b in rows)
+
+
+# ---- per-occurrence constraint status (bug report 2026-10-14, item 7) ----------
+
+
+def _fully_constrained_box_scene():
+    """A box face-mated to the plate's top, +x side and +y side: three mutually
+    perpendicular coincident planes pin all six degrees of freedom."""
+    plate = _make_box_part("Plate", size=100.0, depth=10.0)
+    box = _make_box_part("Box", size=8.0, depth=4.0)
+    # The box's -x/-y/-z faces sit exactly on the plate's +x/+y/top planes.
+    root = _compose(plate, [("occ-A", box, (100.0, 100.0, 10.0))])
+    _mate(root, "coincident", "occ-A", _face(box, (0, 0, -1)), "", _face(plate, (0, 0, 1)))
+    _mate(root, "coincident", "occ-A", _face(box, (-1, 0, 0)), "", _face(plate, (1, 0, 0)))
+    _mate(root, "coincident", "occ-A", _face(box, (0, -1, 0)), "", _face(plate, (0, 1, 0)))
+    return root
+
+
+def test_constraint_status_three_perpendicular_mates_to_the_part_is_fully_constrained():
+    root = _fully_constrained_box_scene()
+    document, part = _doc(root)
+    assert constraint_status(document, part) == {"occ-A": ("fully_constrained", 0)}
+
+
+def test_constraint_status_one_mate_is_under_constrained_with_its_dof():
+    plate = _make_box_part("Plate", size=60.0, depth=10.0)
+    box = _make_box_part("Box", size=8.0, depth=4.0)
+    root = _compose(plate, [("occ-A", box, (20.0, 20.0, 10.0))])
+    _mate(root, "coincident", "occ-A", _face(box, (0, 0, -1)), "", _face(plate, (0, 0, 1)))
+    document, part = _doc(root)
+    assert constraint_status(document, part) == {"occ-A": ("under_constrained", 3)}
+
+
+def test_constraint_status_unmated_unfixed_occurrence_is_free_with_six_dof():
+    plate = _make_box_part("Plate", size=60.0, depth=10.0)
+    box = _make_box_part("Box", size=8.0, depth=4.0)
+    root = _compose(plate, [("occ-A", box, (5.0, 5.0, 20.0))])
+    document, part = _doc(root)
+    assert constraint_status(document, part) == {"occ-A": ("under_constrained", 6)}
+
+
+def test_constraint_status_fixed_occurrence_is_fixed():
+    plate = _make_box_part("Plate", size=60.0, depth=10.0)
+    box = _make_box_part("Box", size=8.0, depth=4.0)
+    root = _compose(plate, [("occ-A", box, (5.0, 5.0, 20.0)), ("occ-B", box, (30.0, 5.0, 20.0))])
+    client.patch(f"/document/parts/{root}/occurrences/occ-A", json={"fixed": True})
+    document, part = _doc(root)
+    status = constraint_status(document, part)
+    assert status["occ-A"] == ("fixed", 0)
+    assert status["occ-B"] == ("under_constrained", 6)
+
+
+def test_constraint_status_a_floating_mated_pair_is_under_constrained_not_fully():
+    """Both members are rigid relative to each other (mobility only from the
+    group's own free motion), but nothing grounds the group - it still floats."""
+    plate = _make_box_part("Plate", size=60.0, depth=10.0)
+    b = _make_box_part("B", size=8.0, depth=4.0)
+    c = _make_box_part("C", size=8.0, depth=4.0)
+    root = _compose(plate, [("occ-B", b, (20.0, 20.0, 30.0)), ("occ-C", c, (28.0, 20.0, 30.0))])
+    _mate(root, "coincident", "occ-B", _face(b, (1, 0, 0)), "occ-C", _face(c, (-1, 0, 0)))
+    document, part = _doc(root)
+    status = constraint_status(document, part)
+    assert {oid: s for oid, (s, _d) in status.items()} == {
+        "occ-B": "under_constrained",
+        "occ-C": "under_constrained",
+    }
+
+
+def test_constraint_status_contradicting_mates_are_over_constrained():
+    plate = _make_box_part("Plate", size=60.0, depth=10.0)
+    box = _make_box_part("Box", size=8.0, depth=4.0)
+    root = _compose(plate, [("occ-A", box, (20.0, 20.0, 10.0))])
+    top, bottom = _face(plate, (0, 0, 1)), _face(box, (0, 0, -1))
+    _mate(root, "coincident", "occ-A", bottom, "", top)
+    _mate(root, "distance", "occ-A", bottom, "", top, value=5.0)  # contradicts coincident
+    document, part = _doc(root)
+    assert constraint_status(document, part)["occ-A"][0] == "over_constrained"
+
+
+def test_constraint_status_endpoint_returns_status_and_dof_per_occurrence():
+    root = _fully_constrained_box_scene()
+    response = client.get(f"/document/parts/{root}/constraint-status")
+    assert response.status_code == 200
+    assert response.json() == {"occ-A": {"status": "fully_constrained", "dof": 0}}
+    assert client.get("/document/parts/not-a-part/constraint-status").status_code == 404

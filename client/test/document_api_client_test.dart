@@ -2745,4 +2745,36 @@ void main() {
       );
     });
   });
+
+  group('DocumentApiClient.getConstraintStatus (item 7)', () {
+    test('GETs /constraint-status and maps each status; an unknown one reads as under-constrained', () async {
+      Uri? requested;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requested = request.url;
+          return http.Response(
+            jsonEncode({
+              'a': {'status': 'fixed', 'dof': 0},
+              'b': {'status': 'fully_constrained', 'dof': 0},
+              'c': {'status': 'under_constrained', 'dof': 3},
+              'd': {'status': 'over_constrained', 'dof': 1},
+              'e': {'status': 'something_new', 'dof': 6},
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      final status = await client.getConstraintStatus('part-1');
+
+      expect(requested?.path, '/document/parts/part-1/constraint-status');
+      expect(status['a']?.state, ConstraintState.fixed);
+      expect(status['b']?.state, ConstraintState.fullyConstrained);
+      expect(status['c']?.state, ConstraintState.underConstrained);
+      expect(status['c']?.dof, 3);
+      expect(status['d']?.state, ConstraintState.overConstrained);
+      expect(status['e']?.state, ConstraintState.underConstrained);
+    });
+  });
 }
