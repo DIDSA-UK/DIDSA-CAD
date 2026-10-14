@@ -530,4 +530,31 @@ void main() {
       expect(secondImportPartIds, ['part-b']);
     });
   });
+
+  test('stripSessionResolvedIds drops resolved_part_id only where an external_ref can recompute it', () {
+    final exported = {
+      'schema_version': 1,
+      'document': {
+        'id': 'd',
+        'root_part_id': 'p',
+        'parts': [
+          {
+            'id': 'p',
+            'occurrences': [
+              {'id': 'o1', 'external_ref': 'Frame_A.didsa', 'resolved_part_id': 'session-only'},
+              {'id': 'o2', 'external_ref': null, 'resolved_part_id': 'kept'},
+            ],
+          },
+        ],
+      },
+      'sketches': [],
+    };
+
+    final stripped = stripSessionResolvedIds(exported);
+
+    final occurrences = (((stripped['document'] as Map)['parts'] as List).single as Map)['occurrences'] as List;
+    expect((occurrences[0] as Map).containsKey('resolved_part_id'), isFalse);
+    expect((occurrences[0] as Map)['external_ref'], 'Frame_A.didsa');
+    expect((occurrences[1] as Map)['resolved_part_id'], 'kept');
+  });
 }

@@ -86,7 +86,12 @@ from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Cylinder, GeomAbs_Line, Geo
 from OCC.Core.TopoDS import topods
 from py_slvs import slvs
 
-from app.document.assembly import apply_transform_to_direction, apply_transform_to_point, resolve_occurrence_target
+from app.document.assembly import (
+    apply_transform_to_direction,
+    apply_transform_to_point,
+    resolve_occurrence_target,
+    top_level_occurrence_id,
+)
 from app.document.create_plane import resolve_plane_ref, resolve_point_ref_position
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
 from app.document.measure import single_shape_geometry
@@ -1188,9 +1193,13 @@ def _applicable_mates(part: Part, driven_occurrence_id: str) -> list[tuple[Mate,
         if mate.suppressed or len(mate.references) != 2:
             continue
         first, second = mate.references
-        if first.occurrence_id == driven_occurrence_id and second.occurrence_id != driven_occurrence_id:
+        # A reference into a sub-assembly (`outer/inner`) belongs to the
+        # top-level Occurrence `outer`: that is what moves when it is driven.
+        first_top = top_level_occurrence_id(first.occurrence_id)
+        second_top = top_level_occurrence_id(second.occurrence_id)
+        if first_top == driven_occurrence_id and second_top != driven_occurrence_id:
             applicable.append((mate, first, second))
-        elif second.occurrence_id == driven_occurrence_id and first.occurrence_id != driven_occurrence_id:
+        elif second_top == driven_occurrence_id and first_top != driven_occurrence_id:
             applicable.append((mate, second, first))
     return applicable
 
@@ -1239,7 +1248,19 @@ def _solve_occurrence_against(
     # constraint, is what actually disambiguates `flipped`).
     resolved: list[tuple[Mate, MateEntityRef, _ResolvedGeometry, _ResolvedGeometry]] = []
     for mate, driven_ref, fixed_ref in applicable:
-        driven_geometry = _resolve_local_geometry(driven_target_part, driven_bodies, driven_ref)
+        # A driven reference may point inside a sub-assembly the driven
+        # Occurrence places (`driven/inner`): resolve it against the leaf Part
+        # and lift it into the driven Occurrence's own local frame.
+        driven_leaf_part, driven_inner = _target_part_and_transform(
+            document, driven_target_part, driven_ref.occurrence_id[len(driven_occurrence.id) + 1 :]
+        )
+        driven_geometry = _resolve_local_geometry(
+            driven_leaf_part,
+            driven_bodies if driven_leaf_part is driven_target_part else compute_part_bodies(driven_leaf_part),
+            driven_ref,
+        )
+        if driven_inner is not None:
+            driven_geometry = _place_in_world(driven_geometry, driven_inner)
         fixed_target_part, fixed_transform = _target_part_and_transform(document, part, fixed_ref.occurrence_id)
         fixed_bodies = compute_part_bodies(fixed_target_part)
         fixed_local_geometry = _resolve_local_geometry(fixed_target_part, fixed_bodies, fixed_ref)

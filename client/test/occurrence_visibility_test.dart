@@ -331,4 +331,16 @@ void main() {
       expect(result, isEmpty);
     });
   });
+
+  group('topLevelOccurrenceId', () {
+    test('returns the first segment of a nested occurrence path', () {
+      expect(topLevelOccurrenceId('frame-occ/frame-a-occ'), 'frame-occ');
+      expect(topLevelOccurrenceId('a/b/c'), 'a');
+    });
+
+    test('leaves a plain id and the root-content id unchanged', () {
+      expect(topLevelOccurrenceId('frame-occ'), 'frame-occ');
+      expect(topLevelOccurrenceId(''), '');
+    });
+  });
 }

@@ -227,3 +227,14 @@ bool pathEquals(List<String> a, List<String> b) {
   }
   return true;
 }
+
+/// The top-level Occurrence a Mate reference belongs to. A reference into a
+/// sub-assembly is the `/`-joined path the assembly-mesh reports
+/// (`outer/inner`, [SelectionEntityRef.occurrenceId]); the first segment is
+/// the Occurrence of the focused Part that carries it - the one that is
+/// driven, deleted or counted as mated. `''` (the focused Part's own root
+/// content) and a plain id come back unchanged.
+String topLevelOccurrenceId(String occurrenceId) {
+  final slash = occurrenceId.indexOf('/');
+  return slash == -1 ? occurrenceId : occurrenceId.substring(0, slash);
+}

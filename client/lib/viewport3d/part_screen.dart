@@ -24,7 +24,7 @@ import '../api/sketch_api_client.dart'
         TextContourDto;
 import '../assembly/add_component.dart';
 import '../assembly/assembly_document_client.dart';
-import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException;
+import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException, ComposedAssemblyGraph;
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
@@ -3704,7 +3704,9 @@ class _PartScreenState extends State<PartScreen> {
   /// 2's own fix: mating to a `fixed` part must never try to drive the
   /// fixed side just because it happened to be picked/listed first).
   String? _drivableOccurrenceId(Iterable<String> occurrenceIds) {
-    for (final id in occurrenceIds) {
+    for (final reference in occurrenceIds) {
+      // A reference into a sub-assembly (`outer/inner`) is driven by moving `outer`.
+      final id = topLevelOccurrenceId(reference);
       if (id.isEmpty) continue;
       final index = _occurrences.indexWhere((o) => o.id == id);
       final isFixed = index != -1 && _occurrences[index].fixed;
@@ -10220,6 +10222,15 @@ class _PartScreenState extends State<PartScreen> {
     //    pointing at the original; repointing the Occurrence at the copy
     //    (SolidWorks "replace component") is a possible follow-up.
     final isRootPart = focusPartId == _part?.id;
+    // A component made in place (Create Component) has an auto-assigned path
+    // but no file behind it yet. Saving it under a chosen name is the first
+    // save of that component - it takes the name, not "a copy next to a
+    // placeholder that is still linked to a file that never existed".
+    if (!isRootPart && (currentPath == null || await _storageService.resolve(root, currentPath) == null)) {
+      if (!mounted) return;
+      await _saveNeverSavedComponentAs(root, focusPartId, partName, currentPath, newPath);
+      return;
+    }
     final wasDirty = _isDirty;
     var saved = false;
     await _runGuarded(() async {
@@ -10259,6 +10270,56 @@ class _PartScreenState extends State<PartScreen> {
     // marks every guarded action dirty).
     setState(() => _isDirty = wasDirty);
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved a copy as $newPath')));
+  }
+
+  /// First save of a component that has no file on disk yet (made by Create
+  /// Component, or added with an auto-assigned path), under the name the user
+  /// picked in Save As. Writes it at [newPath] keeping its identity (nothing
+  /// else references a file that never existed, so no re-mint and no copy),
+  /// moves the session's path for it there, and - only if it still carries its
+  /// auto-generated name - renames the Part and its placeholder Occurrence(s)
+  /// to match the file, so the assembly shows "Table_Top" instead of
+  /// "Component 2". The parent assembly's own file still needs a Save (or Save
+  /// All) to record the new `external_ref`, so the session stays dirty.
+  Future<void> _saveNeverSavedComponentAs(
+    ProjectRoot root,
+    String partId,
+    String partName,
+    String? oldPath,
+    String newPath,
+  ) async {
+    final newName = stripNativeExtension(newPath.split('/').last);
+    final oldAutoName = oldPath == null ? null : stripNativeExtension(oldPath.split('/').last);
+    final hadAutoName = partName == oldAutoName;
+    var saved = false;
+    await _runGuarded(() async {
+      if (hadAutoName && newName.trim().isNotEmpty && newName != partName) {
+        final session = await _api.exportNative();
+        await _api.updatePart(partId, name: newName);
+        for (final partRaw in ((session['document'] as Map?)?['parts'] as List?) ?? const []) {
+          if (partRaw is! Map) continue;
+          for (final occurrenceRaw in (partRaw['occurrences'] as List?) ?? const []) {
+            if (occurrenceRaw is Map &&
+                occurrenceRaw['resolved_part_id'] == partId &&
+                occurrenceRaw['name_override'] == partName) {
+              await _api.updateOccurrenceName(partRaw['id'] as String, occurrenceRaw['id'] as String, newName);
+            }
+          }
+        }
+      }
+      try {
+        await _assemblyDocumentClient.savePart(root, partId, newPath, extras: _extrasFor(partId));
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = 'Failed to save: ${e.message}');
+        return;
+      }
+      setState(() => _relativePathByPartId = {..._relativePathByPartId, partId: newPath});
+      saved = true;
+    });
+    if (!saved || !mounted) return;
+    await _refreshAssemblyTree();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved as $newPath')));
   }
 
   /// File > New: starts a brand-new, blank Part - the same "always start
@@ -10875,7 +10936,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Whether [occurrenceId] takes part in at least one active mate of the focused Part (the only case that
   /// goes through `mate-motion`; everything else keeps the raw PATCH path).
   bool _isMated(String occurrenceId) => _mates.any(
-        (m) => !m.suppressed && m.references.any((r) => r.occurrenceId == occurrenceId),
+        (m) => !m.suppressed && m.references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrenceId),
       );
 
   RigidTransformDto _localOfWorld(RigidTransformDto world) {
@@ -12350,18 +12411,8 @@ class _PartScreenState extends State<PartScreen> {
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
 
-    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
-    if (result == null || result.files.isEmpty || !mounted) return;
-    final bytes = result.files.single.bytes;
-    if (bytes == null) return;
-
-    Map<String, dynamic> componentPayload;
-    try {
-      componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
-    } catch (_) {
-      setState(() => _errorMessage = 'Not a valid native project file');
-      return;
-    }
+    final picked = await _pickAndComposeComponent();
+    if (picked == null || !mounted) return;
 
     await _runGuarded(() async {
       final currentPayload = await _api.exportNative();
@@ -12369,10 +12420,10 @@ class _PartScreenState extends State<PartScreen> {
       try {
         merged = mergeComponentIntoDocument(
           currentPayload: currentPayload,
-          componentPayload: componentPayload,
+          componentPayload: picked.graph.documentPayload,
           rootPartId: rootPartId,
           occurrenceId: const Uuid().v4(),
-          externalRef: result.files.single.name,
+          externalRef: picked.relativePath,
           relativePathByPartId: _relativePathByPartId,
         );
       } on AddComponentException catch (e) {
@@ -12380,9 +12431,71 @@ class _PartScreenState extends State<PartScreen> {
         return;
       }
       await _api.importNative(merged);
+      _learnRelativePaths(merged);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
+  }
+
+  /// Picks a native file inside the project folder (the same listing-backed
+  /// dialog as Open) and composes it together with everything it references
+  /// ([AssemblyDocumentClient.composeGraph]). Add Component and Locate Missing
+  /// File used to take a bare `file_picker` pick and merge only that file's own
+  /// Part, so a picked assembly (e.g. `Frame` holding `Frame_A`/`Frame_B`)
+  /// arrived with every sub-component unresolved - there was no project root to
+  /// resolve its `external_ref`s against. Returns null on cancel or on an error
+  /// (already surfaced through [_errorMessage]).
+  Future<({ComposedAssemblyGraph graph, String relativePath})?> _pickAndComposeComponent() async {
+    final ensuredRoot = await _ensureProjectRoot();
+    if (ensuredRoot == null || !mounted) return null;
+    var root = ensuredRoot;
+    final relativePath = await showOpenProjectPathPromptDialog(
+      context,
+      storageService: _storageService,
+      root: root,
+      onRootChanged: (newRoot) {
+        root = newRoot;
+        if (mounted) setState(() => _projectRoot = newRoot);
+      },
+    );
+    if (relativePath == null || !mounted) return null;
+
+    ComposedAssemblyGraph? graph;
+    await _runGuarded(() async {
+      try {
+        graph = await _assemblyDocumentClient.composeGraph(root, relativePath);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = e.message);
+      } on AssemblyGraphCycleException catch (e) {
+        setState(() => _errorMessage = e.toString());
+      } on FormatException catch (e) {
+        setState(() => _errorMessage = e.message);
+      }
+    });
+    final composed = graph;
+    if (composed == null) return null;
+    return (graph: composed, relativePath: relativePath);
+  }
+
+  /// Records where each Part of a freshly merged session lives, read off the
+  /// Occurrences themselves (`external_ref` -> `resolved_part_id`) - robust to
+  /// a colliding file having been re-minted during the merge, where the ids
+  /// the composer saw are no longer the ids in the session. Never overwrites a
+  /// path or Part id already known, so a later Save All writes each merged
+  /// sub-component to its own file instead of prompting for a location.
+  void _learnRelativePaths(Map<String, dynamic> mergedPayload) {
+    final parts = (((mergedPayload['document'] as Map?)?['parts'] as List?) ?? const []).whereType<Map>();
+    final learned = Map<String, String>.of(_relativePathByPartId);
+    for (final part in parts) {
+      for (final occurrence in ((part['occurrences'] as List?) ?? const []).whereType<Map>()) {
+        final path = occurrence['external_ref'];
+        final partId = occurrence['resolved_part_id'];
+        if (path is! String || partId is! String) continue;
+        if (learned.containsKey(partId) || learned.containsValue(path)) continue;
+        learned[partId] = path;
+      }
+    }
+    if (mounted) setState(() => _relativePathByPartId = learned);
   }
 
   /// Bug fix (assembly testing: "if the software cannot find the file, it
@@ -12415,18 +12528,8 @@ class _PartScreenState extends State<PartScreen> {
     );
     if (confirmed != true || !mounted) return;
 
-    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
-    if (result == null || result.files.isEmpty || !mounted) return;
-    final bytes = result.files.single.bytes;
-    if (bytes == null) return;
-
-    Map<String, dynamic> componentPayload;
-    try {
-      componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
-    } catch (_) {
-      setState(() => _errorMessage = 'Not a valid native project file');
-      return;
-    }
+    final picked = await _pickAndComposeComponent();
+    if (picked == null || !mounted) return;
 
     await _runGuarded(() async {
       final currentPayload = await _api.exportNative();
@@ -12434,10 +12537,10 @@ class _PartScreenState extends State<PartScreen> {
       try {
         merged = relocateOccurrenceInDocument(
           currentPayload: currentPayload,
-          componentPayload: componentPayload,
+          componentPayload: picked.graph.documentPayload,
           rootPartId: rootPartId,
           occurrenceId: occurrence.id,
-          newExternalRef: result.files.single.name,
+          newExternalRef: picked.relativePath,
           relativePathByPartId: _relativePathByPartId,
         );
       } on AddComponentException catch (e) {
@@ -12445,6 +12548,7 @@ class _PartScreenState extends State<PartScreen> {
         return;
       }
       await _api.importNative(merged);
+      _learnRelativePaths(merged);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
@@ -14265,7 +14369,7 @@ class _PartScreenState extends State<PartScreen> {
     final targets = _assemblyMultiSelectOccurrences;
     if (targets.isEmpty) return;
     final targetIds = {for (final o in targets) o.id};
-    final mateCount = _mates.where((m) => m.references.any((r) => targetIds.contains(r.occurrenceId))).length;
+    final mateCount = _mates.where((m) => m.references.any((r) => targetIds.contains(topLevelOccurrenceId(r.occurrenceId)))).length;
     final patternCount =
         _componentPatterns.where((p) => p.sourceOccurrenceIds.any(targetIds.contains)).length;
     final n = targets.length;
@@ -21819,7 +21923,7 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || focusPartId == null) return;
     final affectedMates = <MateDto>[];
     for (var i = 0; i < _mates.length; i++) {
-      if (_mates[i].references.any((r) => r.occurrenceId == occurrence.id)) {
+      if (_mates[i].references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrence.id)) {
         affectedMates.add(_mates[i]);
       }
     }

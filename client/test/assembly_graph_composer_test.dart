@@ -336,4 +336,51 @@ void main() {
       expect((result.documentPayload['document']['parts'] as List), hasLength(2));
     });
   });
+  test('a legacy .DIDSAprt external_ref finds the migrated .didsa file and is rewritten to it', () async {
+    storage.put('Frame_A.didsa', _singlePartPayload(id: 'part-a', name: 'A'));
+    storage.put(
+      'Frame.didsa',
+      _singlePartPayload(id: 'part-frame', name: 'Frame', occurrences: [_occurrence('occ-1', 'Frame_A.DIDSAprt')]),
+    );
+
+    final result = await composer.compose(root, 'Frame.didsa');
+
+    final frame = (result.documentPayload['document']['parts'] as List)
+        .cast<Map<String, dynamic>>()
+        .firstWhere((part) => part['id'] == 'part-frame');
+    final occurrence = (frame['occurrences'] as List).single as Map<String, dynamic>;
+    expect(occurrence['resolved_part_id'], 'part-a');
+    expect(occurrence['external_ref'], 'Frame_A.didsa');
+    expect(result.relativePathByPartId['part-a'], 'Frame_A.didsa');
+  });
+
+  test('the exact name wins over an alternative extension', () async {
+    storage.put('Frame_A.DIDSAprt', _singlePartPayload(id: 'part-legacy', name: 'Legacy'));
+    storage.put('Frame_A.didsa', _singlePartPayload(id: 'part-new', name: 'New'));
+    storage.put(
+      'Frame.didsa',
+      _singlePartPayload(id: 'part-frame', name: 'Frame', occurrences: [_occurrence('occ-1', 'Frame_A.DIDSAprt')]),
+    );
+
+    final result = await composer.compose(root, 'Frame.didsa');
+
+    expect(result.relativePathByPartId.values, contains('Frame_A.DIDSAprt'));
+    expect(result.relativePathByPartId.values, isNot(contains('Frame_A.didsa')));
+  });
+
+  test('the same file referenced under two extensions is one Part, not two', () async {
+    storage.put('Frame_A.didsa', _singlePartPayload(id: 'part-a', name: 'A'));
+    storage.put(
+      'Frame.didsa',
+      _singlePartPayload(
+        id: 'part-frame',
+        name: 'Frame',
+        occurrences: [_occurrence('occ-1', 'Frame_A.DIDSAprt'), _occurrence('occ-2', 'Frame_A.didsa')],
+      ),
+    );
+
+    final result = await composer.compose(root, 'Frame.didsa');
+
+    expect(result.documentPayload['document']['parts'] as List, hasLength(2));
+  });
 }

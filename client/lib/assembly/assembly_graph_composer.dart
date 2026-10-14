@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../storage/file_cache.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
+import 'relative_path.dart';
 import 'remint_identity.dart';
 
 /// Raised when resolving a `.didsa` file's Occurrences would revisit a file
@@ -124,7 +125,32 @@ class AssemblyGraphComposer {
       }
     }
 
-    Future<String?> resolvePart(String relativePath, List<String> ancestorPath) async {
+    // An `external_ref` written under one native extension (a legacy
+    // `Frame_A.DIDSAprt`) must still find the file after the migration to
+    // `.didsa` (and vice versa): `StorageService.resolve` is an exact-name
+    // lookup, so without this the Occurrence silently stayed unresolved. The
+    // exact name always wins; the alternatives are only tried when it is
+    // missing. The ref the file was actually found under is written back onto
+    // the Occurrence so the next Save heals the stale extension on disk.
+    final canonicalPathByRef = <String, String>{};
+    Future<String> canonicalPath(String requested) async {
+      final known = canonicalPathByRef[requested];
+      if (known != null) return known;
+      var found = requested;
+      if (await _storageService.resolve(root, requested) == null) {
+        for (final alternative in nativePathAlternatives(requested)) {
+          if (await _storageService.resolve(root, alternative) != null) {
+            found = alternative;
+            break;
+          }
+        }
+      }
+      canonicalPathByRef[requested] = found;
+      return found;
+    }
+
+    Future<String?> resolvePart(String requestedPath, List<String> ancestorPath) async {
+      final relativePath = await canonicalPath(requestedPath);
       if (ancestorPath.contains(relativePath)) {
         throw AssemblyGraphCycleException([...ancestorPath, relativePath]);
       }
@@ -196,6 +222,7 @@ class AssemblyGraphComposer {
         final resolvedId = await resolvePart(externalRef, nextAncestorPath);
         if (resolvedId != null) {
           occurrence['resolved_part_id'] = resolvedId;
+          occurrence['external_ref'] = await canonicalPath(externalRef);
         }
       }
 
