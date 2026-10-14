@@ -1,8 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
-
+import '../viewport3d/resizable_tool_panel.dart';
 import 'sketch_controller.dart';
 
 /// Offset's own picking-phase bar (on-device feedback: "the tick/FAB
@@ -25,48 +24,23 @@ class OffsetPickBar extends StatelessWidget {
       animation: controller,
       builder: (context, _) {
         final count = controller.selectionSet.length;
-        return SafeArea(
-          top: false,
-          child: Material(
-            elevation: 8,
-            color: Theme.of(context).colorScheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      count == 0
-                          ? 'Select line/curve/edge to offset'
-                          : count == 1
-                              ? '1 entity picked - tap the tick to continue'
-                              : '$count entities picked - tap the tick to continue',
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  if (count > 0)
-                    IconButton(
-                      onPressed: controller.finishOffsetChain,
-                      tooltip: 'Finish picking',
-                      icon: SvgPicture.asset(
-                        'assets/icons/actions/action_finish.svg',
-                        width: 26,
-                        height: 26,
-                        colorFilter: ColorFilter.mode(
-                          Theme.of(context).colorScheme.primary,
-                          BlendMode.srcIn,
-                        ),
-                      ),
-                    ),
-                  TextButton.icon(
-                    onPressed: controller.exitToSelectMode,
-                    icon: const Icon(Icons.close),
-                    label: const Text('Exit'),
-                  ),
-                ],
-              ),
-            ),
+        return ResizableToolPanel(
+          title: 'Offset Entities',
+          tooltip: count == 0
+              ? 'Select line/curve/edge to offset'
+              : count == 1
+                  ? '1 entity picked'
+                  : '$count entities picked',
+          defaultHeightFraction: 0.22,
+          minHeightFraction: 0.15,
+          maxHeightFraction: 0.6,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(onPressed: controller.exitToSelectMode, child: const Text('Exit')),
+              const SizedBox(width: 8),
+              FilledButton(onPressed: count > 0 ? controller.finishOffsetChain : null, child: const Text('Continue')),
+            ],
           ),
         );
       },
@@ -133,6 +107,10 @@ class _OffsetValueBarContentState extends State<_OffsetValueBarContent> {
   final TextEditingController _text = TextEditingController();
   final FocusNode _focusNode = FocusNode();
 
+  /// Flips the side the offset goes to: the typed distance is sent to the controller negated while this is set (a
+  /// typed minus sign still works too, and combines with it).
+  bool _reversed = false;
+
   @override
   void dispose() {
     _text.dispose();
@@ -140,8 +118,9 @@ class _OffsetValueBarContentState extends State<_OffsetValueBarContent> {
     super.dispose();
   }
 
-  void _onChanged(String value) {
-    widget.controller.updateOffsetPreviewDistance(double.tryParse(value));
+  void _pushDistance() {
+    final value = double.tryParse(_text.text);
+    widget.controller.updateOffsetPreviewDistance(value == null ? null : (_reversed ? -value : value));
   }
 
   void _confirm() {
@@ -166,43 +145,54 @@ class _OffsetValueBarContentState extends State<_OffsetValueBarContent> {
   @override
   Widget build(BuildContext context) {
     final canConfirm = double.tryParse(_text.text) != null && double.tryParse(_text.text) != 0;
-    return SafeArea(
-      top: false,
-      child: Material(
-        elevation: 8,
-        color: Theme.of(context).colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Row(
+    return ResizableToolPanel(
+      title: 'Offset Entities',
+      tooltip: widget.targetCount == 1 ? '1 entity picked' : '${widget.targetCount} entities picked',
+      defaultHeightFraction: 0.3,
+      minHeightFraction: 0.2,
+      maxHeightFraction: 0.6,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
             children: [
               Expanded(
-                child: Text(
-                  widget.targetCount == 1 ? '1 entity picked' : '${widget.targetCount} entities picked',
-                ),
-              ),
-              const SizedBox(width: 8),
-              SizedBox(
-                width: 110,
                 child: TextField(
                   controller: _text,
                   focusNode: _focusNode,
                   autofocus: true,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
                   decoration: const InputDecoration(isDense: true, hintText: 'Distance', suffixText: 'mm'),
-                  onChanged: (value) {
-                    _onChanged(value);
+                  onChanged: (_) {
+                    _pushDistance();
                     setState(() {});
                   },
                   onSubmitted: (_) => _confirm(),
                 ),
               ),
               const SizedBox(width: 8),
-              IconButton(onPressed: _cancel, icon: const Icon(Icons.close), tooltip: 'Cancel'),
+              IconButton(
+                onPressed: () {
+                  setState(() => _reversed = !_reversed);
+                  _pushDistance();
+                },
+                isSelected: _reversed,
+                tooltip: 'Reverse direction',
+                icon: const Icon(Icons.flip),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(onPressed: _cancel, child: const Text('Cancel')),
+              const SizedBox(width: 8),
               FilledButton(onPressed: canConfirm ? _confirm : null, child: const Text('Offset')),
             ],
           ),
-        ),
+        ],
       ),
     );
   }

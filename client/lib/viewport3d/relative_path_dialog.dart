@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../assembly/relative_path.dart';
+import '../storage/native_file_listing.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 
@@ -219,7 +220,7 @@ Future<String?> showOpenProjectPathPromptDialog(
   // in-place `sort()`).
   Future<List<String>?> loadFiles(ProjectRoot forRoot) async {
     try {
-      return List<String>.of(await storageService.listFiles(forRoot, extensionFilter: kNativeFileExtension))..sort();
+      return List<String>.of(await storageService.listNativeFiles(forRoot))..sort();
     } on StorageException {
       return null;
     }
@@ -289,7 +290,7 @@ Future<String?> showOpenProjectPathPromptDialog(
                 else if (items!.isEmpty)
                   const Padding(
                     padding: EdgeInsets.only(bottom: 8),
-                    child: Text('No .DIDSAprt files found in this folder.'),
+                    child: Text('No project files found in this folder.'),
                   )
                 else
                   ConstrainedBox(

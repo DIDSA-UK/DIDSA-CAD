@@ -71,6 +71,12 @@ class MatePanel extends StatelessWidget {
   final ValueChanged<bool> onFlippedChanged;
   final ValueChanged<bool> onAllowRotationChanged;
 
+  /// Minimal movement: move only the mated part when that is enough, and let connected parts follow only when it is
+  /// not (the app asks the backend for its `auto` movement mode). The checkbox is shown only when
+  /// [onMinimalMovementChanged] is given.
+  final bool minimalMovement;
+  final ValueChanged<bool>? onMinimalMovementChanged;
+
   final bool saving;
   final String? error;
 
@@ -89,6 +95,8 @@ class MatePanel extends StatelessWidget {
     required this.onValueChanged,
     required this.onFlippedChanged,
     required this.onAllowRotationChanged,
+    this.minimalMovement = false,
+    this.onMinimalMovementChanged,
     required this.saving,
     required this.error,
     required this.onConfirm,
@@ -147,6 +155,16 @@ class MatePanel extends StatelessWidget {
               onChanged: (checked) => onAllowRotationChanged(checked ?? true),
               title: const Text('Allow rotation'),
               subtitle: const Text('Free to spin about the shared axis', style: TextStyle(fontSize: 11)),
+              controlAffinity: ListTileControlAffinity.leading,
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+            ),
+          if (onMinimalMovementChanged != null)
+            CheckboxListTile(
+              value: minimalMovement,
+              onChanged: (checked) => onMinimalMovementChanged!(checked ?? false),
+              title: const Text('Minimal movement'),
+              subtitle: const Text("Moves only this part if it can; connected parts follow only if it can't", style: TextStyle(fontSize: 11)),
               controlAffinity: ListTileControlAffinity.leading,
               contentPadding: EdgeInsets.zero,
               dense: true,

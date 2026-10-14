@@ -5339,9 +5339,15 @@ class DocumentApiClient {
   /// ...}`) if the Mate(s) can't actually be satisfied - the Occurrence's
   /// own transform is left unchanged server-side in that case, never a
   /// garbage partial result.
-  Future<OccurrenceDto> solveForOccurrence(String partId, String occurrenceId) => _send(
+  ///
+  /// [movement] says how mated neighbours are treated: `'group'` (default) lets them follow as their mates allow,
+  /// `'minimal'` moves only [occurrenceId] (422 if that cannot satisfy its mates), `'auto'` tries `'minimal'` first and
+  /// falls back to `'group'`.
+  Future<OccurrenceDto> solveForOccurrence(String partId, String occurrenceId, {String movement = 'group'}) => _send(
         () => _httpClient.post(
-              _uri('/document/parts/$partId/occurrences/$occurrenceId/solve'),
+              _uri('/document/parts/$partId/occurrences/$occurrenceId/solve').replace(
+                queryParameters: movement == 'group' ? null : {'movement': movement},
+              ),
               headers: _headers,
             ),
         (body) => OccurrenceDto.fromJson(body as Map<String, dynamic>),
@@ -5364,10 +5370,13 @@ class DocumentApiClient {
     double? value,
     bool flipped = false,
     bool allowRotation = true,
+    String movement = 'group',
   }) =>
       _send(
         () => _httpClient.post(
-              _uri('/document/parts/$partId/occurrences/$occurrenceId/preview-mate-solve'),
+              _uri('/document/parts/$partId/occurrences/$occurrenceId/preview-mate-solve').replace(
+                queryParameters: movement == 'group' ? null : {'movement': movement},
+              ),
               headers: _headers,
               body: jsonEncode({
                 'type': type,

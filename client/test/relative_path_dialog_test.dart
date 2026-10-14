@@ -163,7 +163,7 @@ void main() {
       final storage = _FakeStorageService(files: const []);
       await openDialog(tester, storage);
 
-      expect(find.text('No .DIDSAprt files found in this folder.'), findsOneWidget);
+      expect(find.text('No project files found in this folder.'), findsOneWidget);
       expect(find.byType(ListView), findsNothing);
 
       await tester.enterText(find.byType(TextFormField), 'top');

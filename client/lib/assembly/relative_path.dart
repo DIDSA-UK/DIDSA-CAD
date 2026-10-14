@@ -43,6 +43,13 @@ String? validateProjectRelativePath(String raw) {
 /// never what's actually written to disk.
 const String kNativeFileExtension = '.DIDSAprt';
 
+/// True when [name] looks like a native project file: the current `.DIDSAprt`, or the legacy `.didsa` older saves (and
+/// DIDSA-VR's Save) wrote, case-insensitively, optionally with the ` (1)`/`_1` suffix a download or copy adds after
+/// the extension. Only [kNativeFileExtension] is ever *written* by the flat app; this is what *lists/opens* accept.
+bool isNativeProjectFileName(String name) => _nativeFileNamePattern.hasMatch(name.trim());
+
+final RegExp _nativeFileNamePattern = RegExp(r'\.(didsaprt|didsa)(_\d+| \(\d+\))?$', caseSensitive: false);
+
 /// Appends [kNativeFileExtension] to [raw] if it has no extension at all -
 /// lenient, not a hard requirement, matching `_openNativeFile`'s own
 /// `FileType.any` posture (an unusual extension is never rejected, only a

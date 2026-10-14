@@ -14,7 +14,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances
-from app.document.assembly_group import GroupSolveResult, solve_group
+from app.document.assembly_group import GroupSolveResult, solve_group, validate_mate_geometry
 from app.document.assembly_solver import _quaternion_from_axis_angle
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -3703,6 +3703,7 @@ def create_mate(part_id: str, payload: MateCreate) -> MateResponse:
         flipped=payload.flipped,
         allow_rotation=payload.allow_rotation,
     )
+    validate_mate_geometry(get_document(), part, mate)  # never store a mate no solve can use
     part.mates.append(mate)
     return _mate_response(mate)
 
@@ -4029,10 +4030,23 @@ def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
     return Response(status_code=204)
 
 
-def _mate_solve_did_not_converge(occurrence_id: str, result: GroupSolveResult) -> HTTPException:
+def _mate_solve_did_not_converge(
+    occurrence_id: str, result: GroupSolveResult, minimal_movement: bool = False
+) -> HTTPException:
+    message = (
+        "These mates can't be met by moving only this part - untick Minimal movement to let the parts it is mated to move too."
+        if minimal_movement
+        else "The mates on this part can't all be satisfied together."
+    )
     return HTTPException(
         status_code=422,
-        detail={"type": "mate_solve_did_not_converge", "occurrence_id": occurrence_id, "dof": result.dof},
+        detail={
+            "type": "mate_solve_did_not_converge",
+            "occurrence_id": occurrence_id,
+            "dof": result.dof,
+            "minimal_movement": minimal_movement,
+            "detail": message,
+        },
     )
 
 
@@ -4046,8 +4060,37 @@ def _commit_group(part: Part, result: GroupSolveResult) -> None:
         by_id[occurrence_id].transform = pose
 
 
+MovementMode = Literal["group", "minimal", "auto"]
+
+
+def _solve_with_movement(
+    document: Document,
+    part: Part,
+    occurrence_id: str,
+    movement: MovementMode,
+    extra_mates: tuple[Mate, ...] = (),
+) -> tuple[GroupSolveResult, Literal["group", "minimal"]]:
+    """Solve `occurrence_id`'s mates in the requested movement mode and report which solve produced the answer.
+
+    - `group` (the default, and what every client did before the modes existed): the whole mate-graph component is
+      solved, so mated neighbours may slide or turn as their own mates allow.
+    - `minimal`: every OTHER occurrence is frozen where it is, so only the driven one moves (the smallest move that
+      satisfies its mates). If that cannot work the result is unconverged - nothing else is moved to rescue it.
+    - `auto`: try `minimal` first; only when it cannot satisfy the mates fall back to `group`. A part that can simply
+      be moved into place never disturbs anything already placed, and a mate that genuinely needs several parts to
+      move still works."""
+    if movement != "group":
+        frozen = frozenset(o.id for o in part.occurrences if o.id != occurrence_id)
+        minimal = solve_group(document, part, occurrence_id, None, also_frozen=frozen, extra_mates=extra_mates, with_jump=False)
+        if minimal.converged or movement == "minimal":
+            return minimal, "minimal"
+    return solve_group(document, part, occurrence_id, None, extra_mates=extra_mates, with_jump=False), "group"
+
+
 @router.post("/parts/{part_id}/occurrences/{occurrence_id}/solve", response_model=OccurrenceResponse)
-def solve_for_occurrence(part_id: str, occurrence_id: str) -> OccurrenceResponse:
+def solve_for_occurrence(
+    part_id: str, occurrence_id: str, response: Response, movement: MovementMode = "group"
+) -> OccurrenceResponse:
     """Snaps `occurrence_id` (and, only as its mates require, the occurrences
     mated to it) onto the nearest mate-satisfying configuration
     (`assembly_group.solve_group`, the whole mate-graph component - no longer the
@@ -4058,15 +4101,22 @@ def solve_for_occurrence(part_id: str, occurrence_id: str) -> OccurrenceResponse
     Kept as the gizmo's post-drag / post-`create_mate` snap: the raw dragged pose
     is already stored on the occurrence, so the solve's wish is its stored pose.
     The response is the driven occurrence; followers that moved are visible on
-    the next fetch."""
+    the next fetch.
+
+    `movement` picks how neighbours are treated (`_solve_with_movement`'s own
+    docstring): `group` (default) lets mated neighbours follow, `minimal` moves
+    only this occurrence (422 if that cannot satisfy its mates), `auto` tries
+    `minimal` and falls back to `group`. The `X-Movement-Used` response header
+    says which solve produced the stored answer."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     if occurrence.fixed:
         raise _occurrence_is_fixed(occurrence_id)
-    result = solve_group(get_document(), part, occurrence_id, None, with_jump=False)
+    result, used = _solve_with_movement(get_document(), part, occurrence_id, movement)
     if not result.converged:
-        raise _mate_solve_did_not_converge(occurrence_id, result)
+        raise _mate_solve_did_not_converge(occurrence_id, result, minimal_movement=movement == "minimal")
     _commit_group(part, result)
+    response.headers["X-Movement-Used"] = used
     return _occurrence_response(occurrence)
 
 
@@ -4157,7 +4207,7 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
     response_model=MateSolvePreviewResponse,
 )
 def preview_mate_solve_endpoint(
-    part_id: str, occurrence_id: str, payload: MateCreate
+    part_id: str, occurrence_id: str, payload: MateCreate, movement: MovementMode = "group"
 ) -> MateSolvePreviewResponse:
     """Test report item 3 (New Mate ghost preview): a dry-run counterpart to
     `solve_for_occurrence` - solves `payload` (the same shape `POST
@@ -4195,12 +4245,14 @@ def preview_mate_solve_endpoint(
             flipped=payload.flipped,
             allow_rotation=payload.allow_rotation,
         )
-        result = solve_group(get_document(), part, occurrence_id, None, extra_mates=(extra_mate,), with_jump=False)
+        result, used = _solve_with_movement(get_document(), part, occurrence_id, movement, extra_mates=(extra_mate,))
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)
     if not result.converged:
         return MateSolvePreviewResponse(converged=False, transform=None)
-    return MateSolvePreviewResponse(converged=True, transform=_rigid_transform_response(result.poses[occurrence_id]))
+    return MateSolvePreviewResponse(
+        converged=True, transform=_rigid_transform_response(result.poses[occurrence_id]), movement_used=used
+    )
 
 
 @router.post(
