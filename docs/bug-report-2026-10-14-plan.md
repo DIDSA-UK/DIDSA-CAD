@@ -14,6 +14,22 @@ saved data. Items 9, 1 and 2 share the file-naming and save code, so land 9
 first: the new save flow in item 2 should write `.didsa` from day one. The
 rest are UI-only.
 
+## Progress
+
+The implementation session updates this table as each PR merges.
+
+| Item | Summary | Status | PR |
+|---|---|---|---|
+| 3 | Part/sketch id collision after Save As (assembly lengths) | Not started | |
+| 9 | `.didsa` extension migration (`.DIDSAprt`/`.didsacad` read-only) | Not started | |
+| 1 | Title from the file path after Open | Not started | |
+| 2 | Android Save overwrites through the project folder | Not started | |
+| 5 | Mate pick occlusion on component instances | Not started | |
+| 6 | Close buttons on the selection drawers | Not started | |
+| 8 | Clear selection in Add Mate | Not started | |
+| 4 | Multi-select action bar in the tree header | Not started | |
+| 7 | Fully-constrained status in the assembly tree | Not started | |
+
 ---
 
 ## 1. The title bar shows "Part 1" after Open instead of the file name
