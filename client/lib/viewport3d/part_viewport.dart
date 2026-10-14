@@ -5791,6 +5791,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// fix below), re-centers on it and auto-fits the far clip to
   /// `max(kDefaultFarClip, 4 * radius)`.
   void _doRecentre() {
+    // Never lower a far clip that is already in force (the View-menu override, or an earlier auto-fit): Reset view
+    // may only raise it when the framed geometry needs more.
+    final previousFarClip = widget.farClip ?? _camera.farClip;
     _camera.reset();
     // C3: "Reset view" moves the camera - resync the edge overlay's
     // towards-camera bias (see [_syncEdgesNode]) for the new position, and
@@ -5815,24 +5818,40 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // leaving [OrbitCamera.reset] to fall back on `_defaultTarget` (itself
     // set the same bodies-only way, by [_syncMeshNode], whenever any local
     // Body exists at all).
-    final bodyBounds = boundsOfBodies(widget.bodies);
-    final assemblyBounds = _assemblyInstanceBounds();
-    final bodyRadius = bodyBounds?.boundingSphereRadius ?? 0;
-    final assemblyRadius = assemblyBounds?.boundingSphereRadius ?? 0;
-    final radius = math.max(bodyRadius, assemblyRadius);
-    if (radius <= 0) return;
-    final center = assemblyRadius > bodyRadius ? assemblyBounds!.center : bodyBounds!.center;
+    final bounds = _enclosingBounds(boundsOfBodies(widget.bodies), _assemblyInstanceBounds());
+    if (bounds == null || bounds.boundingSphereRadius <= 0) return;
+    final radius = bounds.boundingSphereRadius;
+    final center = bounds.center;
     _camera.setTarget(center);
     _lastAutoFramedTarget = center;
-    final newFarClip = math.max(kDefaultFarClip, 4.0 * radius);
-    _camera.farClip = newFarClip;
     _camera.nearClip = kDefaultNearClip;
-    widget.onFarClipChanged?.call(newFarClip);
     // On-device feedback: "Reset view" alone left the camera at a fixed
     // distance tuned only for the reference planes' own size, too close to
     // show a body significantly larger than that - frame the real geometry
     // instead.
     _camera.frameRadius(radius, _viewportSize);
+    // Bug fix ("Reset view does not take occurrences into account - severe clipping; overriding far clip fixes it but
+    // Reset view puts it back"): the far plane was `max(kDefaultFarClip, 4 * radius)` whatever distance
+    // `frameRadius` had just chosen. In a portrait viewport the camera sits `1.2 * radius / (tan(22.5 deg) * aspect)`
+    // away - about 6x the radius on a phone - so with 4x the whole framed assembly landed BEYOND the far plane. The
+    // far plane must reach the far side of the framed sphere from where the camera actually is.
+    final neededFarClip = (_camera.distance + radius) * 1.25;
+    final newFarClip = math.max(math.max(kDefaultFarClip, previousFarClip), neededFarClip);
+    _camera.farClip = newFarClip;
+    widget.onFarClipChanged?.call(newFarClip);
+  }
+
+  /// The smallest sphere enclosing both bounds - [_doRecentre] used to take whichever of the body/assembly spheres
+  /// was bigger and ignore the other, so a root body and an offset assembly could not both end up in frame.
+  MeshBounds? _enclosingBounds(MeshBounds? a, MeshBounds? b) {
+    if (a == null || a.boundingSphereRadius <= 0) return b;
+    if (b == null || b.boundingSphereRadius <= 0) return a;
+    final offset = b.center - a.center;
+    final gap = offset.length;
+    if (gap + b.boundingSphereRadius <= a.boundingSphereRadius) return a;
+    if (gap + a.boundingSphereRadius <= b.boundingSphereRadius) return b;
+    final radius = (gap + a.boundingSphereRadius + b.boundingSphereRadius) / 2;
+    return MeshBounds(center: a.center + offset * ((radius - a.boundingSphereRadius) / gap), boundingSphereRadius: radius);
   }
 
   /// Bug fix (bug report: "when orbiting a part, it sometimes orbits about

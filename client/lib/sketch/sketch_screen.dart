@@ -1115,7 +1115,9 @@ class _SketchScreenState extends State<SketchScreen> {
                         // wants the full height, since it already aligns
                         // itself to the bottom internally.
                         final usesResizableToolPanel =
-                            mode == SketchMode.pattern && _controller.patternPreviewTargets != null;
+                            (mode == SketchMode.pattern && _controller.patternPreviewTargets != null) ||
+                                mode == SketchMode.offset ||
+                                mode == SketchMode.convert;
                         final bar = switch (mode) {
                           SketchMode.dimension => SketchDimensionBar(controller: _controller),
                           SketchMode.offset => _controller.offsetPreviewTargets != null

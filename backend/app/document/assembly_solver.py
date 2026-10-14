@@ -140,6 +140,7 @@ def _unsupported_mate_geometry(ref: MateEntityRef, needed: str) -> HTTPException
             "type": "unsupported_mate_geometry",
             "occurrence_id": ref.occurrence_id,
             "needed": needed,
+            "detail": f"This mate type can't use the selected geometry - it needs {needed}.",
         },
     )
 

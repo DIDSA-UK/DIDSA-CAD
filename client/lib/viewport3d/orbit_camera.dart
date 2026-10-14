@@ -193,6 +193,15 @@ class OrbitCamera {
     return math.max(math.min(nearClip, clipDistance / _nearFarRatio), _minAbsoluteNearClip);
   }
 
+  /// [farClip], widened - never narrowed - so the far plane always reaches the far side of the scene's bounding
+  /// sphere from the camera's CURRENT position. The stored [farClip] is a radius-derived constant (or the user's View
+  /// menu override); neither knows where the camera is, so a camera framed from further out than the constant assumed
+  /// (a portrait phone, a long part, an assembly) clipped geometry that was plainly in view.
+  double get effectiveFarClip {
+    if (sceneRadius <= 0) return farClip;
+    return math.max(farClip, ((position - sceneCenter).length + sceneRadius) * 1.1);
+  }
+
   /// The whole scene's own bounding-sphere center/radius, set by
   /// [setZoomBoundsForRadius] alongside [nearClip]/[farClip] - see
   /// [effectiveNearClip]'s own doc comment for why this is tracked
@@ -438,7 +447,7 @@ class OrbitCamera {
         up: _up,
         fovRadiansY: fovRadiansY,
         fovNear: effectiveNearClip,
-        fovFar: farClip,
+        fovFar: effectiveFarClip,
       );
     }
     return orthographicCameraFor(this, size);

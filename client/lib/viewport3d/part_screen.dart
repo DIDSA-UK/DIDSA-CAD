@@ -22014,7 +22014,7 @@ class _PartScreenState extends State<PartScreen> {
   String get _displayPartName {
     final savedName = _lastSavedFileName;
     if (savedName == null) return _part?.name ?? 'Part';
-    return savedName.replaceFirst(RegExp(r'\.DIDSAprt$', caseSensitive: false), '');
+    return savedName.replaceFirst(RegExp(r'\.(didsaprt|didsa)$', caseSensitive: false), '');
   }
 
   Widget _buildScaffold(BuildContext context) {

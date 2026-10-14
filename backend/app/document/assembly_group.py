@@ -281,6 +281,23 @@ def build_group_model(
     return model
 
 
+def validate_mate_geometry(document: Document, part: Part, mate: Mate) -> None:
+    """Raises the structured 422 (`unsupported_mate_geometry`, or whatever the resolver raises for a dangling
+    reference) when `mate`'s two references cannot form its constraint. `POST /mates` calls this BEFORE storing, so an
+    unsolvable mate is never left in the document - once stored, `build_group_model` raises the same error for every
+    solve of any group containing it, blocking all of that group's occurrences until the mate is deleted."""
+    cache: dict[str, dict] = {}
+    worlds = []
+    for ref in mate.references:
+        target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
+        if target.id not in cache:
+            cache[target.id] = compute_part_bodies(target)
+        geometry = _resolve_local_geometry(target, cache[target.id], ref)
+        worlds.append(geometry if transform is None else _place_in_world(geometry, transform))
+    if not _mate_residual_vector(mate, worlds[0], worlds[1]):
+        raise _unsupported_mate_geometry(mate.references[0], "a compatible point, plane or axis on each side")
+
+
 # ---- lever arm ---------------------------------------------------------------
 
 

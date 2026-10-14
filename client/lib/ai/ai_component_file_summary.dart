@@ -1,5 +1,6 @@
 import '../assembly/relative_path.dart';
 import '../storage/project_root.dart';
+import '../storage/native_file_listing.dart';
 import '../storage/storage_service.dart';
 
 /// Assembly support Phase 18 (`docs/assembly-scope.md` §6 `[2]`): the
@@ -31,7 +32,7 @@ Future<String> summarizeAvailableComponentFilesForPrompt(
 }) async {
   List<String> paths;
   try {
-    paths = await storageService.listFiles(projectRoot, extensionFilter: kNativeFileExtension);
+    paths = await storageService.listNativeFiles(projectRoot);
   } on StorageException {
     return '';
   }

@@ -14,7 +14,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances
-from app.document.assembly_group import GroupSolveResult, solve_group
+from app.document.assembly_group import GroupSolveResult, solve_group, validate_mate_geometry
 from app.document.assembly_solver import _quaternion_from_axis_angle
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -3703,6 +3703,7 @@ def create_mate(part_id: str, payload: MateCreate) -> MateResponse:
         flipped=payload.flipped,
         allow_rotation=payload.allow_rotation,
     )
+    validate_mate_geometry(get_document(), part, mate)  # never store a mate no solve can use
     part.mates.append(mate)
     return _mate_response(mate)
 
@@ -4029,10 +4030,23 @@ def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
     return Response(status_code=204)
 
 
-def _mate_solve_did_not_converge(occurrence_id: str, result: GroupSolveResult) -> HTTPException:
+def _mate_solve_did_not_converge(
+    occurrence_id: str, result: GroupSolveResult, minimal_movement: bool = False
+) -> HTTPException:
+    message = (
+        "These mates can't be met by moving only this part - untick Minimal movement to let the parts it is mated to move too."
+        if minimal_movement
+        else "The mates on this part can't all be satisfied together."
+    )
     return HTTPException(
         status_code=422,
-        detail={"type": "mate_solve_did_not_converge", "occurrence_id": occurrence_id, "dof": result.dof},
+        detail={
+            "type": "mate_solve_did_not_converge",
+            "occurrence_id": occurrence_id,
+            "dof": result.dof,
+            "minimal_movement": minimal_movement,
+            "detail": message,
+        },
     )
 
 
@@ -4082,7 +4096,7 @@ def solve_for_occurrence(part_id: str, occurrence_id: str, minimal_movement: boo
         also_frozen=_minimal_movement_frozen(part, occurrence_id, minimal_movement), with_jump=False,
     )
     if not result.converged:
-        raise _mate_solve_did_not_converge(occurrence_id, result)
+        raise _mate_solve_did_not_converge(occurrence_id, result, minimal_movement)
     _commit_group(part, result)
     return _occurrence_response(occurrence)
 

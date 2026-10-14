@@ -211,6 +211,6 @@ OrthographicCamera orthographicCameraFor(OrbitCamera orbit, Size size) {
     // Bug fix (on-device feedback: geometry clipped when zoomed in close) -
     // see OrbitCamera.effectiveNearClip's own doc comment.
     near: orbit.effectiveNearClip,
-    far: orbit.farClip,
+    far: orbit.effectiveFarClip,
   );
 }

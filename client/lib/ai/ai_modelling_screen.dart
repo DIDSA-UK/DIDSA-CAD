@@ -18,6 +18,7 @@ import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleExcepti
 import '../assembly/assembly_lens.dart';
 import '../assembly/relative_path.dart';
 import '../gear/gear_preset_store.dart';
+import '../storage/native_file_listing.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import '../viewport3d/part_screen.dart';
@@ -409,7 +410,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final root = widget.projectRoot;
     if (storage == null || root == null) return;
     try {
-      final files = await storage.listFiles(root, extensionFilter: kNativeFileExtension);
+      final files = await storage.listNativeFiles(root);
       if (!mounted) return;
       setState(() => _existingAssemblyFileOptions = files..sort());
     } catch (_) {
@@ -1209,7 +1210,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     required StorageService storage,
   }) async {
     if (!mounted) return;
-    final existingFiles = await storage.listFiles(root, extensionFilter: kNativeFileExtension);
+    final existingFiles = await storage.listNativeFiles(root);
     final proposedName = nextAvailablePartName(existingFiles, typePrefix: entry.typePrefix);
     setState(() => _orchestrationStatus = null);
     if (!mounted) return;
@@ -1447,7 +1448,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   }) async {
     if (!mounted) return;
     final proposedName = fixedRelativePath ??
-        nextAvailablePartName(await storage.listFiles(root, extensionFilter: kNativeFileExtension), typePrefix: 'ASSEMBLY');
+        nextAvailablePartName(await storage.listNativeFiles(root), typePrefix: 'ASSEMBLY');
     setState(() => _orchestrationStatus = null);
     if (!mounted) return;
     final confirmedPath = await showRelativePathPromptDialog(

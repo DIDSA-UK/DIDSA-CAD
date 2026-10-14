@@ -85,3 +85,35 @@ def test_coincident_on_two_edges_is_the_axis_lock_concentric_gives():
         results[mtype] = r.json()["transform"]
     assert np.allclose(results["coincident"]["translation"], results["concentric"]["translation"], atol=1e-6)
     assert np.isclose(results["coincident"]["rotation_angle_degrees"], results["concentric"]["rotation_angle_degrees"], atol=1e-6)
+
+
+def test_mate_with_unsolvable_geometry_is_rejected_and_not_stored():
+    root = _scene()
+    ref = lambda oid, i: {"occurrence_id": oid, "subshape_ref": {"body_id": _BODY, "shape_type": "face", "index": i}}
+    # CONCENTRIC needs an axis on each side; a planar mitre face has none.
+    r = client.post(
+        f"/document/parts/{root}/mates",
+        json={"type": "concentric", "references": [ref("bar1", _MITRE_END), ref("bar2", _MITRE_START)], "flipped": False},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["type"] == "unsupported_mate_geometry"
+    assert client.get(f"/document/parts/{root}/mates").json() == []
+    # ...so the occurrences are still free to be mated and solved afterwards.
+    _mate(root, "bar1", "bar2")
+    assert client.post(f"/document/parts/{root}/occurrences/bar2/solve").status_code == 200
+
+
+def test_minimal_movement_failure_says_how_to_fix_it():
+    """Closing the loop (bar4 mitred to bar3 AND to the grounded bar1) while bar3 is only mitre-mated: bar4 alone
+    cannot satisfy both frozen neighbours, but letting bar3 follow can - so minimal movement must refuse, say why,
+    and the default group solve must still succeed (it is a mode, not a regression)."""
+    root = _scene()
+    _build_to_bar3(root, minimal=False)
+    _mate(root, "bar3", "bar4")
+    _mate(root, "bar4", "bar1", ia=_MITRE_END, ib=_MITRE_START)
+    minimal = client.post(f"/document/parts/{root}/occurrences/bar4/solve", params={"minimal_movement": True})
+    assert minimal.status_code == 422, minimal.text
+    detail = minimal.json()["detail"]
+    assert detail["type"] == "mate_solve_did_not_converge" and detail["minimal_movement"] is True
+    assert "Minimal movement" in detail["detail"]
+    assert client.post(f"/document/parts/{root}/occurrences/bar4/solve").status_code == 200
