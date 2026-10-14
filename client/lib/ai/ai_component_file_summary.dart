@@ -1,4 +1,3 @@
-import '../assembly/relative_path.dart';
 import '../storage/project_root.dart';
 import '../storage/native_file_listing.dart';
 import '../storage/storage_service.dart';

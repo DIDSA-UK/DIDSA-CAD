@@ -16,7 +16,6 @@ import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../assembly/assembly_document_client.dart';
 import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException;
 import '../assembly/assembly_lens.dart';
-import '../assembly/relative_path.dart';
 import '../gear/gear_preset_store.dart';
 import '../storage/native_file_listing.dart';
 import '../storage/project_root.dart';
