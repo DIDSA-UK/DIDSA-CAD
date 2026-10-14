@@ -73,42 +73,123 @@ Project-mode Save As (`_saveFocusedPartAs`) also never updates the title.
   file: the title, the path used by later Saves, and its identity (see item 3)
   all switch to it.
 
+**Decision (tester, 2026-10-14): Option A, a project folder.** Every
+native Save on Android goes through a persisted SAF folder grant
+(`StorageService`/`SafStorageService`, which already exists and already
+overwrites in place through `writeFileUriBytes`). The rejected options were:
+- B: a persisted single-file URI. It can't serve assemblies, which need
+  sibling files, and it needs native `ACTION_CREATE_DOCUMENT` code.
+- C: app-private storage. Files are hidden from other apps and lost on
+  uninstall.
+- D: `MANAGE_EXTERNAL_STORAGE`. Play Store policy and user trust.
+
+B may be added later as a convenience for loose single files, but it is out of
+scope here.
+
+**Behaviour after the fix (Android):**
+
+| Situation | Save | Save As |
+|---|---|---|
+| New Part, no folder ever granted | The SAF folder picker opens once, then the name prompt, then the file is written. | The same as Save. |
+| New Part, a folder granted earlier (`lastUsedProjectRoot` still valid) | Name prompt only (it shows the folder and has Change Folder), then the file is written. | The same as Save. |
+| Part already has a file (opened, or saved once) | **Silent overwrite**, no dialog, "Saved" snackbar. | Name prompt, then a new file with fresh ids (item 3). The session switches to the new file. |
+| The grant was revoked, or the file was deleted or moved since | The write fails, so show an error and fall back to the Save As flow, which re-prompts for the folder if needed. Never fail silently. | The same as Save. |
+
 **Fix.**
-1. On mobile (`!_canPersistFilePathForReuse`), stop using
-   `FilePicker.saveFile` for native saves. Route the project-less Save/Save As
-   through the project path instead:
-   - Call `_ensureProjectRoot()`, which gets a SAF tree grant and remembers it
-     as last-used.
-   - Call `showRelativePathPromptDialog(...)`, with the Part name suggested.
-   - Call `_assemblyDocumentClient.savePart(root, partId, path)`.
-   - Set `_projectRoot` and `_relativePathByPartId[partId] = path`.
+1. **Stop using `FilePicker.platform.saveFile` for native saves on mobile**
+   (`!_canPersistFilePathForReuse`). In `_saveNativeFile` and
+   `_saveAsNativeFile`, replace the project-less mobile branch with a new
+   `_firstSaveIntoProject({required bool isSaveAs})`:
+   - `final root = await _ensureProjectRoot()`. This reuses the last
+     remembered folder if its grant is still held, and otherwise shows the
+     SAF folder picker. If the user cancels, abort with no state change and
+     leave `_isDirty` as it was.
+   - `final path = await showRelativePathPromptDialog(context, title:
+     'Save "<name>" as…', initialValue: <part name>, root: root,
+     onRootChanged: …)`. Wiring `onRootChanged` makes Change Folder available
+     on first save. Cancel aborts.
+   - `await _assemblyDocumentClient.savePart(root, _part!.id, path, extras:
+     <root extras, see 3>)`.
+   - `setState(() { _projectRoot = root; _relativePathByPartId = {...,
+     _part!.id: path}; _isDirty = false; })`, then show a "Saved to <path>"
+     snackbar.
 
-   Every later Save then goes through `_saveFocusedPart`, a silent overwrite.
-2. Desktop already overwrites silently after the first save. For one mental
-   model, after a desktop dialog save also set
-   `_projectRoot = DesktopProjectRoot(p.dirname(savedPath))` and the relative
-   path, so both platforms converge on the project path. Keep the old
-   whole-session bundle dump only for sessions opened from a legacy
-   bundle-shaped file.
-3. Regression guard: `savePart` writes `exportNative(partId:)`, which leaves
-   out the client-only `hidden_feature_ids`/`section_planes` extras that
-   `_buildNativeExportBytes` writes. When the Part being saved is the root
-   Part, merge those two keys into the payload before writing
-   (`AssemblyDocumentClient.savePart` gains an optional `extras` map).
-   Otherwise, moving mobile users onto this path silently drops hidden
-   features and section planes.
-4. In Save As, if the chosen path equals the current path, treat it as a
-   plain Save (no identity re-mint, see item 3).
+   From then on `_projectRoot != null`, so plain Save takes the existing
+   `_saveFocusedPart` route, a silent overwrite, and Save As takes
+   `_saveFocusedPartAs`. Item 1's title change makes the title read the new
+   file name straight away.
+2. **Write failure falls back to Save As.** In `_saveFocusedPart`, a
+   `StorageException` from `savePart` currently only sets `_errorMessage`.
+   Keep the message ("Couldn't write <path>: <reason>"), then offer the
+   Save As flow. If the failure looks like a lost grant, re-validate with
+   `_storageService.lastUsedProjectRoot()` (it re-checks with `stat`), and if
+   that is null, clear `_projectRoot` so `_ensureProjectRoot` re-prompts for
+   the folder. `_isDirty` stays true until a write really succeeds.
+3. **Avoid losing the client-only extras.** `savePart` writes
+   `exportNative(partId:)`, which leaves out the `hidden_feature_ids`/
+   `section_planes` keys that the old `_buildNativeExportBytes` added. Give
+   `AssemblyDocumentClient.savePart` an optional
+   `Map<String, dynamic>? extras`, merged into the top-level payload before
+   encoding, and pass the root Part's two keys whenever the Part being saved
+   is `_part!.id`. This applies to every save that goes through `savePart`:
+   `_saveFocusedPart`, `_saveFocusedPartAs`, the new first save, and
+   `saveAll`'s root entry. Desktop's project-mode saves also stop losing
+   them as a side effect. `_openComposedProject` must read these keys back
+   for the root file, as `_openBundlePayload` already does, so they
+   round-trip. Pass them through `initialHiddenFeatureIds`/
+   `initialSectionPlanes`.
+4. **Changes to the name prompt** (`relative_path_dialog.dart`
+   `showRelativePathPromptDialog`):
+   - Show the current folder ("Folder: <root.displayName>"), so a silently
+     reused folder is visible and Change Folder makes sense.
+   - Reword the collision warning from "Save All will overwrite it" to "A
+     file with this name already exists and will be replaced."
+   - Add a `confirmText` parameter (default "Save") so the button matches
+     the action.
+5. **Save As to the same path** as the current one is a plain Save: no
+   identity re-mint (item 3) and no reopen.
+6. **Desktop stays as it is** for silent overwrite (it already works). For
+   one mental model on both platforms, after a desktop dialog save also set
+   `_projectRoot = DesktopProjectRoot(p.dirname(savedPath))` and
+   `_relativePathByPartId[_part!.id] = p.basename(savedPath)`. Plain Save
+   then takes the same `_saveFocusedPart` route there too. Keep the
+   whole-session bundle dump (`_buildNativeExportBytes` and the dialog)
+   only for sessions opened from a legacy bundle-shaped file.
+7. **Clean-up.** `_lastSavedFilePath` and `_saveNativeFileViaDialog` become
+   desktop-only, or dead code once 6 lands. Remove whatever has no caller
+   left, and update the long doc comments on `_saveNativeFile`/
+   `_saveAsNativeFile` that describe the old mobile dialog fallback.
 
-**Tests.** With a fake `StorageService` (the existing test seams
-`storageService`/`canPersistFilePathForReuse: false`):
-- The first Save on a fresh Part prompts once and writes once.
-- A second Save writes to the same relative path with no prompt.
-- Save As prompts and rebinds the path.
-- The root Part's `hidden_feature_ids` survive in the written bytes.
+**Tests.** Use a fake `StorageService`, through the existing seams
+`storageService` and `canPersistFilePathForReuse: false`, plus a fake
+`AssemblyDocumentClient`:
+- A fresh Part with no remembered folder: Save picks the folder once,
+  prompts for the name once, and writes once. A second Save writes to the
+  same relative path with no picker and no prompt.
+- A fresh Part with a remembered folder: Save prompts for the name only.
+- Cancelling the folder picker or the name prompt writes nothing and leaves
+  `_isDirty` true.
+- Save As prompts and rebinds `_relativePathByPartId`, and the title
+  follows. Save As to the same path does no re-mint.
+- `savePart` throwing `StorageException` shows an error, keeps `_isDirty`,
+  and the Save As flow is offered.
+- The root Part's `hidden_feature_ids`/`section_planes` are in the written
+  bytes and restored after `_openComposedProject`.
+- `AssemblyDocumentClient.savePart` with `extras` merges the keys at the top
+  level. This is a plain unit test.
 
 Respect `docs/flutter-widget-test-lessons.md` (real async I/O chains don't
 settle inside `testWidgets`; keep the I/O behind fakes).
+
+**Manual check (Android device).**
+1. New part, then Save: folder picker (first time only), then name, then
+   the file appears in the chosen folder.
+2. Edit, then Save: no dialog, and the same single file is updated. Check
+   its modified time in a file manager, and that there is no `(1)` copy.
+3. Kill the app and relaunch, then Open the file, edit it and Save: a silent
+   overwrite.
+4. Revoke the folder permission in Android settings, then Save: an error,
+   then the folder is re-prompted.
 
 ---
 
@@ -252,6 +333,31 @@ shows with its checkmarks.
 | D | **Collapse the sheet to the action bar only** (no item list), with `maxChildSize` equal to the bar's height. | Trivial. | Reduces the overlap (about 56 px) but doesn't remove it. The last row or two still needs a scroll that isn't padded. |
 
 **Decision (tester, 2026-10-14): Option A.** Implement A; B is not needed.
+
+**Fix (option A).**
+- Give `FeatureTreePanel` and `AssemblyTreePanel` an optional
+  `Widget? multiSelectHeader`. While it is non-null, it replaces the panel's
+  normal title row (the title and the Close button) at the top of the panel,
+  in the panel's own `Material`, and the row list keeps the rest of the
+  height.
+- In `PartScreen`, pass `MultiSelectActionBar(...)` (unchanged widget: count,
+  Hide/Show, Delete, More with exactly 1 selected, Cancel) as
+  `multiSelectHeader` to whichever tree panel is built while
+  `_activeMultiSelect != null`.
+- Delete the `if (_activeMultiSelect != null) Positioned.fill(child:
+  SelectionListDrawer(items: _multiSelectDrawerItems(), …))` block (around
+  line 22813). Remove `_multiSelectDrawerItems()` and
+  `SelectionListDrawer.items`/`SelectionListDrawerItem` if nothing else uses
+  them.
+- Rows deselect by tapping the row again (`onMultiSelectToggle`, which
+  already exists). Make sure the selected-row highlight and checkbox are
+  clearly visible, since the separate list is gone.
+- Narrow panels: `MultiSelectActionBar` already scales its button cluster
+  down. Check it at the 66 %-of-portrait default width and at the minimum
+  drag width, and switch to icon-only buttons with tooltips if it gets
+  cramped.
+- If the tree panel is closed while multi-select is active, its existing
+  `onClose` already calls `_exitMultiSelect()`. Keep that.
 
 **Tests.** A widget test with a tree long enough to reach the bottom of the
 screen: in multi-select mode, tapping the last visible row toggles its
@@ -398,7 +504,8 @@ list and the Confirm button disables.
 - Client: `flutter analyze` and `flutter test`, at least the touched suites
   plus the new ones.
 - Manual (Android, the tester's platform for items 2–3):
-  - New part, then Save twice: one file, no second dialog.
+  - The item 2 manual check above (first save, silent re-save, relaunch,
+    revoked grant).
   - Open `Frame_A`: the title reads "Frame_A".
   - New assembly, then add `Frame_A` and `Frame_B`: two different lengths.
   - Save As a part, then add both copies to an assembly: two distinct parts.
