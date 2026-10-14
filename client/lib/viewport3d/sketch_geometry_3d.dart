@@ -1338,11 +1338,28 @@ const double _sketchPlaneSurfaceHalfSize = sketchPlaneSurfaceSize / 2;
 /// callers) - the depth-sort key now genuinely reflects each Node's real
 /// position, camera-side-independent (a true "back to front from the
 /// camera" distance, not a fixed-axis offset).
+///
+/// Bug fix ("drawing on a face: can't see the grid or the origin pickup, and sketch lines and the shaded fill pop in and
+/// out - the body looked like it was obscuring"; orthographic, on a long part's end face): these used to push BACK along
+/// `-basis.normal`, with the Sketch's own lines/points/fill at zero offset. Sketching on a Body's face puts the plane
+/// exactly ON that face, so the grid and fill ended up a hair INSIDE the body, hidden behind its opaque face, and the
+/// lines/origin marker were coplanar with it - which z-fights, differently at every zoom/pan. Everything now sits in
+/// FRONT of the plane, on whichever side the camera is (`cameraSide`, +1 when the camera is on the `+normal` side), in
+/// the order lines (nearest the camera), then grid, then surface fill, then the body face itself. The step between
+/// layers is far above one depth-buffer step for an orthographic camera (`far / 2^24`, well under 0.001 mm even for a
+/// 1 m part), which the old 0.015 mm gaps were not guaranteed to be.
 const double _sketchPlaneSurfaceRenderEpsilon = 0.03;
-const double _sketchPlaneGridRenderEpsilon = 0.015;
+const double _sketchPlaneGridRenderEpsilon = 0.06;
 
-vm.Matrix4 _sketchPlaneNodeTransform(SketchPlaneBasis basis, double epsilon) =>
-    vm.Matrix4.translation(basis.origin - basis.normal * epsilon);
+/// How far the Sketch's own lines/points/fill are lifted toward the camera - see [_sketchPlaneSurfaceRenderEpsilon].
+const double kSketchGeometryLift = 0.09;
+
+/// `+1` when [cameraPosition] is on the `+normal` side of [basis]'s plane, else `-1`.
+double sketchPlaneCameraSide(SketchPlaneBasis basis, vm.Vector3 cameraPosition) =>
+    (cameraPosition - basis.origin).dot(basis.normal) >= 0 ? 1.0 : -1.0;
+
+vm.Matrix4 _sketchPlaneNodeTransform(SketchPlaneBasis basis, double epsilon, double cameraSide) =>
+    vm.Matrix4.translation(basis.origin + basis.normal * (epsilon * cameraSide));
 
 /// The four corners of a [halfSize]-radius square in [basis]'s own plane,
 /// *relative to* [basis]'s own origin (no `+basis.origin` term) - the
@@ -1423,6 +1440,7 @@ Node buildSketchPlaneSurfaceNode(
   SketchPlaneBasis basis, {
   required vm.Vector4 color,
   double halfExtent = _sketchPlaneSurfaceHalfSize,
+  double cameraSide = 1.0,
 }) {
   final layerAlpha = color.w / _sketchPlaneSurfaceFadeSteps;
   final primitives = <MeshPrimitive>[
@@ -1445,7 +1463,7 @@ Node buildSketchPlaneSurfaceNode(
 
   return Node(
     name: 'sketch-plane-surface',
-    localTransform: _sketchPlaneNodeTransform(basis, _sketchPlaneSurfaceRenderEpsilon),
+    localTransform: _sketchPlaneNodeTransform(basis, _sketchPlaneSurfaceRenderEpsilon, cameraSide),
     mesh: Mesh.primitives(primitives: primitives),
   );
 }
@@ -1535,6 +1553,7 @@ Node buildSketchGridNode(
   SketchPlaneBasis basis, {
   double spacing = 2.5,
   double extent = _sketchPlaneSurfaceHalfSize,
+  double cameraSide = 1.0,
 }) {
   final localBasis = SketchPlaneBasis(
     origin: vm.Vector3.zero(),
@@ -1572,7 +1591,7 @@ Node buildSketchGridNode(
   }
   return Node(
     name: 'sketch-plane-grid',
-    localTransform: _sketchPlaneNodeTransform(basis, _sketchPlaneGridRenderEpsilon),
+    localTransform: _sketchPlaneNodeTransform(basis, _sketchPlaneGridRenderEpsilon, cameraSide),
     mesh: Mesh.primitives(primitives: primitives),
   );
 }

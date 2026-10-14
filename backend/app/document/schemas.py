@@ -3513,6 +3513,9 @@ class MateSolvePreviewResponse(BaseModel):
 
     converged: bool
     transform: RigidTransformResponse | None = None
+    # Which solve produced `transform`: "minimal" (only the driven occurrence moves) or "group" (neighbours follow too).
+    # Null when not converged.
+    movement_used: Literal["group", "minimal"] | None = None
 
 
 class ComponentPatternAxisSchema(BaseModel):

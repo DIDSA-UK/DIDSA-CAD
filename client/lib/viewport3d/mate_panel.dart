@@ -71,8 +71,9 @@ class MatePanel extends StatelessWidget {
   final ValueChanged<bool> onFlippedChanged;
   final ValueChanged<bool> onAllowRotationChanged;
 
-  /// Minimal movement mode: only the mated part moves, every other part stays exactly where it is. The checkbox is
-  /// shown only when [onMinimalMovementChanged] is given.
+  /// Minimal movement: move only the mated part when that is enough, and let connected parts follow only when it is
+  /// not (the app asks the backend for its `auto` movement mode). The checkbox is shown only when
+  /// [onMinimalMovementChanged] is given.
   final bool minimalMovement;
   final ValueChanged<bool>? onMinimalMovementChanged;
 
@@ -163,7 +164,7 @@ class MatePanel extends StatelessWidget {
               value: minimalMovement,
               onChanged: (checked) => onMinimalMovementChanged!(checked ?? false),
               title: const Text('Minimal movement'),
-              subtitle: const Text('Only this part moves; others stay put', style: TextStyle(fontSize: 11)),
+              subtitle: const Text("Moves only this part if it can; connected parts follow only if it can't", style: TextStyle(fontSize: 11)),
               controlAffinity: ListTileControlAffinity.leading,
               contentPadding: EdgeInsets.zero,
               dense: true,

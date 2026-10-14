@@ -3604,9 +3604,13 @@ class _PartScreenState extends State<PartScreen> {
   /// [mateTypeHasAllowRotation]'s own docstring), meaningless otherwise.
   bool _mateAllowRotation = true;
 
-  /// Minimal movement mode for the Mate being authored: solve with every other occurrence frozen so only the mated
-  /// one moves. A preference - kept between mates, not reset when the panel reopens.
-  bool _mateMinimalMovement = false;
+  /// Minimal movement for the Mate being authored. On (the default) the solve is `'auto'`: only the mated part moves if
+  /// that is enough, and connected parts follow only when it is not. Off is the plain group solve. A preference - kept
+  /// between mates, not reset when the panel reopens.
+  bool _mateMinimalMovement = true;
+
+  /// The `movement` argument the mate solve/preview endpoints take for [_mateMinimalMovement].
+  String get _mateMovement => _mateMinimalMovement ? 'auto' : 'group';
   bool _mateSaving = false;
 
   /// Test report item 3 (New Mate ghost preview): [_scheduleMatePreview]'s
@@ -3759,7 +3763,7 @@ class _PartScreenState extends State<PartScreen> {
         value: _mateValue,
         flipped: _mateFlipped,
         allowRotation: _mateAllowRotation,
-        minimalMovement: _mateMinimalMovement,
+        movement: _mateMovement,
       );
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
@@ -3813,7 +3817,7 @@ class _PartScreenState extends State<PartScreen> {
       // could legally move, so none is attempted.
       final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
       if (drivenOccurrenceId != null) {
-        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId, minimalMovement: _mateMinimalMovement);
+        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId, movement: _mateMovement);
       }
       if (!mounted) return;
       setState(() {
@@ -21462,7 +21466,7 @@ class _PartScreenState extends State<PartScreen> {
       // authored one can.
       final drivenOccurrenceId = _drivableOccurrenceId(mate.references.map((r) => r.occurrenceId));
       if (drivenOccurrenceId != null) {
-        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId);
+        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId, movement: _mateMovement);
       }
       if (!mounted) return;
       await _refreshAssemblyTree();

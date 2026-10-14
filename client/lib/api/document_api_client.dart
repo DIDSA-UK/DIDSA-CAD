@@ -5340,12 +5340,13 @@ class DocumentApiClient {
   /// own transform is left unchanged server-side in that case, never a
   /// garbage partial result.
   ///
-  /// [minimalMovement] `true` freezes every OTHER occurrence so only [occurrenceId] moves (the smallest move that
-  /// satisfies its mates); the default `false` lets mated neighbours follow as their mates allow.
-  Future<OccurrenceDto> solveForOccurrence(String partId, String occurrenceId, {bool minimalMovement = false}) => _send(
+  /// [movement] says how mated neighbours are treated: `'group'` (default) lets them follow as their mates allow,
+  /// `'minimal'` moves only [occurrenceId] (422 if that cannot satisfy its mates), `'auto'` tries `'minimal'` first and
+  /// falls back to `'group'`.
+  Future<OccurrenceDto> solveForOccurrence(String partId, String occurrenceId, {String movement = 'group'}) => _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/occurrences/$occurrenceId/solve').replace(
-                queryParameters: minimalMovement ? {'minimal_movement': 'true'} : null,
+                queryParameters: movement == 'group' ? null : {'movement': movement},
               ),
               headers: _headers,
             ),
@@ -5369,12 +5370,12 @@ class DocumentApiClient {
     double? value,
     bool flipped = false,
     bool allowRotation = true,
-    bool minimalMovement = false,
+    String movement = 'group',
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/occurrences/$occurrenceId/preview-mate-solve').replace(
-                queryParameters: minimalMovement ? {'minimal_movement': 'true'} : null,
+                queryParameters: movement == 'group' ? null : {'movement': movement},
               ),
               headers: _headers,
               body: jsonEncode({

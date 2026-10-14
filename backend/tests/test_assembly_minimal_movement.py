@@ -1,4 +1,4 @@
-"""Minimal movement mode (`minimal_movement=true` on `/solve` and `/preview-mate-solve`) and edge-to-edge COINCIDENT.
+"""Movement modes (`movement=group|minimal|auto` on `/solve` and `/preview-mate-solve`) and edge-to-edge COINCIDENT.
 
 Uses the mitred frame member (`data/mitred_frame_member.didsa.json`): `bar1` grounded, three bars rough-placed by
 swipe-sized errors. With only mitre-face mates the earlier bars keep free motion, so the default group solve slides
@@ -39,7 +39,7 @@ def _build_to_bar3(root, minimal):
     assert client.post(f"/document/parts/{root}/occurrences/bar2/solve").status_code == 200
     _mate(root, "bar2", "bar3")
     before = _poses(root)
-    r = client.post(f"/document/parts/{root}/occurrences/bar3/solve", params={"minimal_movement": minimal})
+    r = client.post(f"/document/parts/{root}/occurrences/bar3/solve", params={"movement": "minimal" if minimal else "group"})
     assert r.status_code == 200, r.text
     return before, _poses(root)
 
@@ -68,10 +68,10 @@ def test_minimal_movement_preview_matches_its_solve():
     _mate(root, "bar1", "bar2")
     assert client.post(f"/document/parts/{root}/occurrences/bar2/solve").status_code == 200
     payload = {"type": "coincident", "references": [_face("bar2", _MITRE_END), _face("bar3", _MITRE_START)], "flipped": False}
-    ghost = client.post(f"/document/parts/{root}/occurrences/bar3/preview-mate-solve", params={"minimal_movement": True}, json=payload).json()
+    ghost = client.post(f"/document/parts/{root}/occurrences/bar3/preview-mate-solve", params={"movement": "minimal"}, json=payload).json()
     assert ghost["converged"]
     client.post(f"/document/parts/{root}/mates", json=payload)
-    solved = client.post(f"/document/parts/{root}/occurrences/bar3/solve", params={"minimal_movement": True}).json()
+    solved = client.post(f"/document/parts/{root}/occurrences/bar3/solve", params={"movement": "minimal"}).json()
     assert np.allclose(ghost["transform"]["translation"], solved["transform"]["translation"], atol=1e-6)
 
 
@@ -111,9 +111,48 @@ def test_minimal_movement_failure_says_how_to_fix_it():
     _build_to_bar3(root, minimal=False)
     _mate(root, "bar3", "bar4")
     _mate(root, "bar4", "bar1", ia=_MITRE_END, ib=_MITRE_START)
-    minimal = client.post(f"/document/parts/{root}/occurrences/bar4/solve", params={"minimal_movement": True})
+    minimal = client.post(f"/document/parts/{root}/occurrences/bar4/solve", params={"movement": "minimal"})
     assert minimal.status_code == 422, minimal.text
     detail = minimal.json()["detail"]
     assert detail["type"] == "mate_solve_did_not_converge" and detail["minimal_movement"] is True
     assert "Minimal movement" in detail["detail"]
     assert client.post(f"/document/parts/{root}/occurrences/bar4/solve").status_code == 200
+
+
+def test_auto_keeps_neighbours_still_when_moving_only_the_new_part_is_enough():
+    root = _scene()
+    _mate(root, "bar1", "bar2")
+    assert client.post(f"/document/parts/{root}/occurrences/bar2/solve", params={"movement": "auto"}).status_code == 200
+    _mate(root, "bar2", "bar3")
+    before = _poses(root)
+    r = client.post(f"/document/parts/{root}/occurrences/bar3/solve", params={"movement": "auto"})
+    assert r.status_code == 200, r.text
+    assert r.headers["X-Movement-Used"] == "minimal"
+    after = _poses(root)
+    for oid in ("bar1", "bar2", "bar4"):
+        assert before[oid] == after[oid], oid
+    assert _moved(before["bar3"], after["bar3"]) > 0.1
+
+
+def test_auto_falls_back_to_moving_neighbours_when_minimal_cannot_work():
+    root = _scene()
+    _build_to_bar3(root, minimal=False)
+    _mate(root, "bar3", "bar4")
+    _mate(root, "bar4", "bar1", ia=_MITRE_END, ib=_MITRE_START)
+    assert client.post(f"/document/parts/{root}/occurrences/bar4/solve", params={"movement": "minimal"}).status_code == 422
+    before = _poses(root)
+    r = client.post(f"/document/parts/{root}/occurrences/bar4/solve", params={"movement": "auto"})
+    assert r.status_code == 200, r.text
+    assert r.headers["X-Movement-Used"] == "group"
+    assert _moved(before["bar3"], _poses(root)["bar3"]) > 0.1  # the neighbour was allowed to follow
+    # ...and the answer is the same one the plain group solve gives (auto never invents a third behaviour)
+    assert client.post(f"/document/parts/{root}/occurrences/bar4/solve").status_code == 200
+
+
+def test_auto_preview_reports_which_solve_it_used():
+    root = _scene()
+    _mate(root, "bar1", "bar2")
+    assert client.post(f"/document/parts/{root}/occurrences/bar2/solve").status_code == 200
+    payload = {"type": "coincident", "references": [_face("bar2", _MITRE_END), _face("bar3", _MITRE_START)], "flipped": False}
+    ghost = client.post(f"/document/parts/{root}/occurrences/bar3/preview-mate-solve", params={"movement": "auto"}, json=payload).json()
+    assert ghost["converged"] and ghost["movement_used"] == "minimal"
