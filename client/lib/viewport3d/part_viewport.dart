@@ -2946,6 +2946,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             ? assemblyBounds!.center
             : (bodyRadius >= sketchRadius ? bodyBounds!.center : sketchBounds!.center));
     _camera.setZoomBoundsForRadius(radius, center: center);
+    // The orbit sphere must clear the scene or the camera sits inside a long part - see
+    // [OrbitCamera.keepOrbitOutsideScene] (the visible window at the target is preserved).
+    _camera.keepOrbitOutsideScene();
   }
 
   /// [_syncZoomBounds]'s assembly-geometry input - every visible instance's

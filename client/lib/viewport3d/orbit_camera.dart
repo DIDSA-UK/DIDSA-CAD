@@ -692,6 +692,39 @@ class OrbitCamera {
     halfHeight = _halfHeightForDistance(_defaultDistance).clamp(minHalfHeight, maxHalfHeight);
   }
 
+  /// How far outside the scene's bounding sphere [keepOrbitOutsideScene] keeps the camera, as a multiple of
+  /// [sceneRadius].
+  static const double _orbitClearanceFactor = 1.1;
+
+  /// The orbit distance below which the camera can end up INSIDE the scene's bounding sphere from some direction:
+  /// the sphere's radius plus a margin, plus how far [target] currently sits from the sphere's centre (a panned view
+  /// swings the camera on a sphere around [target], not around the scene). 0 when there is no scene yet.
+  double get minOrbitDistanceOutsideScene =>
+      sceneRadius <= 0 ? 0 : (target - sceneCenter).length + sceneRadius * _orbitClearanceFactor;
+
+  /// Bug fix ("clipping when rotating a long part", perspective): [distance] is only ever set by [reset]/[frameRadius]
+  /// (80 mm until then, whatever the part's size), so for a part longer than that the camera orbits INSIDE it - a 60 x
+  /// 60 x 1500 mm bar contains the camera in ~9% of orientations, every end-on view among them - and nothing, not even
+  /// a wider clip range, can show the inside of a wall as the outside. Raises [distance] until the orbit sphere
+  /// clears the scene's bounding sphere ([minOrbitDistanceOutsideScene]), and narrows [fovRadiansY] by exactly the same
+  /// ratio, so the world-space window visible at [target] (`distance * tan(fov / 2)`) - and so the on-screen size of
+  /// what you are looking at, and the pan/zoom feel derived from it (see [_effectiveDistanceForPanSensitivity]) - is
+  /// unchanged. The cost is a flatter perspective on long parts. Only ever moves the camera back, never in, and never
+  /// past [maxDistance]; a no-op for any scene the camera already clears (every part smaller than ~70 mm across).
+  /// Returns whether it changed anything. Deliberately NOT folded into [setZoomBoundsForRadius], which many callers
+  /// (and tests) rely on to leave [distance] where it is.
+  bool keepOrbitOutsideScene() {
+    final needed = math.min(minOrbitDistanceOutsideScene, maxDistance);
+    if (needed <= 0 || distance >= needed) return false;
+    final scale = distance / needed;
+    fovRadiansY = 2 * math.atan(math.tan(fovRadiansY / 2) * scale);
+    distance = needed;
+    minFovRadiansY = _fovForHalfHeight(minHalfHeight, distance);
+    maxFovRadiansY = _fovForHalfHeight(maxHalfHeight, distance);
+    fovRadiansY = fovRadiansY.clamp(minFovRadiansY, maxFovRadiansY);
+    return true;
+  }
+
   /// Keeps a body from touching the exact viewport edge once framed - purely
   /// cosmetic breathing room, not a correctness factor.
   static const double _frameRadiusPadding = 1.2;
