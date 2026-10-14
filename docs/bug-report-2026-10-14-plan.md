@@ -47,8 +47,9 @@ Project-mode Save As (`_saveFocusedPartAs`) also never updates the title.
 **Tests.** Add a widget test: a `PartScreen` given `initialProjectRoot` and
 `initialRelativePathByPartId {root: 'sub/Frame_A.DIDSAprt'}` shows
 `Frame_A` in the AppBar. Add a second test that the title updates after
-`_relativePathByPartId` changes (Save As). Repeat it with `sub/Frame_C.didsa` (current extension) to check that
-it shows `Frame_C`.
+`_relativePathByPartId` changes (Save As). Repeat the first test with
+`sub/Frame_C.didsa` (the current extension) and check that it shows
+`Frame_C`.
 
 ---
 
