@@ -125,6 +125,23 @@ String withDefaultExtension(String raw) {
   return '$trimmed$kNativeFileExtension';
 }
 
+/// The same path with each *other* native extension, current first: what to
+/// try when an `external_ref` written under one extension (typically a legacy
+/// `Frame_A.DIDSAprt`) no longer resolves because the file now lives under
+/// another (`Frame_A.didsa`). Empty when [path] has no native extension.
+/// A trailing copy suffix (` (1)`, `_1`) is not handled - that is a different
+/// file name, not a different extension.
+List<String> nativePathAlternatives(String path) {
+  final current = _lowerExtensionMatch(path);
+  if (current.isEmpty) return const [];
+  final trimmed = path.trim();
+  final stem = trimmed.substring(0, trimmed.length - current.length);
+  return [
+    for (final extension in _allNativeFileExtensions)
+      if (extension.toLowerCase() != current.toLowerCase()) '$stem$extension',
+  ];
+}
+
 /// The first file in [existingFiles] that [candidatePath] would collide with
 /// under [nativeBaseNameKey] (same folder, same base name, either extension),
 /// or `null`. Exact-name matches count too.

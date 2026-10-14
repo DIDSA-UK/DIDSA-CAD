@@ -31,6 +31,43 @@ class OpenedAssembly {
   final Set<String> staleRelativePaths;
 }
 
+/// Removes every Occurrence's `resolved_part_id` from a single-Part export.
+/// That id names a Part in the *session* (often one re-minted on import), so
+/// written to a single-Part file it points at nothing - the backend discards
+/// it on import and [AssemblyGraphComposer] recomputes it from `external_ref`.
+/// Kept only where there is no `external_ref` to recompute it from.
+Map<String, dynamic> stripSessionResolvedIds(Map<String, dynamic> exported) {
+  final document = exported['document'];
+  if (document is! Map) return exported;
+  final parts = document['parts'];
+  if (parts is! List) return exported;
+  return {
+    ...exported,
+    'document': {
+      ...document,
+      'parts': [
+        for (final part in parts)
+          if (part is Map && part['occurrences'] is List)
+            {
+              ...part,
+              'occurrences': [
+                for (final occurrence in part['occurrences'] as List)
+                  if (occurrence is Map && occurrence['external_ref'] != null)
+                    {
+                      for (final entry in occurrence.entries)
+                        if (entry.key != 'resolved_part_id') entry.key: entry.value,
+                    }
+                  else
+                    occurrence,
+              ],
+            }
+          else
+            part,
+      ],
+    },
+  };
+}
+
 /// Assembly support Phase 2 (`docs/assembly-scope.md`): ties
 /// [AssemblyGraphComposer], [StorageService], and [DocumentApiClient]
 /// together into the three operations a caller actually needs - open a
@@ -70,6 +107,12 @@ class AssemblyDocumentClient {
     );
   }
 
+  /// Composes [relativePath] and everything it references under [root] into
+  /// one payload *without* importing it - what "Add Component" folds into the
+  /// open session so the inserted file's own sub-components arrive resolved.
+  Future<ComposedAssemblyGraph> composeGraph(ProjectRoot root, String relativePath) =>
+      _composer.compose(root, relativePath);
+
   /// `GET /parts/{partId}/assembly-mesh` - everything visible in
   /// `partId`'s own assembly scene. Requires [openAssembly] (or an
   /// equivalent import) to have already composed the graph into this
@@ -100,7 +143,7 @@ class AssemblyDocumentClient {
     bool remintIdentity = false,
     Map<String, dynamic>? extras,
   }) async {
-    var exported = await _documentApiClient.exportNative(partId: partId);
+    var exported = stripSessionResolvedIds(await _documentApiClient.exportNative(partId: partId));
     if (remintIdentity) exported = remintNativeIdentity(exported);
     // Client-only state the backend's export knows nothing about
     // (`hidden_feature_ids`, `section_planes` - see

@@ -123,4 +123,19 @@ void main() {
       expect(isNativeProjectFileName('drawing.DIDSAsketch'), isFalse);
     });
   });
+
+  group('nativePathAlternatives', () {
+    test('offers the other native extensions, current first, keeping the folder and stem', () {
+      expect(nativePathAlternatives('parts/Frame_A.DIDSAprt'), ['parts/Frame_A.didsa', 'parts/Frame_A.didsacad']);
+      expect(nativePathAlternatives('Frame_A.didsa'), ['Frame_A.DIDSAprt', 'Frame_A.didsacad']);
+    });
+
+    test('is case-insensitive about the extension it replaces', () {
+      expect(nativePathAlternatives('Frame_A.didsaprt'), ['Frame_A.didsa', 'Frame_A.didsacad']);
+    });
+
+    test('is empty for a path with no native extension', () {
+      expect(nativePathAlternatives('Frame_A.txt'), isEmpty);
+    });
+  });
 }

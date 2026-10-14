@@ -24,7 +24,7 @@ import '../api/sketch_api_client.dart'
         TextContourDto;
 import '../assembly/add_component.dart';
 import '../assembly/assembly_document_client.dart';
-import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException;
+import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException, ComposedAssemblyGraph;
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
@@ -12350,18 +12350,8 @@ class _PartScreenState extends State<PartScreen> {
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
 
-    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
-    if (result == null || result.files.isEmpty || !mounted) return;
-    final bytes = result.files.single.bytes;
-    if (bytes == null) return;
-
-    Map<String, dynamic> componentPayload;
-    try {
-      componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
-    } catch (_) {
-      setState(() => _errorMessage = 'Not a valid native project file');
-      return;
-    }
+    final picked = await _pickAndComposeComponent();
+    if (picked == null || !mounted) return;
 
     await _runGuarded(() async {
       final currentPayload = await _api.exportNative();
@@ -12369,10 +12359,10 @@ class _PartScreenState extends State<PartScreen> {
       try {
         merged = mergeComponentIntoDocument(
           currentPayload: currentPayload,
-          componentPayload: componentPayload,
+          componentPayload: picked.graph.documentPayload,
           rootPartId: rootPartId,
           occurrenceId: const Uuid().v4(),
-          externalRef: result.files.single.name,
+          externalRef: picked.relativePath,
           relativePathByPartId: _relativePathByPartId,
         );
       } on AddComponentException catch (e) {
@@ -12380,9 +12370,71 @@ class _PartScreenState extends State<PartScreen> {
         return;
       }
       await _api.importNative(merged);
+      _learnRelativePaths(merged);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
+  }
+
+  /// Picks a native file inside the project folder (the same listing-backed
+  /// dialog as Open) and composes it together with everything it references
+  /// ([AssemblyDocumentClient.composeGraph]). Add Component and Locate Missing
+  /// File used to take a bare `file_picker` pick and merge only that file's own
+  /// Part, so a picked assembly (e.g. `Frame` holding `Frame_A`/`Frame_B`)
+  /// arrived with every sub-component unresolved - there was no project root to
+  /// resolve its `external_ref`s against. Returns null on cancel or on an error
+  /// (already surfaced through [_errorMessage]).
+  Future<({ComposedAssemblyGraph graph, String relativePath})?> _pickAndComposeComponent() async {
+    final ensuredRoot = await _ensureProjectRoot();
+    if (ensuredRoot == null || !mounted) return null;
+    var root = ensuredRoot;
+    final relativePath = await showOpenProjectPathPromptDialog(
+      context,
+      storageService: _storageService,
+      root: root,
+      onRootChanged: (newRoot) {
+        root = newRoot;
+        if (mounted) setState(() => _projectRoot = newRoot);
+      },
+    );
+    if (relativePath == null || !mounted) return null;
+
+    ComposedAssemblyGraph? graph;
+    await _runGuarded(() async {
+      try {
+        graph = await _assemblyDocumentClient.composeGraph(root, relativePath);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = e.message);
+      } on AssemblyGraphCycleException catch (e) {
+        setState(() => _errorMessage = e.toString());
+      } on FormatException catch (e) {
+        setState(() => _errorMessage = e.message);
+      }
+    });
+    final composed = graph;
+    if (composed == null) return null;
+    return (graph: composed, relativePath: relativePath);
+  }
+
+  /// Records where each Part of a freshly merged session lives, read off the
+  /// Occurrences themselves (`external_ref` -> `resolved_part_id`) - robust to
+  /// a colliding file having been re-minted during the merge, where the ids
+  /// the composer saw are no longer the ids in the session. Never overwrites a
+  /// path or Part id already known, so a later Save All writes each merged
+  /// sub-component to its own file instead of prompting for a location.
+  void _learnRelativePaths(Map<String, dynamic> mergedPayload) {
+    final parts = (((mergedPayload['document'] as Map?)?['parts'] as List?) ?? const []).whereType<Map>();
+    final learned = Map<String, String>.of(_relativePathByPartId);
+    for (final part in parts) {
+      for (final occurrence in ((part['occurrences'] as List?) ?? const []).whereType<Map>()) {
+        final path = occurrence['external_ref'];
+        final partId = occurrence['resolved_part_id'];
+        if (path is! String || partId is! String) continue;
+        if (learned.containsKey(partId) || learned.containsValue(path)) continue;
+        learned[partId] = path;
+      }
+    }
+    if (mounted) setState(() => _relativePathByPartId = learned);
   }
 
   /// Bug fix (assembly testing: "if the software cannot find the file, it
@@ -12415,18 +12467,8 @@ class _PartScreenState extends State<PartScreen> {
     );
     if (confirmed != true || !mounted) return;
 
-    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
-    if (result == null || result.files.isEmpty || !mounted) return;
-    final bytes = result.files.single.bytes;
-    if (bytes == null) return;
-
-    Map<String, dynamic> componentPayload;
-    try {
-      componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
-    } catch (_) {
-      setState(() => _errorMessage = 'Not a valid native project file');
-      return;
-    }
+    final picked = await _pickAndComposeComponent();
+    if (picked == null || !mounted) return;
 
     await _runGuarded(() async {
       final currentPayload = await _api.exportNative();
@@ -12434,10 +12476,10 @@ class _PartScreenState extends State<PartScreen> {
       try {
         merged = relocateOccurrenceInDocument(
           currentPayload: currentPayload,
-          componentPayload: componentPayload,
+          componentPayload: picked.graph.documentPayload,
           rootPartId: rootPartId,
           occurrenceId: occurrence.id,
-          newExternalRef: result.files.single.name,
+          newExternalRef: picked.relativePath,
           relativePathByPartId: _relativePathByPartId,
         );
       } on AddComponentException catch (e) {
@@ -12445,6 +12487,7 @@ class _PartScreenState extends State<PartScreen> {
         return;
       }
       await _api.importNative(merged);
+      _learnRelativePaths(merged);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
