@@ -249,8 +249,12 @@ in Dart (`client/lib/assembly/remint_identity.dart`) and
   or sketch: routes are `/parts/{part_id}/features/{feature_id}` and the body
   cache is keyed by Part id. Only the session-global stores (parts in the
   document, sketches in `app/sketch/store.py`) collide.
-- Unit-test both implementations against the attached files, which are good
-  fixtures (copy them into `backend/tests/fixtures/` and `client/test/fixtures/`).
+- Unit-test both implementations against the tester's two files, which are
+  already committed as fixtures:
+  `backend/tests/data/frame_a_save_as_source.DIDSAprt` (A, 800 mm) and
+  `backend/tests/data/frame_b_save_as_copy.DIDSAprt` (B, 1600 mm, the Save As
+  copy, with the same document, Part and sketch ids). Identical copies are in
+  `client/test/fixtures/`.
   Check that A's ids are gone, all references are consistent, and a
   backend `import_native` of the result succeeds.
 
