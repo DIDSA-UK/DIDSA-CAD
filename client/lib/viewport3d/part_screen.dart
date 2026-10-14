@@ -31,6 +31,7 @@ import '../assembly/focus_stack.dart';
 import '../assembly/native_file_shape.dart';
 import '../assembly/occurrence_visibility.dart';
 import '../assembly/relative_path.dart';
+import '../assembly/remint_identity.dart';
 import '../assembly/save_all.dart' show stampExternalRefs;
 import 'assembly_component_selection_drawer.dart';
 import 'component_context_menu.dart';
@@ -9842,11 +9843,38 @@ class _PartScreenState extends State<PartScreen> {
       await _saveFocusedPartAs();
       return;
     }
+    // Bug report 2026-10-14, item 3: the Save As copy is written with fresh
+    // document/Part/sketch ids so it never shares identity with the file it
+    // was copied from, and the session then reopens *that* file
+    // ([_openBundlePayload], the same push-replacement Open uses) so the
+    // in-session ids match what is on disk - otherwise the very next Save
+    // would write the old ids over the new file again. Saving to the path the
+    // session already lives at is just a Save: the original bytes go back
+    // and nothing is reopened.
+    Map<String, dynamic>? reminted;
+    String? reopenFileName;
+    String? reopenFilePath;
     await _runGuarded(() async {
-      final bytes = await _buildNativeExportBytes();
-      final saved = await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', bytes);
-      if (saved) setState(() => _isDirty = false);
+      final originalBytes = await _buildNativeExportBytes();
+      final previousPath = _lastSavedFilePath;
+      reminted = remintNativeIdentity(jsonDecode(utf8.decode(originalBytes)) as Map<String, dynamic>);
+      final remintedBytes = Uint8List.fromList(utf8.encode(jsonEncode(reminted)));
+      final saved = await _saveNativeFileViaDialog('${_part?.name ?? 'part'}.DIDSAprt', remintedBytes);
+      if (!saved) {
+        reminted = null;
+        return;
+      }
+      if (previousPath != null && _lastSavedFilePath == previousPath) {
+        await File(previousPath).writeAsBytes(originalBytes);
+        reminted = null;
+      }
+      reopenFileName = _lastSavedFileName;
+      reopenFilePath = _lastSavedFilePath;
+      setState(() => _isDirty = false);
     });
+    final toReopen = reminted;
+    if (toReopen == null || !mounted) return;
+    await _openBundlePayload(toReopen, fileName: reopenFileName, filePath: reopenFilePath);
   }
 
   /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
@@ -9904,9 +9932,11 @@ class _PartScreenState extends State<PartScreen> {
   /// *currently focused* Part's current content under a newly-chosen
   /// project-relative path (reusing [showRelativePathPromptDialog], the
   /// same "pick a path within this root" prompt Save All's own per-Part
-  /// loop already uses), and rebinds this Part's own path to it (a later
-  /// plain Save targets the new file from then on) - standard "Save As"
-  /// semantics.
+  /// loop already uses) with a freshly re-minted identity (see the comment
+  /// in the body: item 3 of `docs/bug-report-2026-10-14-plan.md`). For the
+  /// root Part the session then *becomes* the new file (it is reopened, so a
+  /// later plain Save targets it) - standard "Save As" semantics; for a
+  /// sub-component it is a "Save a copy" and the assembly is left alone.
   ///
   /// Deliberately always writes a *fresh* export to the new path rather
   /// than physically moving the old file
@@ -9944,21 +9974,63 @@ class _PartScreenState extends State<PartScreen> {
     );
     if (newPath == null || !mounted) return;
 
+    // Save As to the very file it already lives in is just a Save: no new
+    // identity, no reopen (a re-minted copy over the original would orphan
+    // every other file's `external_ref` to it).
+    if (newPath == currentPath) {
+      await _saveFocusedPart();
+      return;
+    }
+
+    // Bug report 2026-10-14, item 3: the copy is written with a fresh
+    // document/Part/sketch identity (`savePart(remintIdentity: true)`), so it
+    // can never collide with the file it was copied from when both meet in
+    // one assembly. What happens next depends on which Part was saved:
+    //  * the ROOT Part: Save As means the open document *becomes* the new
+    //    file, and every Part-id-keyed map on this screen (hidden features,
+    //    section planes, focus stack, the path map) would need re-keying to
+    //    the new ids. Reopening the new file via [_openComposedProject] makes
+    //    the in-session ids match the file by construction, so that is what
+    //    this does. The root's open components are written first (unchanged
+    //    ones are byte-identical rewrites) so a reopen, which reads from
+    //    disk, can't drop unsaved edits to them.
+    //  * a sub-component (assembly focus): "Save a copy". The assembly keeps
+    //    pointing at the original; repointing the Occurrence at the copy
+    //    (SolidWorks "replace component") is a possible follow-up.
+    final isRootPart = focusPartId == _part?.id;
+    final wasDirty = _isDirty;
+    var saved = false;
     await _runGuarded(() async {
       try {
-        await _assemblyDocumentClient.savePart(root, focusPartId, newPath);
+        if (isRootPart) {
+          final fullSessionExport = await _api.exportNative();
+          final stamped = stampExternalRefs(
+            documentPayload: fullSessionExport,
+            relativePathByPartId: _relativePathByPartId,
+          );
+          await _api.importNative(stamped);
+          for (final entry in _relativePathByPartId.entries) {
+            if (entry.key == focusPartId) continue;
+            await _assemblyDocumentClient.savePart(root, entry.key, entry.value);
+          }
+        }
+        await _assemblyDocumentClient.savePart(root, focusPartId, newPath, remintIdentity: true);
       } on StorageException catch (e) {
         setState(() => _errorMessage = 'Failed to save: ${e.message}');
         return;
       }
-      setState(() {
-        _relativePathByPartId = {..._relativePathByPartId, focusPartId: newPath};
-        _isDirty = false;
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved as $newPath')));
-      }
+      saved = true;
     });
+    if (!saved || !mounted) return;
+
+    if (isRootPart) {
+      await _openComposedProject(root, newPath);
+      return;
+    }
+    // A copy leaves the session itself exactly as unsaved as it was ([_runGuarded]
+    // marks every guarded action dirty).
+    setState(() => _isDirty = wasDirty);
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved a copy as $newPath')));
   }
 
   /// File > New: starts a brand-new, blank Part - the same "always start
@@ -12067,6 +12139,7 @@ class _PartScreenState extends State<PartScreen> {
           rootPartId: rootPartId,
           occurrenceId: const Uuid().v4(),
           externalRef: result.files.single.name,
+          relativePathByPartId: _relativePathByPartId,
         );
       } on AddComponentException catch (e) {
         setState(() => _errorMessage = e.message);
@@ -12131,6 +12204,7 @@ class _PartScreenState extends State<PartScreen> {
           rootPartId: rootPartId,
           occurrenceId: occurrence.id,
           newExternalRef: result.files.single.name,
+          relativePathByPartId: _relativePathByPartId,
         );
       } on AddComponentException catch (e) {
         setState(() => _errorMessage = e.message);

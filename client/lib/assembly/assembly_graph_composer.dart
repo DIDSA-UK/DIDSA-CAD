@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../storage/file_cache.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
+import 'remint_identity.dart';
 
 /// Raised when resolving a `.didsa` file's Occurrences would revisit a file
 /// already on the current resolution path (A references B references A,
@@ -68,7 +69,9 @@ class ComposedAssemblyGraph {
 ///
 /// Each file already carries its own stable `id` (assigned once, whenever
 /// that file's Part was first created) - this composer trusts that id
-/// as-is rather than minting new ones, which is also what makes resolving
+/// as-is rather than minting new ones (except to heal a collision between
+/// two *different* files, see the comment in [compose]), which is also what
+/// makes resolving
 /// the *same* file from two different Occurrences (a shared library part,
 /// or two paths converging on one sub-assembly) a safe, ordinary dedup
 /// rather than something needing special handling: both resolve to the
@@ -121,7 +124,7 @@ class AssemblyGraphComposer {
       final alreadyResolved = partIdByPath[relativePath];
       if (alreadyResolved != null) return alreadyResolved;
 
-      final Map<String, dynamic> payload;
+      Map<String, dynamic> payload;
       try {
         payload = await readAndDecode(relativePath);
       } on StorageException {
@@ -132,13 +135,36 @@ class AssemblyGraphComposer {
         return null;
       }
 
-      final documentData = payload['document'] as Map<String, dynamic>;
-      final parts = (documentData['parts'] as List).cast<Map<String, dynamic>>();
-      if (parts.length != 1) {
+      final readParts = ((payload['document'] as Map<String, dynamic>)['parts'] as List).cast<Map<String, dynamic>>();
+      if (readParts.length != 1) {
         throw FormatException(
-          '$relativePath is not a valid single-file .didsa save (expected exactly one Part, found ${parts.length})',
+          '$relativePath is not a valid single-file .didsa save (expected exactly one Part, found ${readParts.length})',
         );
       }
+
+      // Heal id collisions between *different* files (bug report 2026-10-14,
+      // item 3). The Part and sketch ids are session-global on the backend,
+      // so two files sharing one (typically a pre-fix "Save As" copy that was
+      // then edited) would otherwise overwrite each other in the composed
+      // payload and collapse to one entry in `relativePathByPartId` - and a
+      // later Save All would write the mixed Part to whichever path survived.
+      // A file whose Part id is already claimed by another path, or whose
+      // sketch id is already present with different content, is re-minted
+      // before it is folded in. The new ids live only in this session; the
+      // next Save of that Part writes them to disk, so the files heal
+      // themselves. (Resolving the *same* path twice never reaches here - the
+      // `partIdByPath` hit above is the ordinary diamond dedup.)
+      final partIdTaken = partIdByPath.values.contains(readParts.single['id']);
+      final sketchCollides = (payload['sketches'] as List? ?? const []).any((sketch) {
+        final existing = sketchesById[(sketch as Map<String, dynamic>)['id']];
+        return existing != null && jsonEncode(existing) != jsonEncode(sketch);
+      });
+      if (partIdTaken || sketchCollides) {
+        payload = remintNativeIdentity(payload);
+      }
+
+      final documentData = payload['document'] as Map<String, dynamic>;
+      final parts = (documentData['parts'] as List).cast<Map<String, dynamic>>();
       final partDict = parts.single;
       final partId = partDict['id'] as String;
       partIdByPath[relativePath] = partId;

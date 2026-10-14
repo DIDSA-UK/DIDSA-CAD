@@ -4,6 +4,7 @@ import '../api/document_api_client.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'assembly_graph_composer.dart';
+import 'remint_identity.dart';
 import 'save_all.dart';
 
 export 'save_all.dart' show PartSaveFailure, SaveAllResult;
@@ -76,8 +77,21 @@ class AssemblyDocumentClient {
   /// `DocumentApiClient.exportNative(partId: partId)` followed by
   /// `StorageService.writeFile`. Never touches any other Part's file, even
   /// ones this Part references or is referenced by.
-  Future<void> savePart(ProjectRoot root, String partId, String relativePath) async {
-    final exported = await _documentApiClient.exportNative(partId: partId);
+  ///
+  /// [remintIdentity] (Save As to a *new* file, bug report 2026-10-14 item
+  /// 3): writes the copy with a fresh document id, Part id and sketch ids
+  /// (`remintNativeIdentity`) so it never shares identity with the file it
+  /// was copied from - two files with the same ids silently overwrite each
+  /// other as soon as they meet in one assembly. The live session's own
+  /// Part keeps its ids; the caller decides whether to reopen the copy.
+  Future<void> savePart(
+    ProjectRoot root,
+    String partId,
+    String relativePath, {
+    bool remintIdentity = false,
+  }) async {
+    var exported = await _documentApiClient.exportNative(partId: partId);
+    if (remintIdentity) exported = remintNativeIdentity(exported);
     final bytes = utf8.encode(jsonEncode(exported));
     await _storageService.writeFile(root, relativePath, bytes);
   }

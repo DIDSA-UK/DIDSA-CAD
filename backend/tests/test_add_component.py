@@ -9,6 +9,9 @@ Mirrors `test_assembly_mesh_glb.py`'s own box-part fixture convention.
 Needs a real pythonocc-core environment, same caveat as every other
 extrude-backed fixture in this test suite."""
 
+import json
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -144,3 +147,95 @@ def test_add_component_rejects_empty_component_file():
         json={"component": {"schema_version": 1, "document": {"id": "x", "parts": []}, "sketches": []}},
     )
     assert response.status_code == 422
+
+
+_DATA = Path(__file__).parent / "data"
+
+
+def _load_fixture(name: str) -> dict:
+    return json.loads((_DATA / name).read_text())
+
+
+def _boss_end_distance(part_id: str) -> float:
+    exported = _export_part(part_id)
+    features = exported["document"]["parts"][0]["features"]
+    first_extrude = next(f for f in features if f.get("type") == "extrude")
+    return first_extrude["end_distance"]
+
+
+def test_add_component_keeps_two_files_that_share_ids_apart():
+    """Bug report 2026-10-14, item 3: Frame_B is a Save-As copy of Frame_A
+    (same document, Part and sketch ids) edited to 1600 mm. Adding A then B
+    used to dedup B away, leaving both occurrences on A's 800 mm Part."""
+    root = _create_part("Assembly")
+    frame_a = _load_fixture("frame_a_save_as_source.DIDSAprt")
+    frame_b = _load_fixture("frame_b_save_as_copy.DIDSAprt")
+
+    first = client.post(
+        f"/document/parts/{root['id']}/add-component",
+        json={"component": frame_a, "external_ref": "Frame_A.DIDSAprt"},
+    )
+    assert first.status_code == 200, first.text
+    second = client.post(
+        f"/document/parts/{root['id']}/add-component",
+        json={"component": frame_b, "external_ref": "Frame_B.DIDSAprt"},
+    )
+    assert second.status_code == 200, second.text
+
+    occurrences = client.get(f"/document/parts/{root['id']}/occurrences").json()
+    resolved = [o["resolved_part_id"] for o in occurrences]
+    assert len(resolved) == 2 and resolved[0] != resolved[1]
+    assert {_boss_end_distance(part_id) for part_id in resolved} == {800.0, 1600.0}
+    assert _boss_end_distance(resolved[0]) == 800.0
+    assert _boss_end_distance(resolved[1]) == 1600.0
+
+
+def test_add_component_same_file_twice_still_dedups_with_shared_ids():
+    root = _create_part("Assembly 2")
+    frame_a = _load_fixture("frame_a_save_as_source.DIDSAprt")
+    for _ in range(2):
+        response = client.post(
+            f"/document/parts/{root['id']}/add-component",
+            json={"component": frame_a, "external_ref": "Frame_A.DIDSAprt"},
+        )
+        assert response.status_code == 200, response.text
+    occurrences = client.get(f"/document/parts/{root['id']}/occurrences").json()
+    assert len({o["resolved_part_id"] for o in occurrences}) == 1
+    assert response.json()["part_ids"].count(occurrences[0]["resolved_part_id"]) == 1
+
+
+def test_add_component_colliding_file_added_twice_reuses_its_reminted_copy():
+    root = _create_part("Assembly 3")
+    frame_a = _load_fixture("frame_a_save_as_source.DIDSAprt")
+    frame_b = _load_fixture("frame_b_save_as_copy.DIDSAprt")
+    for payload, ref in [(frame_a, "A.DIDSAprt"), (frame_b, "B.DIDSAprt"), (frame_b, "B.DIDSAprt")]:
+        response = client.post(
+            f"/document/parts/{root['id']}/add-component", json={"component": payload, "external_ref": ref}
+        )
+        assert response.status_code == 200, response.text
+    occurrences = client.get(f"/document/parts/{root['id']}/occurrences").json()
+    resolved = [o["resolved_part_id"] for o in occurrences]
+    assert resolved[1] == resolved[2] != resolved[0]
+    # root + A + one re-minted B, not a second copy of B.
+    assert len(response.json()["part_ids"]) >= 3
+    assert response.json()["part_ids"].count(resolved[2]) == 1
+
+
+def test_add_component_save_as_copy_of_open_part_is_insertable():
+    """A pre-fix Save-As copy of the *open* Part carries the open Part's own
+    id but different content: that is not a self-reference once re-minted."""
+    frame_a = _load_fixture("frame_a_save_as_source.DIDSAprt")
+    frame_b = _load_fixture("frame_b_save_as_copy.DIDSAprt")
+    imported = client.post("/document/import/native", json=frame_a)
+    assert imported.status_code == 200, imported.text
+    root_id = imported.json()["part_ids"][0]
+
+    response = client.post(
+        f"/document/parts/{root_id}/add-component",
+        json={"component": frame_b, "external_ref": "Frame_B.DIDSAprt"},
+    )
+    assert response.status_code == 200, response.text
+    occurrence = client.get(f"/document/parts/{root_id}/occurrences").json()[0]
+    assert occurrence["resolved_part_id"] != root_id
+    assert _boss_end_distance(occurrence["resolved_part_id"]) == 1600.0
+    assert _boss_end_distance(root_id) == 800.0

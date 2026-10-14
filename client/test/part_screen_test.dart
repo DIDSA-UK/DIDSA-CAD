@@ -9,8 +9,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/assembly/assembly_document_client.dart';
+import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
 import 'package:didsa_cad_client/assembly/relative_path.dart';
+import 'package:didsa_cad_client/storage/file_cache.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
@@ -33,6 +36,21 @@ import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
 /// Part/Feature/mesh to drive [PartScreen] without a real network call.
 /// Locking is simulated the same way the real backend enforces it: every
 /// Feature except the most-recently-added one is locked.
+/// A `FileCache` that never touches `path_provider` or the real filesystem:
+/// real async I/O does not settle inside `testWidgets`' fake-async pump loop
+/// (`docs/flutter-widget-test-lessons.md`), and the composer writes to the
+/// cache on every read.
+class _NoopFileCache extends FileCache {
+  @override
+  Future<void> put(ProjectRoot root, String relativePath, Uint8List bytes, {DateTime? lastKnownModified}) async {}
+
+  @override
+  Future<CachedFile?> get(ProjectRoot root, String relativePath) async => null;
+
+  @override
+  Future<void> evict(ProjectRoot root, String relativePath) async {}
+}
+
 class _FakeDocumentBackend {
   late int _nextFeatureId;
   final List<Map<String, dynamic>> features;
@@ -6084,6 +6102,11 @@ void main() {
             documentApi: documentApi,
             sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
             storageService: storage,
+            assemblyDocumentClient: AssemblyDocumentClient(
+              storageService: storage,
+              documentApiClient: documentApi,
+              composer: AssemblyGraphComposer(storageService: storage, fileCache: _NoopFileCache()),
+            ),
           ),
         ),
       );
@@ -6134,19 +6157,95 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      expect(find.text('Saved as renamed-top.DIDSAprt'), findsOneWidget);
       expect(storage.files.keys, contains('renamed-top.DIDSAprt'));
       // The old file is left in place (no delete primitive exists) rather
       // than silently discarded.
       expect(storage.files.keys, contains('top.DIDSAprt'));
 
-      // A later plain Save now targets the new path, not the old one.
-      toolbar.onSaveNative!();
+      // Bug report 2026-10-14, item 3: the copy was written under a fresh
+      // identity, so it can never collide with the original in an assembly.
+      Map<String, dynamic> read(String path) => jsonDecode(utf8.decode(storage.files[path]!)) as Map<String, dynamic>;
+      String partIdIn(Map<String, dynamic> payload) =>
+          (((payload['document'] as Map)['parts'] as List).first as Map)['id'] as String;
+      final originalId = partIdIn(read('top.DIDSAprt'));
+      final copyId = partIdIn(read('renamed-top.DIDSAprt'));
+      expect(copyId, isNot(originalId));
+      expect((read('renamed-top.DIDSAprt')['document'] as Map)['root_part_id'], copyId);
+
+      // Root Part: the session *became* the new file (it was reopened), so
+      // a later plain Save targets the new path, not the old one.
+      // The reopened screen replaces this one (page transition, then its own
+      // load) - wait for exactly one screen to be left before driving it.
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+      await _pumpUntil(tester, () => find.byType(PartToolbar).evaluate().length == 1);
+      tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveNative!();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(storage.writeCounts['renamed-top.DIDSAprt'], 2);
       expect(storage.writeCounts['top.DIDSAprt'], 1);
+    });
+
+    testWidgets('Save As to the path the Part already lives at is a plain Save: no re-mint, no reopen', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Save All'));
+      await tester.pump();
+      await tester.tap(find.text('Save All'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      final originalBytes = utf8.decode(storage.files['top.DIDSAprt']!);
+
+      tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveAsNative!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(find.text('Saved'), findsOneWidget);
+      expect(storage.files.keys, hasLength(1));
+      expect(storage.writeCounts['top.DIDSAprt'], 2);
+      // Same ids as before: nothing was re-minted over the original.
+      final partIds = RegExp(r'"id":"([^"]+)"');
+      expect(
+        partIds.firstMatch(utf8.decode(storage.files['top.DIDSAprt']!))!.group(1),
+        partIds.firstMatch(originalBytes)!.group(1),
+      );
     });
   });
 
