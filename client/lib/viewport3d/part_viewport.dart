@@ -2946,6 +2946,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             ? assemblyBounds!.center
             : (bodyRadius >= sketchRadius ? bodyBounds!.center : sketchBounds!.center));
     _camera.setZoomBoundsForRadius(radius, center: center);
+    // The orbit sphere must clear the scene or the camera sits inside a long part - see
+    // [OrbitCamera.keepOrbitOutsideScene] (the visible window at the target is preserved).
+    _camera.keepOrbitOutsideScene();
   }
 
   /// [_syncZoomBounds]'s assembly-geometry input - every visible instance's
@@ -3153,8 +3156,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             entry.key,
             entry.value,
             entityColors: widget.sketchEntityColors,
-          )..localTransform = focusTransform,
+          )..localTransform = _sketchGeometryTransform(focusTransform),
     };
+    _sketchLiftSide = _currentSketchPlaneSide();
     for (final node in _sketchNodes.values) {
       scene.add(node);
     }
@@ -3164,6 +3168,26 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // happen to change (which, for a bare Sketch with no reference Body, it
     // never will) - see [_syncZoomBounds]'s own doc comment.
     _syncZoomBounds(boundsOfBodies(widget.bodies));
+  }
+
+  /// Which side of the active sketch plane the camera was on when the sketch nodes were last placed - see
+  /// [kSketchGeometryLift]. Null while not sketching.
+  double? _sketchLiftSide;
+
+  double? _currentSketchPlaneSide() {
+    final basis = widget.sketchPlaneBasis;
+    return basis == null ? null : sketchPlaneCameraSide(basis, _camera.position);
+  }
+
+  /// The Sketch geometry's node transform: [focusTransform], plus a small lift toward the camera along the active
+  /// sketch plane's normal so the lines/points/fill never share depth with a Body face lying in that plane (see
+  /// [kSketchGeometryLift]). Not applied while an Occurrence is focused: the basis' frame relative to the focus
+  /// transform isn't established there, and a wrong-way lift would be worse than none.
+  vm.Matrix4 _sketchGeometryTransform(vm.Matrix4 focusTransform) {
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null || widget.focusWorldTransformMatrix != null) return focusTransform;
+    final side = sketchPlaneCameraSide(basis, _camera.position);
+    return focusTransform * vm.Matrix4.translation(basis.normal * (kSketchGeometryLift * side));
   }
 
   /// C2: mirrors [_syncSketchNodes] for [PartViewport.createPlanes] - one
@@ -3697,6 +3721,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       gridSurface?.$1 ?? basis,
       color: vector4FromHex(widget.sketchPlaneSurfaceColourHex, opacity: widget.sketchPlaneSurfaceOpacity),
       halfExtent: gridSurface?.$2 ?? sketchPlaneSurfaceSize / 2,
+      cameraSide: sketchPlaneCameraSide(basis, _camera.position),
     );
     _sketchPlaneSurfaceNode = node;
     scene.add(node);
@@ -3749,7 +3774,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       yAxis: basis.yAxis,
       normal: basis.normal,
     );
-    final node = buildSketchGridNode(centredBasis, spacing: spacing, extent: spacing * sketchGridHalfCells);
+    final node = buildSketchGridNode(
+      centredBasis,
+      spacing: spacing,
+      extent: spacing * sketchGridHalfCells,
+      cameraSide: sketchPlaneCameraSide(basis, _camera.position),
+    );
     _sketchPlaneGridNode = node;
     scene.add(node);
     _sketchGridSurface = (centredBasis, spacing * sketchGridHalfCells);
@@ -3781,6 +3811,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       centreY = snapToGridSpacing(hitY, spacing);
     }
     if (_sketchGridKey != (spacing, centreX, centreY)) _syncSketchPlaneGridNode();
+    // The camera crossed the sketch plane (Orbit View): the layers must follow it to the other side or they would
+    // end up behind the plane, hidden by whatever lies there.
+    final side = _currentSketchPlaneSide();
+    if (side != null && _sketchLiftSide != null && side != _sketchLiftSide) {
+      _syncSketchPlaneGridNode();
+      _syncSketchNodes();
+    }
   }
 
   /// P17: mirrors [_syncSketchPlaneGridNode]'s remove-then-rebuild shape,
@@ -5791,6 +5828,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// fix below), re-centers on it and auto-fits the far clip to
   /// `max(kDefaultFarClip, 4 * radius)`.
   void _doRecentre() {
+    // Never lower a far clip that is already in force (the View-menu override, or an earlier auto-fit): Reset view
+    // may only raise it when the framed geometry needs more.
+    final previousFarClip = widget.farClip ?? _camera.farClip;
     _camera.reset();
     // C3: "Reset view" moves the camera - resync the edge overlay's
     // towards-camera bias (see [_syncEdgesNode]) for the new position, and
@@ -5815,24 +5855,40 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // leaving [OrbitCamera.reset] to fall back on `_defaultTarget` (itself
     // set the same bodies-only way, by [_syncMeshNode], whenever any local
     // Body exists at all).
-    final bodyBounds = boundsOfBodies(widget.bodies);
-    final assemblyBounds = _assemblyInstanceBounds();
-    final bodyRadius = bodyBounds?.boundingSphereRadius ?? 0;
-    final assemblyRadius = assemblyBounds?.boundingSphereRadius ?? 0;
-    final radius = math.max(bodyRadius, assemblyRadius);
-    if (radius <= 0) return;
-    final center = assemblyRadius > bodyRadius ? assemblyBounds!.center : bodyBounds!.center;
+    final bounds = _enclosingBounds(boundsOfBodies(widget.bodies), _assemblyInstanceBounds());
+    if (bounds == null || bounds.boundingSphereRadius <= 0) return;
+    final radius = bounds.boundingSphereRadius;
+    final center = bounds.center;
     _camera.setTarget(center);
     _lastAutoFramedTarget = center;
-    final newFarClip = math.max(kDefaultFarClip, 4.0 * radius);
-    _camera.farClip = newFarClip;
     _camera.nearClip = kDefaultNearClip;
-    widget.onFarClipChanged?.call(newFarClip);
     // On-device feedback: "Reset view" alone left the camera at a fixed
     // distance tuned only for the reference planes' own size, too close to
     // show a body significantly larger than that - frame the real geometry
     // instead.
     _camera.frameRadius(radius, _viewportSize);
+    // Bug fix ("Reset view does not take occurrences into account - severe clipping; overriding far clip fixes it but
+    // Reset view puts it back"): the far plane was `max(kDefaultFarClip, 4 * radius)` whatever distance
+    // `frameRadius` had just chosen. In a portrait viewport the camera sits `1.2 * radius / (tan(22.5 deg) * aspect)`
+    // away - about 6x the radius on a phone - so with 4x the whole framed assembly landed BEYOND the far plane. The
+    // far plane must reach the far side of the framed sphere from where the camera actually is.
+    final neededFarClip = (_camera.distance + radius) * 1.25;
+    final newFarClip = math.max(math.max(kDefaultFarClip, previousFarClip), neededFarClip);
+    _camera.farClip = newFarClip;
+    widget.onFarClipChanged?.call(newFarClip);
+  }
+
+  /// The smallest sphere enclosing both bounds - [_doRecentre] used to take whichever of the body/assembly spheres
+  /// was bigger and ignore the other, so a root body and an offset assembly could not both end up in frame.
+  MeshBounds? _enclosingBounds(MeshBounds? a, MeshBounds? b) {
+    if (a == null || a.boundingSphereRadius <= 0) return b;
+    if (b == null || b.boundingSphereRadius <= 0) return a;
+    final offset = b.center - a.center;
+    final gap = offset.length;
+    if (gap + b.boundingSphereRadius <= a.boundingSphereRadius) return a;
+    if (gap + a.boundingSphereRadius <= b.boundingSphereRadius) return b;
+    final radius = (gap + a.boundingSphereRadius + b.boundingSphereRadius) / 2;
+    return MeshBounds(center: a.center + offset * ((radius - a.boundingSphereRadius) / gap), boundingSphereRadius: radius);
   }
 
   /// Bug fix (bug report: "when orbiting a part, it sometimes orbits about

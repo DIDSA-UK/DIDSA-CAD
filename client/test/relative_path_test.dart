@@ -47,4 +47,24 @@ void main() {
       expect(withDefaultExtension('sub.dir/bracket'), 'sub.dir/bracket$kNativeFileExtension');
     });
   });
+
+  group('isNativeProjectFileName', () {
+    test('accepts the current and the legacy extension, any case', () {
+      expect(isNativeProjectFileName('bracket.DIDSAprt'), isTrue);
+      expect(isNativeProjectFileName('parts/bracket.didsaprt'), isTrue);
+      expect(isNativeProjectFileName('assembly.didsa'), isTrue);
+      expect(isNativeProjectFileName('Frame_A.DIDSA'), isTrue);
+    });
+
+    test('accepts the duplicate suffix a download or copy appends', () {
+      expect(isNativeProjectFileName('Frame_A.DIDSA_1'), isTrue);
+      expect(isNativeProjectFileName('Frame_A.DIDSAprt (2)'), isTrue);
+    });
+
+    test('rejects other files', () {
+      expect(isNativeProjectFileName('notes.txt'), isFalse);
+      expect(isNativeProjectFileName('didsa'), isFalse);
+      expect(isNativeProjectFileName('drawing.DIDSAsketch'), isFalse);
+    });
+  });
 }

@@ -3603,6 +3603,14 @@ class _PartScreenState extends State<PartScreen> {
   /// authoring/editing a concentric Mate - defaults `true` (free spin,
   /// [mateTypeHasAllowRotation]'s own docstring), meaningless otherwise.
   bool _mateAllowRotation = true;
+
+  /// Minimal movement for the Mate being authored. On (the default) the solve is `'auto'`: only the mated part moves if
+  /// that is enough, and connected parts follow only when it is not. Off is the plain group solve. A preference - kept
+  /// between mates, not reset when the panel reopens.
+  bool _mateMinimalMovement = true;
+
+  /// The `movement` argument the mate solve/preview endpoints take for [_mateMinimalMovement].
+  String get _mateMovement => _mateMinimalMovement ? 'auto' : 'group';
   bool _mateSaving = false;
 
   /// Test report item 3 (New Mate ghost preview): [_scheduleMatePreview]'s
@@ -3755,6 +3763,7 @@ class _PartScreenState extends State<PartScreen> {
         value: _mateValue,
         flipped: _mateFlipped,
         allowRotation: _mateAllowRotation,
+        movement: _mateMovement,
       );
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
@@ -3808,7 +3817,7 @@ class _PartScreenState extends State<PartScreen> {
       // could legally move, so none is attempted.
       final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
       if (drivenOccurrenceId != null) {
-        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId);
+        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId, movement: _mateMovement);
       }
       if (!mounted) return;
       setState(() {
@@ -21457,7 +21466,7 @@ class _PartScreenState extends State<PartScreen> {
       // authored one can.
       final drivenOccurrenceId = _drivableOccurrenceId(mate.references.map((r) => r.occurrenceId));
       if (drivenOccurrenceId != null) {
-        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId);
+        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId, movement: _mateMovement);
       }
       if (!mounted) return;
       await _refreshAssemblyTree();
@@ -22009,7 +22018,7 @@ class _PartScreenState extends State<PartScreen> {
   String get _displayPartName {
     final savedName = _lastSavedFileName;
     if (savedName == null) return _part?.name ?? 'Part';
-    return savedName.replaceFirst(RegExp(r'\.DIDSAprt$', caseSensitive: false), '');
+    return savedName.replaceFirst(RegExp(r'\.(didsaprt|didsa)$', caseSensitive: false), '');
   }
 
   Widget _buildScaffold(BuildContext context) {
@@ -23008,6 +23017,11 @@ class _PartScreenState extends State<PartScreen> {
                       },
                       onAllowRotationChanged: (allow) {
                         setState(() => _mateAllowRotation = allow);
+                        unawaited(_scheduleMatePreview());
+                      },
+                      minimalMovement: _mateMinimalMovement,
+                      onMinimalMovementChanged: (minimal) {
+                        setState(() => _mateMinimalMovement = minimal);
                         unawaited(_scheduleMatePreview());
                       },
                       saving: _mateSaving,

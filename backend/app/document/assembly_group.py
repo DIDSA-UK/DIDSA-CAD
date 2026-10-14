@@ -281,6 +281,23 @@ def build_group_model(
     return model
 
 
+def validate_mate_geometry(document: Document, part: Part, mate: Mate) -> None:
+    """Raises the structured 422 (`unsupported_mate_geometry`, or whatever the resolver raises for a dangling
+    reference) when `mate`'s two references cannot form its constraint. `POST /mates` calls this BEFORE storing, so an
+    unsolvable mate is never left in the document - once stored, `build_group_model` raises the same error for every
+    solve of any group containing it, blocking all of that group's occurrences until the mate is deleted."""
+    cache: dict[str, dict] = {}
+    worlds = []
+    for ref in mate.references:
+        target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
+        if target.id not in cache:
+            cache[target.id] = compute_part_bodies(target)
+        geometry = _resolve_local_geometry(target, cache[target.id], ref)
+        worlds.append(geometry if transform is None else _place_in_world(geometry, transform))
+    if not _mate_residual_vector(mate, worlds[0], worlds[1]):
+        raise _unsupported_mate_geometry(mate.references[0], "a compatible point, plane or axis on each side")
+
+
 # ---- lever arm ---------------------------------------------------------------
 
 
@@ -395,6 +412,8 @@ _MAX_ITERATIONS = 60
 _MAX_ROTATION_STEP = 0.6  # rad per Gauss-Newton step (any member) before scaling down
 _FOLLOWER_WEIGHT = 1e-4  # follower metric = this x the grabbed metric (follower cost ~ 0)
 _PINV_RCOND = 1e-9
+# Escalating follower weights tried, in order, when Gauss-Newton at `_FOLLOWER_WEIGHT` stalls on a multi-member group.
+_FOLLOWER_WEIGHT_FALLBACKS = (1e-3, 1e-2, 1e-1, 1.0)
 
 
 @dataclass
@@ -533,9 +552,11 @@ def _metric(lever_arm: float) -> np.ndarray:
     return np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
 
 
-def _solve_weights(model: GroupModel, grabbed_id: str, lever_arm: float) -> np.ndarray:
+def _solve_weights(
+    model: GroupModel, grabbed_id: str, lever_arm: float, follower_weight: float = _FOLLOWER_WEIGHT
+) -> np.ndarray:
     base = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
-    return np.concatenate([base if oid == grabbed_id else base * _FOLLOWER_WEIGHT for oid in model.member_ids])
+    return np.concatenate([base if oid == grabbed_id else base * follower_weight for oid in model.member_ids])
 
 
 def _retract(
@@ -649,6 +670,20 @@ def solve_group(
     _seed_poses(model, seed)
     poses, residual_inf, iterations = _retract(model, seed, weights)
     seeded_by = "gauss-newton"
+
+    if residual_inf > _SOLVE_TOL and len(model.member_ids) > 1:
+        # Followers at ~0 cost soak up the whole correction even when their own mates cannot absorb it (a chain of
+        # mitre-plane mates leaves only two spins of orientation): the step is then huge for almost no residual
+        # decrease and Gauss-Newton crawls to `_MAX_ITERATIONS` without converging, though the SAME mates solve
+        # instantly when another member is grabbed. Re-weight so the grabbed member shares the correction.
+        for follower_weight in _FOLLOWER_WEIGHT_FALLBACKS:
+            retry_poses, retry_residual, more = _retract(
+                model, seed, _solve_weights(model, grabbed_id, lever_arm, follower_weight)
+            )
+            iterations += more
+            if retry_residual <= _SOLVE_TOL:
+                poses, residual_inf, seeded_by = retry_poses, retry_residual, "gauss-newton-reweighted"
+                break
 
     if residual_inf > _SOLVE_TOL and len(model.member_ids) == 1:
         guess = wanted_pose if wanted_pose is not None else stored[grabbed_id]

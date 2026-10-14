@@ -1256,15 +1256,21 @@ def test_concentric_rejects_a_planar_face_pair_with_no_axis():
 
     base_top = _find_planar_face(base["id"], base["body_id"], (0.0, 0.0, 1.0))
     bracket_bottom = _find_planar_face(bracket["id"], bracket["body_id"], (0.0, 0.0, -1.0))
-    _create_mate(
-        base["id"],
-        mate_type="concentric",
-        driven_ref={"subshape_ref": {"body_id": bracket["body_id"], "shape_type": "face", "index": bracket_bottom}},
-        fixed_ref={"subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_top}},
+    # Rejected when the mate is CREATED (an unsolvable mate used to be stored and then fail every solve of its group).
+    response = client.post(
+        f"/document/parts/{base['id']}/mates",
+        json={
+            "type": "concentric",
+            "references": [
+                {"occurrence_id": "occ-driven", "subshape_ref": {"body_id": bracket["body_id"], "shape_type": "face", "index": bracket_bottom}},
+                {"occurrence_id": "", "subshape_ref": {"body_id": base["body_id"], "shape_type": "face", "index": base_top}},
+            ],
+            "flipped": False,
+        },
     )
-    response = client.post(f"/document/parts/{base['id']}/occurrences/occ-driven/solve")
     assert response.status_code == 422
     assert response.json()["detail"]["type"] == "unsupported_mate_geometry"
+    assert client.get(f"/document/parts/{base['id']}/mates").json() == []
 
 
 def test_solving_an_occurrence_with_no_mates_is_a_no_op_returning_its_current_transform():

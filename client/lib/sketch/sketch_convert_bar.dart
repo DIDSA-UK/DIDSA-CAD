@@ -1,8 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 
+import '../viewport3d/resizable_tool_panel.dart';
 import 'sketch_controller.dart';
 
 /// Convert Entities' bottom fly-up bar (on-device feedback: "the tick/FAB
@@ -30,51 +30,32 @@ class SketchConvertBar extends StatelessWidget {
         final vertexCount = controller.pendingConvertVertices.length;
         final edgeCount = controller.pendingConvertEdges.length;
         final total = vertexCount + edgeCount;
-        return SafeArea(
-          top: false,
-          child: Material(
-            elevation: 8,
-            color: Theme.of(context).colorScheme.surface,
-            borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      total == 0
-                          ? 'Tap a body vertex, edge, or face to convert'
-                          : total == 1
-                              ? '1 entity selected - tap the tick to convert'
-                              : '$total entities selected - tap the tick to convert',
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  if (total > 0)
-                    IconButton(
-                      onPressed: () => unawaited(controller.confirmConvertSelection()),
-                      tooltip: 'Convert selected entities',
-                      icon: SvgPicture.asset(
-                        'assets/icons/actions/action_finish.svg',
-                        width: 26,
-                        height: 26,
-                        colorFilter: ColorFilter.mode(
-                          Theme.of(context).colorScheme.primary,
-                          BlendMode.srcIn,
-                        ),
-                      ),
-                    ),
-                  TextButton.icon(
-                    onPressed: () {
-                      controller.discardPendingConvertSelection();
-                      controller.exitToSelectMode();
-                    },
-                    icon: const Icon(Icons.close),
-                    label: const Text('Exit'),
-                  ),
-                ],
+        return ResizableToolPanel(
+          title: 'Convert Entities',
+          tooltip: total == 0
+              ? 'Tap a body vertex, edge, or face to convert'
+              : total == 1
+                  ? '1 entity selected'
+                  : '$total entities selected',
+          defaultHeightFraction: 0.22,
+          minHeightFraction: 0.15,
+          maxHeightFraction: 0.6,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: () {
+                  controller.discardPendingConvertSelection();
+                  controller.exitToSelectMode();
+                },
+                child: const Text('Exit'),
               ),
-            ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: total > 0 ? () => unawaited(controller.confirmConvertSelection()) : null,
+                child: const Text('Convert'),
+              ),
+            ],
           ),
         );
       },

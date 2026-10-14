@@ -153,6 +153,9 @@ def export_constraint_model(model) -> dict | None:
                 out["plane"] = {"origin": [float(c) for c in g.plane.origin], "normal": [float(c) for c in g.plane.normal]}
             return out
 
+        from app.document.assembly_solver import _effective_mate
+
+        mate = _effective_mate(mate, a.geometry, b.geometry)
         mates.append(
             {
                 "type": mate.type.value,
