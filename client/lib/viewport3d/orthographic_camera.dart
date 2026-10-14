@@ -203,6 +203,24 @@ class OrthographicCamera extends Camera {
 /// `distance` - so orthographic zoom keeps the camera itself stationary the
 /// same way perspective zoom now does via [OrbitCamera.fovRadiansY].
 OrthographicCamera orthographicCameraFor(OrbitCamera orbit, Size size) {
+  // Bug fix ("clipping when rotating a long part - boss preview, final body, and an Occurrence of it"): an
+  // orthographic view looks identical wherever along the view direction the camera sits, but it clips everything
+  // outside `[near, far]` measured from the camera POSITION. The orbit distance is only ever set by Reset view
+  // (80 mm until then, whatever the part's size), so for a part longer than that the camera is parked INSIDE it and
+  // everything behind the camera plane was cut away - up to ~47% of what is on screen when looking end-on, at every
+  // length from 1.5 m to 1 km (measured against real backend meshes by a port of this clip maths). Widen the depth
+  // range, never narrow it, so it always spans the scene's bounding sphere along the actual view direction - the
+  // near plane goes negative when the camera is inside the scene, which orthographic projection handles exactly
+  // (the matrix below maps `[near, far]` onto `[0, 1]`), and the picking rays simply start behind the camera.
+  var near = orbit.effectiveNearClip;
+  var far = orbit.effectiveFarClip;
+  if (orbit.sceneRadius > 0) {
+    final forward = (orbit.target - orbit.position).normalized();
+    final centreDepth = (orbit.sceneCenter - orbit.position).dot(forward);
+    final reach = orbit.sceneRadius * 1.05 + 10.0;
+    near = math.min(near, centreDepth - reach);
+    far = math.max(far, centreDepth + reach);
+  }
   return OrthographicCamera(
     position: orbit.position,
     target: orbit.target,
@@ -210,7 +228,7 @@ OrthographicCamera orthographicCameraFor(OrbitCamera orbit, Size size) {
     halfHeight: orbit.halfHeight,
     // Bug fix (on-device feedback: geometry clipped when zoomed in close) -
     // see OrbitCamera.effectiveNearClip's own doc comment.
-    near: orbit.effectiveNearClip,
-    far: orbit.effectiveFarClip,
+    near: near,
+    far: far,
   );
 }
