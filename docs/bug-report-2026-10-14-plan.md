@@ -9,8 +9,10 @@ This doc is written for a **follow-up implementation session**. Each item has
 the root cause (with code pointers checked against `main` at `43d2fd2`), the planned fix, and the
 tests to add. Line numbers drift; search for the named symbol if a line is off.
 
-Suggested order: **3 → 1 → 2 → 5 → 4 → 6 → 8 → 7**. Item 3 can corrupt
-saved data, items 1 and 2 share code with it, and the rest are UI-only.
+Suggested order: **3 → 9 → 1 → 2 → 5 → 4 → 6 → 8 → 7**. Item 3 can corrupt
+saved data. Items 9, 1 and 2 share the file-naming and save code, so land 9
+first: the new save flow in item 2 should write `.didsa` from day one. The
+rest are UI-only.
 
 ---
 
@@ -32,9 +34,9 @@ Project-mode Save As (`_saveFocusedPartAs`) also never updates the title.
 - Change `_displayPartName` to this precedence:
   1. If `_projectRoot != null`, use the basename of
      `_relativePathByPartId[_part!.id]` (the **root** Part's file), without the
-     `.DIDSAprt` extension. Strip the legacy `.didsa` extension too, as
-     `main` now does for `_lastSavedFileName` (`isNativeProjectFileName`
-     in `assembly/relative_path.dart` accepts both).
+     native extension. Use item 9's `stripNativeExtension`, which strips
+     `.didsa` (current) and `.DIDSAprt` (legacy), rather than another inline
+     regex.
   2. Otherwise use `_lastSavedFileName`, as today.
   3. Otherwise use `_part?.name ?? 'Part'`.
 - With that change, project-mode Save As updates the title automatically,
@@ -45,7 +47,9 @@ Project-mode Save As (`_saveFocusedPartAs`) also never updates the title.
 **Tests.** Add a widget test: a `PartScreen` given `initialProjectRoot` and
 `initialRelativePathByPartId {root: 'sub/Frame_A.DIDSAprt'}` shows
 `Frame_A` in the AppBar. Add a second test that the title updates after
-`_relativePathByPartId` changes (Save As).
+`_relativePathByPartId` changes (Save As). Repeat the first test with
+`sub/Frame_C.didsa` (the current extension) and check that it shows
+`Frame_C`.
 
 ---
 
@@ -503,6 +507,152 @@ list and the Confirm button disables.
 
 ---
 
+## 9. Native file extension: finish the move from `.DIDSAprt` to `.didsa`
+
+**Intended format (confirmed with the tester, 2026-10-14).** `.didsa` is the
+current native extension. It replaced `.DIDSAprt` once part and assembly files
+were known to be the same file format (one Part that can hold both Features
+and Occurrences, `docs/assembly-scope.md`). `.DIDSAprt` files must still
+open, but nothing should *create* them any more. That decision was never
+written down in the repo, which is how the code drifted. This section is now
+the record.
+
+**What the code actually does (as of `main` at `7648b32`).**
+- **The flat app never switched.** `kNativeFileExtension = '.DIDSAprt'`
+  (`client/lib/assembly/relative_path.dart`). Every file the flat app creates
+  gets it: Save/Save As suggestions, `withDefaultExtension`,
+  `_autoAssignPath` for new components, tree Rename, and the AI flows' file
+  names. Two more hard-coded `'.DIDSAprt'` literals sit in
+  `part_screen.dart` (the `_saveNativeFile`/`_saveAsNativeFile` dialog
+  suggestions). The AI scoping prompt's example path
+  (`ai/ai_scoping_prompt.dart`, `"parts/bracket.DIDSAprt"`) teaches the LLM
+  the old extension too.
+- **VR and the design docs did switch.** DIDSA-VR writes `.didsa`
+  (`scripts/main.gd`, "Save as new file") and reads both.
+  `docs/assembly-scope.md` and the backend docstrings talk about `.didsa`
+  files. One note in `assembly-scope.md` (around line 2560) calls `.didsa`
+  "doc-prose shorthand" and `.DIDSAprt` "the actual extension".
+- **The latest fix labels the formats backwards.** `0e2fa07` (on `main`
+  today) made project listing and Open accept `.didsa`, which is right. But it
+  calls `.didsa` "legacy … older saves (and DIDSA-VR's Save) wrote" in
+  `isNativeProjectFileName`'s doc comment and in its commit message, which is
+  the reverse of the intended direction. A future session reading that
+  comment would entrench `.DIDSAprt`. (This plan's item 1 repeated the same
+  wording before this correction.)
+
+**Severity: medium. Nothing is lost or corrupted, but the format migration
+is not done, and two side bugs make files hard to find.**
+1. *The migration isn't done (medium).* Every part and assembly a flat-app
+   user saves today uses the superseded extension, so projects end up with a
+   mix of `.didsa` (from VR) and `.DIDSAprt` (from the flat app). The longer
+   this ships, the more legacy files exist.
+2. *A name with a dot loses the native extension (medium; looks like lost
+   work).* `withDefaultExtension` treats **any** dot in the last path segment
+   as an extension. Saving as `Frame 1.5m` or `Bracket v2.1` writes a file
+   called exactly that, with no native extension.
+   `isNativeProjectFileName` then rejects it, so it **doesn't appear in the
+   Android Open dialog, the AI component listing, or `listNativeFiles`**. The
+   file is on disk but can't be found from the app until it is renamed in a
+   file manager. Desktop Open uses `FileType.any`, so it can still pick it.
+3. *The two extensions can collide (low).* `_autoAssignPath` and the path
+   prompt's "already exists" check compare exact file names, so
+   `Bracket.didsa` and `Bracket.DIDSAprt` can sit side by side in one folder
+   and look like duplicates in the Open list.
+4. *Rename forces the extension (low).* Tree Rename builds the new file name
+   with `withDefaultExtension(newName)`. Once the constant changes, that
+   silently turns `Bracket.DIDSAprt` into `Bracket2.didsa`. Changing
+   extension on rename is surprising, though the in-session ref is updated.
+5. *History (now fixed):* before `0e2fa07`, the Android/iOS Open dialog
+   filtered to `.DIDSAprt` only, so files saved by VR were invisible there.
+   Today's builds fix this. No further action is needed beyond keeping the
+   dual-extension reader.
+
+Data safety: the two extensions hold byte-for-byte the same JSON format
+(`schema_version: 1`). The backend never looks at file names, and all
+readers (`isNativeProjectFileName`, desktop `FileType.any`, VR's
+`_NATIVE_FORMATS`) accept both. Nothing is mis-parsed.
+
+**Fix.**
+1. **Constants** (`relative_path.dart`):
+   - `kNativeFileExtension = '.didsa'` (the only extension ever written).
+   - A new `kLegacyNativeFileExtensions = ['.DIDSAprt']`, read-only. Also
+     consider `.didsacad` (the pre-July name, `docs/status.md` ~line 928) so
+     the oldest saves open too. It is cheap to add, but confirm with the
+     tester first.
+   - Rewrite the doc comments: `.didsa` is current, `.DIDSAprt` is legacy and
+     read-only, and VR writes `.didsa`.
+   - Keep `isNativeProjectFileName` accepting both, plus the existing
+     ` (1)`/`_1` duplicate suffixes, but build its regex from the two
+     constants.
+2. **New helpers** in `relative_path.dart`:
+   - `hasNativeExtension(name)`: case-insensitive, current or legacy.
+   - `stripNativeExtension(name)`: used by item 1's title and anywhere a
+     display or base name is derived. Replace the inline regex in
+     `_displayPartName`.
+   - `nativeBaseNameKey(path)`: lower-cased path with any native extension
+     removed, used for collision checks.
+3. **`withDefaultExtension`:** append `.didsa` unless the name already
+   **ends with a native extension** (current or legacy, case-insensitive),
+   not "contains any dot". So `Frame 1.5m` becomes `Frame 1.5m.didsa`,
+   `bracket.DIDSAprt` stays as it is (the user typed it deliberately), and
+   `bracket.txt` becomes `bracket.txt.didsa`. A file is never written without
+   a native extension.
+4. **Existing files keep their own path and extension.** Save/overwrite
+   (`_saveFocusedPart`, Save All) always writes back to the path the Part was
+   opened from, `.DIDSAprt` included. Never rename implicitly: other
+   assemblies' `external_ref`s point at that exact path. New files (first
+   save, Save As, `_autoAssignPath`, AI-created files) get `.didsa`.
+5. **Tree Rename** keeps the file's current extension: if `oldPath` ends with
+   a native extension, reuse that one, otherwise `.didsa`. Converting a
+   project to `.didsa` is a possible later explicit command that also
+   re-stamps references; it is out of scope here.
+6. **Collisions:** `_autoAssignPath` and the path prompt's collision check
+   (`relative_path_dialog.dart` `checkCollision`) treat `X.didsa` and
+   `X.DIDSAprt` in the same folder as the same name, using
+   `nativeBaseNameKey` against `listNativeFiles` (a single `resolve` call
+   can't see the other extension). The prompt's warning names the existing
+   file, e.g. "Bracket.DIDSAprt already exists".
+7. **Remove the hard-coded literals** in `part_screen.dart` (the two desktop
+   dialog suggestions) in favour of `kNativeFileExtension`. Update the AI
+   scoping prompt example to `parts/bracket.didsa`, and check that AI plan
+   paths go through `withDefaultExtension`.
+8. **Docs:** fix the `assembly-scope.md` note (around line 2560), and add a
+   `docs/status.md` line recording the decision (current `.didsa`, legacy
+   `.DIDSAprt` read-only, never renamed implicitly). Do not edit the history
+   in old commit messages.
+9. **No change is needed** in the backend (it never sees file names) or in
+   DIDSA-VR (it already writes `.didsa` and reads both).
+
+**Tests.**
+- `relative_path_test.dart`:
+  - `withDefaultExtension`: `bracket` gives `.didsa`; `Frame 1.5m` gives
+    `Frame 1.5m.didsa`; `bracket.DIDSAprt` and `bracket.didsa` are
+    unchanged; `sub.dir/bracket` gives `sub.dir/bracket.didsa`.
+  - `stripNativeExtension` and `hasNativeExtension` for both extensions,
+    in either case.
+  - `isNativeProjectFileName` still accepts `.DIDSAprt`, `.didsa`,
+    `x.didsa (1)` and `x.DIDSAprt_1`.
+- Collision: with `Bracket.DIDSAprt` present, `_autoAssignPath('Bracket')`
+  gives `Bracket (2).didsa`, and the prompt warns for `Bracket`.
+- Save on a Part opened from `x.DIDSAprt` writes to `x.DIDSAprt`, not
+  `x.didsa`. A first save of a new Part writes `<name>.didsa`.
+- Rename keeps the extension.
+- About 170 existing test references to `.DIDSAprt` across 14 client test
+  files: update the ones asserting **created or suggested** names to
+  `kNativeFileExtension`/`.didsa`. Keep the ones that model **existing files
+  on disk** as `.DIDSAprt`, since that is the legacy-read coverage. The
+  tester's fixtures (`frame_a_save_as_source.DIDSAprt`,
+  `frame_b_save_as_copy.DIDSAprt`) stay as they are for the same reason.
+
+**Manual check (Android).**
+1. Save a new part as `Frame 1.5m`: it is saved as `Frame 1.5m.didsa` and
+   appears in Open.
+2. Open the tester's `Frame_A.DIDSAprt`, edit it and Save: the same
+   `.DIDSAprt` file is overwritten, with no `.didsa` sibling.
+3. A file saved by VR (`*.didsa`) appears in Open alongside `.DIDSAprt` ones.
+
+---
+
 ## Validation checklist for the implementing session
 
 - Backend: `pytest backend/tests/test_add_component.py tests/test_assembly_group.py
@@ -513,6 +663,8 @@ list and the Confirm button disables.
   - The item 2 manual check above (first save, silent re-save, relaunch,
     revoked grant).
   - Open `Frame_A`: the title reads "Frame_A".
+  - The item 9 manual check (dotted name saves as `.didsa`, an opened
+    `.DIDSAprt` is overwritten in place, VR `.didsa` files are listed).
   - New assembly, then add `Frame_A` and `Frame_B`: two different lengths.
   - Save As a part, then add both copies to an assembly: two distinct parts.
   - Mate-pick a face with a part behind it.
