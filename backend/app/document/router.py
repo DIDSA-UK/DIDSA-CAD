@@ -21,6 +21,7 @@ from app.document.assembly_group import (
     branch_alternatives,
     branch_options,
     mate_branch_controls,
+    phase4_pick,
     constraint_status,
     part_with_branch_changes,
     search_branch_changes,
@@ -4313,6 +4314,9 @@ def _solve_new_mate(
     def solve(trial: Part):
         return _solve_with_movement(document, trial, driven, movement, extra_mates=extra)
 
+    if new_mate is not None and not requested:
+        extra = (_phase4_default(document, part, driven, movement, new_mate),)
+
     if requested:
         changes = _validated_branch_changes(document, part, driven, extra, skip, requested)
         result, used = solve(part_with_branch_changes(part, changes))
@@ -4324,6 +4328,27 @@ def _solve_new_mate(
     if found.result is not None:
         return _MateSolve(found.result, found.used, found.changes, needs_confirmation=True, last=result)
     return _MateSolve(None, used, blocked_by=found.blocked_by, conflicting=found.conflicting, last=result)
+
+
+def _phase4_default(document: Document, part: Part, driven: str, movement: "MovementMode", new_mate: Mate) -> Mate:
+    """Phase 4: a NEW mate that names no branch gets, as its default, the nearest root - unless the nearest roots are about equally
+    near, when `assembly_group.phase4_pick` breaks the tie (least bounding-box interference, then a same-facing DISTANCE behind the
+    fixed face). The returned copy names the chosen fields for THIS solve only; the stored mate keeps `branch_source: auto` and
+    takes them from the solve's result."""
+    if new_mate.alignment is not None or new_mate.secondary_flip is not None:
+        return new_mate
+    controls = mate_branch_controls(document, part, new_mate)
+    if not controls:
+        return new_mate
+
+    def solve_variant(variant: Mate):
+        return _solve_with_movement(document, part, driven, movement, extra_mates=(variant,))
+
+    alternatives = branch_alternatives(part, new_mate, controls, solve_variant, bounding_radius(document, part, driven))
+    pick = phase4_pick(document, part, driven, alternatives)
+    if pick is None:
+        return new_mate
+    return dataclasses.replace(new_mate, alignment=pick.alignment, secondary_flip=pick.secondary_flip)
 
 
 def _mate_solve_refused(occurrence_id: str, outcome: _MateSolve, movement: str) -> HTTPException:
