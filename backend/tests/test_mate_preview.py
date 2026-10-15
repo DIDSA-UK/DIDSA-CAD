@@ -132,13 +132,14 @@ def test_atomic_create_stores_the_mate_and_the_solved_pose_together():
 
 def test_atomic_create_that_does_not_converge_stores_nothing():
     """F6: the second mate can only hold on the other side of the first, which Gauss-Newton cannot cross. The refused mate
-    must not stay behind (it used to, leaving the assembly over-constrained and a second Confirm adding a duplicate)."""
+    must not stay behind (it used to, leaving the assembly over-constrained and a second Confirm adding a duplicate).
+    Phase 2b names the refusal: the first (auto) mate would have to move to its other side, which the user confirms."""
     root, conflicting = _bracket_scene()
     before = client.get(f"/document/parts/{root}/occurrences").json()
     for _ in range(2):  # a retry must not stack a duplicate either
         response = client.post(f"/document/parts/{root}/mates", params={"solve": "auto"}, json=conflicting)
         assert response.status_code == 422, response.text
-        assert response.json()["detail"]["type"] == "mate_solve_did_not_converge"
+        assert response.json()["detail"]["type"] == "branch_change_needed"
     assert [m["type"] for m in client.get(f"/document/parts/{root}/mates").json()] == ["distance"]
     assert client.get(f"/document/parts/{root}/occurrences").json() == before
     # The plain create (no `solve`) still stores it, as before.

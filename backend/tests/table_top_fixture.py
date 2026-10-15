@@ -18,6 +18,8 @@ FRAME = "32947d4e-4a96-446b-bad9-063ddde537a9"
 FRAME_BAR_Y0 = f"{FRAME}/cf9fb8c9-0bf3-4964-b2be-9262545dc401"
 FRAME_BAR_X0 = f"{FRAME}/3f6d733a-f609-4a1e-99dc-3cd89a3b5697"
 FRAME_TOP_BAR = f"{FRAME}/87e7b9c5-194a-4649-80b3-fe8d6ff097cd"
+# The bar along x at the far y edge (outer face y = 800, normal +y: face 0).
+FRAME_BAR_Y800 = f"{FRAME}/41f12b22-fd15-493c-8577-80a6a9d0523a"
 
 PLATE_BODY = "b2949a80-f591-4f8c-9e11-b738d3dac8dc"
 FRAME_BODY = "e8d7bb68-342f-4421-9ae2-2a6af71d3a28"

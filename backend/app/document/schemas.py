@@ -1,6 +1,6 @@
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.document.models import (
     BevelGearType,
@@ -3370,6 +3370,27 @@ class MateEntityRefResponse(BaseModel):
     point_ref: PointRefSchema | None = None
 
 
+class BranchChangeRequest(BaseModel):
+    """A branch change the user was shown and confirmed (`MateSolvePreviewResponse.branch_changes`): move the `field`
+    (`alignment` / `secondary_flip`) of the earlier mate `mate_id` to `to`. Only mates whose branch the program chose
+    (`branch_source == "auto"`) are accepted."""
+
+    mate_id: str
+    field: Literal["alignment", "secondary_flip"]
+    to: str | bool
+
+
+class BranchChangeResponse(BaseModel):
+    """One earlier mate a new mate needs on its other branch: `from` -> `to` of `field`, in the convention the mate is stored in."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    mate_id: str
+    field: Literal["alignment", "secondary_flip"]
+    from_value: str | bool = Field(alias="from")
+    to: str | bool
+
+
 class MateResponse(BaseModel):
     """`GET /parts/{part_id}/mates`'s per-entry shape - `app.document.
     models.Mate` itself, the Assembly tree's own Mates list."""
@@ -3385,9 +3406,11 @@ class MateResponse(BaseModel):
     # Mate round-trips through this response unchanged.
     allow_rotation: bool = True
     # The branch the mate stands for (`Mate.alignment` / `Mate.secondary_flip`; `None` = Closest, not resolved yet). `flipped`
-    # above is their deprecated single-flag form, kept in step.
+    # above is their deprecated single-flag form, kept in step. `branch_source` says who chose it: "auto" (Closest, or a default)
+    # or "user" (set explicitly); only "auto" branches may be offered for an automatic change.
     alignment: Literal["aligned", "anti_aligned"] | None = None
     secondary_flip: bool | None = None
+    branch_source: Literal["auto", "user"] = "auto"
 
 
 class MateCreate(BaseModel):
@@ -3417,6 +3440,9 @@ class MateCreate(BaseModel):
     # Closest) they win over `flipped`. A DISTANCE `value` is never negative: the side is `secondary_flip`.
     alignment: Literal["aligned", "anti_aligned"] | None = None
     secondary_flip: bool | None = None
+    # Earlier mates to move to their other branch - exactly the `branch_changes` of the preview the user confirmed. Only read
+    # by `POST /mates?solve=` (never by the preview, which proposes them).
+    branch_changes: list[BranchChangeRequest] = []
 
 
 class MateUpdate(BaseModel):
@@ -3438,6 +3464,8 @@ class MateUpdate(BaseModel):
     # endpoint reads `model_fields_set`, so omitted still means "leave"). `flipped` is the deprecated alias of them.
     alignment: Literal["aligned", "anti_aligned"] | None = None
     secondary_flip: bool | None = None
+    # As `MateCreate.branch_changes`: earlier mates the user confirmed moving so this edit can be met.
+    branch_changes: list[BranchChangeRequest] = []
 
 
 class MateMotionReferencePose(BaseModel):
@@ -3544,6 +3572,15 @@ class MateSolvePreviewResponse(BaseModel):
     # Every member whose pose the preview moves: the driven occurrence first (always listed, its pose is `transform`), then each
     # follower that changed. A client ghosts all of them, so what it shows is what Confirm will store. Empty when not converged.
     members: list[MateSolvePreviewMember] = []
+    # The new mate is only met if these EARLIER mates move to their other branch (`docs/mate-solution-choice-plan.md` Phase 2b): the
+    # ghost already shows that placement, and Confirm must send exactly these back (`MateCreate.branch_changes`). Empty when nothing
+    # has to move. Only mates whose branch the program chose are ever listed.
+    branch_changes: list[BranchChangeResponse] = []
+    # `converged: false` because mates the USER set explicitly stand in the way (their other branch would have worked): change one of
+    # them to allow this mate. Never moved automatically.
+    blocked_by: list[str] = []
+    # `converged: false` and no branch combination works: the existing mates this one fights with (each, suppressed, lets it converge).
+    conflicting: list[str] = []
 
 
 class ComponentPatternAxisSchema(BaseModel):

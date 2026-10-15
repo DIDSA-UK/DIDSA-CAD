@@ -29,7 +29,10 @@ instead:
 from __future__ import annotations
 
 import math
+import time
+from collections import deque
 from dataclasses import dataclass, field, replace
+from typing import Callable, Iterable
 
 import numpy as np
 from OCC.Core.Bnd import Bnd_Box
@@ -40,6 +43,7 @@ from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
     alignment_pairs,
     apply_flipped_alias,
+    branch_fields,
     resolve_oriented_branch,
     rotation_onto_pairs,
     sync_flipped,
@@ -73,7 +77,7 @@ from app.document.constraint_model import (
     wish_cost,
 )
 from app.document.extrude import compute_part_bodies
-from app.document.models import Document, Mate, MateType, Part, RigidTransform
+from app.document.models import BRANCH_AUTO, MATE_ALIGNED, MATE_ANTI_ALIGNED, Document, Mate, MateType, Part, RigidTransform
 
 _JACOBIAN_STEP = 1e-6  # same step as `assembly_solver._DOF_JACOBIAN_STEP`
 _DEFAULT_RANK_RTOL = 1e-6  # singular values <= rtol * sigma_max count as zero
@@ -459,7 +463,10 @@ def analyze_group(
 
 # ---- group solve: weighted retraction (S2) -----------------------------------
 
-_SOLVE_TOL = 1e-7  # residual_inf at or below this = converged
+_SOLVE_TOL = 1e-7  # the solver iterates until the residual is at or below this
+# What counts as converged / worth a fallback: imported geometry carries ~1e-6 mm of noise, so a consistent but redundant
+# system (two parallel mates to the same bars) can stall just above `_SOLVE_TOL` and is still a solution.
+_NOISE_TOL = 1e-6
 _MAX_ITERATIONS = 60
 _MAX_ROTATION_STEP = 0.6  # rad per Gauss-Newton step (any member) before scaling down
 _FOLLOWER_WEIGHT = 1e-4  # follower metric = this x the grabbed metric (follower cost ~ 0)
@@ -749,7 +756,7 @@ def solve_group(
     poses, residual_inf, iterations = _retract(model, seed, weights)
     seeded_by = "gauss-newton"
 
-    if residual_inf > _SOLVE_TOL and len(model.member_ids) > 1:
+    if residual_inf > _NOISE_TOL and len(model.member_ids) > 1:
         # Followers at ~0 cost soak up the whole correction even when their own mates cannot absorb it (a chain of
         # mitre-plane mates leaves only two spins of orientation): the step is then huge for almost no residual
         # decrease and Gauss-Newton crawls to `_MAX_ITERATIONS` without converging, though the SAME mates solve
@@ -759,11 +766,11 @@ def solve_group(
                 model, seed, _solve_weights(model, grabbed_id, lever_arm, follower_weight)
             )
             iterations += more
-            if retry_residual <= _SOLVE_TOL:
+            if retry_residual <= _NOISE_TOL:
                 poses, residual_inf, seeded_by = retry_poses, retry_residual, "gauss-newton-reweighted"
                 break
 
-    if residual_inf > _SOLVE_TOL and len(model.member_ids) == 1:
+    if residual_inf > _NOISE_TOL and len(model.member_ids) == 1:
         guess = wanted_pose if wanted_pose is not None else stored[grabbed_id]
         fallback = solve_occurrence_from_guess(document, part, grabbed_id, guess, extra_mates)
         if fallback.converged:
@@ -803,7 +810,7 @@ def solve_group(
                         poses, residual_inf = cand, cand_residual
                         seeded_by = "predicted-seed"
 
-    converged = residual_inf <= _SOLVE_TOL
+    converged = residual_inf <= _NOISE_TOL
     constraint_model = export_constraint_model(model) if converged else None
     if converged and wanted_pose is not None and constraint_model is not None:
         refined = _nearest_point_stage(model, constraint_model, poses, stored, wanted_pose, grabbed_id, lever_arm)
@@ -931,6 +938,209 @@ def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_a
         if e >= _MAX_STEP_MIN_E:
             max_step = d * math.sqrt(_MAX_STEP_TOL / e)
     return jump, max_step
+
+
+# ---- branch search: a new mate that needs an earlier mate on its other branch ---------------------------------------------------
+#
+# `docs/mate-solution-choice-plan.md`, Phase 2b. Gauss-Newton keeps a mate on the branch it stands for, so a new mate that can
+# only be met with an EARLIER mate on its other root (F6: a DISTANCE put the bracket above the base, a COINCIDENT then needs
+# it below) cannot be solved from the current branches. The search below looks for the fewest earlier mates to move to their
+# other branch - only ones whose branch the program chose (`branch_source == "auto"`) - and the caller shows the user that
+# before anything is stored. It runs ONLY in the create / edit flow (preview, `POST /mates?solve=`, `PATCH ?solve=`), never in a
+# drag, `mate-motion` or a plain `/solve`: a drag that needs another branch simply stops at the limit.
+
+BRANCH_SEARCH_MAX_SOLVES = 24
+BRANCH_SEARCH_SECONDS = 1.5
+_CONFLICT_RESERVE = 4  # solves kept back for the "which mate does it fight with" step
+_PAIR_CANDIDATES = 6  # pairs are tried among this many of the best-ordered single changes
+
+
+@dataclass(frozen=True)
+class BranchChange:
+    """One earlier mate moved to its other branch, in the convention the mate is STORED in (see `orient_branch`)."""
+
+    mate_id: str
+    field: str  # "alignment" | "secondary_flip"
+    from_value: str | bool
+    to_value: str | bool
+
+
+@dataclass(frozen=True)
+class BranchOption:
+    """A change a search may try: `change` on `mate` (stored mate), by `source` the program or the user chose its branch."""
+
+    mate: Mate
+    change: BranchChange
+    graph_distance: int
+    residual: float
+
+
+@dataclass
+class BranchSearchOutcome:
+    result: GroupSolveResult | None = None  # the converged answer WITH `changes` applied (only for auto changes)
+    used: str = "group"  # which movement mode produced `result`
+    changes: tuple[BranchChange, ...] = ()
+    blocked_by: tuple[str, ...] = ()  # user-set mates whose other branch would have worked
+    conflicting: tuple[str, ...] = ()  # mates that, suppressed, let the new mate converge: what it fights with
+    solves: int = 0
+
+
+def part_with_branch_changes(part: Part, changes: Iterable[BranchChange]) -> Part:
+    """A copy of `part` whose mates carry `changes` (the stored mates are not touched)."""
+    by_id: dict[str, dict] = {}
+    for change in changes:
+        by_id.setdefault(change.mate_id, {})[change.field] = change.to_value
+    return replace(part, mates=[replace(m, **by_id[m.id]) if m.id in by_id else m for m in part.mates])
+
+
+def _other_alignment(value: str | None) -> str:
+    return MATE_ALIGNED if value == MATE_ANTI_ALIGNED else MATE_ANTI_ALIGNED
+
+
+def branch_options(
+    document: Document,
+    part: Part,
+    grabbed_id: str,
+    extra_mates: tuple[Mate, ...] = (),
+    skip_mate_ids: frozenset[str] = frozenset(),
+    failed: GroupSolveResult | None = None,
+) -> list[BranchOption]:
+    """Every single change a branch search may try on the mates of `grabbed_id`'s component, ordered: graph distance from the
+    new mates' occurrences first (mates on the same occurrence before mates further away), then the residual each mate has at
+    `failed`'s end point (the most violated first). `skip_mate_ids` (the new / edited mate) are never candidates."""
+    model = build_group_model(document, part, grabbed_id, extra_mates=extra_mates)
+    stored = {m.id: m for m in part.mates}
+    placed = dict(model.base_transforms)
+    end = dict(placed)
+    if failed is not None:
+        end.update({oid: pose for oid, pose in failed.poses.items() if oid in end})
+    anchors = {top_level_occurrence_id(r.occurrence_id) for m in extra_mates for r in m.references}
+    for mate_id in skip_mate_ids:
+        if mate_id in stored:
+            anchors.update(top_level_occurrence_id(r.occurrence_id) for r in stored[mate_id].references)
+    adjacency: dict[str, set[str]] = {}
+    for mate, _a, _b in model.sides:
+        ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
+        adjacency.setdefault(ids[0], set()).add(ids[1])
+        adjacency.setdefault(ids[1], set()).add(ids[0])
+    distance = {a: 0 for a in anchors}
+    queue = deque(anchors)
+    while queue:
+        node = queue.popleft()
+        for nxt in adjacency.get(node, ()):
+            if nxt not in distance:
+                distance[nxt] = distance[node] + 1
+                queue.append(nxt)
+    options: list[BranchOption] = []
+    for mate, a, b in model.sides:
+        if mate.id in skip_mate_ids or mate.id not in stored:
+            continue
+        d, f = model._world(a, placed), model._world(b, placed)
+        fields = branch_fields(mate, d, f)
+        alignment, flip = model.branches.get(mate.id, (None, None))
+        ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
+        hops = min(distance.get(i, 1 << 20) for i in ids)
+        residual = _mate_residual_vector(mate, model._world(a, end), model._world(b, end))
+        worst = max((abs(x) for x in residual), default=0.0)
+        if "alignment" in fields and alignment is not None:
+            options.append(BranchOption(stored[mate.id], BranchChange(mate.id, "alignment", alignment, _other_alignment(alignment)), hops, worst))
+        if "secondary_flip" in fields and flip is not None:
+            options.append(BranchOption(stored[mate.id], BranchChange(mate.id, "secondary_flip", flip, not flip), hops, worst))
+    options.sort(key=lambda o: (o.graph_distance, -o.residual))
+    return options
+
+
+def search_branch_changes(
+    document: Document,
+    part: Part,
+    solve: Callable[[Part], tuple[GroupSolveResult, str]],
+    grabbed_id: str,
+    new_mate: Mate | None = None,
+    skip_mate_ids: frozenset[str] = frozenset(),
+    failed: GroupSolveResult | None = None,
+    max_solves: int = BRANCH_SEARCH_MAX_SOLVES,
+    seconds: float = BRANCH_SEARCH_SECONDS,
+) -> BranchSearchOutcome:
+    """The fewest earlier mates to move to their other branch so the new mate (`new_mate`, or an already-edited stored one) can
+    be met. `solve(part) -> (result, movement_used)` is the caller's own solve of the new mate against the mates `part` carries.
+
+    1. Single changes of an `auto` mate, one field at a time, in `branch_options` order; every converged one is kept, the
+       one that moves the parts least wins (`pose_delta` in `_metric`).
+    2. If no single works, pairs among the best-ordered few.
+    3. If no `auto` change works but one on a `user` mate would: `blocked_by` names it (never changed for the user).
+    4. If no branch combination works: `conflicting` = the existing mates that, suppressed one at a time, let it converge.
+    A budget of solves and seconds bounds all of it; the conflict step keeps a few solves in reserve."""
+    started = time.monotonic()
+    outcome = BranchSearchOutcome()
+    extra = (new_mate,) if new_mate is not None else ()
+
+    def spent(reserve: int = 0) -> bool:
+        return outcome.solves >= max_solves - reserve or time.monotonic() - started > seconds
+
+    def run(trial: Part) -> tuple[GroupSolveResult, str]:
+        outcome.solves += 1
+        return solve(trial)
+
+    options = branch_options(document, part, grabbed_id, extra, skip_mate_ids, failed)
+    lever = bounding_radius(document, part, grabbed_id)
+    metric = _metric(lever)
+    stored = {o.id: o.transform for o in part.occurrences}
+
+    def movement(result: GroupSolveResult) -> float:
+        return sum(float(np.linalg.norm(pose_delta(pose, stored[oid]) * metric)) for oid, pose in result.poses.items() if oid in stored)
+
+    def best_of(candidates: list[tuple[tuple[BranchChange, ...], GroupSolveResult, str]]):
+        return min(candidates, key=lambda c: movement(c[1])) if candidates else None
+
+    auto = [o for o in options if o.mate.branch_source == BRANCH_AUTO]
+    user = [o for o in options if o.mate.branch_source != BRANCH_AUTO]
+
+    singles: list[tuple[tuple[BranchChange, ...], GroupSolveResult, str]] = []
+    for option in auto:
+        if spent(_CONFLICT_RESERVE):
+            break
+        result, used = run(part_with_branch_changes(part, [option.change]))
+        if result.converged:
+            singles.append(((option.change,), result, used))
+    best = best_of(singles)
+    if best is None:
+        pool = auto[:_PAIR_CANDIDATES]
+        pairs: list[tuple[tuple[BranchChange, ...], GroupSolveResult, str]] = []
+        for i in range(len(pool)):
+            for j in range(i + 1, len(pool)):
+                if spent(_CONFLICT_RESERVE):
+                    break
+                changes = (pool[i].change, pool[j].change)
+                result, used = run(part_with_branch_changes(part, changes))
+                if result.converged:
+                    pairs.append((changes, result, used))
+        best = best_of(pairs)
+    if best is not None:
+        outcome.changes, outcome.result, outcome.used = best[0], best[1], best[2]
+        return outcome
+
+    blockers: list[str] = []
+    for option in user:
+        if spent(_CONFLICT_RESERVE):
+            break
+        result, _used = run(part_with_branch_changes(part, [option.change]))
+        if result.converged and option.change.mate_id not in blockers:
+            blockers.append(option.change.mate_id)
+    if blockers:
+        outcome.blocked_by = tuple(blockers)
+        return outcome
+
+    fighting: list[str] = []
+    in_play = {m.id for m in discover_component(part, grabbed_id, frozenset(), extra).mates}
+    for mate in part.mates:
+        if spent() or mate.id not in in_play or mate.id in skip_mate_ids or mate.suppressed or (new_mate is not None and mate.id == new_mate.id):
+            continue
+        trial = replace(part, mates=[replace(m, suppressed=True) if m.id == mate.id else m for m in part.mates])
+        result, _used = run(trial)
+        if result.converged:
+            fighting.append(mate.id)
+    outcome.conflicting = tuple(fighting)
+    return outcome
 
 
 # ---- per-occurrence constraint status (assembly tree badge) -------------------

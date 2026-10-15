@@ -2069,6 +2069,7 @@ def _mate_to_dict(mate: Mate) -> dict:
         # their deprecated single-flag form: both are written so an older reader still sees a coherent mate.
         "alignment": mate.alignment,
         "secondary_flip": mate.secondary_flip,
+        "branch_source": mate.branch_source,
     }
 
 
@@ -2096,6 +2097,8 @@ def _mate_from_dict(data: dict) -> Mate:
         suppressed=data.get("suppressed", False),
         alignment=alignment,
         secondary_flip=secondary_flip,
+        # Who chose the branch; a file that predates the key reads as "auto" (offered for an automatic change, with confirmation).
+        branch_source=data.get("branch_source", "auto"),
         # Test report item 4: purely additive, same `.get(key, default)`
         # evolutionary-field convention every other Mate field already uses -
         # a file saved before this existed simply lacks the key and imports

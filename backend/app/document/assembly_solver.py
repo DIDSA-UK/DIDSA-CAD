@@ -758,6 +758,23 @@ def resolve_branch(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _Re
     return replace(mate, alignment=alignment, secondary_flip=flip)
 
 
+def branch_fields(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _ResolvedGeometry) -> tuple[str, ...]:
+    """The branch fields (`"alignment"`, `"secondary_flip"`) this mate's geometry actually uses - the ones a branch search may
+    flip. `alignment` when the mate has a direction pair; `secondary_flip` for the side of a plane / point DISTANCE, the spin
+    half-turn of a rotation-locked CONCENTRIC, and an ANGLE's supplement."""
+    effective = _effective_mate(mate, driven_world, fixed_world)
+    fields: list[str] = []
+    if _alignment_pair(effective, driven_world, fixed_world) is not None:
+        fields.append("alignment")
+    if (
+        _signed_offset(effective, driven_world, fixed_world) is not None
+        or _perp_pair(effective, driven_world, fixed_world) is not None
+        or (effective.type == MateType.ANGLE and effective.value is not None and _angle_degrees(driven_world, fixed_world) is not None)
+    ):
+        fields.append("secondary_flip")
+    return tuple(fields)
+
+
 def orient_branch(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _ResolvedGeometry, swapped: bool) -> Mate:
     """Converts a mate's stored (CANONICAL) branch to the orientation a solve uses, and back (it is its own inverse).
 

@@ -3331,6 +3331,9 @@ class MateType(str, Enum):
 MATE_ALIGNED = "aligned"
 MATE_ANTI_ALIGNED = "anti_aligned"
 MATE_ALIGNMENTS = (MATE_ALIGNED, MATE_ANTI_ALIGNED)
+# `Mate.branch_source` values: who chose the branch (see `Mate`).
+BRANCH_AUTO = "auto"
+BRANCH_USER = "user"
 
 
 @dataclass(frozen=True)
@@ -3375,6 +3378,11 @@ class Mate:
     `None` means "Closest": resolved from the pose the first solve starts from (`assembly_solver.resolve_branch`) and
     then written back. A field a mate's geometry does not use stays `None`.
 
+    `branch_source` says who chose the branch: `"auto"` (Closest resolved it, or a legacy `flipped=False` default) or
+    `"user"` (the user set Aligned / Flip side explicitly). When a NEW mate can only be met if an earlier mate sits on its
+    other branch, only `auto` branches are offered for an automatic change - and only with the user's confirmation
+    (`assembly_group.search_branch_changes`); a `user` branch is reported, never moved.
+
     `flipped` is the DEPRECATED single-flag form of these, kept readable/writable for one release: for COINCIDENT
     plane-plane `flipped=True` means `alignment == "aligned"`, for ANGLE it is `secondary_flip`; CONCENTRIC / PARALLEL /
     DISTANCE never used it. It is kept in step with the two fields (`sync_flipped`).
@@ -3402,6 +3410,7 @@ class Mate:
     allow_rotation: bool = True
     alignment: str | None = None
     secondary_flip: bool | None = None
+    branch_source: str = "auto"
 
 
 @dataclass

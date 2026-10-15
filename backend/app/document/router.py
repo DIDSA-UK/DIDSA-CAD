@@ -5,7 +5,7 @@ import logging
 import math
 import time
 import uuid
-from typing import Literal
+from typing import Iterable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
@@ -15,14 +15,20 @@ from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances, top_level_occurrence_id
 from app.document.assembly_group import (
+    BranchChange,
     GroupSolveResult,
+    branch_options,
     constraint_status,
+    part_with_branch_changes,
+    search_branch_changes,
     mate_with_flipped_alias,
     pose_delta,
     solve_group,
     validate_mate_geometry,
 )
 from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
+from app.document.models import BRANCH_AUTO, BRANCH_USER
+from app.document.assembly_group import GroupSolveQuality
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.jobs import JobStatus, cancel_job, get_job
@@ -200,6 +206,7 @@ from app.document.schemas import (
     MateMotionRequest,
     ConstraintStatusEntry,
     MateMotionResponse,
+    BranchChangeResponse,
     MateSolvePreviewMember,
     MateSolvePreviewResponse,
     MateUpdate,
@@ -3453,6 +3460,7 @@ def _mate_response(mate: Mate) -> MateResponse:
         allow_rotation=mate.allow_rotation,
         alignment=mate.alignment,
         secondary_flip=mate.secondary_flip,
+        branch_source=mate.branch_source,
     )
 
 
@@ -3814,23 +3822,30 @@ def create_mate(
     if solve is not None:
         driven = _mate_solve_target(part, mate, occurrence_id)
         if driven is not None:
-            result, used = _solve_with_movement(get_document(), part, driven, solve, extra_mates=(mate,))
-            if not result.converged:
-                raise _mate_solve_did_not_converge(driven, result, minimal_movement=solve == "minimal")
-            _commit_group(part, result)
-            _fill_new_mate_branch(mate, result)
-            response.headers["X-Movement-Used"] = used
+            outcome = _solve_new_mate(get_document(), part, driven, solve, mate, payload.branch_changes)
+            if outcome.result is None or outcome.needs_confirmation:
+                raise _mate_solve_refused(driven, outcome, solve)
+            _apply_branch_changes(part, outcome.changes)
+            _commit_group(part, outcome.result)
+            _fill_new_mate_branch(mate, outcome.result)
+            response.headers["X-Movement-Used"] = outcome.used
     part.mates.append(mate)
     return _mate_response(mate)
 
 
 def _mate_with_branch_fields(document: Document, part: Part, mate: Mate, fields_set: set[str]) -> Mate:
     """A new mate with its branch fields settled: a payload that names `alignment` / `secondary_flip` (even as null = Closest)
-    is taken as it is; one that carries only the deprecated `flipped` has it read into them (`mate_with_flipped_alias`)."""
+    is taken as it is; one that carries only the deprecated `flipped` has it read into them (`mate_with_flipped_alias`).
+    `branch_source` records who chose: a named branch, or a `flipped=True` that was read into one, is the user's; Closest and
+    the `flipped=False` default are not (`"auto"`: the mate a later mate may ask to move, with confirmation)."""
     if "alignment" in fields_set or "secondary_flip" in fields_set:
         sync_flipped(mate)
+        mate.branch_source = BRANCH_USER if (mate.alignment is not None or mate.secondary_flip is not None) else BRANCH_AUTO
         return mate
-    return mate_with_flipped_alias(document, part, mate)
+    aliased = mate_with_flipped_alias(document, part, mate)
+    named = aliased.alignment is not None or aliased.secondary_flip is not None
+    aliased.branch_source = BRANCH_USER if (mate.flipped and named) else BRANCH_AUTO
+    return aliased
 
 
 def _fill_new_mate_branch(mate: Mate, result: GroupSolveResult) -> None:
@@ -3868,7 +3883,7 @@ def update_mate(
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
     _reject_negative_distance(mate.type.value, payload.value)
-    previous = (mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip)
+    previous = (mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip, mate.branch_source)
     driven = _mate_solve_target(part, mate, occurrence_id) if solve is not None else None
     fields = payload.model_fields_set
     if payload.value is not None:
@@ -3888,20 +3903,34 @@ def update_mate(
         try:
             aliased = mate_with_flipped_alias(get_document(), part, mate, override=True)
         except HTTPException:
-            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip = previous
+            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip, mate.branch_source = previous
             raise
         mate.alignment, mate.secondary_flip = aliased.alignment, aliased.secondary_flip
+    # Who chose the branch now: setting it (a value, or the deprecated `flipped` moving it) is the user's choice; resetting both
+    # fields to null hands it back to Closest.
+    named = ("alignment" in fields and payload.alignment is not None) or ("secondary_flip" in fields and payload.secondary_flip is not None)
+    alias_moved = (
+        payload.flipped is not None
+        and "alignment" not in fields
+        and "secondary_flip" not in fields
+        and (mate.alignment, mate.secondary_flip) != (previous[4], previous[5])
+    )
+    if named or alias_moved:
+        mate.branch_source = BRANCH_USER
+    elif "alignment" in fields or "secondary_flip" in fields:
+        mate.branch_source = BRANCH_AUTO
     sync_flipped(mate)
     if solve is not None and driven is not None:
         try:
-            result, used = _solve_with_movement(get_document(), part, driven, solve)
-            if not result.converged:
-                raise _mate_solve_did_not_converge(driven, result, minimal_movement=solve == "minimal")
+            outcome = _solve_new_mate(get_document(), part, driven, solve, None, payload.branch_changes, frozenset({mate.id}))
+            if outcome.result is None or outcome.needs_confirmation:
+                raise _mate_solve_refused(driven, outcome, solve)
         except HTTPException:
-            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip = previous
+            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip, mate.branch_source = previous
             raise
-        _commit_group(part, result)
-        response.headers["X-Movement-Used"] = used
+        _apply_branch_changes(part, outcome.changes)
+        _commit_group(part, outcome.result)
+        response.headers["X-Movement-Used"] = outcome.used
     return _mate_response(mate)
 
 
@@ -4208,7 +4237,7 @@ def _mate_solve_did_not_converge(
     message = (
         "These mates can't be met by moving only this part - untick Minimal movement to let the parts it is mated to move too."
         if minimal_movement
-        else "The mates on this part can't all be satisfied together."
+        else "No placement satisfies these mates together."
     )
     return HTTPException(
         status_code=422,
@@ -4220,6 +4249,123 @@ def _mate_solve_did_not_converge(
             "detail": message,
         },
     )
+
+
+def _branch_change_responses(changes: Iterable[BranchChange]) -> list[BranchChangeResponse]:
+    return [BranchChangeResponse(mate_id=c.mate_id, field=c.field, from_value=c.from_value, to=c.to_value) for c in changes]
+
+
+@dataclasses.dataclass
+class _MateSolve:
+    """The outcome of solving a new (or edited) mate with the branch search (`_solve_new_mate`)."""
+
+    result: GroupSolveResult | None  # converged answer, WITH `changes` applied; None = refused
+    used: Literal["group", "minimal"]
+    changes: tuple[BranchChange, ...] = ()
+    needs_confirmation: bool = False  # `changes` were found by the search and the user has not confirmed them yet
+    blocked_by: tuple[str, ...] = ()
+    conflicting: tuple[str, ...] = ()
+    last: GroupSolveResult | None = None  # the plain solve (what `dof` is reported from)
+
+
+def _validated_branch_changes(
+    document: Document, part: Part, driven: str, extra: tuple[Mate, ...], skip: frozenset[str], requested
+) -> tuple[BranchChange, ...]:
+    """The changes the user confirmed, checked: each must be a flip of a field an `auto` mate of this group really has."""
+    options = {(o.change.mate_id, o.change.field): o for o in branch_options(document, part, driven, extra, skip)}
+    changes = []
+    for request in requested:
+        option = options.get((request.mate_id, request.field))
+        if option is None or option.mate.branch_source != BRANCH_AUTO or option.change.to_value != request.to:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "type": "invalid_branch_change",
+                    "mate_id": request.mate_id,
+                    "field": request.field,
+                    "detail": "Only the other branch of a mate the program chose (not one set explicitly) can be applied automatically.",
+                },
+            )
+        changes.append(option.change)
+    return tuple(changes)
+
+
+def _solve_new_mate(
+    document: Document,
+    part: Part,
+    driven: str,
+    movement: "MovementMode",
+    new_mate: Mate | None,
+    requested=(),
+    skip: frozenset[str] = frozenset(),
+) -> _MateSolve:
+    """Solves the new mate (`new_mate`, or a stored mate just edited in place: `new_mate=None`, its id in `skip`) the way
+    the preview does, and - only here, in the create / edit flow - searches for earlier mates to move to their other branch
+    when the persisted branches cannot be met (`assembly_group.search_branch_changes`). `requested` are changes the user
+    already confirmed: they are applied first and the result stands or falls with them."""
+    extra = (new_mate,) if new_mate is not None else ()
+
+    def solve(trial: Part):
+        return _solve_with_movement(document, trial, driven, movement, extra_mates=extra)
+
+    if requested:
+        changes = _validated_branch_changes(document, part, driven, extra, skip, requested)
+        result, used = solve(part_with_branch_changes(part, changes))
+        return _MateSolve(result if result.converged else None, used, changes, last=result)
+    result, used = solve(part)
+    if result.converged:
+        return _MateSolve(result, used, last=result)
+    found = search_branch_changes(document, part, solve, driven, new_mate, skip, failed=result)
+    if found.result is not None:
+        return _MateSolve(found.result, found.used, found.changes, needs_confirmation=True, last=result)
+    return _MateSolve(None, used, blocked_by=found.blocked_by, conflicting=found.conflicting, last=result)
+
+
+def _mate_solve_refused(occurrence_id: str, outcome: _MateSolve, movement: str) -> HTTPException:
+    """The 422 for a new / edited mate that is not stored, saying which of the cases applies instead of the old catch-all:
+    earlier mates must move (and the user has not confirmed), a mate the user set stands in the way, a genuine conflict."""
+    if outcome.needs_confirmation:
+        return HTTPException(
+            status_code=422,
+            detail={
+                "type": "branch_change_needed",
+                "occurrence_id": occurrence_id,
+                "branch_changes": [c.model_dump(by_alias=True) for c in _branch_change_responses(outcome.changes)],
+                "detail": "To fit, other mates must move to their other side or orientation - confirm to apply them.",
+            },
+        )
+    if outcome.blocked_by:
+        return HTTPException(
+            status_code=422,
+            detail={
+                "type": "mate_blocked_by_user_branch",
+                "occurrence_id": occurrence_id,
+                "blocked_by": list(outcome.blocked_by),
+                "detail": "A mate you set to one side or orientation stands in the way - change it to allow this mate.",
+            },
+        )
+    if outcome.conflicting:
+        return HTTPException(
+            status_code=422,
+            detail={
+                "type": "mate_conflict",
+                "occurrence_id": occurrence_id,
+                "conflicting": list(outcome.conflicting),
+                "detail": "This mate conflicts with existing mates - no side or orientation of them satisfies it.",
+            },
+        )
+    return _mate_solve_did_not_converge(
+        occurrence_id, outcome.last or GroupSolveResult(False, {}, None, GroupSolveQuality(0.0, None, 0, "")), minimal_movement=movement == "minimal"
+    )
+
+
+def _apply_branch_changes(part: Part, changes: Iterable[BranchChange]) -> None:
+    """Writes confirmed branch changes onto the stored mates (their `branch_source` stays what it was)."""
+    by_id = {m.id: m for m in part.mates}
+    for change in changes:
+        mate = by_id[change.mate_id]
+        setattr(mate, change.field, change.to_value)
+        sync_flipped(mate)
 
 
 def _commit_group(part: Part, result: GroupSolveResult) -> None:
@@ -4430,16 +4576,23 @@ def preview_mate_solve_endpoint(
             secondary_flip=payload.secondary_flip,
         )
         extra_mate = _mate_with_branch_fields(get_document(), solve_part, extra_mate, payload.model_fields_set)
-        result, used = _solve_with_movement(get_document(), solve_part, occurrence_id, movement, extra_mates=(extra_mate,))
+        # The preview PROPOSES branch changes (never applies them, never stores anything): a new mate that only fits with earlier
+        # `auto` mates on their other branch converges here with `branch_changes`, and the ghost shows that placement.
+        outcome = _solve_new_mate(
+            get_document(), solve_part, occurrence_id, movement, extra_mate, skip=frozenset({replace_mate_id}) if replace_mate_id else frozenset()
+        )
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)
-    if not result.converged:
-        return MateSolvePreviewResponse(converged=False, transform=None)
+    if outcome.result is None:
+        return MateSolvePreviewResponse(
+            converged=False, transform=None, blocked_by=list(outcome.blocked_by), conflicting=list(outcome.conflicting)
+        )
     return MateSolvePreviewResponse(
         converged=True,
-        transform=_rigid_transform_response(result.poses[occurrence_id]),
-        movement_used=used,
-        members=_preview_members(part, occurrence_id, result),
+        transform=_rigid_transform_response(outcome.result.poses[occurrence_id]),
+        movement_used=outcome.used,
+        members=_preview_members(part, occurrence_id, outcome.result),
+        branch_changes=_branch_change_responses(outcome.changes),
     )
 
 
