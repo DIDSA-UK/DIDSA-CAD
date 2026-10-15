@@ -41,7 +41,11 @@ from OCC.Core.BRepBndLib import brepbndlib
 from app.document.assembly import top_level_occurrence_id
 from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
+    _angle_hinge,
+    _angle_target_radians,
+    _effective_mate,
     alignment_pairs,
+    hinge_swing_state,
     apply_flipped_alias,
     branch_fields,
     resolve_oriented_branch,
@@ -286,7 +290,10 @@ def build_group_model(
         )
         if swapped:
             first, second = second, first
-        sides.append((mate, side(first), side(second)))
+        a_side, b_side = side(first), side(second)
+        if mate.type == MateType.ANGLE:
+            a_side, b_side = _with_hinge(mate, component.mates, side, a_side, b_side)
+        sides.append((mate, a_side, b_side))
         swaps.append(swapped)
 
     model = GroupModel(
@@ -321,6 +328,31 @@ def build_group_model(
     return model
 
 
+def _with_hinge(mate: Mate, mates: Iterable[Mate], side, a_side: "_Side", b_side: "_Side") -> tuple["_Side", "_Side"]:
+    """An ANGLE mate's two sides, the one carrying the mate's SECOND reference given the HINGE: the axis of a CONCENTRIC (or
+    edge-on-edge COINCIDENT) mate between the same two occurrences, on that same occurrence (so the hinge direction does not
+    depend on which side a solve calls "driven"). Unchanged when the pair has no hinge."""
+    ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
+    if ids[0] == ids[1]:
+        return a_side, b_side
+    for other in mates:
+        if other is mate or other.type not in (MateType.CONCENTRIC, MateType.COINCIDENT) or len(other.references) != 2:
+            continue
+        if {top_level_occurrence_id(r.occurrence_id) for r in other.references} != set(ids):
+            continue
+        s0, s1 = side(other.references[0]), side(other.references[1])
+        if _effective_mate(other, s0.geometry, s1.geometry).type != MateType.CONCENTRIC:
+            continue
+        for candidate in (s0, s1):
+            g = candidate.geometry
+            if candidate.occurrence_id == ids[1] and g.axis_origin is not None and g.direction is not None:
+                hinge = (g.axis_origin, g.direction)
+                if a_side.occurrence_id == ids[1]:
+                    return replace(a_side, geometry=replace(a_side.geometry, hinge=hinge)), b_side
+                return a_side, replace(b_side, geometry=replace(b_side.geometry, hinge=hinge))
+    return a_side, b_side
+
+
 def mate_world_geometries(document: Document, part: Part, mate: Mate) -> tuple[_ResolvedGeometry, _ResolvedGeometry]:
     """`mate`'s two references resolved into world space at the STORED poses (the first reference is returned first)."""
     cache: dict[str, dict] = {}
@@ -331,7 +363,35 @@ def mate_world_geometries(document: Document, part: Part, mate: Mate) -> tuple[_
             cache[target.id] = compute_part_bodies(target)
         geometry = _resolve_local_geometry(target, cache[target.id], ref)
         worlds.append(geometry if transform is None else _place_in_world(geometry, transform))
+    if mate.type == MateType.ANGLE:
+        worlds = _with_world_hinge(document, part, mate, worlds, cache)
     return worlds[0], worlds[1]
+
+
+def _with_world_hinge(document: Document, part: Part, mate: Mate, worlds: list, cache: dict) -> list:
+    """`worlds` (the ANGLE mate's two world geometries, references order) with the hinge attached to the second one, if a
+    CONCENTRIC / edge-on-edge COINCIDENT between the same two occurrences gives it one (see `_with_hinge`)."""
+    ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
+    if ids[0] == ids[1]:
+        return worlds
+    for other in part.mates:
+        if other.id == mate.id or other.suppressed or other.type not in (MateType.CONCENTRIC, MateType.COINCIDENT) or len(other.references) != 2:
+            continue
+        if {top_level_occurrence_id(r.occurrence_id) for r in other.references} != set(ids):
+            continue
+        pair = []
+        for ref in other.references:
+            target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
+            if target.id not in cache:
+                cache[target.id] = compute_part_bodies(target)
+            geometry = _resolve_local_geometry(target, cache[target.id], ref)
+            pair.append(geometry if transform is None else _place_in_world(geometry, transform))
+        if _effective_mate(other, pair[0], pair[1]).type != MateType.CONCENTRIC:
+            continue
+        for ref, geometry in zip(other.references, pair):
+            if top_level_occurrence_id(ref.occurrence_id) == ids[1] and geometry.axis_origin is not None and geometry.direction is not None:
+                return [worlds[0], replace(worlds[1], hinge=(geometry.axis_origin, geometry.direction))]
+    return worlds
 
 
 def validate_mate_geometry(document: Document, part: Part, mate: Mate) -> None:
@@ -520,6 +580,17 @@ def pose_delta(new: RigidTransform, old: RigidTransform) -> np.ndarray:
     return np.concatenate([np.array(new.translation) - np.array(old.translation), _rotvec_between(new, old)])
 
 
+def _rotate_member_about(poses: dict[str, RigidTransform], oid: str, origin, axis, angle: float) -> None:
+    """Rotates member `oid` by `angle` (radians) about the world line through `origin` along `axis`."""
+    axis_v = np.array(_normalize(axis), dtype=float)
+    k = np.array([[0.0, -axis_v[2], axis_v[1]], [axis_v[2], 0.0, -axis_v[0]], [-axis_v[1], axis_v[0], 0.0]])
+    rot = np.eye(3) + math.sin(angle) * k + (1.0 - math.cos(angle)) * (k @ k)
+    p = np.array(origin, dtype=float)
+    t = np.array(poses[oid].translation, dtype=float)
+    moved = p + rot @ (t - p)
+    poses[oid] = replace(apply_delta(poses[oid], (0.0, 0.0, 0.0, *(axis_v * angle))), translation=(float(moved[0]), float(moved[1]), float(moved[2])))
+
+
 def _rotate_member(poses: dict[str, RigidTransform], oid: str, rotvec) -> None:
     poses[oid] = apply_delta(poses[oid], (0.0, 0.0, 0.0, *rotvec))
 
@@ -590,6 +661,15 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
         placed = {oid: poses[oid] for oid in model.member_ids}
         d, f = model._world(first, placed), model._world(second, placed)
         mover = first.occurrence_id
+        swing = hinge_swing_state(mate, d, f) if mate.type == MateType.ANGLE and mate.alignment is not None else None
+        if swing is not None:
+            # An ANGLE about a hinge, the lid on the wrong side (or exactly flat): swing it about the hinge to the named root
+            # (+theta or -theta); Gauss-Newton then only polishes. On the right side nothing is touched.
+            (origin, axis), current = swing
+            target = _angle_target_radians(mate) * (-1.0 if mate.alignment == "anti_aligned" else 1.0)
+            if math.sin(current) * math.sin(target) < 1e-12:
+                _rotate_member_about(poses, mover, origin, axis, current - target)
+            continue
         if mate.type == MateType.ANGLE and d.direction is not None and f.direction is not None and mate.value is not None:
             nd, nf = _normalize(d.direction), _normalize(f.direction)
             dot = _dot(nd, nf)
@@ -774,7 +854,9 @@ def solve_group(
         guess = wanted_pose if wanted_pose is not None else stored[grabbed_id]
         fallback = solve_occurrence_from_guess(document, part, grabbed_id, guess, extra_mates)
         if fallback.converged:
-            poses, residual_inf, more = _retract(model, {grabbed_id: fallback.transform}, weights)
+            fallback_poses = {grabbed_id: fallback.transform}
+            _seed_poses(model, fallback_poses)  # py-slvs knows no swing sense: put an ANGLE about a hinge on its named root first
+            poses, residual_inf, more = _retract(model, fallback_poses, weights)
             iterations += more
             seeded_by = "slvs-fallback"
 

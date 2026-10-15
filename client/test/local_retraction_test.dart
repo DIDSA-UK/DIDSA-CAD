@@ -133,6 +133,7 @@ void main() {
       expect(LocalRetractor.tryParse(null), isNull);
       expect(LocalRetractor.tryParse(base()..['version'] = kLocalModelVersion + 1), isNull);
       expect(LocalRetractor.tryParse(base()..['version'] = 1), isNull, reason: 'the pre-branch model (sign-agnostic residuals) is not evaluated');
+      expect(LocalRetractor.tryParse(base()..['version'] = 2), isNull, reason: 'a version-2 model has no swing sense for an ANGLE about a hinge');
       final unknown = base();
       ((unknown['mates'] as List).first as Map<String, dynamic>)['type'] = 'gear';
       expect(LocalRetractor.tryParse(unknown), isNull);

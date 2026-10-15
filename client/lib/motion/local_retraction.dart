@@ -37,7 +37,7 @@ const double kLocalAcceptDistance = 0.5;
 /// Bigger groups / systems stay on the projection (cost grows ~ rows³).
 const int kLocalMaxMembers = 8;
 const int kLocalMaxRows = 64;
-const int kLocalModelVersion = 2;
+const int kLocalModelVersion = 3;
 
 /// Divisor floor (mm) of the mm-scaled squared DISTANCE residuals (axis-axis, point-point): `(x² - d²) / (2 max(d, floor))`.
 const double kLocalDistanceFloor = 1e-3;
@@ -49,7 +49,8 @@ class _Side {
   final Mat3? frozenR;
   final List<double>? frozenT;
 
-  /// local geometry by name: `point`, `axis_origin`, `direction`, `perp`, `porigin` (plane origin), `pnormal`.
+  /// local geometry by name: `point`, `axis_origin`, `direction`, `perp`, `hinge_direction` (the axis an ANGLE swings about), `porigin` (plane
+  /// origin), `pnormal`.
   final Map<String, List<double>> geometry;
 
   const _Side(this.member, this.frozenR, this.frozenT, this.geometry);
@@ -92,7 +93,7 @@ List<double> _vec(Object? o) => <double>[for (final x in (o as List)) (x as num)
 
 _Side _parseSide(Map<String, dynamic> j) {
   final geo = <String, List<double>>{};
-  for (final name in const <String>['point', 'axis_origin', 'direction', 'perp']) {
+  for (final name in const <String>['point', 'axis_origin', 'direction', 'perp', 'hinge_direction']) {
     if (j[name] != null) geo[name] = _vec(j[name]);
   }
   final plane = j['plane'];
@@ -328,8 +329,16 @@ class LocalRetractor {
         case 'angle':
           var target = mate.value!.abs() % 360.0;
           target = math.min(target, 360.0 - target);
-          final dd = _dot(_unit(d['direction']!), _unit(f['direction']!));
+          final nd = _unit(d['direction']!);
+          final nf = _unit(f['direction']!);
+          final dd = _dot(nd, nf);
           add(dd.v - math.cos(target * math.pi / 180.0), dd.d);
+          final hinge = d['hinge_direction'] ?? f['hinge_direction'];
+          if (hinge != null && math.sin(target * math.pi / 180.0) >= 1e-6) {
+            // About a hinge: the sine of the signed swing is +-sin(target) (`alignment`) - zero only on the named way.
+            final sw = _dot(_cross(nd, nf), _unit(hinge));
+            add(sw.v - s * math.sin(target * math.pi / 180.0), sw.d);
+          }
         case 'distance':
           final dist = mate.value!.abs();
           final signedTarget = mate.side * dist;

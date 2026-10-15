@@ -156,6 +156,16 @@ void main() {
       expect(find.byType(CheckboxListTile), findsNothing);
     });
 
+    testWidgets('an ANGLE about a hinge names its alignment as the swing direction', (tester) async {
+      await tester.pumpWidget(wrap(controls(type: 'angle')));
+      expect(find.text('Swing direction'), findsOneWidget);
+      expect(find.text('Positive'), findsOneWidget);
+      expect(find.text('Negative'), findsOneWidget);
+      expect(find.text('Aligned'), findsNothing);
+      expect(mateAlignmentTitle('distance'), 'Orientation');
+      expect(mateAlignmentLabel('anti_aligned'), 'Anti-aligned');
+    });
+
     testWidgets('Closest is marked auto and shows the resolved value; a choice drops the marker', (tester) async {
       await tester.pumpWidget(wrap(controls()));
       expect(find.byKey(const ValueKey('mate-alignment-auto')), findsOneWidget);

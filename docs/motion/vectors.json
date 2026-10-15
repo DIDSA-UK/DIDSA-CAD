@@ -24,7 +24,7 @@
   "local_accept_residual": 1e-06,
   "local_accept_distance": 0.5,
   "local_distance_floor": 0.001,
-  "local_model_version": 2
+  "local_model_version": 3
  },
  "conventions": {
   "pose_in": "translation + rotation_axis (normalised on read) + rotation_angle_degrees (the contract's RigidTransform)",
@@ -17134,7 +17134,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt"
      ],
@@ -17381,7 +17381,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt"
      ],
@@ -17628,7 +17628,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt"
      ],
@@ -17875,7 +17875,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "pin"
      ],
@@ -18016,7 +18016,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "pin"
      ],
@@ -18157,7 +18157,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -18288,7 +18288,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -18419,7 +18419,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -18584,7 +18584,7 @@
     "lever_arm": 20.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt",
       "plate"
@@ -18859,7 +18859,7 @@
     "lever_arm": 20.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt",
       "plate"
@@ -19134,7 +19134,7 @@
     "lever_arm": 20.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt",
       "plate"
@@ -19409,7 +19409,7 @@
     "lever_arm": 20.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt",
       "plate"
@@ -19684,7 +19684,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt"
      ],
@@ -19941,7 +19941,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "bolt"
      ],
@@ -20188,7 +20188,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "pin"
      ],
@@ -20363,7 +20363,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "pin"
      ],
@@ -20538,7 +20538,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "pin"
      ],
@@ -20713,7 +20713,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "pin"
      ],
@@ -20888,7 +20888,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -21053,7 +21053,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -21218,7 +21218,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -21383,7 +21383,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -21514,7 +21514,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -21638,6 +21638,878 @@
    }
   },
   {
+   "id": "local-hinge-angle-positive-swing-toward-flat",
+   "kind": "local_retract",
+   "description": "Angle 60 about a hinge, swing sense +: a wish that swings the lid 70 deg toward the flat position (past what the cone alone would hold) is pulled back to the +120 deg root, never across to -120",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 3,
+     "members": [
+      "lid"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "type": "angle",
+       "value": 60.0,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "direction": [
+         0.0,
+         0.0,
+         -1.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "direction": [
+         0.0,
+         0.0,
+         1.0
+        ],
+        "hinge_direction": [
+         1.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 50.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -0.5,
+       -0.8660254038,
+       0.0,
+       0.8660254038,
+       -0.5
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -0.5,
+       -0.8660254038,
+       0.0,
+       0.8660254038,
+       -0.5
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-hinge-angle-negative-swing-toward-flat",
+   "kind": "local_retract",
+   "description": "Angle 60 about a hinge, swing sense -: the mirror wish keeps the lid on the -120 deg root",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 3,
+     "members": [
+      "lid"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "type": "angle",
+       "value": 60.0,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "direction": [
+         0.0,
+         0.0,
+         -1.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "direction": [
+         0.0,
+         0.0,
+         1.0
+        ],
+        "hinge_direction": [
+         1.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 50.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -0.5,
+       0.8660254038,
+       0.0,
+       -0.8660254038,
+       -0.5
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -0.5,
+       0.8660254038,
+       0.0,
+       -0.8660254038,
+       -0.5
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-hinge-angle-slide-along-hinge",
+   "kind": "local_retract",
+   "description": "Angle about a hinge: a slide along the hinge is free and reproduced exactly",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 3,
+     "members": [
+      "lid"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "type": "angle",
+       "value": 60.0,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "direction": [
+         0.0,
+         0.0,
+         -1.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "direction": [
+         0.0,
+         0.0,
+         1.0
+        ],
+        "hinge_direction": [
+         1.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       8.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       8.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       8.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -0.5,
+       -0.8660254038,
+       0.0,
+       0.8660254038,
+       -0.5
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       8.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -0.5,
+       -0.8660254038,
+       0.0,
+       0.8660254038,
+       -0.5
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-hinge-angle-opposite-sense-is-rejected-root",
+   "kind": "local_retract",
+   "description": "Angle about a hinge, swing sense +, the lid wished onto the -120 root: the nearest point on the + branch, not the wished root",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 3,
+     "members": [
+      "lid"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "type": "angle",
+       "value": 60.0,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "direction": [
+         0.0,
+         0.0,
+         -1.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "direction": [
+         0.0,
+         0.0,
+         1.0
+        ],
+        "hinge_direction": [
+         1.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -0.5,
+       -0.8660254038,
+       0.0,
+       0.8660254038,
+       -0.5
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -0.5,
+       -0.8660254038,
+       0.0,
+       0.8660254038,
+       -0.5
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
    "id": "local-coincident-aligned-lift",
    "kind": "local_retract",
    "description": "Coincident plane-plane on the ALIGNED branch (normals the same way, overlapping co-facing faces): a lift of 5 mm is pulled back onto the plane, slide and spin about z are free",
@@ -21645,7 +22517,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "part"
      ],
@@ -21834,7 +22706,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "pin"
      ],
@@ -21999,7 +22871,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "pin"
      ],
@@ -22164,7 +23036,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "ball"
      ],
@@ -22319,7 +23191,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "box0",
       "box1",
@@ -23252,7 +24124,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "box0",
       "box1",
@@ -24185,7 +25057,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "box0",
       "box1",
@@ -25694,7 +26566,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 2,
+     "version": 3,
      "members": [
       "box0",
       "box1",

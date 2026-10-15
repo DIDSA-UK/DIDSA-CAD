@@ -16,7 +16,7 @@ import math
 
 import numpy as np
 
-MODEL_VERSION = 2  # 2: branch-specific residuals (`alignment` / `side` / `perp` per mate, linear signed DISTANCE, mm-scaled squared ones)
+MODEL_VERSION = 3  # 3: an ANGLE about a hinge (`hinge_direction` on a side) also fixes the swing sense; 2: branch-specific residuals (`alignment` / `side` / `perp` per mate, linear signed DISTANCE, mm-scaled squared ones)
 SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance")
 
 # Constants of spec section 4b (also in docs/motion/vectors.json -> constants).
@@ -151,6 +151,9 @@ def export_constraint_model(model) -> dict | None:
                 v = getattr(g, name)
                 if v is not None:
                     out[name] = [float(c) for c in v]
+            if g.hinge is not None and mate.type.value == "angle":
+                # the hinge an ANGLE swings about (the direction only: the residual needs no point on it)
+                out["hinge_direction"] = [float(c) for c in g.hinge[1]]
             if g.plane is not None:
                 out["plane"] = {"origin": [float(c) for c in g.plane.origin], "normal": [float(c) for c in g.plane.normal]}
             return out
@@ -253,7 +256,7 @@ class ConstraintModel:
 
     def _geo(self, side: dict, poses) -> dict:
         g = {}
-        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir")):
+        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir"), ("hinge_direction", "dir")):
             if name in side:
                 g[name] = self._world(side, poses, name, kind)
         if "plane" in side:
@@ -305,8 +308,14 @@ class ConstraintModel:
             elif t == "angle":
                 target = abs(mate["value"]) % 360.0
                 target = min(target, 360.0 - target)
-                dd = _dot(_unit(d["direction"]), _unit(f["direction"]))
+                nd, nf = _unit(d["direction"]), _unit(f["direction"])
+                dd = _dot(nd, nf)
                 add(_S(dd.v - math.cos(math.radians(target)), dd.d))
+                hinge = d.get("hinge_direction") or f.get("hinge_direction")
+                if hinge is not None and math.sin(math.radians(target)) >= 1e-6:
+                    # about a hinge: the sine of the signed swing is +-sin(target) (`alignment`) - zero only on the named way
+                    sw = _dot(_cross(nd, nf), _unit(hinge))
+                    add(_S(sw.v - s * math.sin(math.radians(target)), sw.d))
             elif t == "distance":
                 dist = abs(mate["value"])
                 signed_target = sign(mate, "side") * dist

@@ -87,7 +87,55 @@ def _build_parallel():
     return root, _first_occurrence(root)
 
 
+def _hinge_pieces():
+    from tests.test_assembly_group import _face
+    from tests.test_assembly_solver import _make_box_part
+
+    base = _make_box_part("Base", size=20.0, depth=10.0)
+    lid = _make_box_part("Lid", size=20.0, depth=2.0)
+    edge = lambda part, i: {"subshape_ref": {"body_id": part["body_id"], "shape_type": "edge", "index": i}}
+    return base, lid, edge, _face
+
+
+def _build_angle_hinge():
+    """A lid hinged on the base's top edge (coincident edges) with a 60 degree ANGLE about it: the swing sense is part of the model."""
+    from tests.test_assembly_solver import _place_occurrence
+
+    base, lid, edge, face = _hinge_pieces()
+    _place_occurrence(base["id"], lid["id"], translation=(0.0, 0.0, 10.0), rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=100.0)
+    refs = lambda a, b: [{"occurrence_id": "occ-driven", **a}, {"occurrence_id": "", **b}]
+    for payload in (
+        {"type": "coincident", "alignment": "aligned", "references": refs(edge(lid, 2), edge(base, 3))},
+        {"type": "angle", "value": 60.0, "alignment": "anti_aligned", "secondary_flip": True, "references": refs(face(lid, (0, 0, -1)), face(base, (0, 0, 1)))},
+    ):
+        assert client.post(f"/document/parts/{base['id']}/mates", json=payload).status_code == 201
+    assert client.post(f"/document/parts/{base['id']}/occurrences/occ-driven/solve").status_code == 200
+    return base["id"], "occ-driven"
+
+
+def _build_angle_hinge_swapped():
+    """The same hinge between two placed components with the LID grounded and the base the mover: the swing sense is stored against
+    the references' order, so the model sees the reversed pair."""
+    from tests.test_assembly_group import _compose
+    from tests.test_assembly_solver import _create_part
+
+    base, lid, edge, face = _hinge_pieces()
+    root = _compose(_create_part("Hinged"), [("base", base, (0.0, 0.0, 0.0)), ("lid", lid, (0.0, 0.0, 10.0))])
+    refs = lambda a, b: [{"occurrence_id": "lid", **a}, {"occurrence_id": "base", **b}]
+    for payload in (
+        {"type": "coincident", "alignment": "aligned", "references": refs(edge(lid, 2), edge(base, 3))},
+        {"type": "angle", "value": 60.0, "alignment": "aligned", "secondary_flip": False, "references": refs(face(lid, (0, 0, -1)), face(base, (0, 0, 1)))},
+    ):
+        assert client.post(f"/document/parts/{root}/mates", json=payload).status_code == 201
+    ms.fix(root, "lid")
+    client.patch(f"/document/parts/{root}/occurrences/base", json={"transform": {"translation": [1.0, 4.0, -5.0], "rotation_axis": [0.1, 0.9, 0.3], "rotation_angle_degrees": 130.0}})
+    assert client.post(f"/document/parts/{root}/occurrences/base/solve").status_code == 200
+    return root, "base"
+
+
 _BUILDERS = {
+    "angle_hinge": _build_angle_hinge,
+    "angle_hinge_swapped": _build_angle_hinge_swapped,
     "bolt": _build_bolt,
     "hinge": _build_hinge,
     "swing": _build_swing,

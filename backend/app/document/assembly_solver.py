@@ -222,6 +222,12 @@ class _ResolvedGeometry:
     # why recomputing from a rotated vector isn't safe).
     perp: Vec3 | None = None
 
+    # The HINGE an ANGLE between two planes swings about: `(origin, direction)` of the axis a CONCENTRIC (or edge-on-edge
+    # COINCIDENT) mate between the same two occurrences holds them on, on the side of the mate's SECOND reference. Attached by
+    # the group model / `mate_world_geometries` (never resolved from a reference), carried through `_place_in_world` like an
+    # axis. It is what gives the sign of an ANGLE: the two roots +theta / -theta about the hinge (see `_angle_hinge`).
+    hinge: tuple[Vec3, Vec3] | None = None
+
 
 def _resolve_local_geometry(target_part: Part, bodies: dict, ref: MateEntityRef) -> _ResolvedGeometry:
     """`ref`'s own geometry, in `target_part`'s local frame (from `bodies`,
@@ -310,7 +316,10 @@ def _place_in_world(geometry: _ResolvedGeometry, transform: RigidTransform) -> _
             x_axis=apply_transform_to_direction(transform, geometry.plane.x_axis),
             y_axis=apply_transform_to_direction(transform, geometry.plane.y_axis),
         )
-    return _ResolvedGeometry(point=point, plane=plane, axis_origin=axis_origin, direction=direction, perp=perp)
+    hinge = None
+    if geometry.hinge is not None:
+        hinge = (apply_transform_to_point(transform, geometry.hinge[0]), apply_transform_to_direction(transform, geometry.hinge[1]))
+    return _ResolvedGeometry(point=point, plane=plane, axis_origin=axis_origin, direction=direction, perp=perp, hinge=hinge)
 
 
 def _target_part_and_transform(
@@ -723,6 +732,36 @@ def _angle_degrees(driven: _ResolvedGeometry, fixed: _ResolvedGeometry) -> float
     return math.degrees(math.acos(dot))
 
 
+def _angle_target_radians(mate: Mate) -> float:
+    target = abs(mate.value or 0.0) % 360.0
+    return math.radians(min(target, 360.0 - target))
+
+
+def _angle_hinge(mate: Mate, driven: _ResolvedGeometry, fixed: _ResolvedGeometry) -> tuple[Vec3, Vec3] | None:
+    """The hinge `(origin, unit direction)` an ANGLE mate's `alignment` is the swing sense about, or `None` when the mate has no
+    hinge, is not an ANGLE between two directions, has no value, or its angle is 0 / 180 degrees (both roots coincide)."""
+    if mate.type != MateType.ANGLE or mate.value is None or driven.direction is None or fixed.direction is None:
+        return None
+    hinge = driven.hinge or fixed.hinge
+    if hinge is None or math.sin(_angle_target_radians(mate)) < 1e-6:
+        return None
+    return hinge[0], _normalize(hinge[1])
+
+
+def _hinge_sine(driven: _ResolvedGeometry, fixed: _ResolvedGeometry, hinge: tuple[Vec3, Vec3]) -> float:
+    """`(driven x fixed) . hinge`: the sine of the signed angle from the driven direction to the fixed one about the hinge."""
+    return _dot(_cross(_normalize(driven.direction), _normalize(fixed.direction)), hinge[1])
+
+
+def hinge_swing_state(mate: Mate, driven: _ResolvedGeometry, fixed: _ResolvedGeometry):
+    """`(hinge, signed angle from driven to fixed about the hinge, in (-pi, pi])` for an ANGLE with an active hinge, else `None`."""
+    hinge = _angle_hinge(mate, driven, fixed)
+    if hinge is None:
+        return None
+    dot = _dot(_normalize(driven.direction), _normalize(fixed.direction))
+    return hinge, math.atan2(_hinge_sine(driven, fixed, hinge), dot)
+
+
 def resolve_branch(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _ResolvedGeometry) -> Mate:
     """`mate` with every branch field its geometry uses and that is still `None` ("Closest") filled in from the CURRENT
     placement (`driven_world` / `fixed_world`, both in world space): `alignment` from the sign of the two directions'
@@ -734,12 +773,17 @@ def resolve_branch(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _Re
     alignment, flip = mate.alignment, mate.secondary_flip
     if alignment is None:
         pair = _alignment_pair(effective, driven_world, fixed_world)
+        hinge = _angle_hinge(effective, driven_world, fixed_world)
         if pair is not None:
             dot = _dot(_normalize(pair[0]), _normalize(pair[1]))
             if abs(dot) > 1e-9:
                 alignment = MATE_ALIGNED if dot > 0 else MATE_ANTI_ALIGNED
             else:
                 alignment = MATE_ANTI_ALIGNED if effective.type == MateType.COINCIDENT else MATE_ALIGNED
+        elif hinge is not None:
+            # An ANGLE about a hinge: which way the lid swings, from the sign of the sine of the swing at the current placement.
+            sine = _hinge_sine(driven_world, fixed_world, hinge)
+            alignment = MATE_ANTI_ALIGNED if sine < -1e-9 else MATE_ALIGNED
     if flip is None:
         offset = _signed_offset(effective, driven_world, fixed_world)
         perp = _perp_pair(effective, driven_world, fixed_world)
@@ -764,7 +808,7 @@ def branch_fields(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _Res
     half-turn of a rotation-locked CONCENTRIC, and an ANGLE's supplement."""
     effective = _effective_mate(mate, driven_world, fixed_world)
     fields: list[str] = []
-    if _alignment_pair(effective, driven_world, fixed_world) is not None:
+    if _alignment_pair(effective, driven_world, fixed_world) is not None or _angle_hinge(effective, driven_world, fixed_world) is not None:
         fields.append("alignment")
     if (
         _signed_offset(effective, driven_world, fixed_world) is not None
@@ -784,6 +828,9 @@ def orient_branch(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _Res
     way: `(a.origin - b.origin) . b.normal` is minus `(b.origin - a.origin) . a.normal` there, so grounding the other part must
     not make the stored side mean the opposite one (the part would hop across the face). Every other branch field is
     orientation-free (a point-plane distance is always `(point - plane.origin) . plane.normal`)."""
+    if swapped and mate.alignment is not None and _angle_hinge(mate, driven_world, fixed_world) is not None:
+        # The swing sense of an ANGLE about its hinge is the sign of `(driven x fixed) . hinge`: swapping the roles reverses it.
+        return replace(mate, alignment=MATE_ALIGNED if mate.alignment == MATE_ANTI_ALIGNED else MATE_ANTI_ALIGNED)
     if not swapped or mate.secondary_flip is None or mate.alignment != MATE_ALIGNED:
         return mate
     effective = _effective_mate(mate, driven_world, fixed_world)
@@ -801,6 +848,9 @@ def resolve_oriented_branch(
     # The alignment first (orientation-free), so the side can then be converted: resolve with the side blanked and keep only the
     # alignment, put the stored side back, orient it, and let the oriented geometry fill a side that is still unset.
     stored = resolve_branch(replace(mate, secondary_flip=None), driven_world, fixed_world)
+    if swapped and mate.alignment is None and stored.alignment is not None and _angle_hinge(stored, driven_world, fixed_world) is not None:
+        # resolved from the REVERSED pair: back to the references' order (an ANGLE's swing sense is antisymmetric)
+        stored = replace(stored, alignment=MATE_ALIGNED if stored.alignment == MATE_ANTI_ALIGNED else MATE_ANTI_ALIGNED)
     stored = replace(stored, secondary_flip=mate.secondary_flip)
     oriented = resolve_branch(orient_branch(stored, driven_world, fixed_world, swapped), driven_world, fixed_world)
     return oriented, orient_branch(oriented, driven_world, fixed_world, swapped)
@@ -1189,10 +1239,17 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
         # The angle or its supplement (`secondary_flip` names which one the solve targets; either is a legitimate
         # solved state for this check, as before).
         supplement_degrees = 180 - target_degrees
-        return (
+        if not (
             abs(actual_degrees - target_degrees) <= _RESIDUAL_ANGLE_TOLERANCE_DEGREES
             or abs(actual_degrees - supplement_degrees) <= _RESIDUAL_ANGLE_TOLERANCE_DEGREES
-        )
+        ):
+            return False
+        hinge = _angle_hinge(mate, driven_world, fixed) if mate.alignment is not None else None
+        if hinge is not None:
+            # about a hinge the swing must also be the named way (+theta or -theta): sine = +-sin(target)
+            expected = _align_sign(mate) * math.sin(_angle_target_radians(mate))
+            return abs(_hinge_sine(driven_world, fixed, hinge) - expected) <= 2e-4
+        return True
 
     if mate.type == MateType.DISTANCE:
         if mate.value is None:
@@ -1313,7 +1370,12 @@ def _mate_residual_vector(mate: Mate, driven_world: _ResolvedGeometry, fixed: _R
         target_degrees = abs(mate.value) % 360
         target_degrees = min(target_degrees, 360 - target_degrees)
         dot = _dot(_normalize(driven_world.direction), _normalize(fixed.direction))
-        return (dot - math.cos(math.radians(target_degrees)),)
+        rows = (dot - math.cos(math.radians(target_degrees)),)
+        hinge = _angle_hinge(mate, driven_world, fixed) if mate.alignment is not None else None
+        if hinge is not None:
+            # about a hinge: the sine of the signed swing is +-sin(target) - zero only on the named way (+theta / -theta)
+            rows = (*rows, _hinge_sine(driven_world, fixed, hinge) - _align_sign(mate) * math.sin(math.radians(target_degrees)))
+        return rows
 
     if mate.type == MateType.DISTANCE:
         if mate.value is None:

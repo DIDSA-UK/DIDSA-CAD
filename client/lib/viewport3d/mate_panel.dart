@@ -71,7 +71,12 @@ String mateSecondaryFlipLabel(String type) => switch (type) {
       _ => 'Flip',
     };
 
-String mateAlignmentLabel(String alignment) => alignment == 'aligned' ? 'Aligned' : 'Anti-aligned';
+String mateAlignmentLabel(String alignment, [String type = '']) =>
+    type == 'angle' ? (alignment == 'aligned' ? 'Positive' : 'Negative') : (alignment == 'aligned' ? 'Aligned' : 'Anti-aligned');
+
+/// The title of the `alignment` control: for an ANGLE about a hinge it is the direction the lid swings (+theta / -theta), for
+/// everything else whether the two directions point the same way.
+String mateAlignmentTitle(String type) => type == 'angle' ? 'Swing direction' : 'Orientation';
 
 /// Phase 3: [text] as a mate value, or `null` when it is not a number - or a negative DISTANCE (the side of a distance is
 /// the "Flip side" control; the backend refuses a negative one).
@@ -157,7 +162,7 @@ class MateBranchControls extends StatelessWidget {
           const SizedBox(height: 8),
           Row(
             children: [
-              const Text('Orientation', style: TextStyle(fontSize: 13)),
+              Text(mateAlignmentTitle(mateType), style: const TextStyle(fontSize: 13)),
               const SizedBox(width: 8),
               if (alignment == null)
                 Text('(auto)', key: const ValueKey('mate-alignment-auto'), style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant)),
@@ -168,9 +173,9 @@ class MateBranchControls extends StatelessWidget {
             key: const ValueKey('mate-alignment'),
             showSelectedIcon: false,
             emptySelectionAllowed: true,
-            segments: const [
-              ButtonSegment(value: 'aligned', label: Text('Aligned')),
-              ButtonSegment(value: 'anti_aligned', label: Text('Anti-aligned')),
+            segments: [
+              ButtonSegment(value: 'aligned', label: Text(mateAlignmentLabel('aligned', mateType))),
+              ButtonSegment(value: 'anti_aligned', label: Text(mateAlignmentLabel('anti_aligned', mateType))),
             ],
             selected: effectiveAlignment == null ? const <String>{} : {effectiveAlignment},
             onSelectionChanged: (picked) {

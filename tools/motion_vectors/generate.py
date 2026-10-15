@@ -54,7 +54,7 @@ LOCAL_ROT_CAP = 0.6         # rad per iteration, any member
 LOCAL_LAM_ABS = 1e-9
 LOCAL_ACCEPT_RESIDUAL = 1e-6
 LOCAL_DISTANCE_FLOOR = 1e-3  # mm: divisor floor of the mm-scaled squared DISTANCE residuals (axis-axis, point-point)
-LOCAL_MODEL_VERSION = 2      # 2: branch-specific residuals (alignment / side / perp per mate), see docs/mate-solution-choice-plan.md
+LOCAL_MODEL_VERSION = 3      # 3: an ANGLE about a hinge also fixes the swing sense (hinge_direction on a side); 2: branch-specific residuals (alignment / side / perp per mate), see docs/mate-solution-choice-plan.md
 LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
 
 
@@ -378,7 +378,7 @@ class ConstraintModel:
 
     def _geo(self, side, poses):
         g = {}
-        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir")):
+        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir"), ("hinge_direction", "dir")):
             if name in side:
                 g[name] = self._world(side, poses, name, kind)
         if "plane" in side:
@@ -428,8 +428,13 @@ class ConstraintModel:
             elif t == "angle":
                 target = abs(mate["value"]) % 360.0
                 target = min(target, 360.0 - target)
-                dd = _vdot(_vunit(d["direction"]), _vunit(f["direction"]))
+                nd, nf = _vunit(d["direction"]), _vunit(f["direction"])
+                dd = _vdot(nd, nf)
                 add(_S(dd.v - math.cos(math.radians(target)), dd.d))
+                hinge = d.get("hinge_direction") or f.get("hinge_direction")
+                if hinge is not None and math.sin(math.radians(target)) >= 1e-6:
+                    sw = _vdot(_vcross(nd, nf), _vunit(hinge))  # the sine of the signed swing about the hinge: +-sin(target)
+                    add(_S(sw.v - s * math.sin(math.radians(target)), sw.d))
             elif t == "distance":
                 dist = abs(mate["value"])
                 signed_target = sign(mate, "side") * dist
@@ -1163,6 +1168,23 @@ def build():
     local_case("local-parallel-anti-aligned-spin-free", "Parallel, anti-aligned: a spin about the shared direction is free and reproduced exactly",
                parallel_model(-1), [P((1.0, 2.0, 3.0), (1, 0, 0), 180.0)], [turned(P((1.0, 2.0, 3.0), (1, 0, 0), 180.0), 35, (0, 0, 1))], 10.0,
                fallback=[turned(P((1.0, 2.0, 3.0), (1, 0, 0), 180.0), 35, (0, 0, 1))])
+    # an ANGLE about a hinge: a lid on a hinge along the world x axis (concentric edge pair) with a 60 degree angle to the base plane; the
+    # swing sense (`alignment` of the angle mate) names +120 or -120 degrees about x
+    def hinge_model(swing):
+        return {"version": LOCAL_MODEL_VERSION, "members": ["lid"], "mates": [
+            mate("concentric", axis_side(0, (0, 0, 0), (1, 0, 0)), axis_side(-1, (0, 0, 0), (1, 0, 0), frozen=FROZEN0)),
+            mate("angle", side(0, direction=[0.0, 0.0, -1.0]), side(-1, direction=[0.0, 0.0, 1.0], hinge_direction=[1.0, 0.0, 0.0], frozen=FROZEN0), value=60.0, alignment=swing)]}
+
+    lid_up = P((0.0, 0.0, 0.0), (1, 0, 0), 120.0)   # swing +120 about x: sin = +sin 60
+    lid_down = P((0.0, 0.0, 0.0), (1, 0, 0), -120.0)  # swing -120 about x
+    local_case("local-hinge-angle-positive-swing-toward-flat", "Angle 60 about a hinge, swing sense +: a wish that swings the lid 70 deg toward the flat position (past what the cone alone would hold) is pulled back to the +120 deg root, never across to -120",
+               hinge_model(1), [lid_up], [turned(lid_up, -70, (1, 0, 0))], 10.0)
+    local_case("local-hinge-angle-negative-swing-toward-flat", "Angle 60 about a hinge, swing sense -: the mirror wish keeps the lid on the -120 deg root",
+               hinge_model(-1), [lid_down], [turned(lid_down, 70, (1, 0, 0))], 10.0)
+    local_case("local-hinge-angle-slide-along-hinge", "Angle about a hinge: a slide along the hinge is free and reproduced exactly",
+               hinge_model(1), [lid_up], [moved(lid_up, (8, 0, 0))], 10.0, fallback=[moved(lid_up, (8, 0, 0))])
+    local_case("local-hinge-angle-opposite-sense-is-rejected-root", "Angle about a hinge, swing sense +, the lid wished onto the -120 root: the nearest point on the + branch, not the wished root",
+               hinge_model(1), [lid_up], [lid_down], 10.0)
     coincident_aligned = {"version": LOCAL_MODEL_VERSION, "members": ["part"], "mates": [
         mate("coincident", plane_side(0, (0, 0, 0), (0, 0, 1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0), alignment=1)]}
     local_case("local-coincident-aligned-lift", "Coincident plane-plane on the ALIGNED branch (normals the same way, overlapping co-facing faces): a lift of 5 mm is pulled back onto the plane, slide and spin about z are free",
