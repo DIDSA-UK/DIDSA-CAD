@@ -9,7 +9,8 @@ This doc is written for a **follow-up implementation session**. Code pointers we
 done by replaying the tester's mates, and small scenes for every mate type, through the real backend
 (`TestClient`, the full conda env from `backend/environment.yml`).
 
-Suggested order: **Phase 1 → 2 → 3 → 4**. Phase 5 is a separate scope. Phase 1 is small, independent and fixes
+Suggested order: **Phase 1 → 2 → 2b → 3 → 4**. Phase 2b must land with or right after 2: persisted branches without
+it turn F6 from an occasional failure into a common one. Phase 5 is a separate scope. Phase 1 is small, independent and fixes
 visible bugs. Phase 2 is the core change: every later phase builds on its data model.
 
 ## Progress
@@ -20,6 +21,7 @@ The implementation session updates this table as each PR merges.
 |---|---|---|---|
 | 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | Not started | |
 | 2 | Persisted mate *branch* (alignment / side) honoured by every solver | Not started | |
+| 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | Not started | |
 | 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | Not started | |
 | 4 | Better default for "Closest" (optional) | Not started | |
 | 5 | Width / Symmetric mate (separate scope) | Not started | |
@@ -126,6 +128,25 @@ F1-F4, but it does keep the "nearest root" behaviour.
 `_direction_lock` (`addParallel`, 2 DOF, spin free). The `Mate` docstring in `models.py` says `flipped` serves
 CONCENTRIC, which it does not.
 
+### F6. A new mate that needs an EARLIER mate on its other root is refused, and stays stored anyway
+
+Scene: base box 20 × 20 × 10, bracket 8 × 8 × 4.
+1. Add DISTANCE 14 mm between the bracket bottom and the base top. It is solved from above, so the bracket bottom
+   sits at z = 24.
+2. Add COINCIDENT between the bracket top and the base bottom. This can only hold if the bracket bottom is at
+   z = −4, i.e. with mate 1 on its other side.
+
+Today:
+- The preview reports `converged: false`, so no ghost shows.
+- `/solve` returns 422 with "The mates on this part can't all be satisfied together.". That is wrong: a valid
+  placement exists. `solve_group` seeded from z = −4.5 converges to exactly z = −4. Gauss-Newton just cannot cross
+  from one root of mate 1 to the other.
+- **The refused mate is still stored.** `_confirmMate` (`part_screen.dart`) calls `createMate` then
+  `solveForOccurrence`, and nothing rolls back on failure. The assembly is left over-constrained, and a second
+  Confirm adds a duplicate.
+
+Phase 2 makes this case more common, because every branch becomes persisted. Phase 2b handles it.
+
 ## How other CAD systems handle this
 
 None solves root choice automatically in general (adding constraints to force a root is NP-complete). They all use the
@@ -139,6 +160,10 @@ previewing:
 - **Onshape:** mates between oriented mate connectors, with *Flip primary axis*, *Reorient secondary axis* (90° steps)
   and signed offsets. The orientation is part of the mate, so it cannot jump.
 - **NX:** an alternate-solution / reverse control in the constraint dialog (from memory; not confirmed in this investigation).
+- **Existing mates are never flipped silently.** SolidWorks marks the mates in error. Its *MateXpert* diagnostic
+  lists the subsets of mates that conflict, shows how far each unsatisfied mate is off, and offers *Toggle
+  alignment*, *Suppress* or *Edit* on each one. Phase 2b does the same search *before* the mate is stored, and
+  shows the result in the preview.
 
 This plan follows SolidWorks' model: two binary choices per mate, starting as "Closest" and then persisted, plus a
 "Next solution" convenience.
@@ -162,12 +187,19 @@ This plan follows SolidWorks' model: two binary choices per mate, starting as "C
 5. **Edit Mate preview.** Give `_openMateEdit` the same live preview, either by reusing `MatePanel` in an edit mode
    or by calling `previewMateSolve` from the dialog's change handlers. Use `_drivableOccurrenceId` with the same
    reference order as create.
+6. **Atomic create (F6).** Add an optional `solve` query parameter (`group|minimal|auto`) to `POST /mates`. Run
+   the same solve the preview runs, with the new mate as `extra_mates`. Store the mate and every member's pose
+   together **only if it converges**; otherwise return the 422 and store nothing. Switch Flutter `_confirmMate` and
+   VR `mates_tool.gd` to it. The edit flow gets the same treatment via `PATCH /mates/{id}?solve=…`, keeping the old
+   values on failure.
 
 Tests:
 - Backend: the tester's table top replayed from the identity pose. `preview-mate-solve` for the first distance mate
   must converge and equal the post-`/solve` pose (fails today).
 - Backend: a group-mode preview with a follower returns that follower in `members`.
 - Flutter widget test: the ghost renders for a driven sub-assembly occurrence.
+- Backend (F6 scene): `POST /mates?solve=auto` with the conflicting COINCIDENT returns 422 and `GET /mates` still
+  lists only the DISTANCE mate.
 
 ## Phase 2 — Persisted mate branch (backend core + constraint model v2 + Dart/GD mirrors)
 
@@ -245,6 +277,51 @@ Tests (backend):
   saved `Top_and_frame.didsa` is a good fixture.
 - Native format: old → new → old round-trip; negative legacy distance migration.
 - `test_constraint_model.py` parity vectors pass. Dart `local_retraction_test.dart` and VR equivalents pass.
+
+## Phase 2b — When a new mate needs another mate's branch to change (backend + panel notice)
+
+Rules:
+1. **Who may change a branch.** Add `branch_source: "auto" | "user"` to `Mate`, persisted the same way as the
+   branch fields. It is `auto` when Closest resolved the branch, and `user` once the user sets Aligned/Flip
+   explicitly (Phase 3 controls, or the edit dialog). Only `auto` branches are candidates for an automatic
+   change, and only with the user's confirmation.
+2. **When.** Branch search runs only in the create/edit flow: `preview-mate-solve`, `POST /mates?solve=…`, and the
+   matching `PATCH`. It **never** runs in `mate-motion`, a drag, or a plain `/solve` re-snap. A drag that would need
+   another branch simply stops at the limit, which also prevents F3's jumping.
+3. **Never silently.** The preview returns the needed changes. The user sees them before Confirm. Confirm applies
+   the new mate, the branch changes and the poses together, as one undo step.
+
+Search (`assembly_group.py`, new `search_branch_changes(model, new_mate, budget)`):
+1. Solve with every persisted branch (the new mate at Closest, or at its Phase 3 alternatives). If it converges,
+   stop; no changes are needed.
+2. Candidates are the `auto` mates in the same mate-graph component. Order them by:
+   - graph distance from the new mate's occurrences (mates on the same occurrence first);
+   - then by each mate's residual at the failed solve's end point.
+3. Try one changed field on one candidate at a time. Seed each trial with `_seed_poses`, which moves the member
+   onto the trial branch; that seed is what gets Gauss-Newton across, as the F6 seeded solve showed. Then try
+   pairs. Stop at a budget (constants, e.g. 24 solves or 1.5 s).
+4. Rank the converged results by fewest changes, then by weighted movement (`pose_delta` · `_metric`).
+
+Preview response additions:
+- `branch_changes: [{mate_id, field, from, to}]` next to `members`. The ghost shows that placement. The Mate panel
+  shows a notice naming the mate, e.g. "To fit, this also moves *Distance 1* to the other side", and Next solution
+  (Phase 3) steps through further results.
+- If only `user` mates stand in the way: `converged: false` plus `blocked_by: [mate_id]`. The panel says which mate
+  to change, e.g. "Distance 1 is set to this side — flip it to allow this mate".
+- If no branch combination works (a genuine conflict): `conflicting: [mate_id]`, the smallest set found by
+  re-solving with one existing mate suppressed at a time, within the same budget (MateXpert-style).
+
+Replace the misleading 422 text "can't all be satisfied together" with whichever of the three cases above applies.
+
+Tests (F6 scene, plus the tester's assembly):
+- The DISTANCE mate is `auto`. The preview of the COINCIDENT converges at bracket bottom z = −4, with
+  `branch_changes` = [DISTANCE side +→−]. Confirm stores both mates, the flipped side and the pose.
+- The DISTANCE mate is `user`: `converged: false`, `blocked_by` = [DISTANCE], and nothing is stored.
+- A truly impossible third mate: `conflicting` names the mate it fights with.
+- `mate-motion` with a wish across the boundary never changes any stored branch.
+- Table top: the plate starts outside the frame, and both distance mates resolve `auto` to "outside". A later mate
+  that needs "inside" (e.g. a 0 mm distance from the plate's far edge to a sketch plane at the inner position)
+  offers the flip of both.
 
 ## Phase 3 — Mate panel controls and "Next solution" (Flutter + VR)
 
