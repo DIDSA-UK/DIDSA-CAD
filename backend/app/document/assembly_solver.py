@@ -744,15 +744,15 @@ def resolve_branch(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _Re
         offset = _signed_offset(effective, driven_world, fixed_world)
         perp = _perp_pair(effective, driven_world, fixed_world)
         if offset is not None:
-            flip = offset < -1e-9
+            flip = bool(offset < -1e-9)  # a plain bool: these are stored on the mate (a numpy bool does not serialise)
         elif perp is not None:
-            flip = _dot(_normalize(perp[0]), _normalize(perp[1])) < 0
+            flip = bool(_dot(_normalize(perp[0]), _normalize(perp[1])) < 0)
         elif effective.type == MateType.ANGLE and effective.value is not None:
             actual = _angle_degrees(driven_world, fixed_world)
             if actual is not None:
                 target = abs(effective.value) % 360.0
                 target = min(target, 360.0 - target)
-                flip = abs(actual - (180.0 - target)) < abs(actual - target) - 1e-9
+                flip = bool(abs(actual - (180.0 - target)) < abs(actual - target) - 1e-9)
     if alignment == mate.alignment and flip == mate.secondary_flip:
         return mate
     return replace(mate, alignment=alignment, secondary_flip=flip)

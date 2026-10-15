@@ -515,3 +515,20 @@ def test_grounding_the_other_part_never_makes_a_stored_side_mean_the_opposite_on
     # the mate itself still names the same canonical branch
     stored = client.get(f"/document/parts/{root_id}/mates").json()[0]
     assert (stored["alignment"], stored["secondary_flip"]) == ("aligned", secondary_flip)
+
+
+# ---- what is stored is plain data -----------------------------------------------------------------------------------------
+
+
+def test_resolved_branch_fields_are_plain_python_values_and_the_document_still_exports():
+    """A resolved side / spin / supplement was a numpy bool once (it came out of a comparison of numpy floats, which the tester's
+    sub-assembly placements produce): it stored fine, then `GET /document/export/native` failed to serialise it. Every resolved
+    field must be a plain `bool` / `str`."""
+    root = tt.import_table_top(client, keep_mates=False)
+    _set_pose(root, tt.PLATE, {"translation": [0.0, 0.0, 0.0], "rotation_axis": [0.0, 0.0, 1.0], "rotation_angle_degrees": 0.0})
+    for payload in tt.table_top_mate_payloads():
+        assert client.post(f"/document/parts/{root}/mates", params={"solve": "auto", "occurrence_id": tt.PLATE}, json=payload).status_code == 201
+    for stored in get_document().parts[root].mates:
+        assert stored.secondary_flip is None or type(stored.secondary_flip) is bool, stored
+        assert stored.alignment is None or type(stored.alignment) is str, stored
+    assert client.get("/document/export/native").status_code == 200
