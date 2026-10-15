@@ -23,7 +23,7 @@ The implementation session updates this table in each phase's own PR ("In review
 | 2 | Persisted mate *branch* (alignment / side) honoured by every solver | In review | stacked on Phase 1: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | In review | stacked on Phase 2: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | In review | stacked on Phase 2b: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 4 | Better default for "Closest" (optional) | Not started | |
+| 4 | Better default for "Closest" (optional) | In review | tie-breakers only (10% tie, interference, behind), measured below: stacked on Phase 3, CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300) |
 | 5 | Width / Symmetric mate (separate scope) | Not started | |
 
 ---
@@ -416,9 +416,17 @@ fields. A backend test that `alternatives` for the tester's first distance mate 
   The distance field refuses a negative value (`parseMateValue`). `mateTypeHasFlip` is gone; clients no longer send `flipped`.
 - **VR.** `MatesTool.mate_alignment` / `mate_secondary_flip` replace `mate_flipped` (the payload names a branch only once picked); the tablet's Mates page shows a branch line and the Orientation / side / Next solution buttons the preview named; the wheel's Flip turns the orientation if the geometry has one, else the side
   (no Next solution wedge: the ring's layout is pinned, so it is a tablet button); the mate list's per-row actions now flip the fields the mate actually has (`alignment` / `secondary_flip`), and "Remake" keeps the branch.
-- **Not done:** the ANGLE +-theta on a hinge has no field of its own, so neither a control nor an alternative reaches the other root (the plan's "Next solution also covers" it does not hold: the alternatives are branch combinations). It needs a new field or a seed-based alternative.
+- **The ANGLE +-theta on a hinge** (added after Phase 3 first landed, because Next solution as specified could not reach it): a lid joined to a base by a CONCENTRIC / edge-on-edge COINCIDENT between the same two occurrences, with an ANGLE between their faces, has the roots
+  {+theta, -theta} x {angle, supplement}. The ANGLE's `alignment` (unused until now) names +theta (`aligned`) or -theta (`anti_aligned`): the sign of `(driven x fixed) . hinge`, with the hinge the axis of that concentric mate on the occurrence of the ANGLE's second
+  reference (`_ResolvedGeometry.hinge`, attached by `build_group_model` / `mate_world_geometries`), stored against the references' order and converted for a solve that reverses them (`orient_branch`, like a DISTANCE side). The residual gets one more row,
+  `(n_d x n_f) . h - s sin(theta)`, zero only on the named way (none at 0 / 180 degrees, where both roots coincide); the seeds swing a lid on the wrong side about the hinge line to the named root and Gauss-Newton only polishes. `branch_fields` / `resolve_branch` /
+  `controls` / `alternatives` / `branch_options` pick it up with no other change: Closest resolves it from the stored pose (a legacy hinge keeps its placement), the preview lists the control and an alternative for all four roots, Next solution steps through them.
+  **Constraint model version 3**: a side may carry `hinge_direction` and the ANGLE residual has the extra row, in all four places (backend, Dart, GDScript, the generator's reference model; 4 new `local_retract` vectors, 35 now). The control reads *Swing direction* (+ / -) for an ANGLE.
+  Limit: only a hinge made by a concentric mate between the SAME two occurrences is recognised; any other angle keeps just the supplement.
 
 ## Phase 4 — A better "Closest" default (optional, after 2-3)
+
+*Implemented and measured, see the notes at the end of this section.*
 
 Nearest-root is the industry default and stays the default. Two cheap tie-breakers can be considered when the nearest
 roots are about equally far away (within 10% movement):
@@ -429,6 +437,19 @@ roots are about equally far away (within 10% movement):
 
 Each is a heuristic and should be measured against a set of fixtures before landing. Skip this phase if Phase 3's
 controls prove sufficient in testing.
+
+### Implementation notes (Phase 4: what was built and what it measured)
+
+- **Where.** `_phase4_default` (`router.py`) runs in the preview and the atomic create / edit flow for a NEW mate that names no branch and has controls (it reuses the up-to-4 alternatives solves of Phase 3); `assembly_group.phase4_pick` chooses among the alternatives
+  within `PHASE4_TIE` (10%) of the nearest one's movement: least bounding-box interference (`InterferenceProxy`: the driven occurrence's world box against every other occurrence and the focused part's own geometry), then a same-facing DISTANCE behind the fixed face
+  (`aligned` + `secondary_flip`), then the nearest. A clearly nearer root always wins; a mate that names any branch field is never touched; the chosen fields are written onto the stored mate with `branch_source: auto` (a later mate may still ask to move it). A plain
+  `POST /mates` with no `solve` resolves Closest the old way.
+- **Why a tie of 10% matters more than expected.** Movement is dominated by the translation to the mate, so for a part that starts far away every root costs about the same: on the tester's table top most random starts are "ties" and the tie-break decides them.
+- **Alternatives measured and dropped:** (a) always preferring the side *behind* an aligned DISTANCE, whatever the cost: 11/17 table-top starts centred against 10/17 for the tie-break, but it overrides the nearest root (+9% movement on a plain box scene, no interference gain) and regressed one start the tie-break gets right;
+  tie-break + that rule together: worse than either (12 wrong fields against 10 and 9); (b) a wider tie (25-100%): 5-10 fewer wrong fields on the table top but up to +28% movement and a part dragged to the far side of the base. 10% keeps nearly all of the table-top gain.
+- **Measured** (`mate bench`, the tester's assembly from 17 start poses, atomic create, no names given): centred 6 -> 10 of 17 (6 -> 11 when the `branch_changes` confirmation is accepted); the default ghost already the right root on 34 -> 42 of 51 mate previews;
+  wrong fields on the two distance mates 19 -> 10. Box / cylinder scenes (30 random starts each): distance plane-plane mean overlap volume 8.8 -> 0.8 (+1 mm movement), concentric pin on a post interfering 14 -> 12 of 30, every other mate type unchanged. Preview +8 ms p50. The tester's "outward"
+  starts (-12 / -30 mm) still land 10 mm outside: the nearest root is 2 mm away, not a tie - that stays the user's call (Flip side).
 
 ## Phase 5 — Width / Symmetric mate (separate scope)
 
