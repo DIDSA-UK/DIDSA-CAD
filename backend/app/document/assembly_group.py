@@ -77,7 +77,7 @@ from app.document.constraint_model import (
     wish_cost,
 )
 from app.document.extrude import compute_part_bodies
-from app.document.models import BRANCH_AUTO, MATE_ALIGNED, MATE_ANTI_ALIGNED, Document, Mate, MateType, Part, RigidTransform
+from app.document.models import BRANCH_AUTO, BRANCH_USER, MATE_ALIGNED, MATE_ANTI_ALIGNED, Document, Mate, MateType, Part, RigidTransform
 
 _JACOBIAN_STEP = 1e-6  # same step as `assembly_solver._DOF_JACOBIAN_STEP`
 _DEFAULT_RANK_RTOL = 1e-6  # singular values <= rtol * sigma_max count as zero
@@ -1141,6 +1141,70 @@ def search_branch_changes(
             fighting.append(mate.id)
     outcome.conflicting = tuple(fighting)
     return outcome
+
+
+# ---- Phase 3: the new mate's own branch choices -------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BranchAlternative:
+    """One combination of a new mate's branch fields that converges, and where it puts the group."""
+
+    alignment: str | None
+    secondary_flip: bool | None
+    result: GroupSolveResult
+    used: str
+    movement_cost: float
+
+
+def mate_branch_controls(document: Document, part: Part, mate: Mate) -> tuple[str, ...]:
+    """The branch fields (`"alignment"`, `"secondary_flip"`) that mean something for `mate`'s picked geometry, for the client to
+    show as controls. Empty when the geometry cannot be resolved (a payload still being filled in)."""
+    from fastapi import HTTPException  # local: this module is otherwise HTTP-free
+
+    try:
+        first, second = mate_world_geometries(document, part, mate)
+    except HTTPException:
+        return ()
+    return branch_fields(mate, first, second)
+
+
+def movement_cost(part: Part, result: GroupSolveResult, lever_arm: float) -> float:
+    """How far `result` moves the group from the stored poses: the sum over members of the weighted pose distance
+    (translation in mm, rotation as radians times `lever_arm`)."""
+    stored = {o.id: o.transform for o in part.occurrences}
+    return float(
+        sum(
+            np.linalg.norm(pose_delta(pose, stored[oid]) * _metric(lever_arm))
+            for oid, pose in result.poses.items()
+            if oid in stored
+        )
+    )
+
+
+def branch_alternatives(
+    part: Part,
+    new_mate: Mate,
+    controls: Iterable[str],
+    solve: Callable[[Mate], tuple[GroupSolveResult, str]],
+    lever_arm: float,
+) -> list[BranchAlternative]:
+    """Every combination of `new_mate`'s `controls` solved from the same start - the other mates keep their persisted branches,
+    no search - keeping the converged ones, nearest to the start first. `solve(mate)` runs the caller's own solve with `mate` as
+    the hypothetical one. At most 4 solves (two binary fields)."""
+    controls = tuple(controls)
+    alignments: list[str | None] = [MATE_ALIGNED, MATE_ANTI_ALIGNED] if "alignment" in controls else [None]
+    flips: list[bool | None] = [False, True] if "secondary_flip" in controls else [None]
+    found: list[BranchAlternative] = []
+    for alignment in alignments:
+        for flip in flips:
+            variant = replace(new_mate, alignment=alignment, secondary_flip=flip, branch_source=BRANCH_USER)
+            sync_flipped(variant)
+            result, used = solve(variant)
+            if result.converged:
+                found.append(BranchAlternative(alignment, flip, result, used, movement_cost(part, result, lever_arm)))
+    found.sort(key=lambda alt: alt.movement_cost)
+    return found
 
 
 # ---- per-occurrence constraint status (assembly tree badge) -------------------

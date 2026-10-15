@@ -17,7 +17,10 @@ from app.document.assembly import compose_chain, expand_component_pattern_instan
 from app.document.assembly_group import (
     BranchChange,
     GroupSolveResult,
+    bounding_radius,
+    branch_alternatives,
     branch_options,
+    mate_branch_controls,
     constraint_status,
     part_with_branch_changes,
     search_branch_changes,
@@ -208,6 +211,8 @@ from app.document.schemas import (
     MateMotionResponse,
     BranchChangeResponse,
     MateSolvePreviewMember,
+    MateBranchValues,
+    MateSolveAlternative,
     MateSolvePreviewResponse,
     MateUpdate,
     OccurrenceCreate,
@@ -4583,17 +4588,60 @@ def preview_mate_solve_endpoint(
         )
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)
+    controls = mate_branch_controls(get_document(), solve_part, extra_mate)
+    alternatives = _preview_alternatives(solve_part, occurrence_id, movement, extra_mate, controls, replace_mate_id)
     if outcome.result is None:
         return MateSolvePreviewResponse(
-            converged=False, transform=None, blocked_by=list(outcome.blocked_by), conflicting=list(outcome.conflicting)
+            converged=False,
+            transform=None,
+            blocked_by=list(outcome.blocked_by),
+            conflicting=list(outcome.conflicting),
+            controls=list(controls),
+            alternatives=alternatives,
         )
+    resolved = outcome.result.branches.get(extra_mate.id)
     return MateSolvePreviewResponse(
         converged=True,
         transform=_rigid_transform_response(outcome.result.poses[occurrence_id]),
         movement_used=outcome.used,
         members=_preview_members(part, occurrence_id, outcome.result),
         branch_changes=_branch_change_responses(outcome.changes),
+        resolved=MateBranchValues(
+            alignment=resolved[0] if resolved is not None and "alignment" in controls else None,
+            secondary_flip=resolved[1] if resolved is not None and "secondary_flip" in controls else None,
+        ),
+        controls=list(controls),
+        alternatives=alternatives,
     )
+
+
+def _preview_alternatives(
+    part: Part,
+    driven_id: str,
+    movement: MovementMode,
+    new_mate: Mate,
+    controls: tuple[str, ...],
+    replace_mate_id: str | None,
+) -> list[MateSolveAlternative]:
+    """"Next solution": every branch combination of the new mate's controls that converges (`assembly_group.branch_alternatives`),
+    each as the members it would move. Only the new mate's own branch varies; the others keep theirs, and nothing is searched."""
+    if not controls:
+        return []
+    document = get_document()
+
+    def solve(variant: Mate):
+        return _solve_with_movement(document, part, driven_id, movement, extra_mates=(variant,))
+
+    alternatives = branch_alternatives(part, new_mate, controls, solve, bounding_radius(document, part, driven_id))
+    return [
+        MateSolveAlternative(
+            alignment=alt.alignment,
+            secondary_flip=alt.secondary_flip,
+            members=_preview_members(part, driven_id, alt.result),
+            movement_cost=alt.movement_cost,
+        )
+        for alt in alternatives
+    ]
 
 
 # A follower counts as moved by a preview above this (mm / radians of pose delta): below it the solve only re-expressed

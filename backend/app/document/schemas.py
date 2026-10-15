@@ -3553,6 +3553,22 @@ class MateSolvePreviewMember(BaseModel):
     transform: RigidTransformResponse
 
 
+class MateBranchValues(BaseModel):
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
+
+
+class MateSolveAlternative(BaseModel):
+    """One converged placement of the new mate: the branch values that produce it, the members it moves (as in
+    `MateSolvePreviewResponse.members`, the driven occurrence first) and how far it moves them (`movement_cost`: the weighted
+    pose distance from the start, mm + lever-arm-scaled radians; only the order matters)."""
+
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
+    members: list[MateSolvePreviewMember]
+    movement_cost: float
+
+
 class MateSolvePreviewResponse(BaseModel):
     """Test report item 3 (New Mate ghost preview): `POST /parts/{part_id}/
     occurrences/{occurrence_id}/preview-mate-solve`'s response - a dry-run
@@ -3581,6 +3597,15 @@ class MateSolvePreviewResponse(BaseModel):
     blocked_by: list[str] = []
     # `converged: false` and no branch combination works: the existing mates this one fights with (each, suppressed, lets it converge).
     conflicting: list[str] = []
+    # Phase 3: the branch the ghost shows (restricted to `controls`; `None` for a field the geometry does not use), in the convention
+    # `MateCreate.alignment` / `secondary_flip` take - a client that lets the user pick one sends these back as they are.
+    resolved: MateBranchValues | None = None
+    # The branch fields that mean something for the picked geometry (`"alignment"`, `"secondary_flip"`): the client shows exactly these
+    # controls and never works out geometry kinds itself. Empty for a mate with no branch (point-point, point-plane COINCIDENT, ...).
+    controls: list[Literal["alignment", "secondary_flip"]] = []
+    # Every combination of the new mate's controls that converges (the other mates keep their persisted branches), nearest to the
+    # start first: "Next solution" steps through these. Empty when the mate has no controls or nothing else converges.
+    alternatives: list[MateSolveAlternative] = []
 
 
 class ComponentPatternAxisSchema(BaseModel):

@@ -24,19 +24,6 @@ void main() {
     });
   });
 
-  group('mateTypeHasFlip', () {
-    test('coincident, concentric, and angle have a flip option', () {
-      expect(mateTypeHasFlip('coincident'), isTrue);
-      expect(mateTypeHasFlip('concentric'), isTrue);
-      expect(mateTypeHasFlip('angle'), isTrue);
-    });
-
-    test('parallel and distance do not', () {
-      expect(mateTypeHasFlip('parallel'), isFalse);
-      expect(mateTypeHasFlip('distance'), isFalse);
-    });
-  });
-
   group('mateTypeLabel', () {
     test('capitalizes every known type', () {
       expect(mateTypeLabel('coincident'), 'Coincident');
@@ -80,6 +67,182 @@ void main() {
     });
   });
 
+  group('Phase 3 helpers', () {
+    MateSolveAlternativeDto alt(String? alignment, bool? flip) =>
+        MateSolveAlternativeDto(alignment: alignment, secondaryFlip: flip);
+
+    test('the flip label says what the flag means for the type', () {
+      expect(mateSecondaryFlipLabel('distance'), 'Flip side');
+      expect(mateSecondaryFlipLabel('concentric'), 'Flip spin');
+      expect(mateSecondaryFlipLabel('angle'), 'Supplement');
+    });
+
+    test('a negative distance is not a value, an angle may be', () {
+      expect(parseMateValue('distance', '-3'), isNull);
+      expect(parseMateValue('distance', '0'), 0);
+      expect(parseMateValue('distance', '12.5'), 12.5);
+      expect(parseMateValue('angle', '-30'), -30);
+      expect(parseMateValue('distance', 'abc'), isNull);
+      expect(mateValueError('distance', '-3'), isNotNull);
+      expect(mateValueError('distance', '3'), isNull);
+      expect(mateValueError('angle', '-3'), isNull);
+    });
+
+    test('the current placement is found among the alternatives', () {
+      final list = [alt('anti_aligned', true), alt('anti_aligned', false), alt('aligned', true), alt('aligned', false)];
+      expect(mateAlternativeIndex(list, 'aligned', true), 2);
+      expect(mateAlternativeIndex(list, 'aligned', null), isNull);
+      expect(mateAlternativeIndex(const [], 'aligned', true), isNull);
+    });
+
+    test('Next solution steps through the alternatives, wraps, and starts at the nearest when nothing matches', () {
+      final list = [alt('anti_aligned', true), alt('anti_aligned', false), alt('aligned', true)];
+      expect(mateNextAlternative(list, 'anti_aligned', true), same(list[1]));
+      expect(mateNextAlternative(list, 'aligned', true), same(list[0]));
+      expect(mateNextAlternative(list, null, null), same(list[0]));
+    });
+
+    test('there is nothing to step to with fewer than two alternatives', () {
+      expect(mateNextAlternative(const [], null, null), isNull);
+      expect(mateNextAlternative([alt('aligned', null)], 'aligned', null), isNull);
+    });
+  });
+
+  group('MateBranchControls', () {
+    Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
+
+    MateBranchControls controls({
+      String type = 'distance',
+      List<String> shown = const ['alignment', 'secondary_flip'],
+      String? alignment,
+      String? resolvedAlignment = 'anti_aligned',
+      bool? secondaryFlip,
+      bool? resolvedSecondaryFlip = true,
+      int count = 4,
+      int? index = 0,
+      ValueChanged<String>? onAlignment,
+      ValueChanged<bool>? onFlip,
+      VoidCallback? onNext,
+    }) =>
+        MateBranchControls(
+          mateType: type,
+          controls: shown,
+          alignment: alignment,
+          resolvedAlignment: resolvedAlignment,
+          secondaryFlip: secondaryFlip,
+          resolvedSecondaryFlip: resolvedSecondaryFlip,
+          alternativeCount: count,
+          alternativeIndex: index,
+          onAlignmentChanged: onAlignment ?? (_) {},
+          onSecondaryFlipChanged: onFlip ?? (_) {},
+          onNextSolution: onNext ?? () {},
+        );
+
+    testWidgets('shows exactly the controls the preview names', (tester) async {
+      await tester.pumpWidget(wrap(controls()));
+      expect(find.byKey(const ValueKey('mate-alignment')), findsOneWidget);
+      expect(find.text('Flip side'), findsOneWidget);
+
+      await tester.pumpWidget(wrap(controls(shown: const ['alignment'], count: 0)));
+      expect(find.byKey(const ValueKey('mate-alignment')), findsOneWidget);
+      expect(find.byKey(const ValueKey('mate-secondary-flip')), findsNothing);
+
+      await tester.pumpWidget(wrap(controls(type: 'angle', shown: const ['secondary_flip'], count: 0)));
+      expect(find.byKey(const ValueKey('mate-alignment')), findsNothing);
+      expect(find.text('Supplement'), findsOneWidget);
+
+      await tester.pumpWidget(wrap(controls(shown: const [], count: 0)));
+      expect(find.byType(SegmentedButton<String>), findsNothing);
+      expect(find.byType(CheckboxListTile), findsNothing);
+    });
+
+    testWidgets('Closest is marked auto and shows the resolved value; a choice drops the marker', (tester) async {
+      await tester.pumpWidget(wrap(controls()));
+      expect(find.byKey(const ValueKey('mate-alignment-auto')), findsOneWidget);
+      var segmented = tester.widget<SegmentedButton<String>>(find.byKey(const ValueKey('mate-alignment')));
+      expect(segmented.selected, {'anti_aligned'});
+      expect(tester.widget<CheckboxListTile>(find.byKey(const ValueKey('mate-secondary-flip'))).value, isTrue);
+
+      await tester.pumpWidget(wrap(controls(alignment: 'aligned', secondaryFlip: false)));
+      expect(find.byKey(const ValueKey('mate-alignment-auto')), findsNothing);
+      segmented = tester.widget<SegmentedButton<String>>(find.byKey(const ValueKey('mate-alignment')));
+      expect(segmented.selected, {'aligned'});
+      expect(tester.widget<CheckboxListTile>(find.byKey(const ValueKey('mate-secondary-flip'))).value, isFalse);
+    });
+
+    testWidgets('picking an orientation and toggling the flip report the choice', (tester) async {
+      String? picked;
+      bool? flip;
+      await tester.pumpWidget(wrap(controls(onAlignment: (a) => picked = a, onFlip: (f) => flip = f)));
+      await tester.tap(find.text('Aligned'));
+      await tester.pump();
+      expect(picked, 'aligned');
+      await tester.tap(find.byKey(const ValueKey('mate-secondary-flip')));
+      await tester.pump();
+      expect(flip, isFalse); // it was on (resolved true): the tap turns it off
+    });
+
+    testWidgets('Next solution says where it is, and only shows with two or more alternatives', (tester) async {
+      var taps = 0;
+      await tester.pumpWidget(wrap(controls(index: 1, onNext: () => taps++)));
+      expect(find.text('Next solution (2 of 4)'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('mate-next-solution')));
+      expect(taps, 1);
+
+      await tester.pumpWidget(wrap(controls(index: null)));
+      expect(find.text('Next solution (4 available)'), findsOneWidget);
+
+      await tester.pumpWidget(wrap(controls(count: 1)));
+      expect(find.byKey(const ValueKey('mate-next-solution')), findsNothing);
+    });
+  });
+
+  group('MatePanel branch controls', () {
+    testWidgets('are placed in the panel when given, and the distance field refuses a negative value', (tester) async {
+      double? sent = 1;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: MatePanel(
+            selectedEntities: const {},
+            bodyNames: const {},
+            mateType: 'distance',
+            value: 5,
+            branchControls: MateBranchControls(
+              mateType: 'distance',
+              controls: const ['alignment', 'secondary_flip'],
+              alignment: null,
+              resolvedAlignment: 'aligned',
+              secondaryFlip: null,
+              resolvedSecondaryFlip: false,
+              alternativeCount: 4,
+              alternativeIndex: 0,
+              onAlignmentChanged: (_) {},
+              onSecondaryFlipChanged: (_) {},
+              onNextSolution: () {},
+            ),
+            allowRotation: true,
+            onMateTypeChanged: (_) {},
+            onValueChanged: (v) => sent = v,
+            onAllowRotationChanged: (_) {},
+            saving: false,
+            error: null,
+            onConfirm: null,
+            onCancel: () {},
+          ),
+        ),
+      ));
+      expect(find.text('Flip side'), findsOneWidget);
+      expect(find.text('Next solution (1 of 4)'), findsOneWidget);
+      await tester.enterText(find.byKey(const ValueKey('mate-value-distance')), '-4');
+      await tester.pump();
+      expect(sent, isNull);
+      expect(find.textContaining('cannot be negative'), findsOneWidget);
+      await tester.enterText(find.byKey(const ValueKey('mate-value-distance')), '0');
+      await tester.pump();
+      expect(sent, 0);
+    });
+  });
+
   group('kMateTypes', () {
     test('has exactly the five backend-supported types', () {
       expect(kMateTypes, ['coincident', 'concentric', 'parallel', 'distance', 'angle']);
@@ -95,10 +258,8 @@ void main() {
             bodyNames: const {},
             mateType: 'distance',
             value: 5,
-            flipped: false,
             onMateTypeChanged: (_) {},
             onValueChanged: (_) {},
-            onFlippedChanged: (_) {},
             allowRotation: false,
             onAllowRotationChanged: (_) {},
             saving: false,
@@ -119,10 +280,8 @@ void main() {
         bodyNames: const {},
         mateType: 'coincident',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -141,10 +300,8 @@ void main() {
         bodyNames: const {},
         mateType: 'coincident',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -159,10 +316,8 @@ void main() {
         bodyNames: const {},
         mateType: 'distance',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -180,10 +335,8 @@ void main() {
         bodyNames: const {},
         mateType: 'angle',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -194,16 +347,14 @@ void main() {
       expect(find.text('Angle (degrees)'), findsOneWidget);
     });
 
-    testWidgets('shows a Flipped checkbox for concentric, not for parallel', (tester) async {
+    testWidgets('shows Allow rotation for concentric, and no checkbox for parallel', (tester) async {
       await tester.pumpWidget(wrap(MatePanel(
         selectedEntities: const {},
         bodyNames: const {},
         mateType: 'concentric',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -211,10 +362,8 @@ void main() {
         onConfirm: null,
         onCancel: () {},
       )));
-      // Test report item 4: concentric now also shows "Allow rotation" -
-      // both checkboxes are meaningful for this type.
-      expect(find.byType(CheckboxListTile), findsNWidgets(2));
-      expect(find.text('Flipped'), findsOneWidget);
+      // The Aligned / Flip controls come from the preview (`branchControls`), not from the type: none here.
+      expect(find.byType(CheckboxListTile), findsOneWidget);
       expect(find.text('Allow rotation'), findsOneWidget);
 
       await tester.pumpWidget(wrap(MatePanel(
@@ -222,10 +371,8 @@ void main() {
         bodyNames: const {},
         mateType: 'parallel',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -242,10 +389,8 @@ void main() {
         bodyNames: const {},
         mateType: 'coincident',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: true,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -253,8 +398,6 @@ void main() {
         onConfirm: null,
         onCancel: () {},
       )));
-      // coincident has Flipped but not Allow rotation.
-      expect(find.text('Flipped'), findsOneWidget);
       expect(find.text('Allow rotation'), findsNothing);
     });
 
@@ -265,10 +408,8 @@ void main() {
         bodyNames: const {},
         mateType: 'concentric',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: true,
         onAllowRotationChanged: (checked) => changedTo = checked,
         saving: false,
@@ -289,10 +430,8 @@ void main() {
         bodyNames: const {'b1': 'Base Body', 'b2': 'Bracket Body'},
         mateType: 'coincident',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -313,10 +452,8 @@ void main() {
         bodyNames: const {},
         mateType: 'coincident',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -333,10 +470,8 @@ void main() {
         bodyNames: const {},
         mateType: 'coincident',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: true,
@@ -356,10 +491,8 @@ void main() {
         bodyNames: const {},
         mateType: 'coincident',
         value: null,
-        flipped: false,
         onMateTypeChanged: (_) {},
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -378,10 +511,8 @@ void main() {
         bodyNames: const {},
         mateType: 'coincident',
         value: null,
-        flipped: false,
         onMateTypeChanged: (type) => changedTo = type,
         onValueChanged: (_) {},
-        onFlippedChanged: (_) {},
         allowRotation: false,
         onAllowRotationChanged: (_) {},
         saving: false,
@@ -411,10 +542,8 @@ void main() {
             bodyNames: const {},
             mateType: 'coincident',
             value: null,
-            flipped: false,
             onMateTypeChanged: (_) {},
             onValueChanged: (_) {},
-            onFlippedChanged: (_) {},
             allowRotation: false,
             onAllowRotationChanged: (_) {},
             saving: false,

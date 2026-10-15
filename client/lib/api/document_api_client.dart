@@ -1961,6 +1961,13 @@ class MateSolvePreviewDto {
   final List<String> blockedBy;
   final List<String> conflicting;
 
+  /// Phase 3: the branch fields that mean something for the picked geometry (`alignment`, `secondary_flip`) - the panel shows
+  /// exactly these controls; [resolved] is the branch the ghost shows (a value for each control, `null` for the rest);
+  /// [alternatives] every converging combination of the new mate's controls, nearest first (what "Next solution" steps through).
+  final List<String> controls;
+  final MateBranchValuesDto? resolved;
+  final List<MateSolveAlternativeDto> alternatives;
+
   const MateSolvePreviewDto({
     required this.converged,
     this.transform,
@@ -1968,6 +1975,9 @@ class MateSolvePreviewDto {
     this.branchChanges = const [],
     this.blockedBy = const [],
     this.conflicting = const [],
+    this.controls = const [],
+    this.resolved,
+    this.alternatives = const [],
   });
 
   factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
@@ -1985,6 +1995,47 @@ class MateSolvePreviewDto {
         ],
         blockedBy: [for (final id in (json['blocked_by'] as List<dynamic>? ?? const [])) id as String],
         conflicting: [for (final id in (json['conflicting'] as List<dynamic>? ?? const [])) id as String],
+        controls: [for (final c in (json['controls'] as List<dynamic>? ?? const [])) c as String],
+        resolved: json['resolved'] == null
+            ? null
+            : MateBranchValuesDto.fromJson(json['resolved'] as Map<String, dynamic>),
+        alternatives: [
+          for (final a in (json['alternatives'] as List<dynamic>? ?? const []))
+            MateSolveAlternativeDto.fromJson(a as Map<String, dynamic>),
+        ],
+      );
+}
+
+/// A mate's branch as the wire carries it (`MateBranchValues`): [alignment] `aligned` / `anti_aligned`, [secondaryFlip] the
+/// DISTANCE side / locked-CONCENTRIC half-turn / ANGLE supplement; `null` = not applicable (or Closest).
+class MateBranchValuesDto {
+  final String? alignment;
+  final bool? secondaryFlip;
+
+  const MateBranchValuesDto({this.alignment, this.secondaryFlip});
+
+  factory MateBranchValuesDto.fromJson(Map<String, dynamic> json) =>
+      MateBranchValuesDto(alignment: json['alignment'] as String?, secondaryFlip: json['secondary_flip'] as bool?);
+}
+
+/// One converged combination of the new mate's branch fields (`MateSolveAlternative`): the values that produce it, the members it
+/// moves (the driven one first) and [movementCost] (only the order matters).
+class MateSolveAlternativeDto {
+  final String? alignment;
+  final bool? secondaryFlip;
+  final List<MateSolvePreviewMemberDto> members;
+  final double movementCost;
+
+  const MateSolveAlternativeDto({this.alignment, this.secondaryFlip, this.members = const [], this.movementCost = 0});
+
+  factory MateSolveAlternativeDto.fromJson(Map<String, dynamic> json) => MateSolveAlternativeDto(
+        alignment: json['alignment'] as String?,
+        secondaryFlip: json['secondary_flip'] as bool?,
+        members: [
+          for (final m in (json['members'] as List<dynamic>? ?? const []))
+            MateSolvePreviewMemberDto.fromJson(m as Map<String, dynamic>),
+        ],
+        movementCost: (json['movement_cost'] as num?)?.toDouble() ?? 0,
       );
 }
 
@@ -5438,6 +5489,9 @@ class DocumentApiClient {
     String? solve,
     String? solveOccurrenceId,
     List<BranchChangeDto> branchChanges = const [],
+    // Setting either makes the branch the user's own (`branch_source: user`); leave both `null` to keep the stored branch.
+    String? alignment,
+    bool? secondaryFlip,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -5452,6 +5506,8 @@ class DocumentApiClient {
                 if (flipped != null) 'flipped': flipped,
                 if (suppressed != null) 'suppressed': suppressed,
                 if (allowRotation != null) 'allow_rotation': allowRotation,
+                if (alignment != null) 'alignment': alignment,
+                if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
                 if (branchChanges.isNotEmpty) 'branch_changes': [for (final c in branchChanges) c.toJson()],
               }),
             ),
@@ -5513,6 +5569,9 @@ class DocumentApiClient {
     String movement = 'group',
     // Previews an EDIT of this stored mate: it is left out of the solve and the given values stand in for it.
     String? replaceMateId,
+    // The branch to preview (`null` = Closest: the solve resolves it, and the answer's `resolved` says which).
+    String? alignment,
+    bool? secondaryFlip,
   }) =>
       _send(
         () => _httpClient.post(
@@ -5531,6 +5590,8 @@ class DocumentApiClient {
                 if (value != null) 'value': value,
                 'flipped': flipped,
                 'allow_rotation': allowRotation,
+                if (alignment != null) 'alignment': alignment,
+                if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
               }),
             ),
         (body) => MateSolvePreviewDto.fromJson(body as Map<String, dynamic>),

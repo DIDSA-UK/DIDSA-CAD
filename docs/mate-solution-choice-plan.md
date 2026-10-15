@@ -22,7 +22,7 @@ The implementation session updates this table in each phase's own PR ("In review
 | 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | In review | CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 2 | Persisted mate *branch* (alignment / side) honoured by every solver | In review | stacked on Phase 1: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | In review | stacked on Phase 2: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | Not started | |
+| 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | In review | stacked on Phase 2b: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 4 | Better default for "Closest" (optional) | Not started | |
 | 5 | Width / Symmetric mate (separate scope) | Not started | |
 
@@ -401,6 +401,22 @@ the two fields plus a Next-solution action, and send them in `build_create_paylo
 
 Tests: Flutter widget tests for the controls shown per `controls`, and for Next solution cycling and sending the
 fields. A backend test that `alternatives` for the tester's first distance mate contains the centred-side root.
+
+### Implementation notes (what Phase 3 actually does, and where it differs from the text above)
+
+- **Preview additions** (`MateSolvePreviewResponse`): `controls` (`assembly_group.mate_branch_controls`, the stored-pose geometry through `branch_fields`: a plane-plane COINCIDENT / PARALLEL has `alignment`, a plane-plane DISTANCE both, a point-plane DISTANCE and an ANGLE
+  `secondary_flip`, a free CONCENTRIC `alignment`, a rotation-locked one both, point-point none), `resolved` (the branch the ghost shows, restricted to `controls`, in the convention a create takes back) and `alternatives`.
+  A client sends `alignment` / `secondary_flip` only for a branch the user picked; left out, the mate is Closest and `branch_source` stays `auto` (Phase 2b), named, it is `user`.
+- **`alternatives`** (`branch_alternatives`) enumerate the combinations of the new mate's `controls` only (at most 4 solves, each with the caller's own movement mode), keep the converged ones and sort them by `movement_cost`: the sum over members of
+  the weighted pose distance from the stored poses (translation in mm, rotation in radians times the driven part's bounding radius). The list does not depend on which branch the payload names, so "2 of 4" does not shift while the user steps.
+  Other mates keep their persisted branches and nothing is searched: a combination that would need an earlier mate to move (Phase 2b) is not an alternative, and the main preview may then list `branch_changes` while `alternatives` is shorter.
+  On the tester's first distance mate from the identity pose all four roots converge; the nearest is the one the ghost shows, and the centred one (aligned + inside) is the fourth - "Next solution" is what reaches it.
+- **Flutter.** `MateBranchControls` (`mate_panel.dart`) replaces the Flipped checkbox in the Add Mate panel and the Edit Mate dialog: an *Aligned / Anti-aligned* segmented button, a *Flip side / Flip spin / Supplement* checkbox, and *Next solution (2 of 4)*, each shown only when the preview's `controls` names it.
+  Closest is the initial state and reads "(auto)" with the resolved value selected; a choice is cleared when the type, either face or Allow rotation changes. Next solution sets both fields of the next alternative. The Edit dialog starts from the stored branch and sends only the fields the user touched.
+  The distance field refuses a negative value (`parseMateValue`). `mateTypeHasFlip` is gone; clients no longer send `flipped`.
+- **VR.** `MatesTool.mate_alignment` / `mate_secondary_flip` replace `mate_flipped` (the payload names a branch only once picked); the tablet's Mates page shows a branch line and the Orientation / side / Next solution buttons the preview named; the wheel's Flip turns the orientation if the geometry has one, else the side
+  (no Next solution wedge: the ring's layout is pinned, so it is a tablet button); the mate list's per-row actions now flip the fields the mate actually has (`alignment` / `secondary_flip`), and "Remake" keeps the branch.
+- **Not done:** the ANGLE +-theta on a hinge has no field of its own, so neither a control nor an alternative reaches the other root (the plan's "Next solution also covers" it does not hold: the alternatives are branch combinations). It needs a new field or a seed-based alternative.
 
 ## Phase 4 — A better "Closest" default (optional, after 2-3)
 

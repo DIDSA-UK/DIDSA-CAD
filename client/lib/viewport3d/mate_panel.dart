@@ -62,15 +62,151 @@ String? mateBranchNotice(
 /// anyway.
 bool mateTypeNeedsValue(String type) => type == 'distance' || type == 'angle';
 
-/// Whether [type] has a meaningful `flipped` alignment choice -
-/// `coincident`/`concentric` per `Mate.flipped`'s own docstring ("the
-/// alignment flag COINCIDENT/CONCENTRIC mates need"), plus `angle` (this
-/// app's own solver, `assembly_solver.py`, maps it to `addAngle`'s
-/// `supplement` toggle - picking between an angle and its 180-degree
-/// supplement, `py_slvs`'s own inherent ambiguity for that constraint).
-/// `parallel`/`distance` ignore it - showing the toggle for those would
-/// just be inert clutter.
-bool mateTypeHasFlip(String type) => type == 'coincident' || type == 'concentric' || type == 'angle';
+/// Phase 3: the label of the `secondary_flip` control for a mate of [type] - what the flag means there. (Which mates HAVE the
+/// control, and which have an alignment, is the backend's call: `MateSolvePreviewDto.controls`.)
+String mateSecondaryFlipLabel(String type) => switch (type) {
+      'distance' => 'Flip side',
+      'concentric' => 'Flip spin',
+      'angle' => 'Supplement',
+      _ => 'Flip',
+    };
+
+String mateAlignmentLabel(String alignment) => alignment == 'aligned' ? 'Aligned' : 'Anti-aligned';
+
+/// Phase 3: [text] as a mate value, or `null` when it is not a number - or a negative DISTANCE (the side of a distance is
+/// the "Flip side" control; the backend refuses a negative one).
+double? parseMateValue(String type, String text) {
+  final value = double.tryParse(text);
+  if (value == null) return null;
+  if (type == 'distance' && value < 0) return null;
+  return value;
+}
+
+/// The hint under a value field for [text], or `null` when it is fine.
+String? mateValueError(String type, String text) {
+  final value = double.tryParse(text);
+  return type == 'distance' && value != null && value < 0 ? 'A distance cannot be negative - use Flip side' : null;
+}
+
+/// Phase 3: where the placement the preview shows sits among [alternatives] (`null` when it matches none, e.g. nothing converged).
+/// [alignment] / [secondaryFlip] are the EFFECTIVE values (what the user chose, else what the preview resolved), `null` for a field
+/// the geometry has no control for.
+int? mateAlternativeIndex(List<MateSolveAlternativeDto> alternatives, String? alignment, bool? secondaryFlip) {
+  for (var i = 0; i < alternatives.length; i++) {
+    if (alternatives[i].alignment == alignment && alternatives[i].secondaryFlip == secondaryFlip) return i;
+  }
+  return null;
+}
+
+/// "Next solution": the alternative after the one currently shown (wrapping), or the nearest one when none matches. `null`
+/// without at least two alternatives - there is nothing to step to.
+MateSolveAlternativeDto? mateNextAlternative(
+  List<MateSolveAlternativeDto> alternatives,
+  String? alignment,
+  bool? secondaryFlip,
+) {
+  if (alternatives.length < 2) return null;
+  final current = mateAlternativeIndex(alternatives, alignment, secondaryFlip);
+  return alternatives[current == null ? 0 : (current + 1) % alternatives.length];
+}
+
+/// Phase 3: the branch controls of a mate under construction or being edited, driven by the preview's `controls` (the client never
+/// works out geometry kinds). [alignment] / [secondaryFlip] are the user's explicit choices (`null` = Closest, the "(auto)"
+/// hint); [resolvedAlignment] / [resolvedSecondaryFlip] are what the ghost shows. "Next solution" steps through the preview's
+/// alternatives, which also reaches roots no single control does.
+class MateBranchControls extends StatelessWidget {
+  final String mateType;
+  final List<String> controls;
+  final String? alignment;
+  final String? resolvedAlignment;
+  final bool? secondaryFlip;
+  final bool? resolvedSecondaryFlip;
+  final int alternativeCount;
+  final int? alternativeIndex;
+  final ValueChanged<String> onAlignmentChanged;
+  final ValueChanged<bool> onSecondaryFlipChanged;
+  final VoidCallback? onNextSolution;
+
+  const MateBranchControls({
+    super.key,
+    required this.mateType,
+    required this.controls,
+    required this.alignment,
+    required this.resolvedAlignment,
+    required this.secondaryFlip,
+    required this.resolvedSecondaryFlip,
+    required this.alternativeCount,
+    required this.alternativeIndex,
+    required this.onAlignmentChanged,
+    required this.onSecondaryFlipChanged,
+    required this.onNextSolution,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasAlignment = controls.contains('alignment');
+    final hasFlip = controls.contains('secondary_flip');
+    final showNext = alternativeCount > 1 && onNextSolution != null;
+    if (!hasAlignment && !hasFlip && !showNext) return const SizedBox.shrink();
+    final effectiveAlignment = alignment ?? resolvedAlignment;
+    final effectiveFlip = secondaryFlip ?? resolvedSecondaryFlip ?? false;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (hasAlignment) ...[
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Text('Orientation', style: TextStyle(fontSize: 13)),
+              const SizedBox(width: 8),
+              if (alignment == null)
+                Text('(auto)', key: const ValueKey('mate-alignment-auto'), style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          SegmentedButton<String>(
+            key: const ValueKey('mate-alignment'),
+            showSelectedIcon: false,
+            emptySelectionAllowed: true,
+            segments: const [
+              ButtonSegment(value: 'aligned', label: Text('Aligned')),
+              ButtonSegment(value: 'anti_aligned', label: Text('Anti-aligned')),
+            ],
+            selected: effectiveAlignment == null ? const <String>{} : {effectiveAlignment},
+            onSelectionChanged: (picked) {
+              if (picked.isNotEmpty) onAlignmentChanged(picked.first);
+            },
+          ),
+        ],
+        if (hasFlip)
+          CheckboxListTile(
+            key: const ValueKey('mate-secondary-flip'),
+            value: effectiveFlip,
+            onChanged: (checked) => onSecondaryFlipChanged(checked ?? false),
+            title: Text(mateSecondaryFlipLabel(mateType)),
+            subtitle: secondaryFlip == null ? const Text('(auto)', style: TextStyle(fontSize: 11)) : null,
+            controlAffinity: ListTileControlAffinity.leading,
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          ),
+        if (showNext)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              key: const ValueKey('mate-next-solution'),
+              onPressed: onNextSolution,
+              icon: const Icon(Icons.skip_next, size: 18),
+              label: Text(
+                alternativeIndex == null
+                    ? 'Next solution ($alternativeCount available)'
+                    : 'Next solution (${alternativeIndex! + 1} of $alternativeCount)',
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
 
 /// Test report item 4: whether [type] has a meaningful "Allow rotation"
 /// choice - `concentric` only, mirroring `Mate.allow_rotation`'s own
@@ -95,7 +231,9 @@ class MatePanel extends StatelessWidget {
 
   final String mateType;
   final double? value;
-  final bool flipped;
+
+  /// Phase 3: the branch controls (see [MateBranchControls]) - `null` while there is no preview to take them from.
+  final MateBranchControls? branchControls;
 
   /// Test report item 4: [mateTypeHasAllowRotation]'s own live value -
   /// meaningless (but still passed) while `mateType != 'concentric'`.
@@ -103,7 +241,6 @@ class MatePanel extends StatelessWidget {
 
   final ValueChanged<String> onMateTypeChanged;
   final ValueChanged<double?> onValueChanged;
-  final ValueChanged<bool> onFlippedChanged;
   final ValueChanged<bool> onAllowRotationChanged;
 
   /// Minimal movement: move only the mated part when that is enough, and let connected parts follow only when it is
@@ -135,11 +272,10 @@ class MatePanel extends StatelessWidget {
     required this.bodyNames,
     required this.mateType,
     required this.value,
-    required this.flipped,
+    this.branchControls,
     required this.allowRotation,
     required this.onMateTypeChanged,
     required this.onValueChanged,
-    required this.onFlippedChanged,
     required this.onAllowRotationChanged,
     this.minimalMovement = false,
     this.onMinimalMovementChanged,
@@ -195,18 +331,12 @@ class MatePanel extends StatelessWidget {
               initialValue: value?.toString() ?? '',
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(labelText: mateType == 'angle' ? 'Angle (degrees)' : 'Distance (mm)'),
-              onChanged: (text) => onValueChanged(double.tryParse(text)),
+              autovalidateMode: AutovalidateMode.always,
+              validator: (text) => mateValueError(mateType, text ?? ''),
+              onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),
             ),
           ],
-          if (mateTypeHasFlip(mateType))
-            CheckboxListTile(
-              value: flipped,
-              onChanged: (checked) => onFlippedChanged(checked ?? false),
-              title: const Text('Flipped'),
-              controlAffinity: ListTileControlAffinity.leading,
-              contentPadding: EdgeInsets.zero,
-              dense: true,
-            ),
+          if (branchControls != null) branchControls!,
           if (mateTypeHasAllowRotation(mateType))
             CheckboxListTile(
               value: allowRotation,

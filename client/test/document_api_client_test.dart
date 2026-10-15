@@ -2680,6 +2680,88 @@ void main() {
       expect(result.branchChanges[1].toJson(), {'mate_id': 'mate-2', 'field': 'alignment', 'to': 'anti_aligned'});
     });
 
+    test('previewMateSolve parses controls, resolved and alternatives, and sends the named branch (Phase 3)', () async {
+      Map<String, dynamic> capturedBody = {};
+      Map<String, dynamic> pose(double x) => {
+            'translation': [x, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          };
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'converged': true,
+            'transform': pose(1.0),
+            'controls': ['alignment', 'secondary_flip'],
+            'resolved': {'alignment': 'anti_aligned', 'secondary_flip': true},
+            'alternatives': [
+              {
+                'alignment': 'anti_aligned',
+                'secondary_flip': true,
+                'members': [
+                  {'occurrence_id': 'occ-1', 'transform': pose(1.0)},
+                ],
+                'movement_cost': 3.5,
+              },
+              {'alignment': 'aligned', 'secondary_flip': null, 'members': [], 'movement_cost': 9},
+            ],
+          });
+        }),
+      );
+      const refs = [
+        MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+        MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+      ];
+      final result = await client.previewMateSolve(
+        'part-1', 'occ-1',
+        type: 'distance', value: 10, references: refs, alignment: 'aligned', secondaryFlip: false,
+      );
+      expect(capturedBody['alignment'], 'aligned');
+      expect(capturedBody['secondary_flip'], false);
+      expect(result.controls, ['alignment', 'secondary_flip']);
+      expect(result.resolved?.alignment, 'anti_aligned');
+      expect(result.resolved?.secondaryFlip, isTrue);
+      expect(result.alternatives, hasLength(2));
+      expect(result.alternatives[0].members.single.occurrenceId, 'occ-1');
+      expect(result.alternatives[0].movementCost, 3.5);
+      expect(result.alternatives[1].secondaryFlip, isNull);
+
+      // Closest: the fields are left out, not sent as null.
+      await client.previewMateSolve('part-1', 'occ-1', type: 'distance', value: 10, references: refs);
+      expect(capturedBody.containsKey('alignment'), isFalse);
+      expect(capturedBody.containsKey('secondary_flip'), isFalse);
+    });
+
+    test('updateMate sends the branch only when given (Phase 3)', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return jsonResponse(mateJson());
+        }),
+      );
+      await client.updateMate('part-1', 'mate-1', value: 3);
+      await client.updateMate('part-1', 'mate-1', alignment: 'aligned', secondaryFlip: true);
+      expect(bodies[0].containsKey('alignment'), isFalse);
+      expect(bodies[0].containsKey('secondary_flip'), isFalse);
+      expect(bodies[1]['alignment'], 'aligned');
+      expect(bodies[1]['secondary_flip'], true);
+    });
+
+    test('a preview from a backend without the Phase 3 fields has no controls', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async => jsonResponse({'converged': false, 'transform': null})),
+      );
+      final result = await client.previewMateSolve('p', 'o', type: 'coincident', references: const [
+        MateEntityRefDto(occurrenceId: 'o', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+        MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+      ]);
+      expect(result.controls, isEmpty);
+      expect(result.resolved, isNull);
+      expect(result.alternatives, isEmpty);
+    });
+
     test('createMate / updateMate send branch_changes only when given (Phase 2b)', () async {
       final bodies = <Map<String, dynamic>>[];
       final client = DocumentApiClient(

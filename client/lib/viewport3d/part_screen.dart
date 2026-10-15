@@ -3609,7 +3609,13 @@ class _PartScreenState extends State<PartScreen> {
 
   String _mateType = kMateTypes.first;
   double? _mateValue;
-  bool _mateFlipped = false;
+
+  /// Phase 3: the branch the user picked for the mate being authored (`null` = Closest: the solve resolves it, the panel shows
+  /// "(auto)" and what the ghost uses). Cleared whenever the geometry the mate is built on changes
+  /// ([_mateGeometryKey]), since a choice means nothing for another pair of faces.
+  String? _mateAlignment;
+  bool? _mateSecondaryFlip;
+  String? _mateGeometryKey;
 
   /// Test report item 4: `Mate.allow_rotation`'s own live value while
   /// authoring/editing a concentric Mate - defaults `true` (free spin,
@@ -3649,7 +3655,55 @@ class _PartScreenState extends State<PartScreen> {
   List<BranchChangeDto> _mateBranchChanges = const [];
   String? _mateNotice;
 
+  /// Phase 3: the latest preview's `controls` / `resolved` / `alternatives` (what the panel's branch controls and "Next solution" use).
+  List<String> _mateControls = const [];
+  MateBranchValuesDto? _mateResolved;
+  List<MateSolveAlternativeDto> _mateAlternatives = const [];
+
+  void _resetMateBranchChoice() {
+    _mateAlignment = null;
+    _mateSecondaryFlip = null;
+    _mateGeometryKey = null;
+  }
+
+  /// The values the ghost shows, restricted to the controls the geometry has.
+  String? get _mateEffectiveAlignment =>
+      _mateControls.contains('alignment') ? (_mateAlignment ?? _mateResolved?.alignment) : null;
+  bool? get _mateEffectiveSecondaryFlip =>
+      _mateControls.contains('secondary_flip') ? (_mateSecondaryFlip ?? _mateResolved?.secondaryFlip) : null;
+
+  MateBranchControls _mateBranchControls() => MateBranchControls(
+        mateType: _mateType,
+        controls: _mateControls,
+        alignment: _mateAlignment,
+        resolvedAlignment: _mateResolved?.alignment,
+        secondaryFlip: _mateSecondaryFlip,
+        resolvedSecondaryFlip: _mateResolved?.secondaryFlip,
+        alternativeCount: _mateAlternatives.length,
+        alternativeIndex: mateAlternativeIndex(_mateAlternatives, _mateEffectiveAlignment, _mateEffectiveSecondaryFlip),
+        onAlignmentChanged: (alignment) {
+          setState(() => _mateAlignment = alignment);
+          unawaited(_scheduleMatePreview());
+        },
+        onSecondaryFlipChanged: (flip) {
+          setState(() => _mateSecondaryFlip = flip);
+          unawaited(_scheduleMatePreview());
+        },
+        onNextSolution: () {
+          final next = mateNextAlternative(_mateAlternatives, _mateEffectiveAlignment, _mateEffectiveSecondaryFlip);
+          if (next == null) return;
+          setState(() {
+            _mateAlignment = next.alignment;
+            _mateSecondaryFlip = next.secondaryFlip;
+          });
+          unawaited(_scheduleMatePreview());
+        },
+      );
+
   void _applyMateBranchPreview(MateSolvePreviewDto? result) {
+    _mateControls = result?.controls ?? const [];
+    _mateResolved = result?.resolved;
+    _mateAlternatives = result?.alternatives ?? const [];
     _mateBranchChanges = result?.branchChanges ?? const [];
     _mateNotice = result == null
         ? null
@@ -3681,7 +3735,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = {};
       _mateType = kMateTypes.first;
       _mateValue = null;
-      _mateFlipped = false;
+      _resetMateBranchChoice();
       _mateAllowRotation = true;
       _mateError = null;
       _mateSaving = false;
@@ -3779,11 +3833,19 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || focusPartId == null || _selectedEntities.length != 2) {
       setState(() {
         _matePreviewMembers = const [];
+        _resetMateBranchChoice();
         _applyMateBranchPreview(null);
       });
       return;
     }
     final entities = _selectedEntities.toList();
+    final geometryKey = '$_mateType|${[for (final e in entities) _mateEntityRefFor(e).toJson()]}|$_mateAllowRotation';
+    if (geometryKey != _mateGeometryKey) {
+      // Another pair of faces / type: an earlier Aligned / Flip choice does not carry over.
+      _mateGeometryKey = geometryKey;
+      _mateAlignment = null;
+      _mateSecondaryFlip = null;
+    }
     final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
     if (drivenOccurrenceId == null) {
       setState(() {
@@ -3800,9 +3862,10 @@ class _PartScreenState extends State<PartScreen> {
         type: _mateType,
         references: [for (final entity in entities) _mateEntityRefFor(entity)],
         value: _mateValue,
-        flipped: _mateFlipped,
         allowRotation: _mateAllowRotation,
         movement: _mateMovement,
+        alignment: _mateAlignment,
+        secondaryFlip: _mateSecondaryFlip,
       );
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
@@ -3854,8 +3917,9 @@ class _PartScreenState extends State<PartScreen> {
         type: _mateType,
         references: [for (final entity in entities) _mateEntityRefFor(entity)],
         value: _mateValue,
-        flipped: _mateFlipped,
         allowRotation: _mateAllowRotation,
+        alignment: _mateAlignment,
+        secondaryFlip: _mateSecondaryFlip,
         solve: drivenOccurrenceId == null ? null : _mateMovement,
         solveOccurrenceId: drivenOccurrenceId,
         branchChanges: _mateBranchChanges,
@@ -21828,11 +21892,19 @@ class _PartScreenState extends State<PartScreen> {
     final focusPartId = _focusStack?.current ?? part?.id;
     if (part == null || focusPartId == null) return;
     double? value = mate.value;
-    bool flipped = mate.flipped;
     bool allowRotation = mate.allowRotation;
     // Phase 2b: earlier mates the edit needs on their other branch, as the live preview last reported them.
     List<BranchChangeDto> branchChanges = const [];
     String? branchNotice;
+    // Phase 3: the branch the preview uses starts as the stored one; only a field the user touches is sent with the edit (and
+    // becomes theirs). The controls, the resolved values and the alternatives come from the latest preview.
+    String? alignment = mate.alignment;
+    bool? secondaryFlip = mate.secondaryFlip;
+    var alignmentTouched = false;
+    var flipTouched = false;
+    var controls = const <String>[];
+    MateBranchValuesDto? resolved;
+    var alternatives = const <MateSolveAlternativeDto>[];
     VoidCallback? dialogRefresh;
     final drivenOccurrenceId = mate.references.length == 2
         ? _drivableOccurrenceId([mate.references[1].occurrenceId, mate.references[0].occurrenceId])
@@ -21845,6 +21917,9 @@ class _PartScreenState extends State<PartScreen> {
         return;
       }
       void remember(MateSolvePreviewDto? result) {
+        controls = result?.controls ?? const [];
+        resolved = result?.resolved;
+        alternatives = result?.alternatives ?? const [];
         branchChanges = result?.branchChanges ?? const [];
         branchNotice = result == null
             ? null
@@ -21859,10 +21934,11 @@ class _PartScreenState extends State<PartScreen> {
           type: mate.type,
           references: mate.references,
           value: value,
-          flipped: flipped,
           allowRotation: allowRotation,
           movement: _mateMovement,
           replaceMateId: mate.id,
+          alignment: alignment,
+          secondaryFlip: secondaryFlip,
         );
         if (!mounted || token != _matePreviewRequestToken) return;
         remember(result);
@@ -21893,23 +21969,61 @@ class _PartScreenState extends State<PartScreen> {
                   initialValue: value?.toString() ?? '',
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   decoration: InputDecoration(labelText: mate.type == 'angle' ? 'Angle (degrees)' : 'Distance (mm)'),
+                  autovalidateMode: AutovalidateMode.always,
+                  validator: (text) => mateValueError(mate.type, text ?? ''),
                   onChanged: (text) {
-                    value = double.tryParse(text);
+                    value = parseMateValue(mate.type, text);
+                    setDialogState(() {});
                     unawaited(refreshPreview());
                   },
                 ),
-              if (mateTypeHasFlip(mate.type))
-                CheckboxListTile(
-                  value: flipped,
-                  onChanged: (checked) {
-                    setDialogState(() => flipped = checked ?? false);
-                    unawaited(refreshPreview());
-                  },
-                  title: const Text('Flipped'),
-                  controlAffinity: ListTileControlAffinity.leading,
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
+              MateBranchControls(
+                mateType: mate.type,
+                controls: controls,
+                alignment: alignment,
+                resolvedAlignment: resolved?.alignment,
+                secondaryFlip: secondaryFlip,
+                resolvedSecondaryFlip: resolved?.secondaryFlip,
+                alternativeCount: alternatives.length,
+                alternativeIndex: mateAlternativeIndex(
+                  alternatives,
+                  controls.contains('alignment') ? (alignment ?? resolved?.alignment) : null,
+                  controls.contains('secondary_flip') ? (secondaryFlip ?? resolved?.secondaryFlip) : null,
                 ),
+                onAlignmentChanged: (picked) {
+                  setDialogState(() {
+                    alignment = picked;
+                    alignmentTouched = true;
+                  });
+                  unawaited(refreshPreview());
+                },
+                onSecondaryFlipChanged: (flip) {
+                  setDialogState(() {
+                    secondaryFlip = flip;
+                    flipTouched = true;
+                  });
+                  unawaited(refreshPreview());
+                },
+                onNextSolution: () {
+                  final next = mateNextAlternative(
+                    alternatives,
+                    controls.contains('alignment') ? (alignment ?? resolved?.alignment) : null,
+                    controls.contains('secondary_flip') ? (secondaryFlip ?? resolved?.secondaryFlip) : null,
+                  );
+                  if (next == null) return;
+                  setDialogState(() {
+                    if (controls.contains('alignment')) {
+                      alignment = next.alignment;
+                      alignmentTouched = true;
+                    }
+                    if (controls.contains('secondary_flip')) {
+                      secondaryFlip = next.secondaryFlip;
+                      flipTouched = true;
+                    }
+                  });
+                  unawaited(refreshPreview());
+                },
+              ),
               if (mateTypeHasAllowRotation(mate.type))
                 CheckboxListTile(
                   value: allowRotation,
@@ -21953,8 +22067,9 @@ class _PartScreenState extends State<PartScreen> {
         focusPartId,
         mate.id,
         value: value,
-        flipped: flipped,
         allowRotation: allowRotation,
+        alignment: alignmentTouched ? alignment : null,
+        secondaryFlip: flipTouched ? secondaryFlip : null,
         solve: drivenOccurrenceId == null ? null : _mateMovement,
         solveOccurrenceId: drivenOccurrenceId,
         branchChanges: branchChanges,
@@ -23530,7 +23645,7 @@ class _PartScreenState extends State<PartScreen> {
                       bodyNames: _selectionBodyNames,
                       mateType: _mateType,
                       value: _mateValue,
-                      flipped: _mateFlipped,
+                      branchControls: _mateBranchControls(),
                       allowRotation: _mateAllowRotation,
                       onMateTypeChanged: (type) {
                         setState(() => _mateType = type);
@@ -23538,10 +23653,6 @@ class _PartScreenState extends State<PartScreen> {
                       },
                       onValueChanged: (value) {
                         setState(() => _mateValue = value);
-                        unawaited(_scheduleMatePreview());
-                      },
-                      onFlippedChanged: (flipped) {
-                        setState(() => _mateFlipped = flipped);
                         unawaited(_scheduleMatePreview());
                       },
                       onAllowRotationChanged: (allow) {
