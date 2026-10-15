@@ -131,7 +131,8 @@ void main() {
     test('a valid model parses', () => expect(LocalRetractor.tryParse(base()), isNotNull));
     test('null, another version, an unknown mate type, a missing side field or an out-of-range member -> projection only', () {
       expect(LocalRetractor.tryParse(null), isNull);
-      expect(LocalRetractor.tryParse(base()..['version'] = 2), isNull);
+      expect(LocalRetractor.tryParse(base()..['version'] = kLocalModelVersion + 1), isNull);
+      expect(LocalRetractor.tryParse(base()..['version'] = 1), isNull, reason: 'the pre-branch model (sign-agnostic residuals) is not evaluated');
       final unknown = base();
       ((unknown['mates'] as List).first as Map<String, dynamic>)['type'] = 'gear';
       expect(LocalRetractor.tryParse(unknown), isNull);
@@ -141,6 +142,18 @@ void main() {
       final badMember = base();
       (((badMember['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>)['member'] = 5;
       expect(LocalRetractor.tryParse(badMember), isNull);
+    });
+    test('every golden model carries the current version and a branch on each mate', () {
+      for (final c in cases) {
+        final model = (c['input'] as Map<String, dynamic>)['model'] as Map<String, dynamic>;
+        expect(model['version'], kLocalModelVersion, reason: c['id'] as String);
+        for (final m in model['mates'] as List) {
+          final mate = m as Map<String, dynamic>;
+          for (final key in <String>['alignment', 'side', 'perp']) {
+            expect(<int>[-1, 1], contains(mate[key]), reason: '${c['id']} $key');
+          }
+        }
+      }
     });
     test('groups bigger than the limit are not solved locally', () {
       expect(LocalRetractor.tryParse(base(), maxMembers: 0), isNull);

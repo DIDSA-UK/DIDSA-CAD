@@ -22,7 +22,9 @@
   "local_rot_cap": 0.6,
   "local_lam_abs": 1e-09,
   "local_accept_residual": 1e-06,
-  "local_accept_distance": 0.5
+  "local_accept_distance": 0.5,
+  "local_distance_floor": 0.001,
+  "local_model_version": 2
  },
  "conventions": {
   "pose_in": "translation + rotation_axis (normalised on read) + rotation_angle_degrees (the contract's RigidTransform)",
@@ -17132,7 +17134,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt"
      ],
@@ -17141,6 +17143,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -17196,6 +17201,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -17373,7 +17381,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt"
      ],
@@ -17382,6 +17390,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -17437,6 +17448,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -17614,7 +17628,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt"
      ],
@@ -17623,6 +17637,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -17678,6 +17695,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -17855,7 +17875,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "pin"
      ],
@@ -17864,6 +17884,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -17993,7 +18016,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "pin"
      ],
@@ -18002,6 +18025,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -18131,7 +18157,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "part"
      ],
@@ -18140,6 +18166,9 @@
        "type": "angle",
        "value": 60.0,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "direction": [
@@ -18259,7 +18288,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "part"
      ],
@@ -18268,6 +18297,9 @@
        "type": "angle",
        "value": 60.0,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "direction": [
@@ -18382,12 +18414,12 @@
   {
    "id": "local-distance-plane-wish-9",
    "kind": "local_retract",
-   "description": "Distance mate 7 to a plane: wish 9 mm out -> nearest 7 mm (signed-squared residual, either side)",
+   "description": "Distance mate 7 to a plane: wish 9 mm out -> nearest 7 mm (linear signed residual, side +1)",
    "input": {
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "part"
      ],
@@ -18396,6 +18428,9 @@
        "type": "distance",
        "value": 7.0,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -18549,7 +18584,7 @@
     "lever_arm": 20.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt",
       "plate"
@@ -18559,6 +18594,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -18590,6 +18628,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -18739,31 +18780,31 @@
       ],
       "rotation": [
        0.9999999999,
-       -1.8e-09,
-       1.22778e-05,
+       -1.7e-09,
+       1.22777e-05,
        6.441e-07,
        0.9986304707,
-       -0.0523180941,
+       -0.052318094,
        -1.22608e-05,
-       0.0523180941,
+       0.052318094,
        0.9986304706
       ]
      },
      {
       "translation": [
-       0.1963215205,
-       0.369292389,
-       -1.5655372975
+       0.1963223374,
+       0.3692915835,
+       -1.5655373389
       ],
       "rotation": [
-       0.9999786956,
-       -0.0065274933,
-       1.22778e-05,
-       0.006519196,
-       0.9986091914,
-       -0.0523180941,
-       0.0003292453,
-       0.0523170595,
+       0.9999786954,
+       -0.0065275203,
+       1.22777e-05,
+       0.006519223,
+       0.9986091912,
+       -0.052318094,
+       0.0003292468,
+       0.0523170594,
        0.9986304706
       ]
      }
@@ -18777,37 +18818,37 @@
       ],
       "rotation": [
        0.9999999999,
-       -1.8e-09,
-       1.22778e-05,
+       -1.7e-09,
+       1.22777e-05,
        6.441e-07,
        0.9986304707,
-       -0.0523180941,
+       -0.052318094,
        -1.22608e-05,
-       0.0523180941,
+       0.052318094,
        0.9986304706
       ]
      },
      {
       "translation": [
-       0.1963215205,
-       0.369292389,
-       -1.5655372975
+       0.1963223374,
+       0.3692915835,
+       -1.5655373389
       ],
       "rotation": [
-       0.9999786956,
-       -0.0065274933,
-       1.22778e-05,
-       0.006519196,
-       0.9986091914,
-       -0.0523180941,
-       0.0003292453,
-       0.0523170595,
+       0.9999786954,
+       -0.0065275203,
+       1.22777e-05,
+       0.006519223,
+       0.9986091912,
+       -0.052318094,
+       0.0003292468,
+       0.0523170594,
        0.9986304706
       ]
      }
     ],
     "residual_inf": 0.0,
-    "fallback_distance": 1.046839859
+    "fallback_distance": 1.0468398579
    }
   },
   {
@@ -18818,7 +18859,7 @@
     "lever_arm": 20.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt",
       "plate"
@@ -18828,6 +18869,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -18859,6 +18903,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -19087,7 +19134,7 @@
     "lever_arm": 20.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt",
       "plate"
@@ -19097,6 +19144,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -19128,6 +19178,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -19309,43 +19362,43 @@
     "local_poses": [
      {
       "translation": [
-       29.9996899015,
-       29.9982890519,
-       10.0021783641
+       30.0003337263,
+       29.9975827374,
+       10.0017469593
       ],
       "rotation": [
-       0.9856636643,
-       0.0192322391,
-       -0.1676223789,
-       -0.1276423862,
-       0.7347011154,
-       -0.6662744871,
-       0.1103383985,
-       0.6781182728,
-       0.7266230425
+       0.9993980566,
+       0.0001661212,
+       0.0346914538,
+       0.0298566674,
+       0.5051151633,
+       -0.8625353623,
+       -0.0176664648,
+       0.863051936,
+       0.5048061527
       ]
      },
      {
       "translation": [
-       3.1009848177,
-       17.1094812337,
-       -21.7836409506
+       -3.3372626834,
+       24.1726257849,
+       -17.4695934731
       ],
       "rotation": [
-       0.9853052318,
-       -0.0328075965,
-       -0.1676223786,
-       -0.0886946879,
-       0.7404131011,
-       -0.666274487,
-       0.1459686697,
-       0.6713509525,
-       0.7266230426
+       0.9937693084,
+       0.1059200864,
+       0.0346914538,
+       -0.0237615411,
+       0.50543856,
+       -0.8625353623,
+       -0.1088942186,
+       0.8563368481,
+       0.5048061527
       ]
      }
     ],
-    "residual_inf": 3.625e-07,
-    "fallback_distance": 15.2389227731
+    "residual_inf": 2.39e-08,
+    "fallback_distance": 20.8361722071
    }
   },
   {
@@ -19356,7 +19409,7 @@
     "lever_arm": 20.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt",
       "plate"
@@ -19366,6 +19419,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -19397,6 +19453,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -19578,43 +19637,43 @@
     "local_poses": [
      {
       "translation": [
-       29.9984665263,
-       30.0002050249,
-       9.9964356577
+       29.9976939002,
+       30.0012615112,
+       9.9984024387
       ],
       "rotation": [
-       0.5373135607,
-       -0.3097446567,
-       0.7844439974,
-       0.0151390524,
-       0.9335088626,
-       0.3582345775,
-       -0.8432466701,
-       -0.1806085576,
-       0.5062762115
+       0.2775331552,
+       -0.1165818956,
+       0.95361628,
+       0.0107562203,
+       0.9929247581,
+       0.1182570444,
+       -0.9606558445,
+       -0.0225629439,
+       0.2768235215
       ]
      },
      {
       "translation": [
-       15.3347368035,
-       -2.0502493757,
-       35.6434229221
+       23.0609978419,
+       -12.6151116834,
+       15.9756130362
       ],
       "rotation": [
-       0.537218205,
-       -0.3099099878,
-       0.7844440067,
-       0.0154263412,
-       0.9335041661,
-       0.3582345598,
-       -0.8433022164,
-       -0.1803490263,
-       0.5062762097
+       0.1650765789,
+       -0.2517254734,
+       0.9536162798,
+       0.5635599368,
+       0.8175667979,
+       0.1182570446,
+       -0.8094133189,
+       0.517898462,
+       0.2768235219
       ]
      }
     ],
-    "residual_inf": 0.0001882051,
-    "fallback_distance": 21.207399427
+    "residual_inf": 6.635e-07,
+    "fallback_distance": 25.8724028151
    }
   },
   {
@@ -19625,7 +19684,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt"
      ],
@@ -19634,6 +19693,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": false,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -19699,6 +19761,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -19876,7 +19941,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "bolt"
      ],
@@ -19885,6 +19950,9 @@
        "type": "concentric",
        "value": null,
        "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "axis_origin": [
@@ -19940,6 +20008,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -20110,6 +20181,2137 @@
    }
   },
   {
+   "id": "local-concentric-aligned-tilt-100deg",
+   "kind": "local_retract",
+   "description": "Concentric, aligned branch: tilting the pin 100 deg (past horizontal) must not turn it over - it stays pointing up (the old sign-agnostic cross() landed on the opposite root here)",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "pin"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 100.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-concentric-anti-aligned-tilt-100deg",
+   "kind": "local_retract",
+   "description": "Concentric, anti-aligned branch (pin upside down): the same 100 deg tilt keeps it pointing down",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "pin"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 80.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-concentric-anti-aligned-slide-and-spin",
+   "kind": "local_retract",
+   "description": "Concentric, anti-aligned: slide 6 mm along the axis and spin 30 deg - both free, reproduced exactly",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "pin"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       11.0
+      ],
+      "rotation_axis": [
+       0.9659258263,
+       0.2588190451,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       11.0
+      ],
+      "rotation_axis": [
+       0.9659258263,
+       0.2588190451,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       11.0
+      ],
+      "rotation": [
+       0.8660254038,
+       0.5,
+       0.0,
+       0.5,
+       -0.8660254038,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       11.0
+      ],
+      "rotation": [
+       0.8660254038,
+       0.5,
+       0.0,
+       0.5,
+       -0.8660254038,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-concentric-locked-spin-half-turn",
+   "kind": "local_retract",
+   "description": "Concentric, rotation locked on the half-turn spin branch (perp -1): a spin wish is blocked, the answer keeps the half-turn",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "pin"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": false,
+       "alignment": 1,
+       "side": 1,
+       "perp": -1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "rotation_angle_degrees": 140.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation": [
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       30.0,
+       30.0,
+       5.0
+      ],
+      "rotation": [
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-distance-side-minus-wish-above",
+   "kind": "local_retract",
+   "description": "Distance 7 on the -normal side: the part sits at z = -7; a wish at z = +2 (the other side of the plate) lands at -7, not +7",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "part"
+     ],
+     "mates": [
+      {
+       "type": "distance",
+       "value": 7.0,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": -1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       -7.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       2.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       -7.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       -7.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       -7.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-distance-side-plus-wish-below",
+   "kind": "local_retract",
+   "description": "Distance 7 on the +normal side: a wish at z = -3 (through the plate) lands at +7",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "part"
+     ],
+     "mates": [
+      {
+       "type": "distance",
+       "value": 7.0,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       -3.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-distance-plane-flipped-alignment",
+   "kind": "local_retract",
+   "description": "Distance 7, anti-aligned normals (the part's face points down at the plate): a 3 deg tilt wish is pulled back, the facing stays",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "part"
+     ],
+     "mates": [
+      {
+       "type": "distance",
+       "value": 7.0,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation_axis": [
+       0.999657325,
+       0.0,
+       -0.0261769483
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       2.0,
+       3.0,
+       7.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-parallel-aligned-tilt-120deg",
+   "kind": "local_retract",
+   "description": "Parallel, aligned: a 120 deg tilt wish (nearer the anti-aligned root) is pulled to the aligned one - z stays up",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "part"
+     ],
+     "mates": [
+      {
+       "type": "parallel",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "direction": [
+         0.0,
+         0.0,
+         1.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "direction": [
+         0.0,
+         0.0,
+         1.0
+        ]
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 120.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-parallel-anti-aligned-spin-free",
+   "kind": "local_retract",
+   "description": "Parallel, anti-aligned: a spin about the shared direction is free and reproduced exactly",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "part"
+     ],
+     "mates": [
+      {
+       "type": "parallel",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "direction": [
+         0.0,
+         0.0,
+         1.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "direction": [
+         0.0,
+         0.0,
+         1.0
+        ]
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation_axis": [
+       0.9537169507,
+       0.3007057995,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation_axis": [
+       0.9537169507,
+       0.3007057995,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation": [
+       0.8191520443,
+       0.5735764364,
+       0.0,
+       0.5735764364,
+       -0.8191520443,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       1.0,
+       2.0,
+       3.0
+      ],
+      "rotation": [
+       0.8191520443,
+       0.5735764364,
+       0.0,
+       0.5735764364,
+       -0.8191520443,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-coincident-aligned-lift",
+   "kind": "local_retract",
+   "description": "Coincident plane-plane on the ALIGNED branch (normals the same way, overlapping co-facing faces): a lift of 5 mm is pulled back onto the plane, slide and spin about z are free",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "part"
+     ],
+     "mates": [
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        },
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       4.0,
+       5.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       7.0,
+       5.0,
+       15.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 20.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       4.0,
+       5.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       7.0,
+       5.0,
+       10.0
+      ],
+      "rotation": [
+       0.9396926208,
+       -0.3420201433,
+       0.0,
+       0.3420201433,
+       0.9396926208,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       7.0,
+       5.0,
+       10.0
+      ],
+      "rotation": [
+       0.9396926208,
+       -0.3420201433,
+       0.0,
+       0.3420201433,
+       0.9396926208,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 4.602683651
+   }
+  },
+  {
+   "id": "local-axis-distance-aligned-pull-out",
+   "kind": "local_retract",
+   "description": "Axis-axis distance 12 (squared residual scaled to mm): a pin 12 mm off the axis pulled 5 mm further out lands back at 12",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "pin"
+     ],
+     "mates": [
+      {
+       "type": "distance",
+       "value": 12.0,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       17.0,
+       0.0,
+       4.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-axis-distance-anti-aligned-tilt",
+   "kind": "local_retract",
+   "description": "Axis-axis distance 12, anti-aligned axes: a 100 deg tilt keeps the pin pointing down",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "pin"
+     ],
+     "mates": [
+      {
+       "type": "distance",
+       "value": 12.0,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       },
+       "b": {
+        "member": -1,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation_axis": [
+       -1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 80.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 180.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       12.0,
+       0.0,
+       4.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0,
+       0.0,
+       0.0,
+       0.0,
+       -1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 0.0
+   }
+  },
+  {
+   "id": "local-point-distance-sphere",
+   "kind": "local_retract",
+   "description": "Point-point distance 9 (a sphere around the fixed point, no root): a wish 2 mm further out and 1 mm sideways lands on the sphere again",
+   "input": {
+    "lever_arm": 10.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 2,
+     "members": [
+      "ball"
+     ],
+     "mates": [
+      {
+       "type": "distance",
+       "value": 9.0,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0.0,
+         0.0,
+         0.0
+        ]
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0.0,
+         0.0,
+         0.0
+        ],
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       9.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       11.0,
+       1.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       9.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       8.9621938885,
+       0.8240635436,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       8.9621938885,
+       0.8240635436,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 1.1e-09,
+    "fallback_distance": 0.8249303158
+   }
+  },
+  {
    "id": "local-row5-slide-spin",
    "kind": "local_retract",
    "description": "5 boxes in a row on a plate, faces mated (group dof 3: slide x, y, spin z as one rigid row): the first box is slid 3 mm and turned 2 deg - the whole row must follow, 4 residual rows per mate (36 rows)",
@@ -20117,7 +22319,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "box0",
       "box1",
@@ -20130,6 +22332,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -20185,6 +22390,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 1,
         "point": [
@@ -20240,6 +22448,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 2,
         "point": [
@@ -20295,6 +22506,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 3,
         "point": [
@@ -20350,6 +22564,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 4,
         "point": [
@@ -20405,6 +22622,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -20460,6 +22680,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 1,
         "point": [
@@ -20515,6 +22738,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 2,
         "point": [
@@ -20570,6 +22796,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 3,
         "point": [
@@ -21023,7 +23252,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "box0",
       "box1",
@@ -21036,6 +23265,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -21091,6 +23323,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 1,
         "point": [
@@ -21146,6 +23381,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 2,
         "point": [
@@ -21201,6 +23439,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 3,
         "point": [
@@ -21256,6 +23497,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 4,
         "point": [
@@ -21311,6 +23555,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -21366,6 +23613,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 1,
         "point": [
@@ -21421,6 +23671,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 2,
         "point": [
@@ -21476,6 +23729,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 3,
         "point": [
@@ -21929,7 +24185,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "box0",
       "box1",
@@ -21945,6 +24201,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -22000,6 +24259,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 1,
         "point": [
@@ -22055,6 +24317,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 2,
         "point": [
@@ -22110,6 +24375,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 3,
         "point": [
@@ -22165,6 +24433,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 4,
         "point": [
@@ -22220,6 +24491,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 5,
         "point": [
@@ -22275,6 +24549,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 6,
         "point": [
@@ -22330,6 +24607,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 7,
         "point": [
@@ -22385,6 +24665,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -22440,6 +24723,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 1,
         "point": [
@@ -22495,6 +24781,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 2,
         "point": [
@@ -22550,6 +24839,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 3,
         "point": [
@@ -22605,6 +24897,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 4,
         "point": [
@@ -22660,6 +24955,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 5,
         "point": [
@@ -22715,6 +25013,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 6,
         "point": [
@@ -23393,7 +25694,7 @@
     "lever_arm": 10.0,
     "local_follower": 0.01,
     "model": {
-     "version": 1,
+     "version": 2,
      "members": [
       "box0",
       "box1",
@@ -23409,6 +25710,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -23464,6 +25768,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 1,
         "point": [
@@ -23519,6 +25826,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 2,
         "point": [
@@ -23574,6 +25884,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 3,
         "point": [
@@ -23629,6 +25942,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 4,
         "point": [
@@ -23684,6 +26000,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 5,
         "point": [
@@ -23739,6 +26058,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 6,
         "point": [
@@ -23794,6 +26116,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 7,
         "point": [
@@ -23849,6 +26174,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 0,
         "point": [
@@ -23904,6 +26232,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 1,
         "point": [
@@ -23959,6 +26290,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 2,
         "point": [
@@ -24014,6 +26348,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 3,
         "point": [
@@ -24069,6 +26406,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 4,
         "point": [
@@ -24124,6 +26464,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 5,
         "point": [
@@ -24179,6 +26522,9 @@
        "type": "coincident",
        "value": null,
        "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
        "a": {
         "member": 6,
         "point": [

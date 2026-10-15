@@ -2366,6 +2366,34 @@ void main() {
       expect(mate.flipped, true);
     });
 
+    test('createMate sends the branch only when given, and MateDto reads it back', () async {
+      Map<String, dynamic> capturedBody = {};
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({...mateJson(value: 12.0), 'alignment': 'anti_aligned', 'secondary_flip': true}, status: 201);
+        }),
+      );
+      const refs = [
+        MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+        MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+      ];
+      var mate = await client.createMate('part-1', type: 'distance', references: refs, value: 12.0);
+      expect(capturedBody.containsKey('alignment'), isFalse);
+      expect(capturedBody.containsKey('secondary_flip'), isFalse);
+      expect(mate.alignment, 'anti_aligned');
+      expect(mate.secondaryFlip, isTrue);
+      mate = await client.createMate('part-1', type: 'distance', references: refs, value: 12.0, alignment: 'aligned', secondaryFlip: false);
+      expect(capturedBody['alignment'], 'aligned');
+      expect(capturedBody['secondary_flip'], false);
+    });
+
+    test('a mate response without the branch (an older backend) reads as Closest', () {
+      final mate = MateDto.fromJson(mateJson());
+      expect(mate.alignment, isNull);
+      expect(mate.secondaryFlip, isNull);
+    });
+
     test('updateMate only sends the fields supplied', () async {
       Map<String, dynamic> capturedBody = {};
       final client = DocumentApiClient(

@@ -3,7 +3,8 @@
 /// point to the hand's wish, instead of moving along the linearised free motion and being popped back at the next anchor.
 ///
 /// Pure Dart (no Flutter): residuals of the five mate types with analytic forward-mode Jacobians (the same residuals as the
-/// backend's `_mate_residual_vector`), a fixed-iteration trust-region sequential nearest-point solve, and the acceptance
+/// backend's `_mate_residual_vector`: each is zero ONLY on the branch the mate names - `alignment` / `side` / `perp` in the
+/// model, `docs/mate-solution-choice-plan.md`), a fixed-iteration trust-region sequential nearest-point solve, and the acceptance
 /// guard that makes it "never worse than the projection". Reproduces the `local_retract` golden vectors to 1e-9.
 library;
 
@@ -36,7 +37,10 @@ const double kLocalAcceptDistance = 0.5;
 /// Bigger groups / systems stay on the projection (cost grows ~ rows³).
 const int kLocalMaxMembers = 8;
 const int kLocalMaxRows = 64;
-const int kLocalModelVersion = 1;
+const int kLocalModelVersion = 2;
+
+/// Divisor floor (mm) of the mm-scaled squared DISTANCE residuals (axis-axis, point-point): `(x² - d²) / (2 max(d, floor))`.
+const double kLocalDistanceFloor = 1e-3;
 
 const Set<String> _types = <String>{'coincident', 'concentric', 'parallel', 'angle', 'distance'};
 
@@ -55,11 +59,19 @@ class _Mate {
   final String type;
   final double? value;
   final bool allowRotation;
+
+  /// The branch the mate stands for, +1 / -1 (absent or 0 reads as +1): the two directions point the same way / opposite ways;
+  /// a DISTANCE on its -normal side; the half-turn spin of a rotation-locked CONCENTRIC.
+  final double alignment;
+  final double side;
+  final double perp;
   final _Side a;
   final _Side b;
 
-  const _Mate(this.type, this.value, this.allowRotation, this.a, this.b);
+  const _Mate(this.type, this.value, this.allowRotation, this.alignment, this.side, this.perp, this.a, this.b);
 }
+
+double _sign(Object? o) => (o is num && o < 0) ? -1.0 : 1.0;
 
 /// A world 3-vector with its derivative (3 × n, row-major) w.r.t. the `6k` twist coordinates.
 class _V {
@@ -145,6 +157,9 @@ class LocalRetractor {
           type,
           (m['value'] as num?)?.toDouble(),
           m['allow_rotation'] as bool? ?? true,
+          _sign(m['alignment']),
+          _sign(m['side']),
+          _sign(m['perp']),
           _parseSide(m['a'] as Map<String, dynamic>),
           _parseSide(m['b'] as Map<String, dynamic>),
         );
@@ -240,6 +255,8 @@ class LocalRetractor {
     return _V(cross3(a.v, b.v), d);
   }
 
+  _V _scale(_V a, double c) => _V(<double>[a.v[0] * c, a.v[1] * c, a.v[2] * c], <double>[for (final x in a.d) x * c]);
+
   _V _unit(_V a) {
     final nn = norm3(a.v);
     final u = <double>[a.v[0] / nn, a.v[1] / nn, a.v[2] / nn];
@@ -269,57 +286,67 @@ class LocalRetractor {
       }
     }
 
-    void addSquared(_S sg, double tsq) => add(sg.v * sg.v - tsq, <double>[for (final x in sg.d) 2 * sg.v * x]);
+    // `a - s b`: zero only when `a` points the way `s b` does (the alignment branch).
+    void directionRows(_V a, _V b, double s) => addV(_sub(a, _scale(b, s)));
+
+    // A signed separation against its target on the chosen side, `sep - side * d` (linear: one Newton step from either side).
+    void addSigned(_S sg, double target) => add(sg.v - target, sg.d);
+
+    // A squared form scaled to mm, `(x² - d²) / (2 max(d, floor))`.
+    void addScaled(_S sq, double dist) {
+      final scale = 2.0 * math.max(dist, kLocalDistanceFloor);
+      add((sq.v - dist * dist) / scale, <double>[for (final x in sq.d) x / scale]);
+    }
 
     for (final mate in _mates) {
       final d = _geo(mate.a, poses);
       final f = _geo(mate.b, poses);
+      final s = mate.alignment;
       switch (mate.type) {
         case 'coincident':
           if (d.containsKey('porigin') && f.containsKey('porigin')) {
-            final s = _dot(_sub(d['porigin']!, f['porigin']!), f['pnormal']!);
-            add(s.v, s.d);
-            addV(_cross(d['pnormal']!, f['pnormal']!));
+            final sg = _dot(_sub(d['porigin']!, f['porigin']!), f['pnormal']!);
+            add(sg.v, sg.d);
+            directionRows(d['pnormal']!, f['pnormal']!, s);
           } else if (d.containsKey('porigin')) {
-            final s = _dot(_sub(f['point']!, d['porigin']!), d['pnormal']!);
-            add(s.v, s.d);
+            final sg = _dot(_sub(f['point']!, d['porigin']!), d['pnormal']!);
+            add(sg.v, sg.d);
           } else if (f.containsKey('porigin')) {
-            final s = _dot(_sub(d['point']!, f['porigin']!), f['pnormal']!);
-            add(s.v, s.d);
+            final sg = _dot(_sub(d['point']!, f['porigin']!), f['pnormal']!);
+            add(sg.v, sg.d);
           } else {
             addV(_sub(d['point']!, f['point']!));
           }
         case 'concentric':
-          addV(_cross(d['direction']!, f['direction']!));
+          directionRows(d['direction']!, f['direction']!, s);
           addV(_cross(_sub(d['axis_origin']!, f['axis_origin']!), f['direction']!));
           if (!mate.allowRotation && d.containsKey('perp') && f.containsKey('perp')) {
-            addV(_cross(d['perp']!, f['perp']!));
+            directionRows(d['perp']!, f['perp']!, mate.perp);
           }
         case 'parallel':
-          addV(_cross(d['direction']!, f['direction']!));
+          directionRows(d['direction']!, f['direction']!, s);
         case 'angle':
           var target = mate.value!.abs() % 360.0;
           target = math.min(target, 360.0 - target);
           final dd = _dot(_unit(d['direction']!), _unit(f['direction']!));
           add(dd.v - math.cos(target * math.pi / 180.0), dd.d);
         case 'distance':
-          final tsq = mate.value! * mate.value!;
+          final dist = mate.value!.abs();
+          final signedTarget = mate.side * dist;
           if (d.containsKey('porigin') && f.containsKey('porigin')) {
-            addSquared(_dot(_sub(d['porigin']!, f['porigin']!), f['pnormal']!), tsq);
-            addV(_cross(d['pnormal']!, f['pnormal']!));
+            addSigned(_dot(_sub(d['porigin']!, f['porigin']!), f['pnormal']!), signedTarget);
+            directionRows(d['pnormal']!, f['pnormal']!, s);
           } else if (d.containsKey('porigin')) {
-            addSquared(_dot(_sub(f['point']!, d['porigin']!), d['pnormal']!), tsq);
+            addSigned(_dot(_sub(f['point']!, d['porigin']!), d['pnormal']!), signedTarget);
           } else if (f.containsKey('porigin')) {
-            addSquared(_dot(_sub(d['point']!, f['porigin']!), f['pnormal']!), tsq);
+            addSigned(_dot(_sub(d['point']!, f['porigin']!), f['pnormal']!), signedTarget);
           } else if (d.containsKey('axis_origin') && f.containsKey('axis_origin')) {
             final p = _cross(_sub(d['axis_origin']!, f['axis_origin']!), f['direction']!);
-            final pp = _dot(p, p);
-            add(pp.v - tsq, pp.d);
-            addV(_cross(d['direction']!, f['direction']!));
+            addScaled(_dot(p, p), dist);
+            directionRows(d['direction']!, f['direction']!, s);
           } else {
             final off = _sub(d['point']!, f['point']!);
-            final oo = _dot(off, off);
-            add(oo.v - tsq, oo.d);
+            addScaled(_dot(off, off), dist);
           }
       }
     }

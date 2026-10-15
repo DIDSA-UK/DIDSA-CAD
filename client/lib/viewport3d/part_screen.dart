@@ -11219,6 +11219,9 @@ class _PartScreenState extends State<PartScreen> {
               value: mate.value,
               flipped: mate.flipped,
               allowRotation: mate.allowRotation,
+              // The branch it stood for, so an undone delete cannot re-resolve it the other way.
+              alignment: mate.alignment,
+              secondaryFlip: mate.secondaryFlip,
             );
           }
           for (final pattern in patterns) {

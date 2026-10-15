@@ -14,6 +14,7 @@ import numpy as np
 
 from app.document.assembly_group import apply_delta, build_group_model, pose_delta, solve_group
 from app.document.constraint_model import (
+    MODEL_VERSION,
     ConstraintModel,
     apply_delta as apply_pose,
     export_constraint_model,
@@ -119,7 +120,7 @@ def test_exported_model_reproduces_the_backend_residual_and_jacobian():
         part = document.parts[root]
         model = build_group_model(document, part, grabbed)
         spec = export_constraint_model(model)
-        assert spec is not None and spec["version"] == 1 and spec["members"] == list(model.member_ids), name
+        assert spec is not None and spec["version"] == MODEL_VERSION and spec["members"] == list(model.member_ids), name
         json.dumps(spec)  # plain JSON
         cm = ConstraintModel(spec)
         for scale in (0.0, 0.3):
@@ -216,7 +217,7 @@ def test_mate_motion_response_carries_the_constraint_model():
     assert r.status_code == 200, r.text
     body = r.json()
     model = body["constraint_model"]
-    assert model["version"] == 1
+    assert model["version"] == MODEL_VERSION and model["mates"][0]["alignment"] in (-1, 1)
     assert model["members"] == [m["occurrence_id"] for m in body["members"]]
     (mate,) = model["mates"]
     assert mate["type"] == "concentric" and mate["a"]["member"] == 0 and mate["b"]["member"] == -1

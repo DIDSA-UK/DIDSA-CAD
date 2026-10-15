@@ -3384,6 +3384,10 @@ class MateResponse(BaseModel):
     # field's own docstring. Defaults `True` (free spin) so a pre-existing
     # Mate round-trips through this response unchanged.
     allow_rotation: bool = True
+    # The branch the mate stands for (`Mate.alignment` / `Mate.secondary_flip`; `None` = Closest, not resolved yet). `flipped`
+    # above is their deprecated single-flag form, kept in step.
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
 
 
 class MateCreate(BaseModel):
@@ -3408,6 +3412,11 @@ class MateCreate(BaseModel):
     # own "meaningful for a subset of types" convention. Defaults `True`
     # (free spin), `Mate.allow_rotation`'s own default.
     allow_rotation: bool = True
+    # The branch (`Mate.alignment` / `Mate.secondary_flip`). Left out, the deprecated `flipped` is read into them
+    # (COINCIDENT plane-plane: True = aligned; ANGLE: the supplement) and every other branch is Closest; sent (even as null =
+    # Closest) they win over `flipped`. A DISTANCE `value` is never negative: the side is `secondary_flip`.
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
 
 
 class MateUpdate(BaseModel):
@@ -3425,6 +3434,10 @@ class MateUpdate(BaseModel):
     flipped: bool | None = None
     suppressed: bool | None = None
     allow_rotation: bool | None = None
+    # `alignment` / `secondary_flip`: sent as a value they set the branch, sent as null they reset it to Closest (the
+    # endpoint reads `model_fields_set`, so omitted still means "leave"). `flipped` is the deprecated alias of them.
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
 
 
 class MateMotionReferencePose(BaseModel):

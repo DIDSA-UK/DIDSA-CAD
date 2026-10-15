@@ -20,7 +20,7 @@ The implementation session updates this table in each phase's own PR ("In review
 | Phase | Summary | Status | PR |
 |---|---|---|---|
 | 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | In review | CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 2 | Persisted mate *branch* (alignment / side) honoured by every solver | Not started | |
+| 2 | Persisted mate *branch* (alignment / side) honoured by every solver | In review | stacked on Phase 1: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | Not started | |
 | 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | Not started | |
 | 4 | Better default for "Closest" (optional) | Not started | |
@@ -277,6 +277,32 @@ Tests (backend):
   saved `Top_and_frame.didsa` is a good fixture.
 - Native format: old → new → old round-trip; negative legacy distance migration.
 - `test_constraint_model.py` parity vectors pass. Dart `local_retraction_test.dart` and VR equivalents pass.
+
+### Implementation notes (what Phase 2 actually does, and where it differs from the text above)
+
+- **Fields and wire.** `Mate.alignment` (`"aligned" | "anti_aligned" | None`) and `Mate.secondary_flip` (`bool | None`) are on the model, `MateCreate` /
+  `MateUpdate` / `MateResponse`, the native format (additive keys, no schema bump) and the Dart `MateDto`. `flipped` stays on the wire and in files and is kept
+  in step (`sync_flipped`): COINCIDENT with an alignment -> `flipped == aligned`, ANGLE -> `flipped == secondary_flip`; the other types never used it.
+- **The alias is geometry-aware.** A create / PATCH that carries only `flipped` reads it into the new fields only where it ever meant something (COINCIDENT
+  plane-plane, ANGLE: `mate_with_flipped_alias`); naming `alignment` / `secondary_flip` - even as `null` = Closest - wins over `flipped` (`model_fields_set`).
+  A file without the keys loads as Closest and resolves from the STORED pose at the first solve, with two exceptions that were never a pose question: an ANGLE's
+  `flipped` becomes its `secondary_flip`, and a negative legacy DISTANCE becomes its length (side = Closest). The tester's `Top_and_frame.didsa` keeps every stored
+  pose bit for bit through `/solve` and a drag commit and comes out as coincident `anti_aligned`, both distances `aligned` + `secondary_flip` (inside).
+- **Closest is resolved once and written back.** `build_group_model` (stored poses) and `_solve_occurrence_against` (the start pose) call `resolve_branch`; `GroupSolveResult.branches`
+  carries what was resolved and `_commit_group` fills only fields that are still `None` (so a drag commit fills a legacy mate but can never change a named branch). Preview resolves, never stores.
+- **The side of a plane-plane DISTANCE is stored against the references' order**, not against "whichever part is moving" (`orient_branch` / `resolve_oriented_branch`):
+  with aligned normals `(a - b) . b.n` is minus `(b - a) . a.n`, so a side stored relative to the fixed part would flip when the other part is grounded and the
+  part would hop across the face (`test_grounding_the_other_part_never_makes_a_stored_side_mean_the_opposite_one`). The exported constraint model carries the side already oriented.
+- **Residuals** (all four places, constraint model **version 2**): direction rows `a.d - s b.d` (3 rows, as many as `cross` had); signed DISTANCE `sep - k d`; axis-axis / point-point
+  DISTANCE `(x^2 - d^2) / (2 max(d, 1e-3))`; ANGLE unchanged. The model carries `alignment` / `side` / `perp` (+1 / -1, absent reads +1). `kLocalModelVersion` and `MODEL_VERSION` are 2;
+  an older model is ignored by an updated client and a version-1 client ignores a version-2 model, both falling back to the projector. 13 new `local_retract` vectors cover the branch cases.
+- **Seeds.** One rotation per mover onto ALL of its alignment targets (`rotation_onto_pairs`: minimal for one direction, Kabsch for several), triggered by a direction pointing the wrong way
+  (or, as before, COINCIDENT plane-plane against a frozen partner); this is what keeps a drag on its branch (F3). The DISTANCE slide seed is gone for the signed geometries (the residual is linear,
+  one step from either side) and stays for the squared ones. The py-slvs path seeds from the same pairs and uses the sign of its signed `addPointPlaneDistance` for the side.
+- **F4.2 had a second cause.** The squared distance residual was only half of why the tester's first mate stalled at ~1e-6: `_axis_angle_from_quaternion` took the angle from `acos(w)`, which is exactly 0 for any rotation
+  below ~1.5e-8 rad, so a Gauss-Newton rotation update that fine (a 5e-10 rad tilt of a 1.6 m plate is 8e-7 mm at its far end) was silently dropped. It now uses `2 atan2(|v|, w)`.
+- **Not done in this phase:** `resolved` / `controls` / `alternatives` on the preview and every client control (Phase 3); the ANGLE +-theta on a hinge (no field of its own, "Next solution" in Phase 3);
+  `branch_source` and the branch search (Phase 2b).
 
 ## Phase 2b — When a new mate needs another mate's branch to change (backend + panel notice)
 

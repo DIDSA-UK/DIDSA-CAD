@@ -14,8 +14,15 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances, top_level_occurrence_id
-from app.document.assembly_group import GroupSolveResult, constraint_status, pose_delta, solve_group, validate_mate_geometry
-from app.document.assembly_solver import _quaternion_from_axis_angle
+from app.document.assembly_group import (
+    GroupSolveResult,
+    constraint_status,
+    mate_with_flipped_alias,
+    pose_delta,
+    solve_group,
+    validate_mate_geometry,
+)
+from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.jobs import JobStatus, cancel_job, get_job
@@ -3444,6 +3451,8 @@ def _mate_response(mate: Mate) -> MateResponse:
         flipped=mate.flipped,
         suppressed=mate.suppressed,
         allow_rotation=mate.allow_rotation,
+        alignment=mate.alignment,
+        secondary_flip=mate.secondary_flip,
     )
 
 
@@ -3718,6 +3727,30 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
             status_code=422,
             detail=f"A {payload.type} Mate requires a value ({'mm' if payload.type == 'distance' else 'degrees'})",
         )
+    _reject_negative_distance(payload.type, payload.value)
+
+
+def _reject_negative_distance(mate_type: str, value: float | None) -> None:
+    """A DISTANCE is a length: which side of the face it sits on is the mate's `secondary_flip` ("Flip side"), not a sign."""
+    if mate_type == "distance" and value is not None and value < 0:
+        raise HTTPException(
+            status_code=422,
+            detail="A distance Mate's value cannot be negative - use secondary_flip (Flip side) to put it on the other side",
+        )
+
+
+def _fill_resolved_branches(part: Part, result: GroupSolveResult) -> None:
+    """Writes what Closest resolved to back onto the stored mates of a committed solve (only fields still `None`: a mate that
+    names its branch is never changed here), and keeps the deprecated `flipped` in step."""
+    for mate in part.mates:
+        resolved = result.branches.get(mate.id)
+        if resolved is None:
+            continue
+        if mate.alignment is None and resolved[0] is not None:
+            mate.alignment = resolved[0]
+        if mate.secondary_flip is None and resolved[1] is not None:
+            mate.secondary_flip = resolved[1]
+        sync_flipped(mate)
 
 
 MovementMode = Literal["group", "minimal", "auto"]
@@ -3773,8 +3806,11 @@ def create_mate(
         value=payload.value,
         flipped=payload.flipped,
         allow_rotation=payload.allow_rotation,
+        alignment=payload.alignment,
+        secondary_flip=payload.secondary_flip,
     )
     validate_mate_geometry(get_document(), part, mate)  # never store a mate no solve can use
+    mate = _mate_with_branch_fields(get_document(), part, mate, payload.model_fields_set)
     if solve is not None:
         driven = _mate_solve_target(part, mate, occurrence_id)
         if driven is not None:
@@ -3782,9 +3818,30 @@ def create_mate(
             if not result.converged:
                 raise _mate_solve_did_not_converge(driven, result, minimal_movement=solve == "minimal")
             _commit_group(part, result)
+            _fill_new_mate_branch(mate, result)
             response.headers["X-Movement-Used"] = used
     part.mates.append(mate)
     return _mate_response(mate)
+
+
+def _mate_with_branch_fields(document: Document, part: Part, mate: Mate, fields_set: set[str]) -> Mate:
+    """A new mate with its branch fields settled: a payload that names `alignment` / `secondary_flip` (even as null = Closest)
+    is taken as it is; one that carries only the deprecated `flipped` has it read into them (`mate_with_flipped_alias`)."""
+    if "alignment" in fields_set or "secondary_flip" in fields_set:
+        sync_flipped(mate)
+        return mate
+    return mate_with_flipped_alias(document, part, mate)
+
+
+def _fill_new_mate_branch(mate: Mate, result: GroupSolveResult) -> None:
+    resolved = result.branches.get(mate.id)
+    if resolved is None:
+        return
+    if mate.alignment is None:
+        mate.alignment = resolved[0]
+    if mate.secondary_flip is None:
+        mate.secondary_flip = resolved[1]
+    sync_flipped(mate)
 
 
 def _get_mate_or_404(part: Part, mate_id: str) -> Mate:
@@ -3810,8 +3867,10 @@ def update_mate(
     values, nothing moves, and the 422 is returned."""
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
-    previous = (mate.value, mate.flipped, mate.suppressed, mate.allow_rotation)
+    _reject_negative_distance(mate.type.value, payload.value)
+    previous = (mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip)
     driven = _mate_solve_target(part, mate, occurrence_id) if solve is not None else None
+    fields = payload.model_fields_set
     if payload.value is not None:
         mate.value = payload.value
     if payload.flipped is not None:
@@ -3820,13 +3879,26 @@ def update_mate(
         mate.suppressed = payload.suppressed
     if payload.allow_rotation is not None:
         mate.allow_rotation = payload.allow_rotation
+    if "alignment" in fields:
+        mate.alignment = payload.alignment  # null = back to Closest
+    if "secondary_flip" in fields:
+        mate.secondary_flip = payload.secondary_flip
+    if payload.flipped is not None and "alignment" not in fields and "secondary_flip" not in fields:
+        # The deprecated flag, sent alone: read it into the branch fields (replacing the ones the mate already names).
+        try:
+            aliased = mate_with_flipped_alias(get_document(), part, mate, override=True)
+        except HTTPException:
+            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip = previous
+            raise
+        mate.alignment, mate.secondary_flip = aliased.alignment, aliased.secondary_flip
+    sync_flipped(mate)
     if solve is not None and driven is not None:
         try:
             result, used = _solve_with_movement(get_document(), part, driven, solve)
             if not result.converged:
                 raise _mate_solve_did_not_converge(driven, result, minimal_movement=solve == "minimal")
         except HTTPException:
-            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation = previous
+            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip = previous
             raise
         _commit_group(part, result)
         response.headers["X-Movement-Used"] = used
@@ -4158,6 +4230,7 @@ def _commit_group(part: Part, result: GroupSolveResult) -> None:
     by_id = {o.id: o for o in part.occurrences}
     for occurrence_id, pose in result.poses.items():
         by_id[occurrence_id].transform = pose
+    _fill_resolved_branches(part, result)
 
 
 def _solve_with_movement(
@@ -4345,6 +4418,7 @@ def preview_mate_solve_endpoint(
     try:
         for ref in payload.references:
             _validate_mate_entity_ref(part, ref)
+        _reject_negative_distance(payload.type, payload.value)
         extra_mate = Mate(
             id="preview",
             type=MateType(payload.type),
@@ -4352,7 +4426,10 @@ def preview_mate_solve_endpoint(
             value=payload.value,
             flipped=payload.flipped,
             allow_rotation=payload.allow_rotation,
+            alignment=payload.alignment,
+            secondary_flip=payload.secondary_flip,
         )
+        extra_mate = _mate_with_branch_fields(get_document(), solve_part, extra_mate, payload.model_fields_set)
         result, used = _solve_with_movement(get_document(), solve_part, occurrence_id, movement, extra_mates=(extra_mate,))
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)

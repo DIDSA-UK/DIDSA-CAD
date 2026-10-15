@@ -38,6 +38,11 @@ from OCC.Core.BRepBndLib import brepbndlib
 from app.document.assembly import top_level_occurrence_id
 from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
+    alignment_pairs,
+    apply_flipped_alias,
+    resolve_oriented_branch,
+    rotation_onto_pairs,
+    sync_flipped,
     _axis_perpendicular,
     _cross,
     _dot,
@@ -63,6 +68,7 @@ from app.document.constraint_model import (
     screw_exp,
     screw_log,
     sqp_nearest,
+    rotvec_from_rot,
     weights as _local_weights,
     wish_cost,
 )
@@ -178,6 +184,9 @@ class GroupModel:
     sides: list[tuple[Mate, _Side, _Side]]  # (mate, first, second) - see `_orient`
     _index: dict[str, int] = field(default_factory=dict)
     _spec: dict | bool | None = field(default=None, repr=False)  # cached constraint model (False = not exportable)
+    # `{mate_id: (alignment, secondary_flip)}`: the branch each mate of the component resolved to, in the convention it is stored in
+    # (relative to its `references` order); `sides` carry the same branch in this model's own orientation.
+    branches: dict[str, tuple[str | None, bool | None]] = field(default_factory=dict)
 
     @property
     def member_ids(self) -> tuple[str, ...]:
@@ -262,21 +271,19 @@ def build_group_model(
         return _Side(top_id, geometry, None if top_id in members else top_transform)
 
     sides = []
+    swaps: list[bool] = []
     for mate in component.mates:
         first, second = mate.references
         # Orient like `_applicable_mates`: the movable side is "driven" when
         # the other side is frozen (the residual is only sign-asymmetric).
-        if (
+        swapped = (
             top_level_occurrence_id(first.occurrence_id) not in members
             and top_level_occurrence_id(second.occurrence_id) in members
-        ):
+        )
+        if swapped:
             first, second = second, first
-        if mate.type == MateType.ANGLE and mate.flipped and mate.value is not None:
-            # `_mate_residual_vector` ignores `flipped`; py-slvs' `addAngle`
-            # uses it as the supplement toggle, so solve for 180 - value.
-            t = abs(mate.value) % 360.0
-            mate = replace(mate, value=180.0 - min(t, 360.0 - t))
         sides.append((mate, side(first), side(second)))
+        swaps.append(swapped)
 
     model = GroupModel(
         component=component,
@@ -284,9 +291,25 @@ def build_group_model(
         sides=sides,
     )
     model._index = {oid: i for i, oid in enumerate(component.member_ids)}
+    # Closest -> a concrete branch: every mate that has not named its alignment / side yet takes the one the STORED poses
+    # sit on, once, here - the residuals below are zero only on that branch, so a solve or drag started from these poses can
+    # never end on another one. (A mate that names its branch keeps it; legacy files, which name none, therefore keep
+    # their stored placement exactly.)
+    placed = dict(model.base_transforms)
+    resolved_sides = []
+    for (mate, a, b), swapped in zip(model.sides, swaps):
+        # `mate` is resolved in the orientation this model uses (`swapped`: reference 1 is the mover); the branch it is stored
+        # in (relative to the references' order, what a commit writes back) is kept in `model.branches`.
+        mate, canonical = resolve_oriented_branch(mate, model._world(a, placed), model._world(b, placed), swapped)
+        model.branches[mate.id] = (canonical.alignment, canonical.secondary_flip)
+        if mate.type == MateType.ANGLE and mate.secondary_flip and mate.value is not None:
+            # `_mate_residual_vector` has no supplement switch; py-slvs' `addAngle` does, so solve for 180 - value.
+            t = abs(mate.value) % 360.0
+            mate = replace(mate, value=180.0 - min(t, 360.0 - t))
+        resolved_sides.append((mate, a, b))
+    model.sides = resolved_sides
     # A mate whose two geometries can't form its residual (e.g. CONCENTRIC on two planar
     # faces) would silently contribute nothing; reject it like the py-slvs path always did.
-    placed = dict(model.base_transforms)
     for mate, a, b in model.sides:
         if not _mate_residual_vector(mate, model._world(a, placed), model._world(b, placed)):
             ref = mate.references[0]
@@ -294,11 +317,8 @@ def build_group_model(
     return model
 
 
-def validate_mate_geometry(document: Document, part: Part, mate: Mate) -> None:
-    """Raises the structured 422 (`unsupported_mate_geometry`, or whatever the resolver raises for a dangling
-    reference) when `mate`'s two references cannot form its constraint. `POST /mates` calls this BEFORE storing, so an
-    unsolvable mate is never left in the document - once stored, `build_group_model` raises the same error for every
-    solve of any group containing it, blocking all of that group's occurrences until the mate is deleted."""
+def mate_world_geometries(document: Document, part: Part, mate: Mate) -> tuple[_ResolvedGeometry, _ResolvedGeometry]:
+    """`mate`'s two references resolved into world space at the STORED poses (the first reference is returned first)."""
     cache: dict[str, dict] = {}
     worlds = []
     for ref in mate.references:
@@ -307,8 +327,27 @@ def validate_mate_geometry(document: Document, part: Part, mate: Mate) -> None:
             cache[target.id] = compute_part_bodies(target)
         geometry = _resolve_local_geometry(target, cache[target.id], ref)
         worlds.append(geometry if transform is None else _place_in_world(geometry, transform))
-    if not _mate_residual_vector(mate, worlds[0], worlds[1]):
+    return worlds[0], worlds[1]
+
+
+def validate_mate_geometry(document: Document, part: Part, mate: Mate) -> None:
+    """Raises the structured 422 (`unsupported_mate_geometry`, or whatever the resolver raises for a dangling
+    reference) when `mate`'s two references cannot form its constraint. `POST /mates` calls this BEFORE storing, so an
+    unsolvable mate is never left in the document - once stored, `build_group_model` raises the same error for every
+    solve of any group containing it, blocking all of that group's occurrences until the mate is deleted."""
+    first, second = mate_world_geometries(document, part, mate)
+    if not _mate_residual_vector(mate, first, second):
         raise _unsupported_mate_geometry(mate.references[0], "a compatible point, plane or axis on each side")
+
+
+def mate_with_flipped_alias(document: Document, part: Part, mate: Mate, override: bool = False) -> Mate:
+    """`mate` with the deprecated `flipped` flag read into `alignment` / `secondary_flip` (COINCIDENT plane-plane, ANGLE),
+    for a payload that carried only `flipped`. Needs the geometry (see `apply_flipped_alias`); `override` replaces a branch
+    the mate already names."""
+    first, second = mate_world_geometries(document, part, mate)
+    aliased = apply_flipped_alias(mate, first, second, override)
+    sync_flipped(aliased)
+    return aliased
 
 
 # ---- lever arm ---------------------------------------------------------------
@@ -445,6 +484,9 @@ class GroupSolveResult:
     analysis: GroupAnalysis | None  # at the solved poses; None when not converged (clients must not read "no basis" as "free")
     quality: GroupSolveQuality
     constraint_model: dict | None = None  # resolved mate geometry for the client's local retraction (spec section 4b); None when not converged
+    # The branch every mate of the component solved on, `{mate_id: (alignment, secondary_flip)}`: what Closest resolved to (a mate
+    # that already named its branch is listed with it). A commit writes the resolved values of still-unresolved mates back.
+    branches: dict[str, tuple[str | None, bool | None]] = field(default_factory=dict)
 
     @property
     def dof(self) -> int | None:
@@ -494,30 +536,54 @@ def _minimal_rotvec(source, target) -> np.ndarray:
 
 def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
     """Move members off the states plain Gauss-Newton on `_mate_residual_vector`
-    cannot leave: the residuals are sign-agnostic (`flipped` is invisible to
-    them) or have a zero gradient there. Only these cases are touched - anywhere
-    else the retraction itself keeps the nearest solution:
+    cannot leave: an alignment residual `d - s f` has a zero-gradient dead point
+    exactly opposite its target (the residual is parallel to `d`, the only
+    direction the rotation cannot change), and ANGLE / squared-DISTANCE ones
+    vanish at an extremum. Only these cases are touched - anywhere else the
+    retraction itself keeps the nearest solution:
 
-    * COINCIDENT plane-plane not facing the right way -> minimal rotation onto the
-      flipped/unflipped target (the same seed the py-slvs path uses);
+    * a direction pointing the WRONG way for its mate's alignment (the opposite
+      of `s * fixed`) -> ONE rotation of the mover onto all of its alignment
+      targets together (`rotation_onto_pairs`: the minimal rotation for one
+      target, a least-squares fit for several), the same seed the py-slvs path
+      gets. This is what keeps a mate on its stored branch while it is dragged:
+      a wish that would turn a pin over is pulled back to the same way up, never
+      across to the other root. A COINCIDENT plane-plane against a frozen
+      partner is aligned fully even when it is not wrong-way (the nearest
+      orientation, as before);
     * ANGLE at a (anti)aligned start (gradient of the dot product vanishes) ->
       rotate onto the target angle about an axis perpendicular to the fixed one
       (this is the S2 fix for the singular start);
-    * DISTANCE closer than a quarter of its value to zero separation (the
-      squared residual has zero gradient at 0) -> slide out along the
-      separation direction to exactly the target (the nearest solution anyway).
+    * a squared DISTANCE (axis-axis, point-point: no side to carry) closer than a
+      quarter of its value to zero separation (zero gradient at 0) -> slide out
+      along the separation direction to exactly the target. The signed plane /
+      point DISTANCE residual is linear in the separation, converges in one step
+      from either side and needs no seed.
     The mover is always the mate's first side (`build_group_model` orients it)."""
+    by_mover: dict[str, list[tuple[Mate, _Side, _Side]]] = {}
+    for entry in model.sides:
+        by_mover.setdefault(entry[1].occurrence_id, []).append(entry)
+    for mover, entries in by_mover.items():
+        placed = {oid: poses[oid] for oid in model.member_ids}
+        pairs: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = []
+        trigger = False
+        for mate, first, second in entries:
+            d, f = model._world(first, placed), model._world(second, placed)
+            mate_pairs = alignment_pairs(mate, d, f)
+            pairs.extend(mate_pairs)
+            if any(_dot(source, target) < 0.0 for source, target in mate_pairs):
+                trigger = True
+            elif mate.type == MateType.COINCIDENT and d.plane is not None and f.plane is not None and second.occurrence_id not in poses:
+                trigger = True  # frozen partner: align fully, the nearest orientation (the same seed py-slvs gets)
+        if trigger:
+            rotation = rotation_onto_pairs(pairs)
+            if rotation is not None:
+                _rotate_member(poses, mover, rotvec_from_rot(rotation))
     for mate, first, second in model.sides:
         placed = {oid: poses[oid] for oid in model.member_ids}
         d, f = model._world(first, placed), model._world(second, placed)
         mover = first.occurrence_id
-        if mate.type == MateType.COINCIDENT and d.plane is not None and f.plane is not None:
-            target = f.plane.normal if mate.flipped else tuple(-c for c in f.plane.normal)
-            # Frozen partner: align fully (minimal rotation = the nearest orientation, the same
-            # seed py-slvs gets). Member partner: only undo a wrong-way facing.
-            if second.occurrence_id not in poses or _dot(_normalize(d.plane.normal), _normalize(target)) < 0.0:
-                _rotate_member(poses, mover, _minimal_rotvec(d.plane.normal, target))
-        elif mate.type == MateType.ANGLE and d.direction is not None and f.direction is not None and mate.value is not None:
+        if mate.type == MateType.ANGLE and d.direction is not None and f.direction is not None and mate.value is not None:
             nd, nf = _normalize(d.direction), _normalize(f.direction)
             dot = _dot(nd, nf)
             if abs(dot) > 1.0 - 5e-7:
@@ -528,10 +594,9 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
         elif mate.type == MateType.DISTANCE and mate.value:
             target = abs(mate.value)
             state = _distance_state(d, f)
-            if state is not None and abs(state[0]) < 0.25 * target:
-                current, direction, kind = state
-                sign = -1.0 if kind == "signed" and current < 0.0 else 1.0
-                _translate_member(poses, mover, np.array(direction) * (sign * target - current))
+            if state is not None and state[2] == "unsigned" and abs(state[0]) < 0.25 * target:
+                current, direction, _kind = state
+                _translate_member(poses, mover, np.array(direction) * (target - current))
 
 
 def _distance_state(d: _ResolvedGeometry, f: _ResolvedGeometry):
@@ -757,6 +822,7 @@ def solve_group(
         analysis=analysis,
         quality=GroupSolveQuality(residual_inf=residual_inf, jump=jump, iterations=iterations, seeded_by=seeded_by, max_step=max_step),
         constraint_model=constraint_model,
+        branches=dict(model.branches),
     )
 
 

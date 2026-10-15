@@ -2065,17 +2065,37 @@ def _mate_to_dict(mate: Mate) -> dict:
         "flipped": mate.flipped,
         "suppressed": mate.suppressed,
         "allow_rotation": mate.allow_rotation,
+        # The branch the mate stands for (`Mate.alignment` / `Mate.secondary_flip`, null = Closest). `flipped` above is
+        # their deprecated single-flag form: both are written so an older reader still sees a coherent mate.
+        "alignment": mate.alignment,
+        "secondary_flip": mate.secondary_flip,
     }
 
 
 def _mate_from_dict(data: dict) -> Mate:
+    mate_type = MateType(_require(data, "type"))
+    value = data.get("value")
+    flipped = data.get("flipped", False)
+    # Evolutionary fields, the usual `.get` convention: a file saved before they existed lacks the keys, which reads as
+    # "Closest" - resolved from the stored pose at the first solve, which reproduces the stored placement exactly (a stored
+    # pose already sits on one branch). Two legacy meanings are carried over here instead, because they were never a pose
+    # question: an ANGLE's `flipped` WAS its supplement, and a DISTANCE's sign never meant anything (the old residual used
+    # the square) - a negative value is its length, and its side is Closest.
+    alignment = data.get("alignment")
+    secondary_flip = data.get("secondary_flip")
+    if "secondary_flip" not in data and mate_type == MateType.ANGLE:
+        secondary_flip = bool(flipped)
+    if mate_type == MateType.DISTANCE and value is not None and value < 0:
+        value = abs(value)
     return Mate(
         id=_require(data, "id"),
-        type=MateType(_require(data, "type")),
+        type=mate_type,
         references=[_mate_entity_ref_from_dict(ref) for ref in data.get("references", [])],
-        value=data.get("value"),
-        flipped=data.get("flipped", False),
+        value=value,
+        flipped=flipped,
         suppressed=data.get("suppressed", False),
+        alignment=alignment,
+        secondary_flip=secondary_flip,
         # Test report item 4: purely additive, same `.get(key, default)`
         # evolutionary-field convention every other Mate field already uses -
         # a file saved before this existed simply lacks the key and imports

@@ -1890,6 +1890,13 @@ class MateDto {
   /// working unchanged.
   final bool allowRotation;
 
+  /// The branch ("root") the mate stands for (`docs/mate-solution-choice-plan.md`): [alignment] is `'aligned'` /
+  /// `'anti_aligned'` (whether the two directions point the same way), [secondaryFlip] the second binary choice (the side of a
+  /// distance, the spin half-turn of a locked concentric, an angle's supplement). `null` = Closest, not resolved yet (a legacy
+  /// file, or a field the mate's geometry does not use). [flipped] is their deprecated single-flag form, kept in step.
+  final String? alignment;
+  final bool? secondaryFlip;
+
   MateDto({
     required this.id,
     required this.type,
@@ -1898,6 +1905,8 @@ class MateDto {
     this.flipped = false,
     this.suppressed = false,
     this.allowRotation = true,
+    this.alignment,
+    this.secondaryFlip,
   });
 
   factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
@@ -1910,6 +1919,8 @@ class MateDto {
         flipped: json['flipped'] as bool? ?? false,
         suppressed: json['suppressed'] as bool? ?? false,
         allowRotation: json['allow_rotation'] as bool? ?? true,
+        alignment: json['alignment'] as String?,
+        secondaryFlip: json['secondary_flip'] as bool?,
       );
 }
 
@@ -5332,6 +5343,10 @@ class DocumentApiClient {
     // the solve converges (422 and nothing stored otherwise). [solveOccurrenceId] names the occurrence it drives.
     String? solve,
     String? solveOccurrenceId,
+    // The branch the mate stands for ([MateDto.alignment] / [MateDto.secondaryFlip]); sent only when given, so a mate that
+    // carries only the deprecated [flipped] still has it read into them and anything else is Closest (resolved by the solve).
+    String? alignment,
+    bool? secondaryFlip,
   }) =>
       _send(
         () => _httpClient.post(
@@ -5347,6 +5362,8 @@ class DocumentApiClient {
                 if (value != null) 'value': value,
                 'flipped': flipped,
                 'allow_rotation': allowRotation,
+                if (alignment != null) 'alignment': alignment,
+                if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),

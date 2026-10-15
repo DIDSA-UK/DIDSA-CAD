@@ -66,12 +66,19 @@ Known v1 scope limits (documented here, not silently assumed):
 - CONCENTRIC only supports axis-to-axis (a cylindrical Face, or a circular
   or straight Edge - Phase 13, `docs/assembly-scope.md` §6 `[15]` - on
   *both* sides) - there is no "concentric to a point" variant.
-- A COINCIDENT mate between two planar references locks the *full*
-  relative orientation (`addSameOrientation`, 3 DOF) rather than only the
-  2 DOF a real "flush, but free to spin about the shared normal" mate
-  should - a deliberate, documented v1 simplification (`addParallel`
-  alone cannot disambiguate the `flipped` sign, since two parallel lines
-  are equally "parallel" whether pointing the same or opposite ways).
+
+Which of a mate's valid placements ("roots") it means is data on the mate, not luck of the starting pose
+(`docs/mate-solution-choice-plan.md`): `Mate.alignment` (the two directions point the same way / opposite ways) and
+`Mate.secondary_flip` (the side of a DISTANCE, the spin half-turn of a locked CONCENTRIC, an ANGLE's supplement). `None`
+is "Closest" and `resolve_branch` fills it in from the pose a solve starts from. The py-slvs constraints below are
+sign-agnostic (`addParallel` holds for both roots), so the root is chosen by a warm-start seed that turns the occurrence
+onto all of its alignment targets (`alignment_pairs` / `rotation_onto_pairs`) and, for a DISTANCE side, by the sign of the
+signed `addPointPlaneDistance`; the residuals every other solver uses (`_mate_residual_vector`) are zero only on that
+branch.
+
+A COINCIDENT mate between two planar references is `addPointInPlane` plus `addParallel` (`_direction_lock`, 2 DOF): flush,
+free to slide and to spin about the shared normal. (This docstring used to say `addSameOrientation`, 3 DOF - the code never
+did; `addSameOrientation` cannot tell the two parallel branches apart either.)
 """
 
 from __future__ import annotations
@@ -97,6 +104,8 @@ from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodi
 from app.document.measure import single_shape_geometry
 from app.document.models import (
     Document,
+    MATE_ALIGNED,
+    MATE_ANTI_ALIGNED,
     Mate,
     MateEntityRef,
     MateType,
@@ -393,11 +402,13 @@ def _quaternion_from_axis_angle(axis: Vec3, angle_degrees: float) -> Quaternion:
 
 
 def _axis_angle_from_quaternion(q: Quaternion) -> tuple[Vec3, float]:
-    qw = max(-1.0, min(1.0, q[0]))
-    angle_radians = 2.0 * math.acos(qw)
-    s = math.sqrt(max(0.0, 1.0 - qw * qw))
-    if s < 1e-9:
+    # The angle comes from the VECTOR part (`2 atan2(|v|, w)`), not from `acos(w)`: near the identity `w = cos(theta / 2)` rounds
+    # to exactly 1.0 for any theta below ~1.5e-8 rad, so a Gauss-Newton rotation update that fine (a 1e-9 rad tilt of a 1.6 m
+    # part is a 1.6e-6 mm shift of its far end) was silently dropped and the solve stalled just above tolerance.
+    s = math.sqrt(q[1] * q[1] + q[2] * q[2] + q[3] * q[3])
+    if s < 1e-15:
         return (0.0, 0.0, 1.0), 0.0
+    angle_radians = 2.0 * math.atan2(s, q[0])
     return (q[1] / s, q[2] / s, q[3] / s), math.degrees(angle_radians)
 
 
@@ -647,6 +658,233 @@ def _effective_mate(mate: Mate, driven: _ResolvedGeometry, fixed: _ResolvedGeome
     return mate
 
 
+# ---- the branch ("root") a mate stands for ---------------------------------------------------------------------
+#
+# `docs/mate-solution-choice-plan.md`: a mate's geometry alone has several exact placements - parallel the same way or the
+# opposite way, a DISTANCE on either side of its face. `Mate.alignment` / `Mate.secondary_flip` say which; every solver
+# below (py-slvs seed, group Gauss-Newton, the exported constraint model and its Dart / GDScript mirrors) uses residuals
+# that are zero ONLY on the chosen branch, so a solve or drag can never land on another one.
+
+_DISTANCE_FLOOR = 1e-3  # mm: the divisor floor of the mm-scaled squared residuals (axis-axis / point-point DISTANCE)
+
+
+def _alignment_pair(mate: Mate, driven: _ResolvedGeometry, fixed: _ResolvedGeometry) -> tuple[Vec3, Vec3] | None:
+    """The two directions whose relative sign `mate.alignment` fixes (driven, fixed), for an EFFECTIVE mate; `None` when
+    the mate's geometry has no such pair (point/plane mixes, point-point, ANGLE)."""
+    if mate.type == MateType.COINCIDENT:
+        if driven.plane is not None and fixed.plane is not None:
+            return driven.plane.normal, fixed.plane.normal
+        return None
+    if mate.type in (MateType.CONCENTRIC, MateType.PARALLEL):
+        if driven.direction is not None and fixed.direction is not None:
+            return driven.direction, fixed.direction
+        return None
+    if mate.type == MateType.DISTANCE:
+        if driven.plane is not None and fixed.plane is not None:
+            return driven.plane.normal, fixed.plane.normal
+        if (
+            driven.plane is None
+            and fixed.plane is None
+            and driven.axis_origin is not None
+            and driven.direction is not None
+            and fixed.axis_origin is not None
+            and fixed.direction is not None
+        ):
+            return driven.direction, fixed.direction
+    return None
+
+
+def _signed_offset(mate: Mate, driven: _ResolvedGeometry, fixed: _ResolvedGeometry) -> float | None:
+    """The signed separation a DISTANCE mate's `secondary_flip` is the side of (`signed` in `_mate_residual_vector`);
+    `None` for the unsigned geometries (axis-axis, point-point) and for other mate types."""
+    if mate.type != MateType.DISTANCE:
+        return None
+    if driven.plane is not None and fixed.plane is not None:
+        return _dot(_vec_sub(driven.plane.origin, fixed.plane.origin), fixed.plane.normal)
+    if driven.plane is not None and fixed.point is not None:
+        return _dot(_vec_sub(fixed.point, driven.plane.origin), driven.plane.normal)
+    if fixed.plane is not None and driven.point is not None:
+        return _dot(_vec_sub(driven.point, fixed.plane.origin), fixed.plane.normal)
+    return None
+
+
+def _perp_pair(mate: Mate, driven: _ResolvedGeometry, fixed: _ResolvedGeometry) -> tuple[Vec3, Vec3] | None:
+    """CONCENTRIC with rotation locked: the two perpendicular reference lines whose relative sign (the spin half-turn)
+    `secondary_flip` fixes."""
+    if mate.type == MateType.CONCENTRIC and not mate.allow_rotation and driven.perp is not None and fixed.perp is not None:
+        return driven.perp, fixed.perp
+    return None
+
+
+def _angle_degrees(driven: _ResolvedGeometry, fixed: _ResolvedGeometry) -> float | None:
+    if driven.direction is None or fixed.direction is None:
+        return None
+    dot = max(-1.0, min(1.0, _dot(_normalize(driven.direction), _normalize(fixed.direction))))
+    return math.degrees(math.acos(dot))
+
+
+def resolve_branch(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _ResolvedGeometry) -> Mate:
+    """`mate` with every branch field its geometry uses and that is still `None` ("Closest") filled in from the CURRENT
+    placement (`driven_world` / `fixed_world`, both in world space): `alignment` from the sign of the two directions'
+    dot product, the DISTANCE side from the sign of the signed offset, the spin half-turn from the perpendicular lines,
+    an ANGLE's supplement from whichever of the angle and its supplement the pair is nearer. Fields already set are never
+    changed, so a resolved mate resolves to itself. Where the sign is undecidable (perpendicular directions, zero offset)
+    the default is anti-aligned for COINCIDENT plane-plane (touching solids face each other), aligned / side 0 otherwise."""
+    effective = _effective_mate(mate, driven_world, fixed_world)
+    alignment, flip = mate.alignment, mate.secondary_flip
+    if alignment is None:
+        pair = _alignment_pair(effective, driven_world, fixed_world)
+        if pair is not None:
+            dot = _dot(_normalize(pair[0]), _normalize(pair[1]))
+            if abs(dot) > 1e-9:
+                alignment = MATE_ALIGNED if dot > 0 else MATE_ANTI_ALIGNED
+            else:
+                alignment = MATE_ANTI_ALIGNED if effective.type == MateType.COINCIDENT else MATE_ALIGNED
+    if flip is None:
+        offset = _signed_offset(effective, driven_world, fixed_world)
+        perp = _perp_pair(effective, driven_world, fixed_world)
+        if offset is not None:
+            flip = offset < -1e-9
+        elif perp is not None:
+            flip = _dot(_normalize(perp[0]), _normalize(perp[1])) < 0
+        elif effective.type == MateType.ANGLE and effective.value is not None:
+            actual = _angle_degrees(driven_world, fixed_world)
+            if actual is not None:
+                target = abs(effective.value) % 360.0
+                target = min(target, 360.0 - target)
+                flip = abs(actual - (180.0 - target)) < abs(actual - target) - 1e-9
+    if alignment == mate.alignment and flip == mate.secondary_flip:
+        return mate
+    return replace(mate, alignment=alignment, secondary_flip=flip)
+
+
+def orient_branch(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _ResolvedGeometry, swapped: bool) -> Mate:
+    """Converts a mate's stored (CANONICAL) branch to the orientation a solve uses, and back (it is its own inverse).
+
+    A branch is stored relative to the mate's `references` order - reference 0 is the "driven" side, reference 1 the "fixed"
+    one - but a solve orients the pair by which occurrence is the one moving (`swapped` = the solve's driven side is
+    reference 1). `alignment` does not care. The SIDE of a DISTANCE between two planes does when their normals point the same
+    way: `(a.origin - b.origin) . b.normal` is minus `(b.origin - a.origin) . a.normal` there, so grounding the other part must
+    not make the stored side mean the opposite one (the part would hop across the face). Every other branch field is
+    orientation-free (a point-plane distance is always `(point - plane.origin) . plane.normal`)."""
+    if not swapped or mate.secondary_flip is None or mate.alignment != MATE_ALIGNED:
+        return mate
+    effective = _effective_mate(mate, driven_world, fixed_world)
+    if effective.type != MateType.DISTANCE or driven_world.plane is None or fixed_world.plane is None:
+        return mate
+    return replace(mate, secondary_flip=not mate.secondary_flip)
+
+
+def resolve_oriented_branch(
+    mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _ResolvedGeometry, swapped: bool
+) -> tuple[Mate, Mate]:
+    """`(oriented, canonical)`: `mate` (its branch stored canonically, `None` = Closest) resolved for a solve that orients the
+    pair `(driven_world, fixed_world)` - `swapped` when that is the reverse of the mate's `references` order. `oriented` is what
+    the residuals use; `canonical` is the same mate with the resolved branch in the stored convention (what a commit writes back)."""
+    # The alignment first (orientation-free), so the side can then be converted: resolve with the side blanked and keep only the
+    # alignment, put the stored side back, orient it, and let the oriented geometry fill a side that is still unset.
+    stored = resolve_branch(replace(mate, secondary_flip=None), driven_world, fixed_world)
+    stored = replace(stored, secondary_flip=mate.secondary_flip)
+    oriented = resolve_branch(orient_branch(stored, driven_world, fixed_world, swapped), driven_world, fixed_world)
+    return oriented, orient_branch(oriented, driven_world, fixed_world, swapped)
+
+
+def sync_flipped(mate: Mate, driven_world: _ResolvedGeometry | None = None, fixed_world: _ResolvedGeometry | None = None) -> None:
+    """Keeps the deprecated `Mate.flipped` in step with the branch fields (`flipped=True` <=> aligned for COINCIDENT,
+    <=> the supplement for ANGLE). CONCENTRIC / PARALLEL / DISTANCE never used it and keep whatever they carry."""
+    if mate.type == MateType.ANGLE and mate.secondary_flip is not None:
+        mate.flipped = bool(mate.secondary_flip)
+    elif mate.type == MateType.COINCIDENT and mate.alignment is not None:
+        mate.flipped = mate.alignment == MATE_ALIGNED
+
+
+def apply_flipped_alias(
+    mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _ResolvedGeometry, override: bool = False
+) -> Mate:
+    """The deprecated `flipped` flag read into the branch fields, for a mate whose payload carried only `flipped`: COINCIDENT
+    plane-plane -> `alignment` (True = aligned), ANGLE -> `secondary_flip`. Needs the geometry because `flipped` meant
+    something only for those (a COINCIDENT of two edges is a CONCENTRIC and ignored it). Fields already set are kept unless
+    `override` (an edit that sets `flipped` on a mate that already names its branch)."""
+    effective = _effective_mate(mate, driven_world, fixed_world)
+    alignment, flip = mate.alignment, mate.secondary_flip
+    if (
+        effective.type == MateType.COINCIDENT
+        and (alignment is None or override)
+        and _alignment_pair(effective, driven_world, fixed_world) is not None
+    ):
+        alignment = MATE_ALIGNED if mate.flipped else MATE_ANTI_ALIGNED
+    if effective.type == MateType.ANGLE and (flip is None or override):
+        flip = bool(mate.flipped)
+    if alignment == mate.alignment and flip == mate.secondary_flip:
+        return mate
+    return replace(mate, alignment=alignment, secondary_flip=flip)
+
+
+def _align_sign(mate: Mate) -> float:
+    """+1 for aligned, -1 for anti-aligned (an unresolved mate reads as aligned: callers resolve first)."""
+    return -1.0 if mate.alignment == MATE_ANTI_ALIGNED else 1.0
+
+
+def _flip_sign(mate: Mate) -> float:
+    """-1 when `secondary_flip` (the other side / the half-turn), else +1."""
+    return -1.0 if mate.secondary_flip else 1.0
+
+
+def _direction_matches(a: Vec3, b: Vec3, sign: float) -> bool:
+    """`a` points the way `sign * b` does (unit vectors compared, `_RESIDUAL_TOLERANCE`)."""
+    na, nb = _normalize(a), _normalize(b)
+    return _magnitude((na[0] - sign * nb[0], na[1] - sign * nb[1], na[2] - sign * nb[2])) <= _RESIDUAL_TOLERANCE
+
+
+def alignment_pairs(mate: Mate, driven_world: _ResolvedGeometry, fixed_world: _ResolvedGeometry) -> list[tuple[Vec3, Vec3]]:
+    """`(current driven direction, target direction)` for every direction a RESOLVED mate wants brought onto its branch: the
+    alignment pair (target = `sign * fixed`) and, for a CONCENTRIC with rotation locked, the spin pair. All in world space."""
+    effective = _effective_mate(mate, driven_world, fixed_world)
+    pairs: list[tuple[Vec3, Vec3]] = []
+    pair = _alignment_pair(effective, driven_world, fixed_world)
+    if pair is not None and mate.alignment is not None:
+        sign = _align_sign(mate)
+        fixed = _normalize(pair[1])
+        pairs.append((_normalize(pair[0]), (sign * fixed[0], sign * fixed[1], sign * fixed[2])))
+    perp = _perp_pair(effective, driven_world, fixed_world)
+    if perp is not None and mate.secondary_flip is not None:
+        sign = _flip_sign(mate)
+        fixed = _normalize(perp[1])
+        pairs.append((_normalize(perp[0]), (sign * fixed[0], sign * fixed[1], sign * fixed[2])))
+    return pairs
+
+
+def rotation_onto_pairs(pairs: list[tuple[Vec3, Vec3]]) -> np.ndarray | None:
+    """The rotation (3x3, acting on world vectors) that best takes every pair's source direction onto its target: the
+    minimal rotation for one independent pair, a least-squares (Kabsch) fit for two or more - so a part held by several
+    alignment mates is turned once, onto all of their branches together, instead of by one mate undoing the previous.
+    Pairs whose sources are parallel to an earlier one add nothing (the spin about that axis is not theirs to decide)
+    and are dropped. `None` for no pair, or nothing to rotate."""
+    kept: list[tuple[np.ndarray, np.ndarray]] = []
+    for source, target in pairs:
+        a, b = np.array(_normalize(source)), np.array(_normalize(target))
+        if any(float(np.linalg.norm(np.cross(a, k[0]))) < 1e-6 for k in kept):
+            continue
+        kept.append((a, b))
+    if not kept:
+        return None
+    if len(kept) == 1:
+        a, b = kept[0]
+        q = _quaternion_aligning(tuple(a), tuple(b))
+        w, x, y, z = q
+        return np.array(
+            [
+                [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+            ]
+        )
+    h = sum(np.outer(a, b) for a, b in kept)
+    u, _s, vt = np.linalg.svd(h)
+    d = np.sign(np.linalg.det(vt.T @ u.T)) or 1.0
+    return vt.T @ np.diag([1.0, 1.0, d]) @ u.T
+
+
 def _add_mate_constraints(
     system: slvs.System,
     builder: _DrivenGeometryBuilder,
@@ -764,13 +1002,15 @@ def _add_mate_constraints(
         fixed_origin = fixed.axis_origin if fixed.axis_origin is not None else (fixed.point or (0.0, 0.0, 0.0))
         driven_line = builder.line(driven_origin, driven.direction)
         fixed_line = _fixed_line(system, fixed_origin, fixed.direction)
-        system.addAngle(mate.value, mate.flipped, driven_line, fixed_line, group=_SOLVE_GROUP)
+        system.addAngle(mate.value, bool(mate.secondary_flip), driven_line, fixed_line, group=_SOLVE_GROUP)
         return
 
     if mate.type == MateType.DISTANCE:
         if mate.value is None:
             raise _unsupported_mate_geometry(ref_placeholder, "a value (mm)")
         distance = abs(mate.value)
+        # The side (`secondary_flip`): `addPointPlaneDistance` is SIGNED, so the chosen side is simply its sign.
+        signed_distance = _flip_sign(mate) * distance
         if driven.plane is not None and fixed.plane is not None:
             # Unlike COINCIDENT's plane-plane case, this keeps the two
             # planes merely parallel (`addParallel`, 2 DOF - direction
@@ -783,7 +1023,7 @@ def _add_mate_constraints(
             driven_line = builder.line(driven.plane.origin, driven.plane.normal)
             fixed_workplane = _fixed_workplane(system, fixed.plane)
             fixed_line = _fixed_line(system, fixed.plane.origin, fixed.plane.normal)
-            system.addPointPlaneDistance(distance, driven_point, fixed_workplane, group=_SOLVE_GROUP)
+            system.addPointPlaneDistance(signed_distance, driven_point, fixed_workplane, group=_SOLVE_GROUP)
             system.addParallel(driven_line, fixed_line, group=_SOLVE_GROUP)
         elif driven.plane is not None:
             assert fixed.point is not None
@@ -793,12 +1033,12 @@ def _add_mate_constraints(
                 _quaternion_from_basis(driven.plane.x_axis, driven.plane.y_axis, driven.plane.normal)
             )
             driven_workplane = system.addWorkplane(driven_workplane_origin, driven_workplane_normal, group=_SOLVE_GROUP)
-            system.addPointPlaneDistance(distance, fixed_point, driven_workplane, group=_SOLVE_GROUP)
+            system.addPointPlaneDistance(signed_distance, fixed_point, driven_workplane, group=_SOLVE_GROUP)
         elif fixed.plane is not None:
             assert driven.point is not None
             driven_point = builder.point(driven.point)
             fixed_workplane = _fixed_workplane(system, fixed.plane)
-            system.addPointPlaneDistance(distance, driven_point, fixed_workplane, group=_SOLVE_GROUP)
+            system.addPointPlaneDistance(signed_distance, driven_point, fixed_workplane, group=_SOLVE_GROUP)
         elif (
             driven.axis_origin is not None
             and driven.direction is not None
@@ -873,12 +1113,14 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
     means the constraints were built successfully, so a missing point/plane/
     axis here can only mean the solve genuinely left it unset, a real
     non-convergence rather than an ambiguous one."""
+    mate = resolve_branch(mate, driven_world, fixed)
     mate = _effective_mate(mate, driven_world, fixed)
+    align = _align_sign(mate)
     if mate.type == MateType.COINCIDENT:
         if driven_world.plane is not None and fixed.plane is not None:
             return _point_plane_distance(
                 driven_world.plane.origin, fixed.plane.origin, fixed.plane.normal
-            ) <= _RESIDUAL_TOLERANCE and _directions_parallel(driven_world.plane.normal, fixed.plane.normal)
+            ) <= _RESIDUAL_TOLERANCE and _direction_matches(driven_world.plane.normal, fixed.plane.normal, align)
         if driven_world.plane is not None:
             if fixed.point is None:
                 return False
@@ -899,7 +1141,7 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
             or fixed.direction is None
         ):
             return False
-        axis_satisfied = _directions_parallel(driven_world.direction, fixed.direction) and (
+        axis_satisfied = _direction_matches(driven_world.direction, fixed.direction, align) and (
             _point_line_distance(driven_world.axis_origin, fixed.axis_origin, fixed.direction) <= _RESIDUAL_TOLERANCE
         )
         if not axis_satisfied:
@@ -908,17 +1150,17 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
         # `allow_rotation=False` constraint - `driven_world.perp`/`fixed.perp`
         # went through the exact same `_place_in_world` rotation `direction`
         # itself did, so this residual check compares the same two lines
-        # that constraint actually built.
+        # that constraint actually built (on the spin half-turn `secondary_flip` names).
         if not mate.allow_rotation:
             if driven_world.perp is None or fixed.perp is None:
                 return False
-            return _directions_parallel(driven_world.perp, fixed.perp)
+            return _direction_matches(driven_world.perp, fixed.perp, _flip_sign(mate))
         return True
 
     if mate.type == MateType.PARALLEL:
         if driven_world.direction is None or fixed.direction is None:
             return False
-        return _directions_parallel(driven_world.direction, fixed.direction)
+        return _direction_matches(driven_world.direction, fixed.direction, align)
 
     if mate.type == MateType.ANGLE:
         if driven_world.direction is None or fixed.direction is None or mate.value is None:
@@ -927,9 +1169,8 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
         actual_degrees = math.degrees(math.acos(dot))
         target_degrees = abs(mate.value) % 360
         target_degrees = min(target_degrees, 360 - target_degrees)
-        # `addAngle`'s own `supplement` toggle (`mate.flipped`) picks which
-        # of the two branches `mateTypeHasFlip` already documents client-side
-        # - either is a legitimate solved state here.
+        # The angle or its supplement (`secondary_flip` names which one the solve targets; either is a legitimate
+        # solved state for this check, as before).
         supplement_degrees = 180 - target_degrees
         return (
             abs(actual_degrees - target_degrees) <= _RESIDUAL_ANGLE_TOLERANCE_DEGREES
@@ -940,21 +1181,20 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
         if mate.value is None:
             return False
         target = abs(mate.value)
+        signed_target = _flip_sign(mate) * target
+        offset = _signed_offset(mate, driven_world, fixed)
         if driven_world.plane is not None and fixed.plane is not None:
-            actual = _point_plane_distance(driven_world.plane.origin, fixed.plane.origin, fixed.plane.normal)
-            return abs(actual - target) <= _RESIDUAL_TOLERANCE and _directions_parallel(
-                driven_world.plane.normal, fixed.plane.normal
+            return abs(offset - signed_target) <= _RESIDUAL_TOLERANCE and _direction_matches(
+                driven_world.plane.normal, fixed.plane.normal, align
             )
         if driven_world.plane is not None:
             if fixed.point is None:
                 return False
-            actual = _point_plane_distance(fixed.point, driven_world.plane.origin, driven_world.plane.normal)
-            return abs(actual - target) <= _RESIDUAL_TOLERANCE
+            return abs(offset - signed_target) <= _RESIDUAL_TOLERANCE
         if fixed.plane is not None:
             if driven_world.point is None:
                 return False
-            actual = _point_plane_distance(driven_world.point, fixed.plane.origin, fixed.plane.normal)
-            return abs(actual - target) <= _RESIDUAL_TOLERANCE
+            return abs(offset - signed_target) <= _RESIDUAL_TOLERANCE
         if (
             driven_world.axis_origin is not None
             and driven_world.direction is not None
@@ -962,8 +1202,8 @@ def _mate_residual_satisfied(mate: Mate, driven_world: _ResolvedGeometry, fixed:
             and fixed.direction is not None
         ):
             actual = _point_line_distance(driven_world.axis_origin, fixed.axis_origin, fixed.direction)
-            return abs(actual - target) <= _RESIDUAL_TOLERANCE and _directions_parallel(
-                driven_world.direction, fixed.direction
+            return abs(actual - target) <= _RESIDUAL_TOLERANCE and _direction_matches(
+                driven_world.direction, fixed.direction, align
             )
         if driven_world.point is None or fixed.point is None:
             return False
@@ -1000,11 +1240,19 @@ def _mate_residual_vector(mate: Mate, driven_world: _ResolvedGeometry, fixed: _R
     own sibling docstring: "does not distinguish [a genuinely redundant
     equation] ... it reports 0 even while a real ... degree of freedom ...
     remains")."""
+    mate = resolve_branch(mate, driven_world, fixed)
     mate = _effective_mate(mate, driven_world, fixed)
+    align = _align_sign(mate)
+
+    def direction_rows(a: Vec3, b: Vec3, sign: float) -> tuple[float, ...]:
+        # `a - sign * b`: zero ONLY when `a` points the way `sign * b` does. Three rows of rank two, non-degenerate at the
+        # target (unlike `cross(a, b)`, zero for both roots, or a dot product, stationary at its extremum).
+        return (a[0] - sign * b[0], a[1] - sign * b[1], a[2] - sign * b[2])
+
     if mate.type == MateType.COINCIDENT:
         if driven_world.plane is not None and fixed.plane is not None:
             offset = _vec_sub(driven_world.plane.origin, fixed.plane.origin)
-            return (_dot(offset, fixed.plane.normal), *_cross(driven_world.plane.normal, fixed.plane.normal))
+            return (_dot(offset, fixed.plane.normal), *direction_rows(driven_world.plane.normal, fixed.plane.normal, align))
         if driven_world.plane is not None:
             if fixed.point is None:
                 return ()
@@ -1028,19 +1276,19 @@ def _mate_residual_vector(mate: Mate, driven_world: _ResolvedGeometry, fixed: _R
         ):
             return ()
         residual = (
-            *_cross(driven_world.direction, fixed.direction),
+            *direction_rows(driven_world.direction, fixed.direction, align),
             *_cross(_vec_sub(driven_world.axis_origin, fixed.axis_origin), fixed.direction),
         )
         if not mate.allow_rotation:
             if driven_world.perp is None or fixed.perp is None:
                 return residual
-            residual = (*residual, *_cross(driven_world.perp, fixed.perp))
+            residual = (*residual, *direction_rows(driven_world.perp, fixed.perp, _flip_sign(mate)))
         return residual
 
     if mate.type == MateType.PARALLEL:
         if driven_world.direction is None or fixed.direction is None:
             return ()
-        return _cross(driven_world.direction, fixed.direction)
+        return direction_rows(driven_world.direction, fixed.direction, align)
 
     if mate.type == MateType.ANGLE:
         if driven_world.direction is None or fixed.direction is None or mate.value is None:
@@ -1053,23 +1301,24 @@ def _mate_residual_vector(mate: Mate, driven_world: _ResolvedGeometry, fixed: _R
     if mate.type == MateType.DISTANCE:
         if mate.value is None:
             return ()
-        target_sq = mate.value * mate.value
+        target = abs(mate.value)
+        # Linear in the signed separation, so Gauss-Newton converges in one step from either side (the squared form had
+        # a zero gradient at 0 and a ~1e-3 rounding floor on large moves); the side is `secondary_flip`.
+        signed_target = _flip_sign(mate) * target
+        # Squared forms (no sign to carry) scaled to millimetres, `(x^2 - d^2) / (2 d)`, so one tolerance means the same
+        # thing for every mate; the divisor is floored for tiny distances.
+        scale = 2.0 * max(target, _DISTANCE_FLOOR)
+        offset = _signed_offset(mate, driven_world, fixed)
         if driven_world.plane is not None and fixed.plane is not None:
-            offset = _vec_sub(driven_world.plane.origin, fixed.plane.origin)
-            signed = _dot(offset, fixed.plane.normal)
-            return (signed * signed - target_sq, *_cross(driven_world.plane.normal, fixed.plane.normal))
+            return (offset - signed_target, *direction_rows(driven_world.plane.normal, fixed.plane.normal, align))
         if driven_world.plane is not None:
             if fixed.point is None:
                 return ()
-            offset = _vec_sub(fixed.point, driven_world.plane.origin)
-            signed = _dot(offset, driven_world.plane.normal)
-            return (signed * signed - target_sq,)
+            return (offset - signed_target,)
         if fixed.plane is not None:
             if driven_world.point is None:
                 return ()
-            offset = _vec_sub(driven_world.point, fixed.plane.origin)
-            signed = _dot(offset, fixed.plane.normal)
-            return (signed * signed - target_sq,)
+            return (offset - signed_target,)
         if (
             driven_world.axis_origin is not None
             and driven_world.direction is not None
@@ -1079,13 +1328,13 @@ def _mate_residual_vector(mate: Mate, driven_world: _ResolvedGeometry, fixed: _R
             perp = _cross(_vec_sub(driven_world.axis_origin, fixed.axis_origin), fixed.direction)
             perp_sq = _dot(perp, perp)
             return (
-                perp_sq - target_sq,
-                *_cross(driven_world.direction, fixed.direction),
+                (perp_sq - target * target) / scale,
+                *direction_rows(driven_world.direction, fixed.direction, align),
             )
         if driven_world.point is None or fixed.point is None:
             return ()
-        offset = _vec_sub(driven_world.point, fixed.point)
-        return (_dot(offset, offset) - target_sq,)
+        offset_vec = _vec_sub(driven_world.point, fixed.point)
+        return ((_dot(offset_vec, offset_vec) - target * target) / scale,)
 
     return ()  # pragma: no cover - every MateType is handled above
 
@@ -1270,54 +1519,37 @@ def _solve_occurrence_against(
         fixed_geometry = (
             fixed_local_geometry if fixed_transform is None else _place_in_world(fixed_local_geometry, fixed_transform)
         )
+        # Closest -> a concrete branch, from the pose this solve starts from (a mate that already names its branch keeps it),
+        # oriented the way THIS solve sees the pair (the driven side is reference 1 when `swapped`: see `orient_branch`).
+        mate, _canonical = resolve_oriented_branch(
+            mate,
+            _place_in_world(driven_geometry, driven_occurrence.transform),
+            fixed_geometry,
+            swapped=driven_ref is mate.references[1],
+        )
         resolved.append((mate, driven_ref, driven_geometry, fixed_geometry))
 
-    seed_rotation_quaternion: Quaternion | None = None
+    # Warm start on the mates' branches. Every parallel-type constraint below is sign-agnostic (py-slvs' `addParallel`
+    # holds for both roots), so which root Newton ends on is decided here: turn the occurrence ONCE onto all of its
+    # alignment targets together (`alignment_pairs` / `rotation_onto_pairs` - the minimal rotation for a single pair, a
+    # least-squares fit for several), composed onto its CURRENT rotation so the spin about the shared direction survives
+    # (a face-to-face mate leaves that spin free, found in VR testing of live mate-constrained dragging). A direction that
+    # is already on its branch needs no extra rotation, one pointing the wrong way is flipped by the minimal one.
+    current_rotation = _quaternion_from_axis_angle(
+        driven_occurrence.transform.rotation_axis, driven_occurrence.transform.rotation_angle_degrees
+    )
+    pairs: list[tuple[Vec3, Vec3]] = []
     for mate, _driven_ref, driven_geometry, fixed_geometry in resolved:
-        if mate.type == MateType.COINCIDENT and driven_geometry.plane is not None and fixed_geometry.plane is not None:
-            target_direction = fixed_geometry.plane.normal if mate.flipped else tuple(-c for c in fixed_geometry.plane.normal)
-            # Seed with the SMALLEST additional rotation that takes the driven
-            # normal - where it points under the Occurrence's CURRENT rotation -
-            # onto the target, composed onto that current rotation. Aligning the
-            # local normal straight to the target (this seed's original form)
-            # threw the current rotation away, including any spin about the
-            # mate's own normal: a face-to-face mate leaves that spin free
-            # (allow_rotation), yet every solve reset it, so a part mated to a
-            # face could never be turned about it (found in VR testing of live
-            # mate-constrained dragging). If the normal already opposes/matches
-            # the target the extra rotation is the identity and the seed IS the
-            # current rotation, so the spin survives; if it needs flipping, the
-            # flip is the minimal one.
-            current_rotation = _quaternion_from_axis_angle(
-                driven_occurrence.transform.rotation_axis, driven_occurrence.transform.rotation_angle_degrees
-            )
-            current_world_normal = _rotate_vector_by_quaternion(current_rotation, driven_geometry.plane.normal)
-            extra_rotation = _quaternion_aligning(current_world_normal, target_direction)
-            seed_rotation_quaternion = _quaternion_multiply(extra_rotation, current_rotation)
-            break
-    if seed_rotation_quaternion is None:
-        # CONCENTRIC's own warm start (test report item 4, bolt-in-hole
-        # repro) - only needed for the `allow_rotation=False` branch, whose
-        # new `addParallel` rotation lock (see that call site's own comment)
-        # is sign-agnostic and otherwise leaves Newton to find the correct
-        # 0-vs-180-degree branch unaided, starting from whatever orientation
-        # the Occurrence already happens to be at. Skipped whenever a
-        # COINCIDENT seed above already applies - one seed is enough to get
-        # Newton close, and COINCIDENT's own disambiguation need (same
-        # docstring) takes priority.
-        for mate, _driven_ref, driven_geometry, fixed_geometry in resolved:
-            if (
-                mate.type == MateType.CONCENTRIC
-                and not mate.allow_rotation
-                and driven_geometry.direction is not None
-                and driven_geometry.perp is not None
-                and fixed_geometry.direction is not None
-                and fixed_geometry.perp is not None
-            ):
-                seed_rotation_quaternion = _quaternion_aligning_axis_and_perp(
-                    driven_geometry.direction, driven_geometry.perp, fixed_geometry.direction, fixed_geometry.perp
-                )
-                break
+        pairs.extend(alignment_pairs(mate, _place_in_world(driven_geometry, driven_occurrence.transform), fixed_geometry))
+    seed_rotation_quaternion: Quaternion | None = None
+    seed_matrix = rotation_onto_pairs(pairs)
+    if seed_matrix is not None:
+        extra_rotation = _quaternion_from_basis(
+            tuple(float(c) for c in seed_matrix[:, 0]),
+            tuple(float(c) for c in seed_matrix[:, 1]),
+            tuple(float(c) for c in seed_matrix[:, 2]),
+        )
+        seed_rotation_quaternion = _quaternion_multiply(extra_rotation, current_rotation)
 
     system = slvs.System()
     seed_translation = driven_occurrence.transform.translation
