@@ -2,7 +2,7 @@
 
 Source: tester report while building `Top_and_frame.didsa`. A 1580 × 780 × 5 table top was meant to sit centred
 on an 800 × 1600 frame, 10 mm in from each outer edge. It took many attempts to get it in the right place. The Mate
-ghost preview was sometimes wrong or missing. The tester's five files are **not committed**; ask the tester to attach them to the implementation session, and add them as fixtures under `backend/tests/data/table_top_frame/` only with their agreement.
+ghost preview was sometimes wrong or missing. The tester's five files are committed, with their agreement, as fixtures in `backend/tests/data/table_top_frame/`.
 
 This doc is written for a **follow-up implementation session**. Code pointers were checked against `main` at
 `6c11dc5`. Line numbers drift, so search for the named symbol if a line is off. The investigation was
@@ -382,8 +382,8 @@ Scope it as its own plan.
 
 ## Reproduction notes
 
-- The tester's files (`Top_and_frame.didsa`, `Frame.didsa`, `Frame_A.didsa`, `Frame_B.didsa`, `Table_Top.didsa`)
-  are not in the repo; see the note at the top. Compose them for `POST /document/import/native` the way the
+- `backend/tests/data/table_top_frame/` holds the tester's files: `Top_and_frame.didsa` (the assembly), `Frame.didsa`
+  (a sub-assembly of four bars), `Frame_A.didsa`, `Frame_B.didsa` and `Table_Top.didsa`. Compose them for `POST /document/import/native` the way the
   client composer does: walk `occurrences[].external_ref`, set each occurrence's `resolved_part_id` to the referenced
   file's `root_part_id`, then concatenate `parts` and `sketches`.
 - Plate occurrence `8caca0b2-7da1-4082-931a-be065ce55456`; frame occurrence `32947d4e-…` (fixed). Correct plate box:
