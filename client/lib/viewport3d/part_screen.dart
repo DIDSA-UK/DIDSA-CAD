@@ -3644,6 +3644,18 @@ class _PartScreenState extends State<PartScreen> {
   /// losing their two picked entities.
   String? _mateError;
 
+  /// Phase 2b: the earlier mates the latest ghost preview needs on their other branch (Confirm sends exactly these back, so
+  /// what is stored is what the ghost showed) and the sentence telling the user so.
+  List<BranchChangeDto> _mateBranchChanges = const [];
+  String? _mateNotice;
+
+  void _applyMateBranchPreview(MateSolvePreviewDto? result) {
+    _mateBranchChanges = result?.branchChanges ?? const [];
+    _mateNotice = result == null
+        ? null
+        : mateBranchNotice(result.branchChanges, _mates, blockedBy: result.blockedBy, conflicting: result.conflicting);
+  }
+
   /// Vertex/edge/face only - `component: false` (unlike [_measureSelectionFilter],
   /// which never needed to say either way, since [hitTestComponentInstances]'
   /// whole-instance candidate and this mode's own sub-entity one are
@@ -3674,6 +3686,7 @@ class _PartScreenState extends State<PartScreen> {
       _mateError = null;
       _mateSaving = false;
       _matePreviewMembers = const [];
+      _applyMateBranchPreview(null);
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
@@ -3689,6 +3702,7 @@ class _PartScreenState extends State<PartScreen> {
       _mateError = null;
       _mateSaving = false;
       _matePreviewMembers = const [];
+      _applyMateBranchPreview(null);
       _selectionFilterOverrides.pop();
     });
   }
@@ -3765,6 +3779,7 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || focusPartId == null || _selectedEntities.length != 2) {
       setState(() {
         _matePreviewMembers = const [];
+        _applyMateBranchPreview(null);
       });
       return;
     }
@@ -3773,6 +3788,7 @@ class _PartScreenState extends State<PartScreen> {
     if (drivenOccurrenceId == null) {
       setState(() {
         _matePreviewMembers = const [];
+        _applyMateBranchPreview(null);
       });
       return;
     }
@@ -3791,11 +3807,13 @@ class _PartScreenState extends State<PartScreen> {
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
         _matePreviewMembers = result.converged ? _matePreviewMembersFrom(result, drivenOccurrenceId) : const [];
+        _applyMateBranchPreview(result);
       });
     } on ApiException {
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
         _matePreviewMembers = const [];
+        _applyMateBranchPreview(null);
       });
     }
   }
@@ -3840,9 +3858,11 @@ class _PartScreenState extends State<PartScreen> {
         allowRotation: _mateAllowRotation,
         solve: drivenOccurrenceId == null ? null : _mateMovement,
         solveOccurrenceId: drivenOccurrenceId,
+        branchChanges: _mateBranchChanges,
       );
       if (!mounted) return;
       setState(() {
+        _applyMateBranchPreview(null);
         _mateActive = false;
         _selectedEntities = {};
         _entitiesBeforeMate = null;
@@ -21810,6 +21830,10 @@ class _PartScreenState extends State<PartScreen> {
     double? value = mate.value;
     bool flipped = mate.flipped;
     bool allowRotation = mate.allowRotation;
+    // Phase 2b: earlier mates the edit needs on their other branch, as the live preview last reported them.
+    List<BranchChangeDto> branchChanges = const [];
+    String? branchNotice;
+    VoidCallback? dialogRefresh;
     final drivenOccurrenceId = mate.references.length == 2
         ? _drivableOccurrenceId([mate.references[1].occurrenceId, mate.references[0].occurrenceId])
         : null;
@@ -21820,6 +21844,14 @@ class _PartScreenState extends State<PartScreen> {
         if (mounted) setState(() => _matePreviewMembers = const []);
         return;
       }
+      void remember(MateSolvePreviewDto? result) {
+        branchChanges = result?.branchChanges ?? const [];
+        branchNotice = result == null
+            ? null
+            : mateBranchNotice(result.branchChanges, _mates, blockedBy: result.blockedBy, conflicting: result.conflicting);
+        dialogRefresh?.call();
+      }
+
       try {
         final result = await _api.previewMateSolve(
           focusPartId,
@@ -21833,9 +21865,11 @@ class _PartScreenState extends State<PartScreen> {
           replaceMateId: mate.id,
         );
         if (!mounted || token != _matePreviewRequestToken) return;
+        remember(result);
         setState(() => _matePreviewMembers = result.converged ? _matePreviewMembersFrom(result, drivenId) : const []);
       } on ApiException {
         if (!mounted || token != _matePreviewRequestToken) return;
+        remember(null);
         setState(() => _matePreviewMembers = const []);
       }
     }
@@ -21846,7 +21880,9 @@ class _PartScreenState extends State<PartScreen> {
       // Light barrier: the ghost behind the dialog is the point of the live preview.
       barrierColor: Colors.black12,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
+        builder: (context, setDialogState) {
+          dialogRefresh = () => setDialogState(() {});
+          return AlertDialog(
           title: Text('Edit ${mateTypeLabel(mate.type)} Mate'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -21886,6 +21922,11 @@ class _PartScreenState extends State<PartScreen> {
                   contentPadding: EdgeInsets.zero,
                   dense: true,
                 ),
+              if (branchNotice != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(branchNotice!, key: const ValueKey('mate-branch-notice'), style: const TextStyle(fontSize: 13)),
+                ),
             ],
           ),
           actions: [
@@ -21897,9 +21938,11 @@ class _PartScreenState extends State<PartScreen> {
               child: const Text('Save'),
             ),
           ],
-        ),
+        );
+        },
       ),
     );
+    dialogRefresh = null;
     // Cancel, Save and a dismissed dialog all end the live preview.
     _matePreviewRequestToken++;
     if (mounted) setState(() => _matePreviewMembers = const []);
@@ -21914,6 +21957,7 @@ class _PartScreenState extends State<PartScreen> {
         allowRotation: allowRotation,
         solve: drivenOccurrenceId == null ? null : _mateMovement,
         solveOccurrenceId: drivenOccurrenceId,
+        branchChanges: branchChanges,
       );
       if (!mounted) return;
       await _refreshAssemblyTree();
@@ -23511,6 +23555,7 @@ class _PartScreenState extends State<PartScreen> {
                       },
                       saving: _mateSaving,
                       error: _mateError,
+                      notice: _mateNotice,
                       onConfirm: _selectedEntities.length == 2 &&
                               (!mateTypeNeedsValue(_mateType) || _mateValue != null)
                           ? _confirmMate

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/mate_panel.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 
@@ -46,6 +47,39 @@ void main() {
     });
   });
 
+  group('mateBranchNotice (Phase 2b)', () {
+    MateDto mate(String id, String type) => MateDto(id: id, type: type, references: const []);
+    BranchChangeDto change(String id) => BranchChangeDto(mateId: id, field: 'secondary_flip', from: false, to: true);
+
+    test('nothing to say without changes, blockers or conflicts', () {
+      expect(mateBranchNotice(const [], const []), isNull);
+    });
+
+    test('one earlier mate moving is named by its type and Confirm applies it', () {
+      final text = mateBranchNotice([change('m1')], [mate('m1', 'distance')])!;
+      expect(text, contains('Distance mate'));
+      expect(text, contains('Confirm applies it'));
+    });
+
+    test('several mates are counted once each, even with two fields changed on one mate', () {
+      final text = mateBranchNotice(
+        [change('m1'), BranchChangeDto(mateId: 'm1', field: 'alignment', from: 'aligned', to: 'anti_aligned'), change('m2')],
+        [mate('m1', 'distance'), mate('m2', 'angle')],
+      )!;
+      expect(text, contains('2 earlier mates'));
+      expect(text, contains('Distance mate, Angle mate'));
+    });
+
+    test('a user-set mate in the way and a genuine conflict each get their own sentence', () {
+      expect(mateBranchNotice(const [], [mate('m1', 'concentric')], blockedBy: ['m1']), contains('you set'));
+      expect(mateBranchNotice(const [], [mate('m1', 'concentric')], conflicting: ['m1']), contains('conflicts'));
+    });
+
+    test('an unknown mate id falls back to "a mate"', () {
+      expect(mateBranchNotice([change('gone')], const []), contains('a mate'));
+    });
+  });
+
   group('kMateTypes', () {
     test('has exactly the five backend-supported types', () {
       expect(kMateTypes, ['coincident', 'concentric', 'parallel', 'distance', 'angle']);
@@ -54,6 +88,30 @@ void main() {
 
   group('MatePanel', () {
     Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
+
+    testWidgets('shows the branch notice only when given (Phase 2b)', (tester) async {
+      Widget panel({String? notice}) => wrap(MatePanel(
+            selectedEntities: const {},
+            bodyNames: const {},
+            mateType: 'distance',
+            value: 5,
+            flipped: false,
+            onMateTypeChanged: (_) {},
+            onValueChanged: (_) {},
+            onFlippedChanged: (_) {},
+            allowRotation: false,
+            onAllowRotationChanged: (_) {},
+            saving: false,
+            error: null,
+            notice: notice,
+            onConfirm: null,
+            onCancel: () {},
+          ));
+      await tester.pumpWidget(panel());
+      expect(find.byKey(const ValueKey('mate-branch-notice')), findsNothing);
+      await tester.pumpWidget(panel(notice: 'To fit, an earlier mate moves.'));
+      expect(find.text('To fit, an earlier mate moves.'), findsOneWidget);
+    });
 
     testWidgets('shows a dropdown listing every Mate type', (tester) async {
       await tester.pumpWidget(wrap(MatePanel(

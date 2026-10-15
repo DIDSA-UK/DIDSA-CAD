@@ -21,7 +21,7 @@ The implementation session updates this table in each phase's own PR ("In review
 |---|---|---|---|
 | 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | In review | CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 2 | Persisted mate *branch* (alignment / side) honoured by every solver | In review | stacked on Phase 1: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | Not started | |
+| 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | In review | stacked on Phase 2: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | Not started | |
 | 4 | Better default for "Closest" (optional) | Not started | |
 | 5 | Width / Symmetric mate (separate scope) | Not started | |
@@ -302,7 +302,7 @@ Tests (backend):
 - **F4.2 had a second cause.** The squared distance residual was only half of why the tester's first mate stalled at ~1e-6: `_axis_angle_from_quaternion` took the angle from `acos(w)`, which is exactly 0 for any rotation
   below ~1.5e-8 rad, so a Gauss-Newton rotation update that fine (a 5e-10 rad tilt of a 1.6 m plate is 8e-7 mm at its far end) was silently dropped. It now uses `2 atan2(|v|, w)`.
 - **Not done in this phase:** `resolved` / `controls` / `alternatives` on the preview and every client control (Phase 3); the ANGLE +-theta on a hinge (no field of its own, "Next solution" in Phase 3);
-  `branch_source` and the branch search (Phase 2b).
+  `branch_source` and the branch search (Phase 2b, below).
 
 ## Phase 2b — When a new mate needs another mate's branch to change (backend + panel notice)
 
@@ -348,6 +348,29 @@ Tests (F6 scene, plus the tester's assembly):
 - Table top: the plate starts outside the frame, and both distance mates resolve `auto` to "outside". A later mate
   that needs "inside" (e.g. a 0 mm distance from the plate's far edge to a sketch plane at the inner position)
   offers the flip of both.
+
+### Implementation notes (what Phase 2b actually does, and where it differs from the text above)
+
+- **`branch_source`** (`"auto" | "user"`, default `auto`) is on `Mate`, `MateCreate` / `MateUpdate` / `MateResponse` and the native format (additive key). A create or edit that *names* a branch
+  (`alignment` / `secondary_flip`, not as `null`) is `user`; everything else - Closest, or a legacy file - is `auto`. Only `auto` mates are candidates; `branch_fields` says which fields a mate's
+  geometry actually uses (a plane-plane COINCIDENT has `alignment` only, a point-plane DISTANCE `secondary_flip` only).
+- **Where it runs.** `search_branch_changes` (`assembly_group.py`) is called from `_solve_new_mate` in `router.py`, which `preview-mate-solve`, `POST /mates?solve=` and `PATCH /mates/{id}?solve=` share
+  (for an edit the stored mate is left out of the solves, as in Phase 1). `mate-motion`, a drag commit and a plain `/solve` never import it; `test_a_plain_solve_never_searches_or_changes_a_branch` and
+  `test_a_drag_across_the_boundary_never_changes_a_stored_branch` pin that.
+- **Search.** The persisted branches are solved first; a converged answer ends it with no changes. Otherwise single changes of one field on one `auto` mate of the component are tried in the order
+  graph distance from the new mate's occurrences, then each mate's residual at the failed solve's end point (`branch_options`), each trial a full solve with the changed mate, so `_seed_poses` carries it to
+  the other root; then pairs among the six best singles; budget 24 solves / 1.5 s, four of them kept for the conflict step. Converged results are ranked by fewest changes, then weighted movement. When only
+  `user` mates' other branches would have worked: `blocked_by`. When nothing works: one mate at a time is suppressed and the new mate re-solved; the ones whose absence lets it converge are `conflicting`.
+- **Wire.** Preview: `branch_changes: [{mate_id, field, from, to}]` (`from` in the convention the mate is stored in, see `orient_branch`), `blocked_by`, `conflicting`; the ghost (`members`) shows the placement
+  *with* the changes. Create / PATCH take `branch_changes: [{mate_id, field, to}]` - exactly the preview's list, `from` dropped. They are applied first, validated (unknown mate, a `user` mate, a field the geometry
+  does not use, or a `to` that is not the other branch is refused with 422 `invalid_branch_change`) and the result stands or falls with them; without them a mate that needs them is refused with 422 `branch_change_needed` (carrying the list), `mate_blocked_by_user_branch`
+  or `mate_conflict` instead of the old catch-all (`mate_solve_did_not_converge` remains for a failure no search explains). Nothing is stored on a refusal; on success the mate, the changed branches and every pose are one commit.
+- **Tolerance.** `converged` and the fallback triggers now accept a residual of 1e-6 mm (`_NOISE_TOL`), the solver still iterates to 1e-7 (`_SOLVE_TOL`). The tester's frame geometry carries ~1e-6 mm of noise,
+  and with two mates to the same bars the system is redundant but consistent, so a correct solution can stall at 1.6e-7 (the second distance mate of the table top failed on exactly that).
+- **Clients.** Flutter: `MateSolvePreviewDto.branchChanges/blockedBy/conflicting`, `BranchChangeDto`, `createMate` / `updateMate` `branchChanges`; the Mate panel (and the edit dialog) shows `mateBranchNotice` and Confirm sends the
+  last preview's list. VR: the tablet status line shows the same sentence (`MatesTool.branch_notice`) and `create_mate` sends `branch_changes`; an *edit* has no live preview there, so a refused edit says what would move
+  and "Do the same again to confirm" - repeating the identical edit sends the list the refusal named.
+- **Not done:** Next solution / `alternatives` and the Aligned / Flip controls that make a branch `user` from the panel (Phase 3).
 
 ## Phase 3 — Mate panel controls and "Next solution" (Flutter + VR)
 

@@ -2652,6 +2652,61 @@ void main() {
       expect(seen[2].queryParameters, {'solve': 'group'});
     });
 
+    test('previewMateSolve parses branch_changes / blocked_by / conflicting (Phase 2b)', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async => jsonResponse({
+              'converged': true,
+              'transform': null,
+              'branch_changes': [
+                {'mate_id': 'mate-1', 'field': 'secondary_flip', 'from': false, 'to': true},
+                {'mate_id': 'mate-2', 'field': 'alignment', 'from': 'aligned', 'to': 'anti_aligned'},
+              ],
+              'blocked_by': ['mate-3'],
+              'conflicting': ['mate-4'],
+            })),
+      );
+      const refs = [
+        MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+        MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+      ];
+      final result = await client.previewMateSolve('part-1', 'occ-1', type: 'distance', references: refs);
+      expect(result.branchChanges.map((c) => c.mateId), ['mate-1', 'mate-2']);
+      expect(result.branchChanges[0].from, false);
+      expect(result.branchChanges[0].to, true);
+      expect(result.branchChanges[1].to, 'anti_aligned');
+      expect(result.blockedBy, ['mate-3']);
+      expect(result.conflicting, ['mate-4']);
+      // The confirmed form drops `from`.
+      expect(result.branchChanges[1].toJson(), {'mate_id': 'mate-2', 'field': 'alignment', 'to': 'anti_aligned'});
+    });
+
+    test('createMate / updateMate send branch_changes only when given (Phase 2b)', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return jsonResponse(mateJson(), status: request.method == 'POST' ? 201 : 200);
+        }),
+      );
+      const refs = [
+        MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+        MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+      ];
+      const change = BranchChangeDto(mateId: 'mate-1', field: 'secondary_flip', from: false, to: true);
+      await client.createMate('part-1', type: 'coincident', references: refs);
+      await client.createMate('part-1', type: 'coincident', references: refs, branchChanges: const [change]);
+      await client.updateMate('part-1', 'mate-1', value: 3);
+      await client.updateMate('part-1', 'mate-1', value: 3, branchChanges: const [change]);
+      expect(bodies[0].containsKey('branch_changes'), isFalse);
+      expect(bodies[1]['branch_changes'], [
+        {'mate_id': 'mate-1', 'field': 'secondary_flip', 'to': true},
+      ]);
+      expect(bodies[2].containsKey('branch_changes'), isFalse);
+      expect(bodies[3]['branch_changes'], [
+        {'mate_id': 'mate-1', 'field': 'secondary_flip', 'to': true},
+      ]);
+    });
+
     test('previewMateSolve parses an unconverged result with a null transform', () async {
       final client = DocumentApiClient(
         httpClient: MockClient((request) async => jsonResponse({'converged': false, 'transform': null})),

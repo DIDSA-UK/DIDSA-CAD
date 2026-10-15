@@ -1944,12 +1944,31 @@ class MateSolvePreviewMemberDto {
 /// preview moves - the driven one first, then each follower that changed -
 /// so the ghost shows what Confirm will store (empty when not converged, and
 /// for a backend that predates the field).
+///
+/// Phase 2b: when the new mate only fits if earlier mates the program chose
+/// (those whose branch was "Closest") move to their other side or
+/// orientation, [branchChanges] lists them (the ghost already shows that
+/// placement) and Confirm must send exactly these back
+/// ([DocumentApiClient.createMate] / [DocumentApiClient.updateMate]
+/// `branchChanges`). [blockedBy] names mates the user set that stand in the
+/// way and [conflicting] mates that genuinely conflict; both leave the
+/// preview unconverged. Empty for a backend that predates the fields.
 class MateSolvePreviewDto {
   final bool converged;
   final RigidTransformDto? transform;
   final List<MateSolvePreviewMemberDto> members;
+  final List<BranchChangeDto> branchChanges;
+  final List<String> blockedBy;
+  final List<String> conflicting;
 
-  const MateSolvePreviewDto({required this.converged, this.transform, this.members = const []});
+  const MateSolvePreviewDto({
+    required this.converged,
+    this.transform,
+    this.members = const [],
+    this.branchChanges = const [],
+    this.blockedBy = const [],
+    this.conflicting = const [],
+  });
 
   factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
         converged: json['converged'] as bool,
@@ -1960,7 +1979,36 @@ class MateSolvePreviewDto {
           for (final m in (json['members'] as List<dynamic>? ?? const []))
             MateSolvePreviewMemberDto.fromJson(m as Map<String, dynamic>),
         ],
+        branchChanges: [
+          for (final c in (json['branch_changes'] as List<dynamic>? ?? const []))
+            BranchChangeDto.fromJson(c as Map<String, dynamic>),
+        ],
+        blockedBy: [for (final id in (json['blocked_by'] as List<dynamic>? ?? const [])) id as String],
+        conflicting: [for (final id in (json['conflicting'] as List<dynamic>? ?? const [])) id as String],
       );
+}
+
+/// One earlier mate a new or edited mate needs on its other branch
+/// (`app.document.schemas.BranchChangeResponse`): [field] (`alignment` /
+/// `secondary_flip`) goes from [from] to [to] (a `String` for `alignment`,
+/// a `bool` for `secondary_flip`).
+class BranchChangeDto {
+  final String mateId;
+  final String field;
+  final Object from;
+  final Object to;
+
+  const BranchChangeDto({required this.mateId, required this.field, required this.from, required this.to});
+
+  factory BranchChangeDto.fromJson(Map<String, dynamic> json) => BranchChangeDto(
+        mateId: json['mate_id'] as String,
+        field: json['field'] as String,
+        from: json['from'] as Object,
+        to: json['to'] as Object,
+      );
+
+  /// The confirmed form sent back (`BranchChangeRequest`): no `from`.
+  Map<String, dynamic> toJson() => {'mate_id': mateId, 'field': field, 'to': to};
 }
 
 /// Request body of `POST /document/parts/{part_id}/occurrences/{occurrence_id}/mate-motion`
@@ -5347,6 +5395,9 @@ class DocumentApiClient {
     // carries only the deprecated [flipped] still has it read into them and anything else is Closest (resolved by the solve).
     String? alignment,
     bool? secondaryFlip,
+    // Earlier mates the user confirmed moving to their other branch (the preview's `branchChanges`); without them a mate
+    // that needs them is refused with 422 `branch_change_needed`.
+    List<BranchChangeDto> branchChanges = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -5364,6 +5415,7 @@ class DocumentApiClient {
                 'allow_rotation': allowRotation,
                 if (alignment != null) 'alignment': alignment,
                 if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
+                if (branchChanges.isNotEmpty) 'branch_changes': [for (final c in branchChanges) c.toJson()],
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),
@@ -5385,6 +5437,7 @@ class DocumentApiClient {
     // As [createMate]: `solve` re-solves [solveOccurrenceId] and stores the edit with the poses, or keeps the old values (422).
     String? solve,
     String? solveOccurrenceId,
+    List<BranchChangeDto> branchChanges = const [],
   }) =>
       _send(
         () => _httpClient.patch(
@@ -5399,6 +5452,7 @@ class DocumentApiClient {
                 if (flipped != null) 'flipped': flipped,
                 if (suppressed != null) 'suppressed': suppressed,
                 if (allowRotation != null) 'allow_rotation': allowRotation,
+                if (branchChanges.isNotEmpty) 'branch_changes': [for (final c in branchChanges) c.toJson()],
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),

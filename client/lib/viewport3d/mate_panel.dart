@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../api/document_api_client.dart';
+
 import 'resizable_tool_panel.dart';
 import 'selection_hit_test.dart';
 import 'svg_icon.dart';
@@ -19,6 +21,39 @@ String mateTypeLabel(String type) => switch (type) {
       'angle' => 'Angle',
       _ => type,
     };
+
+/// Phase 2b: the sentence shown while the ghost preview needs earlier mates on their other branch
+/// ([MateSolvePreviewDto.branchChanges]), or cannot get there ([blockedBy] = mates the user set that stand in the
+/// way, [conflicting] = a genuine conflict). `null` when there is nothing to say. [mates] names them by type.
+String? mateBranchNotice(
+  List<BranchChangeDto> changes,
+  List<MateDto> mates, {
+  List<String> blockedBy = const [],
+  List<String> conflicting = const [],
+}) {
+  String describe(Iterable<String> ids) {
+    final labels = <String>[];
+    for (final id in ids) {
+      final found = mates.where((m) => m.id == id);
+      labels.add(found.isEmpty ? 'a mate' : '${mateTypeLabel(found.first.type)} mate');
+    }
+    return labels.join(', ');
+  }
+
+  if (changes.isNotEmpty) {
+    final ids = <String>{for (final c in changes) c.mateId};
+    return ids.length == 1
+        ? 'To fit, an earlier mate (${describe(ids)}) moves to its other side or orientation. Confirm applies it.'
+        : 'To fit, ${ids.length} earlier mates (${describe(ids)}) move to their other side or orientation. Confirm applies them.';
+  }
+  if (blockedBy.isNotEmpty) {
+    return 'A mate you set to one side or orientation stands in the way (${describe(blockedBy)}). Change it to allow this mate.';
+  }
+  if (conflicting.isNotEmpty) {
+    return 'This mate conflicts with an earlier mate (${describe(conflicting)}).';
+  }
+  return null;
+}
 
 /// Whether [type] needs a numeric [MatePanel.value] - mirrors the backend's
 /// own `_validate_mate_create` requirement (`distance`/`angle` reject a
@@ -80,6 +115,9 @@ class MatePanel extends StatelessWidget {
   final bool saving;
   final String? error;
 
+  /// Phase 2b: informational line under the controls (see [mateBranchNotice]); shown in the normal text colour.
+  final String? notice;
+
   final VoidCallback? onConfirm;
   final VoidCallback onCancel;
 
@@ -107,6 +145,7 @@ class MatePanel extends StatelessWidget {
     this.onMinimalMovementChanged,
     required this.saving,
     required this.error,
+    this.notice,
     required this.onConfirm,
     required this.onCancel,
     this.onClearSelection,
@@ -189,6 +228,11 @@ class MatePanel extends StatelessWidget {
               dense: true,
             ),
           if (saving) const Padding(padding: EdgeInsets.only(top: 8), child: LinearProgressIndicator()),
+          if (notice != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(notice!, key: const ValueKey('mate-branch-notice'), style: const TextStyle(fontSize: 13)),
+            ),
           if (error != null)
             Padding(
               padding: const EdgeInsets.only(top: 8),
