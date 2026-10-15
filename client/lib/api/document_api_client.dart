@@ -1913,21 +1913,42 @@ class MateDto {
       );
 }
 
+/// One occurrence a mate preview moves: [MateSolvePreviewDto.members].
+class MateSolvePreviewMemberDto {
+  final String occurrenceId;
+  final RigidTransformDto transform;
+
+  const MateSolvePreviewMemberDto({required this.occurrenceId, required this.transform});
+
+  factory MateSolvePreviewMemberDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewMemberDto(
+        occurrenceId: json['occurrence_id'] as String,
+        transform: RigidTransformDto.fromJson(json['transform'] as Map<String, dynamic>),
+      );
+}
+
 /// Test report item 3 (New Mate ghost preview):
 /// [DocumentApiClient.previewMateSolve]'s own response shape -
 /// `app.document.schemas.MateSolvePreviewResponse`. [transform] is `null`
-/// whenever [converged] is `false`.
+/// whenever [converged] is `false`. [members] lists every occurrence the
+/// preview moves - the driven one first, then each follower that changed -
+/// so the ghost shows what Confirm will store (empty when not converged, and
+/// for a backend that predates the field).
 class MateSolvePreviewDto {
   final bool converged;
   final RigidTransformDto? transform;
+  final List<MateSolvePreviewMemberDto> members;
 
-  const MateSolvePreviewDto({required this.converged, this.transform});
+  const MateSolvePreviewDto({required this.converged, this.transform, this.members = const []});
 
   factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
         converged: json['converged'] as bool,
         transform: json['transform'] == null
             ? null
             : RigidTransformDto.fromJson(json['transform'] as Map<String, dynamic>),
+        members: [
+          for (final m in (json['members'] as List<dynamic>? ?? const []))
+            MateSolvePreviewMemberDto.fromJson(m as Map<String, dynamic>),
+        ],
       );
 }
 
@@ -5307,10 +5328,18 @@ class DocumentApiClient {
     // default-`true` wire shape) rather than gated on `type` here - the
     // backend already ignores it for every other type.
     bool allowRotation = true,
+    // `solve` (`group` | `minimal` | `auto`) makes the create atomic: the mate is stored together with the solved poses only if
+    // the solve converges (422 and nothing stored otherwise). [solveOccurrenceId] names the occurrence it drives.
+    String? solve,
+    String? solveOccurrenceId,
   }) =>
       _send(
         () => _httpClient.post(
-              _uri('/document/parts/$partId/mates'),
+              _uri('/document/parts/$partId/mates').replace(
+                queryParameters: solve == null
+                    ? null
+                    : {'solve': solve, if (solveOccurrenceId != null) 'occurrence_id': solveOccurrenceId},
+              ),
               headers: _headers,
               body: jsonEncode({
                 'type': type,
@@ -5336,10 +5365,17 @@ class DocumentApiClient {
     bool? flipped,
     bool? suppressed,
     bool? allowRotation,
+    // As [createMate]: `solve` re-solves [solveOccurrenceId] and stores the edit with the poses, or keeps the old values (422).
+    String? solve,
+    String? solveOccurrenceId,
   }) =>
       _send(
         () => _httpClient.patch(
-              _uri('/document/parts/$partId/mates/$mateId'),
+              _uri('/document/parts/$partId/mates/$mateId').replace(
+                queryParameters: solve == null
+                    ? null
+                    : {'solve': solve, if (solveOccurrenceId != null) 'occurrence_id': solveOccurrenceId},
+              ),
               headers: _headers,
               body: jsonEncode({
                 if (value != null) 'value': value,
@@ -5404,11 +5440,18 @@ class DocumentApiClient {
     bool flipped = false,
     bool allowRotation = true,
     String movement = 'group',
+    // Previews an EDIT of this stored mate: it is left out of the solve and the given values stand in for it.
+    String? replaceMateId,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/occurrences/$occurrenceId/preview-mate-solve').replace(
-                queryParameters: movement == 'group' ? null : {'movement': movement},
+                queryParameters: movement == 'group' && replaceMateId == null
+                    ? null
+                    : {
+                        if (movement != 'group') 'movement': movement,
+                        if (replaceMateId != null) 'replace_mate_id': replaceMateId,
+                      },
               ),
               headers: _headers,
               body: jsonEncode({

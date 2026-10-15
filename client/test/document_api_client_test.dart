@@ -2545,6 +2545,85 @@ void main() {
       expect(result.transform?.translation, [1.0, 2.0, 3.0]);
     });
 
+    test('previewMateSolve parses every moved member and sends replace_mate_id / movement', () async {
+      Uri? capturedUri;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          Map<String, dynamic> pose(double x) => {
+                'translation': [x, 0.0, 0.0],
+                'rotation_axis': [0.0, 0.0, 1.0],
+                'rotation_angle_degrees': 0.0,
+              };
+          return jsonResponse({
+            'converged': true,
+            'transform': pose(1.0),
+            'movement_used': 'group',
+            'members': [
+              {'occurrence_id': 'occ-1', 'transform': pose(1.0)},
+              {'occurrence_id': 'occ-2', 'transform': pose(5.0)},
+            ],
+          });
+        }),
+      );
+
+      final result = await client.previewMateSolve(
+        'part-1',
+        'occ-1',
+        type: 'distance',
+        value: 10,
+        references: const [
+          MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+          MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+        ],
+        movement: 'auto',
+        replaceMateId: 'mate-9',
+      );
+
+      expect(capturedUri?.queryParameters, {'movement': 'auto', 'replace_mate_id': 'mate-9'});
+      expect(result.members.map((m) => m.occurrenceId), ['occ-1', 'occ-2']);
+      expect(result.members[1].transform.translation, [5.0, 0.0, 0.0]);
+    });
+
+    test('previewMateSolve without members (an older backend) parses an empty list', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async => jsonResponse({'converged': false, 'transform': null})),
+      );
+      final result = await client.previewMateSolve(
+        'part-1',
+        'occ-1',
+        type: 'distance',
+        references: const [
+          MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+          MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+        ],
+      );
+      expect(result.members, isEmpty);
+    });
+
+    test('createMate / updateMate send solve and occurrence_id as query parameters only when given', () async {
+      final seen = <Uri>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          seen.add(request.url);
+          return jsonResponse(mateJson(), status: request.method == 'POST' ? 201 : 200);
+        }),
+      );
+      const refs = [
+        MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+        MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+      ];
+
+      await client.createMate('part-1', type: 'coincident', references: refs);
+      await client.createMate('part-1', type: 'coincident', references: refs, solve: 'auto', solveOccurrenceId: 'occ-1');
+      await client.updateMate('part-1', 'mate-1', value: 3, solve: 'group');
+
+      expect(seen[0].hasQuery, isFalse);
+      expect(seen[1].queryParameters, {'solve': 'auto', 'occurrence_id': 'occ-1'});
+      expect(seen[2].path, '/document/parts/part-1/mates/mate-1');
+      expect(seen[2].queryParameters, {'solve': 'group'});
+    });
+
     test('previewMateSolve parses an unconverged result with a null transform', () async {
       final client = DocumentApiClient(
         httpClient: MockClient((request) async => jsonResponse({'converged': false, 'transform': null})),

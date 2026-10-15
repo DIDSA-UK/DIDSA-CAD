@@ -14,7 +14,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances, top_level_occurrence_id
-from app.document.assembly_group import GroupSolveResult, constraint_status, solve_group, validate_mate_geometry
+from app.document.assembly_group import GroupSolveResult, constraint_status, pose_delta, solve_group, validate_mate_geometry
 from app.document.assembly_solver import _quaternion_from_axis_angle
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -193,6 +193,7 @@ from app.document.schemas import (
     MateMotionRequest,
     ConstraintStatusEntry,
     MateMotionResponse,
+    MateSolvePreviewMember,
     MateSolvePreviewResponse,
     MateUpdate,
     OccurrenceCreate,
@@ -3719,15 +3720,50 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
         )
 
 
+MovementMode = Literal["group", "minimal", "auto"]
+
+
+def _mate_solve_target(part: Part, mate: Mate, occurrence_id: str | None) -> str | None:
+    """The occurrence a `solve=...` create/edit drives. An explicit `occurrence_id` must be one of the mate's own (top-level)
+    occurrences and not `fixed` (422 otherwise). Left out, it is the clients' own pick: the second reference's occurrence
+    preferred over the first's, skipping the root part's own geometry and `fixed` occurrences; `None` when nothing is drivable
+    (the mate is then stored without a solve, as before)."""
+    tops = [top_level_occurrence_id(ref.occurrence_id) for ref in mate.references]
+    if occurrence_id is not None:
+        occurrence = _get_occurrence_or_404(part, occurrence_id)
+        if occurrence_id not in tops:
+            raise HTTPException(status_code=422, detail="occurrence_id must be one of the mate's own occurrences")
+        if occurrence.fixed:
+            raise _occurrence_is_fixed(occurrence_id)
+        return occurrence_id
+    fixed = {o.id for o in part.occurrences if o.fixed}
+    for top in reversed(tops):
+        if top and top not in fixed:
+            return top
+    return None
+
+
 @router.post("/parts/{part_id}/mates", response_model=MateResponse, status_code=201)
-def create_mate(part_id: str, payload: MateCreate) -> MateResponse:
+def create_mate(
+    part_id: str,
+    payload: MateCreate,
+    response: Response,
+    solve: MovementMode | None = None,
+    occurrence_id: str | None = None,
+) -> MateResponse:
     """Phase 6 (`docs/assembly-scope.md` §3): creates a Mate on `part_id` -
     data only, mirroring `Mate`'s own docstring ("this is data only, ...
-    solving is `app.document.assembly_solver`'s job"). Does not solve
+    solving is `app.document.assembly_solver`'s job"). By default it does not solve
     anything itself - the client calls `POST .../occurrences/{id}/solve`
     afterward (see that endpoint's own docstring for why solving is a
     separate, explicit step rather than an automatic side effect of
-    creating a Mate)."""
+    creating a Mate).
+
+    `solve=group|minimal|auto` makes the create ATOMIC (`docs/mate-solution-choice-plan.md` Phase 1.6): the same solve
+    `preview-mate-solve` runs - the new mate joins the group solve as `extra_mates`, driving `occurrence_id` (default: see
+    `_mate_solve_target`) - and the mate is stored together with every member's solved pose ONLY if it converges. Otherwise
+    the usual 422 `mate_solve_did_not_converge` is returned and nothing is stored (a refused mate used to stay behind,
+    leaving the assembly over-constrained). `X-Movement-Used` says which solve produced the stored poses."""
     part = get_part_or_404(part_id)
     _validate_mate_create(part, payload)
     mate = Mate(
@@ -3739,6 +3775,14 @@ def create_mate(part_id: str, payload: MateCreate) -> MateResponse:
         allow_rotation=payload.allow_rotation,
     )
     validate_mate_geometry(get_document(), part, mate)  # never store a mate no solve can use
+    if solve is not None:
+        driven = _mate_solve_target(part, mate, occurrence_id)
+        if driven is not None:
+            result, used = _solve_with_movement(get_document(), part, driven, solve, extra_mates=(mate,))
+            if not result.converged:
+                raise _mate_solve_did_not_converge(driven, result, minimal_movement=solve == "minimal")
+            _commit_group(part, result)
+            response.headers["X-Movement-Used"] = used
     part.mates.append(mate)
     return _mate_response(mate)
 
@@ -3751,12 +3795,23 @@ def _get_mate_or_404(part: Part, mate_id: str) -> Mate:
 
 
 @router.patch("/parts/{part_id}/mates/{mate_id}", response_model=MateResponse)
-def update_mate(part_id: str, mate_id: str, payload: MateUpdate) -> MateResponse:
+def update_mate(
+    part_id: str,
+    mate_id: str,
+    payload: MateUpdate,
+    response: Response,
+    solve: MovementMode | None = None,
+    occurrence_id: str | None = None,
+) -> MateResponse:
     """`value`/`flipped`/`suppressed`/`allow_rotation` only - see
     `MateUpdate`'s own docstring for why `type`/`references` aren't editable
-    here."""
+    here. `solve=group|minimal|auto` (with `occurrence_id`, see `create_mate`) re-solves the edited mate's
+    occurrence and stores the new values together with the solved poses; if that does not converge the mate keeps its OLD
+    values, nothing moves, and the 422 is returned."""
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
+    previous = (mate.value, mate.flipped, mate.suppressed, mate.allow_rotation)
+    driven = _mate_solve_target(part, mate, occurrence_id) if solve is not None else None
     if payload.value is not None:
         mate.value = payload.value
     if payload.flipped is not None:
@@ -3765,6 +3820,16 @@ def update_mate(part_id: str, mate_id: str, payload: MateUpdate) -> MateResponse
         mate.suppressed = payload.suppressed
     if payload.allow_rotation is not None:
         mate.allow_rotation = payload.allow_rotation
+    if solve is not None and driven is not None:
+        try:
+            result, used = _solve_with_movement(get_document(), part, driven, solve)
+            if not result.converged:
+                raise _mate_solve_did_not_converge(driven, result, minimal_movement=solve == "minimal")
+        except HTTPException:
+            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation = previous
+            raise
+        _commit_group(part, result)
+        response.headers["X-Movement-Used"] = used
     return _mate_response(mate)
 
 
@@ -4095,9 +4160,6 @@ def _commit_group(part: Part, result: GroupSolveResult) -> None:
         by_id[occurrence_id].transform = pose
 
 
-MovementMode = Literal["group", "minimal", "auto"]
-
-
 def _solve_with_movement(
     document: Document,
     part: Part,
@@ -4242,7 +4304,11 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
     response_model=MateSolvePreviewResponse,
 )
 def preview_mate_solve_endpoint(
-    part_id: str, occurrence_id: str, payload: MateCreate, movement: MovementMode = "group"
+    part_id: str,
+    occurrence_id: str,
+    payload: MateCreate,
+    movement: MovementMode = "group",
+    replace_mate_id: str | None = None,
 ) -> MateSolvePreviewResponse:
     """Test report item 3 (New Mate ghost preview): a dry-run counterpart to
     `solve_for_occurrence` - solves `payload` (the same shape `POST
@@ -4262,9 +4328,16 @@ def preview_mate_solve_endpoint(
     are errors mid-edit, they're just "no ghost to show yet." Only a
     structurally-broken request (unknown `part_id`/`occurrence_id`, not
     exactly 2 references) is a real 404/422, mirroring every other
-    endpoint's own payload-shape validation."""
+    endpoint's own payload-shape validation.
+
+    `replace_mate_id` previews an EDIT of that stored mate: the stored mate is left out of the solve and `payload` (its
+    revised values) stands in for it, so the old values do not fight the new ones."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
+    solve_part = part
+    if replace_mate_id is not None:
+        _get_mate_or_404(part, replace_mate_id)
+        solve_part = dataclasses.replace(part, mates=[m for m in part.mates if m.id != replace_mate_id])
     if len(payload.references) != 2:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     if occurrence.fixed:
@@ -4280,14 +4353,33 @@ def preview_mate_solve_endpoint(
             flipped=payload.flipped,
             allow_rotation=payload.allow_rotation,
         )
-        result, used = _solve_with_movement(get_document(), part, occurrence_id, movement, extra_mates=(extra_mate,))
+        result, used = _solve_with_movement(get_document(), solve_part, occurrence_id, movement, extra_mates=(extra_mate,))
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)
     if not result.converged:
         return MateSolvePreviewResponse(converged=False, transform=None)
     return MateSolvePreviewResponse(
-        converged=True, transform=_rigid_transform_response(result.poses[occurrence_id]), movement_used=used
+        converged=True,
+        transform=_rigid_transform_response(result.poses[occurrence_id]),
+        movement_used=used,
+        members=_preview_members(part, occurrence_id, result),
     )
+
+
+# A follower counts as moved by a preview above this (mm / radians of pose delta): below it the solve only re-expressed
+# the same pose, and a ghost on top of the real part would be noise.
+_PREVIEW_MOVED_TOL = 1e-6
+
+
+def _preview_members(part: Part, driven_id: str, result: GroupSolveResult) -> list[MateSolvePreviewMember]:
+    """The driven occurrence first, then every other solved member whose pose differs from its stored one."""
+    stored = {o.id: o.transform for o in part.occurrences}
+    ids = [driven_id, *(oid for oid in result.poses if oid != driven_id and oid in stored)]
+    return [
+        MateSolvePreviewMember(occurrence_id=oid, transform=_rigid_transform_response(result.poses[oid]))
+        for oid in ids
+        if oid == driven_id or max(abs(float(x)) for x in pose_delta(result.poses[oid], stored[oid])) > _PREVIEW_MOVED_TOL
+    ]
 
 
 @router.post(

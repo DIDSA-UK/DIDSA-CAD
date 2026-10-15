@@ -3507,6 +3507,11 @@ class MateMotionResponse(BaseModel):
     constraint_model: dict[str, Any] | None = None
 
 
+class MateSolvePreviewMember(BaseModel):
+    occurrence_id: str
+    transform: RigidTransformResponse
+
+
 class MateSolvePreviewResponse(BaseModel):
     """Test report item 3 (New Mate ghost preview): `POST /parts/{part_id}/
     occurrences/{occurrence_id}/preview-mate-solve`'s response - a dry-run
@@ -3523,6 +3528,9 @@ class MateSolvePreviewResponse(BaseModel):
     # Which solve produced `transform`: "minimal" (only the driven occurrence moves) or "group" (neighbours follow too).
     # Null when not converged.
     movement_used: Literal["group", "minimal"] | None = None
+    # Every member whose pose the preview moves: the driven occurrence first (always listed, its pose is `transform`), then each
+    # follower that changed. A client ghosts all of them, so what it shows is what Confirm will store. Empty when not converged.
+    members: list[MateSolvePreviewMember] = []
 
 
 class ComponentPatternAxisSchema(BaseModel):

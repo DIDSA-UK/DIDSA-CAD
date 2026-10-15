@@ -1182,14 +1182,17 @@ def _free_motion(
     return max(0, 6 - rank), free
 
 
-def _applicable_mates(part: Part, driven_occurrence_id: str) -> list[tuple[Mate, MateEntityRef, MateEntityRef]]:
-    """Every non-suppressed Mate in `part.mates` with exactly one of its two
+def _applicable_mates(
+    part: Part, driven_occurrence_id: str, extra_mates: tuple[Mate, ...] = ()
+) -> list[tuple[Mate, MateEntityRef, MateEntityRef]]:
+    """Every non-suppressed Mate in `part.mates` - then `extra_mates`, the
+    hypothetical mates of a dry-run preview - with exactly one of its two
     `references` naming `driven_occurrence_id` - returned as `(mate,
     driven_ref, fixed_ref)` triples. A Mate with zero or two references to
     the driven Occurrence doesn't apply to *this* solve (the latter would
     be a self-mate, which nothing in this codebase can create)."""
     applicable = []
-    for mate in part.mates:
+    for mate in (*part.mates, *extra_mates):
         if mate.suppressed or len(mate.references) != 2:
             continue
         first, second = mate.references
@@ -1389,7 +1392,11 @@ def _solve_occurrence_against(
 
 
 def solve_occurrence_from_guess(
-    document: Document, part: Part, driven_occurrence_id: str, guess: RigidTransform | None
+    document: Document,
+    part: Part,
+    driven_occurrence_id: str,
+    guess: RigidTransform | None,
+    extra_mates: tuple[Mate, ...] = (),
 ) -> MateSolveResult:
     """Solves every Mate of `part.mates` that references `driven_occurrence_id`, against every other referenced Occurrence held
     fixed at its own current transform, seeding the solve from `guess` (a pose the
@@ -1397,9 +1404,10 @@ def solve_occurrence_from_guess(
     occurrence's stored transform, and never stores anything: the result
     carries the nearest mate-satisfying pose and this occurrence's own dof
     against frozen peers (the group solver, `assembly_group`, uses it as a
-    fallback seed). `guess=None` solves from the stored transform."""
+    fallback seed). `guess=None` solves from the stored transform. `extra_mates` are hypothetical mates solved
+    alongside the stored ones (a preview's mate, which is not in `part.mates`)."""
     driven_occurrence = _find_occurrence(part, driven_occurrence_id)
     if guess is not None:
         driven_occurrence = replace(driven_occurrence, transform=guess)
-    applicable = _applicable_mates(part, driven_occurrence_id)
+    applicable = _applicable_mates(part, driven_occurrence_id, extra_mates)
     return _solve_occurrence_against(document, part, driven_occurrence, applicable)

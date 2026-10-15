@@ -700,7 +700,7 @@ def solve_group(
 
     if residual_inf > _SOLVE_TOL and len(model.member_ids) == 1:
         guess = wanted_pose if wanted_pose is not None else stored[grabbed_id]
-        fallback = solve_occurrence_from_guess(document, part, grabbed_id, guess)
+        fallback = solve_occurrence_from_guess(document, part, grabbed_id, guess, extra_mates)
         if fallback.converged:
             poses, residual_inf, more = _retract(model, {grabbed_id: fallback.transform}, weights)
             iterations += more
