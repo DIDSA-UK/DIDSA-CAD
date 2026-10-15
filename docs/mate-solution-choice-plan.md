@@ -15,11 +15,11 @@ visible bugs. Phase 2 is the core change: every later phase builds on its data m
 
 ## Progress
 
-The implementation session updates this table as each PR merges.
+The implementation session updates this table in each phase's own PR ("In review"); change it to "Merged" once the PR lands.
 
 | Phase | Summary | Status | PR |
 |---|---|---|---|
-| 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | Not started | |
+| 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | In review | CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 2 | Persisted mate *branch* (alignment / side) honoured by every solver | Not started | |
 | 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | Not started | |
 | 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | Not started | |
