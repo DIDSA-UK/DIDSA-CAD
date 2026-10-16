@@ -11,13 +11,16 @@ import json
 import math
 
 import numpy as np
+import pytest
 
 from app.document.assembly_group import apply_delta, build_group_model, pose_delta, solve_group
 from app.document.constraint_model import (
     MODEL_VERSION,
+    PAIR_MODEL_VERSION,
     ConstraintModel,
     apply_delta as apply_pose,
     export_constraint_model,
+    pose_to_rigid,
     residual_inf,
     rigid_to_pose,
     rotvec_from_rot,
@@ -161,6 +164,34 @@ def _poses(model, perturb):
     ]
 
 
+def _assert_parity(name, model, spec, rng):
+    """The exported model reproduces `GroupModel.residual` and its analytic Jacobian equals central differences (backend's and its own)."""
+    json.dumps(spec)  # plain JSON
+    cm = ConstraintModel(spec)
+    for scale in (0.0, 0.3):
+        x = rng.normal(size=model.n_vars) * scale
+        x[::6] *= 20.0  # translations in mm
+        _, poses = _poses(model, x)
+        r, jac = cm.residual(poses)
+        expected = model.residual(x)
+        assert r.shape == expected.shape, name
+        assert np.max(np.abs(r - expected)) < 1e-9, (name, scale)
+        # backend finite-difference Jacobian at the perturbed poses
+        perturbed = {o: apply_delta(model.base_transforms[o], x[6 * i : 6 * i + 6]) for i, o in enumerate(model.member_ids)}
+        fd = model._jacobian_differences(perturbed, 1e-6)  # the old backend Jacobian (central differences, ~1e-4 accurate)
+        assert np.max(np.abs(jac - fd)) < 1e-4 * (1.0 + np.max(np.abs(fd))), (name, scale)
+        # and an exact check of the analytic Jacobian against central differences of the exported model itself
+        fd2 = np.zeros_like(jac)
+        h = 1e-6
+        for c in range(6 * len(poses)):
+            e = np.zeros(6 * len(poses))
+            e[c] = h
+            plus = [apply_pose(poses[i], e[6 * i : 6 * i + 6]) for i in range(len(poses))]
+            minus = [apply_pose(poses[i], -e[6 * i : 6 * i + 6]) for i in range(len(poses))]
+            fd2[:, c] = (cm.residual(plus, with_jacobian=False) - cm.residual(minus, with_jacobian=False)) / (2 * h)
+        assert np.max(np.abs(jac - fd2)) < 1e-6 * (1.0 + np.max(np.abs(fd2))), (name, scale)
+
+
 def test_exported_model_reproduces_the_backend_residual_and_jacobian():
     rng = np.random.default_rng(7)
     for name, root, grabbed in _scenes():
@@ -169,30 +200,110 @@ def test_exported_model_reproduces_the_backend_residual_and_jacobian():
         model = build_group_model(document, part, grabbed)
         spec = export_constraint_model(model)
         assert spec is not None and spec["version"] == MODEL_VERSION and spec["members"] == list(model.member_ids), name
-        json.dumps(spec)  # plain JSON
-        cm = ConstraintModel(spec)
-        for scale in (0.0, 0.3):
-            x = rng.normal(size=model.n_vars) * scale
-            x[::6] *= 20.0  # translations in mm
-            _, poses = _poses(model, x)
-            r, jac = cm.residual(poses)
-            expected = model.residual(x)
-            assert r.shape == expected.shape, name
-            assert np.max(np.abs(r - expected)) < 1e-9, (name, scale)
-            # backend finite-difference Jacobian at the perturbed poses
-            perturbed = {o: apply_delta(model.base_transforms[o], x[6 * i : 6 * i + 6]) for i, o in enumerate(model.member_ids)}
-            fd = model._jacobian_differences(perturbed, 1e-6)  # the old backend Jacobian (central differences, ~1e-4 accurate)
-            assert np.max(np.abs(jac - fd)) < 1e-4 * (1.0 + np.max(np.abs(fd))), (name, scale)
-            # and an exact check of the analytic Jacobian against central differences of the exported model itself
-            fd2 = np.zeros_like(jac)
-            h = 1e-6
-            for c in range(6 * len(poses)):
-                e = np.zeros(6 * len(poses))
-                e[c] = h
-                plus = [apply_pose(poses[i], e[6 * i : 6 * i + 6]) for i in range(len(poses))]
-                minus = [apply_pose(poses[i], -e[6 * i : 6 * i + 6]) for i in range(len(poses))]
-                fd2[:, c] = (cm.residual(plus, with_jacobian=False) - cm.residual(minus, with_jacobian=False)) / (2 * h)
-            assert np.max(np.abs(jac - fd2)) < 1e-6 * (1.0 + np.max(np.abs(fd2))), (name, scale)
+        # a scene without a pair stays at version 3 and carries no `pair` key anywhere (old clients keep working)
+        assert not any("pair" in m[side] for m in spec["mates"] for side in ("a", "b")), name
+        _assert_parity(name, model, spec, rng)
+
+
+# ---- constraint model v4: a side with a `pair` (Width / Symmetric over parts that move) --------------------------------------
+
+
+def _width_payload(scene, tab, value=None, **extra):
+    from tests.test_width_mate_parts import _gap, _tab_one, _tab_two
+
+    _root, bar_l, bar_r, plate_a, plate_b = scene
+    tab_ref = _tab_one(plate_a) if tab == 1 else _tab_two(plate_a, plate_b)
+    payload = {"type": "coincident" if value is None else "distance", "references": [tab_ref, _gap(bar_l, bar_r)], **extra}
+    if value is not None:
+        payload["value"] = value
+    return payload
+
+
+def _turn(root, occurrence, base, axis, degrees):
+    client.patch(
+        f"/document/parts/{root}/occurrences/{occurrence}",
+        json={"transform": {"translation": list(base), "rotation_axis": axis, "rotation_angle_degrees": degrees}},
+    )
+
+
+def _build_width(name):
+    """(root, grabbed, expected_pair) of a Width scene, built fresh."""
+    from tests.test_width_mate_parts import _create, _scene
+
+    if name.startswith("w3"):
+        scene = _scene(1, fix_bars=name == "w3_fixed_bars")
+        root = scene[0]
+        if name == "w3_turned_plate":
+            _turn(root, "plate", (7.0, 3.0, 11.0), [0.3, 0.5, 0.8], 170.0)
+        payload = _width_payload(scene, 1, value=4.0 if name == "w3_offset" else None, **({"alignment": "anti_aligned", "secondary_flip": True} if name == "w3_offset" else {}))
+        assert _create(root, payload, "plate").status_code == 201, name
+        return root, "barL" if name == "w3_free_grab_bar" else "plate", name != "w3_fixed_bars"
+    scene = _scene(2, fix_bars=name != "w4_free_bars")
+    root = scene[0]
+    if name == "w4_turned_away":
+        for oid, base in (("plateA", (14.0, 3.0, 11.0)), ("plateB", (40.0, 4.0, 11.0))):
+            _turn(root, oid, base, [0.3, 0.5, 0.8], 70.0)
+    assert _create(root, _width_payload(scene, 2), "plateA").status_code == 201, name
+    return root, "plateB" if name == "w4_free_bars" else "plateA", True
+
+
+_WIDTH_SCENES = ("w3_free", "w3_free_grab_bar", "w3_offset", "w3_turned_plate", "w3_fixed_bars", "w4_fixed_bars", "w4_free_bars", "w4_turned_away")
+
+
+def test_a_width_pair_model_reproduces_the_backend_residual_and_jacobian():
+    rng = np.random.default_rng(11)
+    for name in _WIDTH_SCENES:
+        root, grabbed, has_pair = _build_width(name)
+        document = get_document()
+        model = build_group_model(document, document.parts[root], grabbed)
+        spec = export_constraint_model(model)
+        assert spec is not None, name
+        sides = [m[side] for m in spec["mates"] for side in ("a", "b")]
+        if not has_pair:
+            # both bars fixed and a one-part tab: the mid-plane collapsed to one plain plane, the model is the ordinary version 3
+            assert spec["version"] == MODEL_VERSION and not any("pair" in s for s in sides), name
+        else:
+            assert spec["version"] == PAIR_MODEL_VERSION and any("pair" in s for s in sides), name
+            for s in sides:
+                if "pair" in s:
+                    assert set(s["pair"]) <= {"member", "frozen", "plane"} and set(s["pair"]["plane"]) == {"origin", "normal"}, name
+        _assert_parity(name, model, spec, rng)
+
+
+def test_a_width_pair_model_lands_on_the_manifold_under_the_nearest_point_retraction():
+    """The retraction on the exported pair model converges to the backend's own residual (not only the model's): from a perturbed
+    pose the result satisfies `GroupModel.residual` to 1e-7."""
+    rng = np.random.default_rng(5)
+    for name in ("w3_free", "w3_offset", "w4_fixed_bars", "w4_free_bars", "w4_turned_away"):
+        root, grabbed, _ = _build_width(name)
+        document = get_document()
+        model = build_group_model(document, document.parts[root], grabbed)
+        cm = ConstraintModel(export_constraint_model(model))
+        poses = [rigid_to_pose(model.base_transforms[o]) for o in model.member_ids]
+        w = weights(len(poses), 20.0)
+        for _ in range(5):
+            wishes = [apply_pose(p, np.concatenate([rng.normal(size=3) * 3.0, rng.normal(size=3) * 0.04])) for p in poses]
+            got = sqp_nearest(cm, poses, wishes, w, iters=6)
+            assert residual_inf(cm, got) < 1e-7, name
+            placed = {o: pose_to_rigid(got[i]) for i, o in enumerate(model.member_ids)}
+            assert np.max(np.abs(model.residual(None, placed))) < 1e-6, name
+
+
+def test_a_pair_moves_the_mid_plane_by_half_of_each_face():
+    """The defining property: sliding ONE gap bar by d along the normal moves the mid-plane (and so the centred tab) by d/2."""
+    root, grabbed, _ = _build_width("w3_free")
+    document = get_document()
+    model = build_group_model(document, document.parts[root], "barL")
+    cm = ConstraintModel(export_constraint_model(model))
+    ids = list(model.member_ids)
+    poses = [rigid_to_pose(model.base_transforms[o]) for o in ids]
+    r0 = cm.residual(poses, with_jacobian=False)
+    assert np.max(np.abs(r0)) < 1e-6
+    bar = ids.index("barL")
+    moved = list(poses)
+    moved[bar] = (poses[bar][0], poses[bar][1] + np.array([4.0, 0.0, 0.0]))
+    row = cm.residual(moved, with_jacobian=False)[0]  # the plane-plane distance row: tab mid-plane vs gap mid-plane
+    assert abs(row) == pytest.approx(2.0, abs=1e-9)
 
 
 def _spin_degrees(pose, base):

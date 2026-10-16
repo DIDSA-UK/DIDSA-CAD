@@ -13,6 +13,7 @@ first — this plan reuses all of it and deliberately changes none of it.
 | W3 | VR: the same flow on the tablet / wheel | Done (tablet; wheel = type entry only; headless-tested, no headset) | DIDSA-VR (this branch) |
 | W4 | AI plan schema + docs + measurement on the tester's table top | Done (same PR; not merged) | CAD #302 |
 | W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Done for FACES (no new backend; Flutter + VR three-pick flow); points and axes NOT built (see W5 notes) | CAD #302, VR #48 |
+| v4 | Constraint model v4: a side with a `pair` (the mid-plane of two moving faces), so live drag of a moving-pair Width / Symmetric gets the local retraction | Backend, generator vectors and Dart done (CAD PR stacked on #302, not merged). **GDScript (DIDSA-VR) NOT done** - repo access was denied in the session that built v4, see "Constraint model v4" below | CAD (stacked on #302) |
 
 Update this table with every PR, the same as the parent plan.
 
@@ -98,12 +99,9 @@ plane-plane residuals are the ordinary ones.
   is recomputed at every evaluated pose (average of the two origins, the first's normal) and the mate also holds the two faces
   parallel (3 extra residual rows, the cross product of the unit normals). If neither part is a member of the solved component (e.g.
   both bars fixed) the mid-plane never moves and collapses to ONE fixed world plane.
-- **Constraint model, honestly:** with the collapse (fixed bars) the exported model is still a plain plane-plane one (`member: -1`
-  plane), no version bump. When a part of a cross-part side moves (free bars, or a tab of two moving parts) the mid-plane depends on
-  two poses, which the clients' retraction cannot evaluate: `export_constraint_model` returns `None` for that component and the
-  clients keep projecting (the existing fallback). So **live drag of such a component has no local retraction** (looser than for
-  other mates); the backend solve, create, preview, alternatives and mate-motion are exact. A constraint model v4 with a two-pose plane
-  (Dart + GDScript + vectors) would fix that - not done.
+- **Constraint model:** with the collapse (fixed bars) the exported model is still a plain plane-plane one (`member: -1` plane, version 3).
+  When a part of a cross-part side moves (free bars, or a tab of two moving parts) the side is exported with a `pair` and the model is
+  version 4 (see "Constraint model v4"), so the clients' retraction evaluates it during live drag.
 - **Strictness:** at creation the two faces of a pair must be parallel at the stored poses (422 `faces_not_parallel`), as before; after
   that the residual keeps them parallel. The legacy single-occurrence solve (`POST .../solve`) handles a cross-part reference only on the fixed side.
 - **Tests:** `backend/tests/test_width_mate_parts.py` (3 parts fixed/free bars, offset, 4 parts near/medium/far, preview, drag,
@@ -120,8 +118,8 @@ plane-plane residuals are the ordinary ones.
   list (`unparallel_pairs`), shown in the design table's status. Either pair may be two parts (2, 3 or 4 parts), same rules as the flat app.
 - **Not built / not verified:** the wheel has the Width entry in its type ring only (no four-pick flow, Undo pick or offset on the wheel - tablet first,
   as planned); no live ghost beyond the usual preview; **no headset run, no live-backend e2e for Width**; the render and e2e suites were not run here.
-  The live drag of a component whose Width mate has moving parts on a side gets no constraint model from the backend and keeps projecting (no local
-  retraction) - `local_retraction.gd` already treats "no model" that way, and nothing in the GDScript solver changed.
+  (Superseded on the backend by constraint model v4: such a component now gets a version-4 model. Until `local_retraction.gd` learns version 4 the VR
+  client answers null for it and keeps projecting, as before.)
 - **Tests:** `tests/width_mate.gd` (38 SMOKE lines), `tests/tool_wheel.gd` updated for the sixth type entry; `tests/ci.sh` green (see the PR).
 
 ## W4 implementation notes (AI plan, docs, measurement)
@@ -166,13 +164,36 @@ plane-plane residuals are the ordinary ones.
 - **Not built, and why it matters:** Symmetric for **points, edges or axes** (e.g. two holes mirrored about a plane). That does need what the plan described: a
   residual "A and B are reflections of each other in P" over three entities, which a mid-plane cannot express (a pair of points has a midpoint, not a plane, and the
   in-plane offset between them is constrained too). The cheapest route would be a `midpoint` analogue of the mid-plane reference (average of two points, plus rows
-  forcing their difference along P's normal) on the same `_Side.partner` mechanism - and still no local retraction (the same constraint-model limit as moving Width
-  sides) unless constraint model v4 is also done. Not started.
+  forcing their difference along P's normal) on the same `_Side.partner` mechanism; a `kind: point` pair in the v4 model would carry it to the clients. Not started.
 - **Behaviours to know:** the mirror is a plane-level statement, so it fixes the average distance and the parallelism, not the position along the plane (add other
   mates for that); the single-occurrence solve (`POST .../solve`) cannot place such a mate (the group solve does, which is what create / preview use); the mate's
   Orientation choice (Aligned / Anti-aligned) is the usual coincident one and decides which way up the mirrored parts end up.
 - **Checked:** backend `not gears` 2496 passed; `flutter test` 2747 passed (33 skipped); `flutter analyze` only the existing infos; VR `tests/ci.sh` see the VR PR.
   No human has tried the Symmetric flow, and nothing is verified on a headset.
+
+## Constraint model v4 (a side with a `pair`)
+
+Closes the gap the multi-part Width left: a component whose Width / Symmetric side depends on two moving poses used to export no model, so
+live drag kept projecting.
+
+- **Wire** (`docs/motion/projector-spec.md` §4b): a side may carry `pair: {member, frozen?, plane: {origin, normal}}`, the second face. The
+  side's world plane = (average of the two world origins, the first face's normal); Jacobian = half of each origin's, the first normal's
+  only; each pair side adds 3 rows `cross(unit n_first, unit n_pair)` (rank 2) after its mate's rows, a before b. No mate type changed: every
+  residual reads the plane as before. `version: 4` only when some side has a `pair`, else 3 (the models of every scene without a pair are
+  byte-identical to before: measured on the nine backend scene families, plus a test that they carry no `pair` and version 3). Clients accept 3
+  and 4; a client that does not know 4 returns null (keep projecting). A `pair` inside a version-3 model is refused by the Dart client.
+- **Four places agree:** `backend/app/document/constraint_model.py` (export + `ConstraintModel`), `tools/motion_vectors/generate.py` (the numpy
+  reference, 17 new `local-width-*` cases: free bars, 4-part tab aligned / anti-aligned, offset +/-, turned-away anti-aligned tab, one bar fixed,
+  near-parallel and 20 deg tilts, a second mate, scenes turned about arbitrary axes; `docs/motion/vectors.json` and
+  `backend/tests/data/local_retract_vectors.json` regenerated), Dart `client/lib/motion/local_retraction.dart`, GDScript `scripts/motion/local_retraction.gd`
+  in DIDSA-VR (**not done here**).
+- **Side effects on the backend (intended):** `GroupModel.jacobian` for these components is now the exact analytic one instead of central
+  differences, and `solve_group` / `mate-motion` return the model (so the anchors are the nearest point like every other component).
+- **Tests:** `test_constraint_model.py` (parity of the exported model with `GroupModel.residual` and its analytic Jacobian against finite differences on
+  eight Width scenes: free bars grabbing the plate or a bar, offset, a plate turned 170 deg, fixed bars (plain), 4 parts with fixed / free bars, 4 parts turned
+  70 deg; retraction from perturbed poses lands on the backend's residual; the half-of-each-face property), `test_width_mate_parts.py` (the former "no model" assertions are now
+  "version 4 with a pair"), Dart golden + Jacobian + parsing + cost tests.
+- **Not verified:** how a drag FEELS (headless only); the GDScript copy; anything on a headset.
 
 ## 1. The problem
 

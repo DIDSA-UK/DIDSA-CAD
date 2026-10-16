@@ -17,6 +17,7 @@ import math
 import numpy as np
 
 MODEL_VERSION = 3  # 3: an ANGLE about a hinge (`hinge_direction` on a side) also fixes the swing sense; 2: branch-specific residuals (`alignment` / `side` / `perp` per mate, linear signed DISTANCE, mm-scaled squared ones)
+PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces on two members); emitted ONLY when some side has one, else 3
 SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance")
 
 # Constants of spec section 4b (also in docs/motion/vectors.json -> constants).
@@ -137,15 +138,13 @@ def export_constraint_model(model) -> dict | None:
     """The wire form of a `GroupModel`'s mates; `None` when a mate type is not one the client can evaluate."""
     ids = list(model.member_ids)
     mates = []
+    has_pair = False
     for mate, a, b in model.sides:
         if mate.type.value not in SUPPORTED_TYPES:
             return None
-        if a.partner is not None or b.partner is not None:
-            # A Width mate over parts that move: its mid-plane depends on two poses (not a plane of one member), which the
-            # clients' retraction cannot evaluate - they keep projecting (docs/width-mate-plan.md).
-            return None
 
         def side(s) -> dict:
+            nonlocal has_pair
             g = s.geometry
             out: dict = {"member": ids.index(s.occurrence_id) if s.occurrence_id in ids else -1}
             if s.frozen_transform is not None:
@@ -160,6 +159,18 @@ def export_constraint_model(model) -> dict | None:
                 out["hinge_direction"] = [float(c) for c in g.hinge[1]]
             if g.plane is not None:
                 out["plane"] = {"origin": [float(c) for c in g.plane.origin], "normal": [float(c) for c in g.plane.normal]}
+            if s.partner is not None:
+                # A Width / Symmetric side over two moving parts: this side is the FIRST face; `pair` is the second face (same
+                # shape as a side's member / frozen / plane). The world plane is (average of the two origins, the first normal).
+                has_pair = True
+                p = s.partner
+                pair: dict = {"member": ids.index(p.occurrence_id) if p.occurrence_id in ids else -1}
+                if p.frozen_transform is not None:
+                    pr, pt = rigid_to_pose(p.frozen_transform)
+                    pair["frozen"] = {"r": pr.tolist(), "t": pt.tolist()}
+                pg = p.geometry.plane
+                pair["plane"] = {"origin": [float(c) for c in pg.origin], "normal": [float(c) for c in pg.normal]}
+                out["pair"] = pair
             return out
 
         from app.document.assembly_solver import _effective_mate
@@ -180,7 +191,7 @@ def export_constraint_model(model) -> dict | None:
                 "b": side(b),
             }
         )
-    return {"version": MODEL_VERSION, "members": ids, "mates": mates}
+    return {"version": PAIR_MODEL_VERSION if has_pair else MODEL_VERSION, "members": ids, "mates": mates}
 
 
 # ---- residual + analytic Jacobian --------------------------------------------------------------------------------
@@ -266,6 +277,16 @@ class ConstraintModel:
         if "plane" in side:
             g["porigin"] = self._world(side, poses, "origin", "point", plane=True)
             g["pnormal"] = self._world(side, poses, "normal", "dir", plane=True)
+            pair = side.get("pair")
+            if pair is not None:
+                # v4: the plane midway between this face and the pair's (origin = average, normal = this face's). The mate
+                # residuals read it as an ordinary plane; `pair_normal` feeds the extra "the two faces stay parallel" rows.
+                other = self._world(pair, poses, "origin", "point", plane=True)
+                mid = _V((g["porigin"].v + other.v) / 2.0, (g["porigin"].d + other.d) / 2.0)
+                g["porigin"] = mid
+                if "point" in g:
+                    g["point"] = mid
+                g["pair_normal"] = self._world(pair, poses, "normal", "dir", plane=True)
         return g
 
     def residual(self, poses, with_jacobian: bool = True):
@@ -343,6 +364,9 @@ class ConstraintModel:
                     off = _sub(d["point"], f["point"])
                     oo = _dot(off, off)
                     add(_S((oo.v - dist * dist) / scale, oo.d / scale))
+            for geo in (d, f):
+                if "pair_normal" in geo:
+                    addv(_cross(_unit(geo["pnormal"]), _unit(geo["pair_normal"])))  # the pair's two faces stay parallel (rank 2)
         r = np.array(rows, float)
         if not with_jacobian:
             return r
