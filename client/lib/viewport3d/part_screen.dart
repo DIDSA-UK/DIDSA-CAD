@@ -3623,14 +3623,15 @@ class _PartScreenState extends State<PartScreen> {
   String? _widthError;
   int _widthPairToken = 0;
 
-  bool get _mateIsWidth => _mateType == kWidthMateType;
+  /// A Width or Symmetric mate: picked as several faces ([WidthPick]) rather than two entities.
+  bool get _mateIsWidth => isMultiPickMateType(_mateType);
 
   /// Whether the picks needed for the current mate type are all made (2 entities, or the 4 faces of a Width mate).
   bool get _matePicksComplete => _mateIsWidth ? _widthPick.isComplete && _widthError == null : _selectedEntities.length == 2;
 
   /// The `type` / `value` / `references` a create or preview sends for the mate being authored.
-  String get _mateWireType => _mateIsWidth ? WidthPick.wireType(_widthOffset) : _mateType;
-  double? get _mateWireValue => _mateIsWidth ? WidthPick.wireValue(_widthOffset) : _mateValue;
+  String get _mateWireType => _mateType == kWidthMateType ? WidthPick.wireType(_widthOffset) : (_mateType == kSymmetricMateType ? 'coincident' : _mateType);
+  double? get _mateWireValue => _mateType == kWidthMateType ? WidthPick.wireValue(_widthOffset) : (_mateType == kSymmetricMateType ? null : _mateValue);
   List<MateEntityRefDto> _mateWireReferences() =>
       _mateIsWidth ? _widthPick.references() : [for (final entity in _selectedEntities) _mateEntityRefFor(entity)];
 
@@ -3638,6 +3639,8 @@ class _PartScreenState extends State<PartScreen> {
   List<String> get _mateDrivePreference {
     if (_mateIsWidth) {
       final picks = _widthPick.picks;
+      // Symmetric: the two mirrored parts move, the mirror plane's part is last choice; Width: the part(s) to centre first.
+      if (_widthPick.symmetric) return [picks[0].occurrenceId, picks[1].occurrenceId, picks[2].occurrenceId];
       return [picks[2].occurrenceId, picks[3].occurrenceId, picks[0].occurrenceId, picks[1].occurrenceId];
     }
     final entities = _selectedEntities.toList();
@@ -3645,7 +3648,7 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   void _resetWidth() {
-    _widthPick = const WidthPick();
+    _widthPick = WidthPick(const [], _mateType == kSymmetricMateType);
     _widthOffset = null;
     _widthError = null;
     _widthPairToken++;
@@ -3675,7 +3678,7 @@ class _PartScreenState extends State<PartScreen> {
   /// ghost preview refreshes once all four faces are in.
   void _afterWidthPicksChanged() {
     final picks = _widthPick.picks;
-    if (picks.length == 2 || picks.length == 4) {
+    if (picks.length == 2 || (!_widthPick.symmetric && picks.length == 4)) {
       unawaited(_checkWidthPairParallel(picks[picks.length - 2], picks[picks.length - 1]));
     } else {
       unawaited(_scheduleMatePreview());
@@ -23754,8 +23757,9 @@ class _PartScreenState extends State<PartScreen> {
                       onMateTypeChanged: (type) {
                         setState(() {
                           // Width and the two-pick types pick different things: switching starts the picks over.
-                          if ((type == kWidthMateType) != _mateIsWidth) {
+                          if (isMultiPickMateType(type) != _mateIsWidth || type != _mateType && isMultiPickMateType(type)) {
                             _selectedEntities = {};
+                            _mateType = type;
                             _resetWidth();
                             _mateValue = null;
                           }

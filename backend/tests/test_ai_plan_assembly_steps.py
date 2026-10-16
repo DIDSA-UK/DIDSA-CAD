@@ -746,6 +746,27 @@ def test_mate_step_width_rejects_a_missing_second_occurrence_a_wrong_type_and_tw
     assert run(both, _width_ref(f"existing:{occ_b}")).ok is False
 
 
+def test_mate_step_symmetric_is_a_midplane_of_two_occurrences_and_a_plain_face_on_a_third():
+    top_id, occ_a, occ_b = _setup_top_with_two_occurrences()
+    validator = _PlanValidator(get_part_or_404(top_id))
+    # the mirror plane is the root part's own face ("")
+    results = validator.run(
+        [
+            MateStep(
+                local_id="s1",
+                type=MateType.COINCIDENT,
+                references=[
+                    MateEntityRefStep.model_validate(_width_ref(f"existing:{occ_a}", f"existing:{occ_b}")),
+                    MateEntityRefStep.model_validate(_face_ref("")),
+                ],
+            )
+        ]
+    )
+    assert all(r.ok for r in results), results
+    mate = validator.part.mates[0]
+    assert mate.references[0].midplane.b_occurrence_id == occ_b and mate.references[1].subshape_ref is not None
+
+
 def test_mate_step_distance_requires_a_value():
     top_id, occ_a, occ_b = _setup_top_with_two_occurrences()
 

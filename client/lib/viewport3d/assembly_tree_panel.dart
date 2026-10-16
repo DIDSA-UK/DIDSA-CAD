@@ -4,7 +4,7 @@ import '../api/document_api_client.dart';
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import 'view_preferences.dart' show colorFromHex;
-import 'width_pick.dart' show isWidthMate;
+import 'width_pick.dart' show isSymmetricMate, isWidthMate;
 
 /// Width of the gutter right of the panel's visible edge that hosts the outer half
 /// of the resize handle. It lives inside the ClipRect and Stack bounds because
@@ -92,6 +92,9 @@ String componentPatternSummary(ComponentPatternDto pattern) {
 String mateDisplayName(List<MateDto> mates, int index) {
   final mate = mates[index];
   // A Width mate (mid-plane references) is listed as "Width N", counted apart from the plain coincident / distance mates.
+  if (isSymmetricMate(mate)) {
+    return 'Symmetric ${mates.take(index + 1).where(isSymmetricMate).length}';
+  }
   if (isWidthMate(mate)) {
     return 'Width ${mates.take(index + 1).where(isWidthMate).length}';
   }
@@ -103,7 +106,7 @@ String mateDisplayName(List<MateDto> mates, int index) {
     'angle' => 'Angle',
     _ => mate.type,
   };
-  final ordinal = mates.take(index + 1).where((m) => m.type == mate.type && !isWidthMate(m)).length;
+  final ordinal = mates.take(index + 1).where((m) => m.type == mate.type && !isWidthMate(m) && !isSymmetricMate(m)).length;
   return '$label $ordinal';
 }
 

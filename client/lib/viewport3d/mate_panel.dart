@@ -21,11 +21,14 @@ String mateTypeLabel(String type) => switch (type) {
       'distance' => 'Distance',
       'angle' => 'Angle',
       kWidthMateType => 'Width',
+      kSymmetricMateType => 'Symmetric',
       _ => type,
     };
 
 /// The label of a stored [mate]: "Width" when its references are mid-planes, else its type's label.
-String mateLabel(MateDto mate) => isWidthMate(mate) ? mateTypeLabel(kWidthMateType) : mateTypeLabel(mate.type);
+String mateLabel(MateDto mate) => isSymmetricMate(mate)
+    ? mateTypeLabel(kSymmetricMateType)
+    : (isWidthMate(mate) ? mateTypeLabel(kWidthMateType) : mateTypeLabel(mate.type));
 
 /// Phase 2b: the sentence shown while the ghost preview needs earlier mates on their other branch
 /// ([MateSolvePreviewDto.branchChanges]), or cannot get there ([blockedBy] = mates the user set that stand in the
@@ -325,10 +328,12 @@ class MatePanel extends StatelessWidget {
     this.onWidthBack,
   });
 
-  bool get _isWidth => mateType == kWidthMateType && widthPick != null;
+  bool get _isWidth => isMultiPickMateType(mateType) && widthPick != null;
 
   String? get _tooltip => _isWidth
-      ? 'Width: pick the two faces of the gap, then the two faces of the part to centre in it'
+      ? (mateType == kSymmetricMateType
+          ? 'Symmetric: pick the two faces to mirror (on two parts), then a face of the mirror plane (on a third part)'
+          : 'Width: pick the two faces of the gap, then the two faces of the part to centre in it')
       : switch (selectedEntities.length) {
         0 => 'Select a face, edge, or vertex for the first side of the mate',
         1 => 'Select a face, edge, or vertex for the second side of the mate',
@@ -360,7 +365,7 @@ class MatePanel extends StatelessWidget {
             initialValue: mateType,
             decoration: const InputDecoration(labelText: 'Mate type'),
             items: [
-              for (final type in [...kMateTypes, if (widthPick != null) kWidthMateType]) DropdownMenuItem(value: type, child: Text(mateTypeLabel(type))),
+              for (final type in [...kMateTypes, if (widthPick != null) ...[kWidthMateType, kSymmetricMateType]]) DropdownMenuItem(value: type, child: Text(mateTypeLabel(type))),
             ],
             onChanged: (type) {
               if (type != null) onMateTypeChanged(type);
@@ -378,7 +383,7 @@ class MatePanel extends StatelessWidget {
               onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),
             ),
           ],
-          if (_isWidth && onWidthOffsetChanged != null) ...[
+          if (_isWidth && mateType == kWidthMateType && onWidthOffsetChanged != null) ...[
             const SizedBox(height: 8),
             TextFormField(
               key: const ValueKey('width-offset'),
@@ -446,19 +451,19 @@ class MatePanel extends StatelessWidget {
     return [
       Text(pick.progress, key: const ValueKey('width-progress'), style: const TextStyle(fontWeight: FontWeight.w600)),
       const SizedBox(height: 4),
-      for (var i = 0; i < WidthPick.total; i++)
+      for (var i = 0; i < pick.total; i++)
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 2),
           child: Row(
             children: [
               // One colour per pair: the gap's faces and the part-to-centre's faces read apart in the list.
-              Container(width: 10, height: 10, color: i < 2 ? scheme.primary : scheme.tertiary),
+              Container(width: 10, height: 10, color: i < 2 ? scheme.primary : scheme.tertiary), // symmetric: the mirror plane takes the second colour
               const SizedBox(width: 8),
               SizedBox(width: 18, height: 18, child: i < pick.picks.length ? _iconFor(SelectionEntityKind.face) : null),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  i < pick.picks.length ? '${WidthPick.slotLabel(i)}: ${_titleFor(pick.picks[i])}' : WidthPick.slotLabel(i),
+                  i < pick.picks.length ? '${pick.slotLabel(i)}: ${_titleFor(pick.picks[i])}' : pick.slotLabel(i),
                   style: TextStyle(
                     color: i < pick.picks.length ? scheme.onSurface : scheme.onSurfaceVariant,
                     fontSize: 13,

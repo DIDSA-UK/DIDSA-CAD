@@ -100,6 +100,101 @@ void main() {
     });
   });
 
+  group('Symmetric (3 picks)', () {
+    WidthPick symPicked(List<SelectionEntityRef> faces) {
+      var pick = const WidthPick([], true);
+      for (final f in faces) {
+        final (next, why) = pick.toggle(f);
+        expect(why, isNull, reason: '$f');
+        pick = next;
+      }
+      return pick;
+    }
+
+    test('counts 1 of 3 .. 3 of 3 and names the steps', () {
+      var pick = const WidthPick([], true);
+      expect(pick.total, 3);
+      expect(pick.progress, startsWith('1 of 3'));
+      pick = symPicked([face('left', 1), face('right', 0)]);
+      expect(pick.progress, contains('3 of 3'));
+      expect(pick.progress, contains('mirror plane'));
+      expect(pick.slotLabel(2), 'Mirror plane');
+      pick = symPicked([face('left', 1), face('right', 0), face('centre', 1)]);
+      expect(pick.isComplete, isTrue);
+      expect(pick.progress, '3 of 3 - ready');
+    });
+
+    test('the two mirrored faces must be on different parts and the mirror plane on a third', () {
+      final one = symPicked([face('left', 1)]);
+      expect(one.toggle(face('left/inner', 2)).$2, contains('different parts'));
+      final two = symPicked([face('left', 1), face('right', 0)]);
+      expect(two.toggle(face('left', 3)).$2, contains('mirror plane'));
+      expect(two.toggle(face('right', 3)).$2, contains('mirror plane'));
+      expect(two.toggle(const SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: 'b', id: 1)).$2, contains('Symmetric'));
+      expect(symPicked([face('left', 1), face('right', 0), face('centre', 1)]).toggle(face('centre', 2)).$2, contains('three faces'));
+    });
+
+    test('the mate is a mid-plane of the two faces and the mirror plane as an ordinary face reference', () {
+      final refs = symPicked([face('left', 1), face('right', 0), face('centre', 1)]).references();
+      expect(refs.length, 2);
+      expect(refs[0].occurrenceId, 'left');
+      expect(refs[0].midplane!.bOccurrenceId, 'right');
+      expect(refs[1].occurrenceId, 'centre');
+      expect(refs[1].midplane, isNull);
+      expect(refs[1].subshapeRef!.index, 1);
+      expect(refs[1].subshapeRef!.shapeType, 'face');
+    });
+
+    test('a stored Symmetric mate is listed and titled as Symmetric, not Width; it involves all three parts', () {
+      final refs = symPicked([face('left', 1), face('right', 0), face('centre', 1)]).references();
+      final sym = MateDto(id: 's', type: 'coincident', references: refs);
+      final width = MateDto(
+          id: 'w',
+          type: 'coincident',
+          references: picked([face('barL', 7), face('barR', 7), face('plate', 0), face('plate', 2)]).references());
+      expect(isSymmetricMate(sym), isTrue);
+      expect(isWidthMate(sym), isFalse);
+      expect(isSymmetricMate(width), isFalse);
+      expect(isWidthMate(width), isTrue);
+      expect(mateLabel(sym), 'Symmetric');
+      expect(mateLabel(width), 'Width');
+      expect(mateDisplayName([sym, width, sym], 2), 'Symmetric 2');
+      expect(mateDisplayName([sym, width], 1), 'Width 1');
+      expect(mateTopLevelOccurrences(sym), {'left', 'right', 'centre'});
+      expect(isMultiPickMateType('symmetric'), isTrue);
+      expect(isMultiPickMateType('coincident'), isFalse);
+    });
+
+    testWidgets('the panel offers Symmetric, shows three slots and no offset field', (tester) async {
+      final pick = symPicked([face('left', 1)]);
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: MatePanel(
+            selectedEntities: pick.picks.toSet(),
+            bodyNames: const {},
+            mateType: kSymmetricMateType,
+            value: null,
+            onMateTypeChanged: (_) {},
+            onValueChanged: (_) {},
+            allowRotation: true,
+            onAllowRotationChanged: (_) {},
+            saving: false,
+            error: null,
+            onConfirm: null,
+            onCancel: () {},
+            widthPick: pick,
+            onWidthOffsetChanged: (_) {},
+            onWidthBack: () {},
+          ),
+        ),
+      ));
+      expect(find.textContaining('2 of 3'), findsOneWidget);
+      expect(find.textContaining('Mirror plane'), findsOneWidget);
+      expect(find.textContaining('Tab face'), findsNothing);
+      expect(find.byKey(const ValueKey('width-offset')), findsNothing);
+    });
+  });
+
   group('DTO', () {
     test('a mid-plane reference round-trips through JSON; refs without one are unchanged', () {
       final ref = picked([face('frame/barA', 7), face('frame/barB', 7), face('plate', 0), face('plate', 2)]).references().first;

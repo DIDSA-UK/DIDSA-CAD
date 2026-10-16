@@ -12,7 +12,7 @@ first — this plan reuses all of it and deliberately changes none of it.
 | W2 | Flutter: four-pick Width flow in the mate panel, highlighting, edit | Done (same PR; not merged; not tried by a human) | CAD #302 |
 | W3 | VR: the same flow on the tablet / wheel | Done (tablet; wheel = type entry only; headless-tested, no headset) | DIDSA-VR (this branch) |
 | W4 | AI plan schema + docs + measurement on the tester's table top | Done (same PR; not merged) | CAD #302 |
-| W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Not started — scoped below, needs its own go-ahead | |
+| W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Done for FACES (no new backend; Flutter + VR three-pick flow); points and axes NOT built (see W5 notes) | CAD #302, VR #48 |
 
 Update this table with every PR, the same as the parent plan.
 
@@ -151,6 +151,28 @@ plane-plane residuals are the ordinary ones.
 - **Checked:** backend `not gears` 2490 passed, `flutter test` 2742 passed (33 skipped), `flutter analyze` only the existing deprecation infos, `generate.py --check` clean
   under the system python (it also fails in the backend micromamba env on unmodified `main`). Not run: the gears / bevel_pair suites.
 - W5 (Symmetric) is untouched.
+
+## W5 implementation notes (Symmetric, faces only)
+
+- **The finding that changed the scope:** the plan said Symmetric needs three references. For FACES it does not. Two faces mirror each other about a plane P
+  exactly when the plane midway between them is P, and the cross-part Width machinery (added for 3 and 4 parts) already builds that mid-plane from faces on
+  two moving parts and keeps them parallel. So Symmetric about P is the stored mate `coincident` of `[midplane(face A on X, face B on Y), P]` - a two-reference
+  mate, no new type, no new reference, no `len(references) == 2` change, no constraint-model change. `backend/tests/test_symmetric_mate.py` pins it (two parts end up
+  equally far from a fixed centre plane, with Minimal movement and with the group solve; non-parallel faces refused; no objects created; delete leaves the assembly;
+  the AI plan accepts it).
+- **Built:** a "Symmetric" type in the Flutter mate panel (`WidthPick` with `symmetric: true`: face 1, face 2 on different parts, then a face of the mirror plane
+  on a third part; the mirrored parts are the ones driven) and on the VR tablet / wheel type ring (`mates_tool.gd`, three picks), listed as "Symmetric N", the
+  AI scoping prompt, and the VR/Flutter tests. A stored mate is told apart from a Width one by shape: a mid-plane first reference with a plain second reference.
+- **Not built, and why it matters:** Symmetric for **points, edges or axes** (e.g. two holes mirrored about a plane). That does need what the plan described: a
+  residual "A and B are reflections of each other in P" over three entities, which a mid-plane cannot express (a pair of points has a midpoint, not a plane, and the
+  in-plane offset between them is constrained too). The cheapest route would be a `midpoint` analogue of the mid-plane reference (average of two points, plus rows
+  forcing their difference along P's normal) on the same `_Side.partner` mechanism - and still no local retraction (the same constraint-model limit as moving Width
+  sides) unless constraint model v4 is also done. Not started.
+- **Behaviours to know:** the mirror is a plane-level statement, so it fixes the average distance and the parallelism, not the position along the plane (add other
+  mates for that); the single-occurrence solve (`POST .../solve`) cannot place such a mate (the group solve does, which is what create / preview use); the mate's
+  Orientation choice (Aligned / Anti-aligned) is the usual coincident one and decides which way up the mirrored parts end up.
+- **Checked:** backend `not gears` 2496 passed; `flutter test` 2747 passed (33 skipped); `flutter analyze` only the existing infos; VR `tests/ci.sh` see the VR PR.
+  No human has tried the Symmetric flow, and nothing is verified on a headset.
 
 ## 1. The problem
 

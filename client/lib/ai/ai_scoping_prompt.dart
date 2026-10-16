@@ -671,6 +671,13 @@ that is none of these three.
   faces, which may also be two components). The part(s) of the two
   references must be different from each other. Nothing is created for the
   mid-plane. Width still needs another mate for the position along the gap.
+  SYMMETRIC (two components mirrored about a plane, e.g. a left and a right
+  bracket either side of a centre part): a "coincident" mate whose FIRST
+  reference is a midplane of one face on each of the two components (a on
+  occurrence_id, b on b_occurrence_id) and whose SECOND reference is an
+  ordinary subshape_ref face on a THIRD component (or "" for this Part's own
+  geometry) - the mirror plane. The two faces end up equally far from that
+  face, on its two sides. Faces only; there is no Symmetric for points or axes.
 - move_component: {local_id, kind:"move_component", occurrence_id,
   translation?, rotation_axis?, rotation_angle_degrees?} - translation is
   an [x, y, z] triple in mm (world space, not the component's own local
