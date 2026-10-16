@@ -1,10 +1,11 @@
 """Resolved mate geometry ("constraint model") and the nearest-point retraction on it
 (`docs/motion/projector-spec.md` section 4b, `docs/constrained-drag-f1a-design.md`).
 
-`export_constraint_model` turns a `GroupModel` into plain JSON-able data: per mate its type, value, `allow_rotation` and, for
-each side, the member index (-1 = not a member) plus an optional frozen pose and the resolved LOCAL geometry. `ConstraintModel`
-evaluates the mate residuals of that data at poses `(R, t)` with analytic (forward-mode) Jacobians, exactly the residuals of
-`assembly_solver._mate_residual_vector`. `sqp_nearest` is the sequential nearest-point retraction: at every iteration the
+`export_constraint_model` turns a `GroupModel` into plain JSON-able data: per mate its type, value, `allow_rotation`, the BRANCH
+the mate stands for (`alignment`, `side`, `perp`: +1 / -1, `docs/mate-solution-choice-plan.md`) and, for each side, the member
+index (-1 = not a member) plus an optional frozen pose and the resolved LOCAL geometry. `ConstraintModel` evaluates the mate
+residuals of that data at poses `(R, t)` with analytic (forward-mode) Jacobians, exactly the residuals of
+`assembly_solver._mate_residual_vector` - each zero only on the chosen branch. `sqp_nearest` is the sequential nearest-point retraction: at every iteration the
 linearised problem "least weighted move to the wished poses that satisfies the mates" is solved, then a constraint-only
 polish lands on the manifold. The client runs the same algorithm per frame (`client/lib/motion/local_retraction.dart`); the
 backend runs it so its anchors are the nearest point too. Pure numpy; no OCCT."""
@@ -15,7 +16,7 @@ import math
 
 import numpy as np
 
-MODEL_VERSION = 1
+MODEL_VERSION = 3  # 3: an ANGLE about a hinge (`hinge_direction` on a side) also fixes the swing sense; 2: branch-specific residuals (`alignment` / `side` / `perp` per mate, linear signed DISTANCE, mm-scaled squared ones)
 SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance")
 
 # Constants of spec section 4b (also in docs/motion/vectors.json -> constants).
@@ -26,6 +27,7 @@ LAM_ABS = 1e-9  # absolute damping of A A^T
 ITERS = 3  # per-frame iterations on the client
 POLISH = 1  # constraint-only steps at the end
 ACCEPT_RESIDUAL = 1e-6
+DISTANCE_FLOOR = 1e-3  # mm: divisor floor of the mm-scaled squared DISTANCE residuals (axis-axis, point-point)
 
 
 # ---- rotations ---------------------------------------------------------------------------------------------------
@@ -149,6 +151,9 @@ def export_constraint_model(model) -> dict | None:
                 v = getattr(g, name)
                 if v is not None:
                     out[name] = [float(c) for c in v]
+            if g.hinge is not None and mate.type.value == "angle":
+                # the hinge an ANGLE swings about (the direction only: the residual needs no point on it)
+                out["hinge_direction"] = [float(c) for c in g.hinge[1]]
             if g.plane is not None:
                 out["plane"] = {"origin": [float(c) for c in g.plane.origin], "normal": [float(c) for c in g.plane.normal]}
             return out
@@ -161,6 +166,12 @@ def export_constraint_model(model) -> dict | None:
                 "type": mate.type.value,
                 "value": None if mate.value is None else float(mate.value),
                 "allow_rotation": bool(mate.allow_rotation),
+                # The branch (resolved: `build_group_model` fills a Closest mate in before this runs). `alignment`: +1 the
+                # directions point the same way, -1 opposite; `side`: -1 when a DISTANCE sits on the -normal side;
+                # `perp`: -1 for the half-turn spin of a rotation-locked CONCENTRIC. Absent / 0 reads as +1.
+                "alignment": -1 if mate.alignment == "anti_aligned" else 1,
+                "side": -1 if (mate.type.value == "distance" and mate.secondary_flip) else 1,
+                "perp": -1 if (mate.type.value == "concentric" and mate.secondary_flip) else 1,
                 "a": side(a),
                 "b": side(b),
             }
@@ -197,6 +208,10 @@ def _dot(a: _V, b: _V) -> _S:
 
 def _cross(a: _V, b: _V) -> _V:
     return _V(np.cross(a.v, b.v), -skew(b.v) @ a.d + skew(a.v) @ b.d)
+
+
+def _scale(a: _V, c: float) -> _V:
+    return _V(a.v * c, a.d * c)
 
 
 def _unit(a: _V) -> _V:
@@ -241,7 +256,7 @@ class ConstraintModel:
 
     def _geo(self, side: dict, poses) -> dict:
         g = {}
-        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir")):
+        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir"), ("hinge_direction", "dir")):
             if name in side:
                 g[name] = self._world(side, poses, name, kind)
         if "plane" in side:
@@ -262,13 +277,21 @@ class ConstraintModel:
                 rows.append(float(vec.v[i]))
                 jac.append(vec.d[i])
 
+        def sign(mate: dict, key: str) -> float:
+            return -1.0 if float(mate.get(key) or 1.0) < 0.0 else 1.0
+
+        def direction_rows(a: _V, b: _V, s: float) -> None:
+            # `a - s b`: zero only when `a` points the way `s b` does (the alignment branch)
+            addv(_sub(a, _scale(b, s)))
+
         for mate in self.mates:
             d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
             t = mate["type"]
+            s = sign(mate, "alignment")
             if t == "coincident":
                 if "porigin" in d and "porigin" in f:
                     add(_dot(_sub(d["porigin"], f["porigin"]), f["pnormal"]))
-                    addv(_cross(d["pnormal"], f["pnormal"]))
+                    direction_rows(d["pnormal"], f["pnormal"], s)
                 elif "porigin" in d:
                     add(_dot(_sub(f["point"], d["porigin"]), d["pnormal"]))
                 elif "porigin" in f:
@@ -276,38 +299,46 @@ class ConstraintModel:
                 else:
                     addv(_sub(d["point"], f["point"]))
             elif t == "concentric":
-                addv(_cross(d["direction"], f["direction"]))
+                direction_rows(d["direction"], f["direction"], s)
                 addv(_cross(_sub(d["axis_origin"], f["axis_origin"]), f["direction"]))
                 if not mate["allow_rotation"] and "perp" in d and "perp" in f:
-                    addv(_cross(d["perp"], f["perp"]))
+                    direction_rows(d["perp"], f["perp"], sign(mate, "perp"))
             elif t == "parallel":
-                addv(_cross(d["direction"], f["direction"]))
+                direction_rows(d["direction"], f["direction"], s)
             elif t == "angle":
                 target = abs(mate["value"]) % 360.0
                 target = min(target, 360.0 - target)
-                dd = _dot(_unit(d["direction"]), _unit(f["direction"]))
+                nd, nf = _unit(d["direction"]), _unit(f["direction"])
+                dd = _dot(nd, nf)
                 add(_S(dd.v - math.cos(math.radians(target)), dd.d))
+                hinge = d.get("hinge_direction") or f.get("hinge_direction")
+                if hinge is not None and math.sin(math.radians(target)) >= 1e-6:
+                    # about a hinge: the sine of the signed swing is +-sin(target) (`alignment`) - zero only on the named way
+                    sw = _dot(_cross(nd, nf), _unit(hinge))
+                    add(_S(sw.v - s * math.sin(math.radians(target)), sw.d))
             elif t == "distance":
-                tsq = mate["value"] ** 2
+                dist = abs(mate["value"])
+                signed_target = sign(mate, "side") * dist
+                scale = 2.0 * max(dist, DISTANCE_FLOOR)
                 if "porigin" in d and "porigin" in f:
                     sg = _dot(_sub(d["porigin"], f["porigin"]), f["pnormal"])
-                    add(_S(sg.v**2 - tsq, 2 * sg.v * sg.d))
-                    addv(_cross(d["pnormal"], f["pnormal"]))
+                    add(_S(sg.v - signed_target, sg.d))
+                    direction_rows(d["pnormal"], f["pnormal"], s)
                 elif "porigin" in d:
                     sg = _dot(_sub(f["point"], d["porigin"]), d["pnormal"])
-                    add(_S(sg.v**2 - tsq, 2 * sg.v * sg.d))
+                    add(_S(sg.v - signed_target, sg.d))
                 elif "porigin" in f:
                     sg = _dot(_sub(d["point"], f["porigin"]), f["pnormal"])
-                    add(_S(sg.v**2 - tsq, 2 * sg.v * sg.d))
+                    add(_S(sg.v - signed_target, sg.d))
                 elif "axis_origin" in d and "axis_origin" in f:
                     p = _cross(_sub(d["axis_origin"], f["axis_origin"]), f["direction"])
                     pp = _dot(p, p)
-                    add(_S(pp.v - tsq, pp.d))
-                    addv(_cross(d["direction"], f["direction"]))
+                    add(_S((pp.v - dist * dist) / scale, pp.d / scale))
+                    direction_rows(d["direction"], f["direction"], s)
                 else:
                     off = _sub(d["point"], f["point"])
                     oo = _dot(off, off)
-                    add(_S(oo.v - tsq, oo.d))
+                    add(_S((oo.v - dist * dist) / scale, oo.d / scale))
         r = np.array(rows, float)
         if not with_jacobian:
             return r

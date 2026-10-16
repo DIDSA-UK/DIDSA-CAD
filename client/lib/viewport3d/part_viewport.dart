@@ -126,33 +126,18 @@ class PartViewport extends StatefulWidget {
   /// focused, never a second, separately-maintained source of truth.
   final String? focusOccurrenceColorHex;
 
-  /// Test report item 3 (New Mate ghost preview): the target Part id whose
-  /// geometry [PartViewportState._syncMatePreviewNode] should render as a
-  /// translucent, distinctly-tinted ("not placed yet, only a proposal")
-  /// preview instance - looked up against [assemblyGeometry] the same way
-  /// [assemblyInstances]' own per-instance loop already does, just for one
-  /// synthetic instance instead of a real [AssemblyOccurrenceInstanceDto].
-  /// `null` (the default) renders no preview at all - every pre-existing
-  /// caller (nothing was authoring a Mate before this) is unaffected. Always
-  /// paired with [matePreviewTransform] - one non-null without the other
-  /// renders nothing, the same "both or neither" contract
-  /// [selectedOccurrenceTransform]/[selectedOccurrenceBoundingRadius] don't
-  /// quite share (that pair tolerates a null radius) but this one needs,
-  /// since there's no meaningful "preview this Part's geometry at no
-  /// particular place" state.
-  final String? matePreviewPartId;
-
-  /// [PartScreen]'s own live-solved (or last-solved) transform for whichever
-  /// Occurrence is the driven side of the Mate currently being authored -
-  /// `null` while unsolved/not converged (e.g. mid-edit with an invalid
-  /// value), in which case no ghost renders at all rather than one frozen at
-  /// a stale position.
-  final RigidTransformDto? matePreviewTransform;
+  /// Test report item 3 (New Mate ghost preview): every occurrence the mate being authored would move - the driven one and
+  /// any follower the solve slides (`MateSolvePreviewDto.members`) - each with its stored and solved pose. The viewport
+  /// ghosts every placed instance belonging to them (a sub-assembly's leaf bodies included, see [matePreviewGhosts]) as a
+  /// translucent, distinctly-tinted "not placed yet, only a proposal" copy, so what shows is what Confirm will store.
+  /// `const []` (the default) renders no preview at all - also while unsolved/not converged (e.g. mid-edit with an invalid
+  /// value), rather than a ghost frozen at a stale position.
+  final List<MatePreviewMember> matePreviewMembers;
 
   /// Bug fix (assembly testing: "pattern component tool should show a ghost
   /// preview of the patterned components in their forecast positions"):
   /// [PartViewportState._syncComponentPatternPreviewNodes]' own sibling to
-  /// [matePreviewPartId]/[matePreviewTransform] - one ghost instance per
+  /// [matePreviewMembers] - one ghost instance per
   /// entry, rather than the single "one Part at one transform" shape those
   /// two share, since a pattern always forecasts several instances at once.
   /// `const []` (the default) renders no preview at all.
@@ -1060,8 +1045,7 @@ class PartViewport extends StatefulWidget {
     this.focusedOccurrencePath = const [],
     this.focusWorldTransformMatrix,
     this.focusOccurrenceColorHex,
-    this.matePreviewPartId,
-    this.matePreviewTransform,
+    this.matePreviewMembers = const [],
     this.componentPatternPreviewInstances = const [],
     this.selectedOccurrenceTransform,
     this.selectedOccurrenceBoundingRadius,
@@ -1359,11 +1343,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// arrived and actually produced cut faces.
   Map<String, Node> _assemblyInstanceSectionCutCapNodes = {};
 
-  /// Test report item 3: one Node per Body of [PartViewport.matePreviewPartId]'s
-  /// own geometry, keyed by bodyId - [_assemblyInstanceNodes]' own sibling
-  /// for the ghost preview, rebuilt wholesale by [_syncMatePreviewNode] the
-  /// same "clear, then rebuild" shape. Always empty outside an active New
-  /// Mate flow.
+  /// Test report item 3: one Node per Body of every ghosted instance of [PartViewport.matePreviewMembers], keyed
+  /// `'<joined occurrencePath>/<bodyId>'` - [_assemblyInstanceNodes]' own sibling for the ghost preview, rebuilt wholesale by
+  /// [_syncMatePreviewNode] the same "clear, then rebuild" shape. Always empty outside an active New/Edit Mate flow.
   Map<String, Node> _matePreviewNodes = {};
 
   /// [_matePreviewNodes]' own sibling for [PartViewport.
@@ -1978,8 +1960,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // unrelated Node map), the same "each sync method owns exactly its own
     // Node map" convention every other pair here already follows.
     if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
-        widget.matePreviewPartId != oldWidget.matePreviewPartId ||
-        widget.matePreviewTransform != oldWidget.matePreviewTransform) {
+        widget.assemblyInstances != oldWidget.assemblyInstances ||
+        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath ||
+        widget.focusWorldTransformMatrix != oldWidget.focusWorldTransformMatrix ||
+        widget.matePreviewMembers != oldWidget.matePreviewMembers) {
       setState(_syncMatePreviewNode);
     }
     // Bug fix (assembly testing: pattern component ghost preview) -
@@ -2740,13 +2724,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
   }
 
-  /// Test report item 3 (New Mate ghost preview): [_assemblyInstanceNodes]'
-  /// own sibling for [PartViewport.matePreviewPartId]/[matePreviewTransform] -
-  /// same "clear, then rebuild wholesale" shape, just always at most one
-  /// synthetic instance instead of looping [PartViewport.assemblyInstances].
-  /// Renders nothing at all unless *both* inputs are non-null (see
-  /// [PartViewport.matePreviewPartId]'s own doc comment for why this is a
-  /// deliberate "both or neither" pair rather than tolerating one alone).
+  /// Test report item 3 (New Mate ghost preview): [_assemblyInstanceNodes]' own sibling for
+  /// [PartViewport.matePreviewMembers] - same "clear, then rebuild wholesale" shape. One ghost per Body of every placed
+  /// instance that belongs to a previewed occurrence ([matePreviewGhosts]): a sub-assembly occurrence has no bodies of its
+  /// own, so its nested leaf instances are what render, and followers the solve moves are ghosted alongside the driven one.
   void _syncMatePreviewNode() {
     final scene = _scene;
     if (scene == null) return;
@@ -2754,23 +2735,29 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(node);
     }
     _matePreviewNodes = {};
-    final partId = widget.matePreviewPartId;
-    final previewTransform = widget.matePreviewTransform;
-    if (partId == null || previewTransform == null) return;
-    final transform = matrix4FromRigidTransform(previewTransform);
-    for (final partGeometry in widget.assemblyGeometry) {
-      if (partGeometry.partId != partId) continue;
-      for (final body in partGeometry.bodies) {
-        if (!isRenderableAssemblyBody(body)) continue;
-        if (body.mesh.vertices.isEmpty) continue;
-        final node = buildAssemblyInstanceNode(
-          body.mesh,
-          localTransform: transform,
-          opacity: kMatePreviewOpacity,
-          tint: kMatePreviewTint,
-        );
-        scene.add(node);
-        _matePreviewNodes[body.bodyId] = node;
+    if (widget.matePreviewMembers.isEmpty) return;
+    final ghosts = matePreviewGhosts(
+      instances: widget.assemblyInstances,
+      members: widget.matePreviewMembers,
+      focusedPath: widget.focusedOccurrencePath,
+      focusWorld: widget.focusWorldTransformMatrix,
+    );
+    for (final ghost in ghosts) {
+      final key = ghost.instance.occurrencePath.join('/');
+      for (final partGeometry in widget.assemblyGeometry) {
+        if (partGeometry.partId != ghost.instance.partId) continue;
+        for (final body in partGeometry.bodies) {
+          if (!isRenderableAssemblyBody(body)) continue;
+          if (body.mesh.vertices.isEmpty) continue;
+          final node = buildAssemblyInstanceNode(
+            body.mesh,
+            localTransform: ghost.world,
+            opacity: kMatePreviewOpacity,
+            tint: kMatePreviewTint,
+          );
+          scene.add(node);
+          _matePreviewNodes['$key/${body.bodyId}'] = node;
+        }
       }
     }
   }

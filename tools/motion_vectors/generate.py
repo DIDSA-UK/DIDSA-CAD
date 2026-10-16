@@ -53,6 +53,8 @@ LOCAL_TRUST = 6.0           # weighted mm of wished displacement per iteration
 LOCAL_ROT_CAP = 0.6         # rad per iteration, any member
 LOCAL_LAM_ABS = 1e-9
 LOCAL_ACCEPT_RESIDUAL = 1e-6
+LOCAL_DISTANCE_FLOOR = 1e-3  # mm: divisor floor of the mm-scaled squared DISTANCE residuals (axis-axis, point-point)
+LOCAL_MODEL_VERSION = 3      # 3: an ANGLE about a hinge also fixes the swing sense (hinge_direction on a side); 2: branch-specific residuals (alignment / side / perp per mate), see docs/mate-solution-choice-plan.md
 LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
 
 
@@ -334,6 +336,10 @@ def _vcross(a, b):
     return _V(np.cross(a.v, b.v), -skew(b.v) @ a.d + skew(a.v) @ b.d)
 
 
+def _vscale(a, c):
+    return _V(a.v * c, a.d * c)
+
+
 def _vunit(a):
     n = float(np.linalg.norm(a.v))
     u = a.v / n
@@ -372,7 +378,7 @@ class ConstraintModel:
 
     def _geo(self, side, poses):
         g = {}
-        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir")):
+        for name, kind in (("point", "point"), ("axis_origin", "point"), ("direction", "dir"), ("perp", "dir"), ("hinge_direction", "dir")):
             if name in side:
                 g[name] = self._world(side, poses, name, kind)
         if "plane" in side:
@@ -392,13 +398,20 @@ class ConstraintModel:
                 rows.append(float(vec.v[i]))
                 jac.append(vec.d[i])
 
+        def sign(mate, key):
+            return -1.0 if float(mate.get(key) or 1.0) < 0.0 else 1.0
+
+        def direction_rows(a, b, s):
+            addv(_vsub(a, _vscale(b, s)))  # `a - s b`: zero only on the alignment branch
+
         for mate in self.spec["mates"]:
             d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
             t = mate["type"]
+            s = sign(mate, "alignment")
             if t == "coincident":
                 if "porigin" in d and "porigin" in f:
                     add(_vdot(_vsub(d["porigin"], f["porigin"]), f["pnormal"]))
-                    addv(_vcross(d["pnormal"], f["pnormal"]))
+                    direction_rows(d["pnormal"], f["pnormal"], s)
                 elif "porigin" in d:
                     add(_vdot(_vsub(f["point"], d["porigin"]), d["pnormal"]))
                 elif "porigin" in f:
@@ -406,38 +419,45 @@ class ConstraintModel:
                 else:
                     addv(_vsub(d["point"], f["point"]))
             elif t == "concentric":
-                addv(_vcross(d["direction"], f["direction"]))
+                direction_rows(d["direction"], f["direction"], s)
                 addv(_vcross(_vsub(d["axis_origin"], f["axis_origin"]), f["direction"]))
                 if not mate["allow_rotation"] and "perp" in d and "perp" in f:
-                    addv(_vcross(d["perp"], f["perp"]))
+                    direction_rows(d["perp"], f["perp"], sign(mate, "perp"))
             elif t == "parallel":
-                addv(_vcross(d["direction"], f["direction"]))
+                direction_rows(d["direction"], f["direction"], s)
             elif t == "angle":
                 target = abs(mate["value"]) % 360.0
                 target = min(target, 360.0 - target)
-                dd = _vdot(_vunit(d["direction"]), _vunit(f["direction"]))
+                nd, nf = _vunit(d["direction"]), _vunit(f["direction"])
+                dd = _vdot(nd, nf)
                 add(_S(dd.v - math.cos(math.radians(target)), dd.d))
+                hinge = d.get("hinge_direction") or f.get("hinge_direction")
+                if hinge is not None and math.sin(math.radians(target)) >= 1e-6:
+                    sw = _vdot(_vcross(nd, nf), _vunit(hinge))  # the sine of the signed swing about the hinge: +-sin(target)
+                    add(_S(sw.v - s * math.sin(math.radians(target)), sw.d))
             elif t == "distance":
-                tsq = mate["value"] ** 2
+                dist = abs(mate["value"])
+                signed_target = sign(mate, "side") * dist
+                scale = 2.0 * max(dist, LOCAL_DISTANCE_FLOOR)
                 if "porigin" in d and "porigin" in f:
                     sg = _vdot(_vsub(d["porigin"], f["porigin"]), f["pnormal"])
-                    add(_S(sg.v ** 2 - tsq, 2 * sg.v * sg.d))
-                    addv(_vcross(d["pnormal"], f["pnormal"]))
+                    add(_S(sg.v - signed_target, sg.d))
+                    direction_rows(d["pnormal"], f["pnormal"], s)
                 elif "porigin" in d:
                     sg = _vdot(_vsub(f["point"], d["porigin"]), d["pnormal"])
-                    add(_S(sg.v ** 2 - tsq, 2 * sg.v * sg.d))
+                    add(_S(sg.v - signed_target, sg.d))
                 elif "porigin" in f:
                     sg = _vdot(_vsub(d["point"], f["porigin"]), f["pnormal"])
-                    add(_S(sg.v ** 2 - tsq, 2 * sg.v * sg.d))
+                    add(_S(sg.v - signed_target, sg.d))
                 elif "axis_origin" in d and "axis_origin" in f:
                     p = _vcross(_vsub(d["axis_origin"], f["axis_origin"]), f["direction"])
                     pp = _vdot(p, p)
-                    add(_S(pp.v - tsq, pp.d))
-                    addv(_vcross(d["direction"], f["direction"]))
+                    add(_S((pp.v - dist * dist) / scale, pp.d / scale))
+                    direction_rows(d["direction"], f["direction"], s)
                 else:
                     off = _vsub(d["point"], f["point"])
                     oo = _vdot(off, off)
-                    add(_S(oo.v - tsq, oo.d))
+                    add(_S((oo.v - dist * dist) / scale, oo.d / scale))
         return np.array(rows, float), (np.array(jac, float) if jac else np.zeros((0, self.n)))
 
 
@@ -1028,8 +1048,9 @@ def build():
         d.update(geom)
         return d
 
-    def mate(kind, a, b, value=None, allow_rotation=True):
-        return {"type": kind, "value": value, "allow_rotation": allow_rotation, "a": a, "b": b}
+    def mate(kind, a, b, value=None, allow_rotation=True, alignment=1, side=1, perp=1):
+        # alignment / side / perp: the branch the mate stands for (+1 / -1), see docs/mate-solution-choice-plan.md
+        return {"type": kind, "value": value, "allow_rotation": allow_rotation, "alignment": alignment, "side": side, "perp": perp, "a": a, "b": b}
 
     def plane_side(member, origin, normal, **extra):
         return side(member, point=list(origin), direction=list(normal), plane={"origin": list(origin), "normal": list(normal)}, **extra)
@@ -1038,30 +1059,30 @@ def build():
         return side(member, axis_origin=list(origin), direction=list(direction), **extra)
 
     FROZEN0 = {"r": I3, "t": [0.0, 0.0, 0.0]}
-    bolt_fixed = {"version": 1, "members": ["bolt"], "mates": [
+    bolt_fixed = {"version": LOCAL_MODEL_VERSION, "members": ["bolt"], "mates": [
         mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1)), axis_side(-1, (30, 30, 0), (0, 0, 1), frozen=FROZEN0)),
-        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0)),
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0), alignment=-1),
     ]}
     bolt_start = P((30.0, 30.0, 10.0))
-    swing_model = {"version": 1, "members": ["pin"], "mates": [
+    swing_model = {"version": LOCAL_MODEL_VERSION, "members": ["pin"], "mates": [
         mate("concentric", axis_side(0, (CX, 0, 0), (0, 0, 1)), axis_side(-1, (0, 0, 0), (0, 0, 1))),
     ]}
     swing_start = P((-CX, 0.0, 30.0))
-    angle_model = {"version": 1, "members": ["part"], "mates": [
+    angle_model = {"version": LOCAL_MODEL_VERSION, "members": ["part"], "mates": [
         mate("angle", side(0, direction=[0.0, 0.0, 1.0]), side(-1, direction=[0.0, 0.0, 1.0]), value=60.0),
     ]}
     angle_start = P((5.0, 5.0, 60.0), (1, 0, 0), 60.0)
-    float_model = {"version": 1, "members": ["bolt", "plate"], "mates": [
+    float_model = {"version": LOCAL_MODEL_VERSION, "members": ["bolt", "plate"], "mates": [
         mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1)), axis_side(1, (30, 30, 0), (0, 0, 1))),
-        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(1, (0, 0, 10), (0, 0, 1))),
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(1, (0, 0, 10), (0, 0, 1)), alignment=-1),
     ]}
-    distance_model = {"version": 1, "members": ["part"], "mates": [
+    distance_model = {"version": LOCAL_MODEL_VERSION, "members": ["part"], "mates": [
         mate("distance", plane_side(0, (0, 0, 0), (0, 0, 1)), plane_side(-1, (0, 0, 0), (0, 0, 1)), value=7.0),
     ]}
     distance_start = P((2.0, 3.0, 7.0))
-    locked_model = {"version": 1, "members": ["bolt"], "mates": [
+    locked_model = {"version": LOCAL_MODEL_VERSION, "members": ["bolt"], "mates": [
         mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1), perp=[1.0, 0.0, 0.0]), axis_side(-1, (30, 30, 0), (0, 0, 1), perp=[1.0, 0.0, 0.0], frozen=FROZEN0), allow_rotation=False),
-        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0)),
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0), alignment=-1),
     ]}
 
     def local_case(cid, description, spec, poses, wishes, lever, fallback=None):
@@ -1097,7 +1118,7 @@ def build():
                angle_model, [angle_start], [turned(angle_start, 3, (1, 0, 0))], 10.0)
     local_case("local-angle-cone-spin-free", "Angle mate: a spin about the cone axis (world z) keeps the angle: on the manifold, reproduced exactly",
                angle_model, [angle_start], [turned(angle_start, 25)], 10.0, fallback=[turned(angle_start, 25)])
-    local_case("local-distance-plane-wish-9", "Distance mate 7 to a plane: wish 9 mm out -> nearest 7 mm (signed-squared residual, either side)",
+    local_case("local-distance-plane-wish-9", "Distance mate 7 to a plane: wish 9 mm out -> nearest 7 mm (linear signed residual, side +1)",
                distance_model, [distance_start], [moved(distance_start, (0, 0, 2))], 10.0)
     bolt_f = P((30.0, 30.0, 10.0))
     local_case("local-floating-bolt-turn-3deg-x", "Nothing fixed (bolt AND plate move): a 3 deg turn of the grabbed bolt about x, the plate's wish is its current pose; both land on the manifold",
@@ -1113,15 +1134,81 @@ def build():
     local_case("local-guard-distance", "The local answer converges but lies more than 0.5 L from the fallback (a far projector output): rejected, fallback shown",
                bolt_fixed, [bolt_start], [moved(bolt_start, (6, -3, 0))], 10.0, fallback=[moved(bolt_start, (6, -3, 0))])
 
+    # ---- branch-specific residuals (docs/mate-solution-choice-plan.md): each mate is zero only on the branch it names -------
+    def z_of(p, v=(0.0, 0.0, 1.0)):
+        return float((p.r @ np.array(v, float))[2])
+
+    def conc_model(alignment, allow_rotation=True, perp_sign=1):
+        return {"version": LOCAL_MODEL_VERSION, "members": ["pin"], "mates": [
+            mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1), perp=[1.0, 0.0, 0.0]), axis_side(-1, (30, 30, 0), (0, 0, 1), perp=[1.0, 0.0, 0.0], frozen=FROZEN0),
+                 allow_rotation=allow_rotation, alignment=alignment, perp=perp_sign)]}
+
+    pin_up = P((30.0, 30.0, 5.0))
+    pin_down = P((30.0, 30.0, 5.0), (1, 0, 0), 180.0)
+    local_case("local-concentric-aligned-tilt-100deg", "Concentric, aligned branch: tilting the pin 100 deg (past horizontal) must not turn it over - it stays pointing up (the old sign-agnostic cross() landed on the opposite root here)",
+               conc_model(1), [pin_up], [turned(pin_up, 100, (1, 0, 0))], 10.0)
+    local_case("local-concentric-anti-aligned-tilt-100deg", "Concentric, anti-aligned branch (pin upside down): the same 100 deg tilt keeps it pointing down",
+               conc_model(-1), [pin_down], [turned(pin_down, 100, (1, 0, 0))], 10.0)
+    local_case("local-concentric-anti-aligned-slide-and-spin", "Concentric, anti-aligned: slide 6 mm along the axis and spin 30 deg - both free, reproduced exactly",
+               conc_model(-1), [pin_down], [turned(moved(pin_down, (0, 0, 6)), 30, (0, 0, 1))], 10.0, fallback=[turned(moved(pin_down, (0, 0, 6)), 30, (0, 0, 1))])
+    local_case("local-concentric-locked-spin-half-turn", "Concentric, rotation locked on the half-turn spin branch (perp -1): a spin wish is blocked, the answer keeps the half-turn",
+               conc_model(1, allow_rotation=False, perp_sign=-1), [turned(pin_up, 180)], [turned(pin_up, 220)], 10.0)
+    plate_model = lambda alignment, side, value=7.0: {"version": LOCAL_MODEL_VERSION, "members": ["part"], "mates": [
+        mate("distance", plane_side(0, (0, 0, 0), (0, 0, 1)), plane_side(-1, (0, 0, 0), (0, 0, 1)), value=value, alignment=alignment, side=side)]}
+    local_case("local-distance-side-minus-wish-above", "Distance 7 on the -normal side: the part sits at z = -7; a wish at z = +2 (the other side of the plate) lands at -7, not +7",
+               plate_model(1, -1), [P((2.0, 3.0, -7.0))], [P((2.0, 3.0, 2.0))], 10.0)
+    local_case("local-distance-side-plus-wish-below", "Distance 7 on the +normal side: a wish at z = -3 (through the plate) lands at +7",
+               plate_model(1, 1), [P((2.0, 3.0, 7.0))], [P((2.0, 3.0, -3.0))], 10.0)
+    local_case("local-distance-plane-flipped-alignment", "Distance 7, anti-aligned normals (the part's face points down at the plate): a 3 deg tilt wish is pulled back, the facing stays",
+               plate_model(-1, 1), [P((2.0, 3.0, 7.0), (1, 0, 0), 180.0)], [turned(P((2.0, 3.0, 7.0), (1, 0, 0), 180.0), 3, (0, 1, 0))], 10.0)
+    parallel_model = lambda alignment: {"version": LOCAL_MODEL_VERSION, "members": ["part"], "mates": [
+        mate("parallel", side(0, direction=[0.0, 0.0, 1.0]), side(-1, direction=[0.0, 0.0, 1.0]), alignment=alignment)]}
+    local_case("local-parallel-aligned-tilt-120deg", "Parallel, aligned: a 120 deg tilt wish (nearer the anti-aligned root) is pulled to the aligned one - z stays up",
+               parallel_model(1), [P((1.0, 2.0, 3.0))], [turned(P((1.0, 2.0, 3.0)), 120, (1, 0, 0))], 10.0)
+    local_case("local-parallel-anti-aligned-spin-free", "Parallel, anti-aligned: a spin about the shared direction is free and reproduced exactly",
+               parallel_model(-1), [P((1.0, 2.0, 3.0), (1, 0, 0), 180.0)], [turned(P((1.0, 2.0, 3.0), (1, 0, 0), 180.0), 35, (0, 0, 1))], 10.0,
+               fallback=[turned(P((1.0, 2.0, 3.0), (1, 0, 0), 180.0), 35, (0, 0, 1))])
+    # an ANGLE about a hinge: a lid on a hinge along the world x axis (concentric edge pair) with a 60 degree angle to the base plane; the
+    # swing sense (`alignment` of the angle mate) names +120 or -120 degrees about x
+    def hinge_model(swing):
+        return {"version": LOCAL_MODEL_VERSION, "members": ["lid"], "mates": [
+            mate("concentric", axis_side(0, (0, 0, 0), (1, 0, 0)), axis_side(-1, (0, 0, 0), (1, 0, 0), frozen=FROZEN0)),
+            mate("angle", side(0, direction=[0.0, 0.0, -1.0]), side(-1, direction=[0.0, 0.0, 1.0], hinge_direction=[1.0, 0.0, 0.0], frozen=FROZEN0), value=60.0, alignment=swing)]}
+
+    lid_up = P((0.0, 0.0, 0.0), (1, 0, 0), 120.0)   # swing +120 about x: sin = +sin 60
+    lid_down = P((0.0, 0.0, 0.0), (1, 0, 0), -120.0)  # swing -120 about x
+    local_case("local-hinge-angle-positive-swing-toward-flat", "Angle 60 about a hinge, swing sense +: a wish that swings the lid 70 deg toward the flat position (past what the cone alone would hold) is pulled back to the +120 deg root, never across to -120",
+               hinge_model(1), [lid_up], [turned(lid_up, -70, (1, 0, 0))], 10.0)
+    local_case("local-hinge-angle-negative-swing-toward-flat", "Angle 60 about a hinge, swing sense -: the mirror wish keeps the lid on the -120 deg root",
+               hinge_model(-1), [lid_down], [turned(lid_down, 70, (1, 0, 0))], 10.0)
+    local_case("local-hinge-angle-slide-along-hinge", "Angle about a hinge: a slide along the hinge is free and reproduced exactly",
+               hinge_model(1), [lid_up], [moved(lid_up, (8, 0, 0))], 10.0, fallback=[moved(lid_up, (8, 0, 0))])
+    local_case("local-hinge-angle-opposite-sense-is-rejected-root", "Angle about a hinge, swing sense +, the lid wished onto the -120 root: the nearest point on the + branch, not the wished root",
+               hinge_model(1), [lid_up], [lid_down], 10.0)
+    coincident_aligned = {"version": LOCAL_MODEL_VERSION, "members": ["part"], "mates": [
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, 1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0), alignment=1)]}
+    local_case("local-coincident-aligned-lift", "Coincident plane-plane on the ALIGNED branch (normals the same way, overlapping co-facing faces): a lift of 5 mm is pulled back onto the plane, slide and spin about z are free",
+               coincident_aligned, [P((4.0, 5.0, 10.0))], [turned(moved(P((4.0, 5.0, 10.0)), (3, 0, 5)), 20)], 10.0)
+    axis_distance = lambda alignment: {"version": LOCAL_MODEL_VERSION, "members": ["pin"], "mates": [
+        mate("distance", axis_side(0, (0, 0, 0), (0, 0, 1)), axis_side(-1, (0, 0, 0), (0, 0, 1), frozen=FROZEN0), value=12.0, alignment=alignment)]}
+    local_case("local-axis-distance-aligned-pull-out", "Axis-axis distance 12 (squared residual scaled to mm): a pin 12 mm off the axis pulled 5 mm further out lands back at 12",
+               axis_distance(1), [P((12.0, 0.0, 4.0))], [moved(P((12.0, 0.0, 4.0)), (5, 0, 0))], 10.0)
+    local_case("local-axis-distance-anti-aligned-tilt", "Axis-axis distance 12, anti-aligned axes: a 100 deg tilt keeps the pin pointing down",
+               axis_distance(-1), [P((12.0, 0.0, 4.0), (1, 0, 0), 180.0)], [turned(P((12.0, 0.0, 4.0), (1, 0, 0), 180.0), 100, (1, 0, 0))], 10.0)
+    point_distance = {"version": LOCAL_MODEL_VERSION, "members": ["ball"], "mates": [
+        mate("distance", side(0, point=[0.0, 0.0, 0.0]), side(-1, point=[0.0, 0.0, 0.0], frozen=FROZEN0), value=9.0)]}
+    local_case("local-point-distance-sphere", "Point-point distance 9 (a sphere around the fixed point, no root): a wish 2 mm further out and 1 mm sideways lands on the sphere again",
+               point_distance, [P((9.0, 0.0, 0.0))], [moved(P((9.0, 0.0, 0.0)), (2, 1, 0))], 10.0)
+
     # k = 5 / 8 boxes in a row on a fixed plate (each: bottom coincident with the plate top, +x face coincident with the next box's -x face):
     # 4 residual rows per mate -> 40 / 60 rows. The group cannot be solved by the old 32-row limit (kLocalMaxRows is now 64).
     def row_model(k):
         mates = []
         for i in range(k):
-            mates.append(mate("coincident", plane_side(i, (4, 4, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1))))
+            mates.append(mate("coincident", plane_side(i, (4, 4, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1)), alignment=-1))
         for i in range(k - 1):
-            mates.append(mate("coincident", plane_side(i, (8, 4, 2), (1, 0, 0)), plane_side(i + 1, (0, 4, 2), (-1, 0, 0))))
-        return {"version": 1, "members": [f"box{i}" for i in range(k)], "mates": mates}
+            mates.append(mate("coincident", plane_side(i, (8, 4, 2), (1, 0, 0)), plane_side(i + 1, (0, 4, 2), (-1, 0, 0)), alignment=-1))
+        return {"version": LOCAL_MODEL_VERSION, "members": [f"box{i}" for i in range(k)], "mates": mates}
 
     def row_poses(k):
         return [P((5.0 + 8.0 * i, 20.0, 10.0)) for i in range(k)]
@@ -1192,6 +1279,7 @@ def main():
             "local_follower": LOCAL_FOLLOWER, "local_iters": LOCAL_ITERS, "local_iters_max": LOCAL_ITERS_MAX, "local_polish": LOCAL_POLISH, "local_trust": LOCAL_TRUST,
             "local_rot_cap": LOCAL_ROT_CAP, "local_lam_abs": LOCAL_LAM_ABS, "local_accept_residual": LOCAL_ACCEPT_RESIDUAL,
             "local_accept_distance": LOCAL_ACCEPT_DISTANCE,
+            "local_distance_floor": LOCAL_DISTANCE_FLOOR, "local_model_version": LOCAL_MODEL_VERSION,
         },
         "conventions": {
             "pose_in": "translation + rotation_axis (normalised on read) + rotation_angle_degrees (the contract's RigidTransform)",

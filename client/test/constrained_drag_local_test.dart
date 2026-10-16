@@ -14,13 +14,16 @@ const double _lever = 10.0;
 const double _cx = 15.0;
 
 Map<String, dynamic> _model() => <String, dynamic>{
-      'version': 1,
+      'version': kLocalModelVersion,
       'members': <String>['pin'],
       'mates': <Map<String, dynamic>>[
         <String, dynamic>{
           'type': 'concentric',
           'value': null,
           'allow_rotation': true,
+          'alignment': 1,
+          'side': 1,
+          'perp': 1,
           'a': <String, dynamic>{'member': 0, 'axis_origin': <double>[_cx, 0, 0], 'direction': <double>[0, 0, 1]},
           'b': <String, dynamic>{'member': -1, 'axis_origin': <double>[0, 0, 0], 'direction': <double>[0, 0, 1]},
         },

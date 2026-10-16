@@ -5,7 +5,7 @@ import logging
 import math
 import time
 import uuid
-from typing import Literal
+from typing import Iterable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
@@ -14,8 +14,24 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import compose_chain, expand_component_pattern_instances, top_level_occurrence_id
-from app.document.assembly_group import GroupSolveResult, constraint_status, solve_group, validate_mate_geometry
-from app.document.assembly_solver import _quaternion_from_axis_angle
+from app.document.assembly_group import (
+    BranchChange,
+    GroupSolveResult,
+    bounding_radius,
+    branch_alternatives,
+    branch_options,
+    mate_branch_controls,
+    constraint_status,
+    part_with_branch_changes,
+    search_branch_changes,
+    mate_with_flipped_alias,
+    pose_delta,
+    solve_group,
+    validate_mate_geometry,
+)
+from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
+from app.document.models import BRANCH_AUTO, BRANCH_USER
+from app.document.assembly_group import GroupSolveQuality
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.jobs import JobStatus, cancel_job, get_job
@@ -193,6 +209,10 @@ from app.document.schemas import (
     MateMotionRequest,
     ConstraintStatusEntry,
     MateMotionResponse,
+    BranchChangeResponse,
+    MateSolvePreviewMember,
+    MateBranchValues,
+    MateSolveAlternative,
     MateSolvePreviewResponse,
     MateUpdate,
     OccurrenceCreate,
@@ -3443,6 +3463,9 @@ def _mate_response(mate: Mate) -> MateResponse:
         flipped=mate.flipped,
         suppressed=mate.suppressed,
         allow_rotation=mate.allow_rotation,
+        alignment=mate.alignment,
+        secondary_flip=mate.secondary_flip,
+        branch_source=mate.branch_source,
     )
 
 
@@ -3717,17 +3740,76 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
             status_code=422,
             detail=f"A {payload.type} Mate requires a value ({'mm' if payload.type == 'distance' else 'degrees'})",
         )
+    _reject_negative_distance(payload.type, payload.value)
+
+
+def _reject_negative_distance(mate_type: str, value: float | None) -> None:
+    """A DISTANCE is a length: which side of the face it sits on is the mate's `secondary_flip` ("Flip side"), not a sign."""
+    if mate_type == "distance" and value is not None and value < 0:
+        raise HTTPException(
+            status_code=422,
+            detail="A distance Mate's value cannot be negative - use secondary_flip (Flip side) to put it on the other side",
+        )
+
+
+def _fill_resolved_branches(part: Part, result: GroupSolveResult) -> None:
+    """Writes what Closest resolved to back onto the stored mates of a committed solve (only fields still `None`: a mate that
+    names its branch is never changed here), and keeps the deprecated `flipped` in step."""
+    for mate in part.mates:
+        resolved = result.branches.get(mate.id)
+        if resolved is None:
+            continue
+        if mate.alignment is None and resolved[0] is not None:
+            mate.alignment = resolved[0]
+        if mate.secondary_flip is None and resolved[1] is not None:
+            mate.secondary_flip = resolved[1]
+        sync_flipped(mate)
+
+
+MovementMode = Literal["group", "minimal", "auto"]
+
+
+def _mate_solve_target(part: Part, mate: Mate, occurrence_id: str | None) -> str | None:
+    """The occurrence a `solve=...` create/edit drives. An explicit `occurrence_id` must be one of the mate's own (top-level)
+    occurrences and not `fixed` (422 otherwise). Left out, it is the clients' own pick: the second reference's occurrence
+    preferred over the first's, skipping the root part's own geometry and `fixed` occurrences; `None` when nothing is drivable
+    (the mate is then stored without a solve, as before)."""
+    tops = [top_level_occurrence_id(ref.occurrence_id) for ref in mate.references]
+    if occurrence_id is not None:
+        occurrence = _get_occurrence_or_404(part, occurrence_id)
+        if occurrence_id not in tops:
+            raise HTTPException(status_code=422, detail="occurrence_id must be one of the mate's own occurrences")
+        if occurrence.fixed:
+            raise _occurrence_is_fixed(occurrence_id)
+        return occurrence_id
+    fixed = {o.id for o in part.occurrences if o.fixed}
+    for top in reversed(tops):
+        if top and top not in fixed:
+            return top
+    return None
 
 
 @router.post("/parts/{part_id}/mates", response_model=MateResponse, status_code=201)
-def create_mate(part_id: str, payload: MateCreate) -> MateResponse:
+def create_mate(
+    part_id: str,
+    payload: MateCreate,
+    response: Response,
+    solve: MovementMode | None = None,
+    occurrence_id: str | None = None,
+) -> MateResponse:
     """Phase 6 (`docs/assembly-scope.md` §3): creates a Mate on `part_id` -
     data only, mirroring `Mate`'s own docstring ("this is data only, ...
-    solving is `app.document.assembly_solver`'s job"). Does not solve
+    solving is `app.document.assembly_solver`'s job"). By default it does not solve
     anything itself - the client calls `POST .../occurrences/{id}/solve`
     afterward (see that endpoint's own docstring for why solving is a
     separate, explicit step rather than an automatic side effect of
-    creating a Mate)."""
+    creating a Mate).
+
+    `solve=group|minimal|auto` makes the create ATOMIC (`docs/mate-solution-choice-plan.md` Phase 1.6): the same solve
+    `preview-mate-solve` runs - the new mate joins the group solve as `extra_mates`, driving `occurrence_id` (default: see
+    `_mate_solve_target`) - and the mate is stored together with every member's solved pose ONLY if it converges. Otherwise
+    the usual 422 `mate_solve_did_not_converge` is returned and nothing is stored (a refused mate used to stay behind,
+    leaving the assembly over-constrained). `X-Movement-Used` says which solve produced the stored poses."""
     part = get_part_or_404(part_id)
     _validate_mate_create(part, payload)
     mate = Mate(
@@ -3737,10 +3819,49 @@ def create_mate(part_id: str, payload: MateCreate) -> MateResponse:
         value=payload.value,
         flipped=payload.flipped,
         allow_rotation=payload.allow_rotation,
+        alignment=payload.alignment,
+        secondary_flip=payload.secondary_flip,
     )
     validate_mate_geometry(get_document(), part, mate)  # never store a mate no solve can use
+    mate = _mate_with_branch_fields(get_document(), part, mate, payload.model_fields_set)
+    if solve is not None:
+        driven = _mate_solve_target(part, mate, occurrence_id)
+        if driven is not None:
+            outcome = _solve_new_mate(get_document(), part, driven, solve, mate, payload.branch_changes)
+            if outcome.result is None or outcome.needs_confirmation:
+                raise _mate_solve_refused(driven, outcome, solve)
+            _apply_branch_changes(part, outcome.changes)
+            _commit_group(part, outcome.result)
+            _fill_new_mate_branch(mate, outcome.result)
+            response.headers["X-Movement-Used"] = outcome.used
     part.mates.append(mate)
     return _mate_response(mate)
+
+
+def _mate_with_branch_fields(document: Document, part: Part, mate: Mate, fields_set: set[str]) -> Mate:
+    """A new mate with its branch fields settled: a payload that names `alignment` / `secondary_flip` (even as null = Closest)
+    is taken as it is; one that carries only the deprecated `flipped` has it read into them (`mate_with_flipped_alias`).
+    `branch_source` records who chose: a named branch, or a `flipped=True` that was read into one, is the user's; Closest and
+    the `flipped=False` default are not (`"auto"`: the mate a later mate may ask to move, with confirmation)."""
+    if "alignment" in fields_set or "secondary_flip" in fields_set:
+        sync_flipped(mate)
+        mate.branch_source = BRANCH_USER if (mate.alignment is not None or mate.secondary_flip is not None) else BRANCH_AUTO
+        return mate
+    aliased = mate_with_flipped_alias(document, part, mate)
+    named = aliased.alignment is not None or aliased.secondary_flip is not None
+    aliased.branch_source = BRANCH_USER if (mate.flipped and named) else BRANCH_AUTO
+    return aliased
+
+
+def _fill_new_mate_branch(mate: Mate, result: GroupSolveResult) -> None:
+    resolved = result.branches.get(mate.id)
+    if resolved is None:
+        return
+    if mate.alignment is None:
+        mate.alignment = resolved[0]
+    if mate.secondary_flip is None:
+        mate.secondary_flip = resolved[1]
+    sync_flipped(mate)
 
 
 def _get_mate_or_404(part: Part, mate_id: str) -> Mate:
@@ -3751,12 +3872,25 @@ def _get_mate_or_404(part: Part, mate_id: str) -> Mate:
 
 
 @router.patch("/parts/{part_id}/mates/{mate_id}", response_model=MateResponse)
-def update_mate(part_id: str, mate_id: str, payload: MateUpdate) -> MateResponse:
+def update_mate(
+    part_id: str,
+    mate_id: str,
+    payload: MateUpdate,
+    response: Response,
+    solve: MovementMode | None = None,
+    occurrence_id: str | None = None,
+) -> MateResponse:
     """`value`/`flipped`/`suppressed`/`allow_rotation` only - see
     `MateUpdate`'s own docstring for why `type`/`references` aren't editable
-    here."""
+    here. `solve=group|minimal|auto` (with `occurrence_id`, see `create_mate`) re-solves the edited mate's
+    occurrence and stores the new values together with the solved poses; if that does not converge the mate keeps its OLD
+    values, nothing moves, and the 422 is returned."""
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
+    _reject_negative_distance(mate.type.value, payload.value)
+    previous = (mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip, mate.branch_source)
+    driven = _mate_solve_target(part, mate, occurrence_id) if solve is not None else None
+    fields = payload.model_fields_set
     if payload.value is not None:
         mate.value = payload.value
     if payload.flipped is not None:
@@ -3765,6 +3899,43 @@ def update_mate(part_id: str, mate_id: str, payload: MateUpdate) -> MateResponse
         mate.suppressed = payload.suppressed
     if payload.allow_rotation is not None:
         mate.allow_rotation = payload.allow_rotation
+    if "alignment" in fields:
+        mate.alignment = payload.alignment  # null = back to Closest
+    if "secondary_flip" in fields:
+        mate.secondary_flip = payload.secondary_flip
+    if payload.flipped is not None and "alignment" not in fields and "secondary_flip" not in fields:
+        # The deprecated flag, sent alone: read it into the branch fields (replacing the ones the mate already names).
+        try:
+            aliased = mate_with_flipped_alias(get_document(), part, mate, override=True)
+        except HTTPException:
+            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip, mate.branch_source = previous
+            raise
+        mate.alignment, mate.secondary_flip = aliased.alignment, aliased.secondary_flip
+    # Who chose the branch now: setting it (a value, or the deprecated `flipped` moving it) is the user's choice; resetting both
+    # fields to null hands it back to Closest.
+    named = ("alignment" in fields and payload.alignment is not None) or ("secondary_flip" in fields and payload.secondary_flip is not None)
+    alias_moved = (
+        payload.flipped is not None
+        and "alignment" not in fields
+        and "secondary_flip" not in fields
+        and (mate.alignment, mate.secondary_flip) != (previous[4], previous[5])
+    )
+    if named or alias_moved:
+        mate.branch_source = BRANCH_USER
+    elif "alignment" in fields or "secondary_flip" in fields:
+        mate.branch_source = BRANCH_AUTO
+    sync_flipped(mate)
+    if solve is not None and driven is not None:
+        try:
+            outcome = _solve_new_mate(get_document(), part, driven, solve, None, payload.branch_changes, frozenset({mate.id}))
+            if outcome.result is None or outcome.needs_confirmation:
+                raise _mate_solve_refused(driven, outcome, solve)
+        except HTTPException:
+            mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip, mate.branch_source = previous
+            raise
+        _apply_branch_changes(part, outcome.changes)
+        _commit_group(part, outcome.result)
+        response.headers["X-Movement-Used"] = outcome.used
     return _mate_response(mate)
 
 
@@ -4071,7 +4242,7 @@ def _mate_solve_did_not_converge(
     message = (
         "These mates can't be met by moving only this part - untick Minimal movement to let the parts it is mated to move too."
         if minimal_movement
-        else "The mates on this part can't all be satisfied together."
+        else "No placement satisfies these mates together."
     )
     return HTTPException(
         status_code=422,
@@ -4085,6 +4256,146 @@ def _mate_solve_did_not_converge(
     )
 
 
+def _branch_change_responses(changes: Iterable[BranchChange]) -> list[BranchChangeResponse]:
+    return [BranchChangeResponse(mate_id=c.mate_id, field=c.field, from_value=c.from_value, to=c.to_value) for c in changes]
+
+
+@dataclasses.dataclass
+class _MateSolve:
+    """The outcome of solving a new (or edited) mate with the branch search (`_solve_new_mate`)."""
+
+    result: GroupSolveResult | None  # converged answer, WITH `changes` applied; None = refused
+    used: Literal["group", "minimal"]
+    changes: tuple[BranchChange, ...] = ()
+    needs_confirmation: bool = False  # `changes` were found by the search and the user has not confirmed them yet
+    blocked_by: tuple[str, ...] = ()
+    conflicting: tuple[str, ...] = ()
+    last: GroupSolveResult | None = None  # the plain solve (what `dof` is reported from)
+
+
+def _validated_branch_changes(
+    document: Document, part: Part, driven: str, extra: tuple[Mate, ...], skip: frozenset[str], requested
+) -> tuple[BranchChange, ...]:
+    """The changes the user confirmed, checked: each must be a flip of a field an `auto` mate of this group really has."""
+    options = {(o.change.mate_id, o.change.field): o for o in branch_options(document, part, driven, extra, skip)}
+    changes = []
+    for request in requested:
+        option = options.get((request.mate_id, request.field))
+        if option is None or option.mate.branch_source != BRANCH_AUTO or option.change.to_value != request.to:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "type": "invalid_branch_change",
+                    "mate_id": request.mate_id,
+                    "field": request.field,
+                    "detail": "Only the other branch of a mate the program chose (not one set explicitly) can be applied automatically.",
+                },
+            )
+        changes.append(option.change)
+    return tuple(changes)
+
+
+def _solve_new_mate(
+    document: Document,
+    part: Part,
+    driven: str,
+    movement: "MovementMode",
+    new_mate: Mate | None,
+    requested=(),
+    skip: frozenset[str] = frozenset(),
+) -> _MateSolve:
+    """Solves the new mate (`new_mate`, or a stored mate just edited in place: `new_mate=None`, its id in `skip`) the way
+    the preview does, and - only here, in the create / edit flow - searches for earlier mates to move to their other branch
+    when the persisted branches cannot be met (`assembly_group.search_branch_changes`). `requested` are changes the user
+    already confirmed: they are applied first and the result stands or falls with them."""
+    extra = (new_mate,) if new_mate is not None else ()
+
+    def solve(trial: Part):
+        return _solve_with_movement(document, trial, driven, movement, extra_mates=extra)
+
+    if new_mate is not None and not requested:
+        extra = (_phase4_default(document, part, driven, movement, new_mate),)
+
+    if requested:
+        changes = _validated_branch_changes(document, part, driven, extra, skip, requested)
+        result, used = solve(part_with_branch_changes(part, changes))
+        return _MateSolve(result if result.converged else None, used, changes, last=result)
+    result, used = solve(part)
+    if result.converged:
+        return _MateSolve(result, used, last=result)
+    found = search_branch_changes(document, part, solve, driven, new_mate, skip, failed=result)
+    if found.result is not None:
+        return _MateSolve(found.result, found.used, found.changes, needs_confirmation=True, last=result)
+    return _MateSolve(None, used, blocked_by=found.blocked_by, conflicting=found.conflicting, last=result)
+
+
+def _phase4_default(document: Document, part: Part, driven: str, movement: "MovementMode", new_mate: Mate) -> Mate:
+    """Phase 4: the default side of a NEW, unnamed DISTANCE. A face of a solid has its material on the -normal side, so a distance
+    between two FACING faces (anti-aligned normals), or from a point to a face, is a gap: the driven body belongs on the +normal side
+    (`secondary_flip` False), never inside the other one. The nearest root can still be the -normal side when the part starts on the
+    wrong side of the face; this puts it back outside. Same-facing faces (a flush inset or an overhang) are genuinely ambiguous and keep
+    the nearest root, as does everything else. Returns a copy that names `secondary_flip` for this solve only: the stored mate keeps
+    `branch_source: auto` and takes the fields from the solve's result."""
+    if new_mate.type != MateType.DISTANCE or new_mate.alignment is not None or new_mate.secondary_flip is not None:
+        return new_mate
+    if "secondary_flip" not in mate_branch_controls(document, part, new_mate):
+        return new_mate
+    nearest, _used = _solve_with_movement(document, part, driven, movement, extra_mates=(new_mate,))
+    resolved = nearest.branches.get(new_mate.id) if nearest.converged else None
+    if resolved is None or resolved[1] is not True or resolved[0] not in (None, "anti_aligned"):
+        return new_mate
+    outside = dataclasses.replace(new_mate, secondary_flip=False)
+    trial, _used = _solve_with_movement(document, part, driven, movement, extra_mates=(outside,))
+    return outside if trial.converged else new_mate
+
+
+def _mate_solve_refused(occurrence_id: str, outcome: _MateSolve, movement: str) -> HTTPException:
+    """The 422 for a new / edited mate that is not stored, saying which of the cases applies instead of the old catch-all:
+    earlier mates must move (and the user has not confirmed), a mate the user set stands in the way, a genuine conflict."""
+    if outcome.needs_confirmation:
+        return HTTPException(
+            status_code=422,
+            detail={
+                "type": "branch_change_needed",
+                "occurrence_id": occurrence_id,
+                "branch_changes": [c.model_dump(by_alias=True) for c in _branch_change_responses(outcome.changes)],
+                "detail": "To fit, other mates must move to their other side or orientation - confirm to apply them.",
+            },
+        )
+    if outcome.blocked_by:
+        return HTTPException(
+            status_code=422,
+            detail={
+                "type": "mate_blocked_by_user_branch",
+                "occurrence_id": occurrence_id,
+                "blocked_by": list(outcome.blocked_by),
+                "detail": "A mate you set to one side or orientation stands in the way - change it to allow this mate.",
+            },
+        )
+    if outcome.conflicting:
+        return HTTPException(
+            status_code=422,
+            detail={
+                "type": "mate_conflict",
+                "occurrence_id": occurrence_id,
+                "conflicting": list(outcome.conflicting),
+                "detail": "This mate conflicts with existing mates - no side or orientation of them satisfies it.",
+            },
+        )
+    return _mate_solve_did_not_converge(
+        occurrence_id, outcome.last or GroupSolveResult(False, {}, None, GroupSolveQuality(0.0, None, 0, "")), minimal_movement=movement == "minimal"
+    )
+
+
+def _apply_branch_changes(part: Part, changes: Iterable[BranchChange]) -> None:
+    """Writes confirmed branch changes onto the stored mates (their `branch_source` stays what it was)."""
+    by_id = {m.id: m for m in part.mates}
+    for change in changes:
+        mate = by_id[change.mate_id]
+        setattr(mate, change.field, change.to_value)
+        sync_flipped(mate)
+
+
 def _commit_group(part: Part, result: GroupSolveResult) -> None:
     """Persist every solved member's pose together. All poses were computed (and
     verified by residual) before this runs and each store is a plain attribute
@@ -4093,9 +4404,7 @@ def _commit_group(part: Part, result: GroupSolveResult) -> None:
     by_id = {o.id: o for o in part.occurrences}
     for occurrence_id, pose in result.poses.items():
         by_id[occurrence_id].transform = pose
-
-
-MovementMode = Literal["group", "minimal", "auto"]
+    _fill_resolved_branches(part, result)
 
 
 def _solve_with_movement(
@@ -4242,7 +4551,11 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
     response_model=MateSolvePreviewResponse,
 )
 def preview_mate_solve_endpoint(
-    part_id: str, occurrence_id: str, payload: MateCreate, movement: MovementMode = "group"
+    part_id: str,
+    occurrence_id: str,
+    payload: MateCreate,
+    movement: MovementMode = "group",
+    replace_mate_id: str | None = None,
 ) -> MateSolvePreviewResponse:
     """Test report item 3 (New Mate ghost preview): a dry-run counterpart to
     `solve_for_occurrence` - solves `payload` (the same shape `POST
@@ -4262,9 +4575,16 @@ def preview_mate_solve_endpoint(
     are errors mid-edit, they're just "no ghost to show yet." Only a
     structurally-broken request (unknown `part_id`/`occurrence_id`, not
     exactly 2 references) is a real 404/422, mirroring every other
-    endpoint's own payload-shape validation."""
+    endpoint's own payload-shape validation.
+
+    `replace_mate_id` previews an EDIT of that stored mate: the stored mate is left out of the solve and `payload` (its
+    revised values) stands in for it, so the old values do not fight the new ones."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
+    solve_part = part
+    if replace_mate_id is not None:
+        _get_mate_or_404(part, replace_mate_id)
+        solve_part = dataclasses.replace(part, mates=[m for m in part.mates if m.id != replace_mate_id])
     if len(payload.references) != 2:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     if occurrence.fixed:
@@ -4272,6 +4592,7 @@ def preview_mate_solve_endpoint(
     try:
         for ref in payload.references:
             _validate_mate_entity_ref(part, ref)
+        _reject_negative_distance(payload.type, payload.value)
         extra_mate = Mate(
             id="preview",
             type=MateType(payload.type),
@@ -4279,15 +4600,87 @@ def preview_mate_solve_endpoint(
             value=payload.value,
             flipped=payload.flipped,
             allow_rotation=payload.allow_rotation,
+            alignment=payload.alignment,
+            secondary_flip=payload.secondary_flip,
         )
-        result, used = _solve_with_movement(get_document(), part, occurrence_id, movement, extra_mates=(extra_mate,))
+        extra_mate = _mate_with_branch_fields(get_document(), solve_part, extra_mate, payload.model_fields_set)
+        # The preview PROPOSES branch changes (never applies them, never stores anything): a new mate that only fits with earlier
+        # `auto` mates on their other branch converges here with `branch_changes`, and the ghost shows that placement.
+        outcome = _solve_new_mate(
+            get_document(), solve_part, occurrence_id, movement, extra_mate, skip=frozenset({replace_mate_id}) if replace_mate_id else frozenset()
+        )
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)
-    if not result.converged:
-        return MateSolvePreviewResponse(converged=False, transform=None)
+    controls = mate_branch_controls(get_document(), solve_part, extra_mate)
+    alternatives = _preview_alternatives(solve_part, occurrence_id, movement, extra_mate, controls, replace_mate_id)
+    if outcome.result is None:
+        return MateSolvePreviewResponse(
+            converged=False,
+            transform=None,
+            blocked_by=list(outcome.blocked_by),
+            conflicting=list(outcome.conflicting),
+            controls=list(controls),
+            alternatives=alternatives,
+        )
+    resolved = outcome.result.branches.get(extra_mate.id)
     return MateSolvePreviewResponse(
-        converged=True, transform=_rigid_transform_response(result.poses[occurrence_id]), movement_used=used
+        converged=True,
+        transform=_rigid_transform_response(outcome.result.poses[occurrence_id]),
+        movement_used=outcome.used,
+        members=_preview_members(part, occurrence_id, outcome.result),
+        branch_changes=_branch_change_responses(outcome.changes),
+        resolved=MateBranchValues(
+            alignment=resolved[0] if resolved is not None and "alignment" in controls else None,
+            secondary_flip=resolved[1] if resolved is not None and "secondary_flip" in controls else None,
+        ),
+        controls=list(controls),
+        alternatives=alternatives,
     )
+
+
+def _preview_alternatives(
+    part: Part,
+    driven_id: str,
+    movement: MovementMode,
+    new_mate: Mate,
+    controls: tuple[str, ...],
+    replace_mate_id: str | None,
+) -> list[MateSolveAlternative]:
+    """"Next solution": every branch combination of the new mate's controls that converges (`assembly_group.branch_alternatives`),
+    each as the members it would move. Only the new mate's own branch varies; the others keep theirs, and nothing is searched."""
+    if not controls:
+        return []
+    document = get_document()
+
+    def solve(variant: Mate):
+        return _solve_with_movement(document, part, driven_id, movement, extra_mates=(variant,))
+
+    alternatives = branch_alternatives(part, new_mate, controls, solve, bounding_radius(document, part, driven_id))
+    return [
+        MateSolveAlternative(
+            alignment=alt.alignment,
+            secondary_flip=alt.secondary_flip,
+            members=_preview_members(part, driven_id, alt.result),
+            movement_cost=alt.movement_cost,
+        )
+        for alt in alternatives
+    ]
+
+
+# A follower counts as moved by a preview above this (mm / radians of pose delta): below it the solve only re-expressed
+# the same pose, and a ghost on top of the real part would be noise.
+_PREVIEW_MOVED_TOL = 1e-6
+
+
+def _preview_members(part: Part, driven_id: str, result: GroupSolveResult) -> list[MateSolvePreviewMember]:
+    """The driven occurrence first, then every other solved member whose pose differs from its stored one."""
+    stored = {o.id: o.transform for o in part.occurrences}
+    ids = [driven_id, *(oid for oid in result.poses if oid != driven_id and oid in stored)]
+    return [
+        MateSolvePreviewMember(occurrence_id=oid, transform=_rigid_transform_response(result.poses[oid]))
+        for oid in ids
+        if oid == driven_id or max(abs(float(x)) for x in pose_delta(result.poses[oid], stored[oid])) > _PREVIEW_MOVED_TOL
+    ]
 
 
 @router.post(

@@ -117,25 +117,27 @@ measured in F1a, `docs/constrained-drag-f1a-design.md`), and the anchor then pop
 exact (mate residual ≤ 1e-6 after the polish) and lands at the weighted-nearest mate-satisfying pose. The projector stays: it is the
 predictor, the fallback and the only path for a model the client cannot evaluate.
 
-**Wire format** (`constraint_model`, `version: 1`). `members`: occurrence ids in `basis` column order. `mates[]`: `type` ∈
-`coincident | concentric | parallel | angle | distance`, `value` (number or null), `allow_rotation`, and sides `a`, `b` - each
-`{member: index | -1, frozen?: {r: 3×3 row-major, t: [3]}, point?, axis_origin?, direction?, perp?: [3], plane?: {origin, normal}}` with the geometry in the LOCAL frame of the
+**Wire format** (`constraint_model`, `version: 3`). `members`: occurrence ids in `basis` column order. `mates[]`: `type` ∈
+`coincident | concentric | parallel | angle | distance`, `value` (number or null), `allow_rotation`, the **branch** the mate stands for - `alignment`, `side`, `perp`, each `+1` or `-1` (absent or 0 reads as `+1`; `docs/mate-solution-choice-plan.md`) - and sides `a`, `b` - each
+`{member: index | -1, frozen?: {r: 3×3 row-major, t: [3]}, point?, axis_origin?, direction?, perp?, hinge_direction?: [3], plane?: {origin, normal}}` with the geometry in the LOCAL frame of the
 occurrence it belongs to; `member = -1` is a part outside the group (pose `frozen`, identity when absent). The side order is the backend's
-(`a` = the mover side). A `version` other than 1, an unknown `type`, or a field the residual below needs but a side lacks ⇒ ignore the model (§4–5 only).
+(`a` = the mover side). A `version` other than 3 (version 1 had sign-agnostic residuals and no branch, version 2 no swing sense for an ANGLE about a hinge), an unknown `type`, or a field the residual below needs but a side lacks ⇒ ignore the model (§4–5 only).
 
-**Residual** `r(x)` (stacked per mate, `x` = the member poses), with `dW`/`fW` the world geometry of side `a`/`b` (point `p`, axis point `o`, unit-or-not direction `d`, `perp`, plane origin `po` and normal `pn`; `R x + t` for points, `R x` for directions):
+**Residual** `r(x)` (stacked per mate, `x` = the member poses), with `dW`/`fW` the world geometry of side `a`/`b` (point `p`, axis point `o`, unit direction `d`, `perp`, plane origin `po` and normal `pn`; `R x + t` for points, `R x` for directions). Every residual is zero **only on the branch the mate names** (`s = alignment`, `k = side`, `p = perp`): a direction row is `a.d − s·b.d`, not the sign-agnostic `a.d × b.d` (which is zero for both roots), so a solve or a drag cannot land on the other root.
 
 | type | rows |
 |---|---|
-| coincident, plane/plane | `(a.po − b.po)·b.pn`, `a.pn × b.pn` (3) |
+| coincident, plane/plane | `(a.po − b.po)·b.pn`, `a.pn − s·b.pn` (3) |
 | coincident, plane/point | `(point − plane.po)·plane.pn` (the plane is whichever side has one; `a` first) |
 | coincident, point/point | `a.p − b.p` (3) |
-| concentric | `a.d × b.d`, `(a.o − b.o) × b.d` (6), plus `a.perp × b.perp` (3) if `allow_rotation` is false and both have `perp` |
-| parallel | `a.d × b.d` (3) |
-| angle | `unit(a.d)·unit(b.d) − cos(min(θ, 360−θ))`, `θ = |value| mod 360` |
-| distance | plane/plane: `((a.po − b.po)·b.pn)² − value²`, `a.pn × b.pn`; plane/point: `s² − value²` with `s` as in coincident; axis/axis: `|(a.o − b.o) × b.d|² − value²`, `a.d × b.d`; point/point: `|a.p − b.p|² − value²` |
+| concentric | `a.d − s·b.d` (3), `(a.o − b.o) × b.d` (3), plus `a.perp − p·b.perp` (3) if `allow_rotation` is false and both have `perp` |
+| parallel | `a.d − s·b.d` (3) |
+| angle | `unit(a.d)·unit(b.d) − cos(min(θ, 360−θ))`, `θ = |value| mod 360` (the supplement is already in `value`: the backend sends `180 − θ` for a flipped angle). **About a hinge** (a side carries `hinge_direction`, the axis of the concentric edge pair the lid swings about, and `sin θ ≥ 1e-6`) one more row: `(unit(a.d) × unit(b.d)) · unit(h) − s·sin θ`, `s` = `alignment` - the swing is +θ or −θ, zero only on the named way |
+| distance | plane/plane: `(a.po − b.po)·b.pn − k·|value|`, `a.pn − s·b.pn`; plane/point: `s_ − k·|value|` with `s_` as in coincident; axis/axis: `(\|(a.o − b.o) × b.d\|² − v²) / (2·max(v, 1e-3))`, `a.d − s·b.d` (`v = \|value\|`); point/point: `(\|a.p − b.p\|² − v²) / (2·max(v, 1e-3))` |
 
-These are exactly the backend's `_mate_residual_vector` (`app/document/assembly_solver.py`); the Jacobian is analytic, forward-mode, per member in the
+The signed distance rows are linear in the separation (one Newton step from either side, no zero-gradient dead point); the two squared forms are scaled to millimetres so one tolerance means the same thing for every mate (the divisor is floored at `DISTANCE_FLOOR = 1e-3` mm).
+
+These are exactly the backend's `_mate_residual_vector` (`app/document/assembly_solver.py`), `ConstraintModel.residual` (`constraint_model.py`) and the generator's reference model in `tools/motion_vectors/generate.py`; the Jacobian is analytic, forward-mode, per member in the
 chart of §2 (`t += v`, `R = exp(w) R`): for a world point `∂p/∂v = I`, `∂p/∂w = −[R·local]×`; for a direction `∂d/∂w = −[R·local]×`; the product rule
 gives the cross/dot rows; `unit()` has derivative `(I − ûûᵀ)/|d|`. Only the 6 columns of a side's own member are non-zero.
 
@@ -309,7 +311,7 @@ extrapolation past a hold.
 
 `FOLLOWER_WEIGHT 1e-4` · GS drop `1e-6` relative / `1e-12` absolute · `τ = 2` frames · `residual_tol 1e-6` · `jump_reject 1.0·L` ·
 re-anchor `150 ms` (`75 ms` if `sigma_gap < 100`) · hysteresis `gain 0.05`, `3` frames · series switch `1e-4` rad · `max_step` `TOL 0.25`.
-Local retraction (§4b): `LOCAL_FOLLOWER 1e-2` · `ITERS 3` · `ITERS_MAX 8` · `POLISH 1` · `TRUST 6.0` weighted mm · `ROT_CAP 0.6` rad · `LAM_ABS 1e-9` · `ACCEPT_RESIDUAL 1e-6` ·
+Local retraction (§4b): `DISTANCE_FLOOR 1e-3` mm · `MODEL_VERSION 2` · `LOCAL_FOLLOWER 1e-2` · `ITERS 3` · `ITERS_MAX 8` · `POLISH 1` · `TRUST 6.0` weighted mm · `ROT_CAP 0.6` rad · `LAM_ABS 1e-9` · `ACCEPT_RESIDUAL 1e-6` ·
 `ACCEPT_DISTANCE 0.5·max(L, d_wish)` · `WALL_STAY 0.05` · `LOCAL_MAX_MEMBERS` 8 (Dart) / 3 (GDScript).
 All are also in `vectors.json → constants`.
 
@@ -329,7 +331,7 @@ poses compared as matrices).
 | `blend`, `blend_anchor` | 4 + 1 | §9: decay of translation/rotation offsets, moving projection, followers, continuity at an anchor |
 | `scheduler` | 8 | §8 |
 | `accept_anchor` | 8 | §7 |
-| `local_retract` | 13 | §4b: one frame of the local retraction + acceptance - bolt in a fixed plate (spin on-manifold, pull-off, sideways), off-axis pin (small / large wish), angle cone (tilt, free spin), distance plane, floating bolt + plate (3° turn, slide + spin, 60° turn), fully locked, distance guard. `input`: `model`, `poses`, `wishes`, `fallback_poses` (stand-in for the projector's output), `lever_arm`; `expected`: `accepted`, shown `poses`, the raw `local_poses` (`local_poses`, `residual_inf` and `fallback_distance` are compared only when `residual_inf ≤ 1e-9`: an answer that is not converged tightly is a sensitive function of the linear solver's rounding - there `accepted` and the shown poses are pinned) |
+| `local_retract` | 35 | §4b: one frame of the local retraction + acceptance - bolt in a fixed plate (spin on-manifold, pull-off, sideways), off-axis pin (small / large wish), angle cone (tilt, free spin), distance plane, floating bolt + plate (3° turn, slide + spin, 60° turn), fully locked, distance guard, boxes in a row, and the branch cases (aligned / anti-aligned concentric, parallel, coincident and axis distance under a 100–120° tilt wish; distance on the − side with a wish through the plate; locked concentric on the half-turn spin; point-point sphere), and an ANGLE about a hinge (positive / negative swing sense held against a wish toward the flat position, free slide along the hinge, a wish onto the other root). `input`: `model`, `poses`, `wishes`, `fallback_poses` (stand-in for the projector's output), `lever_arm`; `expected`: `accepted`, shown `poses`, the raw `local_poses` (`local_poses`, `residual_inf` and `fallback_distance` are compared only when `residual_inf ≤ 1e-9`: an answer that is not converged tightly is a sensitive function of the linear solver's rounding - there `accepted` and the shown poses are pinned) |
 | `swing_sequence` | 1 | 64 frames of the off-axis swing with anchors every 9 frames, once with analytic nearest anchors and once with the real backend anchors (captured from `solve_group`; not recomputed by the script), per-frame `screw`, `screw_blended`, `additive` poses and a `summary` |
 
 Bases are analytic (no SVD) so regeneration does not depend on LAPACK. The B/C/D basis was checked against the real backend

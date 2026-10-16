@@ -82,6 +82,7 @@ import 'mate_context_menu.dart';
 import 'mate_panel.dart';
 import 'component_pattern_panel.dart';
 import 'measurement_panel.dart';
+import 'assembly_instance_render.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
 import 'offset_surface_panel.dart';
@@ -3608,7 +3609,13 @@ class _PartScreenState extends State<PartScreen> {
 
   String _mateType = kMateTypes.first;
   double? _mateValue;
-  bool _mateFlipped = false;
+
+  /// Phase 3: the branch the user picked for the mate being authored (`null` = Closest: the solve resolves it, the panel shows
+  /// "(auto)" and what the ghost uses). Cleared whenever the geometry the mate is built on changes
+  /// ([_mateGeometryKey]), since a choice means nothing for another pair of faces.
+  String? _mateAlignment;
+  bool? _mateSecondaryFlip;
+  String? _mateGeometryKey;
 
   /// Test report item 4: `Mate.allow_rotation`'s own live value while
   /// authoring/editing a concentric Mate - defaults `true` (free spin,
@@ -3625,13 +3632,11 @@ class _PartScreenState extends State<PartScreen> {
   bool _mateSaving = false;
 
   /// Test report item 3 (New Mate ghost preview): [_scheduleMatePreview]'s
-  /// own live result - the target Part id / solved transform [PartViewport.
-  /// matePreviewPartId]/[matePreviewTransform] render as a translucent
-  /// ghost. Both `null` whenever there's nothing to show (fewer than 2
+  /// own live result - every occurrence the dry-run solve moves (the driven one and any follower), which
+  /// [PartViewport.matePreviewMembers] renders as translucent ghosts. Empty whenever there's nothing to show (fewer than 2
   /// entities picked yet, no drivable Occurrence, or the dry-run solve
   /// didn't converge) - see that method's own doc comment.
-  String? _matePreviewPartId;
-  RigidTransformDto? _matePreviewTransform;
+  List<MatePreviewMember> _matePreviewMembers = const [];
 
   /// [_scheduleMatePreview]'s own monotonic guard - mirrors
   /// [_measureRequestToken]'s identical "no Feature/Occurrence is mutated,
@@ -3644,6 +3649,66 @@ class _PartScreenState extends State<PartScreen> {
   /// reasoning) so the user can adjust the mate type/value and retry without
   /// losing their two picked entities.
   String? _mateError;
+
+  /// Phase 2b: the earlier mates the latest ghost preview needs on their other branch (Confirm sends exactly these back, so
+  /// what is stored is what the ghost showed) and the sentence telling the user so.
+  List<BranchChangeDto> _mateBranchChanges = const [];
+  String? _mateNotice;
+
+  /// Phase 3: the latest preview's `controls` / `resolved` / `alternatives` (what the panel's branch controls and "Next solution" use).
+  List<String> _mateControls = const [];
+  MateBranchValuesDto? _mateResolved;
+  List<MateSolveAlternativeDto> _mateAlternatives = const [];
+
+  void _resetMateBranchChoice() {
+    _mateAlignment = null;
+    _mateSecondaryFlip = null;
+    _mateGeometryKey = null;
+  }
+
+  /// The values the ghost shows, restricted to the controls the geometry has.
+  String? get _mateEffectiveAlignment =>
+      _mateControls.contains('alignment') ? (_mateAlignment ?? _mateResolved?.alignment) : null;
+  bool? get _mateEffectiveSecondaryFlip =>
+      _mateControls.contains('secondary_flip') ? (_mateSecondaryFlip ?? _mateResolved?.secondaryFlip) : null;
+
+  MateBranchControls _mateBranchControls() => MateBranchControls(
+        mateType: _mateType,
+        controls: _mateControls,
+        alignment: _mateAlignment,
+        resolvedAlignment: _mateResolved?.alignment,
+        secondaryFlip: _mateSecondaryFlip,
+        resolvedSecondaryFlip: _mateResolved?.secondaryFlip,
+        alternativeCount: _mateAlternatives.length,
+        alternativeIndex: mateAlternativeIndex(_mateAlternatives, _mateEffectiveAlignment, _mateEffectiveSecondaryFlip),
+        onAlignmentChanged: (alignment) {
+          setState(() => _mateAlignment = alignment);
+          unawaited(_scheduleMatePreview());
+        },
+        onSecondaryFlipChanged: (flip) {
+          setState(() => _mateSecondaryFlip = flip);
+          unawaited(_scheduleMatePreview());
+        },
+        onNextSolution: () {
+          final next = mateNextAlternative(_mateAlternatives, _mateEffectiveAlignment, _mateEffectiveSecondaryFlip);
+          if (next == null) return;
+          setState(() {
+            _mateAlignment = next.alignment;
+            _mateSecondaryFlip = next.secondaryFlip;
+          });
+          unawaited(_scheduleMatePreview());
+        },
+      );
+
+  void _applyMateBranchPreview(MateSolvePreviewDto? result) {
+    _mateControls = result?.controls ?? const [];
+    _mateResolved = result?.resolved;
+    _mateAlternatives = result?.alternatives ?? const [];
+    _mateBranchChanges = result?.branchChanges ?? const [];
+    _mateNotice = result == null
+        ? null
+        : mateBranchNotice(result.branchChanges, _mates, blockedBy: result.blockedBy, conflicting: result.conflicting);
+  }
 
   /// Vertex/edge/face only - `component: false` (unlike [_measureSelectionFilter],
   /// which never needed to say either way, since [hitTestComponentInstances]'
@@ -3670,12 +3735,12 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = {};
       _mateType = kMateTypes.first;
       _mateValue = null;
-      _mateFlipped = false;
+      _resetMateBranchChoice();
       _mateAllowRotation = true;
       _mateError = null;
       _mateSaving = false;
-      _matePreviewPartId = null;
-      _matePreviewTransform = null;
+      _matePreviewMembers = const [];
+      _applyMateBranchPreview(null);
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
@@ -3690,8 +3755,8 @@ class _PartScreenState extends State<PartScreen> {
       _entitiesBeforeMate = null;
       _mateError = null;
       _mateSaving = false;
-      _matePreviewPartId = null;
-      _matePreviewTransform = null;
+      _matePreviewMembers = const [];
+      _applyMateBranchPreview(null);
       _selectionFilterOverrides.pop();
     });
   }
@@ -3735,13 +3800,30 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// [PartViewport.matePreviewMembers] for a converged preview: every occurrence it moves that this part knows (the
+  /// stored pose is what the ghost's world change is measured from). A backend without `members` still gets the driven
+  /// occurrence's ghost from `transform`.
+  List<MatePreviewMember> _matePreviewMembersFrom(MateSolvePreviewDto result, String drivenOccurrenceId) {
+    final moved = result.members.isNotEmpty
+        ? result.members
+        : [
+            if (result.transform != null)
+              MateSolvePreviewMemberDto(occurrenceId: drivenOccurrenceId, transform: result.transform!),
+          ];
+    return [
+      for (final member in moved)
+        for (final occurrence in _occurrences.where((o) => o.id == member.occurrenceId))
+          MatePreviewMember(occurrenceId: occurrence.id, previous: occurrence.transform, next: member.transform),
+    ];
+  }
+
   /// Test report item 3 (New Mate ghost preview): fires on every live change
   /// to the New Mate flow's own state (both entities picked, or the
   /// type/value/flipped/allowRotation choice), fetching [DocumentApiClient.
   /// previewMateSolve] against whichever referenced Occurrence would
   /// actually be driven ([_drivableOccurrenceId], the same not-`fixed` pick
   /// [_confirmMate] itself uses) and feeding the result into
-  /// [_matePreviewPartId]/[_matePreviewTransform] for [PartViewport] to
+  /// [_matePreviewMembers] for [PartViewport] to
   /// render as a ghost. Mirrors [_scheduleMeasureQuery]'s own "cheap,
   /// stateless, nothing is mutated - a monotonic request token beats a
   /// `Timer`-based debounce" shape exactly, since this is equally read-only.
@@ -3750,19 +3832,25 @@ class _PartScreenState extends State<PartScreen> {
     final focusPartId = _focusStack?.current ?? part?.id;
     if (part == null || focusPartId == null || _selectedEntities.length != 2) {
       setState(() {
-        _matePreviewPartId = null;
-        _matePreviewTransform = null;
+        _matePreviewMembers = const [];
+        _resetMateBranchChoice();
+        _applyMateBranchPreview(null);
       });
       return;
     }
     final entities = _selectedEntities.toList();
+    final geometryKey = '$_mateType|${[for (final e in entities) _mateEntityRefFor(e).toJson()]}|$_mateAllowRotation';
+    if (geometryKey != _mateGeometryKey) {
+      // Another pair of faces / type: an earlier Aligned / Flip choice does not carry over.
+      _mateGeometryKey = geometryKey;
+      _mateAlignment = null;
+      _mateSecondaryFlip = null;
+    }
     final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
-    final drivenIndex = drivenOccurrenceId == null ? -1 : _occurrences.indexWhere((o) => o.id == drivenOccurrenceId);
-    final drivenPartId = drivenIndex == -1 ? null : _occurrences[drivenIndex].resolvedPartId;
-    if (drivenOccurrenceId == null || drivenPartId == null) {
+    if (drivenOccurrenceId == null) {
       setState(() {
-        _matePreviewPartId = null;
-        _matePreviewTransform = null;
+        _matePreviewMembers = const [];
+        _applyMateBranchPreview(null);
       });
       return;
     }
@@ -3774,20 +3862,21 @@ class _PartScreenState extends State<PartScreen> {
         type: _mateType,
         references: [for (final entity in entities) _mateEntityRefFor(entity)],
         value: _mateValue,
-        flipped: _mateFlipped,
         allowRotation: _mateAllowRotation,
         movement: _mateMovement,
+        alignment: _mateAlignment,
+        secondaryFlip: _mateSecondaryFlip,
       );
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
-        _matePreviewPartId = result.converged ? drivenPartId : null;
-        _matePreviewTransform = result.converged ? result.transform : null;
+        _matePreviewMembers = result.converged ? _matePreviewMembersFrom(result, drivenOccurrenceId) : const [];
+        _applyMateBranchPreview(result);
       });
     } on ApiException {
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
-        _matePreviewPartId = null;
-        _matePreviewTransform = null;
+        _matePreviewMembers = const [];
+        _applyMateBranchPreview(null);
       });
     }
   }
@@ -3811,14 +3900,6 @@ class _PartScreenState extends State<PartScreen> {
       _mateError = null;
     });
     try {
-      await _api.createMate(
-        focusPartId,
-        type: _mateType,
-        references: [for (final entity in entities) _mateEntityRefFor(entity)],
-        value: _mateValue,
-        flipped: _mateFlipped,
-        allowRotation: _mateAllowRotation,
-      );
       // Drives whichever side names a real placed Occurrence (never the
       // root's own `""` id) that's actually safe to drive (not `fixed` -
       // test report item 2's own fix: mating to a `fixed` part must never
@@ -3827,19 +3908,30 @@ class _PartScreenState extends State<PartScreen> {
       // the first's, via [_drivableOccurrenceId]. `null` when neither side
       // is drivable (both fixed, or a fixed Occurrence mated to the root
       // Part's own content) - there is no Occurrence left that a solve
-      // could legally move, so none is attempted.
+      // could legally move, so the mate is stored without one.
       final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
-      if (drivenOccurrenceId != null) {
-        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId, movement: _mateMovement);
-      }
+      // One atomic call: the backend runs the same solve the ghost preview ran and stores the mate together with the solved
+      // poses only if it converges, so a refused mate never stays behind (and a retry never adds a duplicate).
+      await _api.createMate(
+        focusPartId,
+        type: _mateType,
+        references: [for (final entity in entities) _mateEntityRefFor(entity)],
+        value: _mateValue,
+        allowRotation: _mateAllowRotation,
+        alignment: _mateAlignment,
+        secondaryFlip: _mateSecondaryFlip,
+        solve: drivenOccurrenceId == null ? null : _mateMovement,
+        solveOccurrenceId: drivenOccurrenceId,
+        branchChanges: _mateBranchChanges,
+      );
       if (!mounted) return;
       setState(() {
+        _applyMateBranchPreview(null);
         _mateActive = false;
         _selectedEntities = {};
         _entitiesBeforeMate = null;
         _mateSaving = false;
-        _matePreviewPartId = null;
-        _matePreviewTransform = null;
+        _matePreviewMembers = const [];
         _selectionFilterOverrides.pop();
       });
       await _refreshAssemblyTree();
@@ -3924,7 +4016,7 @@ class _PartScreenState extends State<PartScreen> {
   /// preview of the patterned components in their forecast positions") -
   /// [PartViewport.componentPatternPreviewInstances]' own value, computed
   /// entirely client-side (no network round-trip, unlike the New Mate ghost
-  /// preview's own server-solved [_matePreviewTransform]) from this panel's
+  /// preview's own server-solved [_matePreviewMembers]) from this panel's
   /// live, unsaved parameter state, via [linearPatternPreviewStep]/
   /// [circularPatternPreviewStep] - the same pure vector math
   /// `assembly.py`'s own `_linear_pattern_step`/`_circular_pattern_step`
@@ -11211,6 +11303,9 @@ class _PartScreenState extends State<PartScreen> {
               value: mate.value,
               flipped: mate.flipped,
               allowRotation: mate.allowRotation,
+              // The branch it stood for, so an undone delete cannot re-resolve it the other way.
+              alignment: mate.alignment,
+              secondaryFlip: mate.secondaryFlip,
             );
           }
           for (final pattern in patterns) {
@@ -21786,19 +21881,84 @@ class _PartScreenState extends State<PartScreen> {
   /// re-solves the same way [_confirmMate] does right after authoring a
   /// brand-new Mate, so a revised value/flip/allow-rotation choice visibly
   /// re-snaps its target immediately. Picks the driven Occurrence the same
-  /// not-`fixed` way [_confirmMate] itself now does (test report item 2's
-  /// own fix) rather than always preferring one particular side.
+  /// not-`fixed` way, and in the same reference order, as [_confirmMate]
+  /// (test report item 2's own fix). The ghost preview follows every change
+  /// while the dialog is open (the stored mate is left out of that solve, so
+  /// the old values do not fight the new ones), and Save is atomic: the edit
+  /// is stored with the solved poses, or - if the revised mate cannot be met -
+  /// the mate keeps its old values and the error is shown.
   Future<void> _openMateEdit(MateDto mate) async {
     final part = _part;
     final focusPartId = _focusStack?.current ?? part?.id;
     if (part == null || focusPartId == null) return;
     double? value = mate.value;
-    bool flipped = mate.flipped;
     bool allowRotation = mate.allowRotation;
+    // Phase 2b: earlier mates the edit needs on their other branch, as the live preview last reported them.
+    List<BranchChangeDto> branchChanges = const [];
+    String? branchNotice;
+    // Phase 3: the branch the preview uses starts as the stored one; only a field the user touches is sent with the edit (and
+    // becomes theirs). The controls, the resolved values and the alternatives come from the latest preview.
+    String? alignment = mate.alignment;
+    bool? secondaryFlip = mate.secondaryFlip;
+    var alignmentTouched = false;
+    var flipTouched = false;
+    var controls = const <String>[];
+    MateBranchValuesDto? resolved;
+    var alternatives = const <MateSolveAlternativeDto>[];
+    VoidCallback? dialogRefresh;
+    final drivenOccurrenceId = mate.references.length == 2
+        ? _drivableOccurrenceId([mate.references[1].occurrenceId, mate.references[0].occurrenceId])
+        : null;
+    Future<void> refreshPreview() async {
+      final token = ++_matePreviewRequestToken;
+      final drivenId = drivenOccurrenceId;
+      if (drivenId == null || (mateTypeNeedsValue(mate.type) && value == null)) {
+        if (mounted) setState(() => _matePreviewMembers = const []);
+        return;
+      }
+      void remember(MateSolvePreviewDto? result) {
+        controls = result?.controls ?? const [];
+        resolved = result?.resolved;
+        alternatives = result?.alternatives ?? const [];
+        branchChanges = result?.branchChanges ?? const [];
+        branchNotice = result == null
+            ? null
+            : mateBranchNotice(result.branchChanges, _mates, blockedBy: result.blockedBy, conflicting: result.conflicting);
+        dialogRefresh?.call();
+      }
+
+      try {
+        final result = await _api.previewMateSolve(
+          focusPartId,
+          drivenId,
+          type: mate.type,
+          references: mate.references,
+          value: value,
+          allowRotation: allowRotation,
+          movement: _mateMovement,
+          replaceMateId: mate.id,
+          alignment: alignment,
+          secondaryFlip: secondaryFlip,
+        );
+        if (!mounted || token != _matePreviewRequestToken) return;
+        remember(result);
+        setState(() => _matePreviewMembers = result.converged ? _matePreviewMembersFrom(result, drivenId) : const []);
+      } on ApiException {
+        if (!mounted || token != _matePreviewRequestToken) return;
+        remember(null);
+        setState(() => _matePreviewMembers = const []);
+      }
+    }
+
+    unawaited(refreshPreview());
     final save = await showDialog<bool>(
       context: context,
+      // Light barrier: the ghost behind the dialog is the point of the live preview.
+      barrierColor: Colors.black12,
       builder: (context) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
+        builder: (context, setDialogState) {
+          dialogRefresh = () => setDialogState(() {});
+          return AlertDialog(
           title: Text('Edit ${mateTypeLabel(mate.type)} Mate'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
@@ -21809,25 +21969,77 @@ class _PartScreenState extends State<PartScreen> {
                   initialValue: value?.toString() ?? '',
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   decoration: InputDecoration(labelText: mate.type == 'angle' ? 'Angle (degrees)' : 'Distance (mm)'),
-                  onChanged: (text) => value = double.tryParse(text),
+                  autovalidateMode: AutovalidateMode.always,
+                  validator: (text) => mateValueError(mate.type, text ?? ''),
+                  onChanged: (text) {
+                    value = parseMateValue(mate.type, text);
+                    setDialogState(() {});
+                    unawaited(refreshPreview());
+                  },
                 ),
-              if (mateTypeHasFlip(mate.type))
-                CheckboxListTile(
-                  value: flipped,
-                  onChanged: (checked) => setDialogState(() => flipped = checked ?? false),
-                  title: const Text('Flipped'),
-                  controlAffinity: ListTileControlAffinity.leading,
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
+              MateBranchControls(
+                mateType: mate.type,
+                controls: controls,
+                alignment: alignment,
+                resolvedAlignment: resolved?.alignment,
+                secondaryFlip: secondaryFlip,
+                resolvedSecondaryFlip: resolved?.secondaryFlip,
+                alternativeCount: alternatives.length,
+                alternativeIndex: mateAlternativeIndex(
+                  alternatives,
+                  controls.contains('alignment') ? (alignment ?? resolved?.alignment) : null,
+                  controls.contains('secondary_flip') ? (secondaryFlip ?? resolved?.secondaryFlip) : null,
                 ),
+                onAlignmentChanged: (picked) {
+                  setDialogState(() {
+                    alignment = picked;
+                    alignmentTouched = true;
+                  });
+                  unawaited(refreshPreview());
+                },
+                onSecondaryFlipChanged: (flip) {
+                  setDialogState(() {
+                    secondaryFlip = flip;
+                    flipTouched = true;
+                  });
+                  unawaited(refreshPreview());
+                },
+                onNextSolution: () {
+                  final next = mateNextAlternative(
+                    alternatives,
+                    controls.contains('alignment') ? (alignment ?? resolved?.alignment) : null,
+                    controls.contains('secondary_flip') ? (secondaryFlip ?? resolved?.secondaryFlip) : null,
+                  );
+                  if (next == null) return;
+                  setDialogState(() {
+                    if (controls.contains('alignment')) {
+                      alignment = next.alignment;
+                      alignmentTouched = true;
+                    }
+                    if (controls.contains('secondary_flip')) {
+                      secondaryFlip = next.secondaryFlip;
+                      flipTouched = true;
+                    }
+                  });
+                  unawaited(refreshPreview());
+                },
+              ),
               if (mateTypeHasAllowRotation(mate.type))
                 CheckboxListTile(
                   value: allowRotation,
-                  onChanged: (checked) => setDialogState(() => allowRotation = checked ?? true),
+                  onChanged: (checked) {
+                    setDialogState(() => allowRotation = checked ?? true);
+                    unawaited(refreshPreview());
+                  },
                   title: const Text('Allow rotation'),
                   controlAffinity: ListTileControlAffinity.leading,
                   contentPadding: EdgeInsets.zero,
                   dense: true,
+                ),
+              if (branchNotice != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Text(branchNotice!, key: const ValueKey('mate-branch-notice'), style: const TextStyle(fontSize: 13)),
                 ),
             ],
           ),
@@ -21840,20 +22052,28 @@ class _PartScreenState extends State<PartScreen> {
               child: const Text('Save'),
             ),
           ],
-        ),
+        );
+        },
       ),
     );
+    dialogRefresh = null;
+    // Cancel, Save and a dismissed dialog all end the live preview.
+    _matePreviewRequestToken++;
+    if (mounted) setState(() => _matePreviewMembers = const []);
     if (save != true || !mounted) return;
     try {
-      await _api.updateMate(focusPartId, mate.id, value: value, flipped: flipped, allowRotation: allowRotation);
-      // Same not-`fixed` driven-Occurrence pick [_confirmMate] itself uses
-      // ([_drivableOccurrenceId], test report item 2) - a revised Mate can
-      // just as easily end up trying to drive a `fixed` peer as a freshly-
-      // authored one can.
-      final drivenOccurrenceId = _drivableOccurrenceId(mate.references.map((r) => r.occurrenceId));
-      if (drivenOccurrenceId != null) {
-        await _api.solveForOccurrence(focusPartId, drivenOccurrenceId, movement: _mateMovement);
-      }
+      // Atomic: the edit and the re-solve are one call (see above).
+      await _api.updateMate(
+        focusPartId,
+        mate.id,
+        value: value,
+        allowRotation: allowRotation,
+        alignment: alignmentTouched ? alignment : null,
+        secondaryFlip: flipTouched ? secondaryFlip : null,
+        solve: drivenOccurrenceId == null ? null : _mateMovement,
+        solveOccurrenceId: drivenOccurrenceId,
+        branchChanges: branchChanges,
+      );
       if (!mounted) return;
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
@@ -22516,12 +22736,11 @@ class _PartScreenState extends State<PartScreen> {
                   // moved Body itself tracks the drag - see that getter's
                   // own doc comment.
                   assemblyInstances: _displayAssemblyInstances,
-                  // Test report item 3 (New Mate ghost preview): both `null`
+                  // Test report item 3 (New Mate ghost preview): empty
                   // outside an active New Mate flow, or whenever there's
-                  // nothing solved to show yet - see [_matePreviewPartId]'s
+                  // nothing solved to show yet - see [_matePreviewMembers]'s
                   // own doc comment.
-                  matePreviewPartId: _matePreviewPartId,
-                  matePreviewTransform: _matePreviewTransform,
+                  matePreviewMembers: _matePreviewMembers,
                   // Bug fix (assembly testing: "pattern component tool
                   // should show a ghost preview") - empty outside an active
                   // Pattern Component flow, or whenever a source Occurrence
@@ -23426,7 +23645,7 @@ class _PartScreenState extends State<PartScreen> {
                       bodyNames: _selectionBodyNames,
                       mateType: _mateType,
                       value: _mateValue,
-                      flipped: _mateFlipped,
+                      branchControls: _mateBranchControls(),
                       allowRotation: _mateAllowRotation,
                       onMateTypeChanged: (type) {
                         setState(() => _mateType = type);
@@ -23434,10 +23653,6 @@ class _PartScreenState extends State<PartScreen> {
                       },
                       onValueChanged: (value) {
                         setState(() => _mateValue = value);
-                        unawaited(_scheduleMatePreview());
-                      },
-                      onFlippedChanged: (flipped) {
-                        setState(() => _mateFlipped = flipped);
                         unawaited(_scheduleMatePreview());
                       },
                       onAllowRotationChanged: (allow) {
@@ -23451,6 +23666,7 @@ class _PartScreenState extends State<PartScreen> {
                       },
                       saving: _mateSaving,
                       error: _mateError,
+                      notice: _mateNotice,
                       onConfirm: _selectedEntities.length == 2 &&
                               (!mateTypeNeedsValue(_mateType) || _mateValue != null)
                           ? _confirmMate

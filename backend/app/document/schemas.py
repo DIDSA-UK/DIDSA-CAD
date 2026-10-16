@@ -1,6 +1,6 @@
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.document.models import (
     BevelGearType,
@@ -3370,6 +3370,27 @@ class MateEntityRefResponse(BaseModel):
     point_ref: PointRefSchema | None = None
 
 
+class BranchChangeRequest(BaseModel):
+    """A branch change the user was shown and confirmed (`MateSolvePreviewResponse.branch_changes`): move the `field`
+    (`alignment` / `secondary_flip`) of the earlier mate `mate_id` to `to`. Only mates whose branch the program chose
+    (`branch_source == "auto"`) are accepted."""
+
+    mate_id: str
+    field: Literal["alignment", "secondary_flip"]
+    to: str | bool
+
+
+class BranchChangeResponse(BaseModel):
+    """One earlier mate a new mate needs on its other branch: `from` -> `to` of `field`, in the convention the mate is stored in."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    mate_id: str
+    field: Literal["alignment", "secondary_flip"]
+    from_value: str | bool = Field(alias="from")
+    to: str | bool
+
+
 class MateResponse(BaseModel):
     """`GET /parts/{part_id}/mates`'s per-entry shape - `app.document.
     models.Mate` itself, the Assembly tree's own Mates list."""
@@ -3384,6 +3405,12 @@ class MateResponse(BaseModel):
     # field's own docstring. Defaults `True` (free spin) so a pre-existing
     # Mate round-trips through this response unchanged.
     allow_rotation: bool = True
+    # The branch the mate stands for (`Mate.alignment` / `Mate.secondary_flip`; `None` = Closest, not resolved yet). `flipped`
+    # above is their deprecated single-flag form, kept in step. `branch_source` says who chose it: "auto" (Closest, or a default)
+    # or "user" (set explicitly); only "auto" branches may be offered for an automatic change.
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
+    branch_source: Literal["auto", "user"] = "auto"
 
 
 class MateCreate(BaseModel):
@@ -3408,6 +3435,14 @@ class MateCreate(BaseModel):
     # own "meaningful for a subset of types" convention. Defaults `True`
     # (free spin), `Mate.allow_rotation`'s own default.
     allow_rotation: bool = True
+    # The branch (`Mate.alignment` / `Mate.secondary_flip`). Left out, the deprecated `flipped` is read into them
+    # (COINCIDENT plane-plane: True = aligned; ANGLE: the supplement) and every other branch is Closest; sent (even as null =
+    # Closest) they win over `flipped`. A DISTANCE `value` is never negative: the side is `secondary_flip`.
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
+    # Earlier mates to move to their other branch - exactly the `branch_changes` of the preview the user confirmed. Only read
+    # by `POST /mates?solve=` (never by the preview, which proposes them).
+    branch_changes: list[BranchChangeRequest] = []
 
 
 class MateUpdate(BaseModel):
@@ -3425,6 +3460,12 @@ class MateUpdate(BaseModel):
     flipped: bool | None = None
     suppressed: bool | None = None
     allow_rotation: bool | None = None
+    # `alignment` / `secondary_flip`: sent as a value they set the branch, sent as null they reset it to Closest (the
+    # endpoint reads `model_fields_set`, so omitted still means "leave"). `flipped` is the deprecated alias of them.
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
+    # As `MateCreate.branch_changes`: earlier mates the user confirmed moving so this edit can be met.
+    branch_changes: list[BranchChangeRequest] = []
 
 
 class MateMotionReferencePose(BaseModel):
@@ -3507,6 +3548,27 @@ class MateMotionResponse(BaseModel):
     constraint_model: dict[str, Any] | None = None
 
 
+class MateSolvePreviewMember(BaseModel):
+    occurrence_id: str
+    transform: RigidTransformResponse
+
+
+class MateBranchValues(BaseModel):
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
+
+
+class MateSolveAlternative(BaseModel):
+    """One converged placement of the new mate: the branch values that produce it, the members it moves (as in
+    `MateSolvePreviewResponse.members`, the driven occurrence first) and how far it moves them (`movement_cost`: the weighted
+    pose distance from the start, mm + lever-arm-scaled radians; only the order matters)."""
+
+    alignment: Literal["aligned", "anti_aligned"] | None = None
+    secondary_flip: bool | None = None
+    members: list[MateSolvePreviewMember]
+    movement_cost: float
+
+
 class MateSolvePreviewResponse(BaseModel):
     """Test report item 3 (New Mate ghost preview): `POST /parts/{part_id}/
     occurrences/{occurrence_id}/preview-mate-solve`'s response - a dry-run
@@ -3523,6 +3585,27 @@ class MateSolvePreviewResponse(BaseModel):
     # Which solve produced `transform`: "minimal" (only the driven occurrence moves) or "group" (neighbours follow too).
     # Null when not converged.
     movement_used: Literal["group", "minimal"] | None = None
+    # Every member whose pose the preview moves: the driven occurrence first (always listed, its pose is `transform`), then each
+    # follower that changed. A client ghosts all of them, so what it shows is what Confirm will store. Empty when not converged.
+    members: list[MateSolvePreviewMember] = []
+    # The new mate is only met if these EARLIER mates move to their other branch (`docs/mate-solution-choice-plan.md` Phase 2b): the
+    # ghost already shows that placement, and Confirm must send exactly these back (`MateCreate.branch_changes`). Empty when nothing
+    # has to move. Only mates whose branch the program chose are ever listed.
+    branch_changes: list[BranchChangeResponse] = []
+    # `converged: false` because mates the USER set explicitly stand in the way (their other branch would have worked): change one of
+    # them to allow this mate. Never moved automatically.
+    blocked_by: list[str] = []
+    # `converged: false` and no branch combination works: the existing mates this one fights with (each, suppressed, lets it converge).
+    conflicting: list[str] = []
+    # Phase 3: the branch the ghost shows (restricted to `controls`; `None` for a field the geometry does not use), in the convention
+    # `MateCreate.alignment` / `secondary_flip` take - a client that lets the user pick one sends these back as they are.
+    resolved: MateBranchValues | None = None
+    # The branch fields that mean something for the picked geometry (`"alignment"`, `"secondary_flip"`): the client shows exactly these
+    # controls and never works out geometry kinds itself. Empty for a mate with no branch (point-point, point-plane COINCIDENT, ...).
+    controls: list[Literal["alignment", "secondary_flip"]] = []
+    # Every combination of the new mate's controls that converges (the other mates keep their persisted branches), nearest to the
+    # start first: "Next solution" steps through these. Empty when the mate has no controls or nothing else converges.
+    alternatives: list[MateSolveAlternative] = []
 
 
 class ComponentPatternAxisSchema(BaseModel):

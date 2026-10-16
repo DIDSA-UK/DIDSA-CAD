@@ -3327,6 +3327,15 @@ class MateType(str, Enum):
     ANGLE = "angle"
 
 
+# `Mate.alignment` values (`docs/mate-solution-choice-plan.md`): whether the driven direction points the same way as the fixed one.
+MATE_ALIGNED = "aligned"
+MATE_ANTI_ALIGNED = "anti_aligned"
+MATE_ALIGNMENTS = (MATE_ALIGNED, MATE_ANTI_ALIGNED)
+# `Mate.branch_source` values: who chose the branch (see `Mate`).
+BRANCH_AUTO = "auto"
+BRANCH_USER = "user"
+
+
 @dataclass(frozen=True)
 class MateEntityRef:
     """One side of a Mate: which Occurrence the referenced geometry belongs
@@ -3349,15 +3358,34 @@ class MateEntityRef:
 @dataclass
 class Mate:
     """A constraint between two Occurrences' geometry, of one of the five
-    `MateType`s. `value` is the distance (mm) for `DISTANCE` or the angle
-    (degrees) for `ANGLE`, unused otherwise. `flipped` is the alignment
-    flag `COINCIDENT`/`CONCENTRIC` mates need (SolidWorks' own "mate
-    alignment" toggle) to pick between the two valid normal-alignment
-    solutions a coincidence/concentricity constraint alone doesn't
-    disambiguate. Solving (turning a Mate into a resolved `RigidTransform`
+    `MateType`s. `value` is the distance (mm, never negative: the side of a
+    DISTANCE is `secondary_flip`) for `DISTANCE` or the angle
+    (degrees) for `ANGLE`, unused otherwise. Solving (turning a Mate into a resolved `RigidTransform`
     for the Occurrences it references) is `app.document.assembly_solver`'s
     job (Phase 6), not this dataclass's - this is data only, mirroring how
     a Feature's own dataclass never resolves its own geometry either.
+
+    Most mates have several separate placements that satisfy them exactly (the "root identification problem"):
+    two directions can be parallel the same way or opposite ways, a DISTANCE can sit on either side of its face.
+    The mate stores which one it means (`docs/mate-solution-choice-plan.md`), so a later solve or drag can never land
+    on another:
+    - `alignment`: `"aligned"` / `"anti_aligned"`, whether the driven direction (face normal or axis) points the same
+      way as the fixed one (COINCIDENT plane-plane, CONCENTRIC and edge-edge COINCIDENT, PARALLEL, DISTANCE
+      plane-plane and axis-axis);
+    - `secondary_flip`: the second binary choice - the SIDE of a DISTANCE plane/point mate (False = the offset runs along
+      the fixed plane's +normal, True = along -normal), the spin half-turn of a CONCENTRIC with rotation locked, or the
+      supplement of an ANGLE;
+    `None` means "Closest": resolved from the pose the first solve starts from (`assembly_solver.resolve_branch`) and
+    then written back. A field a mate's geometry does not use stays `None`.
+
+    `branch_source` says who chose the branch: `"auto"` (Closest resolved it, or a legacy `flipped=False` default) or
+    `"user"` (the user set Aligned / Flip side explicitly). When a NEW mate can only be met if an earlier mate sits on its
+    other branch, only `auto` branches are offered for an automatic change - and only with the user's confirmation
+    (`assembly_group.search_branch_changes`); a `user` branch is reported, never moved.
+
+    `flipped` is the DEPRECATED single-flag form of these, kept readable/writable for one release: for COINCIDENT
+    plane-plane `flipped=True` means `alignment == "aligned"`, for ANGLE it is `secondary_flip`; CONCENTRIC / PARALLEL /
+    DISTANCE never used it. It is kept in step with the two fields (`sync_flipped`).
 
     Test report item 4: `allow_rotation`, `CONCENTRIC`-only (ignored by every
     other `MateType`, same "meaningful for a subset of types" precedent
@@ -3380,6 +3408,9 @@ class Mate:
     flipped: bool = False
     suppressed: bool = False
     allow_rotation: bool = True
+    alignment: str | None = None
+    secondary_flip: bool | None = None
+    branch_source: str = "auto"
 
 
 @dataclass

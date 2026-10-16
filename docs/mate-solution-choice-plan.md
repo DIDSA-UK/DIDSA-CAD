@@ -15,16 +15,16 @@ visible bugs. Phase 2 is the core change: every later phase builds on its data m
 
 ## Progress
 
-The implementation session updates this table as each PR merges.
+The implementation session updates this table in each phase's own PR ("In review"); change it to "Merged" once the PR lands.
 
 | Phase | Summary | Status | PR |
 |---|---|---|---|
-| 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | Not started | |
-| 2 | Persisted mate *branch* (alignment / side) honoured by every solver | Not started | |
-| 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | Not started | |
-| 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | Not started | |
-| 4 | Better default for "Closest" (optional) | Not started | |
-| 5 | Width / Symmetric mate (separate scope) | Not started | |
+| 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | In review | CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
+| 2 | Persisted mate *branch* (alignment / side) honoured by every solver | In review | stacked on Phase 1: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
+| 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | In review | stacked on Phase 2: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
+| 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | In review | stacked on Phase 2b: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
+| 4 | Better default for "Closest" (optional) | In review | one rule (a gap between facing faces goes outside) after measuring the plan's tie-breakers and dropping them: stacked on Phase 3, CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300) |
+| 5 | Width / Symmetric mate (separate scope) | Scoped: [`docs/width-mate-plan.md`](width-mate-plan.md) | |
 
 ---
 
@@ -278,6 +278,32 @@ Tests (backend):
 - Native format: old → new → old round-trip; negative legacy distance migration.
 - `test_constraint_model.py` parity vectors pass. Dart `local_retraction_test.dart` and VR equivalents pass.
 
+### Implementation notes (what Phase 2 actually does, and where it differs from the text above)
+
+- **Fields and wire.** `Mate.alignment` (`"aligned" | "anti_aligned" | None`) and `Mate.secondary_flip` (`bool | None`) are on the model, `MateCreate` /
+  `MateUpdate` / `MateResponse`, the native format (additive keys, no schema bump) and the Dart `MateDto`. `flipped` stays on the wire and in files and is kept
+  in step (`sync_flipped`): COINCIDENT with an alignment -> `flipped == aligned`, ANGLE -> `flipped == secondary_flip`; the other types never used it.
+- **The alias is geometry-aware.** A create / PATCH that carries only `flipped` reads it into the new fields only where it ever meant something (COINCIDENT
+  plane-plane, ANGLE: `mate_with_flipped_alias`); naming `alignment` / `secondary_flip` - even as `null` = Closest - wins over `flipped` (`model_fields_set`).
+  A file without the keys loads as Closest and resolves from the STORED pose at the first solve, with two exceptions that were never a pose question: an ANGLE's
+  `flipped` becomes its `secondary_flip`, and a negative legacy DISTANCE becomes its length (side = Closest). The tester's `Top_and_frame.didsa` keeps every stored
+  pose bit for bit through `/solve` and a drag commit and comes out as coincident `anti_aligned`, both distances `aligned` + `secondary_flip` (inside).
+- **Closest is resolved once and written back.** `build_group_model` (stored poses) and `_solve_occurrence_against` (the start pose) call `resolve_branch`; `GroupSolveResult.branches`
+  carries what was resolved and `_commit_group` fills only fields that are still `None` (so a drag commit fills a legacy mate but can never change a named branch). Preview resolves, never stores.
+- **The side of a plane-plane DISTANCE is stored against the references' order**, not against "whichever part is moving" (`orient_branch` / `resolve_oriented_branch`):
+  with aligned normals `(a - b) . b.n` is minus `(b - a) . a.n`, so a side stored relative to the fixed part would flip when the other part is grounded and the
+  part would hop across the face (`test_grounding_the_other_part_never_makes_a_stored_side_mean_the_opposite_one`). The exported constraint model carries the side already oriented.
+- **Residuals** (all four places, constraint model **version 2**): direction rows `a.d - s b.d` (3 rows, as many as `cross` had); signed DISTANCE `sep - k d`; axis-axis / point-point
+  DISTANCE `(x^2 - d^2) / (2 max(d, 1e-3))`; ANGLE unchanged. The model carries `alignment` / `side` / `perp` (+1 / -1, absent reads +1). `kLocalModelVersion` and `MODEL_VERSION` are 2;
+  an older model is ignored by an updated client and a version-1 client ignores a version-2 model, both falling back to the projector. 13 new `local_retract` vectors cover the branch cases.
+- **Seeds.** One rotation per mover onto ALL of its alignment targets (`rotation_onto_pairs`: minimal for one direction, Kabsch for several), triggered by a direction pointing the wrong way
+  (or, as before, COINCIDENT plane-plane against a frozen partner); this is what keeps a drag on its branch (F3). The DISTANCE slide seed is gone for the signed geometries (the residual is linear,
+  one step from either side) and stays for the squared ones. The py-slvs path seeds from the same pairs and uses the sign of its signed `addPointPlaneDistance` for the side.
+- **F4.2 had a second cause.** The squared distance residual was only half of why the tester's first mate stalled at ~1e-6: `_axis_angle_from_quaternion` took the angle from `acos(w)`, which is exactly 0 for any rotation
+  below ~1.5e-8 rad, so a Gauss-Newton rotation update that fine (a 5e-10 rad tilt of a 1.6 m plate is 8e-7 mm at its far end) was silently dropped. It now uses `2 atan2(|v|, w)`.
+- **Not done in this phase:** `resolved` / `controls` / `alternatives` on the preview and every client control (Phase 3); the ANGLE +-theta on a hinge (no field of its own, "Next solution" in Phase 3);
+  `branch_source` and the branch search (Phase 2b, below).
+
 ## Phase 2b — When a new mate needs another mate's branch to change (backend + panel notice)
 
 Rules:
@@ -323,6 +349,29 @@ Tests (F6 scene, plus the tester's assembly):
   that needs "inside" (e.g. a 0 mm distance from the plate's far edge to a sketch plane at the inner position)
   offers the flip of both.
 
+### Implementation notes (what Phase 2b actually does, and where it differs from the text above)
+
+- **`branch_source`** (`"auto" | "user"`, default `auto`) is on `Mate`, `MateCreate` / `MateUpdate` / `MateResponse` and the native format (additive key). A create or edit that *names* a branch
+  (`alignment` / `secondary_flip`, not as `null`) is `user`; everything else - Closest, or a legacy file - is `auto`. Only `auto` mates are candidates; `branch_fields` says which fields a mate's
+  geometry actually uses (a plane-plane COINCIDENT has `alignment` only, a point-plane DISTANCE `secondary_flip` only).
+- **Where it runs.** `search_branch_changes` (`assembly_group.py`) is called from `_solve_new_mate` in `router.py`, which `preview-mate-solve`, `POST /mates?solve=` and `PATCH /mates/{id}?solve=` share
+  (for an edit the stored mate is left out of the solves, as in Phase 1). `mate-motion`, a drag commit and a plain `/solve` never import it; `test_a_plain_solve_never_searches_or_changes_a_branch` and
+  `test_a_drag_across_the_boundary_never_changes_a_stored_branch` pin that.
+- **Search.** The persisted branches are solved first; a converged answer ends it with no changes. Otherwise single changes of one field on one `auto` mate of the component are tried in the order
+  graph distance from the new mate's occurrences, then each mate's residual at the failed solve's end point (`branch_options`), each trial a full solve with the changed mate, so `_seed_poses` carries it to
+  the other root; then pairs among the six best singles; budget 24 solves / 1.5 s, four of them kept for the conflict step. Converged results are ranked by fewest changes, then weighted movement. When only
+  `user` mates' other branches would have worked: `blocked_by`. When nothing works: one mate at a time is suppressed and the new mate re-solved; the ones whose absence lets it converge are `conflicting`.
+- **Wire.** Preview: `branch_changes: [{mate_id, field, from, to}]` (`from` in the convention the mate is stored in, see `orient_branch`), `blocked_by`, `conflicting`; the ghost (`members`) shows the placement
+  *with* the changes. Create / PATCH take `branch_changes: [{mate_id, field, to}]` - exactly the preview's list, `from` dropped. They are applied first, validated (unknown mate, a `user` mate, a field the geometry
+  does not use, or a `to` that is not the other branch is refused with 422 `invalid_branch_change`) and the result stands or falls with them; without them a mate that needs them is refused with 422 `branch_change_needed` (carrying the list), `mate_blocked_by_user_branch`
+  or `mate_conflict` instead of the old catch-all (`mate_solve_did_not_converge` remains for a failure no search explains). Nothing is stored on a refusal; on success the mate, the changed branches and every pose are one commit.
+- **Tolerance.** `converged` and the fallback triggers now accept a residual of 1e-6 mm (`_NOISE_TOL`), the solver still iterates to 1e-7 (`_SOLVE_TOL`). The tester's frame geometry carries ~1e-6 mm of noise,
+  and with two mates to the same bars the system is redundant but consistent, so a correct solution can stall at 1.6e-7 (the second distance mate of the table top failed on exactly that).
+- **Clients.** Flutter: `MateSolvePreviewDto.branchChanges/blockedBy/conflicting`, `BranchChangeDto`, `createMate` / `updateMate` `branchChanges`; the Mate panel (and the edit dialog) shows `mateBranchNotice` and Confirm sends the
+  last preview's list. VR: the tablet status line shows the same sentence (`MatesTool.branch_notice`) and `create_mate` sends `branch_changes`; an *edit* has no live preview there, so a refused edit says what would move
+  and "Do the same again to confirm" - repeating the identical edit sends the list the refusal named.
+- **Not done:** Next solution / `alternatives` and the Aligned / Flip controls that make a branch `user` from the panel (Phase 3).
+
 ## Phase 3 — Mate panel controls and "Next solution" (Flutter + VR)
 
 Backend:
@@ -353,7 +402,31 @@ the two fields plus a Next-solution action, and send them in `build_create_paylo
 Tests: Flutter widget tests for the controls shown per `controls`, and for Next solution cycling and sending the
 fields. A backend test that `alternatives` for the tester's first distance mate contains the centred-side root.
 
+### Implementation notes (what Phase 3 actually does, and where it differs from the text above)
+
+- **Preview additions** (`MateSolvePreviewResponse`): `controls` (`assembly_group.mate_branch_controls`, the stored-pose geometry through `branch_fields`: a plane-plane COINCIDENT / PARALLEL has `alignment`, a plane-plane DISTANCE both, a point-plane DISTANCE and an ANGLE
+  `secondary_flip`, a free CONCENTRIC `alignment`, a rotation-locked one both, point-point none), `resolved` (the branch the ghost shows, restricted to `controls`, in the convention a create takes back) and `alternatives`.
+  A client sends `alignment` / `secondary_flip` only for a branch the user picked; left out, the mate is Closest and `branch_source` stays `auto` (Phase 2b), named, it is `user`.
+- **`alternatives`** (`branch_alternatives`) enumerate the combinations of the new mate's `controls` only (at most 4 solves, each with the caller's own movement mode), keep the converged ones and sort them by `movement_cost`: the sum over members of
+  the weighted pose distance from the stored poses (translation in mm, rotation in radians times the driven part's bounding radius). The list does not depend on which branch the payload names, so "2 of 4" does not shift while the user steps.
+  Other mates keep their persisted branches and nothing is searched: a combination that would need an earlier mate to move (Phase 2b) is not an alternative, and the main preview may then list `branch_changes` while `alternatives` is shorter.
+  On the tester's first distance mate from the identity pose all four roots converge; the nearest is the one the ghost shows, and the centred one (aligned + inside) is the fourth - "Next solution" is what reaches it.
+- **Flutter.** `MateBranchControls` (`mate_panel.dart`) replaces the Flipped checkbox in the Add Mate panel and the Edit Mate dialog: an *Aligned / Anti-aligned* segmented button, a *Flip side / Flip spin / Supplement* checkbox, and *Next solution (2 of 4)*, each shown only when the preview's `controls` names it.
+  Closest is the initial state and reads "(auto)" with the resolved value selected; a choice is cleared when the type, either face or Allow rotation changes. Next solution sets both fields of the next alternative. The Edit dialog starts from the stored branch and sends only the fields the user touched.
+  The distance field refuses a negative value (`parseMateValue`). `mateTypeHasFlip` is gone; clients no longer send `flipped`.
+- **VR.** `MatesTool.mate_alignment` / `mate_secondary_flip` replace `mate_flipped` (the payload names a branch only once picked); the tablet's Mates page shows a branch line and the Orientation / side / Next solution buttons the preview named; the wheel's Flip turns the orientation if the geometry has one, else the side
+  (no Next solution wedge: the ring's layout is pinned, so it is a tablet button); the mate list's per-row actions now flip the fields the mate actually has (`alignment` / `secondary_flip`), and "Remake" keeps the branch.
+- **The ANGLE +-theta on a hinge** (added after Phase 3 first landed, because Next solution as specified could not reach it): a lid joined to a base by a CONCENTRIC / edge-on-edge COINCIDENT between the same two occurrences, with an ANGLE between their faces, has the roots
+  {+theta, -theta} x {angle, supplement}. The ANGLE's `alignment` (unused until now) names +theta (`aligned`) or -theta (`anti_aligned`): the sign of `(driven x fixed) . hinge`, with the hinge the axis of that concentric mate on the occurrence of the ANGLE's second
+  reference (`_ResolvedGeometry.hinge`, attached by `build_group_model` / `mate_world_geometries`), stored against the references' order and converted for a solve that reverses them (`orient_branch`, like a DISTANCE side). The residual gets one more row,
+  `(n_d x n_f) . h - s sin(theta)`, zero only on the named way (none at 0 / 180 degrees, where both roots coincide); the seeds swing a lid on the wrong side about the hinge line to the named root and Gauss-Newton only polishes. `branch_fields` / `resolve_branch` /
+  `controls` / `alternatives` / `branch_options` pick it up with no other change: Closest resolves it from the stored pose (a legacy hinge keeps its placement), the preview lists the control and an alternative for all four roots, Next solution steps through them.
+  **Constraint model version 3**: a side may carry `hinge_direction` and the ANGLE residual has the extra row, in all four places (backend, Dart, GDScript, the generator's reference model; 4 new `local_retract` vectors, 35 now). The control reads *Swing direction* (+ / -) for an ANGLE.
+  Limit: only a hinge made by a concentric mate between the SAME two occurrences is recognised; any other angle keeps just the supplement.
+
 ## Phase 4 — A better "Closest" default (optional, after 2-3)
+
+*Implemented and measured, see the notes at the end of this section.*
 
 Nearest-root is the industry default and stays the default. Two cheap tie-breakers can be considered when the nearest
 roots are about equally far away (within 10% movement):
@@ -364,6 +437,20 @@ roots are about equally far away (within 10% movement):
 
 Each is a heuristic and should be measured against a set of fixtures before landing. Skip this phase if Phase 3's
 controls prove sufficient in testing.
+
+### Implementation notes (Phase 4: what was built and what it measured)
+
+- **What shipped:** one rule, `_phase4_default` (`router.py`), for the default side of a NEW, unnamed DISTANCE in the preview and the atomic create (not an edit, a plain `POST /mates`, or a confirmed `branch_changes`). A face of a solid has its material on the -normal side, so a distance
+  between two FACING faces (anti-aligned normals) or from a point to a face is a gap: the driven body belongs on the +normal side (`secondary_flip` False), never inside the other body, even when the part starts on the wrong side of the face (where the nearest root is the -normal one). Same-facing
+  faces (a flush inset or an overhang) are genuinely ambiguous and keep the nearest root, as does every other mate type and any named branch. The stored mate keeps `branch_source: auto`; the preview's ghost and the created mate agree. One extra solve, only for a DISTANCE whose nearest root is the -normal side.
+- **The plan's tie-breakers were built first and measured, and dropped.** Roots within 10% of each other's movement were decided by least bounding-box interference, then by "behind the fixed face" for a same-facing DISTANCE. On the tester's table top they helped (6 -> 10 of 17 start poses centred), but on the most common
+  mates they were neutral at best: first-time accuracy 72.6% -> 72.5% over 1620 previews (9 mates x near / medium / far starts x 60 trials), 17 previews helped and 18 harmed, extra clicks per mate 0.289 -> 0.306 (a pin in a post and a 3 mm overhang got worse); a 25% tie
+  was clearly worse (-52 net); always preferring "behind" trades inset for overhang (net -14). Why: for a far start every root costs about the same, so "ties" are common and decided by a weak signal.
+- **Measured for the rule that shipped** (`mate bench`, ground truth by construction: each scene assembled at its true pose, the part moved to a near (12 mm, 25 deg) / medium (50 mm, 100 deg) / far (110 mm, any way up) start, the mate previewed with nothing named): first-time accuracy **72.6% -> 83.3%**
+  (near 83.0 -> 90.7, medium 76.7 -> 88.3, far 58.1 -> 70.7), extra clicks (Flip side / Next solution, whichever is fewer) per mate **0.289 -> 0.180**, 173 previews helped and **0 harmed**; gap 6 mm above a face 57 -> 87%, gap under an underside 56 -> 85%, vertex 6 mm above a face 63 -> 100%; every other mate
+  (stack, parallel, pin in post, axis distance, inset, overhang) unchanged. Preview cost: no extra alternatives solves in the default path.
+- **Not improved, said plainly:** the tester's table top stays at 6 of 17 centred with nothing named (its distances are same-facing: inset against overhang is the user's call, Flip side / Next solution reach it), and a same-facing distance is right first time only 54% of the time in either direction.
+  Far-from-correct orientations (a part dropped upside-down) are the other big source of misses (alignment is still the nearest).
 
 ## Phase 5 — Width / Symmetric mate (separate scope)
 
@@ -376,7 +463,7 @@ assumes exactly two:
 - `MatePanel`'s two-pick selection;
 - VR `mates_tool.gd`.
 
-Scope it as its own plan.
+Scoped as its own plan: [`docs/width-mate-plan.md`](width-mate-plan.md) (Width as a mate between two synthetic mid-planes, which keeps every two-reference assumption above intact; Symmetric is its later phase W5).
 
 ---
 
