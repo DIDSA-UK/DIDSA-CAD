@@ -23,7 +23,7 @@ The implementation session updates this table in each phase's own PR ("In review
 | 2 | Persisted mate *branch* (alignment / side) honoured by every solver | In review | stacked on Phase 1: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | In review | stacked on Phase 2: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
 | 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | In review | stacked on Phase 2b: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 4 | Better default for "Closest" (optional) | In review | tie-breakers only (10% tie, interference, behind), measured below: stacked on Phase 3, CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300) |
+| 4 | Better default for "Closest" (optional) | In review | one rule (a gap between facing faces goes outside) after measuring the plan's tie-breakers and dropping them: stacked on Phase 3, CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300) |
 | 5 | Width / Symmetric mate (separate scope) | Not started | |
 
 ---
@@ -440,16 +440,17 @@ controls prove sufficient in testing.
 
 ### Implementation notes (Phase 4: what was built and what it measured)
 
-- **Where.** `_phase4_default` (`router.py`) runs in the preview and the atomic create / edit flow for a NEW mate that names no branch and has controls (it reuses the up-to-4 alternatives solves of Phase 3); `assembly_group.phase4_pick` chooses among the alternatives
-  within `PHASE4_TIE` (10%) of the nearest one's movement: least bounding-box interference (`InterferenceProxy`: the driven occurrence's world box against every other occurrence and the focused part's own geometry), then a same-facing DISTANCE behind the fixed face
-  (`aligned` + `secondary_flip`), then the nearest. A clearly nearer root always wins; a mate that names any branch field is never touched; the chosen fields are written onto the stored mate with `branch_source: auto` (a later mate may still ask to move it). A plain
-  `POST /mates` with no `solve` resolves Closest the old way.
-- **Why a tie of 10% matters more than expected.** Movement is dominated by the translation to the mate, so for a part that starts far away every root costs about the same: on the tester's table top most random starts are "ties" and the tie-break decides them.
-- **Alternatives measured and dropped:** (a) always preferring the side *behind* an aligned DISTANCE, whatever the cost: 11/17 table-top starts centred against 10/17 for the tie-break, but it overrides the nearest root (+9% movement on a plain box scene, no interference gain) and regressed one start the tie-break gets right;
-  tie-break + that rule together: worse than either (12 wrong fields against 10 and 9); (b) a wider tie (50-100%): 1-4 fewer wrong fields on the table top (10 at 10% and 25%, 9 at 50%, 6 at 100%) but up to +28% movement on the box and pin scenes. 10% already takes almost all of the gain from the nearest-only default (19 wrong fields).
-- **Measured** (`mate bench`, the tester's assembly from 17 start poses, atomic create, no names given): centred 6 -> 10 of 17 (6 -> 11 when the `branch_changes` confirmation is accepted); the default ghost already the right root on 34 -> 42 of 51 mate previews;
-  wrong fields on the two distance mates 19 -> 10. Box / cylinder scenes (30 random starts each): distance plane-plane mean overlap volume 8.8 -> 0.8 (+1 mm movement), concentric pin on a post interfering 14 -> 12 of 30, every other mate type unchanged. Preview +8 ms p50. The tester's "outward"
-  starts (-12 / -30 mm) still land 10 mm outside: the nearest root is 2 mm away, not a tie - that stays the user's call (Flip side).
+- **What shipped:** one rule, `_phase4_default` (`router.py`), for the default side of a NEW, unnamed DISTANCE in the preview and the atomic create (not an edit, a plain `POST /mates`, or a confirmed `branch_changes`). A face of a solid has its material on the -normal side, so a distance
+  between two FACING faces (anti-aligned normals) or from a point to a face is a gap: the driven body belongs on the +normal side (`secondary_flip` False), never inside the other body, even when the part starts on the wrong side of the face (where the nearest root is the -normal one). Same-facing
+  faces (a flush inset or an overhang) are genuinely ambiguous and keep the nearest root, as does every other mate type and any named branch. The stored mate keeps `branch_source: auto`; the preview's ghost and the created mate agree. One extra solve, only for a DISTANCE whose nearest root is the -normal side.
+- **The plan's tie-breakers were built first and measured, and dropped.** Roots within 10% of each other's movement were decided by least bounding-box interference, then by "behind the fixed face" for a same-facing DISTANCE. On the tester's table top they helped (6 -> 10 of 17 start poses centred), but on the most common
+  mates they were neutral at best: first-time accuracy 72.6% -> 72.5% over 1620 previews (9 mates x near / medium / far starts x 60 trials), 17 previews helped and 18 harmed, extra clicks per mate 0.289 -> 0.306 (a pin in a post and a 3 mm overhang got worse); a 25% tie
+  was clearly worse (-52 net); always preferring "behind" trades inset for overhang (net -14). Why: for a far start every root costs about the same, so "ties" are common and decided by a weak signal.
+- **Measured for the rule that shipped** (`mate bench`, ground truth by construction: each scene assembled at its true pose, the part moved to a near (12 mm, 25 deg) / medium (50 mm, 100 deg) / far (110 mm, any way up) start, the mate previewed with nothing named): first-time accuracy **72.6% -> 83.3%**
+  (near 83.0 -> 90.7, medium 76.7 -> 88.3, far 58.1 -> 70.7), extra clicks (Flip side / Next solution, whichever is fewer) per mate **0.289 -> 0.180**, 173 previews helped and **0 harmed**; gap 6 mm above a face 57 -> 87%, gap under an underside 56 -> 85%, vertex 6 mm above a face 63 -> 100%; every other mate
+  (stack, parallel, pin in post, axis distance, inset, overhang) unchanged. Preview cost: no extra alternatives solves in the default path.
+- **Not improved, said plainly:** the tester's table top stays at 6 of 17 centred with nothing named (its distances are same-facing: inset against overhang is the user's call, Flip side / Next solution reach it), and a same-facing distance is right first time only 54% of the time in either direction.
+  Far-from-correct orientations (a part dropped upside-down) are the other big source of misses (alignment is still the nearest).
 
 ## Phase 5 — Width / Symmetric mate (separate scope)
 

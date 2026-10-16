@@ -43,10 +43,10 @@ def test_preview_of_the_tester_s_distance_mate_converges_and_matches_the_stored_
     payload = tt.table_top_mate_payloads()[1]
     ghost = _preview(root, tt.PLATE, payload)
     assert ghost["converged"] and ghost["transform"] is not None
-    assert client.post(f"/document/parts/{root}/mates", json=payload).status_code == 201
-    solved = client.post(f"/document/parts/{root}/occurrences/{tt.PLATE}/solve", params={"movement": "auto"})
-    assert solved.status_code == 200, solved.text
-    assert _close(ghost["transform"], solved.json()["transform"])
+    # Confirm (the atomic create) stores what the ghost showed
+    assert client.post(f"/document/parts/{root}/mates", params={"solve": "auto", "occurrence_id": tt.PLATE}, json=payload).status_code == 201
+    stored = {o["id"]: o["transform"] for o in client.get(f"/document/parts/{root}/occurrences").json()}[tt.PLATE]
+    assert _close(ghost["transform"], stored)
 
 
 def test_group_preview_lists_the_followers_that_move():

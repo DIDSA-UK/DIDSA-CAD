@@ -21,7 +21,6 @@ from app.document.assembly_group import (
     branch_alternatives,
     branch_options,
     mate_branch_controls,
-    phase4_pick,
     constraint_status,
     part_with_branch_changes,
     search_branch_changes,
@@ -4331,24 +4330,23 @@ def _solve_new_mate(
 
 
 def _phase4_default(document: Document, part: Part, driven: str, movement: "MovementMode", new_mate: Mate) -> Mate:
-    """Phase 4: a NEW mate that names no branch gets, as its default, the nearest root - unless the nearest roots are about equally
-    near, when `assembly_group.phase4_pick` breaks the tie (least bounding-box interference, then a same-facing DISTANCE behind the
-    fixed face). The returned copy names the chosen fields for THIS solve only; the stored mate keeps `branch_source: auto` and
-    takes them from the solve's result."""
-    if new_mate.alignment is not None or new_mate.secondary_flip is not None:
+    """Phase 4: the default side of a NEW, unnamed DISTANCE. A face of a solid has its material on the -normal side, so a distance
+    between two FACING faces (anti-aligned normals), or from a point to a face, is a gap: the driven body belongs on the +normal side
+    (`secondary_flip` False), never inside the other one. The nearest root can still be the -normal side when the part starts on the
+    wrong side of the face; this puts it back outside. Same-facing faces (a flush inset or an overhang) are genuinely ambiguous and keep
+    the nearest root, as does everything else. Returns a copy that names `secondary_flip` for this solve only: the stored mate keeps
+    `branch_source: auto` and takes the fields from the solve's result."""
+    if new_mate.type != MateType.DISTANCE or new_mate.alignment is not None or new_mate.secondary_flip is not None:
         return new_mate
-    controls = mate_branch_controls(document, part, new_mate)
-    if not controls:
+    if "secondary_flip" not in mate_branch_controls(document, part, new_mate):
         return new_mate
-
-    def solve_variant(variant: Mate):
-        return _solve_with_movement(document, part, driven, movement, extra_mates=(variant,))
-
-    alternatives = branch_alternatives(part, new_mate, controls, solve_variant, bounding_radius(document, part, driven))
-    pick = phase4_pick(document, part, driven, alternatives)
-    if pick is None:
+    nearest, _used = _solve_with_movement(document, part, driven, movement, extra_mates=(new_mate,))
+    resolved = nearest.branches.get(new_mate.id) if nearest.converged else None
+    if resolved is None or resolved[1] is not True or resolved[0] not in (None, "anti_aligned"):
         return new_mate
-    return dataclasses.replace(new_mate, alignment=pick.alignment, secondary_flip=pick.secondary_flip)
+    outside = dataclasses.replace(new_mate, secondary_flip=False)
+    trial, _used = _solve_with_movement(document, part, driven, movement, extra_mates=(outside,))
+    return outside if trial.converged else new_mate
 
 
 def _mate_solve_refused(occurrence_id: str, outcome: _MateSolve, movement: str) -> HTTPException:

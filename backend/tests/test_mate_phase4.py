@@ -1,6 +1,6 @@
-"""Phase 4 (`docs/mate-solution-choice-plan.md`): when the nearest roots of a NEW, unnamed mate are about equally near (within 10 % of the
-nearest one's movement), bounding-box interference and then "behind the fixed face" break the tie; a clearly nearer root and a named
-branch are left alone.
+"""Phase 4 (`docs/mate-solution-choice-plan.md`): the default side of a NEW, unnamed DISTANCE. A facing distance (anti-aligned normals) or a
+point-to-face distance is a gap, so the driven body goes on the +normal side of the face - outside the other solid - even when the part starts on
+the wrong side. Same-facing distances (flush inset / overhang) keep the nearest root; a named branch is never touched.
 """
 
 import numpy as np
@@ -10,8 +10,6 @@ from tests import table_top_fixture as tt
 from tests.test_assembly_group import _face
 from tests.test_assembly_solver import _make_box_part, _place_occurrence, client
 
-_IDENTITY = {"translation": [0.0, 0.0, 0.0], "rotation_axis": [0.0, 0.0, 1.0], "rotation_angle_degrees": 0.0}
-
 
 def _scene(translation, rotation_axis=(0.0, 0.0, 1.0), rotation_angle_degrees=0.0):
     base = _make_box_part("Base", size=20.0, depth=10.0)
@@ -20,9 +18,13 @@ def _scene(translation, rotation_axis=(0.0, 0.0, 1.0), rotation_angle_degrees=0.
     return base, bracket
 
 
-def _distance(base, bracket, value=6.0, **fields):
-    refs = [{"occurrence_id": "occ-driven", **_face(bracket, (0, 0, -1))}, {"occurrence_id": "", **_face(base, (0, 0, 1))}]
-    return {"type": "distance", "value": value, "references": refs, **fields}
+def _refs(driven, fixed):
+    return [{"occurrence_id": "occ-driven", **driven}, {"occurrence_id": "", **fixed}]
+
+
+def _shelf(base, bracket, value=6.0, **fields):
+    """The bracket's bottom face 6 mm over the base top (facing faces)."""
+    return {"type": "distance", "value": value, "references": _refs(_face(bracket, (0, 0, -1)), _face(base, (0, 0, 1))), **fields}
 
 
 def _preview(base, payload):
@@ -35,32 +37,50 @@ def _z(base):
     return client.get(f"/document/parts/{base['id']}/occurrences").json()[0]["transform"]["translation"][2]
 
 
-def test_a_near_tie_goes_to_the_root_that_does_not_interfere():
-    # the bracket sits over the base, 0.1 mm below its top plane: the "below" root (bracket inside the base) is 3 % nearer than "above"
-    base, bracket = _scene((5.0, 5.0, 9.9))
-    ghost = _preview(base, _distance(base, bracket))
+def test_a_gap_between_facing_faces_goes_outside_even_from_the_wrong_side():
+    # the bracket starts 5 mm under the base's top plane (inside the base): the nearest root is "below" (z = 4), but a gap cannot be inside the solid
+    base, bracket = _scene((5.0, 5.0, 5.0))
+    ghost = _preview(base, _shelf(base, bracket))
     assert ghost["converged"]
-    assert ghost["resolved"] == {"alignment": "anti_aligned", "secondary_flip": False}  # above the base top, not inside it
+    assert ghost["resolved"] == {"alignment": "anti_aligned", "secondary_flip": False}
     assert ghost["transform"]["translation"][2] == pytest.approx(16.0, abs=1e-6)
 
 
-def test_a_clearly_nearer_root_wins_even_when_it_interferes():
-    # 20 mm under the plane: "below" (10 - 6 = 4) is far nearer than "above" (16); the tie-break must not drag the part across
-    base, bracket = _scene((5.0, 5.0, -20.0))
-    ghost = _preview(base, _distance(base, bracket))
-    assert ghost["converged"] and ghost["resolved"]["secondary_flip"] is True
-    assert ghost["transform"]["translation"][2] == pytest.approx(4.0, abs=1e-6)
+def test_a_facing_gap_under_a_face_goes_on_that_faces_outside_too():
+    # under the base's underside (normal -z): outside is DOWN, z = -6 - 4
+    base, bracket = _scene((5.0, 5.0, 3.0))
+    payload = {"type": "distance", "value": 6.0, "references": _refs(_face(bracket, (0, 0, 1)), _face(base, (0, 0, -1)))}
+    ghost = _preview(base, payload)
+    assert ghost["converged"] and ghost["resolved"]["secondary_flip"] is False
+    assert ghost["transform"]["translation"][2] == pytest.approx(-10.0, abs=1e-6)
 
 
-def test_a_named_branch_is_never_overridden():
-    base, bracket = _scene((5.0, 5.0, 9.9))
-    ghost = _preview(base, _distance(base, bracket, secondary_flip=True))
+def test_a_point_to_face_distance_goes_outside():
+    base, bracket = _scene((5.0, 5.0, 7.0))
+    corner = {"subshape_ref": {"body_id": bracket["body_id"], "shape_type": "vertex", "index": 0}}
+    ghost = _preview(base, {"type": "distance", "value": 6.0, "references": _refs(corner, _face(base, (0, 0, 1)))})
+    assert ghost["converged"] and ghost["resolved"]["secondary_flip"] is False
+    assert ghost["transform"]["translation"][2] == pytest.approx(16.0, abs=1e-6)
+
+
+def test_same_facing_faces_keep_the_nearest_root_inset_or_overhang():
+    # the bracket's +x face against the base's +x face (same way): 3 mm behind the edge (inset) or past it (overhang) - both are legitimate
+    for start_x, behind in ((9.5, True), (14.5, False)):
+        base, bracket = _scene((start_x, 6.0, 10.0))
+        payload = {"type": "distance", "value": 3.0, "references": _refs(_face(bracket, (1, 0, 0)), _face(base, (1, 0, 0)))}
+        ghost = _preview(base, payload)
+        assert ghost["converged"] and ghost["resolved"] == {"alignment": "aligned", "secondary_flip": behind}, start_x
+
+
+def test_a_named_side_is_never_overridden():
+    base, bracket = _scene((5.0, 5.0, 5.0))
+    ghost = _preview(base, _shelf(base, bracket, secondary_flip=True))
     assert ghost["resolved"]["secondary_flip"] is True and ghost["transform"]["translation"][2] == pytest.approx(4.0, abs=1e-6)
 
 
 def test_the_preview_and_the_created_mate_agree_and_the_mate_stays_auto():
-    base, bracket = _scene((5.0, 5.0, 9.9))
-    payload = _distance(base, bracket)
+    base, bracket = _scene((5.0, 5.0, 5.0))
+    payload = _shelf(base, bracket)
     ghost = _preview(base, payload)
     created = client.post(f"/document/parts/{base['id']}/mates", params={"solve": "auto"}, json=payload)
     assert created.status_code == 201, created.text
@@ -70,29 +90,18 @@ def test_the_preview_and_the_created_mate_agree_and_the_mate_stays_auto():
     assert _z(base) == pytest.approx(ghost["transform"]["translation"][2], abs=1e-6)
 
 
-def test_a_tie_with_nothing_to_hit_puts_a_same_facing_distance_behind_the_fixed_face():
-    # an upside-down bracket far to the side of the base (aligned normals), exactly in the base's top plane: both sides are 6 mm away and
-    # neither hits anything, so the tester's "inset" rule decides - behind the fixed face (the minus side)
-    base, bracket = _scene((100.0, 5.0, 10.0), rotation_axis=(1.0, 0.0, 0.0), rotation_angle_degrees=180.0)
-    ghost = _preview(base, _distance(base, bracket))
-    assert ghost["converged"]
-    assert ghost["resolved"] == {"alignment": "aligned", "secondary_flip": True}
-    assert ghost["transform"]["translation"][2] == pytest.approx(10.0 - 6.0, abs=1e-6)
+def test_plain_creates_and_edits_are_unchanged():
+    base, bracket = _scene((5.0, 5.0, 5.0))
+    plain = client.post(f"/document/parts/{base['id']}/mates", json=_shelf(base, bracket))  # no solve=: nothing resolved here
+    assert plain.status_code == 201 and plain.json()["secondary_flip"] is None
 
 
-def test_edits_and_plain_creates_are_unchanged():
-    base, bracket = _scene((5.0, 5.0, 9.9))
-    plain = client.post(f"/document/parts/{base['id']}/mates", json=_distance(base, bracket))  # no solve=: nothing resolved here
-    assert plain.status_code == 201 and plain.json()["alignment"] is None
-
-
-def test_the_tester_s_outward_shifts_still_resolve_to_the_nearest_root():
-    """Not a tie (the plate is 12 mm outside, the inside root is 22 mm away): the nearest root is kept - Phase 4 is not a rule that
-    overrides the user's placement."""
+def test_the_tester_s_same_facing_distances_are_still_the_nearest_root():
+    """Not a facing gap (the plate's edge face and the bar's outer face point the same way): the plate 12 mm outside stays 10 mm outside."""
     root = tt.import_table_top(client, keep_mates=False)
     start = {"translation": [float(x) for x in np.array(tt.CORRECT_PLATE_TRANSLATION) + [0, -12.0, 0]], "rotation_axis": [1.0, 0.0, 0.0], "rotation_angle_degrees": 180.0}
     assert client.patch(f"/document/parts/{root}/occurrences/{tt.PLATE}", json={"transform": start}).status_code == 200
     ghost = client.post(
         f"/document/parts/{root}/occurrences/{tt.PLATE}/preview-mate-solve", params={"movement": "auto"}, json=tt.table_top_mate_payloads()[0]
     ).json()
-    assert ghost["converged"] and ghost["resolved"]["secondary_flip"] is False  # 10 mm outside, as before
+    assert ghost["converged"] and ghost["resolved"]["secondary_flip"] is False

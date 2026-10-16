@@ -90,11 +90,12 @@ def test_the_tester_s_first_distance_mate_lists_all_four_roots_including_the_cen
     assert {(a["alignment"], a["secondary_flip"]) for a in alternatives} == {
         ("aligned", True), ("aligned", False), ("anti_aligned", True), ("anti_aligned", False)
     }
-    # nearest first, and the first one IS what the ghost shows
+    # nearest first; the ghost shows the DEFAULT, which is the nearest root unless Phase 4 moves a facing gap outside (here the plate starts
+    # facing the bar, so the default is the outside root), and either way it is one of the alternatives
     costs = [a["movement_cost"] for a in alternatives]
     assert costs == sorted(costs)
-    assert (alternatives[0]["alignment"], alternatives[0]["secondary_flip"]) == (ghost["resolved"]["alignment"], ghost["resolved"]["secondary_flip"])
-    assert np.allclose(alternatives[0]["members"][0]["transform"]["translation"], ghost["transform"]["translation"], atol=1e-6)
+    shown = next(a for a in alternatives if (a["alignment"], a["secondary_flip"]) == (ghost["resolved"]["alignment"], ghost["resolved"]["secondary_flip"]))
+    assert np.allclose(shown["members"][0]["transform"]["translation"], ghost["transform"]["translation"], atol=1e-6)
     # the centred root (the plate's edge 10 mm INSIDE the bar: the plate at y = 790) is one of them: aligned + inside
     centred = next(a for a in alternatives if (a["alignment"], a["secondary_flip"]) == ("aligned", True))
     assert centred["members"][0]["transform"]["translation"][1] == pytest.approx(tt.CORRECT_PLATE_TRANSLATION[1], abs=1e-3)

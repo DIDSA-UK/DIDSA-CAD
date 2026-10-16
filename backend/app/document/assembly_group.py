@@ -38,7 +38,7 @@ import numpy as np
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 
-from app.document.assembly import apply_transform_to_point, top_level_occurrence_id
+from app.document.assembly import top_level_occurrence_id
 from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
     _angle_hinge,
@@ -1249,92 +1249,6 @@ def mate_branch_controls(document: Document, part: Part, mate: Mate) -> tuple[st
     except HTTPException:
         return ()
     return branch_fields(mate, first, second)
-
-
-# ---- Phase 4: tie-breakers for a new mate's "Closest" default --------------------------------------------------------------
-#
-# `docs/mate-solution-choice-plan.md`, Phase 4. A new mate that names no branch takes the root nearest to where the part is. When
-# the nearest roots are about equally far away (within `PHASE4_TIE` of the nearest one's movement) the choice is a coin toss for
-# the user, so two cheap tie-breakers decide it: the root whose bounding box overlaps the other bodies least, then (a same-facing
-# DISTANCE between two faces) the side that puts the driven face BEHIND the fixed one - the tester's "inset from an edge".
-# Nothing else changes: a clearly nearer root always wins, and a mate that names its branch is never touched.
-
-PHASE4_TIE = 0.10  # roots within this fraction of the nearest root's movement count as equally near
-
-
-def _world_box(box_local, transform):
-    """Axis-aligned world box `(lo, hi)` of the local `(x0, y0, z0, x1, y1, z1)` box placed by `transform` (None = identity)."""
-    x0, y0, z0, x1, y1, z1 = box_local
-    corners = [(x, y, z) for x in (x0, x1) for y in (y0, y1) for z in (z0, z1)]
-    if transform is not None:
-        corners = [apply_transform_to_point(transform, c) for c in corners]
-    arr = np.array(corners, dtype=float)
-    return arr.min(axis=0), arr.max(axis=0)
-
-
-def _local_box(target: Part):
-    box = Bnd_Box()
-    for shape in compute_part_bodies(target).values():
-        brepbndlib.Add(shape, box)
-    return None if box.IsVoid() else box.Get()
-
-
-class InterferenceProxy:
-    """Bounding-box overlap of one occurrence with everything else, for a candidate placement: the sum over the other occurrences
-    (members at the candidate's poses, the rest at their stored ones) and the focused part's own geometry of the volume their
-    world boxes share with the driven occurrence's. Cheap and conservative - boxes, not solids - and 0 when nothing overlaps."""
-
-    def __init__(self, document: Document, part: Part):
-        self.part = part
-        self._local: dict[str, tuple] = {}
-        self._stored: dict[str, tuple] = {}  # occurrence id -> (local box id key, stored transform)
-        for occurrence in part.occurrences:
-            if occurrence.suppressed:
-                continue
-            target, stored = _target_part_and_transform(document, part, occurrence.id)
-            local = self._local.setdefault(target.id, _local_box(target))
-            if local is not None:
-                self._stored[occurrence.id] = (local, stored)
-        own = _local_box(part)
-        self._own = None if own is None else _world_box(own, None)
-
-    def volume(self, result: GroupSolveResult, driven_id: str) -> float:
-        boxes = {oid: _world_box(local, result.poses.get(oid, stored)) for oid, (local, stored) in self._stored.items()}
-        if self._own is not None:
-            boxes[""] = self._own
-        mine = boxes.get(driven_id)
-        if mine is None:
-            return 0.0
-        total = 0.0
-        for oid, (lo, hi) in boxes.items():
-            if oid == driven_id:
-                continue
-            extent = np.minimum(mine[1], hi) - np.maximum(mine[0], lo)
-            if np.all(extent > 0):
-                total += float(np.prod(extent))
-        return total
-
-
-def phase4_pick(
-    document: Document, part: Part, driven_id: str, alternatives: list["BranchAlternative"]
-) -> "BranchAlternative | None":
-    """The default root for a new, still unnamed mate when the nearest roots are about equally near (`alternatives` are sorted
-    nearest first): among those within `PHASE4_TIE` of the nearest one's movement, the one whose bounding box overlaps the other
-    bodies least, then the one that puts a same-facing DISTANCE face behind the fixed face (side -), then the nearest. `None` = no
-    tie: keep the nearest."""
-    if len(alternatives) < 2:
-        return None
-    best = alternatives[0]
-    pool = [alt for alt in alternatives if alt.movement_cost <= best.movement_cost * (1.0 + PHASE4_TIE) + 1e-9]
-    if len(pool) < 2:
-        return None
-    proxy = InterferenceProxy(document, part)
-
-    def behind(alt) -> int:
-        return 0 if (alt.alignment == MATE_ALIGNED and alt.secondary_flip is True) else 1
-
-    # (the pick may be the nearest root itself: the caller still names it, because "Closest" resolves from the start pose and can differ)
-    return min(pool, key=lambda alt: (round(proxy.volume(alt.result, driven_id), 3), behind(alt), alt.movement_cost))
 
 
 def movement_cost(part: Part, result: GroupSolveResult, lever_arm: float) -> float:
