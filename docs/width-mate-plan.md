@@ -10,7 +10,7 @@ first — this plan reuses all of it and deliberately changes none of it.
 |---|---|---|---|
 | W1 | Backend: mid-plane mate reference, validation, solve/preview/branches, export/import | Done (PR open, awaiting review; not merged) | CAD (this branch) |
 | W2 | Flutter: four-pick Width flow in the mate panel, highlighting, edit | Done (same PR; not merged; not tried by a human) | CAD #302 |
-| W3 | VR: the same flow on the tablet / wheel | Not started | |
+| W3 | VR: the same flow on the tablet / wheel | Done (tablet; wheel = type entry only; headless-tested, no headset) | DIDSA-VR (this branch) |
 | W4 | AI plan schema + docs + measurement on the tester's table top | Not started | |
 | W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Not started — scoped below, needs its own go-ahead | |
 
@@ -109,6 +109,20 @@ plane-plane residuals are the ordinary ones.
 - **Tests:** `backend/tests/test_width_mate_parts.py` (3 parts fixed/free bars, offset, 4 parts near/medium/far, preview, drag,
   export/import, delete cascade, non-parallel, missing occurrence). Backend `not gears`: 2484 passed. Flutter: pick rules for 2/3/4 parts.
 - **Not measured:** the earlier benchmark (frame as ONE sub-assembly) is unchanged; there is no human-time measurement for 3/4 parts.
+
+## W3 implementation notes (VR, DIDSA-VR branch `claude/width-mate-w1-w4`)
+
+- **Built:** `Width` mate type in `mates_tool.gd` (`WIDTH_TYPE`, `pick_target()` 4, `width_references`, `width_wire_type`, Undo pick, a pair is checked for
+  parallelism the moment it is complete via the backend's Measure `faces_parallel`, the part(s) to centre are driven first); the tablet's type row,
+  an "Undo pick" button, the existing Set value button doubling as "Offset from centre" for Width; mates listed as "Width"; the pairs highlight in
+  two colours (`face_highlight.gd` `colour_slot`: the gap cyan, the part to centre orange - VR has the two-colour highlight the flat app lacks);
+  `mate_health.gd` follows the faces of a mid-plane reference (capture, drift, remake in place) and reports "faces no longer parallel" as its own
+  list (`unparallel_pairs`), shown in the design table's status. Either pair may be two parts (2, 3 or 4 parts), same rules as the flat app.
+- **Not built / not verified:** the wheel has the Width entry in its type ring only (no four-pick flow, Undo pick or offset on the wheel - tablet first,
+  as planned); no live ghost beyond the usual preview; **no headset run, no live-backend e2e for Width**; the render and e2e suites were not run here.
+  The live drag of a component whose Width mate has moving parts on a side gets no constraint model from the backend and keeps projecting (no local
+  retraction) - `local_retraction.gd` already treats "no model" that way, and nothing in the GDScript solver changed.
+- **Tests:** `tests/width_mate.gd` (38 SMOKE lines), `tests/tool_wheel.gd` updated for the sixth type entry; `tests/ci.sh` green (see the PR).
 
 ## 1. The problem
 
