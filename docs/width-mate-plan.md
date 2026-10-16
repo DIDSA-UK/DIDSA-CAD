@@ -109,8 +109,25 @@ Touch list (backend):
 - A signed offset from centre is `DISTANCE` with `value >= 0` plus `secondary_flip` for which side — the existing convention;
   the panel labels it "Offset from centre".
 - Ghost/preview for a Width mate: the preview already ghosts the moving occurrence; additionally highlight (client-side) the four
-  picked faces and, optionally, draw the computed mid-plane. The mid-plane geometry is not returned today — `preview-mate-solve`
-  gets an optional `midplanes` list (origin, normal, size hint) in W1 only if W2 needs it; otherwise compute client-side.
+  picked faces in two colours during the pick. **No mid-plane is drawn in the scene** (see §4a). `preview-mate-solve` returns no
+  mid-plane geometry; add an optional `midplanes` list (origin, normal, size hint) only if the panel-only marker below is built.
+
+### 4a. No clutter, no orphans (binding rule for every phase)
+
+A Width mate never creates or persists a plane, feature, sketch or any other object. The mid-plane is computed on the fly, on every
+solve, from the two stored face references and thrown away; the mate stores nothing but those references.
+
+- **Delete / undo / redo.** Deleting a Width mate removes everything it made, because it made nothing else. Occurrence deletion
+  removes the mates that reference it by the existing path. A Plane the user made themselves and referenced via `plane_feature_id`
+  is not owned by the mate and survives deleting it.
+- **Display.** Nothing is drawn in the viewport, the VR scene, the feature tree or any plane list by default. During the pick the
+  four chosen faces are highlighted (two colours, one per pair). While previewing, only the moved part's ghost shows. An optional
+  mid-plane marker (one fine outline) may exist only while the mate panel is open, disappears on confirm or cancel, is never saved,
+  and is off unless a tester asks for it.
+- **Part edits.** A lost face or non-parallel faces put the mate in a named broken state; they never create or leave a plane behind.
+- **Tests (§8):** create then delete a Width mate and assert the document's parts, features, planes, sketches and occurrences are
+  identical to before; export/import a document with a Width mate and find no extra objects; deleting the mate does not remove a
+  user-made Plane it referenced.
 
 ## 5. Flutter (W2)
 
@@ -173,6 +190,7 @@ Backend (`backend/tests/`, conda env from `backend/environment.yml`):
   that on the named side.
 - Preview/alternatives/branch search: the Width mate previews like any plane mate; changing another mate's branch (Phase 2b) still
   works with a Width mate present; `controls`/`alternatives` shapes unchanged.
+- No-orphans: the §4a tests above (create/delete leaves the document identical; export/import adds no objects; a referenced user Plane survives).
 - Drift: remove one of the four faces → "reference lost"; skew one so faces are not parallel → "faces no longer parallel".
 - Parity: confirm that the constraint-model JSON for a Width mate is a plain plane–plane model (no new fields) and that
   `docs/motion/vectors.json` needs no regeneration (a test that regenerating produces an identical file).

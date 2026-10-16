@@ -19,11 +19,11 @@ The implementation session updates this table in each phase's own PR ("In review
 
 | Phase | Summary | Status | PR |
 |---|---|---|---|
-| 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | In review | CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 2 | Persisted mate *branch* (alignment / side) honoured by every solver | In review | stacked on Phase 1: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | In review | stacked on Phase 2: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | In review | stacked on Phase 2b: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
-| 4 | Better default for "Closest" (optional) | In review | one rule (a gap between facing faces goes outside) after measuring the plan's tie-breakers and dropping them: stacked on Phase 3, CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300) |
+| 1 | Ghost preview fixes (missing ghost, followers, sub-assemblies) | Merged | CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
+| 2 | Persisted mate *branch* (alignment / side) honoured by every solver | Merged | stacked on Phase 1: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
+| 2b | A new mate that needs another mate's branch changed: search, preview notice, atomic confirm | Merged | stacked on Phase 2: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
+| 3 | Mate panel controls: Aligned/Anti-aligned, Flip side, Next solution (Flutter + VR) | Merged | stacked on Phase 2b: CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300), VR [#46](https://github.com/DIDSA-UK/DIDSA-VR/pull/46) |
+| 4 | Better default for "Closest" (optional) | Merged | one rule (a gap between facing faces goes outside) after measuring the plan's tie-breakers and dropping them: stacked on Phase 3, CAD [#300](https://github.com/DIDSA-UK/DIDSA-CAD/pull/300) |
 | 5 | Width / Symmetric mate (separate scope) | Scoped: [`docs/width-mate-plan.md`](width-mate-plan.md) | |
 
 ---
