@@ -58,6 +58,8 @@ void main() {
     expect((constants['local_lam_abs'] as num).toDouble(), kLocalLambdaAbs);
     expect((constants['local_accept_residual'] as num).toDouble(), kLocalAcceptResidual);
     expect((constants['local_accept_distance'] as num).toDouble(), kLocalAcceptDistance);
+    expect((constants['local_model_version'] as num).toInt(), kLocalModelVersion);
+    expect((constants['local_pair_model_version'] as num).toInt(), kLocalPairModelVersion);
     expect(cases.length, greaterThanOrEqualTo(12));
   });
 
@@ -131,7 +133,7 @@ void main() {
     test('a valid model parses', () => expect(LocalRetractor.tryParse(base()), isNotNull));
     test('null, another version, an unknown mate type, a missing side field or an out-of-range member -> projection only', () {
       expect(LocalRetractor.tryParse(null), isNull);
-      expect(LocalRetractor.tryParse(base()..['version'] = kLocalModelVersion + 1), isNull);
+      expect(LocalRetractor.tryParse(base()..['version'] = kLocalPairModelVersion + 1), isNull);
       expect(LocalRetractor.tryParse(base()..['version'] = 1), isNull, reason: 'the pre-branch model (sign-agnostic residuals) is not evaluated');
       expect(LocalRetractor.tryParse(base()..['version'] = 2), isNull, reason: 'a version-2 model has no swing sense for an ANGLE about a hinge');
       final unknown = base();
@@ -144,10 +146,11 @@ void main() {
       (((badMember['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>)['member'] = 5;
       expect(LocalRetractor.tryParse(badMember), isNull);
     });
-    test('every golden model carries the current version and a branch on each mate', () {
+    test('every golden model carries the current version (4 exactly when a side has a pair) and a branch on each mate', () {
       for (final c in cases) {
         final model = (c['input'] as Map<String, dynamic>)['model'] as Map<String, dynamic>;
-        expect(model['version'], kLocalModelVersion, reason: c['id'] as String);
+        final hasPair = (model['mates'] as List).any((m) => ((m as Map)['a'] as Map).containsKey('pair') || (m['b'] as Map).containsKey('pair'));
+        expect(model['version'], hasPair ? kLocalPairModelVersion : kLocalModelVersion, reason: c['id'] as String);
         for (final m in model['mates'] as List) {
           final mate = m as Map<String, dynamic>;
           for (final key in <String>['alignment', 'side', 'perp']) {
@@ -155,6 +158,33 @@ void main() {
           }
         }
       }
+    });
+    group('version 4 (a side with a pair)', () {
+      Map<String, dynamic> pairModel() => jsonDecode(
+            jsonEncode((cases.firstWhere((c) => c['id'] == 'local-width-free-bars-slide-bar')['input'] as Map<String, dynamic>)['model']),
+          ) as Map<String, dynamic>;
+      Map<String, dynamic> pairSide(Map<String, dynamic> model) {
+        final m = (model['mates'] as List).first as Map<String, dynamic>;
+        return (m['a'] as Map<String, dynamic>).containsKey('pair') ? m['a'] as Map<String, dynamic> : m['b'] as Map<String, dynamic>;
+      }
+
+      test('a version-4 model with a pair parses and counts the extra parallel rows', () {
+        final model = LocalRetractor.tryParse(pairModel());
+        expect(model, isNotNull);
+        expect(model!.rows, 1 + 3 + 3, reason: 'plane distance + the plane-plane normals + the pair\'s parallel rows');
+      });
+      test('version 3 with a pair, or a pair with a missing plane / an out-of-range member -> projection only', () {
+        expect(LocalRetractor.tryParse(pairModel()..['version'] = kLocalModelVersion), isNull);
+        final noPlane = pairModel();
+        (pairSide(noPlane)['pair'] as Map<String, dynamic>).remove('plane');
+        expect(LocalRetractor.tryParse(noPlane), isNull);
+        final badMember = pairModel();
+        (pairSide(badMember)['pair'] as Map<String, dynamic>)['member'] = 9;
+        expect(LocalRetractor.tryParse(badMember), isNull);
+      });
+      test('a version-4 model without any pair is still an ordinary model', () {
+        expect(LocalRetractor.tryParse(base()..['version'] = kLocalPairModelVersion), isNotNull);
+      });
     });
     test('groups bigger than the limit are not solved locally', () {
       expect(LocalRetractor.tryParse(base(), maxMembers: 0), isNull);
@@ -188,7 +218,14 @@ void main() {
 // JIT in debug mode, a release/AOT build is several times faster.
 void localBenchmark() {
   final doc = jsonDecode(File(_vectorsPath).readAsStringSync()) as Map<String, dynamic>;
-  for (final id in const ['local-bolt-pull-off-and-spin', 'local-floating-bolt-slide-and-spin', 'local-row5-slide-spin', 'local-row8-slide-spin']) {
+  for (final id in const [
+    'local-bolt-pull-off-and-spin',
+    'local-floating-bolt-slide-and-spin',
+    'local-row5-slide-spin',
+    'local-row8-slide-spin',
+    'local-width-free-bars-slide-bar',
+    'local-width-4part-anti-aligned-slide-bar',
+  ]) {
     test('cost per local frame: $id', () {
       final c = (doc['cases'] as List).cast<Map<String, dynamic>>().firstWhere((x) => x['id'] == id);
       final inp = c['input'] as Map<String, dynamic>;
@@ -210,4 +247,39 @@ void localBenchmark() {
       expect(us, lessThan(5000), reason: 'a frame must stay far below a 16 ms budget');
     });
   }
+
+  test('cost per local frame: a pair scene against its plain twin (same members, the pair removed)', () {
+    final all = (doc['cases'] as List).cast<Map<String, dynamic>>();
+    for (final id in const ['local-width-free-bars-slide-bar', 'local-width-4part-anti-aligned-slide-bar']) {
+      final inp = all.firstWhere((x) => x['id'] == id)['input'] as Map<String, dynamic>;
+      final spec = inp['model'] as Map<String, dynamic>;
+      final plain = jsonDecode(jsonEncode(spec)) as Map<String, dynamic>;
+      plain['version'] = kLocalModelVersion;
+      for (final m in plain['mates'] as List) {
+        ((m as Map)['a'] as Map).remove('pair');
+        (m['b'] as Map).remove('pair');
+      }
+      final poses = [for (final p in inp['poses'] as List) _poseIn(p)];
+      final wishes = [for (final p in inp['wishes'] as List) _poseIn(p)];
+      final lever = (inp['lever_arm'] as num).toDouble();
+      final us = <String, double>{};
+      for (final entry in <String, Map<String, dynamic>>{'plain': plain, 'pair': spec}.entries) {
+        final model = LocalRetractor.tryParse(entry.value)!;
+        for (var i = 0; i < 200; i++) {
+          model.frame(poses: poses, wishes: wishes, fallback: poses, lever: lever);
+        }
+        final sw = Stopwatch()..start();
+        const n = 2000;
+        for (var i = 0; i < n; i++) {
+          model.frame(poses: poses, wishes: wishes, fallback: poses, lever: lever);
+        }
+        us[entry.key] = sw.elapsedMicroseconds / n;
+        us['${entry.key}_rows'] = model.rows.toDouble();
+      }
+      // ignore: avoid_print
+      print('pair vs plain twin $id: plain ${us['plain_rows']!.toInt()} rows ${us['plain']!.toStringAsFixed(1)} us/frame, '
+          'pair ${us['pair_rows']!.toInt()} rows ${us['pair']!.toStringAsFixed(1)} us/frame (JIT, debug)');
+      expect(us['pair']!, lessThan(5000));
+    }
+  });
 }

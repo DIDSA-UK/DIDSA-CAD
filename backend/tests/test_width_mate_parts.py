@@ -3,7 +3,7 @@ top-level occurrences (two loose bars, a plate made of two parts).
 
 * 3 parts, the bars fixed: the mid-plane never moves, so the constraint model stays a plain plane-plane one;
 * 3 parts, the bars free, and 4 parts: the mid-plane depends on two poses - the group solve holds it (and keeps each pair of
-  faces parallel), the constraint model is not exported (the clients keep projecting);
+  faces parallel); the constraint model is exported as version 4 (a side with a `pair`, see `test_constraint_model.py`);
 * nothing is created or stored for a mid-plane, whichever case.
 """
 
@@ -140,14 +140,18 @@ def test_a_gap_face_on_a_missing_occurrence_is_a_422():
     assert response.status_code == 422
 
 
-def test_three_parts_with_free_bars_hold_the_centre_and_export_no_constraint_model():
+def test_three_parts_with_free_bars_hold_the_centre_and_export_a_pair_constraint_model():
     root, bar_l, bar_r, plate, _ = _scene(1, fix_bars=False)
     # the bars are free: minimal movement moves only the plate; the centre still lands
     assert _create(root, {"type": "coincident", "references": [_tab_one(plate), _gap(bar_l, bar_r)]}, "plate").status_code == 201
     assert _x(root, "plate", 15.0) == pytest.approx(35.0, abs=1e-6)
     document = get_document()
-    assert export_constraint_model(build_group_model(document, document.parts[root], "plate")) is None
-    # grabbing a bar: the mate holds both bars and the plate to the same centre (the model is solved, just not exported)
+    spec = export_constraint_model(build_group_model(document, document.parts[root], "plate"))
+    # the gap side carries its second face as `pair` (version 4); the tab side is a plain plane
+    assert spec is not None and spec["version"] == 4
+    (mate,) = spec["mates"]
+    assert "pair" not in mate["a"] and set(mate["b"]["pair"]) == {"member", "plane"} and mate["b"]["pair"]["member"] != mate["b"]["member"]
+    # grabbing a bar: the mate holds both bars and the plate to the same centre (the model is solved, and exported)
     model = build_group_model(document, document.parts[root], "barL")
     assert set(model.member_ids) == {"barL", "barR", "plate"}
     assert np.max(np.abs(model.residual(np.zeros(model.n_vars)))) < 1e-6
@@ -171,7 +175,11 @@ def test_four_parts_a_tab_made_of_two_parts_between_a_gap_made_of_two_parts(plat
     for oid in ("plateA", "plateB"):
         assert _poses(root)[oid]["rotation_angle_degrees"] == pytest.approx(0.0, abs=1e-5)
     document = get_document()
-    assert export_constraint_model(build_group_model(document, document.parts[root], "plateA")) is None
+    spec = export_constraint_model(build_group_model(document, document.parts[root], "plateA"))
+    # the bars are fixed: the gap is one plain plane; the tab (two moving plates) carries a pair
+    assert spec is not None and spec["version"] == 4
+    (mate,) = spec["mates"]
+    assert "pair" in mate["a"] and "pair" not in mate["b"] and mate["b"]["member"] == -1
 
 
 def test_four_parts_survive_export_and_import_and_deleting_the_mate_leaves_the_objects():
@@ -214,10 +222,11 @@ def test_preview_and_group_drag_work_over_four_parts():
     assert ghost["converged"] and ghost["resolved"]["alignment"] in ("aligned", "anti_aligned")
     assert ghost["controls"] == ["alignment"]
     assert _create(root, payload, "plateA").status_code == 201
-    # a free-motion drag of a plate: the backend still answers (no constraint model is exported for this component)
+    # a free-motion drag of a plate: the answer carries the version 4 constraint model, so the clients retract locally
     response = client.post(f"/document/parts/{root}/occurrences/plateB/mate-motion", json={})
     assert response.status_code == 200, response.text
-    assert response.json().get("constraint_model") is None
+    model = response.json().get("constraint_model")
+    assert model is not None and model["version"] == 4 and model["members"] == [m["occurrence_id"] for m in response.json()["members"]]
 
 
 @pytest.mark.parametrize("movement", ["auto", "group", "minimal"])

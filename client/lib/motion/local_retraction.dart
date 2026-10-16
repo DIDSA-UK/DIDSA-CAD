@@ -39,6 +39,10 @@ const int kLocalMaxMembers = 8;
 const int kLocalMaxRows = 64;
 const int kLocalModelVersion = 3;
 
+/// Version 4 = version 3 plus an optional `pair` on a side: the second face of a Width / Symmetric mid-plane over two members. The
+/// backend emits 4 only for a component that has one, so every other scene keeps version 3 (and an old client keeps projecting).
+const int kLocalPairModelVersion = 4;
+
 /// Divisor floor (mm) of the mm-scaled squared DISTANCE residuals (axis-axis, point-point): `(x² - d²) / (2 max(d, floor))`.
 const double kLocalDistanceFloor = 1e-3;
 
@@ -53,7 +57,11 @@ class _Side {
   /// origin), `pnormal`.
   final Map<String, List<double>> geometry;
 
-  const _Side(this.member, this.frozenR, this.frozenT, this.geometry);
+  /// Version 4: the second face of a mid-plane (`porigin` / `pnormal` of ITS member, or the frozen pose). The side's world plane is
+  /// then (the average of the two world origins, this side's normal) and the mate adds the rows "the two normals stay parallel".
+  final _Side? pair;
+
+  const _Side(this.member, this.frozenR, this.frozenT, this.geometry, [this.pair]);
 }
 
 class _Mate {
@@ -109,7 +117,19 @@ _Side _parseSide(Map<String, dynamic> j) {
     fr = Mat3(<double>[for (final row in rows) ..._vec(row)]);
     ft = _vec(frozen['t']);
   }
-  return _Side((j['member'] as num).toInt(), fr, ft, geo);
+  _Side? pair;
+  final pj = j['pair'];
+  if (pj != null) {
+    final pm = pj as Map<String, dynamic>;
+    final pp = pm['plane'] as Map<String, dynamic>;
+    pair = _Side(
+      (pm['member'] as num).toInt(),
+      pm['frozen'] == null ? null : Mat3(<double>[for (final row in (pm['frozen'] as Map)['r'] as List) ..._vec(row)]),
+      pm['frozen'] == null ? null : _vec((pm['frozen'] as Map)['t']),
+      <String, List<double>>{'porigin': _vec(pp['origin']), 'pnormal': _vec(pp['normal'])},
+    );
+  }
+  return _Side((j['member'] as num).toInt(), fr, ft, geo, pair);
 }
 
 class LocalFrameResult {
@@ -146,7 +166,8 @@ class LocalRetractor {
   static LocalRetractor? tryParse(Map<String, dynamic>? json, {int maxMembers = kLocalMaxMembers}) {
     if (json == null) return null;
     try {
-      if ((json['version'] as num?)?.toInt() != kLocalModelVersion) return null;
+      final version = (json['version'] as num?)?.toInt();
+      if (version != kLocalModelVersion && version != kLocalPairModelVersion) return null;
       final ids = <String>[for (final m in json['members'] as List) m as String];
       if (ids.isEmpty || ids.length > maxMembers) return null;
       final mates = <_Mate>[];
@@ -165,6 +186,9 @@ class LocalRetractor {
           _parseSide(m['b'] as Map<String, dynamic>),
         );
         if (side.a.member >= ids.length || side.b.member >= ids.length) return null;
+        if ((side.a.pair?.member ?? -1) >= ids.length || (side.b.pair?.member ?? -1) >= ids.length) return null;
+        // `pair` belongs to version 4 only: a version-3 model that carries one is malformed, not "version 3 plus extras".
+        if (version == kLocalModelVersion && (side.a.pair != null || side.b.pair != null)) return null;
         mates.add(side);
       }
       final probe = LocalRetractor._(ids.length, ids, mates, 0);
@@ -221,6 +245,19 @@ class LocalRetractor {
     for (final name in s.geometry.keys) {
       final point = name == 'point' || name == 'axis_origin' || name == 'porigin';
       g[name] = _world(s, poses, name, point);
+    }
+    final pair = s.pair;
+    if (pair != null && g.containsKey('porigin')) {
+      // Version 4: the plane midway between this face and the pair's (origin = average, normal = this face's).
+      final other = _world(pair, poses, 'porigin', true);
+      final o = g['porigin']!;
+      final mid = _V(
+        <double>[(o.v[0] + other.v[0]) / 2, (o.v[1] + other.v[1]) / 2, (o.v[2] + other.v[2]) / 2],
+        List<double>.generate(3 * n, (i) => (o.d[i] + other.d[i]) / 2),
+      );
+      g['porigin'] = mid;
+      if (g.containsKey('point')) g['point'] = mid;
+      g['pair_normal'] = _world(pair, poses, 'pnormal', false);
     }
     return g;
   }
@@ -357,6 +394,10 @@ class LocalRetractor {
             final off = _sub(d['point']!, f['point']!);
             addScaled(_dot(off, off), dist);
           }
+      }
+      for (final g in <Map<String, _V>>[d, f]) {
+        // A pair's two faces stay parallel: the cross product of their unit normals (3 rows, rank 2).
+        if (g.containsKey('pair_normal')) addV(_cross(_unit(g['pnormal']!), _unit(g['pair_normal']!)));
       }
     }
     return (rows, jac);

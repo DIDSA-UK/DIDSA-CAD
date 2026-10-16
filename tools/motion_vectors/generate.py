@@ -55,6 +55,7 @@ LOCAL_LAM_ABS = 1e-9
 LOCAL_ACCEPT_RESIDUAL = 1e-6
 LOCAL_DISTANCE_FLOOR = 1e-3  # mm: divisor floor of the mm-scaled squared DISTANCE residuals (axis-axis, point-point)
 LOCAL_MODEL_VERSION = 3      # 3: an ANGLE about a hinge also fixes the swing sense (hinge_direction on a side); 2: branch-specific residuals (alignment / side / perp per mate), see docs/mate-solution-choice-plan.md
+LOCAL_PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces on two members); a model without any pair stays at LOCAL_MODEL_VERSION
 LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
 
 
@@ -384,6 +385,16 @@ class ConstraintModel:
         if "plane" in side:
             g["porigin"] = self._world(side, poses, "origin", "point", plane=True)
             g["pnormal"] = self._world(side, poses, "normal", "dir", plane=True)
+            pair = side.get("pair")
+            if pair is not None:
+                # v4: the plane midway between this face and the pair's (origin = average, normal = this face's); `pair_normal`
+                # feeds the extra "the two faces stay parallel" rows
+                other = self._world(pair, poses, "origin", "point", plane=True)
+                mid = _V((g["porigin"].v + other.v) / 2.0, (g["porigin"].d + other.d) / 2.0)
+                g["porigin"] = mid
+                if "point" in g:
+                    g["point"] = mid
+                g["pair_normal"] = self._world(pair, poses, "normal", "dir", plane=True)
         return g
 
     def residual(self, poses):
@@ -458,6 +469,9 @@ class ConstraintModel:
                     off = _vsub(d["point"], f["point"])
                     oo = _vdot(off, off)
                     add(_S((oo.v - dist * dist) / scale, oo.d / scale))
+            for geo in (d, f):
+                if "pair_normal" in geo:
+                    addv(_vcross(_vunit(geo["pnormal"]), _vunit(geo["pair_normal"])))  # the pair's two faces stay parallel (rank 2)
         return np.array(rows, float), (np.array(jac, float) if jac else np.zeros((0, self.n)))
 
 
@@ -1221,6 +1235,92 @@ def build():
         local_case(f"local-row{k}-lift-and-slide", f"{k}-box row: the first box is lifted 2 mm off the plate and slid 3 mm - the lift is blocked, the slide drags the row",
                    row_model(k), ps, [moved(ps[0], (3, 0, 2))] + ps[1:], 10.0)
 
+    # ---- constraint model v4: a side with a `pair` (docs/width-mate-plan.md). A Width mate over faces of two members: the side's plane is
+    # (the average of the two origins, the FIRST face's normal) and the side adds `cross(unit n_first, unit n_pair)` (3 rows, rank 2).
+    # Fixed bars collapse to one plain plane in the backend export, so these are the MOVING pairs. Geometry: two bars either side of a gap
+    # (inner faces at world x = -50 / +50, facing each other: anti-parallel normals), a tab whose mid-plane is x = 0.
+    PAIR_VERSION = LOCAL_PAIR_MODEL_VERSION
+
+    def pair_side(member, origin, normal, other_member, other_origin, other_normal, other_frozen=None, **extra):
+        pr = {"member": other_member, "plane": {"origin": list(other_origin), "normal": list(other_normal)}}
+        if other_frozen is not None:
+            pr["frozen"] = other_frozen
+        return plane_side(member, origin, normal, pair=pr, **extra)
+
+    def gap_side(first_member=0, second_member=1, **extra):
+        # barL's inner face (local (10,0,0), +x) and barR's inner face (local (-10,0,0), -x): the gap mid-plane is x = 0, normal +x
+        return pair_side(first_member, (10, 0, 0), (1, 0, 0), second_member, (-10, 0, 0), (-1, 0, 0), **extra)
+
+    bar_l, bar_r = P((-60.0, 0.0, 0.0)), P((60.0, 0.0, 0.0))
+    tab_flat = P((0.0, 7.0, -4.0))  # a one-face tab (its mid-plane is its own plane x = 0 local)
+    tab_side = lambda m: plane_side(m, (0, 0, 0), (1, 0, 0))
+    width3 = lambda alignment=1: {"version": PAIR_VERSION, "members": ["barL", "barR", "tab"], "mates": [
+        mate("coincident", tab_side(2), gap_side(), alignment=alignment)]}
+    free3 = [bar_l, bar_r, tab_flat]
+    local_case("local-width-free-bars-slide-bar", "Width (tab centred between two FREE bars; 3 members): the grabbed bar L is slid 4 mm along the gap normal - the gap mid-plane moves 2 mm, "
+               "the tab follows (v4 `pair` side, 1 + 3 + 3 rows)", width3(), free3, [moved(bar_l, (4, 0, 0)), bar_r, tab_flat], 20.0)
+    local_case("local-width-free-bars-tab-wish", "Width over free bars: the tab (grabbed first) is wished 6 mm off-centre - the nearest pose moves the tab back and shares the rest with the bars",
+               {"version": PAIR_VERSION, "members": ["tab", "barL", "barR"], "mates": [mate("coincident", tab_side(0), gap_side(1, 2), alignment=1)]},
+               [tab_flat, bar_l, bar_r], [moved(tab_flat, (6, 2, 0)), bar_l, bar_r], 20.0)
+    local_case("local-width-free-bars-slide-along-free", "Width over free bars: sliding the tab in y / z (in the planes) is free and the bars sit still - reproduced exactly",
+               width3(), free3, [bar_l, bar_r, moved(tab_flat, (0, 9, 5))], 20.0, fallback=[bar_l, bar_r, moved(tab_flat, (0, 9, 5))])
+    # bars + tab all turned together by a rotation not aligned with the axes: still on the manifold, still the same behaviour
+    def spin_all(poses, deg, axis=(1, 2, 3)):
+        g = rot_axis_angle(np.array(axis, float) / np.linalg.norm(axis), deg)
+        return [Pose(g @ p.t, g @ p.r) for p in poses]
+    free3_turned = spin_all(free3, 35.0)
+    local_case("local-width-free-bars-turned-scene", "The same Width scene turned 35 deg about (1,2,3): bar L is pulled 3 mm along its own old x axis - the pair still averages the two origins",
+               width3(), free3_turned, [moved(free3_turned[0], tuple(rot_axis_angle(np.array([1, 2, 3.0]) / np.linalg.norm([1, 2, 3.0]), 35.0) @ np.array([3.0, 0, 0]))), free3_turned[1], free3_turned[2]], 20.0)
+    local_case("local-width-bar-tilt-near-parallel", "Width over free bars: bar L tilted 0.5 deg about z (nearly parallel faces, tiny cross product): the parallel rows pull it back",
+               width3(), free3, [turned(bar_l, 0.5), bar_r, tab_flat], 20.0)
+    local_case("local-width-bar-tilt-20deg", "Width over free bars: bar L tilted 20 deg about y - the parallel rows pull the pair back to parallel; converges near the wish's nearest point",
+               width3(), free3, [turned(bar_l, 20, (0, 1, 0)), bar_r, tab_flat], 20.0)
+    # the tab turned away (a half turn about z): its mid-plane normal points the other way, the mate stays on the ANTI-aligned branch
+    tab_turned = P((0.0, 7.0, -4.0), (0, 0, 1), 180.0)
+    local_case("local-width-turned-away-tab-anti-aligned", "Width over free bars, anti-aligned branch (the tab starts turned a half turn): a 4 mm bar slide keeps the tab turned away",
+               width3(-1), [bar_l, bar_r, tab_turned], [moved(bar_l, (4, 0, 0)), bar_r, tab_turned], 20.0)
+    local_case("local-width-turned-away-tab-tilt-100deg", "Anti-aligned Width: the tab tilted 100 deg about y (past horizontal) must not flip onto the aligned root",
+               width3(-1), [bar_l, bar_r, tab_turned], [bar_l, bar_r, turned(tab_turned, 100, (0, 1, 0))], 20.0)
+    # one bar fixed (a frozen pair second): the pair carries `frozen`, member -1
+    FROZEN_BAR_R = {"r": I3, "t": [60.0, 0.0, 0.0]}
+    width_frozen_partner = {"version": PAIR_VERSION, "members": ["barL", "tab"], "mates": [
+        mate("coincident", tab_side(1), pair_side(0, (10, 0, 0), (1, 0, 0), -1, (-10, 0, 0), (-1, 0, 0), other_frozen=FROZEN_BAR_R), alignment=1)]}
+    local_case("local-width-one-bar-fixed", "Width where bar R is fixed (the pair's second face is a frozen non-member) and bar L + tab move: bar L slid 4 mm drags the tab 2 mm",
+               width_frozen_partner, [bar_l, tab_flat], [moved(bar_l, (4, 0, 0)), tab_flat], 20.0)
+    # the offset (`distance` between the two mid-planes, signed): the tab 3 mm along +x of the gap centre
+    width_offset = lambda side_sign: {"version": PAIR_VERSION, "members": ["barL", "barR", "tab"], "mates": [
+        mate("distance", tab_side(2), gap_side(), value=3.0, alignment=1, side=side_sign)]}
+    local_case("local-width-offset-plus", "Width with a 3 mm offset from centre (distance, side +1): the tab sits at x = +3; bar R slid 6 mm out keeps it 3 mm past the NEW centre",
+               width_offset(1), [bar_l, bar_r, moved(tab_flat, (3, 0, 0))], [bar_l, moved(bar_r, (6, 0, 0)), moved(tab_flat, (3, 0, 0))], 20.0)
+    local_case("local-width-offset-minus", "Width offset 3 mm on the -normal side (side -1): the tab at x = -3; a wish that pushes the tab through the centre to x = +2 lands back on the -3 side",
+               width_offset(-1), [bar_l, bar_r, moved(tab_flat, (-3, 0, 0))], [bar_l, bar_r, moved(tab_flat, (2, 0, 0))], 20.0)
+    # 4 parts: the tab is two members too (tabL / tabR outer faces, normals pointing away from each other: the tab mid-plane's normal is the first
+    # face's). barL / barR as above; both sides carry a pair: 1 + 3 + 3 rows + 3 + 3 parallel rows
+    tab_l, tab_r = P((-5.0, 7.0, -4.0)), P((5.0, 7.0, -4.0))
+    tab_pair = lambda first, second: pair_side(first, (0, 0, 0), (-1, 0, 0), second, (0, 0, 0), (1, 0, 0))  # first = left half (normal -x), second = right half (+x)
+    width4 = lambda alignment: {"version": PAIR_VERSION, "members": ["barL", "barR", "tabL", "tabR"], "mates": [
+        mate("coincident", tab_pair(2, 3), gap_side(), alignment=alignment)]}
+    free4 = [bar_l, bar_r, tab_l, tab_r]
+    local_case("local-width-4part-anti-aligned-slide-bar", "Width over FOUR free members (gap = two bars, tab = two halves; first tab face normal -x against the gap's +x = anti-aligned): bar L slid 4 mm - "
+               "both mid-planes are averages of two origins (1 + 3 + 3 + 3 rows)", width4(-1), free4, [moved(bar_l, (4, 0, 0)), bar_r, tab_l, tab_r], 20.0)
+    local_case("local-width-4part-tab-half-wish", "4-part Width: the left tab half is wished 8 mm away from the centre - the pair mid-plane follows only half of it, the rest of the group shares the correction",
+               width4(-1), free4, [bar_l, bar_r, moved(tab_l, (-8, 0, 0)), tab_r], 20.0)
+    local_case("local-width-4part-tab-half-tilt", "4-part Width: the right tab half tilted 10 deg about z - the tab pair's parallel rows pull it back to parallel",
+               width4(-1), free4, [bar_l, bar_r, tab_l, turned(tab_r, 10)], 20.0)
+    width4_aligned = {"version": PAIR_VERSION, "members": ["barL", "barR", "tabR", "tabL"], "mates": [
+        mate("coincident", pair_side(2, (0, 0, 0), (1, 0, 0), 3, (0, 0, 0), (-1, 0, 0)), gap_side(), alignment=1)]}
+    local_case("local-width-4part-aligned-slide-gap", "4-part Width, aligned (the first tab face is the right half's, normal +x): both bars slid apart 3 mm each - the gap centre stays, nothing else moves",
+               width4_aligned, [bar_l, bar_r, tab_r, tab_l], [moved(bar_l, (-3, 0, 0)), moved(bar_r, (3, 0, 0)), tab_r, tab_l], 20.0)
+    local_case("local-width-4part-turned-scene", "4-part Width with the whole scene turned 50 deg about (3,-1,2): bar R pulled off 5 mm and bar L tilted 2 deg",
+               width4(-1), spin_all(free4, 50.0, (3, -1, 2)), [spin_all(free4, 50.0, (3, -1, 2))[0], turned(spin_all(free4, 50.0, (3, -1, 2))[1], 2, (0, 1, 0)),
+                                                              *spin_all(free4, 50.0, (3, -1, 2))[2:]], 20.0)
+    # a pair next to an ordinary mate: the tab also rides a fixed rail (coincident plane z = -4 of its own bottom face)
+    rail = {"version": PAIR_VERSION, "members": ["barL", "barR", "tab"], "mates": [
+        mate("coincident", tab_side(2), gap_side(), alignment=1),
+        mate("coincident", plane_side(2, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, -4), (0, 0, 1), frozen=FROZEN0), alignment=-1)]}
+    local_case("local-width-plus-rail", "Width plus a second mate on the tab (its bottom face on a fixed rail plane z = -4): lifting the tab off the rail and pulling it off-centre lands on both",
+               rail, free3, [bar_l, bar_r, moved(tab_flat, (5, 0, 3))], 20.0)
+
 
 def self_check():
     """Properties the vectors rely on (the prototype's `_skew` had a wrong third row, which made its screw translation
@@ -1279,7 +1379,7 @@ def main():
             "local_follower": LOCAL_FOLLOWER, "local_iters": LOCAL_ITERS, "local_iters_max": LOCAL_ITERS_MAX, "local_polish": LOCAL_POLISH, "local_trust": LOCAL_TRUST,
             "local_rot_cap": LOCAL_ROT_CAP, "local_lam_abs": LOCAL_LAM_ABS, "local_accept_residual": LOCAL_ACCEPT_RESIDUAL,
             "local_accept_distance": LOCAL_ACCEPT_DISTANCE,
-            "local_distance_floor": LOCAL_DISTANCE_FLOOR, "local_model_version": LOCAL_MODEL_VERSION,
+            "local_distance_floor": LOCAL_DISTANCE_FLOOR, "local_model_version": LOCAL_MODEL_VERSION, "local_pair_model_version": LOCAL_PAIR_MODEL_VERSION,
         },
         "conventions": {
             "pose_in": "translation + rotation_axis (normalised on read) + rotation_angle_degrees (the contract's RigidTransform)",
