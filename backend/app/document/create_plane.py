@@ -321,7 +321,14 @@ def resolve_midplane_from_bodies(
     Body-face case)."""
     resolved_a = resolve_plane_ref(part, bodies, plane_ref_a, excluded_feature_ids)
     resolved_b = resolve_plane_ref(part, bodies, plane_ref_b, excluded_feature_ids)
+    return midplane_of_resolved(resolved_a, resolved_b, plane_ref_a, plane_ref_b)
 
+
+def midplane_of_resolved(
+    resolved_a: ResolvedPlane, resolved_b: ResolvedPlane, plane_ref_a: PlaneRef, plane_ref_b: PlaneRef
+) -> ResolvedPlane:
+    """The pure maths of `resolve_midplane_from_bodies`, on two already-resolved planes in one common frame (a Width mate
+    resolves its two faces in different Parts and brings them into one frame first)."""
     dot = sum(a * b for a, b in zip(resolved_a.normal, resolved_b.normal))
     if abs(abs(dot) - 1.0) > 1e-6:
         raise _faces_not_parallel(plane_ref_a, plane_ref_b)

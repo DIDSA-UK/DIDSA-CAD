@@ -127,6 +127,7 @@ from app.document.models import (
     MaterialAssignment,
     Mate,
     MateEntityRef,
+    MidplaneRef,
     MeasureEntityRef,
     MateType,
     MergeFeature,
@@ -201,6 +202,7 @@ from app.document.schemas import (
     ComponentPatternUpdate,
     MateCreate,
     MateEntityRefResponse,
+    MidplaneRefSchema,
     MateResponse,
     MateMotionChart,
     MateMotionDiagnostics,
@@ -3451,7 +3453,16 @@ def _mate_entity_ref_response(ref: MateEntityRef) -> MateEntityRefResponse:
         subshape_ref=_subshape_ref_to_schema(ref.subshape_ref) if ref.subshape_ref else None,
         plane_ref=_plane_ref_to_schema(ref.plane_ref) if ref.plane_ref else None,
         point_ref=_point_ref_to_schema(ref.point_ref) if ref.point_ref else None,
+        midplane=_midplane_ref_to_schema(ref.midplane) if ref.midplane else None,
     )
+
+
+def _midplane_ref_to_schema(ref: MidplaneRef) -> MidplaneRefSchema:
+    return MidplaneRefSchema(a=_plane_ref_to_schema(ref.a), b=_plane_ref_to_schema(ref.b), b_occurrence_id=ref.b_occurrence_id)
+
+
+def _midplane_ref_to_domain(schema: MidplaneRefSchema) -> MidplaneRef:
+    return MidplaneRef(a=_plane_ref_to_domain(schema.a), b=_plane_ref_to_domain(schema.b), b_occurrence_id=schema.b_occurrence_id)
 
 
 def _mate_response(mate: Mate) -> MateResponse:
@@ -3678,10 +3689,15 @@ def _mate_entity_ref_to_domain(schema: MateEntityRefResponse) -> MateEntityRef:
         subshape_ref=_subshape_ref_to_domain(schema.subshape_ref) if schema.subshape_ref else None,
         plane_ref=_plane_ref_to_domain(schema.plane_ref) if schema.plane_ref else None,
         point_ref=_point_ref_to_domain(schema.point_ref) if schema.point_ref else None,
+        midplane=_midplane_ref_to_domain(schema.midplane) if schema.midplane else None,
     )
 
 
-def _validate_mate_entity_ref(part: Part, ref: MateEntityRefResponse) -> None:
+# The mate types a Width (mid-plane) reference may be used with: the plane-plane ones (`docs/width-mate-plan.md` §3).
+_MIDPLANE_MATE_TYPES = ("coincident", "distance", "parallel")
+
+
+def _validate_mate_entity_ref(part: Part, ref: MateEntityRefResponse, mate_type: str | None = None) -> None:
     """One `MateCreate.references` entry's own payload-shape validation -
     exactly one of `subshape_ref`/`plane_ref`/`point_ref` (mirrors
     `_validate_plane_ref`'s identical "exactly one of N" check for
@@ -3691,12 +3707,31 @@ def _validate_mate_entity_ref(part: Part, ref: MateEntityRefResponse) -> None:
     ever reference a top-level Occurrence of the currently-open Part, the
     same limit Phase 5's gizmo already has - see `assembly_solver`'s own
     module docstring)."""
-    set_count = sum(x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref))
+    set_count = sum(x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref, ref.midplane))
     if set_count != 1:
         raise HTTPException(
             status_code=422,
-            detail="Each mate reference must have exactly one of subshape_ref, plane_ref, or point_ref",
+            detail="Each mate reference must have exactly one of subshape_ref, plane_ref, point_ref, or midplane",
         )
+    if ref.midplane is not None:
+        if mate_type is not None and mate_type not in _MIDPLANE_MATE_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"A Width (midplane) reference can only be used with a {'/'.join(_MIDPLANE_MATE_TYPES)} mate, not {mate_type}",
+            )
+        for side in (ref.midplane.a, ref.midplane.b):
+            _validate_midplane_plane_ref(side)
+        b_id = ref.midplane.b_occurrence_id
+        if b_id is not None and top_level_occurrence_id(b_id) != top_level_occurrence_id(ref.occurrence_id):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "type": "midplane_faces_on_different_occurrences",
+                    "message": "A Width reference's two faces must belong to the same top-level occurrence",
+                    "occurrence_id": ref.occurrence_id,
+                    "b_occurrence_id": b_id,
+                },
+            )
     if ref.occurrence_id == "":
         return
     # A `/`-joined path names an Occurrence nested inside a sub-assembly
@@ -3717,6 +3752,14 @@ def _validate_mate_entity_ref(part: Part, ref: MateEntityRefResponse) -> None:
             current = get_document().parts.get(occurrence.part_id) if occurrence.part_id else None
 
 
+def _validate_midplane_plane_ref(ref: PlaneRefSchema) -> None:
+    """Shape check of one face of a mid-plane (its Part is the occurrence's, so existence is left to the resolver)."""
+    if sum(x is not None for x in (ref.face_ref, ref.fixed_plane, ref.plane_feature_id)) != 1:
+        raise HTTPException(status_code=422, detail="Each midplane face must have exactly one of face_ref, fixed_plane, or plane_feature_id")
+    if ref.face_ref is not None and ref.face_ref.shape_type != SubShapeType.FACE:
+        raise HTTPException(status_code=422, detail="midplane face_ref entries must have shape_type=FACE")
+
+
 def _validate_mate_create(part: Part, payload: MateCreate) -> None:
     """`POST /parts/{part_id}/mates`'s own payload-shape validation - the
     router's job, mirroring every other structured Feature/Mate validation
@@ -3727,7 +3770,7 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
     if len(payload.references) != 2:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     for ref in payload.references:
-        _validate_mate_entity_ref(part, ref)
+        _validate_mate_entity_ref(part, ref, payload.type)
     first_top = top_level_occurrence_id(payload.references[0].occurrence_id)
     second_top = top_level_occurrence_id(payload.references[1].occurrence_id)
     if first_top == second_top:
@@ -4591,7 +4634,7 @@ def preview_mate_solve_endpoint(
         return MateSolvePreviewResponse(converged=False, transform=None)
     try:
         for ref in payload.references:
-            _validate_mate_entity_ref(part, ref)
+            _validate_mate_entity_ref(part, ref, payload.type)
         _reject_negative_distance(payload.type, payload.value)
         extra_mate = Mate(
             id="preview",

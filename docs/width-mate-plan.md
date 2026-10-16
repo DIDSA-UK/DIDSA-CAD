@@ -8,13 +8,60 @@ first — this plan reuses all of it and deliberately changes none of it.
 
 | Phase | Summary | Status | PR |
 |---|---|---|---|
-| W1 | Backend: mid-plane mate reference, validation, solve/preview/branches, export/import | Not started | |
+| W1 | Backend: mid-plane mate reference, validation, solve/preview/branches, export/import | Done (PR open, awaiting review; not merged) | CAD (this branch) |
 | W2 | Flutter: four-pick Width flow in the mate panel, highlighting, edit | Not started | |
 | W3 | VR: the same flow on the tablet / wheel | Not started | |
 | W4 | AI plan schema + docs + measurement on the tester's table top | Not started | |
 | W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Not started — scoped below, needs its own go-ahead | |
 
 Update this table with every PR, the same as the parent plan.
+
+## W1 implementation notes (what was built, and where it differs from the text)
+
+- **One deviation from §2, needed by the tester's file:** the Frame is a *sub-assembly of four bars*, so its two gap faces sit on two
+  different leaf occurrences (`Frame/<bar y0>` and `Frame/<bar y800>`), not on one. `MidplaneRef` is therefore `(a, b, b_occurrence_id)`:
+  `b` may name another occurrence **under the same top-level occurrence** (null = the same occurrence as the reference). Face `b` is
+  carried into `a`'s frame through the sub-assembly's own transforms (`assembly_solver._resolve_midplane_plane`, `invert_transform`),
+  the maths is `create_plane.midplane_of_resolved` (the old `resolve_midplane_from_bodies` body, now shared). Faces under *different
+  top-level* occurrences stay out of scope: 422 `midplane_faces_on_different_occurrences`. The mate is still a two-reference mate.
+- **Untouched, as required:** every `len(references) == 2` check, `build_group_model` sides and the constraint model
+  (`MODEL_VERSION` unchanged; `test_the_constraint_model_of_a_width_mate_is_a_plain_plane_plane_model`). The only solver edit is the
+  new `midplane` branch in `_resolve_local_geometry` (plus two optional arguments, `document` and `root_part`, passed by its 5 callers).
+- **Consumer audit** (every reader of a mate reference's geometry; `rg "\.references|MateEntityRef" backend/app`, plus `plane_ref` /
+  `subshape_ref` on the Dart/GDScript side):
+  - handled: `assembly_solver._resolve_local_geometry` (the only place a mate reference becomes geometry) and its 5 call sites:
+    `assembly_group.build_group_model.side`, `mate_world_geometries`, `_with_world_hinge` (2), `assembly_solver._solve_occurrence_against`
+    (driven + fixed); `router._mate_entity_ref_response` / `_mate_entity_ref_to_domain` / `_validate_mate_entity_ref` (+ the
+    plane-plane type check) in create and `preview-mate-solve`; `schemas.MateEntityRefResponse`; `native_format._mate_entity_ref_to/from_dict`
+    (written only when set, so mate-less-of-midplane files are byte-identical).
+  - not touched, no change needed: `constraint_model.export_constraint_model` (reads resolved geometry only), `_applicable_mates`/
+    `_live_mates`/`discover_component` (read `occurrence_id` only), `delete_occurrence` (reads `occurrence_id`; `b_occurrence_id` is under the
+    same top-level one by validation), `subshape_identity` (documents that mate refs are out of its scope), `measure`/`mesh_data`.
+  - **not yet handled (later phases):** `ai_plan._mate_entity_ref_from_step` and `MateEntityRefStep` (W4: today an AI plan cannot carry a
+    `midplane`; the "exactly one of" check there is still three-way); Dart `MateEntityRefDto` (W2) and `mates_tool.gd` / `mate_health.gd` (W3).
+    A Width mate in a file opened by an older Flutter/VR client shows its mid-plane reference as an empty one.
+  - There is **no backend mate-health endpoint** today; drift surfaces when a mate is next solved or previewed. A lost face is the existing
+    422 `missing_reference`, faces that stopped being parallel are 422 `faces_not_parallel` (distinct types, tested). The named "faces no
+    longer parallel" *state* in the UI is a client job (W2/W3) reading that error.
+- **Environment note:** `tools/motion_vectors/generate.py --check` passes on the plain system python (numpy there) and **fails in the
+  backend micromamba env on unmodified `main` too** (float rounding of that numpy); it is clean before and after this change under the
+  system python, and no vector or constant changed.
+- **Measurement** (`backend/tests/bench_width_mate.py`, 60 trials per start class, ground truth = the fixture's true plate pose, nothing named):
+
+  | start | scenario | picks / typed | first-time-correct | extra clicks per trial | centred after | backend ms per trial |
+  |---|---|---|---|---|---|---|
+  | near | 2 distance mates | 4 / 2 | 71.7% | 0.57 | 100% | 288 |
+  | near | 1 Width mate | 4 / 0 | 100% | 0.00 | 100% | 163 |
+  | medium | 2 distance mates | 4 / 2 | 64.2% | 0.72 | 100% | 279 |
+  | medium | 1 Width mate | 4 / 0 | 100% | 0.00 | 100% | 168 |
+  | far | 2 distance mates | 4 / 2 | 56.7% | 1.23 | 100% | 317 |
+  | far | 1 Width mate | 4 / 0 | 100% | 0.00 | 100% | 176 |
+
+  Read plainly: Width is right first time because its only branch (plate right way up or flipped) is invisible on a symmetric plate and
+  the centring has no inset/overhang root; the two distances each have an inset/overhang choice. Width needs the same *number* of picks
+  (4) but no typed value, and fewer clicks. Caveats: "time" here is backend solve time, not human time; Width does not set the gap
+  size and leaves the in-plane position free (needs the usual other mates); the Width pick UX (a four-pick flow) is untested with a human
+  until W2/W3. "Centred after" is 100% for both because the benchmark confirms the correct alternative after a wrong preview.
 
 ## 1. The problem
 

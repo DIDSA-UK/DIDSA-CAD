@@ -273,7 +273,7 @@ def build_group_model(
         target, inner = _target_part_and_transform(document, top_part, ref.occurrence_id[len(top_id) + 1 :])
         if target.id not in bodies_cache:
             bodies_cache[target.id] = compute_part_bodies(target)
-        geometry = _resolve_local_geometry(target, bodies_cache[target.id], ref)
+        geometry = _resolve_local_geometry(target, bodies_cache[target.id], ref, document, part)
         if inner is not None:
             geometry = _place_in_world(geometry, inner)
         return _Side(top_id, geometry, None if top_id in members else top_transform)
@@ -361,7 +361,7 @@ def mate_world_geometries(document: Document, part: Part, mate: Mate) -> tuple[_
         target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
         if target.id not in cache:
             cache[target.id] = compute_part_bodies(target)
-        geometry = _resolve_local_geometry(target, cache[target.id], ref)
+        geometry = _resolve_local_geometry(target, cache[target.id], ref, document, part)
         worlds.append(geometry if transform is None else _place_in_world(geometry, transform))
     if mate.type == MateType.ANGLE:
         worlds = _with_world_hinge(document, part, mate, worlds, cache)
@@ -384,7 +384,7 @@ def _with_world_hinge(document: Document, part: Part, mate: Mate, worlds: list, 
             target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
             if target.id not in cache:
                 cache[target.id] = compute_part_bodies(target)
-            geometry = _resolve_local_geometry(target, cache[target.id], ref)
+            geometry = _resolve_local_geometry(target, cache[target.id], ref, document, part)
             pair.append(geometry if transform is None else _place_in_world(geometry, transform))
         if _effective_mate(other, pair[0], pair[1]).type != MateType.CONCENTRIC:
             continue

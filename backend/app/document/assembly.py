@@ -115,6 +115,18 @@ def compose(parent: RigidTransform, child: RigidTransform) -> RigidTransform:
     return RigidTransform(translation=composed_translation, rotation_axis=axis, rotation_angle_degrees=angle)
 
 
+def invert_transform(transform: RigidTransform) -> RigidTransform:
+    """The `RigidTransform` undoing `transform` (rotation transposed, translation `-R^T t`)."""
+    inverse = RigidTransform(rotation_axis=transform.rotation_axis, rotation_angle_degrees=-transform.rotation_angle_degrees)
+    t = transform.translation
+    back = apply_transform_to_direction(inverse, t)
+    return RigidTransform(
+        translation=(-back[0], -back[1], -back[2]),
+        rotation_axis=inverse.rotation_axis,
+        rotation_angle_degrees=inverse.rotation_angle_degrees,
+    )
+
+
 def compose_chain(transforms: list[RigidTransform]) -> RigidTransform:
     """`compose` folded left-to-right over a full Occurrence path from an
     assembly-mesh walk's root down to one leaf - `transforms[0]` is the
