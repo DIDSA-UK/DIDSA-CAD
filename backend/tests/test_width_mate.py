@@ -148,11 +148,11 @@ def test_non_parallel_faces_are_a_422():
     assert _stored_mates(root) == []
 
 
-def test_faces_on_different_top_level_occurrences_are_a_422():
+def test_both_references_on_the_same_top_level_occurrence_are_a_422():
     root = tt.import_table_top(client, keep_mates=False)
-    across = {"occurrence_id": tt.FRAME_BAR_Y0, "midplane": {"a": _fr(tt.FRAME_BODY, 7), "b": _fr(tt.PLATE_BODY, 2), "b_occurrence_id": tt.PLATE}}
-    response = _post(root, {"type": "coincident", "references": [_plate_width(), across]})
-    assert response.status_code == 422 and response.json()["detail"]["type"] == "midplane_faces_on_different_occurrences"
+    across = {"occurrence_id": tt.FRAME_BAR_Y0, "midplane": {"a": _fr(tt.FRAME_BODY, 7), "b": _fr(tt.FRAME_BODY, 7), "b_occurrence_id": tt.FRAME_BAR_Y800}}
+    response = _post(root, {"type": "coincident", "references": [across, _frame_width()]})
+    assert response.status_code == 422 and "different occurrences" in response.json()["detail"]
     assert _stored_mates(root) == []
 
 

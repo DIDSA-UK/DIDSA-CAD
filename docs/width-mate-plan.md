@@ -86,6 +86,30 @@ Update this table with every PR, the same as the parent plan.
   pre-existing `deprecated_member_use` infos plus one in the new test, the same as every other test file). **Not tried:** the flow in a
   running app with a human; the widget tests cover the state machine, wire shape and panel, not `PartScreen` end to end.
 
+## Multi-part Width (2, 3 or 4 parts) - what changed, and the one thing it gave up
+
+This did touch the group model (the user chose it knowing so). Still true: a Width mate has exactly two references and the
+plane-plane residuals are the ordinary ones.
+
+- **Model:** `MidplaneRef.b_occurrence_id` may now name any occurrence (any top level). `assembly.mate_ref_tops` / `mate_tops` give the
+  top-level occurrences a reference / mate involves; discovery, orientation, branch search, `_mate_solve_target`, occurrence deletion
+  and the "different occurrences" check use them instead of `references[i].occurrence_id` alone.
+- **Group model:** `_Side.partner`. A cross-part Width side is its first face's plane with the second face as `partner`; its world plane
+  is recomputed at every evaluated pose (average of the two origins, the first's normal) and the mate also holds the two faces
+  parallel (3 extra residual rows, the cross product of the unit normals). If neither part is a member of the solved component (e.g.
+  both bars fixed) the mid-plane never moves and collapses to ONE fixed world plane.
+- **Constraint model, honestly:** with the collapse (fixed bars) the exported model is still a plain plane-plane one (`member: -1`
+  plane), no version bump. When a part of a cross-part side moves (free bars, or a tab of two moving parts) the mid-plane depends on
+  two poses, which the clients' retraction cannot evaluate: `export_constraint_model` returns `None` for that component and the
+  clients keep projecting (the existing fallback). So **live drag of such a component has no local retraction** (looser than for
+  other mates); the backend solve, create, preview, alternatives and mate-motion are exact. A constraint model v4 with a two-pose plane
+  (Dart + GDScript + vectors) would fix that - not done.
+- **Strictness:** at creation the two faces of a pair must be parallel at the stored poses (422 `faces_not_parallel`), as before; after
+  that the residual keeps them parallel. The legacy single-occurrence solve (`POST .../solve`) handles a cross-part reference only on the fixed side.
+- **Tests:** `backend/tests/test_width_mate_parts.py` (3 parts fixed/free bars, offset, 4 parts near/medium/far, preview, drag,
+  export/import, delete cascade, non-parallel, missing occurrence). Backend `not gears`: 2484 passed. Flutter: pick rules for 2/3/4 parts.
+- **Not measured:** the earlier benchmark (frame as ONE sub-assembly) is unchanged; there is no human-time measurement for 3/4 parts.
+
 ## 1. The problem
 
 The tester's real intent for the table top was *"centre this plate between those two frame faces"*. Today they express it with two
@@ -100,7 +124,9 @@ Scope of Width, precisely:
   "tab": the plate's two parallel faces, or its mid-plane). The tab is centred between the gap faces.
 - Variants the same mate must cover without new machinery: centred (offset 0), centred with a signed offset from centre
   (`DISTANCE` between the two mid-planes), and "tab parallel but not centred" is *not* Width (that is two distances).
-- Not in W1–W4: the two faces on *different* occurrences (a gap formed by two parts), and Symmetric (W5).
+- **Added after W2 (user decision): Width works over 2, 3 or 4 parts.** Either pair may be made of two parts: the gap of two loose bars
+  (3 parts) and/or a tab made of two parts (4 parts). The part(s) of the tab must differ from the part(s) of the gap. See
+  "Multi-part Width" below. Not in W1–W4: Symmetric (W5).
 
 ## 2. Design decision: a mate between two synthetic mid-planes
 

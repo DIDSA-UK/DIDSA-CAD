@@ -38,7 +38,7 @@ import numpy as np
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 
-from app.document.assembly import top_level_occurrence_id
+from app.document.assembly import mate_ref_tops, mate_tops, top_level_occurrence_id
 from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
     _angle_hinge,
@@ -62,6 +62,8 @@ from app.document.assembly_solver import (
     _resolve_local_geometry,
     _ResolvedGeometry,
     _target_part_and_transform,
+    cross_midplane_geometry,
+    midplane_spans_tops,
     _unsupported_mate_geometry,
     _vec_sub,
     solve_occurrence_from_guess,
@@ -81,7 +83,7 @@ from app.document.constraint_model import (
     wish_cost,
 )
 from app.document.extrude import compute_part_bodies
-from app.document.models import BRANCH_AUTO, BRANCH_USER, MATE_ALIGNED, MATE_ANTI_ALIGNED, Document, Mate, MateType, Part, RigidTransform
+from app.document.models import BRANCH_AUTO, BRANCH_USER, MATE_ALIGNED, MATE_ANTI_ALIGNED, Document, Mate, MateEntityRef, MateType, Part, ResolvedPlane, RigidTransform
 
 _JACOBIAN_STEP = 1e-6  # same step as `assembly_solver._DOF_JACOBIAN_STEP`
 _DEFAULT_RANK_RTOL = 1e-6  # singular values <= rtol * sigma_max count as zero
@@ -145,12 +147,12 @@ def discover_component(
     mates = [*_live_mates(part), *(m for m in extra_mates if len(m.references) == 2)]
     adjacency: dict[str, set[str]] = {}
     for mate in mates:
-        a = top_level_occurrence_id(mate.references[0].occurrence_id)
-        b = top_level_occurrence_id(mate.references[1].occurrence_id)
-        if a == b or a in frozen or b in frozen:
-            continue
-        adjacency.setdefault(a, set()).add(b)
-        adjacency.setdefault(b, set()).add(a)
+        # A mate joins every movable occurrence it involves (a Width mate over two parts involves up to four).
+        movable = [t for t in mate_tops(mate) if t not in frozen]
+        for a in movable:
+            for b in movable:
+                if a != b:
+                    adjacency.setdefault(a, set()).add(b)
 
     seen = {grabbed_id}
     stack = [grabbed_id]
@@ -166,8 +168,8 @@ def discover_component(
     used: list[Mate] = []
     touched_frozen: set[str] = set()
     for mate in mates:
-        ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
-        if ids[0] == ids[1] or not any(i in seen for i in ids):
+        ids = mate_tops(mate)
+        if len(ids) < 2 or not any(i in seen for i in ids):
             continue
         used.append(mate)
         touched_frozen.update(i for i in ids if i in frozen)
@@ -178,11 +180,24 @@ def discover_component(
 # ---- residual model ---------------------------------------------------------
 
 
+def _midway(first: _ResolvedGeometry, second: _ResolvedGeometry) -> _ResolvedGeometry:
+    """The plane midway between two world planes (origin = average, orientation = the first's) - `midplane_of_resolved` without
+    its parallel check, which the solver's intermediate poses need (parallelism is held by the residual instead)."""
+    a, b = first.plane, second.plane
+    origin = tuple((x + y) / 2.0 for x, y in zip(a.origin, b.origin))
+    plane = ResolvedPlane(origin=origin, normal=a.normal, x_axis=a.x_axis, y_axis=a.y_axis)
+    return _ResolvedGeometry(point=origin, plane=plane, direction=a.normal)
+
+
 @dataclass
 class _Side:
     occurrence_id: str
     geometry: _ResolvedGeometry  # local to its target part
     frozen_transform: RigidTransform | None  # None for a member, or for the "" ref (identity)
+    # A Width side whose second face is under another top-level occurrence: this side is the FIRST face's plane, `partner` the
+    # second face's. The side's world geometry is the plane midway between the two at the pose being evaluated, and the mate
+    # also keeps the two faces parallel (`GroupModel.residual`). None for every other side.
+    partner: "_Side | None" = None
 
 
 @dataclass
@@ -215,12 +230,29 @@ class GroupModel:
         out: list[float] = []
         for mate, a, b in self.sides:
             out.extend(_mate_residual_vector(mate, self._world(a, placed), self._world(b, placed)))
+            for side in (a, b):
+                if side.partner is not None:
+                    out.extend(self._parallel_rows(side, placed))
         return np.asarray(out, dtype=float)
 
     @staticmethod
-    def _world(side: _Side, placed: dict[str, RigidTransform]) -> _ResolvedGeometry:
+    def _world_one(side: _Side, placed: dict[str, RigidTransform]) -> _ResolvedGeometry:
         transform = placed.get(side.occurrence_id, side.frozen_transform)
         return side.geometry if transform is None else _place_in_world(side.geometry, transform)
+
+    @staticmethod
+    def _world(side: _Side, placed: dict[str, RigidTransform]) -> _ResolvedGeometry:
+        one = GroupModel._world_one(side, placed)
+        if side.partner is None:
+            return one
+        return _midway(one, GroupModel._world_one(side.partner, placed))
+
+    @staticmethod
+    def _parallel_rows(side: _Side, placed: dict[str, RigidTransform]) -> tuple[float, float, float]:
+        """The two faces of a cross-occurrence Width side stay parallel: the cross product of their unit normals (3 rows, rank 2)."""
+        n1 = _normalize(GroupModel._world_one(side, placed).plane.normal)
+        n2 = _normalize(GroupModel._world_one(side.partner, placed).plane.normal)
+        return _cross(n1, n2)
 
     def jacobian(self, poses: dict[str, RigidTransform] | None = None, step: float = _JACOBIAN_STEP) -> np.ndarray:
         """Jacobian (rows = residuals, `6k` columns), analytic from the exported constraint model (forward mode, exact;
@@ -263,7 +295,7 @@ def build_group_model(
     members = set(component.member_ids)
     bodies_cache: dict[str, dict] = {}
 
-    def side(ref) -> _Side:
+    def single_side(ref) -> _Side:
         # A reference into a sub-assembly (`outer/inner`) is carried by its
         # top-level Occurrence `outer`: the geometry is lifted into `outer`'s
         # own local frame so it moves with `outer` (a member) or sits at
@@ -278,16 +310,27 @@ def build_group_model(
             geometry = _place_in_world(geometry, inner)
         return _Side(top_id, geometry, None if top_id in members else top_transform)
 
+    def side(ref) -> _Side:
+        if not midplane_spans_tops(ref):
+            return single_side(ref)
+        # A Width reference over two top-level occurrences: each face is its own side. With neither occurrence a member the
+        # mid-plane never moves, so it collapses to one fixed world plane (the model stays a plain plane-plane one); otherwise
+        # the first side carries the second as its `partner` and the plane is recomputed at every evaluated pose.
+        mp = ref.midplane
+        first = single_side(MateEntityRef(occurrence_id=ref.occurrence_id, plane_ref=mp.a))
+        second = single_side(MateEntityRef(occurrence_id=mp.b_occurrence_id, plane_ref=mp.b))
+        if first.occurrence_id not in members and second.occurrence_id not in members:
+            plane = cross_midplane_geometry(document, part, ref).plane
+            return _Side("", _ResolvedGeometry(point=plane.origin, plane=plane, direction=plane.normal), None)
+        return replace(first, partner=second)
+
     sides = []
     swaps: list[bool] = []
     for mate in component.mates:
         first, second = mate.references
         # Orient like `_applicable_mates`: the movable side is "driven" when
         # the other side is frozen (the residual is only sign-asymmetric).
-        swapped = (
-            top_level_occurrence_id(first.occurrence_id) not in members
-            and top_level_occurrence_id(second.occurrence_id) in members
-        )
+        swapped = not any(t in members for t in mate_ref_tops(first)) and any(t in members for t in mate_ref_tops(second))
         if swapped:
             first, second = second, first
         a_side, b_side = side(first), side(second)
@@ -358,6 +401,9 @@ def mate_world_geometries(document: Document, part: Part, mate: Mate) -> tuple[_
     cache: dict[str, dict] = {}
     worlds = []
     for ref in mate.references:
+        if midplane_spans_tops(ref):
+            worlds.append(cross_midplane_geometry(document, part, ref))
+            continue
         target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
         if target.id not in cache:
             cache[target.id] = compute_part_bodies(target)
@@ -1096,15 +1142,17 @@ def branch_options(
     end = dict(placed)
     if failed is not None:
         end.update({oid: pose for oid, pose in failed.poses.items() if oid in end})
-    anchors = {top_level_occurrence_id(r.occurrence_id) for m in extra_mates for r in m.references}
+    anchors = {t for m in extra_mates for t in mate_tops(m)}
     for mate_id in skip_mate_ids:
         if mate_id in stored:
-            anchors.update(top_level_occurrence_id(r.occurrence_id) for r in stored[mate_id].references)
+            anchors.update(mate_tops(stored[mate_id]))
     adjacency: dict[str, set[str]] = {}
     for mate, _a, _b in model.sides:
-        ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
-        adjacency.setdefault(ids[0], set()).add(ids[1])
-        adjacency.setdefault(ids[1], set()).add(ids[0])
+        ids = mate_tops(mate)
+        for x in ids:
+            for y in ids:
+                if x != y:
+                    adjacency.setdefault(x, set()).add(y)
     distance = {a: 0 for a in anchors}
     queue = deque(anchors)
     while queue:
@@ -1120,7 +1168,7 @@ def branch_options(
         d, f = model._world(a, placed), model._world(b, placed)
         fields = branch_fields(mate, d, f)
         alignment, flip = model.branches.get(mate.id, (None, None))
-        ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
+        ids = mate_tops(mate)
         hops = min(distance.get(i, 1 << 20) for i in ids)
         residual = _mate_residual_vector(mate, model._world(a, end), model._world(b, end))
         worst = max((abs(x) for x in residual), default=0.0)

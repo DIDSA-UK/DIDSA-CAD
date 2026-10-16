@@ -13,7 +13,13 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
-from app.document.assembly import compose_chain, expand_component_pattern_instances, top_level_occurrence_id
+from app.document.assembly import (
+    compose_chain,
+    expand_component_pattern_instances,
+    mate_ref_tops,
+    mate_tops,
+    top_level_occurrence_id,
+)
 from app.document.assembly_group import (
     BranchChange,
     GroupSolveResult,
@@ -3673,9 +3679,7 @@ def delete_occurrence(part_id: str, occurrence_id: str) -> Response:
     walk is needed here either."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
-    part.mates = [
-        m for m in part.mates if not any(top_level_occurrence_id(r.occurrence_id) == occurrence_id for r in m.references)
-    ]
+    part.mates = [m for m in part.mates if occurrence_id not in mate_tops(m)]
     part.component_patterns = [
         p for p in part.component_patterns if occurrence_id not in p.source_occurrence_ids
     ]
@@ -3721,18 +3725,14 @@ def _validate_mate_entity_ref(part: Part, ref: MateEntityRefResponse, mate_type:
             )
         for side in (ref.midplane.a, ref.midplane.b):
             _validate_midplane_plane_ref(side)
-        b_id = ref.midplane.b_occurrence_id
-        if b_id is not None and top_level_occurrence_id(b_id) != top_level_occurrence_id(ref.occurrence_id):
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "type": "midplane_faces_on_different_occurrences",
-                    "message": "A Width reference's two faces must belong to the same top-level occurrence",
-                    "occurrence_id": ref.occurrence_id,
-                    "b_occurrence_id": b_id,
-                },
-            )
-    if ref.occurrence_id == "":
+        if ref.midplane.b_occurrence_id is not None:
+            _check_mate_occurrence_path(part, ref.midplane.b_occurrence_id)
+    _check_mate_occurrence_path(part, ref.occurrence_id)
+
+
+def _check_mate_occurrence_path(part: Part, occurrence_id: str) -> None:
+    """`occurrence_id` is `""` (the Part's own root content) or a `/`-joined path of existing occurrences."""
+    if occurrence_id == "":
         return
     # A `/`-joined path names an Occurrence nested inside a sub-assembly
     # (`outer/inner`, the same key the client reads off assembly-mesh
@@ -3740,16 +3740,21 @@ def _validate_mate_entity_ref(part: Part, ref: MateEntityRefResponse, mate_type:
     # placed; only the *last* one may point at a not-yet-resolved target
     # (the top-level case has always been allowed to).
     current: Part | None = part
-    segments = ref.occurrence_id.split("/")
+    segments = occurrence_id.split("/")
     for index, segment in enumerate(segments):
         occurrence = next((o for o in current.occurrences if o.id == segment), None) if current else None
         if occurrence is None:
             raise HTTPException(
                 status_code=422,
-                detail={"type": "occurrence_not_found", "occurrence_id": ref.occurrence_id},
+                detail={"type": "occurrence_not_found", "occurrence_id": occurrence_id},
             )
         if index < len(segments) - 1:
             current = get_document().parts.get(occurrence.part_id) if occurrence.part_id else None
+
+
+def _schema_ref_tops(ref: MateEntityRefResponse) -> tuple[str, ...]:
+    """`mate_ref_tops` for a wire reference."""
+    return mate_ref_tops(_mate_entity_ref_to_domain(ref))
 
 
 def _validate_midplane_plane_ref(ref: PlaneRefSchema) -> None:
@@ -3771,9 +3776,7 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     for ref in payload.references:
         _validate_mate_entity_ref(part, ref, payload.type)
-    first_top = top_level_occurrence_id(payload.references[0].occurrence_id)
-    second_top = top_level_occurrence_id(payload.references[1].occurrence_id)
-    if first_top == second_top:
+    if set(_schema_ref_tops(payload.references[0])) & set(_schema_ref_tops(payload.references[1])):
         # Compares the top-level Occurrence each reference belongs to, not the
         # full path: two faces inside the same sub-assembly can never be
         # mated here (the whole sub-assembly moves as one rigid body).
@@ -3817,7 +3820,7 @@ def _mate_solve_target(part: Part, mate: Mate, occurrence_id: str | None) -> str
     occurrences and not `fixed` (422 otherwise). Left out, it is the clients' own pick: the second reference's occurrence
     preferred over the first's, skipping the root part's own geometry and `fixed` occurrences; `None` when nothing is drivable
     (the mate is then stored without a solve, as before)."""
-    tops = [top_level_occurrence_id(ref.occurrence_id) for ref in mate.references]
+    tops = mate_tops(mate)
     if occurrence_id is not None:
         occurrence = _get_occurrence_or_404(part, occurrence_id)
         if occurrence_id not in tops:
@@ -3826,9 +3829,11 @@ def _mate_solve_target(part: Part, mate: Mate, occurrence_id: str | None) -> str
             raise _occurrence_is_fixed(occurrence_id)
         return occurrence_id
     fixed = {o.id for o in part.occurrences if o.fixed}
-    for top in reversed(tops):
-        if top and top not in fixed:
-            return top
+    # the second reference's occurrences first (its first face's before its second face's), then the first reference's
+    for ref in reversed(mate.references):
+        for top in mate_ref_tops(ref):
+            if top and top not in fixed:
+                return top
     return None
 
 

@@ -42,24 +42,29 @@ void main() {
       expect(pick.isEmpty, isTrue);
     });
 
-    test('the second face of a pair must be under the same top-level part', () {
-      final (pick, why) = picked([face('frame/barA', 7)]).toggle(face('plate', 0));
-      expect(why, contains('same part'));
-      expect(pick.picks.length, 1);
-      // two bars of one frame are the same part
-      expect(picked([face('frame/barA', 7)]).toggle(face('frame/barB', 7)).$2, isNull);
+    test('a pair may be made of two parts (a gap of two loose bars, a tab of two parts), 2, 3 or 4 parts in all', () {
+      // 2 parts: both faces of each pair on one part
+      expect(picked([face('frame', 7), face('frame', 3), face('plate', 0), face('plate', 2)]).isComplete, isTrue);
+      // 3 parts: the gap spans two bars
+      expect(picked([face('barL', 7), face('barR', 7), face('plate', 0), face('plate', 2)]).isComplete, isTrue);
+      // 4 parts: the gap spans two bars and the tab spans two plates
+      final four = picked([face('barL', 7), face('barR', 7), face('plateA', 0), face('plateB', 2)]);
+      expect(four.isComplete, isTrue);
+      final refs = four.references();
+      expect(refs[0].midplane!.bOccurrenceId, 'barR');
+      expect(refs[1].occurrenceId, 'plateA');
+      expect(refs[1].midplane!.bOccurrenceId, 'plateB');
     });
 
-    test('the part to centre must differ from the gap', () {
-      final base = picked([face('frame/barA', 7), face('frame/barB', 7)]);
-      final (pick, why) = base.toggle(face('frame/barC', 3));
-      expect(why, contains('different part'));
-      expect(pick.picks.length, 2);
-    });
-
-    test('the third and fourth face must pair with each other', () {
-      final base = picked([face('frame/barA', 7), face('frame/barB', 7), face('plate', 0)]);
-      expect(base.toggle(face('other', 1)).$2, contains('same part'));
+    test('the part(s) to centre must differ from the part(s) of the gap', () {
+      final base = picked([face('barL', 7), face('barR', 7)]);
+      for (final clash in ['barL', 'barR', 'barL/inner']) {
+        final (pick, why) = base.toggle(face(clash, 3));
+        expect(why, contains('different part'), reason: clash);
+        expect(pick.picks.length, 2);
+      }
+      final three = picked([face('barL', 7), face('barR', 7), face('plateA', 0)]);
+      expect(three.toggle(face('barR', 1)).$2, contains('different part'));
     });
 
     test('toggling a pick off removes it and every pick after it; Back removes the last', () {
@@ -119,6 +124,11 @@ void main() {
       expect(mateLabel(plain), 'Coincident');
       expect(mateDisplayName([plain, width, width], 2), 'Width 2');
       expect(mateDisplayName([plain, width], 0), 'Coincident 1');
+    });
+
+    test('a Width mate over 4 parts involves all four top-level occurrences (delete / count / re-solve rely on it)', () {
+      final refs = picked([face('barL', 7), face('barR/inner', 7), face('plateA', 0), face('plateB', 2)]).references();
+      expect(mateTopLevelOccurrences(MateDto(id: 'w', type: 'coincident', references: refs)), {'barL', 'barR', 'plateA', 'plateB'});
     });
   });
 

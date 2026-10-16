@@ -6,8 +6,8 @@ import 'selection_hit_test.dart';
 /// sent is a plain `coincident` (centred) or `distance` (offset from centre) mate whose two references are mid-planes.
 const String kWidthMateType = 'width';
 
-/// The four-pick state of a Width mate being authored: the gap pair (two parallel faces of one part, e.g. the two inner
-/// faces of a frame) and the tab pair (two parallel faces of the part that is centred between them). Owned by the mate
+/// The four-pick state of a Width mate being authored: the gap pair (two parallel faces, of one part or of two, e.g. the inner
+/// faces of a frame or of two loose bars) and the tab pair (two parallel faces of the part(s) centred between them). Owned by the mate
 /// panel; nothing here is ever sent anywhere except the finished [references].
 class WidthPick {
   final List<SelectionEntityRef> picks;
@@ -34,30 +34,25 @@ class WidthPick {
 
   static String _stepName(int index) => const [
         'first face of the gap',
-        'second face of the gap (same part)',
+        'second face of the gap (same part or another)',
         'first face of the part to centre',
-        'second face of the part to centre (same part)',
+        'second face of the part to centre (same part or another)',
       ][index];
 
   /// The label of slot [index] in the panel list.
   static String slotLabel(int index) => const ['Gap face 1', 'Gap face 2', 'Tab face 1', 'Tab face 2'][index];
 
-  /// Why [entity] cannot be the next pick, or `null` when it can. Faces only; the second face of a pair must be another face
-  /// under the same top-level occurrence; the tab pair must belong to a different top-level occurrence than the gap's.
+  /// Why [entity] cannot be the next pick, or `null` when it can. Faces only; the part(s) of the tab pair must differ from the part(s)
+  /// of the gap pair. A pair may span two parts (the Width mate then involves 3 or 4 parts).
   String? rejection(SelectionEntityRef entity) {
     if (entity.kind != SelectionEntityKind.face) return 'A Width mate is made from faces';
     if (isComplete) return 'Already four faces - remove one first';
     if (picks.contains(entity)) return null; // a toggle-off, handled by [toggle]
-    final index = picks.length;
-    if (index == 1 || index == 3) {
-      final first = picks[index - 1];
-      if (topLevelOccurrenceId(entity.occurrenceId) != topLevelOccurrenceId(first.occurrenceId)) {
-        return 'Both faces of a pair must belong to the same part';
-      }
-    }
-    if (index >= 2) {
-      final gapTop = topLevelOccurrenceId(picks.first.occurrenceId);
-      if (topLevelOccurrenceId(entity.occurrenceId) == gapTop) {
+    // Either pair may be made of two parts (two loose bars, a plate of two parts); the part(s) to centre just must not be a part of
+    // the gap itself.
+    if (picks.length >= 2) {
+      final gapParts = {for (final g in picks.take(2)) topLevelOccurrenceId(g.occurrenceId)};
+      if (gapParts.contains(topLevelOccurrenceId(entity.occurrenceId))) {
         return 'The part to centre must be a different part from the gap';
       }
     }
@@ -98,6 +93,14 @@ class WidthPick {
   /// The `value` that is sent for [offset] (`null` for the centred one).
   static double? wireValue(double? offset) => offset == null || offset == 0 ? null : offset;
 }
+
+/// Every top-level occurrence [mate] involves: its references' own, and the second face's of a Width reference spanning two parts.
+Set<String> mateTopLevelOccurrences(MateDto mate) => {
+      for (final r in mate.references) ...[
+        topLevelOccurrenceId(r.occurrenceId),
+        if (r.midplane?.bOccurrenceId != null) topLevelOccurrenceId(r.midplane!.bOccurrenceId!),
+      ],
+    };
 
 /// A mate shown as "Width" in lists and titles: any of its references is a mid-plane.
 bool isWidthMate(MateDto mate) => mate.references.any((r) => r.midplane != null);

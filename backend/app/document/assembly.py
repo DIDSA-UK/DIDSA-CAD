@@ -139,6 +139,29 @@ def compose_chain(transforms: list[RigidTransform]) -> RigidTransform:
     return result
 
 
+def mate_ref_tops(ref) -> tuple[str, ...]:
+    """The distinct top-level occurrences a mate reference involves, first face's first. One for every reference but a Width
+    (mid-plane) one whose second face sits on another top-level occurrence (`docs/width-mate-plan.md`: a gap or a tab made of
+    two parts)."""
+    tops = [top_level_occurrence_id(ref.occurrence_id)]
+    midplane = getattr(ref, "midplane", None)
+    if midplane is not None and midplane.b_occurrence_id is not None:
+        other = top_level_occurrence_id(midplane.b_occurrence_id)
+        if other not in tops:
+            tops.append(other)
+    return tuple(tops)
+
+
+def mate_tops(mate) -> tuple[str, ...]:
+    """Every top-level occurrence either reference of `mate` involves (distinct, in reference order)."""
+    seen: list[str] = []
+    for ref in mate.references:
+        for top in mate_ref_tops(ref):
+            if top not in seen:
+                seen.append(top)
+    return tuple(seen)
+
+
 def top_level_occurrence_id(occurrence_id: str) -> str:
     """The first segment of an Occurrence reference. A Mate (or Measure/
     Section target) reference into a sub-assembly names its Occurrence by

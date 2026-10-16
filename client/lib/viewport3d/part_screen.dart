@@ -3638,7 +3638,7 @@ class _PartScreenState extends State<PartScreen> {
   List<String> get _mateDrivePreference {
     if (_mateIsWidth) {
       final picks = _widthPick.picks;
-      return [picks[2].occurrenceId, picks[0].occurrenceId];
+      return [picks[2].occurrenceId, picks[3].occurrenceId, picks[0].occurrenceId, picks[1].occurrenceId];
     }
     final entities = _selectedEntities.toList();
     return [entities[1].occurrenceId, entities[0].occurrenceId];
@@ -11128,7 +11128,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Whether [occurrenceId] takes part in at least one active mate of the focused Part (the only case that
   /// goes through `mate-motion`; everything else keeps the raw PATCH path).
   bool _isMated(String occurrenceId) => _mates.any(
-        (m) => !m.suppressed && m.references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrenceId),
+        (m) => !m.suppressed && mateTopLevelOccurrences(m).contains(occurrenceId),
       );
 
   RigidTransformDto _localOfWorld(RigidTransformDto world) {
@@ -14564,7 +14564,7 @@ class _PartScreenState extends State<PartScreen> {
     final targets = _assemblyMultiSelectOccurrences;
     if (targets.isEmpty) return;
     final targetIds = {for (final o in targets) o.id};
-    final mateCount = _mates.where((m) => m.references.any((r) => targetIds.contains(topLevelOccurrenceId(r.occurrenceId)))).length;
+    final mateCount = _mates.where((m) => mateTopLevelOccurrences(m).any(targetIds.contains)).length;
     final patternCount =
         _componentPatterns.where((p) => p.sourceOccurrenceIds.any(targetIds.contains)).length;
     final n = targets.length;
@@ -22247,7 +22247,7 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || focusPartId == null) return;
     final affectedMates = <MateDto>[];
     for (var i = 0; i < _mates.length; i++) {
-      if (_mates[i].references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrence.id)) {
+      if (mateTopLevelOccurrences(_mates[i]).contains(occurrence.id)) {
         affectedMates.add(_mates[i]);
       }
     }
