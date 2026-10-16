@@ -450,18 +450,44 @@ class AiAddComponentStep extends AiPlanStep {
       };
 }
 
+/// `MidplaneRefStep` (`ai_plan_schemas.py`): a Width mate's side, the mid-plane of two parallel faces ([a] on the owning reference's
+/// occurrence, [b] on [bOccurrenceId] - same `""` / `existing:<id>` / local_id forms as [AiMateEntityRefStep.occurrenceId]; null = the same
+/// occurrence). Never created as geometry; the mate stores only these refs.
+class AiMidplaneRef {
+  final AiPlaneRef a;
+  final AiPlaneRef b;
+  final String? bOccurrenceId;
+
+  const AiMidplaneRef({required this.a, required this.b, this.bOccurrenceId});
+
+  factory AiMidplaneRef.fromJson(Map<String, dynamic> json) => AiMidplaneRef(
+        a: AiPlaneRef.fromJson(json['a'] as Map<String, dynamic>),
+        b: AiPlaneRef.fromJson(json['b'] as Map<String, dynamic>),
+        bOccurrenceId: json['b_occurrence_id'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'a': a.toJson(),
+        'b': b.toJson(),
+        if (bOccurrenceId != null) 'b_occurrence_id': bOccurrenceId,
+      };
+}
+
 /// `MateEntityRefStep` (`ai_plan_schemas.py`) - one side of a [AiMateStep].
 /// [occurrenceId] is either `""` (this Part's own root content),
 /// `existing:<occurrence_id>`, or a bare plan-local `local_id` naming an
 /// [AiAddComponentStep] earlier in this same plan (Phase 18) - never any
 /// other step kind's `localId`. Exactly one of
-/// [subshapeRef]/[planeRef]/[pointRef] should be set (a server-side rule,
+/// [subshapeRef]/[planeRef]/[pointRef]/[midplane] should be set (a server-side rule,
 /// not enforced here per this file's own permissive-parsing doc comment).
 class AiMateEntityRefStep {
   final String occurrenceId;
   final AiSubShapeRef? subshapeRef;
   final AiPlaneRef? planeRef;
   final AiPointRef? pointRef;
+
+  /// A Width mate's side (coincident / distance / parallel mates only; see [AiMidplaneRef]).
+  final AiMidplaneRef? midplane;
 
   /// Phase 14 (`docs/assembly-scope.md` §6 `[3]`): resolved instead of
   /// [subshapeRef]'s own `index` when set - see `MateEntityRefStep.edge_
@@ -478,6 +504,7 @@ class AiMateEntityRefStep {
     this.subshapeRef,
     this.planeRef,
     this.pointRef,
+    this.midplane,
     this.edgeSelector,
   });
 
@@ -487,6 +514,7 @@ class AiMateEntityRefStep {
             json['subshape_ref'] == null ? null : AiSubShapeRef.fromJson(json['subshape_ref'] as Map<String, dynamic>),
         planeRef: json['plane_ref'] == null ? null : AiPlaneRef.fromJson(json['plane_ref'] as Map<String, dynamic>),
         pointRef: json['point_ref'] == null ? null : AiPointRef.fromJson(json['point_ref'] as Map<String, dynamic>),
+        midplane: json['midplane'] == null ? null : AiMidplaneRef.fromJson(json['midplane'] as Map<String, dynamic>),
         edgeSelector:
             json['edge_selector'] == null ? null : AiEdgeSelector.fromJson(json['edge_selector'] as Map<String, dynamic>),
       );
@@ -496,6 +524,7 @@ class AiMateEntityRefStep {
         if (subshapeRef != null) 'subshape_ref': subshapeRef!.toJson(),
         if (planeRef != null) 'plane_ref': planeRef!.toJson(),
         if (pointRef != null) 'point_ref': pointRef!.toJson(),
+        if (midplane != null) 'midplane': midplane!.toJson(),
         if (edgeSelector != null) 'edge_selector': edgeSelector!.toJson(),
       };
 }

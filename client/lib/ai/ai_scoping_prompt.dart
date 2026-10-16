@@ -659,6 +659,18 @@ that is none of these three.
   when you expect (or don't care which of) the matches to be geometrically
   equivalent for the mate you're making; otherwise fall back to a raw
   subshape_ref index instead.
+  WIDTH (centre one part between two parallel faces): a reference may be
+  {"occurrence_id": ..., "midplane": {"a": {"face_ref": {"body_id","shape_type":"face","index"}},
+  "b": {"face_ref": {...}}, "b_occurrence_id"?: ...}} INSTEAD of a subshape_ref - the plane
+  midway between face a (on occurrence_id) and face b (on b_occurrence_id, same
+  forms as occurrence_id; leave it out when b is on the same component). The
+  two faces must be parallel. Use it with a "coincident" mate (centred) or
+  "distance" (value = offset from the centre) or "parallel"; the first
+  reference is the gap (e.g. the two inner faces of a frame, which may be two
+  separate components), the second the component centred in it (its two
+  faces, which may also be two components). The part(s) of the two
+  references must be different from each other. Nothing is created for the
+  mid-plane. Width still needs another mate for the position along the gap.
 - move_component: {local_id, kind:"move_component", occurrence_id,
   translation?, rotation_axis?, rotation_angle_degrees?} - translation is
   an [x, y, z] triple in mm (world space, not the component's own local

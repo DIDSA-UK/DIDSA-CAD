@@ -11,7 +11,7 @@ first — this plan reuses all of it and deliberately changes none of it.
 | W1 | Backend: mid-plane mate reference, validation, solve/preview/branches, export/import | Done (PR open, awaiting review; not merged) | CAD (this branch) |
 | W2 | Flutter: four-pick Width flow in the mate panel, highlighting, edit | Done (same PR; not merged; not tried by a human) | CAD #302 |
 | W3 | VR: the same flow on the tablet / wheel | Done (tablet; wheel = type entry only; headless-tested, no headset) | DIDSA-VR (this branch) |
-| W4 | AI plan schema + docs + measurement on the tester's table top | Not started | |
+| W4 | AI plan schema + docs + measurement on the tester's table top | Done (same PR; not merged) | CAD #302 |
 | W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Not started — scoped below, needs its own go-ahead | |
 
 Update this table with every PR, the same as the parent plan.
@@ -123,6 +123,34 @@ plane-plane residuals are the ordinary ones.
   The live drag of a component whose Width mate has moving parts on a side gets no constraint model from the backend and keeps projecting (no local
   retraction) - `local_retraction.gd` already treats "no model" that way, and nothing in the GDScript solver changed.
 - **Tests:** `tests/width_mate.gd` (38 SMOKE lines), `tests/tool_wheel.gd` updated for the sixth type entry; `tests/ci.sh` green (see the PR).
+
+## W4 implementation notes (AI plan, docs, measurement)
+
+- **AI plan:** `MateEntityRefStep.midplane` (`MidplaneRefStep`: `a`, `b` plane refs, optional `b_occurrence_id` in the plan's own `""` / `existing:<id>` /
+  local_id forms). The validator's "exactly one of" is now four-way, a midplane reference is refused for any mate type but coincident / distance /
+  parallel, the "different occurrences" check compares the sets of top-level occurrences each reference involves, and a missing `b_occurrence_id` is a
+  step error. Dart: `AiMidplaneRef`, the translator maps it (resolving `b_occurrence_id` like any occurrence id) and creates a Width mate **atomically
+  with the group solve** (`solve=auto`) instead of the single-occurrence solve that cannot move a part whose mid-plane depends on another part. The
+  scoping prompt (`assemblyVocabularyText`) describes Width to the model, including that it still needs another mate for the position along the gap.
+- **Found and fixed while measuring 4 parts:** with Minimal movement ("auto") a 4-part tab turned away from the gap returned a misleading 422
+  (`midplane_faces_on_different_occurrences`) because the group solve's py-slvs fallback ran on a model it cannot express. That fallback is now skipped for
+  Width sides that depend on a second part; "auto" then falls back to the group solve, "minimal" alone reports an ordinary non-convergence
+  (`test_four_parts_turned_away_still_centre_...`).
+- **Measurement, all of it** (`backend/tests/bench_width_mate.py`; backend solve time, not human time; 60 trials per start class):
+  - the tester's table top (frame = one sub-assembly), nothing named: first-time-correct **two distance mates 71.7 / 64.2 / 56.7 %** (near / medium / far) vs
+    **one Width mate 100 %**; extra clicks per trial 0.57 / 0.72 / 1.23 vs 0; both end 100 % centred once the user confirms the right alternative;
+    backend 280-320 ms vs 160-180 ms per scenario. Both need 4 picks; Width needs no typed value. Width is not better at everything: it leaves the
+    in-plane position free (the other mates still have to say it), it does not set a gap size, and its only branch (right way up or flipped) is invisible
+    on a symmetric plate, which is *why* it is right first time - a part with a visible orientation would have the same Orientation choice as any coincident mate;
+  - synthetic loose parts, one unnamed Width mate, start turned up to 170 degrees and moved up to 110 mm: **3 parts with fixed bars, 3 parts with free bars,
+    4 parts with fixed bars: 100 % centred in every start class** (9-14 ms for 3 parts; 40-57 ms for 4 parts from the medium and far starts, which need
+    the group solve). Precondition, by design: the two faces of a pair must already be parallel when the mate is made (else 422 `faces_not_parallel`), so
+    the two parts of a pair are turned together in this benchmark;
+  - **not measured:** any human time or first-time-correct with a person picking four faces (the four-pick UX is untested with a tester, §10); the
+    4-part case with free bars; a headset.
+- **Checked:** backend `not gears` 2490 passed, `flutter test` 2742 passed (33 skipped), `flutter analyze` only the existing deprecation infos, `generate.py --check` clean
+  under the system python (it also fails in the backend micromamba env on unmodified `main`). Not run: the gears / bevel_pair suites.
+- W5 (Symmetric) is untouched.
 
 ## 1. The problem
 

@@ -147,5 +147,55 @@ def run(trials: int) -> None:
             )
 
 
+def _unit(rng):
+    v = rng.normal(size=3)
+    return v / np.linalg.norm(v)
+
+
+def _tr(oid: str, translation, axis, angle: float) -> dict:
+    return {"translation": [float(x) for x in translation], "rotation_axis": [float(x) for x in axis], "rotation_angle_degrees": float(angle)}
+
+
+def run_parts(trials: int) -> None:
+    """Width over 3 and 4 parts (synthetic boxes: two bars 10..60 apart, a plate or two plate parts): does one unnamed Width mate centre
+    the part(s) from a near / medium / far start, and how long does the backend take? Bars fixed, or free (they may then move too)."""
+    from tests.test_width_mate_parts import _create, _fr, _gap, _scene, _tab_one, _tab_two
+
+    print(f"\nWidth over 3 and 4 parts, {trials} trials per start class (centred = the tab's mid-plane on x = 35 and its faces parallel to the gap)\n")
+    print(f"{'start':7} {'scenario':26} {'centred':>8} {'ms/trial':>9}")
+    for kind, (mm, deg) in {"near": (12.0, 0.0), "medium": (40.0, 60.0), "far": (110.0, 170.0)}.items():
+        rng = np.random.default_rng({"near": 11, "medium": 12, "far": 13}[kind])
+        for name, parts, fix in (("3 parts, bars fixed", 1, True), ("3 parts, bars free", 1, False), ("4 parts, bars fixed", 2, True)):
+            ok = 0
+            elapsed = []
+            failures: dict = {}
+            for _ in range(trials):
+                root, bar_l, bar_r, plate_a, plate_b = _scene(parts, fix_bars=fix)
+                moving = ["plate"] if parts == 1 else ["plateA", "plateB"]
+                # both parts of a pair get the SAME turn: a Width pair must already be parallel when the mate is made (else 422 faces_not_parallel)
+                axis, angle = _unit(rng), (rng.uniform(0, deg) if deg else 0.0)
+                for oid in moving:
+                    offset = _unit(rng) * mm
+                    base = {"plate": (7.0, 3.0, 11.0), "plateA": (14.0, 3.0, 11.0), "plateB": (40.0, 4.0, 11.0)}[oid]
+                    client.patch(f"/document/parts/{root}/occurrences/{oid}", json={"transform": _tr(oid, np.array(base) + offset, axis, angle)})
+                payload = {"type": "coincident", "references": [_tab_one(plate_a) if parts == 1 else _tab_two(plate_a, plate_b), _gap(bar_l, bar_r)]}
+                began = time.perf_counter()
+                response = _create(root, payload, moving[0])
+                elapsed.append((time.perf_counter() - began) * 1000.0)
+                if response.status_code != 201:
+                    failures[response.json()["detail"]["type"] if isinstance(response.json().get("detail"), dict) else str(response.json().get("detail"))[:40]] = failures.get(str(response.json().get("detail"))[:40], 0) + 1
+                    continue
+                poses = {o["id"]: _rt(o["transform"]) for o in client.get(f"/document/parts/{root}/occurrences").json()}
+                if parts == 1:
+                    xs = [apply_transform_to_point(poses["plate"], (x, 5.0, 2.0))[0] for x in (0.0, 30.0)]
+                    normals = [apply_transform_to_direction(poses["plate"], (1.0, 0.0, 0.0))]
+                else:
+                    xs = [apply_transform_to_point(poses["plateA"], (0.0, 5.0, 2.0))[0], apply_transform_to_point(poses["plateB"], (12.0, 5.0, 2.0))[0]]
+                    normals = [apply_transform_to_direction(poses[o], (1.0, 0.0, 0.0)) for o in ("plateA", "plateB")]
+                ok += abs(sum(xs) / 2.0 - 35.0) < 1e-4 and all(abs(abs(n[0]) - 1.0) < 1e-5 for n in normals)
+            print(f"{kind:7} {name:26} {100.0 * ok / trials:7.1f}% {statistics.mean(elapsed):9.0f}", failures or "")
+
+
 if __name__ == "__main__":
     run(int(sys.argv[1]) if len(sys.argv) > 1 else 20)
+    run_parts(int(sys.argv[2]) if len(sys.argv) > 2 else 20)

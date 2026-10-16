@@ -1455,6 +1455,74 @@ void main() {
       expect(result.createdFeatureIds, isEmpty);
     });
 
+    test('a Width mate is created atomically with the group solve (no single-occurrence solve), ids resolved inside the midplane', () async {
+      Map<String, dynamic>? mateBody;
+      Map<String, String>? mateQuery;
+      var singleSolveCalled = false;
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'w1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/document/parts/part-1/mates') {
+          mateBody = decodeBody(request);
+          mateQuery = request.url.queryParameters;
+          return jsonResponse({
+            'id': 'mate-w',
+            'type': mateBody!['type'],
+            'references': mateBody!['references'],
+            'value': null,
+            'flipped': false,
+            'suppressed': false,
+          }, status: 201);
+        }
+        if (request.url.path.endsWith('/solve')) {
+          singleSolveCalled = true;
+          return jsonResponse(occurrenceJson('occ-plate'));
+        }
+        return http.Response('not found', 404);
+      });
+      Map<String, dynamic> face(String body, int index) => {
+            'face_ref': {'body_id': body, 'shape_type': 'face', 'index': index},
+          };
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {
+            'local_id': 'w1',
+            'kind': 'mate',
+            'type': 'coincident',
+            'references': [
+              {
+                'occurrence_id': 'existing:occ-barL',
+                'midplane': {'a': face('b1', 7), 'b': face('b2', 7), 'b_occurrence_id': 'existing:occ-barR'},
+              },
+              {
+                'occurrence_id': 'existing:occ-plate',
+                'midplane': {'a': face('p', 0), 'b': face('p', 2)},
+              },
+            ],
+          },
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(mateBody!['references'][0]['occurrence_id'], 'occ-barL');
+      expect(mateBody!['references'][0]['midplane']['b_occurrence_id'], 'occ-barR');
+      expect(mateBody!['references'][1]['midplane'].containsKey('b_occurrence_id'), isFalse);
+      expect(mateQuery!['solve'], 'auto');
+      expect(mateQuery!['occurrence_id'], 'occ-plate');
+      expect(singleSolveCalled, isFalse);
+    });
+
     test('mate against this Part\'s own root content ("") never attempts to solve an empty occurrence id', () async {
       var solveCalled = false;
       final mock = MockClient((request) async {

@@ -896,7 +896,8 @@ def solve_group(
                 poses, residual_inf, seeded_by = retry_poses, retry_residual, "gauss-newton-reweighted"
                 break
 
-    if residual_inf > _NOISE_TOL and len(model.member_ids) == 1:
+    # (The py-slvs single-occurrence fallback cannot express a Width mid-plane that depends on another part's pose: skip it for those.)
+    if residual_inf > _NOISE_TOL and len(model.member_ids) == 1 and not any(a.partner or b.partner for _m, a, b in model.sides):
         guess = wanted_pose if wanted_pose is not None else stored[grabbed_id]
         fallback = solve_occurrence_from_guess(document, part, grabbed_id, guess, extra_mates)
         if fallback.converged:

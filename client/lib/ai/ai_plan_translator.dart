@@ -46,6 +46,7 @@ import 'package:uuid/uuid.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../assembly/add_component.dart';
+import '../assembly/occurrence_visibility.dart' show topLevelOccurrenceId;
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'ai_plan.dart';
@@ -812,6 +813,12 @@ class PlanTranslator {
         // an `EdgeSelector` at all (the heuristics need real OCCT topology,
         // never available client-side).
         final resolvedReferences = resolvedMateReferencesByLocalId[step.localId];
+        // A Width mate (a `midplane` reference, possibly over several parts) is created atomically with the group solve - the
+        // single-occurrence solve below cannot move a part whose mid-plane depends on another part's pose.
+        final isWidth = step.references.any((r) => r.midplane != null);
+        final widthTarget = step.references[1].occurrenceId.isNotEmpty
+            ? step.references[1].occurrenceId
+            : step.references[0].occurrenceId;
         final mate = await documentApi.createMate(
           partId,
           type: step.type.wireValue,
@@ -821,6 +828,8 @@ class PlanTranslator {
           ],
           value: step.value,
           flipped: step.flipped,
+          solve: isWidth && widthTarget.isNotEmpty ? 'auto' : null,
+          solveOccurrenceId: isWidth && widthTarget.isNotEmpty ? topLevelOccurrenceId(_resolveOccurrenceId(widthTarget, ids)) : null,
         );
         // Mirrors `MatePanel`'s own real-UI behavior (`docs/assembly-scope.md`
         // §2i): solve immediately so the mated Occurrence visibly snaps into
@@ -835,7 +844,7 @@ class PlanTranslator {
         final solveTarget = step.references[1].occurrenceId.isNotEmpty
             ? step.references[1].occurrenceId
             : step.references[0].occurrenceId;
-        if (solveTarget.isNotEmpty) {
+        if (solveTarget.isNotEmpty && !isWidth) {
           await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget, ids));
         }
         return mate.id;
@@ -985,6 +994,21 @@ class PlanTranslator {
                     ? null
                     : SketchEntityRefDto.fromJson(step.pointRef!.sketchPointRef!),
               ),
+        midplane: step.midplane == null
+            ? null
+            : MidplaneRefDto(
+                a: _planeRefDto(step.midplane!.a),
+                b: _planeRefDto(step.midplane!.b),
+                bOccurrenceId: step.midplane!.bOccurrenceId == null ? null : _resolveOccurrenceId(step.midplane!.bOccurrenceId!, ids),
+              ),
+      );
+
+  PlaneRefDto _planeRefDto(AiPlaneRef ref) => PlaneRefDto(
+        faceRef: ref.faceRef == null
+            ? null
+            : SubShapeRefDto(bodyId: ref.faceRef!.bodyId, shapeType: ref.faceRef!.shapeType, index: ref.faceRef!.index),
+        fixedPlane: ref.fixedPlane?.wireValue,
+        planeFeatureId: ref.planeFeatureId,
       );
 
   SketchEntityRefDto _entityRef(

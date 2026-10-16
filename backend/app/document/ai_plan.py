@@ -75,6 +75,7 @@ from app.document.ai_plan_schemas import (
     LoftSectionStep,
     LoftStep,
     MateEntityRefStep,
+    MidplaneRefStep,
     MateStep,
     MergeStep,
     MirrorPlaneStep,
@@ -108,6 +109,7 @@ from app.document.extrude import EXTRUDABLE_STATUSES, compute_part_bodies, resol
 from app.document.fillet import resolve_fillet
 from app.document.loft import resolve_loft
 from app.document.mirror import resolve_mirror
+from app.document.assembly import mate_ref_tops
 from app.document.models import (
     BooleanFeature,
     ChamferFeature,
@@ -125,6 +127,7 @@ from app.document.models import (
     LoftSection,
     Mate,
     MateEntityRef,
+    MidplaneRef,
     MateType,
     MergeFeature,
     MirrorFeature,
@@ -1092,10 +1095,13 @@ def _mate_entity_ref_from_step(
     references actually used a selector."""
     from app.document.router import _plane_ref_to_domain, _point_ref_to_domain, _subshape_ref_to_domain
 
-    set_count = sum(x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref))
+    set_count = sum(x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref, ref.midplane))
     if set_count != 1:
         raise _StepError(
-            {"type": "invalid_step_payload", "message": f"{field} requires exactly one of subshape_ref, plane_ref, or point_ref"}
+            {
+                "type": "invalid_step_payload",
+                "message": f"{field} requires exactly one of subshape_ref, plane_ref, point_ref, or midplane",
+            }
         )
     occurrence_id = ""
     occurrence: Occurrence | None = None
@@ -1125,8 +1131,19 @@ def _mate_entity_ref_from_step(
         subshape_ref=_subshape_ref_to_domain(subshape_ref) if subshape_ref else None,
         plane_ref=_plane_ref_to_domain(ref.plane_ref) if ref.plane_ref else None,
         point_ref=_point_ref_to_domain(ref.point_ref) if ref.point_ref else None,
+        midplane=_midplane_from_step(v, ref.midplane, f"{field}.midplane") if ref.midplane else None,
     )
     return entity_ref, resolved_subshape_ref
+
+
+def _midplane_from_step(v: _PlanValidator, midplane: MidplaneRefStep, field: str) -> MidplaneRef:
+    """A Width side: both faces as plane refs, the second face's occurrence resolved like any mate reference's (it only has to exist)."""
+    from app.document.router import _plane_ref_to_domain
+
+    b_occurrence_id = None
+    if midplane.b_occurrence_id is not None:
+        b_occurrence_id = "" if midplane.b_occurrence_id == "" else v._lookup_occurrence(midplane.b_occurrence_id, f"{field}.b_occurrence_id").id
+    return MidplaneRef(a=_plane_ref_to_domain(midplane.a), b=_plane_ref_to_domain(midplane.b), b_occurrence_id=b_occurrence_id)
 
 
 def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
@@ -1144,8 +1161,12 @@ def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
     ]
     references = [pair[0] for pair in resolved_pairs]
     resolved_mate_references = [pair[1] for pair in resolved_pairs]
-    if references[0].occurrence_id == references[1].occurrence_id:
+    if set(mate_ref_tops(references[0])) & set(mate_ref_tops(references[1])):
         raise _StepError({"type": "invalid_step_payload", "message": "A Mate's two references must name different occurrences"})
+    if any(r.midplane is not None for r in references) and step.type not in (MateType.COINCIDENT, MateType.DISTANCE, MateType.PARALLEL):
+        raise _StepError(
+            {"type": "invalid_step_payload", "message": f"A midplane (Width) reference can only be used with a coincident, distance or parallel mate, not {step.type.value}"}
+        )
     if step.type in (MateType.DISTANCE, MateType.ANGLE) and step.value is None:
         raise _StepError(
             {"type": "invalid_step_payload", "message": f"A {step.type.value} Mate requires a value (mm or degrees)"}

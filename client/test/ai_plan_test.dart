@@ -289,6 +289,43 @@ void main() {
     expect(roundTripped.references[1].edgeSelector, isNull);
   });
 
+  test('a mate reference with a Width midplane parses and round-trips', () {
+    final json = {
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'w1',
+          'kind': 'mate',
+          'type': 'coincident',
+          'references': [
+            {
+              'occurrence_id': 'existing:barL',
+              'midplane': {
+                'a': {'face_ref': {'body_id': 'b1', 'shape_type': 'face', 'index': 7}},
+                'b': {'face_ref': {'body_id': 'b2', 'shape_type': 'face', 'index': 7}},
+                'b_occurrence_id': 'existing:barR',
+              },
+            },
+            {
+              'occurrence_id': 'existing:plate',
+              'midplane': {
+                'a': {'face_ref': {'body_id': 'p', 'shape_type': 'face', 'index': 0}},
+                'b': {'face_ref': {'body_id': 'p', 'shape_type': 'face', 'index': 2}},
+              },
+            },
+          ],
+        },
+      ],
+    };
+    final mate = AiGenerationPlan.fromJson(json).steps.single as AiMateStep;
+    expect(mate.references[0].midplane!.bOccurrenceId, 'existing:barR');
+    expect(mate.references[0].midplane!.a.faceRef!.index, 7);
+    expect(mate.references[1].midplane!.bOccurrenceId, isNull);
+    expect(mate.references.every((r) => r.subshapeRef == null), isTrue);
+    final back = AiPlanStep.fromJson(mate.toJson()) as AiMateStep;
+    expect(back.toJson(), mate.toJson());
+  });
+
   test('fillet edges.of still round-trips as required for a real fillet/chamfer step', () {
     // The same AiEdgeSelector type now serves both call sites - confirms
     // widening `of` to nullable didn't silently drop it for the call site
