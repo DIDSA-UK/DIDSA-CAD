@@ -665,6 +665,108 @@ def test_mate_step_rejects_the_same_occurrence_referenced_twice():
     assert results["mate1"]["error"]["type"] == "invalid_step_payload"
 
 
+def _width_ref(occurrence_id: str, b_occurrence_id: str | None = None, body_a: str = "b1", body_b: str = "b1") -> dict:
+    midplane = {
+        "a": {"face_ref": {"body_id": body_a, "shape_type": "face", "index": 0}},
+        "b": {"face_ref": {"body_id": body_b, "shape_type": "face", "index": 1}},
+    }
+    if b_occurrence_id is not None:
+        midplane["b_occurrence_id"] = b_occurrence_id
+    return {"occurrence_id": occurrence_id, "midplane": midplane}
+
+
+def test_mate_step_accepts_a_width_midplane_reference_and_stores_nothing():
+    top_id, occ_a, occ_b = _setup_top_with_two_occurrences()
+    real_part = get_part_or_404(top_id)
+    validator = _PlanValidator(real_part)
+    results = validator.run(
+        [
+            MateStep(
+                local_id="w1",
+                type=MateType.COINCIDENT,
+                references=[
+                    MateEntityRefStep.model_validate(_width_ref(f"existing:{occ_a}")),
+                    MateEntityRefStep.model_validate(_width_ref(f"existing:{occ_b}", body_a="b2", body_b="b2")),
+                ],
+            )
+        ]
+    )
+    assert all(r.ok for r in results), results
+    mate = validator.part.mates[0]
+    assert all(r.midplane is not None and r.subshape_ref is None for r in mate.references)
+    assert get_part_or_404(top_id).mates == []  # dry run only
+
+
+def test_mate_step_width_second_face_on_another_occurrence_is_resolved_and_must_not_clash():
+    top_id, occ_a, occ_b = _setup_top_with_two_occurrences()
+    validator = _PlanValidator(get_part_or_404(top_id))
+    # the gap spans occ_a and occ_b, the other reference is on occ_b too: the two references share an occurrence
+    clash = validator.run(
+        [
+            MateStep(
+                local_id="w1",
+                type=MateType.COINCIDENT,
+                references=[
+                    MateEntityRefStep.model_validate(_width_ref(f"existing:{occ_a}", f"existing:{occ_b}")),
+                    MateEntityRefStep.model_validate(_width_ref(f"existing:{occ_b}")),
+                ],
+            )
+        ]
+    )
+    assert clash[0].ok is False and clash[0].error["type"] == "invalid_step_payload"
+    ok = _PlanValidator(get_part_or_404(top_id))
+    results = ok.run(
+        [
+            MateStep(
+                local_id="w1",
+                type=MateType.COINCIDENT,
+                references=[
+                    MateEntityRefStep.model_validate(_width_ref(f"existing:{occ_a}", f"existing:{occ_a}")),
+                    MateEntityRefStep.model_validate(_width_ref(f"existing:{occ_b}")),
+                ],
+            )
+        ]
+    )
+    assert all(r.ok for r in results), results
+    assert ok.part.mates[0].references[0].midplane.b_occurrence_id == occ_a
+
+
+def test_mate_step_width_rejects_a_missing_second_occurrence_a_wrong_type_and_two_ref_kinds():
+    top_id, occ_a, occ_b = _setup_top_with_two_occurrences()
+
+    def run(first: dict, second: dict, mate_type=MateType.COINCIDENT):
+        return _PlanValidator(get_part_or_404(top_id)).run(
+            [MateStep(local_id="w1", type=mate_type, references=[MateEntityRefStep.model_validate(first), MateEntityRefStep.model_validate(second)])]
+        )[0]
+
+    assert run(_width_ref(f"existing:{occ_a}", "existing:nope"), _width_ref(f"existing:{occ_b}")).ok is False
+    wrong = run(_width_ref(f"existing:{occ_a}"), _width_ref(f"existing:{occ_b}"), MateType.CONCENTRIC)
+    assert wrong.ok is False and "Width" in wrong.error["message"]
+    both = {**_width_ref(f"existing:{occ_a}"), "subshape_ref": {"body_id": "b1", "shape_type": "face", "index": 0}}
+    assert run(both, _width_ref(f"existing:{occ_b}")).ok is False
+
+
+def test_mate_step_symmetric_is_a_midplane_of_two_occurrences_and_a_plain_face_on_a_third():
+    top_id, occ_a, occ_b = _setup_top_with_two_occurrences()
+    validator = _PlanValidator(get_part_or_404(top_id))
+    # the mirror plane is the root part's own face ("")
+    results = validator.run(
+        [
+            MateStep(
+                local_id="s1",
+                type=MateType.COINCIDENT,
+                references=[
+                    MateEntityRefStep.model_validate(_width_ref(f"existing:{occ_a}", f"existing:{occ_b}")),
+                    MateEntityRefStep.model_validate(_face_ref("")),
+                ],
+            )
+        ]
+    )
+    assert all(r.ok for r in results), results
+    mate = validator.part.mates[0]
+    assert mate.references[0].midplane.b_occurrence_id == occ_b and mate.references[1].subshape_ref is not None
+
+
 def test_mate_step_distance_requires_a_value():
     top_id, occ_a, occ_b = _setup_top_with_two_occurrences()
 

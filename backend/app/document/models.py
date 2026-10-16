@@ -3337,6 +3337,18 @@ BRANCH_USER = "user"
 
 
 @dataclass(frozen=True)
+class MidplaneRef:
+    """The mid-plane between two parallel plane-like references (`docs/width-mate-plan.md` §2): a Width mate's one side.
+    Never stored as geometry - resolved on the fly from `a` and `b` on every solve (`create_plane.midplane_of_resolved`).
+    `a` lives in the owning `MateEntityRef.occurrence_id`'s Part; `b` in `b_occurrence_id`'s Part (`None` = the same
+    occurrence). Both must sit under the same top-level Occurrence."""
+
+    a: PlaneRef
+    b: PlaneRef
+    b_occurrence_id: str | None = None
+
+
+@dataclass(frozen=True)
 class MateEntityRef:
     """One side of a Mate: which Occurrence the referenced geometry belongs
     to, plus the geometry itself. Reuses `SubShapeRef`/`PlaneRef`/`PointRef`
@@ -3344,8 +3356,8 @@ class MateEntityRef:
     use - since a mate references a face/edge/vertex/plane exactly the way
     an existing Feature does; only `occurrence_id` is new, since a bare
     `SubShapeRef` alone doesn't say which of possibly-many Occurrences of
-    the same Part definition it belongs to. Exactly one of the three ref
-    fields is ever set, mirroring `PointRef`/`PlaneRef`'s own established
+    the same Part definition it belongs to. Exactly one of the four ref
+    fields (`subshape_ref`/`plane_ref`/`point_ref`/`midplane`) is ever set, mirroring `PointRef`/`PlaneRef`'s own established
     "exactly one of N fields, payload shape validated by the router"
     convention."""
 
@@ -3353,6 +3365,7 @@ class MateEntityRef:
     subshape_ref: SubShapeRef | None = None
     plane_ref: PlaneRef | None = None
     point_ref: PointRef | None = None
+    midplane: MidplaneRef | None = None
 
 
 @dataclass

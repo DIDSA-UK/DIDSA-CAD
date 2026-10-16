@@ -61,6 +61,7 @@ from app.document.models import (
     MaterialAssignment,
     Mate,
     MateEntityRef,
+    MidplaneRef,
     MateType,
     MergeFeature,
     MergeMode,
@@ -2044,6 +2045,18 @@ def _mate_entity_ref_to_dict(ref: MateEntityRef) -> dict:
         "subshape_ref": _subshape_ref_to_dict(ref.subshape_ref) if ref.subshape_ref else None,
         "plane_ref": _plane_ref_to_dict(ref.plane_ref) if ref.plane_ref else None,
         "point_ref": _point_ref_to_dict(ref.point_ref) if ref.point_ref else None,
+        # Only written when set, so files without a Width reference are byte-identical to before.
+        **(
+            {
+                "midplane": {
+                    "a": _plane_ref_to_dict(ref.midplane.a),
+                    "b": _plane_ref_to_dict(ref.midplane.b),
+                    "b_occurrence_id": ref.midplane.b_occurrence_id,
+                }
+            }
+            if ref.midplane
+            else {}
+        ),
     }
 
 
@@ -2053,6 +2066,13 @@ def _mate_entity_ref_from_dict(data: dict) -> MateEntityRef:
         subshape_ref=_subshape_ref_from_dict(data["subshape_ref"]) if data.get("subshape_ref") else None,
         plane_ref=_plane_ref_from_dict(data["plane_ref"]) if data.get("plane_ref") else None,
         point_ref=_point_ref_from_dict(data["point_ref"]) if data.get("point_ref") else None,
+        midplane=MidplaneRef(
+            a=_plane_ref_from_dict(data["midplane"]["a"]),
+            b=_plane_ref_from_dict(data["midplane"]["b"]),
+            b_occurrence_id=data["midplane"].get("b_occurrence_id"),
+        )
+        if data.get("midplane")
+        else None,
     )
 
 

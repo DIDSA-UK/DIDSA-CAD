@@ -5,6 +5,7 @@ import '../api/document_api_client.dart';
 import 'resizable_tool_panel.dart';
 import 'selection_hit_test.dart';
 import 'svg_icon.dart';
+import 'width_pick.dart';
 
 /// Phase 6 (`docs/assembly-scope.md` §3): the five Mate types this app's
 /// backend supports (`app.document.models.MateType`) - kept as a plain
@@ -19,8 +20,15 @@ String mateTypeLabel(String type) => switch (type) {
       'parallel' => 'Parallel',
       'distance' => 'Distance',
       'angle' => 'Angle',
+      kWidthMateType => 'Width',
+      kSymmetricMateType => 'Symmetric',
       _ => type,
     };
+
+/// The label of a stored [mate]: "Width" when its references are mid-planes, else its type's label.
+String mateLabel(MateDto mate) => isSymmetricMate(mate)
+    ? mateTypeLabel(kSymmetricMateType)
+    : (isWidthMate(mate) ? mateTypeLabel(kWidthMateType) : mateTypeLabel(mate.type));
 
 /// Phase 2b: the sentence shown while the ghost preview needs earlier mates on their other branch
 /// ([MateSolvePreviewDto.branchChanges]), or cannot get there ([blockedBy] = mates the user set that stand in the
@@ -35,7 +43,7 @@ String? mateBranchNotice(
     final labels = <String>[];
     for (final id in ids) {
       final found = mates.where((m) => m.id == id);
-      labels.add(found.isEmpty ? 'a mate' : '${mateTypeLabel(found.first.type)} mate');
+      labels.add(found.isEmpty ? 'a mate' : '${mateLabel(found.first)} mate');
     }
     return labels.join(', ');
   }
@@ -85,6 +93,20 @@ double? parseMateValue(String type, String text) {
   if (value == null) return null;
   if (type == 'distance' && value < 0) return null;
   return value;
+}
+
+/// [text] as a Width offset from the centre: empty = centred (`null`), otherwise a non-negative number (the side is "Flip side").
+double? parseWidthOffset(String text) {
+  final value = double.tryParse(text.trim());
+  return value == null || value < 0 ? null : value;
+}
+
+/// The hint under the Width offset field for [text], or `null` when it is fine.
+String? widthOffsetError(String text) {
+  if (text.trim().isEmpty) return null;
+  final value = double.tryParse(text.trim());
+  if (value == null) return 'Enter a number, or leave empty to centre';
+  return value < 0 ? 'The offset cannot be negative - use Flip side' : null;
 }
 
 /// The hint under a value field for [text], or `null` when it is fine.
@@ -257,6 +279,14 @@ class MatePanel extends StatelessWidget {
   final bool saving;
   final String? error;
 
+  /// The Width flow (`mateType == kWidthMateType`): the four-pick state, the pair error ("faces not parallel"), the optional
+  /// offset from the centre and its callbacks. Null for every other type.
+  final WidthPick? widthPick;
+  final String? widthError;
+  final double? widthOffset;
+  final ValueChanged<double?>? onWidthOffsetChanged;
+  final VoidCallback? onWidthBack;
+
   /// Phase 2b: informational line under the controls (see [mateBranchNotice]); shown in the normal text colour.
   final String? notice;
 
@@ -291,9 +321,20 @@ class MatePanel extends StatelessWidget {
     required this.onCancel,
     this.onClearSelection,
     this.onRemoveEntity,
+    this.widthPick,
+    this.widthError,
+    this.widthOffset,
+    this.onWidthOffsetChanged,
+    this.onWidthBack,
   });
 
-  String? get _tooltip => switch (selectedEntities.length) {
+  bool get _isWidth => isMultiPickMateType(mateType) && widthPick != null;
+
+  String? get _tooltip => _isWidth
+      ? (mateType == kSymmetricMateType
+          ? 'Symmetric: pick the two faces to mirror (on two parts), then a face of the mirror plane (on a third part)'
+          : 'Width: pick the two faces of the gap, then the two faces of the part to centre in it')
+      : switch (selectedEntities.length) {
         0 => 'Select a face, edge, or vertex for the first side of the mate',
         1 => 'Select a face, edge, or vertex for the second side of the mate',
         _ => null,
@@ -308,7 +349,8 @@ class MatePanel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (selectedEntities.isNotEmpty) ..._selectionRows(context),
+          if (_isWidth) ..._widthRows(context),
+          if (!_isWidth && selectedEntities.isNotEmpty) ..._selectionRows(context),
           if (selectedEntities.isNotEmpty && onClearSelection != null)
             Align(
               alignment: Alignment.centerLeft,
@@ -323,7 +365,7 @@ class MatePanel extends StatelessWidget {
             initialValue: mateType,
             decoration: const InputDecoration(labelText: 'Mate type'),
             items: [
-              for (final type in kMateTypes) DropdownMenuItem(value: type, child: Text(mateTypeLabel(type))),
+              for (final type in [...kMateTypes, if (widthPick != null) ...[kWidthMateType, kSymmetricMateType]]) DropdownMenuItem(value: type, child: Text(mateTypeLabel(type))),
             ],
             onChanged: (type) {
               if (type != null) onMateTypeChanged(type);
@@ -339,6 +381,21 @@ class MatePanel extends StatelessWidget {
               autovalidateMode: AutovalidateMode.always,
               validator: (text) => mateValueError(mateType, text ?? ''),
               onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),
+            ),
+          ],
+          if (_isWidth && mateType == kWidthMateType && onWidthOffsetChanged != null) ...[
+            const SizedBox(height: 8),
+            TextFormField(
+              key: const ValueKey('width-offset'),
+              initialValue: widthOffset?.toString() ?? '',
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Offset from centre (mm, optional)',
+                helperText: 'Leave empty to centre exactly',
+              ),
+              autovalidateMode: AutovalidateMode.always,
+              validator: (text) => widthOffsetError(text ?? ''),
+              onChanged: (text) => onWidthOffsetChanged!(parseWidthOffset(text)),
             ),
           ],
           if (branchControls != null) branchControls!,
@@ -385,6 +442,53 @@ class MatePanel extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// The Width pick list: "N of 4" progress, the four slots (filled or waiting), Back for the last pick, and the pair error.
+  List<Widget> _widthRows(BuildContext context) {
+    final pick = widthPick!;
+    final scheme = Theme.of(context).colorScheme;
+    return [
+      Text(pick.progress, key: const ValueKey('width-progress'), style: const TextStyle(fontWeight: FontWeight.w600)),
+      const SizedBox(height: 4),
+      for (var i = 0; i < pick.total; i++)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 2),
+          child: Row(
+            children: [
+              // One colour per pair: the gap's faces and the part-to-centre's faces read apart in the list.
+              Container(width: 10, height: 10, color: i < 2 ? scheme.primary : scheme.tertiary), // symmetric: the mirror plane takes the second colour
+              const SizedBox(width: 8),
+              SizedBox(width: 18, height: 18, child: i < pick.picks.length ? _iconFor(SelectionEntityKind.face) : null),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  i < pick.picks.length ? '${pick.slotLabel(i)}: ${_titleFor(pick.picks[i])}' : pick.slotLabel(i),
+                  style: TextStyle(
+                    color: i < pick.picks.length ? scheme.onSurface : scheme.onSurfaceVariant,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      if (widthError != null)
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(widthError!, key: const ValueKey('width-error'), style: TextStyle(color: scheme.error, fontSize: 13)),
+        ),
+      if (pick.picks.isNotEmpty && onWidthBack != null)
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            key: const ValueKey('width-back'),
+            onPressed: saving ? null : onWidthBack,
+            icon: const Icon(Icons.undo, size: 18),
+            label: const Text('Back (undo last pick)'),
+          ),
+        ),
+    ];
   }
 
   // Same small private `_iconFor`/`_labelFor`/`_titleFor` subset

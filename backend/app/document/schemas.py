@@ -3359,15 +3359,24 @@ class OccurrenceCreate(BaseModel):
     resolved_part_id: str | None = None
 
 
+class MidplaneRefSchema(BaseModel):
+    """`MidplaneRef` on the wire: two parallel plane-like refs; `b_occurrence_id` null = same occurrence as the owning ref."""
+
+    a: PlaneRefSchema
+    b: PlaneRefSchema
+    b_occurrence_id: str | None = None
+
+
 class MateEntityRefResponse(BaseModel):
     """One side of a `MateResponse` - see `app.document.models.
     MateEntityRef`'s own docstring. Exactly one of `subshape_ref`/
-    `plane_ref`/`point_ref` is ever set."""
+    `plane_ref`/`point_ref`/`midplane` is ever set."""
 
     occurrence_id: str
     subshape_ref: SubShapeRefSchema | None = None
     plane_ref: PlaneRefSchema | None = None
     point_ref: PointRefSchema | None = None
+    midplane: MidplaneRefSchema | None = None
 
 
 class BranchChangeRequest(BaseModel):

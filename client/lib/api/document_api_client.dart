@@ -1844,7 +1844,10 @@ class MateEntityRefDto {
   final PlaneRefDto? planeRef;
   final PointRefDto? pointRef;
 
-  const MateEntityRefDto({required this.occurrenceId, this.subshapeRef, this.planeRef, this.pointRef});
+  /// A Width mate's side (`docs/width-mate-plan.md`): the mid-plane of two parallel faces. Exactly one of the four ref fields is set.
+  final MidplaneRefDto? midplane;
+
+  const MateEntityRefDto({required this.occurrenceId, this.subshapeRef, this.planeRef, this.pointRef, this.midplane});
 
   factory MateEntityRefDto.fromJson(Map<String, dynamic> json) => MateEntityRefDto(
         occurrenceId: json['occurrence_id'] as String,
@@ -1857,6 +1860,9 @@ class MateEntityRefDto {
         pointRef: json['point_ref'] == null
             ? null
             : PointRefDto.fromJson(json['point_ref'] as Map<String, dynamic>),
+        midplane: json['midplane'] == null
+            ? null
+            : MidplaneRefDto.fromJson(json['midplane'] as Map<String, dynamic>),
       );
 
   /// Phase 6 (`docs/assembly-scope.md` §3): the reverse direction -
@@ -1869,6 +1875,30 @@ class MateEntityRefDto {
         if (subshapeRef != null) 'subshape_ref': subshapeRef!.toJson(),
         if (planeRef != null) 'plane_ref': planeRef!.toJson(),
         if (pointRef != null) 'point_ref': pointRef!.toJson(),
+        if (midplane != null) 'midplane': midplane!.toJson(),
+      };
+}
+
+/// The wire counterpart to the backend's `MidplaneRefSchema`: two parallel plane-like refs. [a] lives in the owning
+/// reference's occurrence, [b] in [bOccurrenceId] (null = the same occurrence; otherwise another occurrence under the same
+/// top-level one, e.g. two bars of a frame).
+class MidplaneRefDto {
+  final PlaneRefDto a;
+  final PlaneRefDto b;
+  final String? bOccurrenceId;
+
+  const MidplaneRefDto({required this.a, required this.b, this.bOccurrenceId});
+
+  factory MidplaneRefDto.fromJson(Map<String, dynamic> json) => MidplaneRefDto(
+        a: PlaneRefDto.fromJson(json['a'] as Map<String, dynamic>),
+        b: PlaneRefDto.fromJson(json['b'] as Map<String, dynamic>),
+        bOccurrenceId: json['b_occurrence_id'] as String?,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'a': a.toJson(),
+        'b': b.toJson(),
+        if (bOccurrenceId != null) 'b_occurrence_id': bOccurrenceId,
       };
 }
 

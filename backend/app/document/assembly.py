@@ -115,6 +115,18 @@ def compose(parent: RigidTransform, child: RigidTransform) -> RigidTransform:
     return RigidTransform(translation=composed_translation, rotation_axis=axis, rotation_angle_degrees=angle)
 
 
+def invert_transform(transform: RigidTransform) -> RigidTransform:
+    """The `RigidTransform` undoing `transform` (rotation transposed, translation `-R^T t`)."""
+    inverse = RigidTransform(rotation_axis=transform.rotation_axis, rotation_angle_degrees=-transform.rotation_angle_degrees)
+    t = transform.translation
+    back = apply_transform_to_direction(inverse, t)
+    return RigidTransform(
+        translation=(-back[0], -back[1], -back[2]),
+        rotation_axis=inverse.rotation_axis,
+        rotation_angle_degrees=inverse.rotation_angle_degrees,
+    )
+
+
 def compose_chain(transforms: list[RigidTransform]) -> RigidTransform:
     """`compose` folded left-to-right over a full Occurrence path from an
     assembly-mesh walk's root down to one leaf - `transforms[0]` is the
@@ -125,6 +137,29 @@ def compose_chain(transforms: list[RigidTransform]) -> RigidTransform:
     for transform in transforms:
         result = compose(result, transform)
     return result
+
+
+def mate_ref_tops(ref) -> tuple[str, ...]:
+    """The distinct top-level occurrences a mate reference involves, first face's first. One for every reference but a Width
+    (mid-plane) one whose second face sits on another top-level occurrence (`docs/width-mate-plan.md`: a gap or a tab made of
+    two parts)."""
+    tops = [top_level_occurrence_id(ref.occurrence_id)]
+    midplane = getattr(ref, "midplane", None)
+    if midplane is not None and midplane.b_occurrence_id is not None:
+        other = top_level_occurrence_id(midplane.b_occurrence_id)
+        if other not in tops:
+            tops.append(other)
+    return tuple(tops)
+
+
+def mate_tops(mate) -> tuple[str, ...]:
+    """Every top-level occurrence either reference of `mate` involves (distinct, in reference order)."""
+    seen: list[str] = []
+    for ref in mate.references:
+        for top in mate_ref_tops(ref):
+            if top not in seen:
+                seen.append(top)
+    return tuple(seen)
 
 
 def top_level_occurrence_id(occurrence_id: str) -> str:

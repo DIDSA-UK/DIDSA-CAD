@@ -94,12 +94,14 @@ from OCC.Core.TopoDS import topods
 from py_slvs import slvs
 
 from app.document.assembly import (
+    mate_ref_tops,
+    invert_transform,
     apply_transform_to_direction,
     apply_transform_to_point,
     resolve_occurrence_target,
     top_level_occurrence_id,
 )
-from app.document.create_plane import resolve_plane_ref, resolve_point_ref_position
+from app.document.create_plane import midplane_of_resolved, resolve_plane_ref, resolve_point_ref_position
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
 from app.document.measure import single_shape_geometry
 from app.document.models import (
@@ -229,7 +231,79 @@ class _ResolvedGeometry:
     hinge: tuple[Vec3, Vec3] | None = None
 
 
-def _resolve_local_geometry(target_part: Part, bodies: dict, ref: MateEntityRef) -> _ResolvedGeometry:
+def _resolve_midplane_plane(
+    target_part: Part, bodies: dict, ref: MateEntityRef, document: Document | None, root_part: Part | None
+) -> ResolvedPlane:
+    """A Width side (`MateEntityRef.midplane`): the plane midway between its two faces, in `target_part`'s local frame
+    (`ref.occurrence_id`'s leaf Part). Computed fresh on every call; nothing is created or stored. Face `b` may sit in a
+    different leaf Part under the same top-level Occurrence (the two bars of a frame): it is carried into `a`'s frame
+    through the sub-assembly's own transforms."""
+    mp = ref.midplane
+    assert mp is not None
+    plane_a = resolve_plane_ref(target_part, bodies, mp.a, frozenset())
+    b_id = ref.occurrence_id if mp.b_occurrence_id is None else mp.b_occurrence_id
+    if b_id == ref.occurrence_id:
+        plane_b = resolve_plane_ref(target_part, bodies, mp.b, frozenset())
+        return midplane_of_resolved(plane_a, plane_b, mp.a, mp.b)
+    top = top_level_occurrence_id(ref.occurrence_id)
+    if top == "" or top != top_level_occurrence_id(b_id) or document is None or root_part is None:
+        # Faces under different top-level occurrences are resolved by `cross_midplane_geometry` (world space) / the group model's
+        # composite sides; this local-frame resolver only serves one rigid body.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "type": "midplane_faces_on_different_occurrences",
+                "message": "This solve cannot resolve a Width reference whose faces are on different top-level occurrences",
+                "occurrence_id": ref.occurrence_id,
+                "b_occurrence_id": b_id,
+            },
+        )
+    top_part, _ = _target_part_and_transform(document, root_part, top)
+    part_a, to_a = _target_part_and_transform(document, top_part, ref.occurrence_id[len(top) + 1 :])
+    part_b, to_b = _target_part_and_transform(document, top_part, b_id[len(top) + 1 :])
+    plane_b = resolve_plane_ref(part_b, compute_part_bodies(part_b), mp.b, frozenset())
+    if to_b is not None:
+        plane_b = _transform_plane(plane_b, to_b)
+    if to_a is not None:
+        plane_b = _transform_plane(plane_b, invert_transform(to_a))
+    return midplane_of_resolved(plane_a, plane_b, mp.a, mp.b)
+
+
+def _transform_plane(plane: ResolvedPlane, transform: RigidTransform) -> ResolvedPlane:
+    return ResolvedPlane(
+        origin=apply_transform_to_point(transform, plane.origin),
+        normal=apply_transform_to_direction(transform, plane.normal),
+        x_axis=apply_transform_to_direction(transform, plane.x_axis),
+        y_axis=apply_transform_to_direction(transform, plane.y_axis),
+    )
+
+
+def midplane_spans_tops(ref: MateEntityRef) -> bool:
+    """A Width reference whose two faces are under different top-level occurrences."""
+    return ref.midplane is not None and len(mate_ref_tops(ref)) > 1
+
+
+def cross_midplane_geometry(document: Document, part: Part, ref: MateEntityRef) -> _ResolvedGeometry:
+    """A cross-occurrence Width reference in WORLD space at the stored poses: each face is resolved in its own part, placed by
+    its occurrence's chain, and the plane midway between them is returned (strict: 422 `faces_not_parallel` unless parallel)."""
+    mp = ref.midplane
+    assert mp is not None and mp.b_occurrence_id is not None
+    planes = []
+    for occurrence_id, plane_ref in ((ref.occurrence_id, mp.a), (mp.b_occurrence_id, mp.b)):
+        target, transform = _target_part_and_transform(document, part, occurrence_id)
+        plane = resolve_plane_ref(target, compute_part_bodies(target), plane_ref, frozenset())
+        planes.append(plane if transform is None else _transform_plane(plane, transform))
+    plane = midplane_of_resolved(planes[0], planes[1], mp.a, mp.b)
+    return _ResolvedGeometry(point=plane.origin, plane=plane, direction=plane.normal)
+
+
+def _resolve_local_geometry(
+    target_part: Part,
+    bodies: dict,
+    ref: MateEntityRef,
+    document: Document | None = None,
+    root_part: Part | None = None,
+) -> _ResolvedGeometry:
     """`ref`'s own geometry, in `target_part`'s local frame (from `bodies`,
     `compute_part_bodies(target_part)`'s own result - never pre-transformed).
     Exactly one of `ref.point_ref`/`ref.plane_ref`/`ref.subshape_ref` is
@@ -240,6 +314,9 @@ def _resolve_local_geometry(target_part: Part, bodies: dict, ref: MateEntityRef)
         return _ResolvedGeometry(point=point)
     if ref.plane_ref is not None:
         plane = resolve_plane_ref(target_part, bodies, ref.plane_ref, frozenset())
+        return _ResolvedGeometry(point=plane.origin, plane=plane, direction=plane.normal)
+    if ref.midplane is not None:
+        plane = _resolve_midplane_plane(target_part, bodies, ref, document, root_part)
         return _ResolvedGeometry(point=plane.origin, plane=plane, direction=plane.normal)
 
     assert ref.subshape_ref is not None
@@ -1526,11 +1603,12 @@ def _applicable_mates(
         first, second = mate.references
         # A reference into a sub-assembly (`outer/inner`) belongs to the
         # top-level Occurrence `outer`: that is what moves when it is driven.
-        first_top = top_level_occurrence_id(first.occurrence_id)
-        second_top = top_level_occurrence_id(second.occurrence_id)
-        if first_top == driven_occurrence_id and second_top != driven_occurrence_id:
+        # (A Width reference spanning two top-level occurrences involves both.)
+        first_tops = mate_ref_tops(first)
+        second_tops = mate_ref_tops(second)
+        if driven_occurrence_id in first_tops and driven_occurrence_id not in second_tops:
             applicable.append((mate, first, second))
-        elif second_top == driven_occurrence_id and first_top != driven_occurrence_id:
+        elif driven_occurrence_id in second_tops and driven_occurrence_id not in first_tops:
             applicable.append((mate, second, first))
     return applicable
 
@@ -1589,15 +1667,20 @@ def _solve_occurrence_against(
             driven_leaf_part,
             driven_bodies if driven_leaf_part is driven_target_part else compute_part_bodies(driven_leaf_part),
             driven_ref,
+            document,
+            part,
         )
         if driven_inner is not None:
             driven_geometry = _place_in_world(driven_geometry, driven_inner)
-        fixed_target_part, fixed_transform = _target_part_and_transform(document, part, fixed_ref.occurrence_id)
-        fixed_bodies = compute_part_bodies(fixed_target_part)
-        fixed_local_geometry = _resolve_local_geometry(fixed_target_part, fixed_bodies, fixed_ref)
-        fixed_geometry = (
-            fixed_local_geometry if fixed_transform is None else _place_in_world(fixed_local_geometry, fixed_transform)
-        )
+        if midplane_spans_tops(fixed_ref):
+            fixed_geometry = cross_midplane_geometry(document, part, fixed_ref)  # already in world space
+        else:
+            fixed_target_part, fixed_transform = _target_part_and_transform(document, part, fixed_ref.occurrence_id)
+            fixed_bodies = compute_part_bodies(fixed_target_part)
+            fixed_local_geometry = _resolve_local_geometry(fixed_target_part, fixed_bodies, fixed_ref, document, part)
+            fixed_geometry = (
+                fixed_local_geometry if fixed_transform is None else _place_in_world(fixed_local_geometry, fixed_transform)
+            )
         # Closest -> a concrete branch, from the pose this solve starts from (a mate that already names its branch keeps it),
         # oriented the way THIS solve sees the pair (the driven side is reference 1 when `swapped`: see `orient_branch`).
         mate, _canonical = resolve_oriented_branch(

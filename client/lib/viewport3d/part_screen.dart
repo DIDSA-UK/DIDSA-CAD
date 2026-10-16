@@ -80,6 +80,7 @@ import 'loft_surface_panel.dart';
 import 'merge_panel.dart';
 import 'mate_context_menu.dart';
 import 'mate_panel.dart';
+import 'width_pick.dart';
 import 'component_pattern_panel.dart';
 import 'measurement_panel.dart';
 import 'assembly_instance_render.dart';
@@ -2423,6 +2424,10 @@ class _PartScreenState extends State<PartScreen> {
     // Phase 6: same "cap at 2, a 3rd distinct tap starts fresh" shape
     // Measure's own block just above uses - a Mate is exactly 2 references,
     // same "1 <= len(refs) <= 2 would be ill-defined past 2" reasoning.
+    if (_mateActive && _mateIsWidth) {
+      _toggleWidthPick(entity);
+      return;
+    }
     if (_mateActive) {
       setState(() {
         final next = Set<SelectionEntityRef>.of(_selectedEntities);
@@ -3610,6 +3615,101 @@ class _PartScreenState extends State<PartScreen> {
   String _mateType = kMateTypes.first;
   double? _mateValue;
 
+  /// The Width flow (`docs/width-mate-plan.md`, [kWidthMateType]): the four picks, the optional offset from the centre, and the
+  /// error of a pair whose faces are not parallel. [_selectedEntities] mirrors the picks (so the faces are highlighted while
+  /// picking); nothing here is saved, drawn or sent until Confirm, and Cancel drops it all.
+  WidthPick _widthPick = const WidthPick();
+  double? _widthOffset;
+  String? _widthError;
+  int _widthPairToken = 0;
+
+  /// A Width or Symmetric mate: picked as several faces ([WidthPick]) rather than two entities.
+  bool get _mateIsWidth => isMultiPickMateType(_mateType);
+
+  /// Whether the picks needed for the current mate type are all made (2 entities, or the 4 faces of a Width mate).
+  bool get _matePicksComplete => _mateIsWidth ? _widthPick.isComplete && _widthError == null : _selectedEntities.length == 2;
+
+  /// The `type` / `value` / `references` a create or preview sends for the mate being authored.
+  String get _mateWireType => _mateType == kWidthMateType ? WidthPick.wireType(_widthOffset) : (_mateType == kSymmetricMateType ? 'coincident' : _mateType);
+  double? get _mateWireValue => _mateType == kWidthMateType ? WidthPick.wireValue(_widthOffset) : (_mateType == kSymmetricMateType ? null : _mateValue);
+  List<MateEntityRefDto> _mateWireReferences() =>
+      _mateIsWidth ? _widthPick.references() : [for (final entity in _selectedEntities) _mateEntityRefFor(entity)];
+
+  /// The occurrences in the order a solve prefers to drive them: the part to centre (the tab, picked last) before the gap's.
+  List<String> get _mateDrivePreference {
+    if (_mateIsWidth) {
+      final picks = _widthPick.picks;
+      // Symmetric: the two mirrored parts move, the mirror plane's part is last choice; Width: the part(s) to centre first.
+      if (_widthPick.symmetric) return [picks[0].occurrenceId, picks[1].occurrenceId, picks[2].occurrenceId];
+      return [picks[2].occurrenceId, picks[3].occurrenceId, picks[0].occurrenceId, picks[1].occurrenceId];
+    }
+    final entities = _selectedEntities.toList();
+    return [entities[1].occurrenceId, entities[0].occurrenceId];
+  }
+
+  void _resetWidth() {
+    _widthPick = WidthPick(const [], _mateType == kSymmetricMateType);
+    _widthOffset = null;
+    _widthError = null;
+    _widthPairToken++;
+  }
+
+  /// Toggles a face into the Width picks (see [WidthPick.toggle]); a refused face says why in the panel.
+  void _toggleWidthPick(SelectionEntityRef entity) {
+    final (next, why) = _widthPick.toggle(entity);
+    setState(() {
+      _widthPick = next;
+      _widthError = why;
+      _selectedEntities = next.picks.toSet();
+    });
+    _afterWidthPicksChanged();
+  }
+
+  void _widthBack() {
+    setState(() {
+      _widthPick = _widthPick.back();
+      _widthError = null;
+      _selectedEntities = _widthPick.picks.toSet();
+    });
+    _afterWidthPicksChanged();
+  }
+
+  /// After a pick: the second face of a pair is checked for parallelism right away (the Measure endpoint reports it), and the
+  /// ghost preview refreshes once all four faces are in.
+  void _afterWidthPicksChanged() {
+    final picks = _widthPick.picks;
+    if (picks.length == 2 || (!_widthPick.symmetric && picks.length == 4)) {
+      unawaited(_checkWidthPairParallel(picks[picks.length - 2], picks[picks.length - 1]));
+    } else {
+      unawaited(_scheduleMatePreview());
+    }
+  }
+
+  Future<void> _checkWidthPairParallel(SelectionEntityRef first, SelectionEntityRef second) async {
+    final part = _part;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (focusPartId == null) return;
+    final token = ++_widthPairToken;
+    MeasureEntityRefDto ref(SelectionEntityRef e) => MeasureEntityRefDto(
+          occurrenceId: e.occurrenceId,
+          subshapeRef: SubShapeRefDto(bodyId: e.bodyId, shapeType: 'face', index: e.id),
+        );
+    try {
+      final result = await _api.measure(focusPartId, [ref(first), ref(second)]);
+      if (!mounted || token != _widthPairToken) return;
+      setState(() {
+        _widthError = result.facesParallel == false
+            ? 'These two faces are not parallel - a Width mate needs a pair of parallel faces. Remove one (Back) and pick another.'
+            : null;
+      });
+    } on ApiException {
+      if (!mounted || token != _widthPairToken) return;
+      // Not measurable here (the backend will say why on Confirm / in the preview): do not block the pick.
+      setState(() => _widthError = null);
+    }
+    if (mounted && _widthError == null) unawaited(_scheduleMatePreview());
+  }
+
   /// Phase 3: the branch the user picked for the mate being authored (`null` = Closest: the solve resolves it, the panel shows
   /// "(auto)" and what the ghost uses). Cleared whenever the geometry the mate is built on changes
   /// ([_mateGeometryKey]), since a choice means nothing for another pair of faces.
@@ -3735,6 +3835,7 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = {};
       _mateType = kMateTypes.first;
       _mateValue = null;
+      _resetWidth();
       _resetMateBranchChoice();
       _mateAllowRotation = true;
       _mateError = null;
@@ -3750,6 +3851,7 @@ class _PartScreenState extends State<PartScreen> {
 
   void _closeMate() {
     setState(() {
+      _resetWidth();
       _mateActive = false;
       _selectedEntities = _entitiesBeforeMate ?? {};
       _entitiesBeforeMate = null;
@@ -3830,7 +3932,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _scheduleMatePreview() async {
     final part = _part;
     final focusPartId = _focusStack?.current ?? part?.id;
-    if (part == null || focusPartId == null || _selectedEntities.length != 2) {
+    if (part == null || focusPartId == null || !_matePicksComplete) {
       setState(() {
         _matePreviewMembers = const [];
         _resetMateBranchChoice();
@@ -3838,15 +3940,15 @@ class _PartScreenState extends State<PartScreen> {
       });
       return;
     }
-    final entities = _selectedEntities.toList();
-    final geometryKey = '$_mateType|${[for (final e in entities) _mateEntityRefFor(e).toJson()]}|$_mateAllowRotation';
+    final references = _mateWireReferences();
+    final geometryKey = '$_mateWireType|${[for (final r in references) r.toJson()]}|$_mateAllowRotation';
     if (geometryKey != _mateGeometryKey) {
       // Another pair of faces / type: an earlier Aligned / Flip choice does not carry over.
       _mateGeometryKey = geometryKey;
       _mateAlignment = null;
       _mateSecondaryFlip = null;
     }
-    final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
+    final drivenOccurrenceId = _drivableOccurrenceId(_mateDrivePreference);
     if (drivenOccurrenceId == null) {
       setState(() {
         _matePreviewMembers = const [];
@@ -3859,9 +3961,9 @@ class _PartScreenState extends State<PartScreen> {
       final result = await _api.previewMateSolve(
         focusPartId,
         drivenOccurrenceId,
-        type: _mateType,
-        references: [for (final entity in entities) _mateEntityRefFor(entity)],
-        value: _mateValue,
+        type: _mateWireType,
+        references: references,
+        value: _mateWireValue,
         allowRotation: _mateAllowRotation,
         movement: _mateMovement,
         alignment: _mateAlignment,
@@ -3893,8 +3995,8 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _confirmMate() async {
     final part = _part;
     final focusPartId = _focusStack?.current ?? part?.id;
-    if (part == null || focusPartId == null || _selectedEntities.length != 2) return;
-    final entities = _selectedEntities.toList();
+    if (part == null || focusPartId == null || !_matePicksComplete) return;
+    final references = _mateWireReferences();
     setState(() {
       _mateSaving = true;
       _mateError = null;
@@ -3909,14 +4011,14 @@ class _PartScreenState extends State<PartScreen> {
       // is drivable (both fixed, or a fixed Occurrence mated to the root
       // Part's own content) - there is no Occurrence left that a solve
       // could legally move, so the mate is stored without one.
-      final drivenOccurrenceId = _drivableOccurrenceId([entities[1].occurrenceId, entities[0].occurrenceId]);
+      final drivenOccurrenceId = _drivableOccurrenceId(_mateDrivePreference);
       // One atomic call: the backend runs the same solve the ghost preview ran and stores the mate together with the solved
       // poses only if it converges, so a refused mate never stays behind (and a retry never adds a duplicate).
       await _api.createMate(
         focusPartId,
-        type: _mateType,
-        references: [for (final entity in entities) _mateEntityRefFor(entity)],
-        value: _mateValue,
+        type: _mateWireType,
+        references: references,
+        value: _mateWireValue,
         allowRotation: _mateAllowRotation,
         alignment: _mateAlignment,
         secondaryFlip: _mateSecondaryFlip,
@@ -3926,6 +4028,7 @@ class _PartScreenState extends State<PartScreen> {
       );
       if (!mounted) return;
       setState(() {
+        _resetWidth();
         _applyMateBranchPreview(null);
         _mateActive = false;
         _selectedEntities = {};
@@ -11028,7 +11131,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Whether [occurrenceId] takes part in at least one active mate of the focused Part (the only case that
   /// goes through `mate-motion`; everything else keeps the raw PATCH path).
   bool _isMated(String occurrenceId) => _mates.any(
-        (m) => !m.suppressed && m.references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrenceId),
+        (m) => !m.suppressed && mateTopLevelOccurrences(m).contains(occurrenceId),
       );
 
   RigidTransformDto _localOfWorld(RigidTransformDto world) {
@@ -14464,7 +14567,7 @@ class _PartScreenState extends State<PartScreen> {
     final targets = _assemblyMultiSelectOccurrences;
     if (targets.isEmpty) return;
     final targetIds = {for (final o in targets) o.id};
-    final mateCount = _mates.where((m) => m.references.any((r) => targetIds.contains(topLevelOccurrenceId(r.occurrenceId)))).length;
+    final mateCount = _mates.where((m) => mateTopLevelOccurrences(m).any(targetIds.contains)).length;
     final patternCount =
         _componentPatterns.where((p) => p.sourceOccurrenceIds.any(targetIds.contains)).length;
     final n = targets.length;
@@ -21959,7 +22062,7 @@ class _PartScreenState extends State<PartScreen> {
         builder: (context, setDialogState) {
           dialogRefresh = () => setDialogState(() {});
           return AlertDialog(
-          title: Text('Edit ${mateTypeLabel(mate.type)} Mate'),
+          title: Text('Edit ${mateLabel(mate)} Mate'),
           content: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -21968,7 +22071,11 @@ class _PartScreenState extends State<PartScreen> {
                 TextFormField(
                   initialValue: value?.toString() ?? '',
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  decoration: InputDecoration(labelText: mate.type == 'angle' ? 'Angle (degrees)' : 'Distance (mm)'),
+                  decoration: InputDecoration(
+                    labelText: mate.type == 'angle'
+                        ? 'Angle (degrees)'
+                        : (isWidthMate(mate) ? 'Offset from centre (mm)' : 'Distance (mm)'),
+                  ),
                   autovalidateMode: AutovalidateMode.always,
                   validator: (text) => mateValueError(mate.type, text ?? ''),
                   onChanged: (text) {
@@ -22143,7 +22250,7 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null || focusPartId == null) return;
     final affectedMates = <MateDto>[];
     for (var i = 0; i < _mates.length; i++) {
-      if (_mates[i].references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrence.id)) {
+      if (mateTopLevelOccurrences(_mates[i]).contains(occurrence.id)) {
         affectedMates.add(_mates[i]);
       }
     }
@@ -23648,9 +23755,26 @@ class _PartScreenState extends State<PartScreen> {
                       branchControls: _mateBranchControls(),
                       allowRotation: _mateAllowRotation,
                       onMateTypeChanged: (type) {
-                        setState(() => _mateType = type);
+                        setState(() {
+                          // Width and the two-pick types pick different things: switching starts the picks over.
+                          if (isMultiPickMateType(type) != _mateIsWidth || type != _mateType && isMultiPickMateType(type)) {
+                            _selectedEntities = {};
+                            _mateType = type;
+                            _resetWidth();
+                            _mateValue = null;
+                          }
+                          _mateType = type;
+                        });
                         unawaited(_scheduleMatePreview());
                       },
+                      widthPick: _widthPick,
+                      widthError: _widthError,
+                      widthOffset: _widthOffset,
+                      onWidthOffsetChanged: (offset) {
+                        setState(() => _widthOffset = offset);
+                        unawaited(_scheduleMatePreview());
+                      },
+                      onWidthBack: _widthBack,
                       onValueChanged: (value) {
                         setState(() => _mateValue = value);
                         unawaited(_scheduleMatePreview());
@@ -23667,21 +23791,25 @@ class _PartScreenState extends State<PartScreen> {
                       saving: _mateSaving,
                       error: _mateError,
                       notice: _mateNotice,
-                      onConfirm: _selectedEntities.length == 2 &&
-                              (!mateTypeNeedsValue(_mateType) || _mateValue != null)
+                      onConfirm: _matePicksComplete && (!mateTypeNeedsValue(_mateType) || _mateValue != null)
                           ? _confirmMate
                           : null,
                       onCancel: _closeMate,
                       onClearSelection: () {
-                        setState(() => _selectedEntities = {});
+                        setState(() {
+                          _selectedEntities = {};
+                          _resetWidth();
+                        });
                         // Same pattern every other mate-panel callback uses:
                         // the ghost preview must reset with the selection.
                         unawaited(_scheduleMatePreview());
                       },
-                      onRemoveEntity: (entity) {
-                        setState(() => _selectedEntities = Set.of(_selectedEntities)..remove(entity));
-                        unawaited(_scheduleMatePreview());
-                      },
+                      onRemoveEntity: _mateIsWidth
+                          ? null
+                          : (entity) {
+                              setState(() => _selectedEntities = Set.of(_selectedEntities)..remove(entity));
+                              unawaited(_scheduleMatePreview());
+                            },
                     ),
                   ),
                 if (_componentPatternPanelActive)

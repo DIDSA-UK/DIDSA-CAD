@@ -140,6 +140,10 @@ def export_constraint_model(model) -> dict | None:
     for mate, a, b in model.sides:
         if mate.type.value not in SUPPORTED_TYPES:
             return None
+        if a.partner is not None or b.partner is not None:
+            # A Width mate over parts that move: its mid-plane depends on two poses (not a plane of one member), which the
+            # clients' retraction cannot evaluate - they keep projecting (docs/width-mate-plan.md).
+            return None
 
         def side(s) -> dict:
             g = s.geometry

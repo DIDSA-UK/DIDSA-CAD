@@ -8,13 +8,171 @@ first — this plan reuses all of it and deliberately changes none of it.
 
 | Phase | Summary | Status | PR |
 |---|---|---|---|
-| W1 | Backend: mid-plane mate reference, validation, solve/preview/branches, export/import | Not started | |
-| W2 | Flutter: four-pick Width flow in the mate panel, highlighting, edit | Not started | |
-| W3 | VR: the same flow on the tablet / wheel | Not started | |
-| W4 | AI plan schema + docs + measurement on the tester's table top | Not started | |
-| W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Not started — scoped below, needs its own go-ahead | |
+| W1 | Backend: mid-plane mate reference, validation, solve/preview/branches, export/import | Done (PR open, awaiting review; not merged) | CAD (this branch) |
+| W2 | Flutter: four-pick Width flow in the mate panel, highlighting, edit | Done (same PR; not merged; not tried by a human) | CAD #302 |
+| W3 | VR: the same flow on the tablet / wheel | Done (tablet; wheel = type entry only; headless-tested, no headset) | DIDSA-VR (this branch) |
+| W4 | AI plan schema + docs + measurement on the tester's table top | Done (same PR; not merged) | CAD #302 |
+| W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Done for FACES (no new backend; Flutter + VR three-pick flow); points and axes NOT built (see W5 notes) | CAD #302, VR #48 |
 
 Update this table with every PR, the same as the parent plan.
+
+## W1 implementation notes (what was built, and where it differs from the text)
+
+- **One deviation from §2, needed by the tester's file:** the Frame is a *sub-assembly of four bars*, so its two gap faces sit on two
+  different leaf occurrences (`Frame/<bar y0>` and `Frame/<bar y800>`), not on one. `MidplaneRef` is therefore `(a, b, b_occurrence_id)`:
+  `b` may name another occurrence **under the same top-level occurrence** (null = the same occurrence as the reference). Face `b` is
+  carried into `a`'s frame through the sub-assembly's own transforms (`assembly_solver._resolve_midplane_plane`, `invert_transform`),
+  the maths is `create_plane.midplane_of_resolved` (the old `resolve_midplane_from_bodies` body, now shared). Faces under *different
+  top-level* occurrences stay out of scope: 422 `midplane_faces_on_different_occurrences`. The mate is still a two-reference mate.
+- **Untouched, as required:** every `len(references) == 2` check, `build_group_model` sides and the constraint model
+  (`MODEL_VERSION` unchanged; `test_the_constraint_model_of_a_width_mate_is_a_plain_plane_plane_model`). The only solver edit is the
+  new `midplane` branch in `_resolve_local_geometry` (plus two optional arguments, `document` and `root_part`, passed by its 5 callers).
+- **Consumer audit** (every reader of a mate reference's geometry; `rg "\.references|MateEntityRef" backend/app`, plus `plane_ref` /
+  `subshape_ref` on the Dart/GDScript side):
+  - handled: `assembly_solver._resolve_local_geometry` (the only place a mate reference becomes geometry) and its 5 call sites:
+    `assembly_group.build_group_model.side`, `mate_world_geometries`, `_with_world_hinge` (2), `assembly_solver._solve_occurrence_against`
+    (driven + fixed); `router._mate_entity_ref_response` / `_mate_entity_ref_to_domain` / `_validate_mate_entity_ref` (+ the
+    plane-plane type check) in create and `preview-mate-solve`; `schemas.MateEntityRefResponse`; `native_format._mate_entity_ref_to/from_dict`
+    (written only when set, so mate-less-of-midplane files are byte-identical).
+  - not touched, no change needed: `constraint_model.export_constraint_model` (reads resolved geometry only), `_applicable_mates`/
+    `_live_mates`/`discover_component` (read `occurrence_id` only), `delete_occurrence` (reads `occurrence_id`; `b_occurrence_id` is under the
+    same top-level one by validation), `subshape_identity` (documents that mate refs are out of its scope), `measure`/`mesh_data`.
+  - **not yet handled (later phases):** `ai_plan._mate_entity_ref_from_step` and `MateEntityRefStep` (W4: today an AI plan cannot carry a
+    `midplane`; the "exactly one of" check there is still three-way); Dart `MateEntityRefDto` (W2) and `mates_tool.gd` / `mate_health.gd` (W3).
+    A Width mate in a file opened by an older Flutter/VR client shows its mid-plane reference as an empty one.
+  - There is **no backend mate-health endpoint** today; drift surfaces when a mate is next solved or previewed. A lost face is the existing
+    422 `missing_reference`, faces that stopped being parallel are 422 `faces_not_parallel` (distinct types, tested). The named "faces no
+    longer parallel" *state* in the UI is a client job (W2/W3) reading that error.
+- **Environment note:** `tools/motion_vectors/generate.py --check` passes on the plain system python (numpy there) and **fails in the
+  backend micromamba env on unmodified `main` too** (float rounding of that numpy); it is clean before and after this change under the
+  system python, and no vector or constant changed.
+- **Measurement** (`backend/tests/bench_width_mate.py`, 60 trials per start class, ground truth = the fixture's true plate pose, nothing named):
+
+  | start | scenario | picks / typed | first-time-correct | extra clicks per trial | centred after | backend ms per trial |
+  |---|---|---|---|---|---|---|
+  | near | 2 distance mates | 4 / 2 | 71.7% | 0.57 | 100% | 288 |
+  | near | 1 Width mate | 4 / 0 | 100% | 0.00 | 100% | 163 |
+  | medium | 2 distance mates | 4 / 2 | 64.2% | 0.72 | 100% | 279 |
+  | medium | 1 Width mate | 4 / 0 | 100% | 0.00 | 100% | 168 |
+  | far | 2 distance mates | 4 / 2 | 56.7% | 1.23 | 100% | 317 |
+  | far | 1 Width mate | 4 / 0 | 100% | 0.00 | 100% | 176 |
+
+  Read plainly: Width is right first time because its only branch (plate right way up or flipped) is invisible on a symmetric plate and
+  the centring has no inset/overhang root; the two distances each have an inset/overhang choice. Width needs the same *number* of picks
+  (4) but no typed value, and fewer clicks. Caveats: "time" here is backend solve time, not human time; Width does not set the gap
+  size and leaves the in-plane position free (needs the usual other mates); the Width pick UX (a four-pick flow) is untested with a human
+  until W2/W3. "Centred after" is 100% for both because the benchmark confirms the correct alternative after a wrong preview.
+
+## W2 implementation notes (Flutter)
+
+- **Built:** `width_pick.dart` (`WidthPick`, the panel-owned four-pick state; `kWidthMateType`; `isWidthMate`), `MidplaneRefDto` +
+  `MateEntityRefDto.midplane`, a "Width" entry in the new-mate type list, a panel with "N of 4 - <step>", four labelled slots (gap
+  pair / tab pair in two colours), Back, an optional "Offset from centre" field, and "Width N" in the assembly tree. The two-pick
+  behaviour of the other types is unchanged (`_toggleSelectedEntity` only branches to `WidthPick` when the type is Width).
+- **Wire:** centred = `coincident`, offset = `distance` (+ the usual branch controls: Orientation, Flip side, Next solution). The gap is
+  reference 1, the part to centre reference 2, so the solve drives the tab, as with other mates.
+- **Picking rules** (refused with a reason in the panel): faces only; the second face of a pair under the same top-level part; the tab
+  pair under a different part from the gap; a toggled-off pick removes the picks after it. The parallel check runs the moment a pair is
+  complete, via the existing Measure endpoint (`facesParallel`), and `faces_not_parallel` from the backend still surfaces on Confirm.
+- **Not built, said plainly:**
+  - the four faces are highlighted with the viewport's existing single selection colour while picking; the *two colours* (gap / tab)
+    appear in the panel list only. A second 3D colour needs a new highlight set in `part_viewport.dart` (6000+ lines of rendering that
+    I cannot see here);
+  - **edit does not re-pick faces.** `PATCH /mates/{id}` deliberately never changes references (a mate's references are a new mate), so
+    editing a Width mate edits its offset and branch (labelled "Offset from centre"), exactly like any mate; re-picking a pair means
+    delete + new Width mate. Showing the four stored faces in the edit dialog is not done;
+  - no mid-plane marker is drawn (the default of §4a), so there is nothing to clean up on confirm or cancel.
+- **Checked:** `flutter test` (2740 passed, 33 skipped, includes `test/width_mate_test.dart`), `flutter analyze` (only the 182
+  pre-existing `deprecated_member_use` infos plus one in the new test, the same as every other test file). **Not tried:** the flow in a
+  running app with a human; the widget tests cover the state machine, wire shape and panel, not `PartScreen` end to end.
+
+## Multi-part Width (2, 3 or 4 parts) - what changed, and the one thing it gave up
+
+This did touch the group model (the user chose it knowing so). Still true: a Width mate has exactly two references and the
+plane-plane residuals are the ordinary ones.
+
+- **Model:** `MidplaneRef.b_occurrence_id` may now name any occurrence (any top level). `assembly.mate_ref_tops` / `mate_tops` give the
+  top-level occurrences a reference / mate involves; discovery, orientation, branch search, `_mate_solve_target`, occurrence deletion
+  and the "different occurrences" check use them instead of `references[i].occurrence_id` alone.
+- **Group model:** `_Side.partner`. A cross-part Width side is its first face's plane with the second face as `partner`; its world plane
+  is recomputed at every evaluated pose (average of the two origins, the first's normal) and the mate also holds the two faces
+  parallel (3 extra residual rows, the cross product of the unit normals). If neither part is a member of the solved component (e.g.
+  both bars fixed) the mid-plane never moves and collapses to ONE fixed world plane.
+- **Constraint model, honestly:** with the collapse (fixed bars) the exported model is still a plain plane-plane one (`member: -1`
+  plane), no version bump. When a part of a cross-part side moves (free bars, or a tab of two moving parts) the mid-plane depends on
+  two poses, which the clients' retraction cannot evaluate: `export_constraint_model` returns `None` for that component and the
+  clients keep projecting (the existing fallback). So **live drag of such a component has no local retraction** (looser than for
+  other mates); the backend solve, create, preview, alternatives and mate-motion are exact. A constraint model v4 with a two-pose plane
+  (Dart + GDScript + vectors) would fix that - not done.
+- **Strictness:** at creation the two faces of a pair must be parallel at the stored poses (422 `faces_not_parallel`), as before; after
+  that the residual keeps them parallel. The legacy single-occurrence solve (`POST .../solve`) handles a cross-part reference only on the fixed side.
+- **Tests:** `backend/tests/test_width_mate_parts.py` (3 parts fixed/free bars, offset, 4 parts near/medium/far, preview, drag,
+  export/import, delete cascade, non-parallel, missing occurrence). Backend `not gears`: 2484 passed. Flutter: pick rules for 2/3/4 parts.
+- **Not measured:** the earlier benchmark (frame as ONE sub-assembly) is unchanged; there is no human-time measurement for 3/4 parts.
+
+## W3 implementation notes (VR, DIDSA-VR branch `claude/width-mate-w1-w4`)
+
+- **Built:** `Width` mate type in `mates_tool.gd` (`WIDTH_TYPE`, `pick_target()` 4, `width_references`, `width_wire_type`, Undo pick, a pair is checked for
+  parallelism the moment it is complete via the backend's Measure `faces_parallel`, the part(s) to centre are driven first); the tablet's type row,
+  an "Undo pick" button, the existing Set value button doubling as "Offset from centre" for Width; mates listed as "Width"; the pairs highlight in
+  two colours (`face_highlight.gd` `colour_slot`: the gap cyan, the part to centre orange - VR has the two-colour highlight the flat app lacks);
+  `mate_health.gd` follows the faces of a mid-plane reference (capture, drift, remake in place) and reports "faces no longer parallel" as its own
+  list (`unparallel_pairs`), shown in the design table's status. Either pair may be two parts (2, 3 or 4 parts), same rules as the flat app.
+- **Not built / not verified:** the wheel has the Width entry in its type ring only (no four-pick flow, Undo pick or offset on the wheel - tablet first,
+  as planned); no live ghost beyond the usual preview; **no headset run, no live-backend e2e for Width**; the render and e2e suites were not run here.
+  The live drag of a component whose Width mate has moving parts on a side gets no constraint model from the backend and keeps projecting (no local
+  retraction) - `local_retraction.gd` already treats "no model" that way, and nothing in the GDScript solver changed.
+- **Tests:** `tests/width_mate.gd` (38 SMOKE lines), `tests/tool_wheel.gd` updated for the sixth type entry; `tests/ci.sh` green (see the PR).
+
+## W4 implementation notes (AI plan, docs, measurement)
+
+- **AI plan:** `MateEntityRefStep.midplane` (`MidplaneRefStep`: `a`, `b` plane refs, optional `b_occurrence_id` in the plan's own `""` / `existing:<id>` /
+  local_id forms). The validator's "exactly one of" is now four-way, a midplane reference is refused for any mate type but coincident / distance /
+  parallel, the "different occurrences" check compares the sets of top-level occurrences each reference involves, and a missing `b_occurrence_id` is a
+  step error. Dart: `AiMidplaneRef`, the translator maps it (resolving `b_occurrence_id` like any occurrence id) and creates a Width mate **atomically
+  with the group solve** (`solve=auto`) instead of the single-occurrence solve that cannot move a part whose mid-plane depends on another part. The
+  scoping prompt (`assemblyVocabularyText`) describes Width to the model, including that it still needs another mate for the position along the gap.
+- **Found and fixed while measuring 4 parts:** with Minimal movement ("auto") a 4-part tab turned away from the gap returned a misleading 422
+  (`midplane_faces_on_different_occurrences`) because the group solve's py-slvs fallback ran on a model it cannot express. That fallback is now skipped for
+  Width sides that depend on a second part; "auto" then falls back to the group solve, "minimal" alone reports an ordinary non-convergence
+  (`test_four_parts_turned_away_still_centre_...`).
+- **Measurement, all of it** (`backend/tests/bench_width_mate.py`; backend solve time, not human time; 60 trials per start class):
+  - the tester's table top (frame = one sub-assembly), nothing named: first-time-correct **two distance mates 71.7 / 64.2 / 56.7 %** (near / medium / far) vs
+    **one Width mate 100 %**; extra clicks per trial 0.57 / 0.72 / 1.23 vs 0; both end 100 % centred once the user confirms the right alternative;
+    backend 280-320 ms vs 160-180 ms per scenario. Both need 4 picks; Width needs no typed value. Width is not better at everything: it leaves the
+    in-plane position free (the other mates still have to say it), it does not set a gap size, and its only branch (right way up or flipped) is invisible
+    on a symmetric plate, which is *why* it is right first time - a part with a visible orientation would have the same Orientation choice as any coincident mate;
+  - synthetic loose parts, one unnamed Width mate, start turned up to 170 degrees and moved up to 110 mm: **3 parts with fixed bars, 3 parts with free bars,
+    4 parts with fixed bars: 100 % centred in every start class** (9-14 ms for 3 parts; 40-57 ms for 4 parts from the medium and far starts, which need
+    the group solve). Precondition, by design: the two faces of a pair must already be parallel when the mate is made (else 422 `faces_not_parallel`), so
+    the two parts of a pair are turned together in this benchmark;
+  - **not measured:** any human time or first-time-correct with a person picking four faces (the four-pick UX is untested with a tester, §10); the
+    4-part case with free bars; a headset.
+- **Checked:** backend `not gears` 2490 passed, `flutter test` 2742 passed (33 skipped), `flutter analyze` only the existing deprecation infos, `generate.py --check` clean
+  under the system python (it also fails in the backend micromamba env on unmodified `main`). Not run: the gears / bevel_pair suites.
+- W5 (Symmetric) is untouched.
+
+## W5 implementation notes (Symmetric, faces only)
+
+- **The finding that changed the scope:** the plan said Symmetric needs three references. For FACES it does not. Two faces mirror each other about a plane P
+  exactly when the plane midway between them is P, and the cross-part Width machinery (added for 3 and 4 parts) already builds that mid-plane from faces on
+  two moving parts and keeps them parallel. So Symmetric about P is the stored mate `coincident` of `[midplane(face A on X, face B on Y), P]` - a two-reference
+  mate, no new type, no new reference, no `len(references) == 2` change, no constraint-model change. `backend/tests/test_symmetric_mate.py` pins it (two parts end up
+  equally far from a fixed centre plane, with Minimal movement and with the group solve; non-parallel faces refused; no objects created; delete leaves the assembly;
+  the AI plan accepts it).
+- **Built:** a "Symmetric" type in the Flutter mate panel (`WidthPick` with `symmetric: true`: face 1, face 2 on different parts, then a face of the mirror plane
+  on a third part; the mirrored parts are the ones driven) and on the VR tablet / wheel type ring (`mates_tool.gd`, three picks), listed as "Symmetric N", the
+  AI scoping prompt, and the VR/Flutter tests. A stored mate is told apart from a Width one by shape: a mid-plane first reference with a plain second reference.
+- **Not built, and why it matters:** Symmetric for **points, edges or axes** (e.g. two holes mirrored about a plane). That does need what the plan described: a
+  residual "A and B are reflections of each other in P" over three entities, which a mid-plane cannot express (a pair of points has a midpoint, not a plane, and the
+  in-plane offset between them is constrained too). The cheapest route would be a `midpoint` analogue of the mid-plane reference (average of two points, plus rows
+  forcing their difference along P's normal) on the same `_Side.partner` mechanism - and still no local retraction (the same constraint-model limit as moving Width
+  sides) unless constraint model v4 is also done. Not started.
+- **Behaviours to know:** the mirror is a plane-level statement, so it fixes the average distance and the parallelism, not the position along the plane (add other
+  mates for that); the single-occurrence solve (`POST .../solve`) cannot place such a mate (the group solve does, which is what create / preview use); the mate's
+  Orientation choice (Aligned / Anti-aligned) is the usual coincident one and decides which way up the mirrored parts end up.
+- **Checked:** backend `not gears` 2496 passed; `flutter test` 2747 passed (33 skipped); `flutter analyze` only the existing infos; VR `tests/ci.sh` see the VR PR.
+  No human has tried the Symmetric flow, and nothing is verified on a headset.
 
 ## 1. The problem
 
@@ -30,7 +188,9 @@ Scope of Width, precisely:
   "tab": the plate's two parallel faces, or its mid-plane). The tab is centred between the gap faces.
 - Variants the same mate must cover without new machinery: centred (offset 0), centred with a signed offset from centre
   (`DISTANCE` between the two mid-planes), and "tab parallel but not centred" is *not* Width (that is two distances).
-- Not in W1–W4: the two faces on *different* occurrences (a gap formed by two parts), and Symmetric (W5).
+- **Added after W2 (user decision): Width works over 2, 3 or 4 parts.** Either pair may be made of two parts: the gap of two loose bars
+  (3 parts) and/or a tab made of two parts (4 parts). The part(s) of the tab must differ from the part(s) of the gap. See
+  "Multi-part Width" below. Not in W1–W4: Symmetric (W5).
 
 ## 2. Design decision: a mate between two synthetic mid-planes
 

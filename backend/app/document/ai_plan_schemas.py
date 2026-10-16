@@ -530,6 +530,17 @@ class AddComponentStep(BaseModel):
     name_override: str | None = None
 
 
+class MidplaneRefStep(BaseModel):
+    """A Width mate's side (`docs/width-mate-plan.md`): the mid-plane of two parallel faces, `a` on the owning reference's occurrence and
+    `b` on `b_occurrence_id` (same convention as `MateEntityRefStep.occurrence_id`: "", `existing:<id>` or a plan-local add_component
+    local_id; omitted = the same occurrence). `a`/`b` reuse `PlaneRefSchema` verbatim (a face_ref, in practice). The faces may belong to
+    different top-level occurrences (a gap of two loose bars, a tab of two parts). The mid-plane is never created: the mate stores only these refs."""
+
+    a: PlaneRefSchema
+    b: PlaneRefSchema
+    b_occurrence_id: str | None = None
+
+
 class MateEntityRefStep(BaseModel):
     """Mirrors `MateEntityRefResponse` (`app.document.schemas`) - one side of
     a `MateStep`. `occurrence_id` is either `""` (this Part's own root
@@ -545,7 +556,7 @@ class MateEntityRefStep(BaseModel):
     plan-local id either, since that Part's Bodies aren't built by this plan
     at all (they're assumed to already exist, the same way an `existing:`
     Feature reference assumes the Part being edited already has one).
-    Exactly one of the three ref fields must be set.
+    Exactly one of the four ref fields (`subshape_ref`/`plane_ref`/`point_ref`/`midplane`) must be set; `midplane` only for coincident / distance / parallel mates.
 
     `edge_selector` (Phase 14, `docs/assembly-scope.md` §6 `[3]`): optional,
     only meaningful alongside `subshape_ref` (`shape_type == "edge"`) -
@@ -570,6 +581,7 @@ class MateEntityRefStep(BaseModel):
     subshape_ref: SubShapeRefSchema | None = None
     plane_ref: PlaneRefSchema | None = None
     point_ref: PointRefSchema | None = None
+    midplane: MidplaneRefStep | None = None
     edge_selector: EdgeSelector | None = None
 
 
