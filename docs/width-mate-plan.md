@@ -9,7 +9,7 @@ first — this plan reuses all of it and deliberately changes none of it.
 | Phase | Summary | Status | PR |
 |---|---|---|---|
 | W1 | Backend: mid-plane mate reference, validation, solve/preview/branches, export/import | Done (PR open, awaiting review; not merged) | CAD (this branch) |
-| W2 | Flutter: four-pick Width flow in the mate panel, highlighting, edit | Not started | |
+| W2 | Flutter: four-pick Width flow in the mate panel, highlighting, edit | Done (same PR; not merged; not tried by a human) | CAD #302 |
 | W3 | VR: the same flow on the tablet / wheel | Not started | |
 | W4 | AI plan schema + docs + measurement on the tester's table top | Not started | |
 | W5 | Symmetric mate (faces/points on two *moving* occurrences about a plane) | Not started — scoped below, needs its own go-ahead | |
@@ -62,6 +62,29 @@ Update this table with every PR, the same as the parent plan.
   (4) but no typed value, and fewer clicks. Caveats: "time" here is backend solve time, not human time; Width does not set the gap
   size and leaves the in-plane position free (needs the usual other mates); the Width pick UX (a four-pick flow) is untested with a human
   until W2/W3. "Centred after" is 100% for both because the benchmark confirms the correct alternative after a wrong preview.
+
+## W2 implementation notes (Flutter)
+
+- **Built:** `width_pick.dart` (`WidthPick`, the panel-owned four-pick state; `kWidthMateType`; `isWidthMate`), `MidplaneRefDto` +
+  `MateEntityRefDto.midplane`, a "Width" entry in the new-mate type list, a panel with "N of 4 - <step>", four labelled slots (gap
+  pair / tab pair in two colours), Back, an optional "Offset from centre" field, and "Width N" in the assembly tree. The two-pick
+  behaviour of the other types is unchanged (`_toggleSelectedEntity` only branches to `WidthPick` when the type is Width).
+- **Wire:** centred = `coincident`, offset = `distance` (+ the usual branch controls: Orientation, Flip side, Next solution). The gap is
+  reference 1, the part to centre reference 2, so the solve drives the tab, as with other mates.
+- **Picking rules** (refused with a reason in the panel): faces only; the second face of a pair under the same top-level part; the tab
+  pair under a different part from the gap; a toggled-off pick removes the picks after it. The parallel check runs the moment a pair is
+  complete, via the existing Measure endpoint (`facesParallel`), and `faces_not_parallel` from the backend still surfaces on Confirm.
+- **Not built, said plainly:**
+  - the four faces are highlighted with the viewport's existing single selection colour while picking; the *two colours* (gap / tab)
+    appear in the panel list only. A second 3D colour needs a new highlight set in `part_viewport.dart` (6000+ lines of rendering that
+    I cannot see here);
+  - **edit does not re-pick faces.** `PATCH /mates/{id}` deliberately never changes references (a mate's references are a new mate), so
+    editing a Width mate edits its offset and branch (labelled "Offset from centre"), exactly like any mate; re-picking a pair means
+    delete + new Width mate. Showing the four stored faces in the edit dialog is not done;
+  - no mid-plane marker is drawn (the default of §4a), so there is nothing to clean up on confirm or cancel.
+- **Checked:** `flutter test` (2740 passed, 33 skipped, includes `test/width_mate_test.dart`), `flutter analyze` (only the 182
+  pre-existing `deprecated_member_use` infos plus one in the new test, the same as every other test file). **Not tried:** the flow in a
+  running app with a human; the widget tests cover the state machine, wire shape and panel, not `PartScreen` end to end.
 
 ## 1. The problem
 
