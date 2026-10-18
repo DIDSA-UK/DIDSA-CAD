@@ -63,10 +63,9 @@ all sparse (D5):
 |---|---|---|
 | **Pose** | occurrence or pattern copy (D3) | The arrangement: exploded, lifted out, turned. |
 | **Hidden** | occurrence or pattern copy | Show only what matters. |
-| **Colour** | occurrence or pattern copy | Overrides `Occurrence.color` in this scene only (a review colour scheme). |
-| **Opacity** | occurrence or pattern copy | See-through context parts (0-1; 1 = solid). Rendered as the apps' existing ghost material. |
+| **Appearance** | occurrence, pattern copy, or one body of either | The Vision tool's record (`docs/vision-tool-scope.md` section 2): colour, opacity, metal, shine, glow, each optional. A scene's appearance beats everything else for as long as it is shown (that doc's D3, step 1). |
 | **Section planes** | the scene | The flat app's `SectionPlane` list (the same JSON as its `section_planes` extra), and DIDSA-VR's section tool reads the first one. |
-| **Viewpoint** | the scene | Where the viewer looks from, in the assembly's own frame (mm): `eye`, `target`, `up`. The flat app sets its camera from it; DIDSA-VR places the model so you stand at `eye` looking at `target` (at real-life scale, or keeps your current scale - S2 decides). Optional: a scene without one leaves the view where it is. |
+| **Viewpoint** | the scene | Where the viewer looks from, in the assembly's own frame (mm): `eye`, `target`, `up`. The flat app sets its camera from it. **Owner:** DIDSA-VR keeps your current scale (the user controls scale, and a sudden change would be jarring) and only turns and places the model so you look from `eye` towards `target`. Optional: a scene without one leaves the view where it is. |
 
 Not in v1: feature visibility inside a part (`hidden_feature_ids`), material, labels or markup, animation. These are later phases if
 wanted.
@@ -166,7 +165,8 @@ after or alongside.
       // path from THIS Part (D3); each field optional, at least one present
       {"path": "689e531a…/7214dfb8…", "transform": {"translation": [0, 0, 120], "rotation_axis": [0, 0, 1], "rotation_angle_degrees": 0}},
       {"path": "9f3c7747…", "hidden": true},
-      {"path": "504857a3…#pattern:af676f33…:2", "transform": {…}, "color": "#E8834A", "opacity": 0.3}
+      {"path": "504857a3…#pattern:af676f33…:2", "transform": {…}, "appearance": {"colour": "#E8834A", "opacity": 0.3}},
+      {"path": "689e531a…/7214dfb8…", "body_id": "e8d7bb68…", "appearance": {"metallic": 1.0}}  // one body
     ],
     "section_planes": [ /* the flat app's SectionPlane JSON */ ],
     "viewpoint": {"eye": [2400, 1500, 2400], "target": [0, 400, -780], "up": [0, 1, 0]}  // assembly frame, mm; optional
@@ -175,8 +175,8 @@ after or alongside.
 ```
 
 - Validation (router): each path resolves from this Part (the mate path check, extended to accept a `#pattern:` segment that names an
-  existing pattern, source and index), no path twice in a scene, a transform passes `_validate_occurrence_transform_payload`, a colour is
-  `#RRGGBB`, opacity is 0-1, a viewpoint's `eye` differs from its `target`.
+  existing pattern, source and index), no `(path, body_id)` twice in a scene, a transform passes `_validate_occurrence_transform_payload`, an appearance
+  passes the Vision tool's checks, a transform or `hidden` is never on a body (bodies don't move on their own), a viewpoint's `eye` differs from its `target`.
 - `Scene` / `SceneOverride` dataclasses in `models.py`; `_scene_to_dict` / `_scene_from_dict` in `native_format.py`, written only when
   the list is non-empty so files without scenes stay byte-identical.
 
@@ -207,8 +207,9 @@ Built on the sandbox:
   choose to keep it.
 - **Show scene** (the tablet's Assemble page lists scenes; the wheel gets a Scenes sub-wheel): enter the sandbox with the scene applied.
   **Update scene** / **Save as new** while shown; **Return parts** = back to default (asking if there are unsaved scene changes, D7).
-- In the sandbox, Paint becomes temporary too (today a colour is saved on the occurrence straight away; hiding is already on screen
-  only): needed so a scene's colours never leak into the model. A see-through (opacity) control is new.
+- In the sandbox, painting becomes temporary too (today a colour is saved on the occurrence straight away; hiding is already on screen
+  only): needed so a scene's colours never leak into the model. The painting itself is the Vision tool (`docs/vision-tool-scope.md`),
+  whose gun targets a body, a part or its parent assembly.
 - Pattern copies become movable (they aren't grabbable on their own today), using the glb's new `instance_path`.
 - Rooms: a room's scenes are its Part's own (D6); a room can show them.
 
@@ -223,18 +224,18 @@ requirement, not identical UI.
 | Phase | What | Repo |
 |---|---|---|
 | S0 | Settled (this revision), apart from section 9. | — |
-| S1 | Backend: model, native format round trip, validation (incl. `#pattern:` paths), CRUD endpoints, delete cascade, unresolved-path report; the glb `instance_path` extra; tests; the reference composition + golden vectors. | CAD |
+| S1 | Backend (needs the Vision tool's appearance record, its V1): model, native format round trip, validation (incl. `#pattern:` paths), CRUD endpoints, delete cascade, unresolved-path report; the glb `instance_path` extra; tests; the reference composition + golden vectors. | CAD |
 | S2 | DIDSA-VR: Save as scene / Show / Update / Back to default on the sandbox; temporary colour and hide in the sandbox; movable pattern copies; viewpoint; composition against the vectors; headless tests + e2e. | VR |
 | S3 | Flat app: scene list, scene mode, the same actions; widget tests. | CAD |
 | S4 (later) | `assembly-mesh.glb?scene_id=`, animated transitions between scenes (the roadmap's exploded-view animation), feature visibility and markup in a scene. | both |
 | R1 (separate) | Finding moved files (D11). | both |
 
-## 9. Still open
+## 9. Settled in the second revision
 
-1. **Name:** "Scene" is used throughout as the working name. Keep it, or "Display state" / "View"?
-2. **D11:** scope "finding moved files" now, as its own short doc?
-3. **Viewpoint in VR:** when a scene with a viewpoint is shown, move you to it at real-life scale, or keep your current scale and only
-   turn and place the model? (S2 can try both on the headset.)
+1. **Name: Scene** (Owner).
+2. **Finding moved files (D11):** on the roadmap as its own item (Owner), `docs/roadmap.md`.
+3. **Viewpoint in VR:** keep the current scale (Owner), see D2.
+4. Colours and looks in a scene use the Vision tool's appearance record (Owner asked for the Vision tool in the same discussion).
 
 ## 10. Out of scope
 
