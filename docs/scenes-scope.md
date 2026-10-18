@@ -63,7 +63,7 @@ all sparse (D5):
 |---|---|---|
 | **Pose** | occurrence or pattern copy (D3) | The arrangement: exploded, lifted out, turned. |
 | **Hidden** | occurrence or pattern copy | Show only what matters. |
-| **Appearance** | occurrence, pattern copy, or one body of either | The Vision tool's record (`docs/vision-tool-scope.md` section 2): colour, opacity, metal, shine, glow, each optional. A scene's appearance beats everything else for as long as it is shown (that doc's D3, step 1). |
+| **Appearance** | occurrence, pattern copy, or one body or face of either | The Appearance tool's record (`docs/appearance-tool-scope.md` section 2): colour, opacity, metal, shine, glow, each optional. A scene's appearance beats everything else for as long as it is shown (that doc's D3, step 1). |
 | **Section planes** | the scene | The flat app's `SectionPlane` list (the same JSON as its `section_planes` extra), and DIDSA-VR's section tool reads the first one. |
 | **Viewpoint** | the scene | Where the viewer looks from, in the assembly's own frame (mm): `eye`, `target`, `up`. The flat app sets its camera from it. **Owner:** DIDSA-VR keeps your current scale (the user controls scale, and a sudden change would be jarring) and only turns and places the model so you look from `eye` towards `target`. Optional: a scene without one leaves the view where it is. |
 
@@ -176,7 +176,7 @@ after or alongside.
 
 - Validation (router): each path resolves from this Part (the mate path check, extended to accept a `#pattern:` segment that names an
   existing pattern, source and index), no `(path, body_id)` twice in a scene, a transform passes `_validate_occurrence_transform_payload`, an appearance
-  passes the Vision tool's checks, a transform or `hidden` is never on a body (bodies don't move on their own), a viewpoint's `eye` differs from its `target`.
+  passes the Appearance tool's checks, a transform or `hidden` is never on a body (bodies don't move on their own), a viewpoint's `eye` differs from its `target`.
 - `Scene` / `SceneOverride` dataclasses in `models.py`; `_scene_to_dict` / `_scene_from_dict` in `native_format.py`, written only when
   the list is non-empty so files without scenes stay byte-identical.
 
@@ -208,8 +208,8 @@ Built on the sandbox:
 - **Show scene** (the tablet's Assemble page lists scenes; the wheel gets a Scenes sub-wheel): enter the sandbox with the scene applied.
   **Update scene** / **Save as new** while shown; **Return parts** = back to default (asking if there are unsaved scene changes, D7).
 - In the sandbox, painting becomes temporary too (today a colour is saved on the occurrence straight away; hiding is already on screen
-  only): needed so a scene's colours never leak into the model. The painting itself is the Vision tool (`docs/vision-tool-scope.md`),
-  whose gun targets a body, a part or its parent assembly.
+  only): needed so a scene's colours never leak into the model. The painting itself is the Appearance tool (`docs/appearance-tool-scope.md`),
+  whose gun targets a face, a body, a part or its parent assembly.
 - Pattern copies become movable (they aren't grabbable on their own today), using the glb's new `instance_path`.
 - Rooms: a room's scenes are its Part's own (D6); a room can show them.
 
@@ -224,7 +224,7 @@ requirement, not identical UI.
 | Phase | What | Repo |
 |---|---|---|
 | S0 | Settled (this revision), apart from section 9. | — |
-| S1 | Backend (needs the Vision tool's appearance record, its V1): model, native format round trip, validation (incl. `#pattern:` paths), CRUD endpoints, delete cascade, unresolved-path report; the glb `instance_path` extra; tests; the reference composition + golden vectors. | CAD |
+| S1 | Backend (needs the Appearance tool's appearance record, its V1): model, native format round trip, validation (incl. `#pattern:` paths), CRUD endpoints, delete cascade, unresolved-path report; the glb `instance_path` extra; tests; the reference composition + golden vectors. | CAD |
 | S2 | DIDSA-VR: Save as scene / Show / Update / Back to default on the sandbox; temporary colour and hide in the sandbox; movable pattern copies; viewpoint; composition against the vectors; headless tests + e2e. | VR |
 | S3 | Flat app: scene list, scene mode, the same actions; widget tests. | CAD |
 | S4 (later) | `assembly-mesh.glb?scene_id=`, animated transitions between scenes (the roadmap's exploded-view animation), feature visibility and markup in a scene. | both |
@@ -235,7 +235,7 @@ requirement, not identical UI.
 1. **Name: Scene** (Owner).
 2. **Finding moved files (D11):** on the roadmap as its own item (Owner), `docs/roadmap.md`.
 3. **Viewpoint in VR:** keep the current scale (Owner), see D2.
-4. Colours and looks in a scene use the Vision tool's appearance record (Owner asked for the Vision tool in the same discussion).
+4. Colours and looks in a scene use the Appearance tool's appearance record (Owner asked for the Appearance tool, first called the Vision tool, in the same discussion).
 
 ## 10. Out of scope
 
