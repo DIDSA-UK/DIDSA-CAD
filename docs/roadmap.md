@@ -615,7 +615,9 @@ mark it up, no authoring tools.
 
 New suggestions, not from any doc, flagged as such:
 - **Review markup:** pin comments or spatial annotations on parts, saved with the file and visible in the flat app.
-- **Exploded view / assembly animation:** drive mates through a range and record it for review.
+- **Exploded view / assembly animation:** drive mates through a range and record it for review. Its static half, **scenes** (named arrangements stored on an assembly Part, made in the VR sandbox), is scoped in `docs/scenes-scope.md`.
+- **Appearance tool** (first called the Vision tool): grow the colour tool into colour, transparency, reflectivity (metal / shine) and glow, a full picker as well as the palette, and a paint gun aimed at a face, a body, a part or its parent assembly; in an assembly it is stored there, never in the parts' own files, and higher levels beat lower ones. Scoped in `docs/appearance-tool-scope.md`; scenes reuse its appearance record.
+- **Finding moved files:** an occurrence finds its file only by a relative path, so a moved or renamed sub-assembly file isn't found. Store the file's own root Part id next to the path, and when the path misses, look the id up in an index of the project folder (one match: use it and offer to save the corrected path; several or a name-only match: ask; never guess). See `docs/scenes-scope.md` D11.
 - **Gear Design in VR:** parametric gear generation as a table feature, since the backend is complete; a gear next to its mate in true scale is a good demo of why VR helps.
 - **2D drawing / DXF in a floating window** once the DXF work (`docs/dxf-io/`) lands, shown through the browser relay or as a flat panel.
 - **Capture:** screenshots or a turntable video of the current view for sharing; a related earlier idea is the Cast option under "Other open items".
