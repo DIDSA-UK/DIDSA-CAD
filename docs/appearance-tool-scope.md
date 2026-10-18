@@ -48,9 +48,17 @@ Brushed metal, Polished metal, Glass, Glowing), because one slider can't tell po
 
 - **Click** (trigger down and up within 0.45 s): paints the **body** under the laser. The paint is applied on release, not on press,
   because a press might turn into a hold (today's Paint fires on press).
+- **Click always paints the body** (Owner); no setting, no remembered level.
 - **Hold** (0.45 s, the same time as the selection breadcrumb, `controller.gd` `CRUMB_HOLD_MS`): the breadcrumb panel opens at the hit
-  point, reusing `group_breadcrumb.gd`. Its rows, innermost first: **Face**, **Body**, **Part**, then each sub-assembly up to the
-  top-level one, then **Whole assembly** (the assembly's own record). Body is lit when it opens (what a click would have done).
+  point, reusing `group_breadcrumb.gd`. Its rows, innermost first:
+  1. **Face**
+  2. **Body** (lit when it opens: what a click would have done)
+  3. **Part**
+  4. **Pattern (all 4)**: every copy of the pattern this part belongs to (Owner). Shown only when the part is a pattern copy or a
+     pattern's source.
+  5. **Every Frame A (2)**: every placement of the same part in this assembly (Owner). Shown only when the part is placed more than once.
+  6. each sub-assembly the part sits in, up to the top-level one
+  7. **Whole assembly** (Owner: allowed, as the top row): a base coat under everything
 - **Hover a row:** the model shows the outcome of a release, live. The target takes the new appearance and everything else keeps its
   own, so inheritance is visible (a bolt with its own colour stays that colour when its sub-assembly is previewed blue, D3). Brackets show
   the extent of the target; a haptic tick on each row change; the wrist names it ("Paint · Frame (sub-assembly), 4 parts").
@@ -67,7 +75,17 @@ Brushed metal, Polished metal, Glass, Glowing), because one slider can't tell po
 - **Flat app:** the same rows in a context popup: click paints the body, a long press (touch) or right-click opens the list, hovering a
   row previews it.
 
-Open on this gesture (section 8): pattern rows, "every copy of this part" rows, and whether "Whole assembly" belongs in the list.
+How the wider rows are stored (D2's override list), so they keep meaning what was chosen as the assembly changes:
+
+- **Pattern (all N):** one override on the pattern's source path with `scope: "pattern"`; every copy, including ones added later when
+  the count grows, takes it.
+- **Every <part>:** one override `{part_id, scope: "same_part"}`: every placement of that Part anywhere inside this assembly, at any
+  depth, including ones added later. Still an override in the assembly; the part's own file is not touched (D2).
+- **Whole assembly:** an override with an empty path, under everything else in this assembly.
+
+Within one level (D3) the more specific target wins: face > body > part > pattern > every placement of the part > sub-assembly > whole
+assembly. So "every Frame A blue" then "this Frame A red" gives one red and the rest blue.
+
 
 ### D2. Where an appearance is stored — **Recommendation**
 
@@ -158,6 +176,9 @@ Textures and decals; an "appearance from material" link (D6); the scene animatio
   {"path": "f676588a…/689e531a…", "appearance": {"colour": "#2F6FD6"}},                          // a sub-assembly: the whole frame
   {"path": "f676588a…/689e531a…/7214dfb8…", "body_id": "e8d7bb68…", "appearance": {"metallic": 1.0, "roughness": 0.2}}, // one bar's body
   {"path": "504857a3…#pattern:af676f33…:2", "appearance": {"opacity": 0.3}},                   // one pattern copy
+  {"path": "504857a3…", "scope": "pattern", "pattern_id": "af676f33…", "appearance": {"colour": "#333333"}},             // every copy of the pattern
+  {"part_id": "1d3363e0…", "scope": "same_part", "appearance": {"metallic": 1.0, "roughness": 0.3}},                      // every Leg placed
+  {"path": "", "appearance": {"colour": "#D0D0D0"}},                                                                     // whole assembly
   {"path": "9f3c7747…", "body_id": "b2949a80…", "face": {"body_id": "b2949a80…", "shape_type": "face", "index": 4, "signature": {…}, "lineage": {…}},
    "appearance": {"colour": "#FFFFFF", "emission": "#FFFFFF", "emission_strength": 2.0}}          // one face: a glowing panel
 ],
@@ -168,7 +189,8 @@ Textures and decals; an "appearance from material" link (D6); the scene animatio
 ```
 
 Validation: path as in scenes (resolves from this Part, `#pattern:` allowed), `body_id` exists on the resolved Part, ranges as section 2,
-no duplicate `(path, body_id, face)`; a face ref must be a face of that body. Written only when non-empty, so existing files stay byte-identical; no `SCHEMA_VERSION` bump (the
+no duplicate `(path or part_id, scope, body_id, face)`; a face ref must be a face of that body; `scope` is absent (this one),
+`"pattern"` (with a `pattern_id` whose source is `path`) or `"same_part"` (with `part_id` and no `path`). Written only when non-empty, so existing files stay byte-identical; no `SCHEMA_VERSION` bump (the
 `component_patterns` precedent). Delete cascade as for mates and scenes.
 
 ## 6. API sketch
@@ -200,13 +222,5 @@ the same, alongside the scene composition vectors.
 3. **Higher levels beat lower levels** (Owner, D3), and within one level the most specific target wins (Owner confirmed).
 4. **Choosing the target** is click (body) or hold for the breadcrumb with a live preview per row (Owner, D1).
 
-## 9. Open (the gun's breadcrumb)
-
-1. **Pattern copies:** on a patterned part, add a row **Pattern (all N)** beside the copy itself? (It would write an override for every
-   copy, or one on the pattern.)
-2. **Every copy of this part:** a row **All Frame A (2)** that paints every placement of the same part in this assembly? (Overrides on
-   each, never the part's own file: painting in an assembly doesn't edit parts, D2.)
-3. **Whole assembly** as the last row (a base coat under everything), or leave the list ending at the top-level sub-assembly, as
-   selection does?
-4. **Click default:** always the body, or remember the last level chosen from the breadcrumb (a "sticky" level)? Recommendation: always
-   the body, so a click is predictable; a setting can change it.
+5. **The breadcrumb** (Owner): a **Pattern (all N)** row, an **Every <part> (N)** row, **Whole assembly** as the top row, and
+   **click always paints the body** (D1).
