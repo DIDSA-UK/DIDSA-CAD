@@ -44,9 +44,30 @@ Brushed metal, Polished metal, Glass, Glowing), because one slider can't tell po
 - **Parent assembly:** the sub-assembly the part sits in, one level up per click, using the same levels as the VR grip latch and
   breadcrumb (`group_index.gd`), so "parent" can go as high as the top-level sub-assembly.
 
-The gun's level steps Face → Body → Part → each parent assembly (the wheel and the tablet set it). The laser highlights exactly what a
-shot will paint (the face, the body's faces, the part, or the group's brackets) before the trigger, and the
-wrist names the target ("Paint · Frame (sub-assembly)").
+#### Choosing the target: click, or hold for the breadcrumb (**Owner**)
+
+- **Click** (trigger down and up within 0.45 s): paints the **body** under the laser. The paint is applied on release, not on press,
+  because a press might turn into a hold (today's Paint fires on press).
+- **Hold** (0.45 s, the same time as the selection breadcrumb, `controller.gd` `CRUMB_HOLD_MS`): the breadcrumb panel opens at the hit
+  point, reusing `group_breadcrumb.gd`. Its rows, innermost first: **Face**, **Body**, **Part**, then each sub-assembly up to the
+  top-level one, then **Whole assembly** (the assembly's own record). Body is lit when it opens (what a click would have done).
+- **Hover a row:** the model shows the outcome of a release, live. The target takes the new appearance and everything else keeps its
+  own, so inheritance is visible (a bolt with its own colour stays that colour when its sub-assembly is previewed blue, D3). Brackets show
+  the extent of the target; a haptic tick on each row change; the wrist names it ("Paint · Frame (sub-assembly), 4 parts").
+- **Release on a row:** applies it, as one undo step. **Release off the panel:** nothing is painted (unlike the selection breadcrumb,
+  which keeps the part there; for paint, a hold means "I want to choose", so letting go elsewhere is a cancel).
+- **Before any press:** the laser outlines the body a click would paint (the outline only, no colour, so sweeping across a model doesn't
+  flicker).
+- **Each row shows what is there now:** a small swatch of the resolved appearance at that level, marked when that level has its own
+  override ("set here"), so you can see where a colour comes from before changing it.
+- **Clear** is a swatch like any other: painting "Clear" on a level removes that level's override, and the preview shows what shows
+  through from below.
+- **Context in the panel's title:** "Painting" normally, "Painting · temporary (mates relaxed)" in the sandbox, "Painting scene
+  'Exploded'" while a scene is shown (D5).
+- **Flat app:** the same rows in a context popup: click paints the body, a long press (touch) or right-click opens the list, hovering a
+  row previews it.
+
+Open on this gesture (section 8): pattern rows, "every copy of this part" rows, and whether "Whole assembly" belongs in the list.
 
 ### D2. Where an appearance is stored — **Recommendation**
 
@@ -176,4 +197,16 @@ the same, alongside the scene composition vectors.
 
 1. "Mesh" means a **body** (Owner); **faces** are folded into v1 as the finest target (Owner: "unless it's an easy fold in"; section 4).
 2. The tool is called **Appearance** (Owner). "Vision tool" stays only as this doc's working title.
-3. **Higher levels beat lower levels** (Owner, D3). Open only in its reading: within one level, the most specific target wins.
+3. **Higher levels beat lower levels** (Owner, D3), and within one level the most specific target wins (Owner confirmed).
+4. **Choosing the target** is click (body) or hold for the breadcrumb with a live preview per row (Owner, D1).
+
+## 9. Open (the gun's breadcrumb)
+
+1. **Pattern copies:** on a patterned part, add a row **Pattern (all N)** beside the copy itself? (It would write an override for every
+   copy, or one on the pattern.)
+2. **Every copy of this part:** a row **All Frame A (2)** that paints every placement of the same part in this assembly? (Overrides on
+   each, never the part's own file: painting in an assembly doesn't edit parts, D2.)
+3. **Whole assembly** as the last row (a base coat under everything), or leave the list ending at the top-level sub-assembly, as
+   selection does?
+4. **Click default:** always the body, or remember the last level chosen from the breadcrumb (a "sticky" level)? Recommendation: always
+   the body, so a click is predictable; a setting can change it.
