@@ -68,6 +68,12 @@ class PartUpdate(BaseModel):
     supplier: str | None = None
     supplier_part_number: str | None = None
     name: str | None = None
+    # The Appearance tool (`docs/appearance-tool-scope.md` D2): the Part's own look. Omitted = unchanged; an explicit
+    # `null` clears `appearance`; `body_appearances` / `face_appearances` replace the whole map / list ({} / [] clears).
+    # An appearance is `{colour?, opacity?, metallic?, roughness?, emission?, emission_strength?}` (section 2).
+    appearance: dict | None = None
+    body_appearances: dict[str, dict] | None = None
+    face_appearances: list["FaceAppearanceSchema"] | None = None
 
 
 class MaterialAssignmentUpdate(BaseModel):
@@ -105,6 +111,11 @@ class PartResponse(BaseModel):
     supplier_part_number: str | None = None
     default_material: MaterialAssignmentSchema | None = None
     body_material_assignments: dict[str, MaterialAssignmentSchema] = {}
+    # The Appearance tool: the Part's own look (see `PartUpdate`); what it paints as an assembly is
+    # `GET /parts/{id}/appearance-overrides`.
+    appearance: dict | None = None
+    body_appearances: dict[str, dict] = {}
+    face_appearances: list["FaceAppearanceSchema"] = []
 
 
 class MassPropertiesResponse(BaseModel):
@@ -302,6 +313,49 @@ class SubShapeRefSchema(BaseModel):
     body_id: str
     shape_type: SubShapeType
     index: int
+
+
+class FaceAppearanceSchema(BaseModel):
+    """The Appearance tool: a Part's own appearance for one face (`models.FaceAppearance`). `face.shape_type` is "face".
+    `index` in a response is the stored one; `current_index` is where the face is now (it is re-found by its signature
+    after an edit) and `unresolved` says why it could not be found ("no_match", "ambiguous", "missing_body")."""
+
+    face: SubShapeRefSchema
+    appearance: dict
+    current_index: int | None = None
+    unresolved: str | None = None
+
+
+class AppearanceOverrideSchema(BaseModel):
+    """The Appearance tool (`docs/appearance-tool-scope.md` D2, section 6): one override in an assembly
+    (`models.AppearanceOverride`). As a PUT body, `appearance: null` clears the override with this target; anything
+    else sets or replaces it. `path` is an occurrence path from the assembly (`#pattern:` segments allowed; "" = the
+    Whole assembly, or with `body_id` one of its own bodies); `scope` is null, "pattern" (with `pattern_id`, every copy
+    of the pattern whose source is the last segment of `path`) or "same_part" (with `part_id` and an empty `path`)."""
+
+    path: str = ""
+    scope: str | None = None
+    pattern_id: str | None = None
+    part_id: str | None = None
+    body_id: str | None = None
+    face: SubShapeRefSchema | None = None
+    appearance: dict | None = None
+
+
+class AppearanceOverrideResponse(AppearanceOverrideSchema):
+    """One override as `GET /parts/{id}/appearance-overrides` lists it. `legacy`: it comes from an Occurrence's old
+    `color` field and has no override record of its own. `unresolved`: why its target can't be found in the assembly
+    as it is now ("occurrence_not_found", "pattern_copy_not_found", "pattern_not_found", "part_not_resolved",
+    "part_not_placed", "body_not_found", "no_match", "ambiguous") - kept, but ignored until it resolves again.
+    `face_current_index`: where a face override's face is now."""
+
+    legacy: bool = False
+    unresolved: str | None = None
+    face_current_index: int | None = None
+
+
+class AppearanceOverridesResponse(BaseModel):
+    overrides: list[AppearanceOverrideResponse] = []
 
 
 class MeasureEntityRefSchema(BaseModel):

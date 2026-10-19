@@ -226,12 +226,13 @@ def test_assembly_glb_node_extras_carry_owner_and_occurrence_id():
             rotation_quaternion=(1.0, 0.0, 0.0, 0.0),
             owner_part_id="root-part",
             occurrence_id="occ-1",
+            instance_path="occ-1",
         ),
     ]
     data = encode_assembly_glb(meshes, instances)
     gltf, _bin_bytes = _parse_glb(data)
-    assert gltf["nodes"][0]["extras"] == {"owner_part_id": "root-part", "occurrence_id": ""}
-    assert gltf["nodes"][1]["extras"] == {"owner_part_id": "root-part", "occurrence_id": "occ-1"}
+    assert gltf["nodes"][0]["extras"] == {"owner_part_id": "root-part", "occurrence_id": "", "instance_path": ""}
+    assert gltf["nodes"][1]["extras"] == {"owner_part_id": "root-part", "occurrence_id": "occ-1", "instance_path": "occ-1"}
 
 
 def test_assembly_glb_primitive_extras_carry_face_and_body_ids_when_present():

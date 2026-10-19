@@ -12,6 +12,16 @@ from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
+from app.document.appearance import resolve_appearance, resolve_faces, split_path
+from app.document.appearance_routes import (
+    apply_part_appearance_update,
+    resolution_model as appearance_resolution_model,
+    appearance_router,
+    drop_overrides_of_pattern,
+    drop_overrides_through_occurrence,
+    part_appearance_fields,
+    set_legacy_colour,
+)
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
 from app.document.assembly import (
     compose_chain,
@@ -435,6 +445,7 @@ def _part_response(part: Part) -> PartResponse:
             body_id: _material_assignment_to_schema(assignment)
             for body_id, assignment in part.body_material_assignments.items()
         },
+        **part_appearance_fields(part),
     )
 
 
@@ -3383,6 +3394,7 @@ def update_part(part_id: str, payload: PartUpdate) -> PartResponse:
         if not stripped_name:
             raise HTTPException(status_code=422, detail="name must not be empty")
         part.name = stripped_name
+    apply_part_appearance_update(part, payload)
     return _part_response(part)
 
 
@@ -3602,7 +3614,8 @@ def update_occurrence_transform(
     if payload.fixed is not None:
         occurrence.fixed = payload.fixed
     if payload.color is not None:
-        occurrence.color = payload.color or None
+        # The Appearance tool: `color` is the legacy alias of this occurrence's own appearance override (kept in step).
+        set_legacy_colour(part, occurrence, payload.color or None)
     if payload.name_override is not None:
         occurrence.name_override = payload.name_override or None
     return _occurrence_response(occurrence)
@@ -3680,9 +3693,14 @@ def delete_occurrence(part_id: str, occurrence_id: str) -> Response:
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     part.mates = [m for m in part.mates if occurrence_id not in mate_tops(m)]
+    for pattern in part.component_patterns:
+        if occurrence_id in pattern.source_occurrence_ids:
+            drop_overrides_of_pattern(get_document(), part, pattern.id)
     part.component_patterns = [
         p for p in part.component_patterns if occurrence_id not in p.source_occurrence_ids
     ]
+    # The Appearance tool: overrides whose path goes through the occurrence go with it (the Mate cascade's rule).
+    drop_overrides_through_occurrence(get_document(), part, occurrence_id)
     part.occurrences.remove(occurrence)
     return Response(status_code=204)
 
@@ -4280,6 +4298,7 @@ def update_component_pattern(
 def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
     part = get_part_or_404(part_id)
     pattern = _get_component_pattern_or_404(part, pattern_id)
+    drop_overrides_of_pattern(get_document(), part, pattern_id)
     part.component_patterns.remove(pattern)
     return Response(status_code=204)
 
@@ -8605,6 +8624,7 @@ def _walk_assembly_glb_instances(
             hidden=hidden,
             owner_part_id=owner_part_id,
             occurrence_id=occurrence_id,
+            instance_path="/".join(occurrence_path),
         )
     )
 
@@ -8657,6 +8677,29 @@ def _walk_assembly_glb_instances(
                     owner_part_id=part.id,
                     occurrence_id="",  # pattern-derived copy: no Occurrence entry of its own to reference
                 )
+
+
+def _paint_glb_instances(
+    document: Document, root_part: Part, instances: list[AssemblyGlbInstance], geometry_by_part_id: dict[str, MeshData]
+) -> None:
+    """The Appearance tool (`docs/appearance-tool-scope.md` D7): each instance's resolved appearance, as seen from
+    `root_part` (`app.document.appearance`'s rule, the same code the vectors pin), face by face. An instance whose
+    faces all resolve alike gets one `appearance`; otherwise `face_appearances` too (the encoder splits its mesh)."""
+    model = appearance_resolution_model(document)
+    for instance in instances:
+        path = split_path(instance.instance_path)
+        mesh = geometry_by_part_id.get(instance.part_id)
+        node_appearance = resolve_appearance(model, root_part.id, path)
+        if mesh is None or not mesh.face_ids:
+            instance.appearance = node_appearance
+            continue
+        by_face = resolve_faces(model, root_part.id, path, sorted(set(zip(mesh.body_ids, mesh.face_ids))))
+        distinct = {tuple(sorted(a.items())) for a in by_face.values()}
+        if len(distinct) <= 1:
+            instance.appearance = next(iter(by_face.values()), node_appearance)
+        else:
+            instance.appearance = node_appearance
+            instance.face_appearances = by_face
 
 
 @router.get("/parts/{part_id}/assembly-mesh.glb")
@@ -8738,6 +8781,7 @@ def get_assembly_mesh_glb(
         occurrence_id="",  # the root's own top-level content, not a placed Occurrence
     )
     visible_instances = instances if include_hidden else [instance for instance in instances if not instance.hidden]
+    _paint_glb_instances(document, root_part, visible_instances, geometry_by_part_id)
 
     data = encode_assembly_glb(geometry_by_part_id, visible_instances, include_topology=topology)
     return Response(
@@ -9115,3 +9159,4 @@ def export_part_assembly_glb(part_id: str) -> Response:
 from app.document.gears_routes import gear_router  # noqa: E402
 
 router.include_router(gear_router)
+router.include_router(appearance_router)

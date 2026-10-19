@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 
+from app.document.appearance import Appearance
 from app.sketch.models import Plane, SketchEntityRef
 from app.sketch.reference_signature import LineageOrigin, ShapeSignature
 
@@ -3133,6 +3134,37 @@ class MaterialAssignment:
     density_g_cm3: float
 
 
+@dataclass(frozen=True)
+class FaceAppearance:
+    """The Appearance tool (`docs/appearance-tool-scope.md` D2): a Part's own appearance for one of its faces
+    (`Part.face_appearances`). `face` is a face `SubShapeRef` carrying its signature, re-found the way a fillet's edge
+    is (`subshape_identity.decide_subshape`); one that can't be re-found is kept and reported, never moved."""
+
+    face: SubShapeRef
+    appearance: Appearance
+
+
+@dataclass(frozen=True)
+class AppearanceOverride:
+    """The Appearance tool (`docs/appearance-tool-scope.md` D2): an appearance painted in an assembly, stored in the
+    assembly Part (`Part.appearance_overrides`), never in the files of the parts it paints.
+
+    `path` is an occurrence path from the owning Part (the mate convention, `#pattern:` segments allowed); `""` is
+    the Whole assembly, or with `body_id` one of the assembly's own bodies. `body_id` narrows it to one body of the
+    Part at `path`, `face` (whose `body_id` is the same) to one face. `scope`: None (this target), `"pattern"` (every
+    copy of `pattern_id`, whose source is the last segment of `path`, including copies added later) or `"same_part"`
+    (every placement of `part_id` inside this assembly at any depth; `path` is then empty). Which one wins is
+    `app.document.appearance`'s rule."""
+
+    appearance: Appearance
+    path: str = ""
+    body_id: str | None = None
+    face: SubShapeRef | None = None
+    scope: str | None = None
+    pattern_id: str | None = None
+    part_id: str | None = None
+
+
 @dataclass
 class Part:
     """A `.didsa` file's content: an ordered list of Features (this Part's
@@ -3201,6 +3233,12 @@ class Part:
     # `mates` the same way every assembly-structure field on `Part` already
     # does (decision #2).
     component_patterns: list["ComponentPattern"] = field(default_factory=list)
+    # The Appearance tool (`docs/appearance-tool-scope.md` D2): this Part's own look (travels with it into every
+    # assembly), and what it paints as an assembly (`appearance_overrides`, see `AppearanceOverride`).
+    appearance: Appearance | None = None
+    body_appearances: dict[str, Appearance] = field(default_factory=dict)
+    face_appearances: list[FaceAppearance] = field(default_factory=list)
+    appearance_overrides: list[AppearanceOverride] = field(default_factory=list)
 
     def resolve_material(self, body_id: str) -> MaterialAssignment | None:
         """The material that applies to `body_id`: its own override if one

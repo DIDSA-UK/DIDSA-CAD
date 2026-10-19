@@ -285,10 +285,11 @@ def test_assembly_mesh_glb_node_extras_name_the_real_occurrence():
     bolt_node = next(n for n in gltf["nodes"] if n["translation"] == [15.0, 0.0, 10.0])
 
     # Root's own content: a real owner (itself) but no Occurrence placed it.
-    assert root_node["extras"] == {"owner_part_id": mount["id"], "occurrence_id": ""}
+    assert root_node["extras"] == {"owner_part_id": mount["id"], "occurrence_id": "", "instance_path": ""}
     # The placed bolt: owned by the mount, naming the real Occurrence id -
     # exactly what POST /parts/{mount_id}/mates would need to reference it.
-    assert bolt_node["extras"] == {"owner_part_id": mount["id"], "occurrence_id": "occ-bolt-1"}
+    # `instance_path` (the Appearance tool / scenes): the full occurrence path from the root.
+    assert bolt_node["extras"] == {"owner_part_id": mount["id"], "occurrence_id": "occ-bolt-1", "instance_path": "occ-bolt-1"}
 
 
 def test_assembly_mesh_glb_primitive_extras_carry_face_and_body_ids():

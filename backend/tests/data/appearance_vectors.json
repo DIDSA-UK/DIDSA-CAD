@@ -1,0 +1,2905 @@
+{
+ "cases": [
+  {
+   "body_id": "l1",
+   "expected": {},
+   "face_index": 0,
+   "model": "base",
+   "name": "nothing_set",
+   "path": [
+    "leg1"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "No appearance anywhere: nothing resolved (the renderer's default look)."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "base",
+   "name": "part_own",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "The leaf Part's own appearance."
+  },
+  {
+   "body_id": "a2",
+   "expected": {
+    "colour": "#8B5A2B",
+    "roughness": 0.6
+   },
+   "face_index": 1,
+   "model": "base",
+   "name": "part_own_body",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "The Part's own body appearance on top of its part appearance (field by field)."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#202020",
+    "roughness": 0.6
+   },
+   "face_index": 4,
+   "model": "base",
+   "name": "part_own_face",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "The Part's own face beats its body and part (within one level, most specific wins)."
+  },
+  {
+   "body_id": "l1",
+   "expected": {
+    "colour": "#D0D0D0"
+   },
+   "face_index": 0,
+   "model": "whole",
+   "name": "whole_assembly",
+   "path": [
+    "leg2"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "An empty path paints everything in the assembly."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#D0D0D0",
+    "roughness": 0.6
+   },
+   "face_index": 4,
+   "model": "whole",
+   "name": "whole_beats_part_files",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Higher levels beat lower: the root's Whole assembly beats a Part's own face colour."
+  },
+  {
+   "body_id": "rb",
+   "expected": {
+    "colour": "#D0D0D0"
+   },
+   "face_index": 0,
+   "model": "whole",
+   "name": "whole_root_own_body",
+   "path": [],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Whole assembly covers the root's own bodies too."
+  },
+  {
+   "body_id": "a2",
+   "expected": {
+    "colour": "#2F6FD6",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "frame_blue",
+   "name": "subassembly_inherits",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A sub-assembly override paints what is inside it."
+  },
+  {
+   "body_id": "fb",
+   "expected": {
+    "colour": "#2F6FD6"
+   },
+   "face_index": 0,
+   "model": "frame_blue",
+   "name": "subassembly_own_bodies",
+   "path": [
+    "frame"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A sub-assembly override paints the sub-assembly's own bodies."
+  },
+  {
+   "body_id": "p1",
+   "expected": {
+    "colour": "#2F6FD6"
+   },
+   "face_index": 0,
+   "model": "frame_blue",
+   "name": "subassembly_deep",
+   "path": [
+    "frame",
+    "sub",
+    "pin"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A sub-assembly override reaches every depth below it."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#D63A2F",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "frame_blue_barA_red",
+   "name": "part_in_painted_subassembly",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A part painted inside a painted sub-assembly keeps its own colour."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#2F6FD6",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "frame_blue_barA_red",
+   "name": "sibling_keeps_subassembly",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Its sibling keeps the sub-assembly colour."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "metallic": 1.0,
+    "roughness": 0.3
+   },
+   "face_index": 0,
+   "model": "every_A",
+   "name": "every_placement",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "same_part paints every placement of the Part."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#D63A2F",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "every_A_blue_barA_red",
+   "name": "every_placement_this_one",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Every Frame A blue, then this Frame A red: this one is red."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#2F6FD6",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "every_A_blue_barA_red",
+   "name": "every_placement_the_rest",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "... and the rest stay blue."
+  },
+  {
+   "body_id": "a2",
+   "expected": {
+    "colour": "#D63A2F",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "every_A_over_frame",
+   "name": "every_placement_over_subassembly",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Every placement of a part beats the sub-assembly it sits in."
+  },
+  {
+   "body_id": "fb",
+   "expected": {
+    "colour": "#2F6FD6"
+   },
+   "face_index": 0,
+   "model": "every_A_over_frame",
+   "name": "subassembly_own_body_not_every_A",
+   "path": [
+    "frame"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "... the sub-assembly's own bodies keep the sub-assembly colour."
+  },
+  {
+   "body_id": "b1",
+   "expected": {
+    "colour": "#202020"
+   },
+   "face_index": 0,
+   "model": "bolt_pattern",
+   "name": "pattern_source",
+   "path": [
+    "bolt"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Pattern (all N) paints the source."
+  },
+  {
+   "body_id": "b1",
+   "expected": {
+    "colour": "#202020"
+   },
+   "face_index": 0,
+   "model": "bolt_pattern",
+   "name": "pattern_copy",
+   "path": [
+    "bolt#pattern:p1:3"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Pattern (all N) paints every copy."
+  },
+  {
+   "body_id": "b1",
+   "expected": {
+    "colour": "#202020",
+    "opacity": 0.3
+   },
+   "face_index": 0,
+   "model": "bolt_pattern",
+   "name": "pattern_copy_named",
+   "path": [
+    "bolt#pattern:p1:2"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "One copy painted on its own beats the pattern; other fields come from the pattern."
+  },
+  {
+   "body_id": "b1",
+   "expected": {},
+   "face_index": 0,
+   "model": "bolt_pattern",
+   "name": "pattern_other_pattern_copy",
+   "path": [
+    "bolt#pattern:p9:1"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A pattern override covers its own pattern only."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#2F6FD6",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "frame_pattern",
+   "name": "pattern_of_subassemblies",
+   "path": [
+    "frame#pattern:p2:2",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Every copy of a patterned sub-assembly, inside it."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#D63A2F",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "frame_pattern",
+   "name": "pattern_copy_subassembly_row",
+   "path": [
+    "frame#pattern:p2:1",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "That copy's own sub-assembly row beats the pattern."
+  },
+  {
+   "body_id": "b1",
+   "expected": {
+    "colour": "#D63A2F"
+   },
+   "face_index": 0,
+   "model": "two_patterns_one_source",
+   "name": "pattern_tie_source",
+   "path": [
+    "bolt"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A source in two painted patterns: the later override wins (a tie)."
+  },
+  {
+   "body_id": "b1",
+   "expected": {
+    "colour": "#2F6FD6"
+   },
+   "face_index": 0,
+   "model": "two_patterns_one_source",
+   "name": "pattern_tie_copy",
+   "path": [
+    "bolt#pattern:p1:1"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A copy belongs to one pattern only."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#2F6FD6",
+    "metallic": 1.0,
+    "roughness": 0.2
+   },
+   "face_index": 0,
+   "model": "body_and_face",
+   "name": "body_override",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A body override beats the part override, field by field."
+  },
+  {
+   "body_id": "a2",
+   "expected": {
+    "colour": "#2F6FD6",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "body_and_face",
+   "name": "body_override_other_body",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "... and leaves the other body alone."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#FFFFFF",
+    "emission": "#FFFFFF",
+    "emission_strength": 2.0,
+    "metallic": 1.0,
+    "roughness": 0.2
+   },
+   "face_index": 7,
+   "model": "body_and_face",
+   "name": "face_override",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A face override beats the body and part overrides."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "roughness": 0.6
+   },
+   "face_index": 7,
+   "model": "body_and_face",
+   "name": "face_override_other_part",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A face override names one placement only."
+  },
+  {
+   "body_id": null,
+   "expected": {
+    "colour": "#2F6FD6",
+    "roughness": 0.6
+   },
+   "face_index": null,
+   "model": "body_and_face",
+   "name": "node_level_ignores_bodies",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "With no body (the instance as a whole) only whole-node targets apply."
+  },
+  {
+   "body_id": "rb",
+   "expected": {
+    "colour": "#E8834A"
+   },
+   "face_index": 0,
+   "model": "own_body_of_root",
+   "name": "assembly_own_body",
+   "path": [],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "An empty path with a body_id paints one of the assembly's own bodies."
+  },
+  {
+   "body_id": "rb2",
+   "expected": {
+    "colour": "#8B5A2B"
+   },
+   "face_index": 0,
+   "model": "own_body_of_root",
+   "name": "assembly_own_other_body",
+   "path": [],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "... not its other bodies (they keep the root Part's own look)."
+  },
+  {
+   "body_id": "l1",
+   "expected": {},
+   "face_index": 0,
+   "model": "own_body_of_root",
+   "name": "root_part_appearance_stays_home",
+   "path": [
+    "leg1"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A Part's own appearance never paints what it places."
+  },
+  {
+   "body_id": "p1",
+   "expected": {
+    "colour": "#2FD65A",
+    "metallic": 0.4,
+    "opacity": 0.5
+   },
+   "face_index": 0,
+   "model": "levels",
+   "name": "levels_top_wins",
+   "path": [
+    "frame",
+    "sub",
+    "pin"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "The top assembly beats the sub-assembly files, field by field: opacity from R, colour from F."
+  },
+  {
+   "body_id": "a2",
+   "expected": {
+    "colour": "#2FD65A",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "levels",
+   "name": "levels_sub_file_beats_part",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A sub-assembly file's override beats the Part's own look."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#D0D0D0",
+    "metallic": 1.0,
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "levels_whole",
+   "name": "levels_whole_beats_sub_file",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "The root's Whole assembly beats a sub-assembly file's colour; the file's other fields stay."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#2FD65A",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "sub_file_whole",
+   "name": "sub_file_whole",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A sub-assembly file's own Whole assembly paints what it places."
+  },
+  {
+   "body_id": "fb",
+   "expected": {
+    "colour": "#E8834A"
+   },
+   "face_index": 0,
+   "model": "sub_file_whole",
+   "name": "sub_file_own_body",
+   "path": [
+    "frame"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "... and its own body override beats its Whole assembly."
+  },
+  {
+   "body_id": "p1",
+   "expected": {
+    "colour": "#D63A2F"
+   },
+   "face_index": 0,
+   "model": "nested_subassemblies",
+   "name": "nested_subassembly_deeper_wins",
+   "path": [
+    "frame",
+    "sub",
+    "pin"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "The nearer sub-assembly wins."
+  },
+  {
+   "body_id": "g1",
+   "expected": {
+    "colour": "#2F6FD6",
+    "opacity": 0.8
+   },
+   "face_index": 0,
+   "model": "every_G_vs_pin",
+   "name": "every_G_paints_inside",
+   "path": [
+    "frame",
+    "sub"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Every placement of a sub-assembly paints what is inside it."
+  },
+  {
+   "body_id": "p1",
+   "expected": {
+    "colour": "#D63A2F",
+    "opacity": 0.8
+   },
+   "face_index": 0,
+   "model": "every_G_vs_pin",
+   "name": "pin_beats_every_G",
+   "path": [
+    "frame",
+    "sub",
+    "pin"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A part named inside it beats it; the opacity still comes from it."
+  },
+  {
+   "body_id": "l1",
+   "expected": {
+    "colour": "#D63A2F"
+   },
+   "face_index": 0,
+   "model": "legacy",
+   "name": "legacy_colour",
+   "path": [
+    "leg1"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Occurrence.color reads as an override."
+  },
+  {
+   "body_id": "l1",
+   "expected": {},
+   "face_index": 0,
+   "model": "legacy",
+   "name": "legacy_colour_not_sibling",
+   "path": [
+    "leg2"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "... for that occurrence only."
+  },
+  {
+   "body_id": "l1",
+   "expected": {
+    "colour": "#D63A2F",
+    "opacity": 0.5
+   },
+   "face_index": 0,
+   "model": "legacy_and_override",
+   "name": "legacy_plus_override",
+   "path": [
+    "leg1"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "An override that sets no colour keeps the legacy colour."
+  },
+  {
+   "body_id": "l1",
+   "expected": {
+    "colour": "#2F6FD6"
+   },
+   "face_index": 0,
+   "model": "legacy_and_override",
+   "name": "override_colour_beats_legacy",
+   "path": [
+    "leg2"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "An override's own colour beats the legacy one."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#2F6FD6",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "legacy_subassembly",
+   "name": "legacy_subassembly",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A legacy colour on a sub-assembly now paints what is inside it."
+  },
+  {
+   "body_id": "a2",
+   "expected": {
+    "colour": "#8B5A2B",
+    "opacity": 0.4,
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "fieldwise",
+   "name": "fieldwise",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "An override that sets only opacity keeps the colour from below."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#E8834A",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "same_part_body",
+   "name": "same_part_body",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Every placement of a part, one body."
+  },
+  {
+   "body_id": "a2",
+   "expected": {
+    "colour": "#8B5A2B",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "same_part_body",
+   "name": "same_part_body_other_body",
+   "path": [
+    "frame",
+    "barB"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "... the other body keeps its own look."
+  },
+  {
+   "body_id": "b1",
+   "expected": {
+    "colour": "#E8834A"
+   },
+   "face_index": 0,
+   "model": "pattern_body",
+   "name": "pattern_body",
+   "path": [
+    "bolt#pattern:p1:2"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Every copy of a pattern, one body."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#D63A2F",
+    "roughness": 0.6
+   },
+   "face_index": 2,
+   "model": "pattern_copy_face",
+   "name": "pattern_copy_face",
+   "path": [
+    "frame#pattern:p2:1",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "One face of a part inside one copy of a patterned sub-assembly."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#2F6FD6",
+    "roughness": 0.6
+   },
+   "face_index": 3,
+   "model": "pattern_copy_face",
+   "name": "pattern_copy_face_neighbour",
+   "path": [
+    "frame#pattern:p2:1",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Its neighbour face takes the pattern."
+  },
+  {
+   "body_id": "l1",
+   "expected": {
+    "colour": "#D0D0D0",
+    "emission": "#E8834A",
+    "emission_strength": 3.0
+   },
+   "face_index": 0,
+   "model": "glow",
+   "name": "glow_fields",
+   "path": [
+    "leg1"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "Emission and its strength resolve as separate fields."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#D63A2F",
+    "opacity": 0.3,
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "frame_blue_barA_red",
+   "name": "scene_beats_all",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": [
+    {
+     "appearance": {
+      "colour": "#D63A2F",
+      "opacity": 0.3
+     },
+     "path": "frame"
+    }
+   ],
+   "why": "A shown scene beats every override."
+  },
+  {
+   "body_id": "a2",
+   "expected": {
+    "colour": "#2FD65A",
+    "roughness": 0.6
+   },
+   "face_index": 0,
+   "model": "base",
+   "name": "scene_body",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": [
+    {
+     "appearance": {
+      "colour": "#2FD65A"
+     },
+     "body_id": "a2",
+     "path": "frame/barA"
+    }
+   ],
+   "why": "A scene's body override applies to that body only."
+  },
+  {
+   "body_id": "a1",
+   "expected": {
+    "colour": "#202020",
+    "roughness": 0.6
+   },
+   "face_index": 4,
+   "model": "base",
+   "name": "scene_body_other_body",
+   "path": [
+    "frame",
+    "barA"
+   ],
+   "root": "R",
+   "scene_overrides": [
+    {
+     "appearance": {
+      "colour": "#2FD65A"
+     },
+     "body_id": "a2",
+     "path": "frame/barA"
+    }
+   ],
+   "why": "... the other body keeps the Part's own look."
+  },
+  {
+   "body_id": "x",
+   "expected": {},
+   "face_index": 0,
+   "model": "frame_blue",
+   "name": "unresolved_path",
+   "path": [
+    "frame",
+    "gone"
+   ],
+   "root": "R",
+   "scene_overrides": null,
+   "why": "A path that does not resolve paints nothing."
+  }
+ ],
+ "fields": [
+  "colour",
+  "opacity",
+  "metallic",
+  "roughness",
+  "emission",
+  "emission_strength"
+ ],
+ "models": {
+  "base": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "body_and_face": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "frame/barA"
+      },
+      {
+       "appearance": {
+        "metallic": 1.0,
+        "roughness": 0.2
+       },
+       "body_id": "a1",
+       "path": "frame/barA"
+      },
+      {
+       "appearance": {
+        "colour": "#FFFFFF",
+        "emission": "#FFFFFF",
+        "emission_strength": 2.0
+       },
+       "body_id": "a1",
+       "face": {
+        "body_id": "a1",
+        "index": 7
+       },
+       "path": "frame/barA"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "bolt_pattern": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "path": "bolt",
+       "pattern_id": "p1",
+       "scope": "pattern"
+      },
+      {
+       "appearance": {
+        "opacity": 0.3
+       },
+       "path": "bolt#pattern:p1:2"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "every_A": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "metallic": 1.0,
+        "roughness": 0.3
+       },
+       "part_id": "A",
+       "path": "",
+       "scope": "same_part"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "every_A_blue_barA_red": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#D63A2F"
+       },
+       "path": "frame/barA"
+      },
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "part_id": "A",
+       "path": "",
+       "scope": "same_part"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "every_A_over_frame": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "frame"
+      },
+      {
+       "appearance": {
+        "colour": "#D63A2F"
+       },
+       "part_id": "A",
+       "path": "",
+       "scope": "same_part"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "every_G_vs_pin": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2F6FD6",
+        "opacity": 0.8
+       },
+       "part_id": "G",
+       "path": "",
+       "scope": "same_part"
+      },
+      {
+       "appearance": {
+        "colour": "#D63A2F"
+       },
+       "path": "frame/sub/pin"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "fieldwise": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "opacity": 0.4
+       },
+       "path": "frame/barB"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "frame_blue": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "frame"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "frame_blue_barA_red": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "frame"
+      },
+      {
+       "appearance": {
+        "colour": "#D63A2F"
+       },
+       "path": "frame/barA"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "frame_pattern": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "frame",
+       "pattern_id": "p2",
+       "scope": "pattern"
+      },
+      {
+       "appearance": {
+        "colour": "#D63A2F"
+       },
+       "path": "frame#pattern:p2:1"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "glow": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "emission": "#E8834A"
+       },
+       "path": "leg1"
+      },
+      {
+       "appearance": {
+        "colour": "#D0D0D0",
+        "emission_strength": 3.0
+       },
+       "path": ""
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "legacy": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "color": "#D63A2F",
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "legacy_and_override": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "opacity": 0.5
+       },
+       "path": "leg1"
+      },
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "leg2"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "color": "#D63A2F",
+       "part_id": "L"
+      },
+      "leg2": {
+       "color": "#D63A2F",
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "legacy_subassembly": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "color": "#2F6FD6",
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "levels": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2FD65A"
+       },
+       "path": "barA"
+      },
+      {
+       "appearance": {
+        "colour": "#2FD65A",
+        "opacity": 0.9
+       },
+       "path": "sub/pin"
+      }
+     ],
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#D63A2F",
+        "metallic": 0.4
+       },
+       "path": "pin"
+      }
+     ],
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "opacity": 0.5
+       },
+       "path": "frame/sub/pin"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "levels_whole": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2FD65A",
+        "metallic": 1.0
+       },
+       "path": "barA"
+      }
+     ],
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#D0D0D0"
+       },
+       "path": ""
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "nested_subassemblies": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "frame"
+      },
+      {
+       "appearance": {
+        "colour": "#D63A2F"
+       },
+       "path": "frame/sub"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "own_body_of_root": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance": {
+      "colour": "#8B5A2B"
+     },
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#E8834A"
+       },
+       "body_id": "rb",
+       "path": ""
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "pattern_body": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#E8834A"
+       },
+       "body_id": "b1",
+       "path": "bolt",
+       "pattern_id": "p1",
+       "scope": "pattern"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "pattern_copy_face": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#D63A2F"
+       },
+       "body_id": "a1",
+       "face": {
+        "body_id": "a1",
+        "index": 2
+       },
+       "path": "frame#pattern:p2:1/barA"
+      },
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "frame",
+       "pattern_id": "p2",
+       "scope": "pattern"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "same_part_body": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#E8834A"
+       },
+       "body_id": "a1",
+       "part_id": "A",
+       "path": "",
+       "scope": "same_part"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "sub_file_whole": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2FD65A"
+       },
+       "path": ""
+      },
+      {
+       "appearance": {
+        "colour": "#E8834A"
+       },
+       "body_id": "fb",
+       "path": ""
+      }
+     ],
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "two_patterns_one_source": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#2F6FD6"
+       },
+       "path": "bolt",
+       "pattern_id": "p1",
+       "scope": "pattern"
+      },
+      {
+       "appearance": {
+        "colour": "#D63A2F"
+       },
+       "path": "bolt",
+       "pattern_id": "p3",
+       "scope": "pattern"
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  },
+  "whole": {
+   "parts": {
+    "A": {
+     "appearance": {
+      "roughness": 0.6
+     },
+     "body_appearances": {
+      "a2": {
+       "colour": "#8B5A2B"
+      }
+     },
+     "face_appearances": [
+      {
+       "appearance": {
+        "colour": "#202020"
+       },
+       "face": {
+        "body_id": "a1",
+        "index": 4
+       }
+      }
+     ]
+    },
+    "B": {},
+    "F": {
+     "occurrences": {
+      "barA": {
+       "part_id": "A"
+      },
+      "barB": {
+       "part_id": "A"
+      },
+      "sub": {
+       "part_id": "G"
+      }
+     }
+    },
+    "G": {
+     "occurrences": {
+      "pin": {
+       "part_id": "P"
+      }
+     }
+    },
+    "L": {},
+    "P": {},
+    "R": {
+     "appearance_overrides": [
+      {
+       "appearance": {
+        "colour": "#D0D0D0"
+       },
+       "path": ""
+      }
+     ],
+     "occurrences": {
+      "bolt": {
+       "part_id": "B"
+      },
+      "frame": {
+       "part_id": "F"
+      },
+      "leg1": {
+       "part_id": "L"
+      },
+      "leg2": {
+       "part_id": "L"
+      }
+     }
+    }
+   }
+  }
+ },
+ "source": "tools/appearance_vectors/generate.py (reference: backend/app/document/appearance.py)",
+ "version": 1
+}

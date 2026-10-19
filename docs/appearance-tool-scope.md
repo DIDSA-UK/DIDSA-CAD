@@ -1,10 +1,71 @@
 # Appearance tool (the "Vision tool") — scope
 
-**Status:** scope only; nothing is built. Written 18 Oct 2026 from the owner's request during the scenes scope (`docs/scenes-scope.md`):
+**Status:** being built on branch `claude/appearance-and-scenes` (both repos), milestone by milestone; see Progress below. Written 18 Oct 2026 from the owner's request during the scenes scope (`docs/scenes-scope.md`):
 grow the Colour tool into a **Vision tool** with transparency, reflectivity and luminescence, a full colour picker as well as the
 palette, and a paint gun that can be set to colour a **mesh**, a **part** or its **parent assembly**. **Owner** marks the owner's words and
 decisions; the rest are proposals the owner accepted. Revised the same day with the owner's answers (section 8). In the apps the tool is
 called **Appearance** (Owner).
+
+## Progress
+
+| Phase | Summary | Status | Where |
+|---|---|---|---|
+| V1 | Backend: record, three storage places, D3 resolution + golden vectors, endpoints, `Occurrence.color` alias, glb materials + `instance_path`, delete cascade, validation, native round trip | Done (M1; not merged) | CAD `claude/appearance-and-scenes` |
+| V2 | DIDSA-VR Appearance tool | Not started (M2) | VR `claude/appearance-and-scenes` |
+| V3 | Flat app | Not started (M5) | CAD |
+| V4 | STEP colours | Not started (M6) | CAD |
+
+Update this table with every milestone.
+
+## V1 implementation notes (what was built, and where it is more precise than the text)
+
+- **Where:** the record and the rule are `backend/app/document/appearance.py` (pure Python: no OCCT, no pydantic, so it is the
+  reference the clients copy); the endpoints, checks, cascade and the resolution model the glb paints from are
+  `appearance_routes.py`; shared path helpers (`#pattern:` copies, "goes through this occurrence") are `occurrence_paths.py`
+  (scenes reuse them); the materials are `mesh_export.material_for_appearance`.
+- **Golden vectors:** `tools/appearance_vectors/generate.py` -> `docs/appearance/vectors.json` (57 cases; the backend's copy is
+  `backend/tests/data/appearance_vectors.json`, `--check` keeps the two in step). Each case is a resolution model (the plain-dict
+  shape in `appearance.py`'s docstring), an instance path, a body and face, an optional scene, and the expected fields. The GDScript
+  (V2) and Dart (V3) copies are tested against the docs copy.
+- **"Most specific wins" made exact** (D1 / D3; it gives the owner's order for every case in the list and settles the ones the list
+  doesn't name): within one override list a face beats a body beats a whole node; then the node **nearest the face** wins; on the
+  same node a named path beats Pattern (all N) beats Every <part> (N); the Whole assembly is under everything. So "Every Frame A
+  blue" then "this Frame A red" gives one red (same node, named path wins), a pattern of *sub-assemblies* painted blue with one copy's
+  sub-assembly row painted red gives that copy red, and a nearer sub-assembly beats a farther one. A tie (a source occurrence in two
+  painted patterns) goes to the later override.
+- **Whole assembly and the levels** (follows D3 as settled, flagged for the owner): the Whole assembly is under every other row *of
+  its own assembly*, but it is still the top assembly's level, so it beats the colours stored in sub-assembly files and the parts' own
+  `appearance` / `body_appearances` / `face_appearances` (the vectors `whole_beats_part_files`, `levels_whole_beats_sub_file`). A base
+  coat that should sit *under* the parts' own colours would need a different rule; nothing else depends on this choice.
+- **A Part's own `appearance` paints only its own bodies**, never what it places (painting a whole sub-assembly in its own file is
+  its Whole assembly override, `path: ""`). An override with `path: ""` and a `body_id` paints one of the assembly's own bodies.
+- **`Occurrence.color`** (D2): read as an override on that occurrence in the Part that places it; an explicit override with the same
+  target keeps its own fields and takes the legacy colour only when it sets none. A PUT on a top-level occurrence's own override
+  mirrors its colour into `color` (clearing the override clears `color`); a PATCH of `color` by an older client updates that override's
+  colour (an empty string removes just the colour). As the scope says, the alias now paints what is inside a sub-assembly (it used to
+  be per instance only).
+- **Faces:** stored with the signature measured when they are set (wire `SubShapeRefSchema` has none), re-found with
+  `subshape_identity.decide_subshape` before painting; one that can't be re-found paints nothing and is reported
+  (`unresolved`, `face_current_index` in GET; `current_index` / `unresolved` in `PartResponse.face_appearances`).
+- **glb (D7):** each instance's material is its resolved appearance (unset fields from `appearance.DEFAULT_LOOK`, the flat app's
+  default material; `extras.appearance` lists only the fields that were set, so a client can use its own default for the rest).
+  Opacity < 1 is `alphaMode: BLEND`; glow is `emissiveFactor` (the emission colour, or the base colour when only a strength is set)
+  with `KHR_materials_emissive_strength` past 1; strength 0 is off. An instance whose faces resolve differently gets **one primitive
+  per appearance**, each a uint32 index list into the same shared position / normal accessors, with that primitive's own
+  `face_ids` / `body_ids` (in its index order) and the topology on the first primitive only. An assembly with no appearance anywhere
+  is unchanged apart from the new node extra `instance_path` (the full occurrence path, `#pattern:` segments included; it moved here
+  from the scenes scope's S1 because the VR gun needs it to paint one pattern copy).
+- **Endpoints:** `PUT /parts/{id}/appearance-overrides` (set / replace / `appearance: null` clears one target; returns the list),
+  `GET` (the list, legacy colours included with `legacy: true`, each with `unresolved`), `PATCH /parts/{id}` (`appearance`,
+  `body_appearances`, `face_appearances`; omitted = unchanged, `appearance: null` clears, the map / list replace whole), and the
+  three fields in `PartResponse`.
+- **Delete cascade:** deleting an occurrence drops every override in the session whose path goes through it (any Part's list, not
+  only the owner's); deleting a component pattern (or the occurrence that is its source) drops its copies' overrides and its
+  Pattern (all N) override. Every placement (`same_part`) names a Part and stays; when nothing places it any more it is reported
+  `part_not_placed`. A copy that a smaller count no longer derives is kept and reported (`pattern_copy_not_found`).
+- **Native format:** the four Part fields are written only when set, so a file without them exports byte for byte as before; an
+  invalid appearance or scope in a file is a 422 on import. No `SCHEMA_VERSION` bump.
+- **Tests:** `backend/tests/test_appearance.py`.
 
 ## 1. Today
 

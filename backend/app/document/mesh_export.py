@@ -11,6 +11,7 @@ import struct
 from dataclasses import dataclass
 from typing import Sequence
 
+from app.document.appearance import DEFAULT_LOOK
 from app.document.mesh_data import MeshData
 
 _STL_HEADER = b"DIDSA-CAD STL export".ljust(80, b"\0")[:80]
@@ -23,6 +24,9 @@ _GLB_CHUNK_TYPE_BIN = 0x004E4942
 _GLTF_COMPONENT_TYPE_FLOAT = 5126
 _GLTF_MODE_TRIANGLES = 4
 _GLTF_TARGET_ARRAY_BUFFER = 34962
+_GLTF_TARGET_ELEMENT_ARRAY_BUFFER = 34963
+_GLTF_COMPONENT_TYPE_UNSIGNED_INT = 5125
+_EMISSIVE_STRENGTH = "KHR_materials_emissive_strength"
 
 
 def encode_stl(mesh: MeshData) -> bytes:
@@ -167,16 +171,51 @@ class AssemblyGlbInstance:
     hidden: bool = False
     owner_part_id: str = ""
     occurrence_id: str = ""
+    # The Appearance tool (`docs/appearance-tool-scope.md` D7): the resolved appearance of the whole instance
+    # (`app.document.appearance`, only the fields something sets; `{}` = nothing, the renderer's default), which
+    # replaces `color` when set; and, when its faces don't all resolve the same, one per `(body_id, face id)` - the
+    # mesh is then split into one primitive per appearance.
+    appearance: dict | None = None
+    face_appearances: dict[tuple[str, int], dict] | None = None
+    # The full occurrence path from the root (`/`-joined, `#pattern:` segments included; "" = the root's own content),
+    # so a client can tell pattern copies apart (their `occurrence_id` is empty) - `docs/scenes-scope.md` section 5.
+    instance_path: str = ""
 
 
-def _color_to_base_color_factor(color: str) -> list[float]:
-    """`color` is always `"#RRGGBB"` (see `app.document.models.Occurrence.
-    color`'s own docstring) - straight 0-255 -> 0-1 channel scaling, no
-    sRGB-to-linear conversion, matching every other hand-rolled encoder in
-    this module's own "keep it simple" convention."""
+def _hex_to_rgb(color: str) -> list[float]:
     hex_digits = color.lstrip("#")
-    r, g, b = (int(hex_digits[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
-    return [r, g, b, 1.0]
+    return [int(hex_digits[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+
+
+def _appearance_key(appearance: dict) -> tuple:
+    return tuple(sorted(appearance.items()))
+
+
+def material_for_appearance(appearance: dict) -> dict:
+    """A glTF material from a resolved appearance (section 2's table): unset fields come from `DEFAULT_LOOK`, and
+    `extras.appearance` carries only the fields that were set, so a client can use its own default look for the rest.
+    Opacity below 1 blends. Glow: `emissiveFactor` is `emission` (or the base colour when only a strength is set),
+    scaled past 1 by `KHR_materials_emissive_strength`; a strength of 0 turns it off. Channels are written as stored
+    (straight 0-255 -> 0-1 scaling, no sRGB-to-linear step), this module's "keep it simple" convention."""
+    look = {**DEFAULT_LOOK, **appearance}
+    material: dict = {
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [*_hex_to_rgb(look["colour"]), float(look["opacity"])],
+            "metallicFactor": float(look["metallic"]),
+            "roughnessFactor": float(look["roughness"]),
+        }
+    }
+    if look["opacity"] < 1.0:
+        material["alphaMode"] = "BLEND"
+    strength = appearance.get("emission_strength")
+    if appearance.get("emission") is not None or strength is not None:
+        strength = 1.0 if strength is None else float(strength)
+        if strength > 0.0:
+            material["emissiveFactor"] = _hex_to_rgb(appearance.get("emission") or look["colour"])
+            if strength != 1.0:
+                material["extensions"] = {_EMISSIVE_STRENGTH: {"emissiveStrength": strength}}
+    material["extras"] = {"appearance": dict(appearance)}
+    return material
 
 
 _TOPOLOGY_DECIMALS = 5  # coordinates in the topology extras are rounded to this many decimals (JSON size)
@@ -254,7 +293,13 @@ def encode_assembly_glb(
     duplicated in the binary buffer, only a few extra bytes of JSON) - mesh
     count only equals unique-part count in the common case where every
     instance of a given Part shares one colour (including "no override" on
-    all of them)."""
+    all of them).
+
+    The Appearance tool (`docs/appearance-tool-scope.md` D7): the variant key
+    is now the instance's resolved appearance (`AssemblyGlbInstance.
+    appearance`, `material_for_appearance`), and an instance whose faces
+    resolve differently (a painted body or face) gets one primitive per
+    appearance, each a uint32 index list into the same shared accessors."""
     buffer_bytes = bytearray()
     accessors: list[dict] = []
     buffer_views: list[dict] = []
@@ -297,72 +342,135 @@ def encode_assembly_glb(
         part_accessor_indices[part_id] = (position_accessor, normal_accessor)
 
     materials: list[dict] = []
-    material_index_by_color: dict[str, int] = {}
+    material_index_by_key: dict[tuple, int] = {}
     meshes: list[dict] = []
-    mesh_index_by_variant: dict[tuple[str, str | None], int] = {}
+    mesh_index_by_variant: dict[tuple, int] = {}
+    index_accessor_by_triangles: dict[tuple, int] = {}
     nodes: list[dict] = []
 
+    def _material_index(appearance: dict) -> int | None:
+        if not appearance:
+            return None
+        key = _appearance_key(appearance)
+        if key not in material_index_by_key:
+            material_index_by_key[key] = len(materials)
+            materials.append(material_for_appearance(appearance))
+        return material_index_by_key[key]
+
+    def _index_accessor(part_id: str, triangle_indices: list[int]) -> int:
+        """A uint32 index accessor over the shared position / normal accessors: one appearance's triangles."""
+        key = (part_id, tuple(triangle_indices))
+        if key in index_accessor_by_triangles:
+            return index_accessor_by_triangles[key]
+        triangles = meshes_by_part_id[part_id].triangles
+        indices = [v for t in triangle_indices for v in (triangles[t].a, triangles[t].b, triangles[t].c)]
+        offset = len(buffer_bytes)
+        data = struct.pack(f"<{len(indices)}I", *indices)
+        buffer_bytes.extend(data)
+        buffer_views.append(
+            {"buffer": 0, "byteOffset": offset, "byteLength": len(data), "target": _GLTF_TARGET_ELEMENT_ARRAY_BUFFER}
+        )
+        accessors.append(
+            {
+                "bufferView": len(buffer_views) - 1,
+                "componentType": _GLTF_COMPONENT_TYPE_UNSIGNED_INT,
+                "count": len(indices),
+                "type": "SCALAR",
+                "min": [min(indices)],
+                "max": [max(indices)],
+            }
+        )
+        index_accessor_by_triangles[key] = len(accessors) - 1
+        return index_accessor_by_triangles[key]
+
+    def _primitive_extras(part_id: str, triangle_indices: list[int] | None, with_topology: bool) -> dict | None:
+        # Milestone 4: `face_ids`/`body_ids` are dense, one entry per
+        # triangle - `(body_ids[i], face_ids[i])` is a real
+        # `SubShapeRef{body_id, shape_type: "face", index}` (see
+        # `MeshData.body_ids`'s own docstring for why `face_ids` stays
+        # un-offset across a multi-Body Part's merge while `body_ids`
+        # disambiguates which Body each one belongs to). Plain JSON
+        # `extras`, not a vertex attribute, so the VR client can read it
+        # straight off `GLTFState.json` with no custom
+        # `GLTFDocumentExtension` needed. Omitted for a mesh with no
+        # tessellated faces at all (only reachable if a Part somehow
+        # produced triangles with no Body behind them at all). A mesh split by
+        # appearance carries, per primitive, the entries of that primitive's
+        # own triangles (in its index order), so reading the primitives one
+        # after another gives every triangle once.
+        part_mesh = meshes_by_part_id[part_id]
+        if not part_mesh.face_ids:
+            return None
+        if triangle_indices is None:
+            extras: dict = {"face_ids": list(part_mesh.face_ids), "body_ids": list(part_mesh.body_ids)}
+        else:
+            extras = {
+                "face_ids": [part_mesh.face_ids[t] for t in triangle_indices],
+                "body_ids": [part_mesh.body_ids[t] for t in triangle_indices],
+            }
+        if with_topology and include_topology and part_mesh.body_topology:
+            # VR Measure tool: real edges / vertices / face boundaries, see _topology_extras (on the first primitive).
+            if part_id not in topology_by_part_id:
+                topology_by_part_id[part_id] = _topology_extras(part_mesh)
+            extras["topology"] = topology_by_part_id[part_id]
+        return extras
+
     for instance in instances:
+        qw, qx, qy, qz = instance.rotation_quaternion
+        # Milestone 4: which Mate/Measure entity this node is - see
+        # AssemblyGlbInstance's own docstring for the empty-
+        # occurrence_id convention.
+        node_extras = {
+            "owner_part_id": instance.owner_part_id,
+            "occurrence_id": instance.occurrence_id,
+            "instance_path": instance.instance_path,
+        }
         if instance.part_id not in part_accessor_indices:
-            qw, qx, qy, qz = instance.rotation_quaternion
-            nodes.append(
-                {
-                    "translation": list(instance.translation),
-                    "rotation": [qx, qy, qz, qw],
-                    "extras": {"owner_part_id": instance.owner_part_id, "occurrence_id": instance.occurrence_id},
-                }
-            )
+            nodes.append({"translation": list(instance.translation), "rotation": [qx, qy, qz, qw], "extras": node_extras})
             continue
-        variant_key = (instance.part_id, instance.color)
+        appearance = instance.appearance
+        if appearance is None:
+            appearance = {"colour": instance.color} if instance.color is not None else {}
+        part_mesh = meshes_by_part_id[instance.part_id]
+        groups: dict[tuple, tuple[dict, list[int]]] | None = None
+        if instance.face_appearances is not None and part_mesh.face_ids:
+            groups = {}
+            for t, (body_id, face_id) in enumerate(zip(part_mesh.body_ids, part_mesh.face_ids)):
+                face_appearance = instance.face_appearances.get((body_id, face_id), appearance)
+                groups.setdefault(_appearance_key(face_appearance), (face_appearance, []))[1].append(t)
+            if len(groups) == 1:
+                appearance = next(iter(groups.values()))[0]
+                groups = None
+        variant_key = (
+            (instance.part_id, _appearance_key(appearance))
+            if groups is None
+            else (instance.part_id, tuple((key, tuple(tris)) for key, (_a, tris) in groups.items()))
+        )
         mesh_index = mesh_index_by_variant.get(variant_key)
         if mesh_index is None:
             position_accessor, normal_accessor = part_accessor_indices[instance.part_id]
-            primitive = {
-                "attributes": {"POSITION": position_accessor, "NORMAL": normal_accessor},
-                "mode": _GLTF_MODE_TRIANGLES,
-            }
-            if instance.color is not None:
-                material_index = material_index_by_color.get(instance.color)
-                if material_index is None:
-                    material_index = len(materials)
-                    material_index_by_color[instance.color] = material_index
-                    materials.append(
-                        {"pbrMetallicRoughness": {"baseColorFactor": _color_to_base_color_factor(instance.color)}}
-                    )
-                primitive["material"] = material_index
-            # Milestone 4: `face_ids`/`body_ids` are dense, one entry per
-            # triangle - `(body_ids[i], face_ids[i])` is a real
-            # `SubShapeRef{body_id, shape_type: "face", index}` (see
-            # `MeshData.body_ids`'s own docstring for why `face_ids` stays
-            # un-offset across a multi-Body Part's merge while `body_ids`
-            # disambiguates which Body each one belongs to). Plain JSON
-            # `extras`, not a vertex attribute, so the VR client can read it
-            # straight off `GLTFState.json` with no custom
-            # `GLTFDocumentExtension` needed. Omitted for a mesh with no
-            # tessellated faces at all (only reachable if a Part somehow
-            # produced triangles with no Body behind them at all).
-            part_mesh = meshes_by_part_id[instance.part_id]
-            if part_mesh.face_ids:
-                primitive["extras"] = {"face_ids": list(part_mesh.face_ids), "body_ids": list(part_mesh.body_ids)}
-                if include_topology and part_mesh.body_topology:
-                    # VR Measure tool: real edges / vertices / face boundaries, see _topology_extras.
-                    if instance.part_id not in topology_by_part_id:
-                        topology_by_part_id[instance.part_id] = _topology_extras(part_mesh)
-                    primitive["extras"]["topology"] = topology_by_part_id[instance.part_id]
+            primitives: list[dict] = []
+            for position, (group_appearance, triangle_indices) in enumerate(
+                [(appearance, None)] if groups is None else list(groups.values())
+            ):
+                primitive: dict = {
+                    "attributes": {"POSITION": position_accessor, "NORMAL": normal_accessor},
+                    "mode": _GLTF_MODE_TRIANGLES,
+                }
+                if triangle_indices is not None:
+                    primitive["indices"] = _index_accessor(instance.part_id, triangle_indices)
+                material_index = _material_index(group_appearance)
+                if material_index is not None:
+                    primitive["material"] = material_index
+                extras = _primitive_extras(instance.part_id, triangle_indices, with_topology=position == 0)
+                if extras is not None:
+                    primitive["extras"] = extras
+                primitives.append(primitive)
             mesh_index = len(meshes)
             mesh_index_by_variant[variant_key] = mesh_index
-            meshes.append({"primitives": [primitive]})
-        qw, qx, qy, qz = instance.rotation_quaternion
+            meshes.append({"primitives": primitives})
         nodes.append(
-            {
-                "mesh": mesh_index,
-                "translation": list(instance.translation),
-                "rotation": [qx, qy, qz, qw],
-                # Milestone 4: which Mate/Measure entity this node is - see
-                # AssemblyGlbInstance's own docstring for the empty-
-                # occurrence_id convention.
-                "extras": {"owner_part_id": instance.owner_part_id, "occurrence_id": instance.occurrence_id},
-            }
+            {"mesh": mesh_index, "translation": list(instance.translation), "rotation": [qx, qy, qz, qw], "extras": node_extras}
         )
 
     gltf: dict = {
@@ -377,6 +485,8 @@ def encode_assembly_glb(
     }
     if materials:
         gltf["materials"] = materials
+        if any(_EMISSIVE_STRENGTH in m.get("extensions", {}) for m in materials):
+            gltf["extensionsUsed"] = [_EMISSIVE_STRENGTH]
 
     json_bytes = _pad(json.dumps(gltf, separators=(",", ":")).encode("utf-8"), b" ")
     bin_bytes = _pad(bytes(buffer_bytes), b"\0")

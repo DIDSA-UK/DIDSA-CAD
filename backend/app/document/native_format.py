@@ -20,7 +20,10 @@ dict; the client is the one that writes/reads the actual file to/from disk.
 import base64
 import dataclasses
 
+from app.document.appearance import SCOPES as APPEARANCE_SCOPES, Appearance, appearance_errors
 from app.document.models import (
+    AppearanceOverride,
+    FaceAppearance,
     BevelGearFeature,
     BevelGearType,
     BevelPairFeature,
@@ -2198,7 +2201,7 @@ def _component_pattern_from_dict(data: dict) -> ComponentPattern:
 
 
 def _part_to_dict(part: Part) -> dict:
-    return {
+    data = {
         "id": part.id,
         "name": part.name,
         "features": [_feature_to_dict(f) for f in part.features],
@@ -2232,6 +2235,53 @@ def _part_to_dict(part: Part) -> dict:
         # a file saved before Phase 7 existed simply lacks this key.
         "component_patterns": [_component_pattern_to_dict(p) for p in part.component_patterns],
     }
+    # The Appearance tool (`docs/appearance-tool-scope.md` section 5): written only when set, so a file without any
+    # appearance stays byte-identical (no SCHEMA_VERSION bump, the `component_patterns` precedent).
+    if part.appearance is not None:
+        data["appearance"] = part.appearance.to_dict()
+    if part.body_appearances:
+        data["body_appearances"] = {body_id: a.to_dict() for body_id, a in part.body_appearances.items()}
+    if part.face_appearances:
+        data["face_appearances"] = [
+            {"face": _subshape_ref_to_dict(entry.face), "appearance": entry.appearance.to_dict()}
+            for entry in part.face_appearances
+        ]
+    if part.appearance_overrides:
+        data["appearance_overrides"] = [_appearance_override_to_dict(o) for o in part.appearance_overrides]
+    return data
+
+
+def _appearance_override_to_dict(override: AppearanceOverride) -> dict:
+    data: dict = {"path": override.path}
+    for key in ("scope", "pattern_id", "part_id", "body_id"):
+        if getattr(override, key) is not None:
+            data[key] = getattr(override, key)
+    if override.face is not None:
+        data["face"] = _subshape_ref_to_dict(override.face)
+    data["appearance"] = override.appearance.to_dict()
+    return data
+
+
+def _appearance_from_dict(data: dict) -> Appearance:
+    errors = appearance_errors(data)
+    if errors:
+        raise NativeFormatError(f"Invalid appearance: {'; '.join(errors)}")
+    return Appearance.from_dict(data)
+
+
+def _appearance_override_from_dict(data: dict) -> AppearanceOverride:
+    scope = data.get("scope")
+    if scope is not None and scope not in APPEARANCE_SCOPES:
+        raise NativeFormatError(f"Unknown appearance override scope: {scope!r}")
+    return AppearanceOverride(
+        appearance=_appearance_from_dict(_require(data, "appearance")),
+        path=data.get("path") or "",
+        body_id=data.get("body_id"),
+        face=_subshape_ref_from_dict(data["face"]) if data.get("face") else None,
+        scope=scope,
+        pattern_id=data.get("pattern_id"),
+        part_id=data.get("part_id"),
+    )
 
 
 def _part_from_dict(data: dict) -> Part:
@@ -2252,6 +2302,15 @@ def _part_from_dict(data: dict) -> Part:
     part.occurrences = [_occurrence_from_dict(o) for o in data.get("occurrences", [])]
     part.mates = [_mate_from_dict(m) for m in data.get("mates", [])]
     part.component_patterns = [_component_pattern_from_dict(p) for p in data.get("component_patterns", [])]
+    part.appearance = _appearance_from_dict(data["appearance"]) if data.get("appearance") else None
+    part.body_appearances = {
+        body_id: _appearance_from_dict(a) for body_id, a in (data.get("body_appearances") or {}).items()
+    }
+    part.face_appearances = [
+        FaceAppearance(face=_subshape_ref_from_dict(_require(entry, "face")), appearance=_appearance_from_dict(_require(entry, "appearance")))
+        for entry in data.get("face_appearances") or []
+    ]
+    part.appearance_overrides = [_appearance_override_from_dict(o) for o in data.get("appearance_overrides") or []]
     return part
 
 
