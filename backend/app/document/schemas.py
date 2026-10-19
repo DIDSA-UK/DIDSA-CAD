@@ -3769,3 +3769,60 @@ class ComponentPatternUpdate(BaseModel):
     skip_indices: list[int] | None = None
     orient_with_rotation: bool | None = None
     suppressed: bool | None = None
+
+
+class SceneOverrideSchema(BaseModel):
+    """Scenes (`docs/scenes-scope.md` section 4): what one scene changes about one placed instance (`models.SceneOverride`).
+    `path` is an occurrence path from the scene's Part (`#pattern:` copies allowed; "" = the Part's own bodies, appearance only);
+    `transform` is the node's local transform at its own level (mm); `body_id` / `face` narrow an `appearance` to a body / face
+    (never a transform or `hidden`). At least one of transform / hidden / appearance."""
+
+    path: str = ""
+    body_id: str | None = None
+    face: SubShapeRefSchema | None = None
+    transform: RigidTransformResponse | None = None
+    hidden: bool | None = None
+    appearance: dict | None = None
+
+
+class SceneViewpointSchema(BaseModel):
+    eye: tuple[float, float, float]
+    target: tuple[float, float, float]
+    up: tuple[float, float, float] = (0.0, 1.0, 0.0)
+
+
+class SceneCreate(BaseModel):
+    """POST /parts/{id}/scenes. `section_planes` is the flat app's SectionPlane JSON, stored as given."""
+
+    name: str
+    overrides: list[SceneOverrideSchema] = []
+    section_planes: list[dict] = []
+    viewpoint: SceneViewpointSchema | None = None
+
+
+class SceneUpdate(BaseModel):
+    """PATCH /parts/{id}/scenes/{scene_id} (Update scene / rename): omitted = unchanged; a given list replaces the whole list;
+    an explicit `viewpoint: null` removes the viewpoint."""
+
+    name: str | None = None
+    overrides: list[SceneOverrideSchema] | None = None
+    section_planes: list[dict] | None = None
+    viewpoint: SceneViewpointSchema | None = None
+
+
+class SceneUnresolved(BaseModel):
+    """An override whose target can't be found in the assembly as it is now (D8: kept, ignored, listed). `reason` is one of
+    "occurrence_not_found", "pattern_copy_not_found", "part_not_resolved", "body_not_found", "no_match", "ambiguous"."""
+
+    path: str
+    body_id: str | None = None
+    reason: str
+
+
+class SceneResponse(BaseModel):
+    id: str
+    name: str
+    overrides: list[SceneOverrideSchema] = []
+    section_planes: list[dict] = []
+    viewpoint: SceneViewpointSchema | None = None
+    unresolved: list[SceneUnresolved] = []

@@ -3165,6 +3165,44 @@ class AppearanceOverride:
     part_id: str | None = None
 
 
+@dataclass(frozen=True)
+class SceneOverride:
+    """One entry of a scene (`docs/scenes-scope.md` D2-D4): what the scene changes about one placed instance, each field optional,
+    at least one set. `path` is an occurrence path from the scene's Part (`#pattern:` copies allowed; "" = the Part's own bodies,
+    which take an appearance only). `transform` is that node's LOCAL transform at its own level (the frame `Occurrence.transform`
+    uses; for a pattern copy it replaces the derived one). `body_id` / `face` narrow an `appearance` to one body / face (a body or
+    face never moves or hides on its own). Composition: `app.document.scene_compose`."""
+
+    path: str
+    transform: "RigidTransform | None" = None
+    hidden: bool | None = None
+    appearance: Appearance | None = None
+    body_id: str | None = None
+    face: SubShapeRef | None = None
+
+
+@dataclass(frozen=True)
+class SceneViewpoint:
+    """Where a scene is looked at from, in its Part's frame (mm). DIDSA-VR keeps the user's own scale and only turns and places
+    the model (Owner, D2)."""
+
+    eye: tuple[float, float, float]
+    target: tuple[float, float, float]
+    up: tuple[float, float, float] = (0.0, 1.0, 0.0)
+
+
+@dataclass
+class Scene:
+    """A named arrangement of an assembly (`docs/scenes-scope.md`): stored with the Part it was made in (`Part.scenes`), never its
+    real state. Sparse: it lists only what it changes. `section_planes` is the flat app's `SectionPlane` JSON, kept as given."""
+
+    id: str
+    name: str
+    overrides: list[SceneOverride] = field(default_factory=list)
+    section_planes: list[dict] = field(default_factory=list)
+    viewpoint: SceneViewpoint | None = None
+
+
 @dataclass
 class Part:
     """A `.didsa` file's content: an ordered list of Features (this Part's
@@ -3239,6 +3277,8 @@ class Part:
     body_appearances: dict[str, Appearance] = field(default_factory=dict)
     face_appearances: list[FaceAppearance] = field(default_factory=list)
     appearance_overrides: list[AppearanceOverride] = field(default_factory=list)
+    # Scenes (`docs/scenes-scope.md` D1 B): named display arrangements of this Part's assembly, never its real state.
+    scenes: list[Scene] = field(default_factory=list)
 
     def resolve_material(self, body_id: str) -> MaterialAssignment | None:
         """The material that applies to `body_id`: its own override if one

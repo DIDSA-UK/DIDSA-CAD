@@ -1,8 +1,45 @@
 # Scenes (display states) — scope
 
-**Status:** scope only; nothing is built. Written 18 Oct 2026 from the owner's design discussion in the DIDSA-VR "sandbox" work
+**Status:** being built on branch `claude/appearance-and-scenes` (both repos), milestone by milestone; see Progress below. Written 18 Oct 2026 from the owner's design discussion in the DIDSA-VR "sandbox" work
 (DIDSA-VR `CHANGELOG.md`, "Relax all mates is a sandbox"); revised the same day with the owner's answers. Decisions marked **Owner** are
 settled; **Recommendation** marks the ones the owner accepted as proposed ("your offers work") or that are still open (section 9).
+
+## Progress
+
+| Phase | Summary | Status | Where |
+|---|---|---|---|
+| S1 | Backend: model, native format, validation (incl. `#pattern:` paths and body / face appearances), CRUD, delete cascade, unresolved report, composition reference + golden vectors | Done (M3; not merged) | CAD `claude/appearance-and-scenes` |
+| S2 | DIDSA-VR: scenes on the sandbox | Not started (M4) | VR |
+| S3 | Flat app | Not started (M5) | CAD |
+| S4 | Later | — | — |
+
+The glb `instance_path` extra listed under S1 was built in the Appearance tool's V1 (the VR gun needed it first).
+
+## S1 implementation notes (what was built, and where it is more precise than the text)
+
+- **Where:** `Scene`, `SceneOverride`, `SceneViewpoint` in `models.py`; `native_format` writes `scenes` only when a Part has one;
+  routes, validation, the unresolved report and the cascade in `backend/app/document/scenes_routes.py`; path resolution shared with
+  the Appearance tool (`occurrence_paths.py`).
+- **Composition reference:** `backend/app/document/scene_compose.py` (pure Python; imports only `appearance.py`). Golden vectors:
+  `tools/scene_vectors/generate.py` -> `docs/scenes/vectors.json` (6 cases over one tree: default, exploded, hidden, looks,
+  everything, empty; tolerance 1e-4 for float32 clients); the backend's copy is `backend/tests/data/scene_vectors.json`. Its input is
+  the list of placed instances (path, real local transform, real `hidden`, bodies to resolve) plus the appearance resolution model,
+  so a client tests composition without expanding patterns itself.
+- **The rule, made exact:** a node's local transform is the scene's transform for its path, else its real one, and world poses
+  compose down the tree (D4). **Visibility:** the nearest scene `hidden` on the node or an ancestor decides, so hiding a
+  sub-assembly hides its contents and a scene can show a part the model hides (`hidden: false`); with no scene `hidden` on the way
+  up, the node's own real flag (as the glb walk uses it: a child keeps its own flag). **Appearance:** the scene's appearance
+  overrides are the top layer of the Appearance tool's rule (its D3 step 1).
+- **Validation (section 4) and two choices it implies:** every override sets at least one of transform / hidden / appearance; a
+  body or face takes an appearance only; **the Part's own bodies (path `""`) take an appearance only** (they are the frame everything
+  else is placed in); no `(path, body, face)` twice; a face is a face of an existing body of the Part its path names and is stored
+  with its signature; the viewpoint's eye differs from its target. `section_planes` is stored as given (the flat app's JSON).
+- **API:** `GET /parts/{id}/scenes` (each with `unresolved: [{path, body_id, reason}]`), `GET .../scenes/{scene_id}`, `POST`
+  (the server mints the id), `PATCH` (rename / replace any field whole; `viewpoint: null` removes it), `DELETE`.
+- **Cascade (D8):** deleting an occurrence drops every scene override (in any Part's scenes) whose path goes through it; deleting
+  a component pattern, or the occurrence that is its source, drops its copies' overrides. A scene left empty is kept. A copy that
+  a smaller count no longer derives, a body or face that can't be found, is kept and reported.
+- **Tests:** `backend/tests/test_scenes.py`.
 
 ## 1. What a scene is
 

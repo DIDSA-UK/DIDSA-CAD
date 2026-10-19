@@ -23,6 +23,9 @@ import dataclasses
 from app.document.appearance import SCOPES as APPEARANCE_SCOPES, Appearance, appearance_errors
 from app.document.models import (
     AppearanceOverride,
+    Scene,
+    SceneOverride,
+    SceneViewpoint,
     FaceAppearance,
     BevelGearFeature,
     BevelGearType,
@@ -2248,7 +2251,59 @@ def _part_to_dict(part: Part) -> dict:
         ]
     if part.appearance_overrides:
         data["appearance_overrides"] = [_appearance_override_to_dict(o) for o in part.appearance_overrides]
+    # Scenes (`docs/scenes-scope.md` section 4): written only when there is one, so files without scenes stay byte-identical.
+    if part.scenes:
+        data["scenes"] = [_scene_to_dict(scene) for scene in part.scenes]
     return data
+
+
+def _scene_override_to_dict(override: SceneOverride) -> dict:
+    data: dict = {"path": override.path}
+    if override.body_id is not None:
+        data["body_id"] = override.body_id
+    if override.face is not None:
+        data["face"] = _subshape_ref_to_dict(override.face)
+    if override.transform is not None:
+        data["transform"] = _rigid_transform_to_dict(override.transform)
+    if override.hidden is not None:
+        data["hidden"] = override.hidden
+    if override.appearance is not None:
+        data["appearance"] = override.appearance.to_dict()
+    return data
+
+
+def _scene_to_dict(scene: Scene) -> dict:
+    data: dict = {"id": scene.id, "name": scene.name, "overrides": [_scene_override_to_dict(o) for o in scene.overrides]}
+    if scene.section_planes:
+        data["section_planes"] = [dict(p) for p in scene.section_planes]
+    if scene.viewpoint is not None:
+        data["viewpoint"] = {"eye": list(scene.viewpoint.eye), "target": list(scene.viewpoint.target), "up": list(scene.viewpoint.up)}
+    return data
+
+
+def _scene_from_dict(data: dict) -> Scene:
+    overrides = []
+    for o in data.get("overrides") or []:
+        overrides.append(
+            SceneOverride(
+                path=o.get("path") or "",
+                transform=_rigid_transform_from_dict(o["transform"]) if o.get("transform") is not None else None,
+                hidden=o.get("hidden"),
+                appearance=_appearance_from_dict(o["appearance"]) if o.get("appearance") is not None else None,
+                body_id=o.get("body_id"),
+                face=_subshape_ref_from_dict(o["face"]) if o.get("face") else None,
+            )
+        )
+    viewpoint = data.get("viewpoint")
+    return Scene(
+        id=_require(data, "id"),
+        name=_require(data, "name"),
+        overrides=overrides,
+        section_planes=list(data.get("section_planes") or []),
+        viewpoint=SceneViewpoint(
+            eye=tuple(viewpoint["eye"]), target=tuple(viewpoint["target"]), up=tuple(viewpoint.get("up", (0.0, 1.0, 0.0)))
+        ) if viewpoint else None,
+    )
 
 
 def _appearance_override_to_dict(override: AppearanceOverride) -> dict:
@@ -2311,6 +2366,7 @@ def _part_from_dict(data: dict) -> Part:
         for entry in data.get("face_appearances") or []
     ]
     part.appearance_overrides = [_appearance_override_from_dict(o) for o in data.get("appearance_overrides") or []]
+    part.scenes = [_scene_from_dict(sc) for sc in data.get("scenes") or []]
     return part
 
 

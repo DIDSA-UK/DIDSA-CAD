@@ -1,0 +1,2067 @@
+{
+ "cases": [
+  {
+   "expected": {
+    "": {
+     "appearance": {},
+     "bodies": {
+      "rb": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "bolt": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:1": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       40.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:2": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       80.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "frame": {
+     "appearance": {
+      "colour": "#2F6FD6"
+     },
+     "bodies": {},
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barA": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barB": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -500.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "leg": {
+     "appearance": {},
+     "bodies": {
+      "l1": {}
+     },
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -200.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   },
+   "name": "default",
+   "scene": null,
+   "why": "No scene: the real tree (the frame turned 90 deg places barB at (300 - 800, 0, 0)), the model's own looks."
+  },
+  {
+   "expected": {
+    "": {
+     "appearance": {},
+     "bodies": {
+      "rb": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "bolt": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:1": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       40.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:2": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.7071067812,
+        -0.7071067812
+       ],
+       [
+        0.0,
+        0.7071067812,
+        0.7071067812
+       ]
+      ],
+      "origin": [
+       80.0,
+       0.0,
+       150.0
+      ]
+     }
+    },
+    "frame": {
+     "appearance": {
+      "colour": "#2F6FD6"
+     },
+     "bodies": {},
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       120.0
+      ]
+     }
+    },
+    "frame/barA": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       -60.0,
+       120.0
+      ]
+     }
+    },
+    "frame/barB": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -500.0,
+       0.0,
+       120.0
+      ]
+     }
+    },
+    "leg": {
+     "appearance": {},
+     "bodies": {
+      "l1": {}
+     },
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -200.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   },
+   "name": "exploded",
+   "scene": {
+    "overrides": [
+     {
+      "path": "frame",
+      "transform": {
+       "rotation_angle_degrees": 90.0,
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "translation": [
+        300.0,
+        0.0,
+        120.0
+       ]
+      }
+     },
+     {
+      "path": "frame/barA",
+      "transform": {
+       "rotation_angle_degrees": 0.0,
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "translation": [
+        -60.0,
+        0.0,
+        0.0
+       ]
+      }
+     },
+     {
+      "path": "bolt#pattern:p1:2",
+      "transform": {
+       "rotation_angle_degrees": 45.0,
+       "rotation_axis": [
+        1.0,
+        0.0,
+        0.0
+       ],
+       "translation": [
+        80.0,
+        0.0,
+        150.0
+       ]
+      }
+     }
+    ]
+   },
+   "why": "Moves compose down the tree: the lifted frame carries both bars; barA's own move is in the frame's frame; one pattern copy moves alone."
+  },
+  {
+   "expected": {
+    "": {
+     "appearance": {},
+     "bodies": {
+      "rb": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "bolt": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:1": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       40.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:2": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       80.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "frame": {
+     "appearance": {
+      "colour": "#2F6FD6"
+     },
+     "bodies": {},
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barA": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      }
+     },
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barB": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -500.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "leg": {
+     "appearance": {},
+     "bodies": {
+      "l1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -200.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   },
+   "name": "hidden",
+   "scene": {
+    "overrides": [
+     {
+      "hidden": true,
+      "path": "frame"
+     },
+     {
+      "hidden": false,
+      "path": "frame/barB"
+     },
+     {
+      "hidden": false,
+      "path": "leg"
+     },
+     {
+      "hidden": true,
+      "path": "bolt#pattern:p1:1"
+     }
+    ]
+   },
+   "why": "Hiding a sub-assembly hides its contents; the nearest scene `hidden` wins; a scene can show a hidden part."
+  },
+  {
+   "expected": {
+    "": {
+     "appearance": {},
+     "bodies": {
+      "rb": {
+       "colour": "#202020"
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "bolt": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:1": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       40.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:2": {
+     "appearance": {
+      "emission": "#FFFFFF",
+      "emission_strength": 2.0
+     },
+     "bodies": {
+      "b1": {
+       "emission": "#FFFFFF",
+       "emission_strength": 2.0
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       80.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "frame": {
+     "appearance": {
+      "colour": "#D63A2F",
+      "opacity": 0.3
+     },
+     "bodies": {},
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barA": {
+     "appearance": {
+      "colour": "#D63A2F",
+      "opacity": 0.3,
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#D63A2F",
+       "opacity": 0.3,
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#D63A2F",
+       "opacity": 0.3,
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barB": {
+     "appearance": {
+      "colour": "#D63A2F",
+      "opacity": 0.3,
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#D63A2F",
+       "opacity": 0.3,
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#D63A2F",
+       "metallic": 1.0,
+       "opacity": 0.3,
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -500.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "leg": {
+     "appearance": {},
+     "bodies": {
+      "l1": {}
+     },
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -200.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   },
+   "name": "looks",
+   "scene": {
+    "overrides": [
+     {
+      "appearance": {
+       "colour": "#D63A2F",
+       "opacity": 0.3
+      },
+      "path": "frame"
+     },
+     {
+      "appearance": {
+       "metallic": 1.0
+      },
+      "body_id": "a2",
+      "path": "frame/barB"
+     },
+     {
+      "appearance": {
+       "emission": "#FFFFFF",
+       "emission_strength": 2.0
+      },
+      "path": "bolt#pattern:p1:2"
+     },
+     {
+      "appearance": {
+       "colour": "#202020"
+      },
+      "body_id": "rb",
+      "path": ""
+     }
+    ]
+   },
+   "why": "A scene's appearance beats the model's, field by field, down to one body; the Part's own body too."
+  },
+  {
+   "expected": {
+    "": {
+     "appearance": {},
+     "bodies": {
+      "rb": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "bolt": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:1": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       40.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:2": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       80.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "frame": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "opacity": 0.5
+     },
+     "bodies": {},
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        -1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        -1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barA": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "opacity": 0.5,
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "opacity": 0.5,
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "opacity": 0.5,
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        -1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        -1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barB": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "opacity": 0.5,
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "opacity": 0.5,
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "opacity": 0.5,
+       "roughness": 0.6
+      }
+     },
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        -1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        -1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       800.0,
+       0.0
+      ]
+     }
+    },
+    "leg": {
+     "appearance": {},
+     "bodies": {
+      "l1": {}
+     },
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -200.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   },
+   "name": "everything",
+   "scene": {
+    "overrides": [
+     {
+      "appearance": {
+       "opacity": 0.5
+      },
+      "path": "frame",
+      "transform": {
+       "rotation_angle_degrees": 180.0,
+       "rotation_axis": [
+        0.0,
+        1.0,
+        0.0
+       ],
+       "translation": [
+        0.0,
+        0.0,
+        0.0
+       ]
+      }
+     },
+     {
+      "hidden": true,
+      "path": "frame/barB"
+     },
+     {
+      "path": "bolt",
+      "transform": {
+       "rotation_angle_degrees": 0.0,
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "translation": [
+        0.0,
+        0.0,
+        0.0
+       ]
+      }
+     }
+    ],
+    "section_planes": [
+     {
+      "flipped": false,
+      "normal": [
+       1,
+       0,
+       0
+      ],
+      "origin": [
+       0,
+       0,
+       0
+      ]
+     }
+    ],
+    "viewpoint": {
+     "eye": [
+      2400,
+      1500,
+      2400
+     ],
+     "target": [
+      0,
+      400,
+      -780
+     ],
+     "up": [
+      0,
+      1,
+      0
+     ]
+    }
+   },
+   "why": "Pose, visibility and appearance together; section planes and the viewpoint don't change composition."
+  },
+  {
+   "expected": {
+    "": {
+     "appearance": {},
+     "bodies": {
+      "rb": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "bolt": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       0.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:1": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       40.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "bolt#pattern:p1:2": {
+     "appearance": {},
+     "bodies": {
+      "b1": {}
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       80.0,
+       0.0,
+       50.0
+      ]
+     }
+    },
+    "frame": {
+     "appearance": {
+      "colour": "#2F6FD6"
+     },
+     "bodies": {},
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barA": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       300.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "frame/barB": {
+     "appearance": {
+      "colour": "#2F6FD6",
+      "roughness": 0.6
+     },
+     "bodies": {
+      "a1": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      },
+      "a2": {
+       "colour": "#2F6FD6",
+       "roughness": 0.6
+      }
+     },
+     "hidden": false,
+     "world": {
+      "basis": [
+       [
+        0.0,
+        -1.0,
+        0.0
+       ],
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -500.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    "leg": {
+     "appearance": {},
+     "bodies": {
+      "l1": {}
+     },
+     "hidden": true,
+     "world": {
+      "basis": [
+       [
+        1.0,
+        0.0,
+        0.0
+       ],
+       [
+        0.0,
+        1.0,
+        0.0
+       ],
+       [
+        0.0,
+        0.0,
+        1.0
+       ]
+      ],
+      "origin": [
+       -200.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   },
+   "name": "empty",
+   "scene": {
+    "overrides": []
+   },
+   "why": "A scene with no overrides shows the default."
+  }
+ ],
+ "model": {
+  "parts": {
+   "A": {
+    "appearance": {
+     "roughness": 0.6
+    },
+    "body_appearances": {
+     "a2": {
+      "colour": "#8B5A2B"
+     }
+    }
+   },
+   "B": {},
+   "F": {
+    "occurrences": {
+     "barA": {
+      "part_id": "A"
+     },
+     "barB": {
+      "part_id": "A"
+     }
+    }
+   },
+   "L": {},
+   "R": {
+    "appearance_overrides": [
+     {
+      "appearance": {
+       "colour": "#2F6FD6"
+      },
+      "path": "frame"
+     }
+    ],
+    "occurrences": {
+     "bolt": {
+      "part_id": "B"
+     },
+     "frame": {
+      "part_id": "F"
+     },
+     "leg": {
+      "part_id": "L"
+     }
+    }
+   }
+  }
+ },
+ "nodes": [
+  {
+   "bodies": [
+    "rb"
+   ],
+   "hidden": false,
+   "local": {
+    "rotation_angle_degrees": 0.0,
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "path": ""
+  },
+  {
+   "bodies": [],
+   "hidden": false,
+   "local": {
+    "rotation_angle_degrees": 90.0,
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "translation": [
+     300.0,
+     0.0,
+     0.0
+    ]
+   },
+   "path": "frame"
+  },
+  {
+   "bodies": [
+    "a1",
+    "a2"
+   ],
+   "hidden": false,
+   "local": {
+    "rotation_angle_degrees": 0.0,
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "path": "frame/barA"
+  },
+  {
+   "bodies": [
+    "a1",
+    "a2"
+   ],
+   "hidden": false,
+   "local": {
+    "rotation_angle_degrees": 0.0,
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "translation": [
+     0.0,
+     800.0,
+     0.0
+    ]
+   },
+   "path": "frame/barB"
+  },
+  {
+   "bodies": [
+    "b1"
+   ],
+   "hidden": false,
+   "local": {
+    "rotation_angle_degrees": 0.0,
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "translation": [
+     0.0,
+     0.0,
+     50.0
+    ]
+   },
+   "path": "bolt"
+  },
+  {
+   "bodies": [
+    "b1"
+   ],
+   "hidden": false,
+   "local": {
+    "rotation_angle_degrees": 0.0,
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "translation": [
+     40.0,
+     0.0,
+     50.0
+    ]
+   },
+   "path": "bolt#pattern:p1:1"
+  },
+  {
+   "bodies": [
+    "b1"
+   ],
+   "hidden": false,
+   "local": {
+    "rotation_angle_degrees": 0.0,
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "translation": [
+     80.0,
+     0.0,
+     50.0
+    ]
+   },
+   "path": "bolt#pattern:p1:2"
+  },
+  {
+   "bodies": [
+    "l1"
+   ],
+   "hidden": true,
+   "local": {
+    "rotation_angle_degrees": 0.0,
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "translation": [
+     -200.0,
+     0.0,
+     0.0
+    ]
+   },
+   "path": "leg"
+  }
+ ],
+ "root": "R",
+ "source": "tools/scene_vectors/generate.py (reference: backend/app/document/scene_compose.py)",
+ "tolerance": 0.0001,
+ "version": 1
+}

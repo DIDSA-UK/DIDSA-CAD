@@ -13,6 +13,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.appearance import resolve_appearance, resolve_faces, split_path
+from app.document.scenes_routes import drop_scene_overrides_of_pattern, drop_scene_overrides_through_occurrence, scenes_router
 from app.document.appearance_routes import (
     apply_part_appearance_update,
     resolution_model as appearance_resolution_model,
@@ -3696,11 +3697,13 @@ def delete_occurrence(part_id: str, occurrence_id: str) -> Response:
     for pattern in part.component_patterns:
         if occurrence_id in pattern.source_occurrence_ids:
             drop_overrides_of_pattern(get_document(), part, pattern.id)
+            drop_scene_overrides_of_pattern(get_document(), part, pattern.id)
     part.component_patterns = [
         p for p in part.component_patterns if occurrence_id not in p.source_occurrence_ids
     ]
     # The Appearance tool: overrides whose path goes through the occurrence go with it (the Mate cascade's rule).
     drop_overrides_through_occurrence(get_document(), part, occurrence_id)
+    drop_scene_overrides_through_occurrence(get_document(), part, occurrence_id)  # scenes D8: the same rule for scene overrides
     part.occurrences.remove(occurrence)
     return Response(status_code=204)
 
@@ -4299,6 +4302,7 @@ def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
     part = get_part_or_404(part_id)
     pattern = _get_component_pattern_or_404(part, pattern_id)
     drop_overrides_of_pattern(get_document(), part, pattern_id)
+    drop_scene_overrides_of_pattern(get_document(), part, pattern_id)
     part.component_patterns.remove(pattern)
     return Response(status_code=204)
 
@@ -9160,3 +9164,4 @@ from app.document.gears_routes import gear_router  # noqa: E402
 
 router.include_router(gear_router)
 router.include_router(appearance_router)
+router.include_router(scenes_router)
