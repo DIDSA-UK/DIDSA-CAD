@@ -9,11 +9,38 @@ settled; **Recommendation** marks the ones the owner accepted as proposed ("your
 | Phase | Summary | Status | Where |
 |---|---|---|---|
 | S1 | Backend: model, native format, validation (incl. `#pattern:` paths and body / face appearances), CRUD, delete cascade, unresolved report, composition reference + golden vectors | Done (M3; not merged) | CAD `claude/appearance-and-scenes` |
-| S2 | DIDSA-VR: scenes on the sandbox | Not started (M4) | VR |
+| S2 | DIDSA-VR: scenes on the sandbox | Done (M4; not merged) | VR `claude/appearance-and-scenes` |
 | S3 | Flat app | Not started (M5) | CAD |
 | S4 | Later | — | — |
 
 The glb `instance_path` extra listed under S1 was built in the Appearance tool's V1 (the VR gun needed it first).
+
+## S2 implementation notes (DIDSA-VR)
+
+- **Where:** `scripts/scenes_tool.gd` (show / capture / save / update / back to default), `scripts/appearance/scene_compose.gd` (the
+  composition, a copy of `scene_compose.py`, checked against `docs/scenes/vectors.json` by `tests/scene_vectors.gd`), the tablet's
+  Assemble > Scenes page (`scripts/ui/scenes_page.gd`) and a Scenes sub-wheel on the tool wheel's root ring.
+- **Show** relaxes the mates (the sandbox) with every part's real pose as its home, then poses every placed instance by the scene.
+  The glb is flat (one node per instance at its pose in the root's frame), so a node's real local transform is read off the glb as
+  its pose in its nearest loaded ancestor's pose. A sub-assembly with no geometry is a mesh-less glb node; the client tags it with
+  its `instance_path` and poses it too. Hidden: only what the scene decides (a scene `hidden` on the node or above); a part the
+  model hides is not in the glb unless the app loads hidden parts, and Show says how many it couldn't show. The scene's appearance
+  overrides become the Appearance tool's temporary layer (the top layer, D5), so painting while a scene shows is temporary.
+- **Capture** (Update scene / Save as new) walks the tree top down: a node's local transform now (its pose in its parent's pose
+  now) against its real one; a different one is a transform override. A mesh-less sub-assembly moves with its parts when they all
+  moved alike since the scene was shown (a group grab), else each part moved on its own. The root's own content can't take a
+  transform (the backend's rule), so its moves are left out and counted; a temporary paint with `scope` (every copy of a pattern,
+  every placement) has no scene form and is left out and counted. Hidden flags are kept from the shown scene; VR can't yet hide a
+  part into a scene. Update never sends `section_planes` (kept as the flat app wrote them; VR does not draw them yet).
+- **Back to default** is Return parts; it asks Update / Discard / Stay only when a scene shows and what is on screen differs from
+  it (transforms within 0.01 mm / 1e-4), on the Scenes page, the Mates page's Return parts and the wheel's Return pill. The plain
+  sandbox returns without asking, as before. Showing another scene asks the same way.
+- **Viewpoint:** turns the model so the viewpoint's `up` is the world's up and the eye-to-target direction (made horizontal) is the
+  way the head faces, and places it so the eye is at the head; the scale is the user's (D9). Save my view stores the head's eye, a
+  target 1 m ahead and the world's up. Not applied to a room's scene.
+- **Rooms:** an open room's Part is its own scope (D6): its scenes, its nodes.
+- **Tests:** `tests/scenes_tool.gd` (headless, fake backends), `tests/scenes_ui.gd` (main scene, the wheel and the tablet's prompt),
+  `tests/e2e_scenes.gd` (live backend).
 
 ## S1 implementation notes (what was built, and where it is more precise than the text)
 

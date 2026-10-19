@@ -81,6 +81,8 @@ Update this table with every milestone.
   assembly). Their Body row is the override `{path: "", body_id}`.
 - **Rows list:** Every <part> (N) counts placements of the leaf Part in the scope (pattern copies included); Pattern (all N) appears
   for a pattern copy or a pattern's source, one row per pattern.
+- **Under a clip** (an open Assembly Room, the section tool; added in M4): the clip shader carries the whole look (colour with
+  opacity, metallic, roughness, emission), and a part split by appearance is wrapped surface by surface (`scripts/clip_look.gd`).
 
 ## 1. Today
 
