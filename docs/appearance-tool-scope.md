@@ -11,7 +11,7 @@ called **Appearance** (Owner).
 | Phase | Summary | Status | Where |
 |---|---|---|---|
 | V1 | Backend: record, three storage places, D3 resolution + golden vectors, endpoints, `Occurrence.color` alias, glb materials + `instance_path`, delete cascade, validation, native round trip | Done (M1; not merged) | CAD `claude/appearance-and-scenes` |
-| V2 | DIDSA-VR Appearance tool | Not started (M2) | VR `claude/appearance-and-scenes` |
+| V2 | DIDSA-VR Appearance tool | Done (M2; not merged; headless, render and live-backend tested, not on the headset) | VR `claude/appearance-and-scenes` (its CHANGELOG and `docs/status.md`) |
 | V3 | Flat app | Not started (M5) | CAD |
 | V4 | STEP colours | Not started (M6) | CAD |
 
@@ -33,10 +33,10 @@ Update this table with every milestone.
   blue" then "this Frame A red" gives one red (same node, named path wins), a pattern of *sub-assemblies* painted blue with one copy's
   sub-assembly row painted red gives that copy red, and a nearer sub-assembly beats a farther one. A tie (a source occurrence in two
   painted patterns) goes to the later override.
-- **Whole assembly and the levels** (follows D3 as settled, flagged for the owner): the Whole assembly is under every other row *of
-  its own assembly*, but it is still the top assembly's level, so it beats the colours stored in sub-assembly files and the parts' own
-  `appearance` / `body_appearances` / `face_appearances` (the vectors `whole_beats_part_files`, `levels_whole_beats_sub_file`). A base
-  coat that should sit *under* the parts' own colours would need a different rule; nothing else depends on this choice.
+- **Whole assembly and the levels** (**Owner, 19 Oct: confirmed**, "whole assembly coat suits on top of individual part color"): the
+  Whole assembly is under every other row *of its own assembly*, but it is still the top assembly's level, so it beats the colours
+  stored in sub-assembly files and the parts' own `appearance` / `body_appearances` / `face_appearances` (the vectors
+  `whole_beats_part_files`, `levels_whole_beats_sub_file`).
 - **A Part's own `appearance` paints only its own bodies**, never what it places (painting a whole sub-assembly in its own file is
   its Whole assembly override, `path: ""`). An override with `path: ""` and a `body_id` paints one of the assembly's own bodies.
 - **`Occurrence.color`** (D2): read as an override on that occurrence in the Part that places it; an explicit override with the same
@@ -49,6 +49,8 @@ Update this table with every milestone.
   (`unresolved`, `face_current_index` in GET; `current_index` / `unresolved` in `PartResponse.face_appearances`).
 - **glb (D7):** each instance's material is its resolved appearance (unset fields from `appearance.DEFAULT_LOOK`, the flat app's
   default material; `extras.appearance` lists only the fields that were set, so a client can use its own default for the rest).
+  Colours are written **linear** (glTF's colour factors are linear; the picked `#RRGGBB` is sRGB): found in M2, where Godot's importer
+  turned the straight hex/255 values back through linear-to-sRGB and showed every picked colour lighter (0.5 showed as 0.7354).
   Opacity < 1 is `alphaMode: BLEND`; glow is `emissiveFactor` (the emission colour, or the base colour when only a strength is set)
   with `KHR_materials_emissive_strength` past 1; strength 0 is off. An instance whose faces resolve differently gets **one primitive
   per appearance**, each a uint32 index list into the same shared position / normal accessors, with that primitive's own
@@ -66,6 +68,19 @@ Update this table with every milestone.
 - **Native format:** the four Part fields are written only when set, so a file without them exports byte for byte as before; an
   invalid appearance or scope in a file is a 422 on import. No `SCHEMA_VERSION` bump.
 - **Tests:** `backend/tests/test_appearance.py`.
+
+## V2 implementation notes (DIDSA-VR, branch `claude/appearance-and-scenes`)
+
+- `scripts/appearance/appearance_rule.gd` is the GDScript copy of `appearance.py` (passes all 57 vectors);
+  `scripts/appearance_tool.gd` builds the resolution model from `GET /parts/{id}`, `/appearance-overrides` and `/occurrences`, paints
+  with `PUT`, and restyles parts itself after a paint (`appearance_look.gd`); the glb's materials are the look after every load.
+- **Painting a level that already has paint merges** the brush into that level's record (an opacity-only brush keeps the level's
+  colour), rather than replacing it: the brush only carries the properties whose switches are on (section 2, "every field
+  optional"). Clear still removes the record.
+- **The assembly's own bodies** (root content) get Face, Body and Whole assembly rows; there is no Part row there (the part is the
+  assembly). Their Body row is the override `{path: "", body_id}`.
+- **Rows list:** Every <part> (N) counts placements of the leaf Part in the scope (pattern copies included); Pattern (all N) appears
+  for a pattern copy or a pattern's source, one row per pattern.
 
 ## 1. Today
 

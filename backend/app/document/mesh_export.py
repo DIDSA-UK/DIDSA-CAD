@@ -182,9 +182,17 @@ class AssemblyGlbInstance:
     instance_path: str = ""
 
 
+def _srgb_to_linear(channel: float) -> float:
+    """The sRGB transfer function's inverse (IEC 61966-2-1), the one Godot's `Color.srgb_to_linear` uses."""
+    return channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
+
+
 def _hex_to_rgb(color: str) -> list[float]:
+    """`#RRGGBB` (a colour as picked: sRGB) as glTF's LINEAR factors. A glTF reader turns the factor back into sRGB (Godot's
+    importer does, measured: 0.5 shows as 0.7354), so writing the straight 0-1 value would show every picked colour lighter
+    than it was picked. Rounded to 6 decimals to keep the JSON short (well under one 8-bit step)."""
     hex_digits = color.lstrip("#")
-    return [int(hex_digits[i : i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    return [round(_srgb_to_linear(int(hex_digits[i : i + 2], 16) / 255.0), 6) for i in (0, 2, 4)]
 
 
 def _appearance_key(appearance: dict) -> tuple:
@@ -195,8 +203,8 @@ def material_for_appearance(appearance: dict) -> dict:
     """A glTF material from a resolved appearance (section 2's table): unset fields come from `DEFAULT_LOOK`, and
     `extras.appearance` carries only the fields that were set, so a client can use its own default look for the rest.
     Opacity below 1 blends. Glow: `emissiveFactor` is `emission` (or the base colour when only a strength is set),
-    scaled past 1 by `KHR_materials_emissive_strength`; a strength of 0 turns it off. Channels are written as stored
-    (straight 0-255 -> 0-1 scaling, no sRGB-to-linear step), this module's "keep it simple" convention."""
+    scaled past 1 by `KHR_materials_emissive_strength`; a strength of 0 turns it off. Colours are converted from sRGB to
+    linear, as glTF's colour factors are linear (`_hex_to_rgb`); opacity, metallic and roughness are not colours."""
     look = {**DEFAULT_LOOK, **appearance}
     material: dict = {
         "pbrMetallicRoughness": {

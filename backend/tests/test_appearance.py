@@ -83,6 +83,9 @@ def test_material_for_appearance():
     assert plain["pbrMetallicRoughness"] == {"baseColorFactor": [1.0, 0.0, 0.0, 1.0], "metallicFactor": 0.0, "roughnessFactor": 0.8}
     assert "alphaMode" not in plain and "emissiveFactor" not in plain
     assert plain["extras"] == {"appearance": {"colour": "#FF0000"}}
+    # glTF colour factors are linear: a picked mid grey (sRGB) is written as its linear value, so a reader shows #808080 again.
+    grey = material_for_appearance({"colour": "#808080"})["pbrMetallicRoughness"]["baseColorFactor"]
+    assert grey[:3] == [0.215861] * 3 and grey[3] == 1.0
     glass = material_for_appearance({"opacity": 0.25, "metallic": 1.0, "roughness": 0.1})
     assert glass["alphaMode"] == "BLEND"
     assert glass["pbrMetallicRoughness"]["baseColorFactor"][3] == 0.25
