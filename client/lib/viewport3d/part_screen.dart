@@ -13409,24 +13409,32 @@ class _PartScreenState extends State<PartScreen> {
   /// Finding moved files: the Review sheet (`ReferencesSheet`).
   void _openReferencesSheet() {
     if (!mounted) return;
+    if (_referencesSheetContext != null) return; // already open
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (sheetContext) => ReferencesSheet(
-        reports: _referenceReports,
-        onUse: (report, path) => _useReferenceFile(report, path, sheetContext),
-        onLocate: (report) => _locateReferenceFile(report, sheetContext),
-        onLeaveMissing: _dropReferenceReport,
-      ),
-    );
+      builder: (sheetContext) {
+        _referencesSheetContext = sheetContext;
+        return ReferencesSheet(
+          reports: _referenceReports,
+          onUse: (report, path) => _useReferenceFile(report, path, sheetContext),
+          onLocate: (report) => _locateReferenceFile(report, sheetContext),
+          onLeaveMissing: _dropReferenceReport,
+        );
+      },
+    ).whenComplete(() => _referencesSheetContext = null);
   }
+
+  /// The Review sheet's own context while it is open (null otherwise), so it - and never this screen's route - is what closes.
+  BuildContext? _referencesSheetContext;
 
   void _dropReferenceReport(ReferenceReport report) {
     _referenceReports.value = [
       for (final other in _referenceReports.value)
         if (other != report) other,
     ];
-    if (_referenceReports.value.isEmpty && mounted) Navigator.of(context).maybePop();
+    final sheet = _referencesSheetContext;
+    if (_referenceReports.value.isEmpty && sheet != null && sheet.mounted) Navigator.of(sheet).pop();
   }
 
   /// The Review sheet's Use: composes the chosen file and re-links the Occurrence to it.

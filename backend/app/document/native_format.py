@@ -2045,6 +2045,10 @@ def _occurrence_from_dict(data: dict) -> Occurrence:
         ref_part_id = data.get("resolved_part_id")
     if ref_part_id is not None and not isinstance(ref_part_id, str):
         raise NativeFormatError(f"Occurrence {data.get('id')!r}: ref_part_id must be a string")
+    resolved = data.get("resolved_part_id")
+    if resolved is not None and not isinstance(resolved, str):
+        # (an unhashable value would otherwise reach the `in document.parts` check and raise a TypeError: a 500)
+        raise NativeFormatError(f"Occurrence {data.get('id')!r}: resolved_part_id must be a string")
     return Occurrence(
         id=_require(data, "id"),
         part_id=data.get("resolved_part_id"),

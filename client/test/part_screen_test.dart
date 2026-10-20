@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/appearance/appearance_panel.dart';
+import 'package:didsa_cad_client/appearance/appearance_rule.dart' show appearanceErrors;
 import 'package:didsa_cad_client/appearance/scenes_panel.dart';
 import 'package:didsa_cad_client/assembly/assembly_document_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
@@ -7033,5 +7035,197 @@ void main() {
     await tester.pump();
     expect(find.byKey(const Key('reference-o-gone')), findsNothing);
     expect(find.byKey(const Key('reference-o-frame')), findsOneWidget);
+  });
+
+  testWidgets('leaving every reference closes the Review sheet, never the screen under it', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final documentApi = DocumentApiClient(
+      httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          initialReferenceReports: const [
+            ReferenceReport(
+              parentPartId: 'root',
+              parentPath: 'root.didsa',
+              occurrenceId: 'o-gone',
+              requestedPath: 'Gone.didsa',
+              storedPartId: 'gone',
+              outcome: ReferenceOutcome.missing,
+            ),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.byKey(const Key('references-banner')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.tap(find.text('Review'));
+    await _pumpUntil(tester, () => find.byKey(const Key('reference-o-gone')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.tap(find.byKey(const Key('leave-o-gone')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(find.byKey(const Key('reference-o-gone')), findsNothing, reason: 'the sheet closed');
+    expect(find.text('Part 1'), findsOneWidget, reason: 'the screen under it is still there');
+  });
+
+  // Stress by simulated input on the whole screen: seeded random sequences of what a person does with the Appearance panel, the Scenes
+  // panel, the tree and the dialogs between them. Asserts no exception and that nothing invalid was sent to the backend.
+  group('Appearance and scenes under random user input', () {
+    Map<String, dynamic> occurrence(String id) => {
+          'id': id,
+          'external_ref': 'parts/$id.didsa',
+          'resolved_part_id': '$id-part',
+          'name_override': null,
+          'transform': {'translation': [0.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+          'suppressed': false,
+          'hidden': false,
+          'fixed': false,
+        };
+
+    for (final seed in [1, 2, 3, 4, 5, 6]) {
+      testWidgets('seed $seed: 250 random operations', (tester) async {
+        tester.view.physicalSize = Size(seed.isEven ? 1280 : 480, seed.isEven ? 800 : 900);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+        final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1'), occurrence('occ-2'), occurrence('occ-3')]);
+        final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+        final sketchBackend = _FakeSketchBackend();
+        await tester.pumpWidget(MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ));
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+        await tester.tap(find.byTooltip('Assembly tree'));
+        await tester.pump(const Duration(milliseconds: 300));
+
+        final rng = math.Random(seed);
+        final log = <String>[];
+        Future<void> settle() async {
+          for (var i = 0; i < 4; i++) {
+            await tester.pump(const Duration(milliseconds: 100));
+          }
+        }
+
+        Future<void> tapKey(String key) async {
+          final f = find.byKey(ValueKey(key));
+          if (f.evaluate().isEmpty) return;
+          log.add('tap $key');
+          await tester.tap(f, warnIfMissed: false);
+          await settle();
+        }
+
+        final ops = <String, Future<void> Function()>{
+          'open appearance via disc': () async {
+            if (find.byType(AssemblyTreePanel).evaluate().isEmpty) return;
+            final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+            if (tree.occurrences.isEmpty) return;
+            tree.onOccurrenceColorTap!(tree.occurrences[rng.nextInt(tree.occurrences.length)]);
+            await settle();
+          },
+          'brush a colour': () async {
+            if (find.byType(AppearancePanel).evaluate().isEmpty) return;
+            final panel = tester.widget<AppearancePanel>(find.byType(AppearancePanel));
+            panel.onBrushChanged(rng.nextBool() ? {'colour': '#3498DB'} : {'opacity': 0.5, 'metallic': 0.3});
+            await settle();
+          },
+          'paint a row': () async {
+            if (find.byType(AppearancePanel).evaluate().isEmpty) return;
+            final panel = tester.widget<AppearancePanel>(find.byType(AppearancePanel));
+            if (panel.rows.isEmpty) return;
+            panel.onPaintRow(panel.rows[rng.nextInt(panel.rows.length)]);
+            await settle();
+          },
+          'hover a row': () async {
+            if (find.byType(AppearancePanel).evaluate().isEmpty) return;
+            final panel = tester.widget<AppearancePanel>(find.byType(AppearancePanel));
+            if (panel.rows.isEmpty) return;
+            panel.onPreviewRow(rng.nextBool() ? panel.rows[rng.nextInt(panel.rows.length)] : null);
+            await settle();
+          },
+          'undo paint': () => tapKey('appearance-undo'),
+          'close appearance': () => tapKey('appearance-close'),
+          'open scenes': () async {
+            if (find.byKey(const ValueKey('scenes-panel-slot')).evaluate().isNotEmpty) return;
+            final add = find.byTooltip('Add');
+            if (add.evaluate().isEmpty) return;
+            await tester.tap(add, warnIfMissed: false);
+            await settle();
+            final item = find.text('Scenes…');
+            if (item.evaluate().isNotEmpty) {
+              log.add('open scenes');
+              await tester.tap(item, warnIfMissed: false);
+              await settle();
+            }
+          },
+          'new scene': () => tapKey('scenes-new'),
+          'update scene': () => tapKey('scenes-update'),
+          'save scene as new': () => tapKey('scenes-save-new'),
+          'back to default': () => tapKey('scenes-back'),
+          'close scenes': () => tapKey('scenes-close'),
+          'show a scene': () async {
+            final rows = find.byWidgetPredicate((w) => w.key is ValueKey && (w.key as ValueKey).value.toString().startsWith('scene-row-'));
+            if (rows.evaluate().isEmpty) return;
+            log.add('show scene');
+            await tester.tap(rows.at(rng.nextInt(rows.evaluate().length)), warnIfMissed: false);
+            await settle();
+          },
+          'hide a component (long press)': () async {
+            if (find.byType(AssemblyTreePanel).evaluate().isEmpty) return;
+            final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+            if (tree.occurrences.isEmpty) return;
+            tree.onOccurrenceLongPress(tree.occurrences[rng.nextInt(tree.occurrences.length)]);
+            await settle();
+          },
+          'answer a dialog': () async {
+            if (find.byType(AlertDialog).evaluate().isEmpty) return;
+            final field = find.byType(TextField);
+            if (field.evaluate().isNotEmpty && rng.nextBool()) await tester.enterText(field.first, rng.nextBool() ? 'Scene ${rng.nextInt(99)}' : '   ');
+            final buttons = find.descendant(of: find.byType(AlertDialog), matching: find.byType(ButtonStyleButton));
+            if (buttons.evaluate().isEmpty) return;
+            log.add('dialog button');
+            await tester.tap(buttons.at(rng.nextInt(buttons.evaluate().length)), warnIfMissed: false);
+            await settle();
+          },
+          'tap anywhere': () async {
+            final size = tester.view.physicalSize;
+            await tester.tapAt(Offset(rng.nextDouble() * size.width, rng.nextDouble() * size.height));
+            await settle();
+          },
+          'drag the viewport': () async {
+            final size = tester.view.physicalSize;
+            await tester.dragFrom(Offset(size.width / 2, size.height / 2), Offset(rng.nextDouble() * 200 - 100, rng.nextDouble() * 200 - 100));
+            await settle();
+          },
+          'toggle viewpoint switches': () async {
+            await tapKey(rng.nextBool() ? 'scenes-use-viewpoint' : 'scenes-save-view');
+          },
+        };
+        // Weighted: the panels' own controls are most of what a person does; stray taps and drags are the minority.
+        final names = [
+          for (final name in ops.keys) ...List.filled(name.startsWith('tap anywhere') || name.startsWith('drag') ? 1 : 4, name),
+        ];
+        for (var step = 0; step < 250; step++) {
+          final name = names[rng.nextInt(names.length)];
+          log.add('#$step $name');
+          await ops[name]!();
+          final error = tester.takeException();
+          if (error != null) fail('after ${log.skip(log.length > 8 ? log.length - 8 : 0).join(' > ')}: $error');
+        }
+        // ignore: avoid_print
+        print('STRESS seed $seed: ${log.where((l) => !l.startsWith('#')).length} effective actions, ${backend.appearancePuts.length} paints sent, ${backend.scenePatches.length} scene patches');
+        for (final put in backend.appearancePuts) {
+          final appearance = put['appearance'];
+          expect(appearance == null || appearanceErrors(appearance).isEmpty, isTrue, reason: 'invalid appearance sent: $put');
+        }
+      });
+    }
   });
 }

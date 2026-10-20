@@ -8,7 +8,7 @@ import 'reference_report.dart';
 /// a new place (nothing to do), several copies to pick from, a suggestion, or missing - each with Use, Locate... and Leave
 /// missing. A file that is not known to be the placed part (a suggestion, or a file picked by hand) is only used after the
 /// user confirms; the sheet never swaps a file in on its own.
-class ReferencesSheet extends StatelessWidget {
+class ReferencesSheet extends StatefulWidget {
   const ReferencesSheet({
     super.key,
     required this.reports,
@@ -28,6 +28,9 @@ class ReferencesSheet extends StatelessWidget {
 
   final void Function(ReferenceReport report) onLeaveMissing;
 
+  @override
+  State<ReferencesSheet> createState() => _ReferencesSheetState();
+
   static Future<bool> confirmDifferentFile(BuildContext context, String path) async {
     final confirmed = await showDialog<bool>(
       context: context,
@@ -42,12 +45,27 @@ class ReferencesSheet extends StatelessWidget {
     );
     return confirmed == true;
   }
+}
+
+class _ReferencesSheetState extends State<ReferencesSheet> {
+  /// True while Use or Locate... is being applied: a second tap on any button waits, so a double tap can't re-link twice.
+  bool _busy = false;
+
+  Future<void> _run(Future<void> Function() action) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await action();
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return SafeArea(
       child: ValueListenableBuilder<List<ReferenceReport>>(
-        valueListenable: reports,
+        valueListenable: widget.reports,
         builder: (context, list, _) {
           final ordered = [...list.where((r) => r.needsYou), ...list.where((r) => !r.needsYou)];
           return ConstrainedBox(
@@ -63,19 +81,21 @@ class ReferencesSheet extends StatelessWidget {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
-                const Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 16),
-                  child: Text(
-                    'A corrected path is an unsaved change until you save. A file that is not the placed part is never '
-                    'used without asking.',
-                    style: TextStyle(fontSize: 12),
-                  ),
-                ),
                 const Divider(),
                 Flexible(
                   child: ListView(
                     shrinkWrap: true,
-                    children: [for (final report in ordered) _row(context, report)],
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16),
+                        child: Text(
+                          'A corrected path is an unsaved change until you save. A file that is not the placed part is never '
+                          'used without asking.',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                      for (final report in ordered) _row(context, report),
+                    ],
                   ),
                 ),
               ],
@@ -144,12 +164,15 @@ class ReferencesSheet extends StatelessWidget {
                   TextButton(
                     key: Key('use-${report.occurrenceId}-$path'),
                     // Only a file carrying the stored id is known to be the placed part.
-                    onPressed: () async {
-                      if (report.outcome == ReferenceOutcome.suggest && !await confirmDifferentFile(context, path)) {
-                        return;
-                      }
-                      await onUse(report, path);
-                    },
+                    onPressed: _busy
+                        ? null
+                        : () => _run(() async {
+                              if (report.outcome == ReferenceOutcome.suggest &&
+                                  !await ReferencesSheet.confirmDifferentFile(context, path)) {
+                                return;
+                              }
+                              await widget.onUse(report, path);
+                            }),
                     child: const Text('Use'),
                   ),
                 ],
@@ -158,16 +181,16 @@ class ReferencesSheet extends StatelessWidget {
           if (report.needsYou)
             Padding(
               padding: const EdgeInsets.only(left: 20),
-              child: Row(
+              child: Wrap(
                 children: [
                   TextButton(
                     key: Key('locate-${report.occurrenceId}'),
-                    onPressed: () => onLocate(report),
+                    onPressed: _busy ? null : () => _run(() => widget.onLocate(report)),
                     child: const Text('Locate…'),
                   ),
                   TextButton(
                     key: Key('leave-${report.occurrenceId}'),
-                    onPressed: () => onLeaveMissing(report),
+                    onPressed: _busy ? null : () => widget.onLeaveMissing(report),
                     child: const Text('Leave missing'),
                   ),
                 ],

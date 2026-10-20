@@ -185,7 +185,8 @@ class _AppearancePanelState extends State<AppearancePanel> {
                   icon: const Icon(Icons.undo),
                   onPressed: widget.busy ? null : widget.onUndo,
                 ),
-              IconButton(key: const ValueKey('appearance-close'), tooltip: 'Close', icon: const Icon(Icons.close), onPressed: widget.onClose),
+              IconButton(
+                  key: const ValueKey('appearance-close'), tooltip: 'Close', icon: const Icon(Icons.close), onPressed: widget.onClose),
             ],
           ),
           const SizedBox(height: 8),
@@ -205,62 +206,76 @@ class _AppearancePanelState extends State<AppearancePanel> {
             ],
           ),
           const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _SvSquare(
-                hsv: _hsv,
-                onChanged: (hsv) {
-                  setState(() => _hsv = hsv);
-                  _setColour(hexOfColour(hsv.toColor()));
-                },
-              ),
-              const SizedBox(width: 8),
-              _HueBar(
-                hue: _hsv.hue,
-                onChanged: (h) {
-                  final hsv = _hsv.withHue(h);
-                  setState(() => _hsv = hsv);
-                  _setColour(hexOfColour(hsv.toColor()));
-                },
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
+          // Wide: the picker with the colour switch, hex and recent beside it. On a phone there is no room beside a 120 px
+          // square for a Switch and its text, so they go underneath instead of overflowing.
+          LayoutBuilder(
+            builder: (context, box) {
+              final colourControls = Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Switch(
+                        key: const ValueKey('appearance-switch-colour'),
+                        value: widget.brush['colour'] != null,
+                        onChanged: (on) => _set('colour', on ? hexOfColour(_hsv.toColor()) : null),
+                      ),
+                      const Flexible(child: Text('Colour', overflow: TextOverflow.ellipsis)),
+                    ],
+                  ),
+                  TextField(
+                    key: const ValueKey('appearance-hex'),
+                    controller: _hex,
+                    decoration: const InputDecoration(labelText: 'Hex', hintText: '#RRGGBB', isDense: true),
+                    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[#0-9A-Fa-f]')), LengthLimitingTextInputFormatter(7)],
+                    onSubmitted: (text) {
+                      final hex = text.startsWith('#') ? text : '#$text';
+                      if (isHexColour(hex)) _setColour(hex);
+                    },
+                  ),
+                  if (widget.recentColours.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text('Recent', style: theme.textTheme.labelSmall),
+                    Wrap(spacing: 4, runSpacing: 4, children: [
+                      for (final hex in widget.recentColours)
+                        _Dot(key: ValueKey('appearance-recent-$hex'), hex: hex, tooltip: hex, size: 22, onTap: () => _setColour(hex)),
+                    ]),
+                  ],
+                ],
+              );
+              final picker = <Widget>[
+                _SvSquare(
+                  hsv: _hsv,
+                  onChanged: (hsv) {
+                    setState(() => _hsv = hsv);
+                    _setColour(hexOfColour(hsv.toColor()));
+                  },
+                ),
+                const SizedBox(width: 8),
+                _HueBar(
+                  hue: _hsv.hue,
+                  onChanged: (h) {
+                    final hsv = _hsv.withHue(h);
+                    setState(() => _hsv = hsv);
+                    _setColour(hexOfColour(hsv.toColor()));
+                  },
+                ),
+              ];
+              if (box.maxWidth < 360) {
+                return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Row(
-                      children: [
-                        Switch(
-                          key: const ValueKey('appearance-switch-colour'),
-                          value: widget.brush['colour'] != null,
-                          onChanged: (on) => _set('colour', on ? hexOfColour(_hsv.toColor()) : null),
-                        ),
-                        const Text('Colour'),
-                      ],
-                    ),
-                    TextField(
-                      key: const ValueKey('appearance-hex'),
-                      controller: _hex,
-                      decoration: const InputDecoration(labelText: 'Hex', hintText: '#RRGGBB', isDense: true),
-                      inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[#0-9A-Fa-f]')), LengthLimitingTextInputFormatter(7)],
-                      onSubmitted: (text) {
-                        final hex = text.startsWith('#') ? text : '#$text';
-                        if (isHexColour(hex)) _setColour(hex);
-                      },
-                    ),
-                    if (widget.recentColours.isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      Text('Recent', style: theme.textTheme.labelSmall),
-                      Wrap(spacing: 4, runSpacing: 4, children: [
-                        for (final hex in widget.recentColours)
-                          _Dot(key: ValueKey('appearance-recent-$hex'), hex: hex, tooltip: hex, size: 22, onTap: () => _setColour(hex)),
-                      ]),
-                    ],
+                    Row(crossAxisAlignment: CrossAxisAlignment.start, children: picker),
+                    const SizedBox(height: 8),
+                    colourControls
                   ],
-                ),
-              ),
-            ],
+                );
+              }
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [...picker, const SizedBox(width: 12), Expanded(child: colourControls)],
+              );
+            },
           ),
           for (final (label, field, lo, hi, inverted) in kBrushProperties)
             Row(
@@ -391,7 +406,8 @@ class _Dot extends StatelessWidget {
           decoration: BoxDecoration(
             color: colourOfHex(hex),
             shape: BoxShape.circle,
-            border: Border.all(color: selected ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor, width: selected ? 3 : 1),
+            border: Border.all(
+                color: selected ? Theme.of(context).colorScheme.primary : Theme.of(context).dividerColor, width: selected ? 3 : 1),
           ),
         ),
       ),
@@ -452,13 +468,22 @@ class _SvPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final rect = Offset.zero & size;
-    canvas.drawRect(rect, Paint()..shader = LinearGradient(colors: [Colors.white, HSVColor.fromAHSV(1, hsv.hue, 1, 1).toColor()]).createShader(rect));
+    canvas.drawRect(
+        rect, Paint()..shader = LinearGradient(colors: [Colors.white, HSVColor.fromAHSV(1, hsv.hue, 1, 1).toColor()]).createShader(rect));
     canvas.drawRect(
       rect,
-      Paint()..shader = const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black]).createShader(rect),
+      Paint()
+        ..shader = const LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black])
+            .createShader(rect),
     );
     final at = Offset(hsv.saturation * size.width, (1 - hsv.value) * size.height);
-    canvas.drawCircle(at, 6, Paint()..style = PaintingStyle.stroke..strokeWidth = 2..color = hsv.value > 0.5 ? Colors.black : Colors.white);
+    canvas.drawCircle(
+        at,
+        6,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = hsv.value > 0.5 ? Colors.black : Colors.white);
   }
 
   @override
@@ -503,7 +528,12 @@ class _HuePainter extends CustomPainter {
         ).createShader(rect),
     );
     final y = hue / 360 * size.height;
-    canvas.drawRect(Rect.fromLTWH(0, y - 2, size.width, 4), Paint()..style = PaintingStyle.stroke..strokeWidth = 2..color = Colors.black);
+    canvas.drawRect(
+        Rect.fromLTWH(0, y - 2, size.width, 4),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2
+          ..color = Colors.black);
   }
 
   @override

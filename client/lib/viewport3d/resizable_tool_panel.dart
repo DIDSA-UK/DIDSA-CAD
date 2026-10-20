@@ -118,13 +118,14 @@ class _ResizableToolPanelState extends State<ResizableToolPanel> {
 
   Widget _buildTitleRow(BuildContext context) {
     final titleText = Text(widget.title,
+        overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16));
     final tooltip = widget.tooltip;
     if (tooltip == null) return titleText;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        titleText,
+        Flexible(child: titleText),
         const SizedBox(width: 12),
         SizedBox(
           height: 18,
