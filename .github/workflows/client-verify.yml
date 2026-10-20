@@ -60,6 +60,14 @@ jobs:
       # contains no native solver any more (the drag clamp is pure Dart, see
       # docs/sketch-drag-projector.md). Runs only after analyze+test both pass
       # (default `if: success()`, unlike the `!cancelled()` steps above).
+      # The runner image's default JDK moved past what this project's Gradle (8.14, android/gradle/wrapper) can read
+      # ("Unsupported class file major version 69" = Java 25): pin the JDK the Android build is known to work with.
+      - name: Set up Java for the Android build
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
       - name: Build debug APK
         run: flutter build apk --debug
 
