@@ -258,7 +258,7 @@ void main() {
       final env = _envs[0];
       final list = [
         for (var i = 0; i < 200; i++)
-          {'id': 's$i', 'name': i.isEven ? 'Scene $i ${'long ' * 40}' : '🙂 Scene $i ñ ü 日本語 ‮rtl', 'unresolved': <dynamic>[]},
+          {'id': 's$i', 'name': i.isEven ? 'Scene $i ${'long ' * 40}' : '🙂 Scene $i ñ ü 日本語 \u202Ertl', 'unresolved': <dynamic>[]},
       ];
       final calls = await pump(tester, env, list);
       _noException(tester, 'layout of 200 rows');

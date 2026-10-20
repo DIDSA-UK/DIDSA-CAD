@@ -20,7 +20,7 @@ SEEDS = [1, 2, 3]
 STEPS = 200
 
 COLOURS = ["#E63946", "#3498DB", "#000000", "#FFFFFF", "#2f6fd6"]
-HOSTILE_COLOURS = ["red", "#12", "#GGGGGG", "", "#1234567", "rgb(1,2,3)", None, 5, True, ["#000000"], {"a": 1}, "#" + "A" * 5000, "‮#000000"]
+HOSTILE_COLOURS = ["red", "#12", "#GGGGGG", "", "#1234567", "rgb(1,2,3)", None, 5, True, ["#000000"], {"a": 1}, "#" + "A" * 5000, "\u202e#000000"]
 HOSTILE_NUMBERS = [-1, 1.0001, 2, 1e308, -1e308, "0.5", None, True, [0.5], {"v": 1}, 10**30]
 NAMES = ["Exploded", "", "   ", "x" * 5000, "🙂 ünï", "a\nb", "../../x", "\u0000", "<script>", "Lifted", "name\t", "ÅÅÅ"]
 
