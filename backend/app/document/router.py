@@ -9,6 +9,8 @@ from typing import Iterable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
+from OCC.Core.TopAbs import TopAbs_FACE
+from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
@@ -9009,10 +9011,15 @@ def _merged_body_mesh_data(bodies: dict[str, object], mesh_quality: MeshQuality 
 def export_part_step(part_id: str) -> Response:
     """AP242 STEP export (locked-in scope) of every current Body in this
     Part - see `app.document.step_export.export_step`'s own docstring for
-    why AP242 is written now even with no PMI/MBD populated yet."""
+    why AP242 is written now even with no PMI/MBD populated yet. Each Body
+    carries its resolved appearance's colour and opacity
+    (`docs/appearance-tool-scope.md` D7): the Part's own paint and its own
+    overrides on its own bodies, as `assembly-mesh` resolves them for this
+    Part as the root."""
     part = get_part_or_404(part_id)
     bodies = _export_bodies_or_400(part)
-    data = export_step(bodies, part)
+    looks = _step_body_looks(get_document(), part, {body_id: ([], body_id) for body_id in bodies}, bodies)
+    data = export_step(bodies, part, looks)
     return Response(
         content=data,
         media_type="application/step",
@@ -9056,6 +9063,35 @@ def export_part_glb(part_id: str) -> Response:
     )
 
 
+def _step_body_looks(
+    document: Document,
+    root_part: Part,
+    sources: dict[str, tuple[list[str], str]],
+    bodies: dict[str, TopoDS_Shape],
+) -> dict[str, tuple[dict, dict[int, dict]]]:
+    """Each exported Body's resolved look for `export_step` (`docs/appearance-tool-scope.md` D7, V4), as seen from
+    `root_part` with no scene: `sources` maps each key of `bodies` to the instance path it was placed through and its
+    Body id. The Body's own appearance, and the faces whose appearance differs from it, by the same rule (and the same
+    resolution model) as the assembly glb's materials."""
+    model = appearance_resolution_model(document)
+    looks: dict[str, tuple[dict, dict[int, dict]]] = {}
+    for key, (path, body_id) in sources.items():
+        shape = bodies.get(key)
+        if shape is None:
+            continue
+        body_appearance = resolve_appearance(model, root_part.id, path, body_id)
+        face_count = 0
+        explorer = TopExp_Explorer(shape, TopAbs_FACE)
+        while explorer.More():
+            face_count += 1
+            explorer.Next()
+        by_face = resolve_faces(model, root_part.id, path, [(body_id, index) for index in range(face_count)])
+        face_appearances = {index: appearance for (_b, index), appearance in by_face.items() if appearance != body_appearance}
+        if body_appearance or face_appearances:
+            looks[key] = (body_appearance, face_appearances)
+    return looks
+
+
 def _walk_assembly_export_bodies(
     document: Document,
     part: Part,
@@ -9063,6 +9099,7 @@ def _walk_assembly_export_bodies(
     transform_chain: list[RigidTransform],
     ancestors: frozenset[str],
     out: dict[str, TopoDS_Shape],
+    sources: dict[str, tuple[list[str], str]] | None = None,
 ) -> None:
     """Assembly-audit gap `[29]` (`docs/assembly-scope.md`): the export
     formats' own counterpart to `get_assembly_mesh`'s own `_walk` (same
@@ -9079,12 +9116,16 @@ def _walk_assembly_export_bodies(
     with the Body id) - unlike `get_assembly_mesh`'s own geometry dedup by
     Part id, every instance gets its own real, correctly-positioned copy
     here, since a file export has no equivalent of "one shared mesh, many
-    instance transforms" the way the interactive viewport does."""
+    instance transforms" the way the interactive viewport does. `sources`,
+    when given, records each key's instance path and Body id (what the STEP
+    export resolves each Body's appearance from)."""
     bodies = compute_part_bodies(part)
     world_transform = compose_chain(transform_chain)
     prefix = "/".join(occurrence_path) if occurrence_path else part.id
     for body_id, shape in bodies.items():
         out[f"{prefix}#{body_id}"] = apply_rigid_transform_to_shape(shape, world_transform)
+        if sources is not None:
+            sources[f"{prefix}#{body_id}"] = (list(occurrence_path), body_id)
     child_ancestors = ancestors | {part.id}
     for occurrence in part.occurrences:
         if occurrence.suppressed or occurrence.part_id is None:
@@ -9099,6 +9140,7 @@ def _walk_assembly_export_bodies(
             [*transform_chain, occurrence.transform],
             child_ancestors,
             out,
+            sources,
         )
     for pattern in part.component_patterns:
         if pattern.suppressed:
@@ -9119,19 +9161,23 @@ def _walk_assembly_export_bodies(
                     [*transform_chain, derived_transform],
                     child_ancestors,
                     out,
+                    sources,
                 )
 
 
-def _assembly_export_bodies_or_400(part_id: str) -> tuple[Part, dict[str, TopoDS_Shape]]:
+def _assembly_export_bodies_or_400(
+    part_id: str, sources: dict[str, tuple[list[str], str]] | None = None
+) -> tuple[Part, dict[str, TopoDS_Shape]]:
     """[_export_bodies_or_400]'s assembly-scoped sibling - every placed
     instance's own real, world-positioned geometry (including
     `ComponentPattern`-derived ones), not just [part_id]'s own local Bodies.
     400s for a Part with nothing reachable to export at all, the same
-    "don't silently emit an empty/invalid file" contract."""
+    "don't silently emit an empty/invalid file" contract. `sources`, when
+    given, is filled as `_walk_assembly_export_bodies` describes."""
     document = get_document()
     root_part = get_part_or_404(part_id)
     bodies: dict[str, TopoDS_Shape] = {}
-    _walk_assembly_export_bodies(document, root_part, [], [], frozenset(), bodies)
+    _walk_assembly_export_bodies(document, root_part, [], [], frozenset(), bodies, sources)
     if not bodies:
         raise HTTPException(status_code=400, detail="Part has no geometry to export")
     return root_part, bodies
@@ -9149,9 +9195,14 @@ def export_part_assembly_step(part_id: str) -> Response:
     `export_step` has no shape for today, and guessing at [root_part]'s own
     default for every instance's material would be actively misleading
     rather than merely incomplete, so this stays geometry-only until that's
-    worth building."""
-    root_part, bodies = _assembly_export_bodies_or_400(part_id)
-    data = export_step(bodies, part=None)
+    worth building. Colours are written, though (`docs/appearance-tool-scope.md`
+    D7): each placed Body carries its resolved appearance's colour and
+    opacity as seen from [root_part] (its overrides beat the files below
+    it, as in the assembly glb), per Body and per face that differs."""
+    sources: dict[str, tuple[list[str], str]] = {}
+    root_part, bodies = _assembly_export_bodies_or_400(part_id, sources)
+    looks = _step_body_looks(get_document(), root_part, sources, bodies)
+    data = export_step(bodies, part=None, appearances=looks)
     return Response(
         content=data,
         media_type="application/step",

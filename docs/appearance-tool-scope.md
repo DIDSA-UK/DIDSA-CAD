@@ -13,9 +13,33 @@ called **Appearance** (Owner).
 | V1 | Backend: record, three storage places, D3 resolution + golden vectors, endpoints, `Occurrence.color` alias, glb materials + `instance_path`, delete cascade, validation, native round trip | Done (M1; not merged) | CAD `claude/appearance-and-scenes` |
 | V2 | DIDSA-VR Appearance tool | Done (M2; not merged; headless, render and live-backend tested, not on the headset) | VR `claude/appearance-and-scenes` (its CHANGELOG and `docs/status.md`) |
 | V3 | Flat app | Done (M5; not merged; unit, widget and screen tests; not tried on a device) | CAD `claude/appearance-and-scenes` (`client/lib/appearance/`) |
-| V4 | STEP colours | Not started (M6) | CAD |
+| V4 | STEP colours | Done (M6; not merged; backend tests read the exported STEP back with OCCT's reader; not opened in another CAD tool) | CAD `claude/appearance-and-scenes` (`step_export.py`) |
 
 Update this table with every milestone.
+
+## V4 implementation notes (STEP colours, `backend/app/document/step_export.py`)
+
+- **What is written:** each exported Body's resolved appearance (D3, no scene) as an XCAF surface colour
+  (`XCAFDoc_ColorTool`, `XCAFDoc_ColorSurf`) on the Body's shape label, and a face whose colour differs from its Body's
+  gets its own sub-shape label and colour. Only colour and opacity have a STEP form: `COLOUR_RGB` (the picked `#RRGGBB`
+  as sRGB, so the file holds hex/255 exactly, which is what other CAD tools show; OCCT names a few exact colours, e.g.
+  `DRAUGHTING_PRE_DEFINED_COLOUR('red')`) and AP242's `SURFACE_STYLE_TRANSPARENT` (1 - opacity, from the colour's alpha).
+  Metal, shine and glow are not written. An opacity with no colour keeps the default colour (`DEFAULT_LOOK`); a Body
+  with neither gets no colour, so an unpainted export is unchanged.
+- **Which look:** `router._step_body_looks`, the same rule and resolution model as the assembly glb's materials.
+  `export/step` resolves the Part's own bodies with the Part as the root (its own `appearance` / `body_appearances` /
+  `face_appearances`, and its own overrides on its own bodies). `export/assembly-step` (still a flat list of
+  world-positioned bodies, one STEP product each, not an XCAF assembly tree) resolves every placed Body from the
+  exported root, so the root's overrides beat the sub-assembly files and the parts' own paint, and a sub-assembly
+  exported on its own uses its own overrides. Pattern copies are painted by their `#pattern:` path and the pattern's
+  own override.
+- **Reading it back:** `backend/tests/test_appearance_step.py` reads the file with `STEPCAFControl_Reader` (colours on)
+  and checks every Body's and face's colour and opacity, and the raw `COLOUR_RGB` / `SURFACE_STYLE_TRANSPARENT`
+  entities. (pythonocc note: `XCAFDoc_ColorTool.GetColor` with a `TDF_Label` taken from a `TDF_LabelSequence` does not
+  match any overload in this build; the `TopoDS_Shape` overload works.)
+- **Not done:** an XCAF assembly structure (one product per Part with instances) in the assembly STEP, so colours on
+  instances rather than on flattened copies; materials and names in the assembly STEP stay as before (geometry only).
+  The STEP import does not read colours back into appearances. Not checked in another CAD tool.
 
 ## V3 implementation notes (flat app, `client/lib/appearance/`)
 
@@ -306,6 +330,7 @@ no duplicate `(path or part_id, scope, body_id, face)`; a face ref must be a fac
 | GET | `/parts/{id}/appearance-overrides` | List, with unresolved paths reported (as scenes do). |
 | PATCH | `/parts/{id}` | `appearance`, `body_appearances`, `face_appearances` (the part's own). |
 | GET | `/parts/{id}/assembly-mesh.glb` | Materials now carry the resolved appearance (D7). |
+| GET | `/parts/{id}/export/step`, `/parts/{id}/export/assembly-step` | Colour and opacity per body and per face that differs (D7, V4). |
 
 A shared reference implementation of the D3 resolution (Python, golden vectors for the Dart and GDScript copies) keeps the three apps
 the same, alongside the scene composition vectors.

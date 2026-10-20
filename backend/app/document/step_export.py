@@ -54,6 +54,21 @@ g/cm^3 via `XCAFDoc_MaterialTool.GetDensityForShape` - OCCT's own Units
 library normalizing it) were all confirmed correct as originally written,
 by writing a real STEP file and grepping it for the resulting `PRODUCT`/
 `DESCRIPTIVE_REPRESENTATION_ITEM`/`VOLUME_MEASURE` entities.
+
+**Colours (`docs/appearance-tool-scope.md` D7, V4)**: each Body's resolved
+appearance, given by the caller as `appearances`, is written through
+`XCAFDoc_ColorTool` as a surface colour (`XCAFDoc_ColorSurf`) on the Body's
+shape label, and a face that looks different from its Body gets its own
+sub-shape label and colour. Only the colour and the opacity have a STEP
+equivalent (STEP `COLOUR_RGB` and AP242's `SURFACE_STYLE_TRANSPARENT`, which
+OCCT writes from the colour's alpha as 1 - opacity); metal, shine and glow
+are not written. The colour is the picked `#RRGGBB` (sRGB, what other CAD
+tools show), given to OCCT as `Quantity_TOC_sRGB` so `COLOUR_RGB` holds
+exactly hex/255 (checked by writing a real file: `#2F6FD6` is
+`COLOUR_RGB('',0.1843...,0.4352...,0.8392...)`); OCCT writes a few exact
+colours (pure red) by name (`DRAUGHTING_PRE_DEFINED_COLOUR('red')`), which
+readers treat the same. A Body with no colour and no opacity set anywhere
+gets no colour at all, so an unpainted export is unchanged.
 """
 
 import os
@@ -63,14 +78,22 @@ from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.IFSelect import IFSelect_RetDone
 from OCC.Core.Interface import Interface_Static
+from OCC.Core.Quantity import Quantity_Color, Quantity_ColorRGBA, Quantity_TOC_sRGB
 from OCC.Core.STEPCAFControl import STEPCAFControl_Writer
 from OCC.Core.STEPControl import STEPControl_AsIs
 from OCC.Core.TCollection import TCollection_HAsciiString
 from OCC.Core.TDataStd import TDataStd_Name
 from OCC.Core.TDocStd import TDocStd_Document
-from OCC.Core.XCAFDoc import XCAFDoc_DocumentTool
+from OCC.Core.TopAbs import TopAbs_FACE
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.XCAFDoc import XCAFDoc_ColorSurf, XCAFDoc_DocumentTool
 
+from app.document.appearance import DEFAULT_LOOK
 from app.document.models import MaterialAssignment, Part
+
+# One Body's resolved look for STEP: the Body's own appearance, and the faces (by index, `TopExp_Explorer` order, the
+# order `face_ids` and appearance face references use) whose appearance differs from it.
+BodyLook = tuple[dict, dict[int, dict]]
 
 
 def _new_xcaf_document() -> TDocStd_Document:
@@ -95,7 +118,49 @@ def _set_shape_mass_property(label, volume_mm3: float) -> None:
     XCAFDoc_Volume.Set(label, volume_mm3)
 
 
-def export_step(bodies: dict[str, object], part: Part | None = None) -> bytes:
+def step_colour(appearance: dict) -> tuple[str, float] | None:
+    """The part of a resolved appearance STEP can carry: `(colour, opacity)`, or None when the appearance sets neither
+    (nothing to write). An opacity with no colour keeps the default colour (`DEFAULT_LOOK`), as the renderers do."""
+    if appearance.get("colour") is None and appearance.get("opacity") is None:
+        return None
+    return (appearance.get("colour") or DEFAULT_LOOK["colour"], float(appearance.get("opacity", 1.0)))
+
+
+def _colour_rgba(colour: tuple[str, float]) -> Quantity_ColorRGBA:
+    hex_digits = colour[0].lstrip("#")
+    r, g, b = (int(hex_digits[i : i + 2], 16) / 255.0 for i in (0, 2, 4))
+    return Quantity_ColorRGBA(Quantity_Color(r, g, b, Quantity_TOC_sRGB), colour[1])
+
+
+def _set_body_colours(shape_tool, colour_tool, label, shape, look: BodyLook) -> None:
+    """Writes one Body's look (see this module's docstring, "Colours"): the Body's colour on its label, and a colour on
+    each face whose STEP colour differs from the Body's (a face whose own look sets no colour or opacity under a
+    painted Body gets the default colour, so it does not inherit the Body's)."""
+    body_appearance, face_appearances = look
+    body_colour = step_colour(body_appearance)
+    if body_colour is not None:
+        colour_tool.SetColor(label, _colour_rgba(body_colour), XCAFDoc_ColorSurf)
+    if not face_appearances:
+        return
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    index = 0
+    while explorer.More():
+        appearance = face_appearances.get(index)
+        if appearance is not None:
+            face_colour = step_colour(appearance)
+            if face_colour is None and body_colour is not None:
+                face_colour = (DEFAULT_LOOK["colour"], float(DEFAULT_LOOK["opacity"]))
+            if face_colour is not None and face_colour != body_colour:
+                face_label = shape_tool.AddSubShape(label, explorer.Current())
+                if not face_label.IsNull():
+                    colour_tool.SetColor(face_label, _colour_rgba(face_colour), XCAFDoc_ColorSurf)
+        index += 1
+        explorer.Next()
+
+
+def export_step(
+    bodies: dict[str, object], part: Part | None = None, appearances: dict[str, BodyLook] | None = None
+) -> bytes:
     """`bodies` is a Part's current Body map (`compute_part_bodies`'s own
     return shape) - takes it directly rather than only a `Part`, so the
     router can reuse the one `compute_part_bodies` call it already needs to
@@ -103,11 +168,15 @@ def export_step(bodies: dict[str, object], part: Part | None = None) -> bytes:
     here. `part`, when given, supplies the MBD metadata (Part Properties +
     material assignment) described in this module's own docstring; `None`
     (the default, and every pre-existing caller/test) exports geometry only,
-    with no behavior change from before this feature."""
+    with no behavior change from before this feature. `appearances`, when
+    given, is each Body's resolved look under the same key as `bodies`
+    (this module's docstring, "Colours"); a Body missing from it gets no
+    colour."""
     doc = _new_xcaf_document()
     shape_tool = XCAFDoc_DocumentTool.ShapeTool(doc.Main())
     shape_tool.SetAutoNaming(False)
     material_tool = XCAFDoc_DocumentTool.MaterialTool(doc.Main())
+    colour_tool = XCAFDoc_DocumentTool.ColorTool(doc.Main())
 
     # A material is registered once per distinct (name, density) pair, not
     # once per Body - re-registering an identical material for every Body
@@ -135,6 +204,10 @@ def export_step(bodies: dict[str, object], part: Part | None = None) -> bytes:
 
     for body_id, shape in bodies.items():
         label = shape_tool.AddShape(shape, False)
+
+        look = appearances.get(body_id) if appearances else None
+        if look is not None:
+            _set_body_colours(shape_tool, colour_tool, label, shape, look)
 
         if part is not None:
             material = part.resolve_material(body_id)
