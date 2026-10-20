@@ -12,6 +12,14 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../ai/ai_modelling_screen.dart';
 import '../api/document_api_client.dart';
+import '../appearance/appearance_look.dart';
+import '../appearance/appearance_model.dart';
+import '../appearance/appearance_panel.dart';
+import '../appearance/appearance_preferences.dart';
+import '../appearance/appearance_rule.dart' show Json, instanceChain, kScopePattern, kScopeSamePart, splitPath;
+import '../appearance/scene_compose.dart' show sceneHiddenDecision;
+import '../appearance/scene_display.dart';
+import '../appearance/scenes_panel.dart';
 import '../api/sketch_api_client.dart'
     show
         ApiException,
@@ -106,7 +114,6 @@ import 'move_body_panel.dart';
 import 'move_face_panel.dart';
 import 'move_rotate_component_panel.dart';
 import 'multi_select_action_bar.dart';
-import 'occurrence_colour_sheet.dart';
 import 'rollback.dart';
 import 'ruled_surface_panel.dart';
 import 'scale_body_panel.dart';
@@ -744,7 +751,8 @@ class _PartScreenState extends State<PartScreen> {
   AssemblyOccurrenceInstanceDto? get _gizmoParentInstance {
     final focusedPath = _focusStack?.currentOccurrencePath ?? const <String>[];
     if (focusedPath.isEmpty) return null;
-    final instances = _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[];
+    // Scenes (S3): a move while a scene shows is measured in the scene's poses.
+    final instances = _sceneMode ? _sceneInstances : (_assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[]);
     return findInstanceAtPath(instances, focusedPath);
   }
 
@@ -791,6 +799,10 @@ class _PartScreenState extends State<PartScreen> {
   RigidTransformDto? get _gizmoTargetWorldTransform {
     final occurrence = _gizmoTargetOccurrence;
     if (occurrence == null) return null;
+    if (_sceneMode) {
+      final shown = findInstanceAtPath(_sceneInstances, [...?_focusStack?.currentOccurrencePath, occurrence.id]);
+      if (shown != null) return shown.worldTransform;
+    }
     final parentInstance = _gizmoParentInstance;
     if (parentInstance == null) return occurrence.transform;
     return composeRigidTransforms(parentInstance.worldTransform, occurrence.transform);
@@ -812,6 +824,7 @@ class _PartScreenState extends State<PartScreen> {
   /// The freedom for the current gizmo target, (re)fetching when the target, its stored pose or the mates changed.
   /// Kept during a drag (nothing refetches mid-gesture). Fetching is fire-and-forget; until it lands, no cues.
   GizmoFreedom? get _activeFreedom {
+    if (_sceneMode) return null; // (mates are not enforced while a scene shows)
     final occurrence = _gizmoTargetOccurrence;
     if (occurrence == null || !_isMated(occurrence.id)) return null;
     if (_dragSession != null) return _gizmoFreedom;
@@ -981,7 +994,10 @@ class _PartScreenState extends State<PartScreen> {
     // instance is already backend-true post-refetch - see
     // [_displayOccurrences]'s own doc comment for why no client-only overlay
     // is folded in here anymore.
-    final overlaid = _assemblyMesh == null ? const <AssemblyOccurrenceInstanceDto>[] : _assemblyMesh!.instances;
+    // Scenes (S3): while a scene shows, its poses and visibility (the composition over the real instances).
+    final overlaid = _assemblyMesh == null
+        ? const <AssemblyOccurrenceInstanceDto>[]
+        : (_sceneMode ? _sceneInstances : _assemblyMesh!.instances);
     final liveTransform = _gizmoLiveTransform;
     final targetOccurrence = _gizmoTargetOccurrence;
     if (liveTransform == null || targetOccurrence == null) return overlaid;
@@ -2354,6 +2370,9 @@ class _PartScreenState extends State<PartScreen> {
     // placing a section must never fall through to the generic accumulate-
     // toggle, in Selection mode or not.
     if (_tryHandleSectionPlacementToggle(entity)) return;
+    // The Appearance tool (V3): with its panel open a face click paints (or, with the eyedropper, samples) - see
+    // [_tryHandlePaintTap].
+    if (_tryHandlePaintTap(entity)) return;
     // Bug fix (assembly testing: "pattern component tool: selecting a
     // custom line to use as a direction always seems to silently fail and
     // fall back to using an X/Y/Z direction vector") - checked before every
@@ -3827,6 +3846,545 @@ class _PartScreenState extends State<PartScreen> {
     sketchCircle: false,
     plane: false,
   );
+
+  // --- The Appearance tool (`docs/appearance-tool-scope.md` V3) -----------------------------------------------------
+  // Looks come from the backend's `assembly-mesh` (each instance's resolved `appearance` / `face_appearances`, the rule the
+  // glb uses) until the Appearance panel opens; from then on [_appearance] (the same rule in Dart, read from the backend's
+  // lists) drives them, so a hovered row previews live. A click on a part with the panel open paints its body; the panel
+  // then lists every level that face could be painted at.
+
+  late final AppearanceModel _appearance = AppearanceModel(_api)..addListener(_onAppearanceChanged);
+  bool _appearanceOpen = false;
+
+  /// [_appearance] is read and drives the looks (live preview) instead of the mesh response.
+  bool _appearanceLive = false;
+  Json _brush = const {'colour': '#E63946'};
+  bool _eyedropper = false;
+  List<String> _recentColours = const [];
+  List<(String, Json)> _savedAppearances = const [];
+  _PaintPick? _paintPick;
+  final List<(Json, Json?)> _paintUndo = [];
+  bool _paintBusy = false;
+  bool _paintedSinceOpen = false;
+  Map<String, InstanceLook>? _liveLooks;
+  Map<String, InstanceLook> _meshLooks = const {};
+  List<AssemblyOccurrenceInstanceDto>? _meshLooksSource;
+
+  static const _appearanceSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: false,
+    component: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  void _onAppearanceChanged() {
+    if (!mounted) return;
+    setState(() => _liveLooks = null);
+  }
+
+  /// Every placed instance's look, keyed by its joined `occurrencePath` ([PartViewport.assemblyInstanceLooks]). The same
+  /// map object until something it depends on changes, so the viewport only rebuilds instance nodes when a look changes.
+  Map<String, InstanceLook> get _instanceLooks {
+    if (_appearanceLive) return _liveLooks ??= _computeLiveLooks();
+    final instances = _assemblyMesh?.instances;
+    if (!identical(instances, _meshLooksSource)) {
+      _meshLooksSource = instances;
+      _meshLooks = {
+        for (final i in instances ?? const <AssemblyOccurrenceInstanceDto>[])
+          if (i.appearance.isNotEmpty || i.faceAppearances.isNotEmpty)
+            i.occurrencePath.join('/'): InstanceLook(whole: i.appearance, faces: i.faceAppearances.isEmpty ? null : i.faceAppearances),
+      };
+    }
+    return _meshLooks;
+  }
+
+  Map<String, InstanceLook> _computeLiveLooks() {
+    final mesh = _assemblyMesh;
+    if (mesh == null) return const {};
+    final facesOf = <String, List<(String, int)>>{
+      for (final g in mesh.geometry)
+        g.partId: [
+          for (final b in g.bodies) ...{for (final f in b.mesh.faceIds) f}.map((f) => (b.bodyId, f)),
+        ],
+    };
+    return {
+      for (final i in mesh.instances) i.occurrencePath.join('/'): _appearance.lookOf(i.occurrencePath, facesOf[i.partId] ?? const []),
+    };
+  }
+
+  /// The primary content's look (the root's own bodies, or the focused Part's): [PartViewport.primaryLook].
+  InstanceLook? get _primaryLook => _instanceLooks[(_focusStack?.currentOccurrencePath ?? const <String>[]).join('/')];
+
+  Future<void> _openAppearance({_PaintPick? pick}) async {
+    final part = _part;
+    if (part == null) return;
+    setState(() {
+      if (!_appearanceOpen) _selectionFilterOverrides.push(_appearanceSelectionFilter);
+      _appearanceOpen = true;
+      _paintPick = pick;
+      _paintedSinceOpen = false;
+      _paintUndo.clear();
+      _selectionMode = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+    });
+    final recent = await AppearancePreferences.recent();
+    final saved = await AppearancePreferences.saved();
+    if (mounted) {
+      setState(() {
+        _recentColours = recent;
+        _savedAppearances = saved;
+      });
+    }
+    await _ensureAppearanceModel(part.id);
+  }
+
+  /// Reads the appearance model for [rootId] (read-only: not a document edit) and makes it drive the looks.
+  Future<void> _ensureAppearanceModel(String rootId) async {
+    try {
+      await _appearance.ensureLoaded(rootId);
+      if (mounted) {
+        setState(() {
+          _appearanceLive = true;
+          _liveLooks = null;
+        });
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+    }
+  }
+
+  void _closeAppearance() {
+    _appearance.endPreview();
+    final painted = _paintedSinceOpen;
+    setState(() {
+      if (_appearanceOpen) _selectionFilterOverrides.pop();
+      _appearanceOpen = false;
+      _eyedropper = false;
+      _paintPick = null;
+      _paintUndo.clear();
+    });
+    // The mesh response carries the looks again once it is read after the paints (the scene mode keeps the model on).
+    if (!_sceneMode) {
+      if (painted) {
+        unawaited(_refreshAssemblyMesh().then((_) {
+          if (mounted && !_appearanceOpen && !_sceneMode) setState(() => _appearanceLive = false);
+        }));
+      } else {
+        setState(() => _appearanceLive = false);
+      }
+    }
+  }
+
+  /// A face click with the Appearance panel open: the eyedropper takes what it shows; else its body is painted with the
+  /// brush and the panel lists the face's rows. Returns whether the click was taken.
+  bool _tryHandlePaintTap(SelectionEntityRef entity) {
+    if (!_appearanceOpen || entity.kind != SelectionEntityKind.face || entity.bodyId.isEmpty) return false;
+    final path = entity.occurrenceId.isEmpty ? (_focusStack?.currentOccurrencePath ?? const <String>[]) : splitPath(entity.occurrenceId);
+    final pick = _PaintPick(path: path, bodyId: entity.bodyId, faceIndex: entity.id, label: _paintPickLabel(path));
+    if (_eyedropper) {
+      final got = _appearance.resolvedAt(path, bodyId: entity.bodyId, faceIndex: entity.id);
+      setState(() {
+        _brush = got.isEmpty ? const {'colour': '#C8C8C8'} : got;
+        _eyedropper = false;
+        _paintPick = pick;
+      });
+      return true;
+    }
+    setState(() => _paintPick = pick);
+    final rows = _paintRows;
+    final body = rows.where((r) => r.id == 'body');
+    if (body.isNotEmpty) unawaited(_paintRow(body.first));
+    return true;
+  }
+
+  String _paintPickLabel(List<String> path) {
+    if (path.isEmpty) return _part?.name ?? 'Assembly';
+    final chain = instanceChainOf(path);
+    return chain == null ? path.last : _appearance.partName(chain.last);
+  }
+
+  List<String>? instanceChainOf(List<String> path) {
+    final root = _part?.id;
+    if (root == null) return null;
+    return instanceChain(_appearance.model, root, path);
+  }
+
+  List<PaintRow> get _paintRows {
+    final pick = _paintPick;
+    final mesh = _assemblyMesh;
+    if (pick == null || !_appearanceLive) return const [];
+    final instances = mesh == null ? const <List<String>>[<String>[]] : [for (final i in mesh.instances) i.occurrencePath];
+    return _appearance.rowsFor(pick.path, bodyId: pick.bodyId, faceIndex: pick.faceIndex, instances: instances);
+  }
+
+  Future<void> _paintRow(PaintRow row) async {
+    if (_paintBusy) return;
+    final brush = _brush;
+    setState(() => _paintBusy = true);
+    Future<void> paint() async {
+      final before = await _appearance.paint(row, brush);
+      _paintUndo.add((row.record, before));
+      _paintedSinceOpen = true;
+      final hex = brush['colour'];
+      if (hex is String) _recentColours = await AppearancePreferences.remember(hex);
+    }
+
+    try {
+      if (_appearance.isTemporary) {
+        await paint(); // (a shown scene's paint: on screen only, not a document edit)
+        if (mounted) setState(_sceneEdited);
+      } else {
+        await _runGuarded(paint);
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+    }
+    if (mounted) setState(() => _paintBusy = false);
+  }
+
+  Future<void> _undoPaint() async {
+    if (_paintUndo.isEmpty || _paintBusy) return;
+    final (record, before) = _paintUndo.removeLast();
+    setState(() => _paintBusy = true);
+    if (_appearance.isTemporary) {
+      await _appearance.store(record, before);
+      if (mounted) setState(_sceneEdited);
+    } else {
+      await _runGuarded(() => _appearance.store(record, before));
+    }
+    if (mounted) setState(() => _paintBusy = false);
+  }
+
+  Widget _buildAppearancePanel() {
+    return AppearancePanel(
+      title: _sceneMode ? 'Painting scene "${_shownScene?['name'] ?? ''}"' : 'Appearance',
+      brush: _brush,
+      onBrushChanged: (b) => setState(() => _brush = b),
+      rows: _paintRows,
+      pickLabel: _paintPick?.label,
+      onPreviewRow: (row) => row == null ? _appearance.endPreview() : _appearance.preview(row, _brush),
+      onPaintRow: (row) => unawaited(_paintRow(row)),
+      eyedropper: _eyedropper,
+      onEyedropperChanged: (on) => setState(() => _eyedropper = on),
+      recentColours: _recentColours,
+      savedAppearances: _savedAppearances,
+      onSaveBrush: (name) async {
+        final saved = await AppearancePreferences.save(name, _brush);
+        if (mounted) setState(() => _savedAppearances = saved);
+      },
+      onUndo: _paintUndo.isEmpty ? null : () => unawaited(_undoPaint()),
+      onClose: _closeAppearance,
+      busy: _paintBusy,
+    );
+  }
+
+  // --- Scenes (`docs/scenes-scope.md` S3) --------------------------------------------------------------------------
+  // Showing a scene is a mode of the assembly lens with one way out, Back to default (D7). While it shows, the viewport
+  // draws [_sceneInstances] (the composition over the real instances, `scene_display.dart`), the gizmo and Hide / Show
+  // change the scene being edited ([_sceneTransforms], [_sceneHidden]) instead of the model, the Appearance panel paints
+  // into [AppearanceModel.temporary], and mates are not enforced. Update scene / Save as new send it; leaving with changes
+  // asks Update / Discard / Stay.
+
+  bool _scenesPanelOpen = false;
+  List<Json> _scenes = const [];
+  bool _sceneMode = false;
+
+  /// The backend's scene being shown; null in the default and in a new scene from the default.
+  Json? _shownScene;
+  Map<String, Json> _sceneTransforms = {};
+  Map<String, bool> _sceneHidden = {};
+  bool _sceneDirty = false;
+  bool _sceneUseViewpoint = true;
+  bool _sceneSaveView = true;
+  bool _sceneBusy = false;
+  String? _sceneNotice;
+  List<SectionPlane>? _sectionPlanesBeforeScene;
+  List<AssemblyOccurrenceInstanceDto>? _sceneInstancesCache;
+  List<AssemblyOccurrenceInstanceDto>? _sceneInstancesSource;
+  int _sceneRevision = 0;
+  int _sceneInstancesRevision = -1;
+
+  List<Json> _sceneOverrides() {
+    final whole = <String, Json>{};
+    for (final e in _sceneTransforms.entries) {
+      (whole[e.key] ??= {'path': e.key})['transform'] = e.value;
+    }
+    for (final e in _sceneHidden.entries) {
+      (whole[e.key] ??= {'path': e.key})['hidden'] = e.value;
+    }
+    final subshape = <Json>[];
+    for (final r in _appearance.temporary ?? const <Json>[]) {
+      if (r['scope'] != null) continue; // (a paint on every copy / placement has no scene form)
+      final path = (r['path'] as String?) ?? '';
+      if (r['body_id'] != null || r['face'] != null) {
+        subshape.add({
+          'path': path,
+          'body_id': r['body_id'] ?? (r['face'] as Map)['body_id'],
+          if (r['face'] != null) 'face': {'body_id': (r['face'] as Map)['body_id'], 'shape_type': 'face', 'index': (r['face'] as Map)['index']},
+          'appearance': r['appearance'],
+        });
+      } else {
+        (whole[path] ??= {'path': path})['appearance'] = r['appearance'];
+      }
+    }
+    final paths = whole.keys.toList()..sort();
+    return [for (final p in paths) whole[p]!, ...subshape];
+  }
+
+  /// The real instances as the scene on screen shows them (cached until the mesh or the scene changes).
+  List<AssemblyOccurrenceInstanceDto> get _sceneInstances {
+    final real = _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[];
+    if (!identical(real, _sceneInstancesSource) || _sceneInstancesRevision != _sceneRevision || _sceneInstancesCache == null) {
+      _sceneInstancesSource = real;
+      _sceneInstancesRevision = _sceneRevision;
+      _sceneInstancesCache = sceneDisplayInstances(real, {
+        'overrides': [
+          for (final e in _sceneTransforms.entries) {'path': e.key, 'transform': e.value},
+          for (final e in _sceneHidden.entries) {'path': e.key, 'hidden': e.value},
+        ],
+      });
+    }
+    return _sceneInstancesCache!;
+  }
+
+  /// A scene edit (a move, a hide, a paint, a section): what is on screen is no longer the scene shown.
+  void _sceneEdited() {
+    _sceneRevision++;
+    _sceneDirty = true;
+  }
+
+  String get _sceneRoot => _part?.id ?? '';
+
+  Future<void> _openScenes() async {
+    setState(() {
+      _scenesPanelOpen = true;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+    });
+    await _refreshScenes();
+  }
+
+  Future<void> _refreshScenes() async {
+    final root = _sceneRoot;
+    if (root.isEmpty) return;
+    try {
+      final list = await _api.listScenes(root);
+      if (mounted) setState(() => _scenes = list);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+    }
+  }
+
+  /// Asks Update / Discard / Stay when the scene on screen has changes. True = go on (updated or discarded).
+  Future<bool> _sceneMayLeave() async {
+    if (!_sceneMode) return true;
+    // A section plane added, moved or removed while the scene shows is a change too.
+    final shownPlanes = jsonEncode((_shownScene?['section_planes'] as List?) ?? const []);
+    final planesChanged = _shownScene != null && jsonEncode([for (final p in _sectionPlanes) p.toJson()]) != shownPlanes;
+    if (!_sceneDirty && !planesChanged) return true;
+    final choice = await askSceneLeave(context, canUpdate: _shownScene != null);
+    if (!mounted) return false;
+    switch (choice) {
+      case SceneLeaveChoice.stay:
+        return false;
+      case SceneLeaveChoice.discard:
+        return true;
+      case SceneLeaveChoice.update:
+        return _updateScene();
+    }
+  }
+
+  Future<void> _enterScene(Json? scene) async {
+    final root = _sceneRoot;
+    if (root.isEmpty || !await _sceneMayLeave()) return;
+    final transforms = <String, Json>{};
+    final hidden = <String, bool>{};
+    final looks = <Json>[];
+    for (final raw in (scene?['overrides'] as List?) ?? const []) {
+      final o = Map<String, dynamic>.from(raw as Map);
+      final whole = o['body_id'] == null && o['face'] == null;
+      if (whole && o['transform'] is Map) transforms[o['path'] as String] = Map<String, dynamic>.from(o['transform'] as Map);
+      if (whole && o['hidden'] != null) hidden[o['path'] as String] = o['hidden'] as bool;
+      if (o['appearance'] is Map && (o['appearance'] as Map).isNotEmpty) looks.add(AppearanceModel.recordFromWire(o));
+    }
+    setState(() {
+      if (!_sceneMode) _sectionPlanesBeforeScene = _sectionPlanes;
+      _sceneMode = true;
+      _shownScene = scene;
+      _sceneTransforms = transforms;
+      _sceneHidden = hidden;
+      _sceneRevision++;
+      _sceneDirty = false;
+      _appearance.temporary = looks;
+      _gizmoLiveTransform = null;
+      final planes = (scene?['section_planes'] as List?) ?? const [];
+      if (scene != null) {
+        _sectionPlanes = [
+          for (final p in planes)
+            if (p is Map) SectionPlane.fromJson(Map<String, dynamic>.from(p)),
+        ];
+      }
+      final unresolved = ((scene?['unresolved'] as List?) ?? const []).length;
+      _sceneNotice = unresolved > 0 ? '$unresolved change(s) in this scene no longer match the assembly (kept, not shown).' : null;
+    });
+    await _ensureAppearanceModel(root);
+    final viewpoint = scene?['viewpoint'];
+    if (_sceneUseViewpoint && viewpoint is Map) {
+      await _viewportKey.currentState?.animateToViewpoint(Map<String, dynamic>.from(viewpoint));
+    }
+  }
+
+  Future<void> _backToDefault() async {
+    if (!await _sceneMayLeave()) return;
+    _leaveScene();
+  }
+
+  void _leaveScene() {
+    setState(() {
+      _sceneMode = false;
+      _shownScene = null;
+      _sceneTransforms = {};
+      _sceneHidden = {};
+      _sceneRevision++;
+      _sceneDirty = false;
+      _sceneNotice = null;
+      _appearance.temporary = null;
+      _gizmoLiveTransform = null;
+      if (_sectionPlanesBeforeScene != null) _sectionPlanes = _sectionPlanesBeforeScene!;
+      _sectionPlanesBeforeScene = null;
+      _liveLooks = null;
+      if (!_appearanceOpen) _appearanceLive = false;
+    });
+  }
+
+  Json _sceneFields({required bool withView}) => {
+        'overrides': _sceneOverrides(),
+        'section_planes': [for (final p in _sectionPlanes) p.toJson()],
+        if (withView) 'viewpoint': _viewportKey.currentState?.currentViewpoint(),
+      };
+
+  /// PATCHes the shown scene with what is on screen. True when it was kept.
+  Future<bool> _updateScene() async {
+    final scene = _shownScene;
+    if (scene == null) return false;
+    setState(() => _sceneBusy = true);
+    try {
+      final updated = await _api.updateScene(_sceneRoot, scene['id'] as String, _sceneFields(withView: _sceneSaveView));
+      if (!mounted) return true;
+      setState(() {
+        _shownScene = updated;
+        _sceneDirty = false;
+        _scenes = [for (final s in _scenes) s['id'] == updated['id'] ? updated : s];
+      });
+      _showSnack(_sceneSavedText('Updated scene "${updated['name']}"'));
+      return true;
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+      return false;
+    } finally {
+      if (mounted) setState(() => _sceneBusy = false);
+    }
+  }
+
+  Future<void> _saveSceneAsNew() async {
+    final name = await askSceneName(context, title: 'Save as new scene', initial: 'Scene ${_scenes.length + 1}');
+    if (name == null || !mounted) return;
+    setState(() => _sceneBusy = true);
+    try {
+      final created = await _api.createScene(_sceneRoot, {'name': name, ..._sceneFields(withView: _sceneSaveView)});
+      if (!mounted) return;
+      setState(() {
+        _shownScene = created;
+        _sceneDirty = false;
+        _scenes = [..._scenes, created];
+      });
+      _showSnack(_sceneSavedText('Saved scene "$name"'));
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+    } finally {
+      if (mounted) setState(() => _sceneBusy = false);
+    }
+  }
+
+  String _sceneSavedText(String head) {
+    final skipped = (_appearance.temporary ?? const <Json>[]).where((r) => r['scope'] == kScopePattern || r['scope'] == kScopeSamePart).length;
+    return skipped == 0 ? '$head.' : '$head. $skipped paint(s) on every copy / placement left out: paint them one by one.';
+  }
+
+  Future<void> _renameScene(Json scene) async {
+    final name = await askSceneName(context, title: 'Rename scene', initial: '${scene['name']}');
+    if (name == null || !mounted) return;
+    try {
+      final updated = await _api.updateScene(_sceneRoot, scene['id'] as String, {'name': name});
+      if (mounted) {
+        setState(() {
+          _scenes = [for (final s in _scenes) s['id'] == updated['id'] ? updated : s];
+          if (_shownScene?['id'] == updated['id']) _shownScene = updated;
+        });
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+    }
+  }
+
+  Future<void> _deleteScene(Json scene) async {
+    try {
+      await _api.deleteScene(_sceneRoot, scene['id'] as String);
+      if (!mounted) return;
+      if (_shownScene?['id'] == scene['id']) _leaveScene();
+      setState(() => _scenes = [for (final s in _scenes) if (s['id'] != scene['id']) s]);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+    }
+  }
+
+  /// A gizmo move (drag or typed) of the component at [path] while a scene shows: the scene's transform for it.
+  void _storeSceneMove(List<String> path, RigidTransformDto world) {
+    final key = path.join('/');
+    setState(() {
+      _sceneTransforms = {..._sceneTransforms, key: sceneLocalTransform(_sceneInstances, key, world)};
+      _sceneEdited();
+      _gizmoLiveTransform = null;
+    });
+  }
+
+  /// Hide / Show of the component at [path] while a scene shows: the scene's `hidden` for it.
+  void _storeSceneHidden(List<String> path, bool hidden) {
+    setState(() {
+      _sceneHidden = {..._sceneHidden, path.join('/'): hidden};
+      _sceneEdited();
+    });
+  }
+
+  /// Whether the component at [path] shows hidden now (the scene's flag while one shows, else the model's).
+  bool _shownHidden(List<String> path, bool real) =>
+      _sceneMode ? (sceneHiddenDecision(path.join('/'), _sceneHidden) ?? real) : real;
+
+  Widget _buildScenesPanel() => ScenesPanel(
+        scenes: _scenes,
+        shownId: _sceneMode ? ((_shownScene?['id'] as String?) ?? '') : null,
+        dirty: _sceneDirty,
+        useViewpoint: _sceneUseViewpoint,
+        saveView: _sceneSaveView,
+        busy: _sceneBusy,
+        notice: _sceneNotice,
+        onShow: (scene) => unawaited(_enterScene(scene)),
+        onNewScene: () => unawaited(_enterScene(null)),
+        onUpdate: () => unawaited(_updateScene()),
+        onSaveAsNew: () => unawaited(_saveSceneAsNew()),
+        onBackToDefault: () => unawaited(_backToDefault()),
+        onRename: (scene) => unawaited(_renameScene(scene)),
+        onDelete: (scene) => unawaited(_deleteScene(scene)),
+        onUseViewpointChanged: (on) => setState(() => _sceneUseViewpoint = on),
+        onSaveViewChanged: (on) => setState(() => _sceneSaveView = on),
+        onClose: () => setState(() => _scenesPanelOpen = false),
+      );
 
   void _openMate() {
     setState(() {
@@ -11107,7 +11665,16 @@ class _PartScreenState extends State<PartScreen> {
     }
     final mesh = await _api.getAssemblyMesh(part.id);
     if (!mounted) return;
-    setState(() => _assemblyMesh = mesh);
+    setState(() {
+      _assemblyMesh = mesh;
+      _liveLooks = null;
+    });
+    // The Appearance tool: while its model drives the looks, a changed assembly (a part added, deleted, moved into
+    // another) is read again so every instance is in it.
+    if (_appearanceLive) {
+      _appearance.forget();
+      await _ensureAppearanceModel(part.id);
+    }
   }
 
   /// [PartViewport.onComponentGizmoDragUpdate] - stores every live drag
@@ -11162,7 +11729,7 @@ class _PartScreenState extends State<PartScreen> {
     _abortConstrainedDrag();
     final occurrence = _gizmoTargetOccurrence;
     final focusPartId = _focusStack?.current ?? _part?.id;
-    if (occurrence == null || focusPartId == null || !_isMated(occurrence.id)) return;
+    if (occurrence == null || focusPartId == null || _sceneMode || !_isMated(occurrence.id)) return;
     _dragPreGrab = {for (final o in _occurrences) o.id: o.transform};
     _dragWishWorld = null;
     final session = _newDragSession(occurrence, focusPartId, onCue: (message) {
@@ -11356,6 +11923,11 @@ class _PartScreenState extends State<PartScreen> {
       setState(() => _gizmoLiveTransform = null);
       return;
     }
+    if (_sceneMode) {
+      // Scenes (S3): the move is the scene's, on screen only (nothing is sent until Update scene / Save as new).
+      _storeSceneMove([...?_focusStack?.currentOccurrencePath, occurrence.id], liveWorldTransform);
+      return;
+    }
     final previousTransform = occurrence.transform;
     final parentInstance = _gizmoParentInstance;
     final finalTransform = parentInstance == null
@@ -11449,6 +12021,10 @@ class _PartScreenState extends State<PartScreen> {
     final occurrence = _gizmoTargetOccurrence;
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (occurrence == null || focusPartId == null) return;
+    if (_sceneMode) {
+      _storeSceneMove([...?_focusStack?.currentOccurrencePath, occurrence.id], newWorldTransform);
+      return;
+    }
     if (_isMated(occurrence.id)) {
       await _applyConstrainedWorldTransform(occurrence, focusPartId, newWorldTransform);
       return;
@@ -12583,6 +13159,10 @@ class _PartScreenState extends State<PartScreen> {
         _openComponentPattern();
       case AssemblyAddMenuAction.createNewComponent:
         await _onCreateNewComponentPressed();
+      case AssemblyAddMenuAction.appearance:
+        await _openAppearance();
+      case AssemblyAddMenuAction.scenes:
+        await _openScenes();
     }
   }
 
@@ -21854,7 +22434,7 @@ class _PartScreenState extends State<PartScreen> {
     // membership in the full focused chain is the real "is *this*
     // Occurrence the one currently focused" question.
     final isFocused = focusStack?.currentOccurrencePath.contains(occurrence.id) ?? false;
-    final hidden = occurrence.hidden;
+    final hidden = _shownHidden([...?_focusStack?.currentOccurrencePath, occurrence.id], occurrence.hidden);
     final fixed = occurrence.fixed;
     // Bug fix ("selecting a component shows no contextual toolbar"): this
     // menu's own Move/Rotate/Fix/Float/Delete entries duplicate
@@ -21926,6 +22506,8 @@ class _PartScreenState extends State<PartScreen> {
         _openComponentPattern();
       case ComponentContextMenuAction.rename:
         await _renameOccurrence(occurrence);
+      case ComponentContextMenuAction.appearance:
+        await _onOccurrenceColorTap(occurrence);
       case ComponentContextMenuAction.delete:
         await _confirmDeleteOccurrence(occurrence);
     }
@@ -22369,6 +22951,11 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _setOccurrenceHidden(OccurrenceDto occurrence, bool hidden) async {
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
+    if (_sceneMode) {
+      // Scenes (S3): Hide / Show while a scene shows is the scene's.
+      _storeSceneHidden([...?_focusStack?.currentOccurrencePath, occurrence.id], hidden);
+      return;
+    }
     await _runGuarded(() async {
       await _api.updateOccurrenceHidden(focusPartId, occurrence.id, hidden);
       await _refreshAssemblyTree();
@@ -22517,29 +23104,12 @@ class _PartScreenState extends State<PartScreen> {
   /// via [_setOccurrenceColor]. `null` (dismissed without a choice) does
   /// nothing, mirroring every other picker-sheet call site in this file
   /// (`_onBodyColourChanged`'s own `showColourSwatchSheet` caller, etc.).
+  ///
+  /// The Appearance tool (V3): the disc now opens the Appearance panel on that component (its Part, Pattern, `Every <part>`,
+  /// sub-assembly and Whole assembly rows); a click on the part in the viewport adds its Face and Body rows.
   Future<void> _onOccurrenceColorTap(OccurrenceDto occurrence) async {
-    final hex = await showOccurrenceColourSheet(context, selectedHex: occurrence.color);
-    if (!mounted || hex == null) return;
-    await _setOccurrenceColor(occurrence, hex);
-  }
-
-  /// The colour disc's real persistence call - mirrors [_setOccurrenceHidden]
-  /// exactly, PATCHing the backend's own `color` field via
-  /// [DocumentApiClient.updateOccurrenceColor] and re-fetching both the tree
-  /// (the disc itself reads `_occurrences`) *and* the assembly mesh (the
-  /// viewport reads `_assemblyMesh`'s own per-instance `color` to tint the
-  /// rendered Body - `PartViewport._syncAssemblyInstanceNodes`), the same
-  /// "changes what's visible" pairing Hide/Show already needs both fetches
-  /// for. [hex] is `''` for [showOccurrenceColourSheet]'s own "Default" tile
-  /// (explicitly clears the override) or a real `"#RRGGBB"` swatch.
-  Future<void> _setOccurrenceColor(OccurrenceDto occurrence, String hex) async {
-    final focusPartId = _focusStack?.current ?? _part?.id;
-    if (focusPartId == null) return;
-    await _runGuarded(() async {
-      await _api.updateOccurrenceColor(focusPartId, occurrence.id, hex);
-      await _refreshAssemblyTree();
-      await _refreshAssemblyMesh();
-    });
+    final path = [...?_focusStack?.currentOccurrencePath, occurrence.id];
+    await _openAppearance(pick: _PaintPick(path: path, label: _paintPickLabel(path)));
   }
 
   /// §6 roadmap Phase 10 (`[5]`): Isolate's real persistence call - mirrors
@@ -22872,6 +23442,8 @@ class _PartScreenState extends State<PartScreen> {
                   focusedOccurrencePath: _focusStack?.currentOccurrencePath ?? const [],
                   focusWorldTransformMatrix: _focusWorldTransformMatrix,
                   focusOccurrenceColorHex: _focusOccurrenceColorHex,
+                  assemblyInstanceLooks: _instanceLooks,
+                  primaryLook: _primaryLook,
                   selectedPlane: _selectedPlane,
                   sketchGeometries: _visibleSketchGeometries,
                   createPlanes: _createPlaneGeometries,
@@ -23743,6 +24315,16 @@ class _PartScreenState extends State<PartScreen> {
                       bodyNames: _selectionBodyNames,
                       onDone: _closeMeasure,
                     ),
+                  ),
+                if (_appearanceOpen)
+                  Positioned.fill(
+                    key: const ValueKey('appearance-panel-slot'),
+                    child: _buildAppearancePanel(),
+                  ),
+                if (_scenesPanelOpen && !_appearanceOpen)
+                  Positioned.fill(
+                    key: const ValueKey('scenes-panel-slot'),
+                    child: _buildScenesPanel(),
                   ),
                 if (_mateActive)
                   Positioned.fill(
@@ -25269,4 +25851,16 @@ class _BuildingGeometryOverlay extends StatelessWidget {
       ),
     );
   }
+}
+
+
+/// What the Appearance panel's rows are for: the instance at [path] (`[]` = the root's own content) and, after a click on
+/// it, the face clicked.
+class _PaintPick {
+  final List<String> path;
+  final String? bodyId;
+  final int? faceIndex;
+  final String label;
+
+  const _PaintPick({required this.path, this.bodyId, this.faceIndex, required this.label});
 }

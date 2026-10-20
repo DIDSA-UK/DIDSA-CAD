@@ -10,10 +10,32 @@ settled; **Recommendation** marks the ones the owner accepted as proposed ("your
 |---|---|---|---|
 | S1 | Backend: model, native format, validation (incl. `#pattern:` paths and body / face appearances), CRUD, delete cascade, unresolved report, composition reference + golden vectors | Done (M3; not merged) | CAD `claude/appearance-and-scenes` |
 | S2 | DIDSA-VR: scenes on the sandbox | Done (M4; not merged) | VR `claude/appearance-and-scenes` |
-| S3 | Flat app | Not started (M5) | CAD |
+| S3 | Flat app | Done (M5; not merged; unit, widget and screen tests; not tried on a device) | CAD `claude/appearance-and-scenes` (`client/lib/appearance/`) |
 | S4 | Later | — | — |
 
 The glb `instance_path` extra listed under S1 was built in the Appearance tool's V1 (the VR gun needed it first).
+
+## S3 implementation notes (flat app)
+
+- **Where:** `scene_compose.dart` (the composition, a copy of `scene_compose.py`; passes `docs/scenes/vectors.json`, read from
+  the repo root by `test/scene_compose_test.dart`), `scene_display.dart` (the composition over `assembly-mesh`'s instances, and
+  an on-screen move back to a scene override), `scenes_panel.dart` (the list and the actions), and the scene mode in
+  `part_screen.dart`. Opened from the assembly lens's Add flyout (Scenes...).
+- **The scene mode (D7):** Show (a row of the list) or New scene (from the default) enters it; while it shows the viewport draws
+  the composed instances, and the Move/Rotate gizmo (drag or typed), Hide / Show and the Appearance panel change the scene
+  being edited, not the model (nothing is sent; mates are not enforced, the gizmo has no constrained drag). A move is stored as
+  the instance's local transform in the pose its parent shows at, so moving a sub-assembly carries its contents and a part
+  inside it can move as well; a pattern copy is moved by its path like any other instance. Section planes: showing a scene puts
+  its section planes in the Section tool (the ones you had come back on Back to default) and a save writes the current ones.
+- **Update scene / Save as new** (named in a dialog) write what is on screen: transforms, hidden flags, appearance overrides
+  (a paint on every copy / every placement has no scene form and is left out, with a note), the section planes and, with
+  "Save my view" on, the camera as the viewpoint (`eye` = the camera, `target` = what it orbits, `up`). Show takes the scene's
+  viewpoint when "Show takes the scene's viewpoint" is on (the camera turns to look from the eye at the target).
+- **Back to default** (and showing another scene) asks Update / Discard / Stay when the scene on screen has changes (a move,
+  a hide, a paint, a section plane changed); a new scene not yet saved offers Discard / Stay. Rename and Delete are in each row's
+  menu. A scene's `unresolved` overrides are counted in the list and when shown.
+- **Scope (D6):** the scenes are always the opened assembly's own; focusing into a sub-assembly does not switch to that
+  sub-assembly's scenes (open its file on its own for those). Not tried on a device or a touch screen.
 
 ## S2 implementation notes (DIDSA-VR)
 

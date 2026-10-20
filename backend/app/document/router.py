@@ -8537,8 +8537,41 @@ def get_assembly_mesh(
                     )
 
     _walk(root_part, [], [], hidden=False, ancestors=frozenset())
+    _paint_json_instances(document, root_part, instances, geometry_by_part_id)
 
     return AssemblyMeshResponse(geometry=list(geometry_by_part_id.values()), instances=instances)
+
+
+def _paint_json_instances(
+    document: Document,
+    root_part: Part,
+    instances: list[AssemblyOccurrenceInstance],
+    geometry_by_part_id: dict[str, AssemblyBodyGeometry],
+) -> None:
+    """`assembly-mesh`'s counterpart of `_paint_glb_instances` (the flat app's looks, `docs/appearance-tool-scope.md` V3):
+    each instance's resolved appearance as seen from `root_part`, and the faces that look different from it."""
+    model = appearance_resolution_model(document)
+    for instance in instances:
+        path = list(instance.occurrence_path)
+        node_appearance = resolve_appearance(model, root_part.id, path)
+        geometry = geometry_by_part_id.get(instance.part_id)
+        faces = sorted(
+            {(body.body_id, face_id) for body in (geometry.bodies if geometry else []) for face_id in body.mesh.face_ids}
+        )
+        if not faces:
+            instance.appearance = node_appearance
+            continue
+        by_face = resolve_faces(model, root_part.id, path, faces)
+        distinct = {tuple(sorted(a.items())) for a in by_face.values()}
+        if len(distinct) <= 1:
+            instance.appearance = next(iter(by_face.values()), node_appearance)
+            continue
+        instance.appearance = node_appearance
+        instance.face_appearances = [
+            {"body_id": body_id, "face_index": face_index, "appearance": appearance}
+            for (body_id, face_index), appearance in by_face.items()
+            if appearance != node_appearance
+        ]
 
 
 def _assembly_glb_part_mesh_data(

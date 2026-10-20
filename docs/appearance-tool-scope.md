@@ -12,10 +12,37 @@ called **Appearance** (Owner).
 |---|---|---|---|
 | V1 | Backend: record, three storage places, D3 resolution + golden vectors, endpoints, `Occurrence.color` alias, glb materials + `instance_path`, delete cascade, validation, native round trip | Done (M1; not merged) | CAD `claude/appearance-and-scenes` |
 | V2 | DIDSA-VR Appearance tool | Done (M2; not merged; headless, render and live-backend tested, not on the headset) | VR `claude/appearance-and-scenes` (its CHANGELOG and `docs/status.md`) |
-| V3 | Flat app | Not started (M5) | CAD |
+| V3 | Flat app | Done (M5; not merged; unit, widget and screen tests; not tried on a device) | CAD `claude/appearance-and-scenes` (`client/lib/appearance/`) |
 | V4 | STEP colours | Not started (M6) | CAD |
 
 Update this table with every milestone.
+
+## V3 implementation notes (flat app, `client/lib/appearance/`)
+
+- **The rule in Dart:** `appearance_rule.dart`, a copy of `appearance.py`, passes all 57 golden vectors read straight from
+  `docs/appearance/vectors.json` (`test/appearance_rule_test.dart`; nothing copied), and `resolveFaces` agrees with
+  `resolveAppearance` face by face.
+- **Looks on load come from the backend:** `GET /parts/{id}/assembly-mesh` (the JSON the flat app draws from, not the glb) now
+  carries each instance's resolved `appearance` and the faces that differ from it (`face_appearances: [{body_id, face_index,
+  appearance}]`), resolved with the same rule as the glb's materials (`router._paint_json_instances`; backend tests
+  `test_json_assembly_mesh_*`). The viewport (`part_viewport.dart`) draws a painted instance with its whole look (colour,
+  opacity, metal, shine, glow; `appearance_look.dart`) and splits a body into one primitive per look when its faces differ; the
+  root's (or the focused Part's) own bodies get the same. Nothing else is fetched until the Appearance panel opens, so an
+  assembly with no paint draws as before.
+- **The panel** (`appearance_panel.dart`; the colour disc grows into it, D4): opened from the Assembly tree's colour disc, the
+  component context menu (Appearance...) or the assembly lens's Add flyout (Appearance...). The brush: the palette and Clear,
+  a saturation / value square with a hue bar, a hex field, recent colours, Opacity, Shine (1 - roughness), Metal and Glow with
+  a switch each (only switched-on properties are painted), a preview swatch, the eyedropper, the presets and saved appearances
+  (Save brush..., kept in `shared_preferences`).
+- **Targets (D1):** with the panel open a click on a part paints its **body** (the flat app's "click paints the body"); the
+  panel then lists that face's rows: Face, Body, Part, Pattern (all N), Every <part> (N), each sub-assembly, Whole assembly,
+  each with its swatch and "set here". Hovering a row (a mouse; a long press on touch) previews it on the model, nothing sent;
+  clicking it paints. Undo (the panel's) puts the level's paint back. From the tree or the context menu the rows start at the
+  component's Part row. Rows, preview and paint are `appearance_model.dart` (the VR tool's model in Dart: built from GET part /
+  appearance-overrides / occurrences / component-patterns, PUT to the root, merge, Clear, the legacy colour mirror; tested
+  against an in-memory backend).
+- **Not built:** painting a single part in the part lens (its own `appearance` / `body_appearances` / `face_appearances`, a
+  PATCH of the Part): the panel paints in the assembly lens only. The section view's cut faces keep their own colour.
 
 ## V1 implementation notes (what was built, and where it is more precise than the text)
 

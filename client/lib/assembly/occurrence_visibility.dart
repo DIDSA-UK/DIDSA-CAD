@@ -92,6 +92,8 @@ List<AssemblyOccurrenceInstanceDto> applyInstanceVisibilityOverrides(
         // reconstruction falls back to its own default" gap
         // [applyOccurrenceVisibilityOverrides] has for `fixed`/`color`.
         color: instance.color,
+        appearance: instance.appearance,
+        faceAppearances: instance.faceAppearances,
       ),
   ];
 }
@@ -208,6 +210,8 @@ List<AssemblyOccurrenceInstanceDto> overrideInstanceTransform(
           // this, a coloured component would flash back to the neutral
           // default tint for the duration of every Move/Rotate gizmo drag.
           color: instance.color,
+          appearance: instance.appearance,
+          faceAppearances: instance.faceAppearances,
         )
       else
         instance,

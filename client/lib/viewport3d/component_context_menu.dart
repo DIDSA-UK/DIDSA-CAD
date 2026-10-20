@@ -24,6 +24,7 @@ enum ComponentContextMenuAction {
   fix,
   float,
   rename,
+  appearance,
   delete,
 }
 
@@ -122,6 +123,12 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       action: ComponentContextMenuAction.rename,
       label: 'Rename',
       icon: Icons.drive_file_rename_outline,
+    ),
+    // The Appearance tool (`docs/appearance-tool-scope.md` V3): opens the Appearance panel on this component.
+    const ActionSheetEntry(
+      action: ComponentContextMenuAction.appearance,
+      label: 'Appearance...',
+      icon: Icons.palette_outlined,
     ),
     // Assembly-audit gap `[27]` (`docs/assembly-scope.md`): no way to remove
     // a placed component from an assembly had ever been built - full CRUD

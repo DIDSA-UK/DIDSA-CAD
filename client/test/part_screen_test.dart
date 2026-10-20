@@ -9,6 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/appearance/appearance_panel.dart';
+import 'package:didsa_cad_client/appearance/scenes_panel.dart';
 import 'package:didsa_cad_client/assembly/assembly_document_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
@@ -122,6 +124,14 @@ class _FakeDocumentBackend {
   /// `ComponentPatternDto.fromJson`'s own wire shape.
   final List<Map<String, dynamic>> mates;
   final List<Map<String, dynamic>> componentPatterns;
+
+  /// The Appearance tool / scenes (V3 / S3): each Part's appearance overrides, every PUT body, `part-1`'s scenes and the
+  /// scene POST / PATCH bodies.
+  final Map<String, List<Map<String, dynamic>>> appearanceOverrides = {};
+  final List<Map<String, dynamic>> appearancePuts = [];
+  final List<Map<String, dynamic>> scenes = [];
+  final List<Map<String, dynamic>> scenePosts = [];
+  final List<Map<String, dynamic>> scenePatches = [];
 
   /// `GET .../constraint-status` for `part-1` (item 7) and how often it was
   /// asked - the tree refreshes it next to the occurrence list.
@@ -673,6 +683,41 @@ class _FakeDocumentBackend {
       if (index == -1) return http.Response('not found: pattern', 404);
       componentPatterns.removeAt(index);
       return http.Response('', 204);
+    }
+    // The Appearance tool (V3): a Part's override list, kept per Part; PUT replaces the target's entry (null clears).
+    final overridesMatch = RegExp(r'^/document/parts/([^/]+)/appearance-overrides$').firstMatch(path);
+    if (overridesMatch != null) {
+      final list = appearanceOverrides.putIfAbsent(overridesMatch.group(1)!, () => []);
+      if (method == 'PUT') {
+        appearancePuts.add(Map<String, dynamic>.from(body));
+        String key(Map r) => '${r['path']}|${r['scope']}|${r['pattern_id']}|${r['part_id']}|${r['body_id']}|${(r['face'] as Map?)?['index']}';
+        list.removeWhere((r) => key(r) == key(body));
+        if (body['appearance'] != null) list.add(Map<String, dynamic>.from(body));
+      }
+      return _json({'overrides': list}, 200);
+    }
+    // Scenes (S3): `part-1`'s scenes; POST mints the id, PATCH replaces each field given.
+    final scenesMatch = RegExp(r'^/document/parts/part-1/scenes(?:/([^/]+))?$').firstMatch(path);
+    if (scenesMatch != null) {
+      final sceneId = scenesMatch.group(1);
+      if (sceneId == null && method == 'GET') return _json(scenes, 200);
+      if (sceneId == null && method == 'POST') {
+        scenePosts.add(Map<String, dynamic>.from(body));
+        final scene = {'id': 'scene-${scenes.length + 1}', 'section_planes': <dynamic>[], 'viewpoint': null, ...body, 'unresolved': <dynamic>[]};
+        scenes.add(scene);
+        return _json(scene, 201);
+      }
+      final index = scenes.indexWhere((sc) => sc['id'] == sceneId);
+      if (index == -1) return http.Response('not found: scene', 404);
+      if (method == 'PATCH') {
+        scenePatches.add(Map<String, dynamic>.from(body));
+        scenes[index] = {...scenes[index], ...body};
+        return _json(scenes[index], 200);
+      }
+      if (method == 'DELETE') {
+        scenes.removeAt(index);
+        return http.Response('', 204);
+      }
     }
     final assemblyMeshMatch = RegExp(r'^/document/parts/([^/]+)/assembly-mesh$').firstMatch(path);
     if (assemblyMeshMatch != null && method == 'GET') {
@@ -6746,5 +6791,193 @@ void main() {
     // `_openComposedProject` at all), and the graph composition itself
     // already has its own real, non-flaky coverage in
     // `assembly_graph_composer_test.dart`/`assembly_document_client_test.dart`.
+  });
+
+  // The Appearance tool (`docs/appearance-tool-scope.md` V3) and scenes (`docs/scenes-scope.md` S3) in the assembly lens.
+  group('The Appearance tool and scenes in the assembly lens', () {
+    Map<String, dynamic> occurrence(String id) => {
+          'id': id,
+          'external_ref': 'parts/$id.didsa',
+          'resolved_part_id': '$id-part',
+          'name_override': null,
+          'transform': {
+            'translation': [0.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'suppressed': false,
+          'hidden': false,
+          'fixed': false,
+        };
+
+    Future<_FakeDocumentBackend> openAssembly(WidgetTester tester) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      return backend;
+    }
+
+    PartViewport viewport(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport));
+
+    Future<void> settle(WidgetTester tester) async {
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    testWidgets('the colour disc opens the Appearance panel; a row paints into the root; hover previews; undo clears', (tester) async {
+      final backend = await openAssembly(tester);
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      tree.onOccurrenceColorTap!(tree.occurrences.first);
+      await settle(tester);
+      expect(find.byKey(const ValueKey('appearance-panel-slot')), findsOneWidget);
+      final panel = tester.widget<AppearancePanel>(find.byType(AppearancePanel));
+      expect(panel.rows.map((r) => r.id), ['part', 'whole'], reason: 'a component from the tree: its Part row and Whole assembly');
+      expect(panel.rows.first.label, 'Part · occ-1-part');
+
+      panel.onBrushChanged({'colour': '#3498DB', 'metallic': 0.9});
+      await settle(tester);
+      final rows = tester.widget<AppearancePanel>(find.byType(AppearancePanel)).rows;
+      tester.widget<AppearancePanel>(find.byType(AppearancePanel)).onPaintRow(rows.first);
+      await settle(tester);
+      expect(backend.appearancePuts.single, {'path': 'occ-1', 'appearance': {'colour': '#3498DB', 'metallic': 0.9}});
+      expect(backend.occurrences.first['color'], isNull, reason: 'the paint is an override in the root, not the occurrence');
+      expect(viewport(tester).assemblyInstanceLooks['occ-1']!.whole, {'colour': '#3498DB', 'metallic': 0.9});
+      expect(viewport(tester).assemblyInstanceLooks['occ-2']!.isEmpty, isTrue);
+
+      // Hovering Whole assembly previews it on every part, nothing sent; leaving it puts the looks back.
+      final whole = tester.widget<AppearancePanel>(find.byType(AppearancePanel)).rows.last;
+      tester.widget<AppearancePanel>(find.byType(AppearancePanel)).onBrushChanged({'colour': '#E63946'});
+      await settle(tester);
+      tester.widget<AppearancePanel>(find.byType(AppearancePanel)).onPreviewRow(whole);
+      await settle(tester);
+      expect(viewport(tester).assemblyInstanceLooks['occ-2']!.whole['colour'], '#E63946');
+      expect(viewport(tester).assemblyInstanceLooks['occ-1']!.whole['colour'], '#3498DB', reason: 'the part keeps its own (more specific) colour');
+      expect(backend.appearancePuts, hasLength(1));
+      tester.widget<AppearancePanel>(find.byType(AppearancePanel)).onPreviewRow(null);
+      await settle(tester);
+      expect(viewport(tester).assemblyInstanceLooks['occ-2']!.isEmpty, isTrue);
+
+      await tester.tap(find.byKey(const ValueKey('appearance-undo')));
+      await settle(tester);
+      expect(backend.appearancePuts.last, {'path': 'occ-1', 'appearance': null});
+      expect(viewport(tester).assemblyInstanceLooks['occ-1']!.isEmpty, isTrue);
+
+      await tester.tap(find.byKey(const ValueKey('appearance-close')));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('appearance-panel-slot')), findsNothing);
+    });
+
+    testWidgets('a scene: Hide is on screen only, Save as new sends it, Back to default and Show', (tester) async {
+      final backend = await openAssembly(tester);
+      await tester.tap(find.byTooltip('Add'));
+      await settle(tester);
+      await tester.tap(find.text('Scenes…'));
+      await settle(tester);
+      expect(find.byKey(const ValueKey('scenes-panel-slot')), findsOneWidget);
+      expect(find.text('No scenes in this assembly yet.'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('scenes-new')));
+      await settle(tester);
+      expect(find.textContaining('New scene from the default'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('scenes-close')));
+      await settle(tester);
+
+      // Hide occ-1 while the scene shows: the viewport hides it, the model doesn't.
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      tree.onOccurrenceLongPress(tree.occurrences.first);
+      await settle(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await settle(tester);
+      await tester.tap(find.text('Hide'));
+      await settle(tester);
+      expect(backend.occurrences.first['hidden'], isFalse, reason: 'nothing sent: the scene hides it');
+      expect(viewport(tester).assemblyInstances.firstWhere((i) => i.occurrencePath.join('/') == 'occ-1').hidden, isTrue);
+      expect(viewport(tester).assemblyInstances.firstWhere((i) => i.occurrencePath.join('/') == 'occ-2').hidden, isFalse);
+
+      // Save as new: the hidden part is the scene's one override.
+      await tester.tap(find.byTooltip('Add'));
+      await settle(tester);
+      await tester.tap(find.text('Scenes…'));
+      await settle(tester);
+      await tester.tap(find.byKey(const ValueKey('scenes-save-new')));
+      await settle(tester);
+      await tester.enterText(find.byKey(const ValueKey('scene-name-field')), 'Without one');
+      await tester.tap(find.byKey(const ValueKey('scene-name-ok')));
+      await settle(tester);
+      expect(backend.scenePosts.single['name'], 'Without one');
+      expect(backend.scenePosts.single['overrides'], [
+        {'path': 'occ-1', 'hidden': true},
+      ]);
+      expect(find.textContaining('Showing "Without one"'), findsOneWidget);
+
+      // Back to default: everything as the model has it.
+      await tester.tap(find.byKey(const ValueKey('scenes-back')));
+      await settle(tester);
+      expect(viewport(tester).assemblyInstances.every((i) => !i.hidden), isTrue);
+      expect(find.textContaining('Showing the default'), findsOneWidget);
+
+      // Show it again from the list.
+      // (The panel's own callbacks: in the 800x600 test window a snackbar can sit over the list.)
+      final scenesPanel = tester.widget<ScenesPanel>(find.byType(ScenesPanel));
+      scenesPanel.onShow(scenesPanel.scenes.firstWhere((sc) => sc['id'] == 'scene-1'));
+      await settle(tester);
+      expect(viewport(tester).assemblyInstances.firstWhere((i) => i.occurrencePath.join('/') == 'occ-1').hidden, isTrue);
+    });
+
+    testWidgets('leaving a changed scene asks Update / Discard / Stay', (tester) async {
+      final backend = await openAssembly(tester);
+      backend.scenes.add({'id': 'scene-1', 'name': 'Shown', 'overrides': <dynamic>[], 'section_planes': <dynamic>[], 'viewpoint': null, 'unresolved': <dynamic>[]});
+      await tester.tap(find.byTooltip('Add'));
+      await settle(tester);
+      await tester.tap(find.text('Scenes…'));
+      await settle(tester);
+      // (The panel's own callbacks: in the 800x600 test window a snackbar can sit over the list.)
+      final scenesPanel = tester.widget<ScenesPanel>(find.byType(ScenesPanel));
+      scenesPanel.onShow(scenesPanel.scenes.firstWhere((sc) => sc['id'] == 'scene-1'));
+      await settle(tester);
+      tester.widget<ScenesPanel>(find.byType(ScenesPanel)).onClose();
+      await settle(tester);
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      tree.onOccurrenceLongPress(tree.occurrences.last);
+      await settle(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await settle(tester);
+      await tester.tap(find.text('Hide'));
+      await settle(tester);
+
+      await tester.tap(find.byTooltip('Add'));
+      await settle(tester);
+      await tester.tap(find.text('Scenes…'));
+      await settle(tester);
+      expect(find.textContaining('(changed since shown)'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('scenes-back')));
+      await settle(tester);
+      expect(find.text('Unsaved scene changes'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('scene-leave-stay')));
+      await settle(tester);
+      expect(find.textContaining('Showing "Shown"'), findsOneWidget, reason: 'Stay keeps the scene on screen');
+
+      await tester.tap(find.byKey(const ValueKey('scenes-back')));
+      await settle(tester);
+      await tester.tap(find.byKey(const ValueKey('scene-leave-update')));
+      await settle(tester);
+      expect(backend.scenePatches.single['overrides'], [
+        {'path': 'occ-2', 'hidden': true},
+      ]);
+      expect(find.textContaining('Showing the default'), findsOneWidget);
+      expect(backend.occurrences.last['hidden'], isFalse);
+    });
   });
 }

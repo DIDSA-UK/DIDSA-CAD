@@ -8,6 +8,7 @@ import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
+import '../appearance/appearance_look.dart';
 import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus, pathEquals;
 import '../sketch/sketch_controller.dart'
     show
@@ -125,6 +126,16 @@ class PartViewport extends StatefulWidget {
   /// genuinely always in sync with whichever Occurrence is currently
   /// focused, never a second, separately-maintained source of truth.
   final String? focusOccurrenceColorHex;
+
+  /// The Appearance tool (`docs/appearance-tool-scope.md` V3): each placed instance's look, keyed by its joined
+  /// `occurrencePath` (`appearance_model.dart`'s `lookOf`). An instance with a non-empty look wears it (colour, opacity,
+  /// metal, shine, glow; one primitive per look when its faces differ) instead of [AssemblyOccurrenceInstanceDto.color]'s
+  /// plain tint. Empty (the default) leaves every instance as before.
+  final Map<String, InstanceLook> assemblyInstanceLooks;
+
+  /// The same for the primary content [bodies] (the root's own bodies, or the focused Part's): its look, faces keyed
+  /// `'$bodyId|$faceIndex'`. Null or empty leaves [bodyColourHex] / [focusOccurrenceColorHex] as before.
+  final InstanceLook? primaryLook;
 
   /// Test report item 3 (New Mate ghost preview): every occurrence the mate being authored would move - the driven one and
   /// any follower the solve slides (`MateSolvePreviewDto.members`) - each with its stored and solved pose. The viewport
@@ -1045,6 +1056,8 @@ class PartViewport extends StatefulWidget {
     this.focusedOccurrencePath = const [],
     this.focusWorldTransformMatrix,
     this.focusOccurrenceColorHex,
+    this.assemblyInstanceLooks = const {},
+    this.primaryLook,
     this.matePreviewMembers = const [],
     this.componentPatternPreviewInstances = const [],
     this.selectedOccurrenceTransform,
@@ -1933,7 +1946,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // rebuild trigger [focusWorldTransformMatrix] just above already
         // gets, for the exact same reason - a change while still focused
         // (e.g. tapping the colour disc mid-focus-session) must re-tint.
-        widget.focusOccurrenceColorHex != oldWidget.focusOccurrenceColorHex) {
+        widget.focusOccurrenceColorHex != oldWidget.focusOccurrenceColorHex ||
+        widget.primaryLook != oldWidget.primaryLook) {
       setState(_syncMeshNode);
     }
     // Assembly support Phase 4: [_syncAssemblyInstanceNodes]'s own three
@@ -1952,7 +1966,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.sectionPreviewMeshes != oldWidget.sectionPreviewMeshes ||
         widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds ||
         widget.renderMode != oldWidget.renderMode ||
-        widget.bodiesHidden != oldWidget.bodiesHidden) {
+        widget.bodiesHidden != oldWidget.bodiesHidden ||
+        widget.assemblyInstanceLooks != oldWidget.assemblyInstanceLooks) {
       setState(_syncAssemblyInstanceNodes);
     }
     // Test report item 3: [_syncMatePreviewNode]'s own three inputs - a
@@ -2490,7 +2505,35 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 1,
               )
               ..doubleSided = true);
-        final node = Node(mesh: Mesh(geometry, material))..localTransform = focusTransform;
+        final primaryLook = widget.primaryLook;
+        final looked = primaryLook != null &&
+            !primaryLook.isEmpty &&
+            !widget.isPreviewMesh &&
+            !isPreviewOverlay &&
+            !isCoarseOverlay &&
+            !isSkippedInstance;
+        // The Appearance tool (V3): painted primary content wears its look over the body colour / roughness defaults, one
+        // primitive per look when its faces differ (`appearance_look.dart`).
+        final node = looked
+            ? Node(
+                mesh: Mesh.primitives(primitives: [
+                  for (final (piece, appearance) in splitMeshByLook(displayMesh, body.bodyId, primaryLook.whole, primaryLook.faces))
+                    () {
+                      final params = LookParams.of(
+                        appearance,
+                        defaultColour: vector4FromHex(widget.focusOccurrenceColorHex ?? widget.bodyColourHex).xyz,
+                        defaultRoughness: widget.roughness,
+                        defaultMetallic: ScenePreferences.fixedMetallic,
+                      );
+                      return MeshPrimitive(
+                        geometryFromMesh(piece, doubleSidedWinding: isTranslucent || params.opacity < 1.0),
+                        materialForLook(params, opacity: effectiveBodyOpacity, baseEmissive: widget.emissiveIntensity),
+                      );
+                    }(),
+                ]),
+              )
+            : Node(mesh: Mesh(geometry, material));
+        node.localTransform = focusTransform;
         scene.add(node);
         _meshNodes[body.bodyId] = node;
 
@@ -2702,12 +2745,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           final dimmedForSelectOther = highlightOverride != null &&
               !_isHighlightOwner(highlightOverride, bodyId: body.bodyId, occurrenceId: occurrenceKey);
           final effectiveOpacity = dimmedForSelectOther ? math.min(opacity, kSelectOtherDimOpacity) : opacity;
-          final node = buildAssemblyInstanceNode(
-            displayMesh,
-            localTransform: nodeTransform,
-            opacity: effectiveOpacity,
-            tint: tint,
-          );
+          // The Appearance tool (V3): a painted instance wears its whole look, split per face when its faces differ.
+          final look = widget.assemblyInstanceLooks[occurrenceKey];
+          final node = look != null && !look.isEmpty
+              ? buildLookedInstanceNode(
+                  displayMesh,
+                  bodyId: body.bodyId,
+                  look: look,
+                  localTransform: nodeTransform,
+                  opacity: effectiveOpacity,
+                  defaultColour: tint,
+                )
+              : buildAssemblyInstanceNode(
+                  displayMesh,
+                  localTransform: nodeTransform,
+                  opacity: effectiveOpacity,
+                  tint: tint,
+                );
           scene.add(node);
           _assemblyInstanceNodes[sectionKey] = node;
           if (cutCapMesh != null) {
@@ -3919,6 +3973,35 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// - used for the sketch-orientation-definition step, before the user has
   /// confirmed which plane/flip/rotation they're actually defining, so
   /// there's no single "facing" view yet the way [animateToPlane] has.
+  /// Scenes (`docs/scenes-scope.md`): where the camera looks from now, as a scene viewpoint in the model's frame (mm):
+  /// `{eye, target, up}`.
+  Map<String, dynamic> currentViewpoint() {
+    final eye = _camera.position;
+    final target = _camera.target;
+    final up = _camera.up;
+    return {
+      'eye': [eye.x, eye.y, eye.z],
+      'target': [target.x, target.y, target.z],
+      'up': [up.x, up.y, up.z],
+    };
+  }
+
+  /// Scenes: turns the camera to look from a scene viewpoint's `eye` towards its `target` (the flat app sets its camera
+  /// from it; the distance is the eye's).
+  Future<void> animateToViewpoint(Map<String, dynamic> viewpoint, {Duration duration = const Duration(milliseconds: 400)}) async {
+    vm.Vector3 v(Object? raw) {
+      final l = raw as List;
+      return vm.Vector3((l[0] as num).toDouble(), (l[1] as num).toDouble(), (l[2] as num).toDouble());
+    }
+
+    final eye = v(viewpoint['eye']);
+    final target = v(viewpoint['target']);
+    final up = viewpoint['up'] == null ? vm.Vector3(0, 1, 0) : v(viewpoint['up']);
+    if ((eye - target).length < 1e-9) return;
+    await _animateOrientationTo(OrbitCamera.orientationLookingFrom(eye, target, up), toTarget: target, duration: duration);
+    if (mounted) setState(() => _camera.distance = (eye - target).length);
+  }
+
   Future<void> animateToIsometric({Duration duration = const Duration(milliseconds: 400)}) {
     return _animateOrientationTo(OrbitCamera.isometricOrientation(), duration: duration);
   }

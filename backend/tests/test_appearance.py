@@ -420,6 +420,33 @@ def test_glb_without_any_appearance_has_no_materials():
     assert {n["extras"]["instance_path"] for n in gltf["nodes"]} == {"", "frame", "frame/barA", "frame/barB", "bolt"}
 
 
+def test_json_assembly_mesh_carries_the_same_looks():
+    """The flat app's `assembly-mesh` (V3): each instance's resolved appearance, and the faces that differ from it."""
+    a = _frame_assembly()
+    body = a["bar_bodies"][0]
+    _put(a["root"], {"path": "", "appearance": {"colour": "#D0D0D0"}})
+    _put(a["root"], {"path": "frame", "appearance": {"colour": "#2F6FD6"}})
+    _put(a["root"], {"path": "frame/barA", "body_id": body, "appearance": {"colour": "#D63A2F", "emission_strength": 2.0}})
+    data = client.get(f"/document/parts/{a['root']}/assembly-mesh").json()
+    by_path = {"/".join(i["occurrence_path"]): i for i in data["instances"]}
+    assert by_path[""]["appearance"] == {"colour": "#D0D0D0"} and by_path[""]["face_appearances"] == []
+    assert by_path["frame/barB"]["appearance"] == {"colour": "#2F6FD6"} and by_path["frame/barB"]["face_appearances"] == []
+    bar_a = by_path["frame/barA"]
+    assert bar_a["appearance"] == {"colour": "#2F6FD6"}
+    assert bar_a["face_appearances"] and {f["body_id"] for f in bar_a["face_appearances"]} == {body}
+    assert all(f["appearance"] == {"colour": "#D63A2F", "emission_strength": 2.0} for f in bar_a["face_appearances"])
+    bar_geometry = next(g for g in data["geometry"] if g["part_id"] == a["bar"])
+    face_ids = {f for b in bar_geometry["bodies"] if b["body_id"] == body for f in b["mesh"]["face_ids"]}
+    assert {f["face_index"] for f in bar_a["face_appearances"]} == face_ids
+    assert by_path["bolt"]["appearance"] == {"colour": "#D0D0D0"}
+
+
+def test_json_assembly_mesh_without_any_appearance():
+    a = _frame_assembly()
+    data = client.get(f"/document/parts/{a['root']}/assembly-mesh").json()
+    assert all(i["appearance"] == {} and i["face_appearances"] == [] for i in data["instances"])
+
+
 # --- native format ------------------------------------------------------------------------------------------------
 
 

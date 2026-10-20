@@ -38,6 +38,18 @@ void main() {
       expect(await pendingResult, AssemblyAddMenuAction.addMate);
     });
 
+    // The Appearance tool (V3) and scenes (S3) open from the same flyout.
+    testWidgets('tapping Appearance… resolves appearance, Scenes… resolves scenes', (tester) async {
+      await openMenu(tester);
+      await tester.tap(find.text('Appearance…'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, AssemblyAddMenuAction.appearance);
+      await openMenu(tester);
+      await tester.tap(find.text('Scenes…'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, AssemblyAddMenuAction.scenes);
+    });
+
     testWidgets('tapping Pattern Component resolves patternComponent', (tester) async {
       await openMenu(tester);
       await tester.tap(find.text('Pattern Component'));
@@ -58,7 +70,7 @@ void main() {
 
     testWidgets('every entry is enabled', (tester) async {
       await openMenu(tester);
-      for (final label in ['Add Component', 'Create Component…', 'Add Mate', 'Pattern Component']) {
+      for (final label in ['Add Component', 'Create Component…', 'Add Mate', 'Pattern Component', 'Appearance…', 'Scenes…']) {
         final tile = tester.widget<ListTile>(
           find.ancestor(of: find.text(label), matching: find.byType(ListTile)),
         );

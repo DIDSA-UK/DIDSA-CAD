@@ -414,6 +414,17 @@ class OrbitCamera {
   /// doc comment) - both are "the" isometric view, not two different ones.
   static vm.Quaternion isometricOrientation() => _isometricOrientation();
 
+  /// Scenes (`docs/scenes-scope.md`): the orientation that looks from [eye] towards [target] with [up] as near to up as
+  /// it can be - [_isometricOrientation]'s construction (right, up, back columns) from a look direction.
+  static vm.Quaternion orientationLookingFrom(vm.Vector3 eye, vm.Vector3 target, vm.Vector3 up) {
+    final back = (eye - target).normalized();
+    var right = up.cross(back);
+    if (right.length < 1e-9) right = vm.Vector3(1, 0, 0).cross(back).length > 1e-9 ? vm.Vector3(1, 0, 0).cross(back) : vm.Vector3(0, 1, 0).cross(back);
+    right.normalize();
+    final trueUp = back.cross(right)..normalize();
+    return vm.Quaternion.fromRotation(vm.Matrix3.columns(right, trueUp, back)).conjugated();
+  }
+
   /// Unit vector from [target] towards the camera.
   vm.Vector3 get _direction => orientation.rotated(_localBack);
 

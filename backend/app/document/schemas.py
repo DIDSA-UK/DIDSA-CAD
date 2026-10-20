@@ -3261,6 +3261,12 @@ class AssemblyOccurrenceInstance(BaseModel):
     # viewport's own default body colour), same as every pre-existing
     # instance before this field existed.
     color: str | None = None
+    # The Appearance tool (`docs/appearance-tool-scope.md` V3): the instance's resolved appearance as seen from the
+    # requested root (`app.document.appearance`, the rule the glb's materials use; only the fields something sets, `{}` =
+    # nothing), and the faces whose appearance differs from it (`[{body_id, face_index, appearance}]`, face indices as in
+    # the mesh's `face_ids`; empty when every face looks alike). `color` stays for older clients.
+    appearance: dict = {}
+    face_appearances: list[dict] = []
 
 
 class AssemblyMeshResponse(BaseModel):

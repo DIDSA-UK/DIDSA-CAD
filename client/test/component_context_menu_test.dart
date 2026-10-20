@@ -136,6 +136,15 @@ void main() {
       expect(await pendingResult, ComponentContextMenuAction.mate);
     });
 
+    // The Appearance tool (V3): the component's Appearance panel.
+    testWidgets('tapping Appearance... resolves appearance', (tester) async {
+      await openMenu(tester, isFocused: false, hidden: false);
+      await tester.ensureVisible(find.text('Appearance...'));
+      await tester.tap(find.text('Appearance...'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, ComponentContextMenuAction.appearance);
+    });
+
     testWidgets('tapping Pattern resolves pattern', (tester) async {
       await openMenu(tester, isFocused: false, hidden: false);
       await tester.tap(find.text('Pattern'));

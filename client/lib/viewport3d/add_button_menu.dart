@@ -52,6 +52,8 @@ enum AssemblyAddMenuAction {
   createNewComponent,
   addMate,
   patternComponent,
+  appearance,
+  scenes,
 }
 
 /// Shows the Assembly-lens "Add" FAB's flyout - the direct analog of
@@ -86,6 +88,18 @@ Future<AssemblyAddMenuAction?> showAssemblyAddMenu(BuildContext context) {
       action: AssemblyAddMenuAction.patternComponent,
       label: 'Pattern Component',
       icon: Icons.grid_view_outlined,
+    ),
+    // The Appearance tool (`docs/appearance-tool-scope.md` V3) and scenes (`docs/scenes-scope.md` S3): not additions to
+    // the assembly, but the assembly lens's other two whole-assembly tools live in the same flyout.
+    ActionSheetEntry(
+      action: AssemblyAddMenuAction.appearance,
+      label: 'Appearance…',
+      icon: Icons.palette_outlined,
+    ),
+    ActionSheetEntry(
+      action: AssemblyAddMenuAction.scenes,
+      label: 'Scenes…',
+      icon: Icons.photo_camera_back_outlined,
     ),
   ]);
 }

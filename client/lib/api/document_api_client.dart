@@ -1730,12 +1730,21 @@ class AssemblyOccurrenceInstanceDto {
   /// [OccurrenceDto.color]'s own doc comment.
   final String? color;
 
+  /// The Appearance tool (`docs/appearance-tool-scope.md` V3): this instance's resolved appearance as seen from the
+  /// requested root (only the fields something sets; empty = nothing), and the faces that look different from it,
+  /// keyed `'$bodyId|$faceIndex'` (empty when every face looks alike). The backend resolves them with the same rule the
+  /// glb's materials and `appearance_rule.dart` use.
+  final Map<String, dynamic> appearance;
+  final Map<String, Map<String, dynamic>> faceAppearances;
+
   AssemblyOccurrenceInstanceDto({
     required this.occurrencePath,
     required this.partId,
     required this.worldTransform,
     this.hidden = false,
     this.color,
+    this.appearance = const {},
+    this.faceAppearances = const {},
   });
 
   factory AssemblyOccurrenceInstanceDto.fromJson(Map<String, dynamic> json) =>
@@ -1745,6 +1754,22 @@ class AssemblyOccurrenceInstanceDto {
         worldTransform: RigidTransformDto.fromJson(json['world_transform'] as Map<String, dynamic>),
         hidden: json['hidden'] as bool? ?? false,
         color: json['color'] as String?,
+        appearance: (json['appearance'] as Map?)?.cast<String, dynamic>() ?? const {},
+        faceAppearances: {
+          for (final f in (json['face_appearances'] as List?) ?? const [])
+            '${(f as Map)['body_id']}|${(f['face_index'] as num).toInt()}': (f['appearance'] as Map).cast<String, dynamic>(),
+        },
+      );
+
+  /// This instance with [worldTransform] and [hidden] replaced (everything else kept: a gizmo drag, a shown scene).
+  AssemblyOccurrenceInstanceDto copyWith({RigidTransformDto? worldTransform, bool? hidden}) => AssemblyOccurrenceInstanceDto(
+        occurrencePath: occurrencePath,
+        partId: partId,
+        worldTransform: worldTransform ?? this.worldTransform,
+        hidden: hidden ?? this.hidden,
+        color: color,
+        appearance: appearance,
+        faceAppearances: faceAppearances,
       );
 }
 
@@ -5670,6 +5695,62 @@ class DocumentApiClient {
         () => _httpClient.get(_uri('/document/parts/$partId/component-patterns'), headers: _headers),
         (body) =>
             (body as List).map((p) => ComponentPatternDto.fromJson(p as Map<String, dynamic>)).toList(),
+      );
+
+  // --- The Appearance tool (`docs/appearance-tool-scope.md`) and scenes (`docs/scenes-scope.md`) ---------------------
+  // Plain JSON maps: `lib/appearance/` works on the reference's JSON shapes (`appearance_rule.dart`), so these hand the
+  // backend's bodies straight through rather than through DTOs.
+
+  /// `GET /document/parts/{part_id}` as JSON: what the appearance model reads from it (`appearance`, `body_appearances`,
+  /// `face_appearances` with each face's `current_index`, and `name`).
+  Future<Map<String, dynamic>> getPartJson(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId'), headers: _headers),
+        (body) => body as Map<String, dynamic>,
+      );
+
+  /// `GET /document/parts/{part_id}/appearance-overrides`: the Part's override list (`legacy`, `unresolved` and
+  /// `face_current_index` on each).
+  Future<List<Map<String, dynamic>>> getAppearanceOverrides(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/appearance-overrides'), headers: _headers),
+        (body) => [for (final o in (body as Map<String, dynamic>)['overrides'] as List) o as Map<String, dynamic>],
+      );
+
+  /// `PUT /document/parts/{part_id}/appearance-overrides`: sets or replaces the override with [record]'s target
+  /// (`{path, scope?, pattern_id?, part_id?, body_id?, face?}`); `appearance: null` clears it. Returns the whole list.
+  Future<List<Map<String, dynamic>>> putAppearanceOverride(String partId, Map<String, dynamic> record) => _send(
+        () => _httpClient.put(
+              _uri('/document/parts/$partId/appearance-overrides'),
+              headers: _headers,
+              body: jsonEncode(record),
+            ),
+        (body) => [for (final o in (body as Map<String, dynamic>)['overrides'] as List) o as Map<String, dynamic>],
+      );
+
+  /// `GET /document/parts/{part_id}/scenes`: the Part's scenes, each with `unresolved`.
+  Future<List<Map<String, dynamic>>> listScenes(String partId) => _send(
+        () => _httpClient.get(_uri('/document/parts/$partId/scenes'), headers: _headers),
+        (body) => [for (final s in body as List) s as Map<String, dynamic>],
+      );
+
+  /// `POST /document/parts/{part_id}/scenes` (`{name, overrides, section_planes?, viewpoint?}`): the new scene.
+  Future<Map<String, dynamic>> createScene(String partId, Map<String, dynamic> scene) => _send(
+        () => _httpClient.post(_uri('/document/parts/$partId/scenes'), headers: _headers, body: jsonEncode(scene)),
+        (body) => body as Map<String, dynamic>,
+      );
+
+  /// `PATCH /document/parts/{part_id}/scenes/{scene_id}`: each field given replaces that part of the scene whole.
+  Future<Map<String, dynamic>> updateScene(String partId, String sceneId, Map<String, dynamic> fields) => _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/scenes/$sceneId'),
+              headers: _headers,
+              body: jsonEncode(fields),
+            ),
+        (body) => body as Map<String, dynamic>,
+      );
+
+  Future<void> deleteScene(String partId, String sceneId) => _send(
+        () => _httpClient.delete(_uri('/document/parts/$partId/scenes/$sceneId'), headers: _headers),
+        (_) {},
       );
 
   /// Phase 7: `POST /document/parts/{part_id}/component-patterns` - creates
