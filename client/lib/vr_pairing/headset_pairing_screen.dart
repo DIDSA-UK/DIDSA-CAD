@@ -22,12 +22,19 @@ class HeadsetPairingScreen extends StatefulWidget {
   /// How long the code stays on screen before it hides itself.
   final Duration showFor;
 
+  /// Overridable for tests: the on-phone server's Wi-Fi setting and this phone's Wi-Fi addresses (see
+  /// [HeadsetPairing.runChecks]).
+  final bool? localServerOnWifi;
+  final Future<List<String>> Function()? wifiAddresses;
+
   const HeadsetPairingScreen({
     super.key,
     this.baseUrl,
     this.apiKey,
     this.httpClient,
     this.showFor = const Duration(seconds: 60),
+    this.localServerOnWifi,
+    this.wifiAddresses,
   });
 
   @override
@@ -35,7 +42,7 @@ class HeadsetPairingScreen extends StatefulWidget {
 }
 
 class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
-  List<PairingCheck>? _checks;
+  PairingResult? _result;
   bool _shown = false;
   int _secondsLeft = 0;
   Timer? _timer;
@@ -43,7 +50,7 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
   String get _baseUrl => widget.baseUrl ?? ApiConfig.baseUrl;
   String get _apiKey => widget.apiKey ?? ApiConfig.apiKey;
 
-  bool get _compatible => _checks != null && _checks!.every((c) => !c.failed);
+  bool get _compatible => _result?.compatible ?? false;
 
   @override
   void initState() {
@@ -59,12 +66,18 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
 
   Future<void> _runChecks() async {
     _hide();
-    setState(() => _checks = null);
+    setState(() => _result = null);
     final client = widget.httpClient ?? http.Client();
     try {
-      final checks = await HeadsetPairing.runChecks(client: client, baseUrl: _baseUrl, apiKey: _apiKey);
+      final result = await HeadsetPairing.runChecks(
+        client: client,
+        baseUrl: _baseUrl,
+        apiKey: _apiKey,
+        localServerOnWifi: widget.localServerOnWifi,
+        wifiAddresses: widget.wifiAddresses,
+      );
       if (!mounted) return;
-      setState(() => _checks = checks);
+      setState(() => _result = result);
       if (_compatible) _show();
     } finally {
       if (widget.httpClient == null) client.close();
@@ -92,7 +105,8 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final checks = _checks;
+    final result = _result;
+    final checks = result?.checks;
     return Scaffold(
       appBar: AppBar(title: const Text('Connect a VR headset')),
       body: SafeArea(
@@ -128,18 +142,14 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                       padding: const EdgeInsets.all(16),
                       child: QrImageView(
                         key: const ValueKey('headset-pairing-qr'),
-                        data: HeadsetPairing.payload(
-                          name: HeadsetPairing.defaultName(_baseUrl),
-                          baseUrl: _baseUrl,
-                          apiKey: _apiKey,
-                        ),
+                        data: HeadsetPairing.payload(name: result!.name, baseUrl: result.pairUrl!, apiKey: _apiKey),
                         size: 260,
                         backgroundColor: Colors.white,
                       ),
                     ),
                   ),
                   const SizedBox(height: 8),
-                  Text(HeadsetPairing.defaultName(_baseUrl), textAlign: TextAlign.center),
+                  Text(result.name, textAlign: TextAlign.center),
                   Text('Hides in $_secondsLeft s', textAlign: TextAlign.center),
                   const SizedBox(height: 8),
                   OutlinedButton(onPressed: _hide, child: const Text('Hide now')),

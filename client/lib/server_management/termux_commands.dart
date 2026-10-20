@@ -72,7 +72,10 @@ class TermuxCommands {
   /// without CAD_API_KEY set, and the client can only talk to it if that
   /// key matches what ConnectionScreen already has stored, so the caller
   /// must pass the same value rather than this screen collecting its own.
-  static List<String> startServer(String apiKey) => _wrapInDistro(_startScript(apiKey));
+  ///
+  /// [onWifi]: listen on every interface (`0.0.0.0`), so a VR headset on the same Wi-Fi can reach the server at the phone's
+  /// address ([ApiConfig.localServerOnWifi]); otherwise only inside the phone (`127.0.0.1`).
+  static List<String> startServer(String apiKey, {bool onWifi = false}) => _wrapInDistro(_startScript(apiKey, onWifi));
 
   static List<String> stopServer() =>
       _wrapInDistro("pkill -f ${_shellQuote(processMatch)} && echo stopped || echo not_running");
@@ -81,8 +84,8 @@ class TermuxCommands {
   /// RUN_COMMAND intents) so there's no window where the app could observe
   /// "not running" between them and no ordering dependency on Android's
   /// own intent delivery timing.
-  static List<String> restartServer(String apiKey) =>
-      _wrapInDistro("pkill -f ${_shellQuote(processMatch)} 2>/dev/null; sleep 1; ${_startScript(apiKey)}");
+  static List<String> restartServer(String apiKey, {bool onWifi = false}) =>
+      _wrapInDistro("pkill -f ${_shellQuote(processMatch)} 2>/dev/null; sleep 1; ${_startScript(apiKey, onWifi)}");
 
   /// Pull then start in *one* dispatched command, not two separate
   /// RUN_COMMAND intents - RUN_COMMAND_BACKGROUND returns as soon as
@@ -93,8 +96,8 @@ class TermuxCommands {
   /// pull completes before the start script even begins - the whole point
   /// of this being one shell parse rather than an ordering assumption
   /// about two independent ones.
-  static List<String> pullAndStart(String branch, String apiKey) =>
-      _wrapInDistro('${_pullScript(branch)} && ${_startScript(apiKey)}');
+  static List<String> pullAndStart(String branch, String apiKey, {bool onWifi = false}) =>
+      _wrapInDistro('${_pullScript(branch)} && ${_startScript(apiKey, onWifi)}');
 
   static String _pullScript(String branch) {
     final quotedBranch = _shellQuote(branch);
@@ -106,7 +109,11 @@ class TermuxCommands {
         '&& git reset --hard FETCH_HEAD';
   }
 
-  static String _startScript(String apiKey) =>
+  /// The address uvicorn listens on: inside the phone only, or every interface (see [startServer]'s `onWifi`).
+  static const String phoneOnlyHost = '127.0.0.1';
+  static const String wifiHost = '0.0.0.0';
+
+  static String _startScript(String apiKey, bool onWifi) =>
       'cd $backendDir '
       '&& eval "\$(micromamba shell hook --shell bash)" '
       '&& micromamba activate $condaEnv '
@@ -135,7 +142,7 @@ class TermuxCommands {
       // failures hit during this feature's development - see
       // [processMatch]'s own doc comment for what was - but both remain
       // independently correct practice, so they're kept.
-      '&& exec python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 '
+      '&& exec python -m uvicorn app.main:app --host ${onWifi ? wifiHost : phoneOnlyHost} --port 8000 '
       '> >(tee -a $logFile) 2>&1';
 
   /// RUN_COMMAND_ARGUMENTS is delivered as a real argv array (see

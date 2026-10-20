@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show InternetAddressType, NetworkInterface;
 
 import 'package:http/http.dart' as http;
 
@@ -9,6 +10,9 @@ import '../config.dart';
 /// The headset app (DIDSA-VR, `docs/landing-scope.md` "Adding a server") scans the code and stores the server, so nobody types
 /// a URL or API key on a VR keyboard. The code is shown only once every check here passes: the server is set, it answers, the
 /// headset could reach its address, and it has the endpoints the headset needs.
+///
+/// The on-phone server (Server Management, `http://127.0.0.1:8000`) pairs too: the code then carries the phone's Wi-Fi address,
+/// once Server Management's "Let VR headsets on this Wi-Fi connect" has the server listening there.
 
 /// How one check came out. [fail] stops the code being shown; [warn] shows it with a note.
 enum PairingCheckState { pass, warn, fail }
@@ -23,6 +27,18 @@ class PairingCheck {
   bool get failed => state == PairingCheckState.fail;
 }
 
+/// What [HeadsetPairing.runChecks] found: every check, and (when nothing failed) the address and name the code carries. For the
+/// on-phone server [pairUrl] is the phone's Wi-Fi address, not the `127.0.0.1` this app uses.
+class PairingResult {
+  final List<PairingCheck> checks;
+  final String? pairUrl;
+  final String name;
+
+  const PairingResult(this.checks, {this.pairUrl, this.name = ''});
+
+  bool get compatible => pairUrl != null && checks.every((c) => !c.failed);
+}
+
 class HeadsetPairing {
   HeadsetPairing._();
 
@@ -31,9 +47,11 @@ class HeadsetPairing {
   static const String payloadScheme = 'didsa-vr';
   static const int payloadVersion = 1;
 
-  /// Whether the headset app accepts a plain `http://` address on the local network. False until DIDSA-VR's custom Android build
-  /// (landing scope step L0) adds a network security config for it; until then Android on the headset blocks cleartext HTTP.
-  static const bool headsetAllowsLanHttp = false;
+  /// Whether a plain `http://` address on the local network may be paired. Android's cleartext-HTTP rule is enforced by its Java
+  /// networking stack; the headset app's requests go through Godot's own sockets, which it is not expected to cover (Android's
+  /// `NetworkSecurityPolicy` docs say as much for the socket API). Not yet tried on a headset: if it turns out blocked there, set
+  /// this false (and DIDSA-VR needs its network security config, landing scope step L0). Plain http on the internet stays refused.
+  static const bool headsetAllowsLanHttp = true;
 
   /// What the headset app calls, by OpenAPI path. Without these it cannot open, show or save anything.
   static const List<String> requiredPaths = [
@@ -99,6 +117,12 @@ class HeadsetPairing {
           'example a Cloudflare Tunnel; plain http on your own network comes with a later headset build.',
         );
       }
+      return const PairingCheck(
+        title,
+        PairingCheckState.warn,
+        'Plain http on your own network: the headset must be on the same Wi-Fi, and the API key travels unencrypted, so '
+        'anything on this network could read it.',
+      );
     }
     if (host.endsWith('.local')) {
       return const PairingCheck(
@@ -194,25 +218,98 @@ class HeadsetPairing {
   }
 
   /// Every check in order. Stops after the first failure, since later checks would only repeat it.
-  static Future<List<PairingCheck>> runChecks({
+  ///
+  /// [localServerOnWifi] defaults to [ApiConfig.localServerOnWifi]; [wifiAddresses] to [phoneWifiAddresses] (both overridable for
+  /// tests).
+  static Future<PairingResult> runChecks({
     required http.Client client,
     required String baseUrl,
     required String apiKey,
+    bool? localServerOnWifi,
+    Future<List<String>> Function()? wifiAddresses,
   }) async {
     if (baseUrl.trim().isEmpty || apiKey.trim().isEmpty) {
-      return const [
+      return const PairingResult([
         PairingCheck('Server set', PairingCheckState.fail, 'Connect this app to a server first, then try again.'),
-      ];
+      ]);
     }
-    final results = <PairingCheck>[
+    final checks = <PairingCheck>[
       const PairingCheck('Server set', PairingCheckState.pass, 'Using the server this app is connected to.'),
     ];
-    results.add(checkAddress(baseUrl));
-    if (results.last.failed) return results;
-    results.add(await checkHealth(client, baseUrl, apiKey));
-    if (results.last.failed) return results;
-    results.add(await checkEndpoints(client, baseUrl, apiKey));
-    return results;
+    var pairUrl = _trimmed(baseUrl);
+    var name = defaultName(baseUrl);
+    final uri = Uri.tryParse(pairUrl);
+    final onPhone = uri != null && _isLoopback(uri.host.toLowerCase());
+    if (onPhone) {
+      const title = 'This phone\'s server on Wi-Fi';
+      if (!(localServerOnWifi ?? ApiConfig.localServerOnWifi)) {
+        checks.add(const PairingCheck(
+          title,
+          PairingCheckState.fail,
+          'This app uses the server running on this phone. In Server Management turn on "Let VR headsets on this Wi-Fi '
+          'connect", Restart the server, then try again.',
+        ));
+        return PairingResult(checks);
+      }
+      final addresses = await (wifiAddresses ?? phoneWifiAddresses)();
+      if (addresses.isEmpty) {
+        checks.add(const PairingCheck(
+          title,
+          PairingCheckState.fail,
+          'This phone has no Wi-Fi address. Join the Wi-Fi the headset uses (or turn on the phone\'s hotspot and join it '
+          'from the headset).',
+        ));
+        return PairingResult(checks);
+      }
+      pairUrl = uri.replace(host: addresses.first).toString();
+      pairUrl = _trimmed(pairUrl);
+      name = 'Phone server (${addresses.first})';
+      checks.add(PairingCheck(
+        title,
+        PairingCheckState.warn,
+        'The headset will use $pairUrl. Keep this phone awake and on this Wi-Fi; if its address changes, pair again.',
+      ));
+    }
+    checks.add(checkAddress(pairUrl));
+    if (checks.last.failed) return PairingResult(checks);
+    final health = await checkHealth(client, pairUrl, apiKey);
+    if (onPhone && health.failed) {
+      checks.add(PairingCheck(
+        health.title,
+        PairingCheckState.fail,
+        'The server does not answer on $pairUrl. Restart it from Server Management (the Wi-Fi setting applies when it starts).',
+      ));
+      return PairingResult(checks);
+    }
+    checks.add(health);
+    if (health.failed) return PairingResult(checks);
+    checks.add(await checkEndpoints(client, pairUrl, apiKey));
+    if (checks.last.failed) return PairingResult(checks);
+    return PairingResult(checks, pairUrl: pairUrl, name: name);
+  }
+
+  /// This phone's local-network IPv4 addresses, Wi-Fi (and hotspot) interfaces first. A mobile-data interface's address is left
+  /// out: carriers hand out private 10.x addresses a headset cannot reach.
+  static Future<List<String>> phoneWifiAddresses() async {
+    final List<NetworkInterface> interfaces;
+    try {
+      interfaces = await NetworkInterface.list(type: InternetAddressType.IPv4);
+    } catch (_) {
+      return const [];
+    }
+    bool isWifi(String name) => RegExp(r'^(wlan|swlan|ap|softap|wl|en)').hasMatch(name.toLowerCase());
+    bool isMobile(String name) => RegExp(r'^(rmnet|v4-rmnet|ccmni|pdp|dummy|tun|lo)').hasMatch(name.toLowerCase());
+    final wifi = <String>[];
+    final other = <String>[];
+    for (final interface in interfaces) {
+      if (isMobile(interface.name)) continue;
+      for (final address in interface.addresses) {
+        final host = address.address;
+        if (_isLoopback(host) || host.startsWith('169.254.') || !_isLocalNetwork(host) || _isTailnet(host)) continue;
+        (isWifi(interface.name) ? wifi : other).add(host);
+      }
+    }
+    return [...wifi, ...other];
   }
 
   /// The QR code's text: `didsa-vr:1?n=<name>&u=<url>&k=<key>`, each value percent-encoded.

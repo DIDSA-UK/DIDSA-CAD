@@ -19,12 +19,22 @@ code is shown. A warning still shows the code, with the reason.
 | Check | Fails when | Warns when |
 |---|---|---|
 | Server set | No saved URL or key | |
-| Address the headset can reach | Not http(s); loopback (`localhost`, `127.x`, `::1`: the on-phone Termux server); `10.0.2.2` (emulator); link-local; plain `http://` anywhere, for now | `.local` name; Tailscale (`100.64/10`, `*.ts.net`); `https://` to a private address (certificate must be trusted) |
-| Server running | `GET /health` with the key fails, times out or is refused (401 / 403 named) | |
+| This phone's server on Wi-Fi (only for the on-phone server, `127.0.0.1`) | Server Management's "Let VR headsets on this Wi-Fi connect" is off; or the phone has no Wi-Fi address | Always: the address the code will carry, and keep the phone awake |
+| Address the headset can reach | Not http(s); loopback given directly; `10.0.2.2` (emulator); link-local; plain `http://` on the internet | `http://` on the local network (key unencrypted); `.local` name; Tailscale (`100.64/10`, `*.ts.net`); `https://` to a private address (certificate must be trusted) |
+| Server running | `GET /health` with the key fails, times out or is refused (401 / 403 named). For the phone's server it is asked at the Wi-Fi address, so a server still listening only inside the phone fails here, with "Restart it" | |
 | Server works with the headset | `/openapi.json` lacks a required path: `/health`, `/document/import/native`, `/document/export/native`, `/document/parts/{part_id}/assembly-mesh.glb` | `/openapi.json` unreadable; or no `mates`, `measure`, `appearance-overrides` or `scenes` route (that tool will not work in VR) |
 
-Plain `http://` on the local network is refused because Android on the headset blocks cleartext HTTP. When DIDSA-VR's custom
-Android build allows LAN addresses (its landing scope, step L0), set `HeadsetPairing.headsetAllowsLanHttp` to true.
+Plain `http://` on the local network is allowed (`HeadsetPairing.headsetAllowsLanHttp`). Android's cleartext-HTTP rule is enforced by
+its Java networking stack, and the headset app's requests use Godot's own sockets; not yet tried on a headset. If a headset test shows
+it blocked, set the flag false until DIDSA-VR adds a network security config (its landing scope, "Plain http on the Quest").
+
+## The phone's own server
+
+Server Management's **Let VR headsets on this Wi-Fi connect** (`ApiConfig.localServerOnWifi`, off by default) starts uvicorn with
+`--host 0.0.0.0` instead of `127.0.0.1` on the next Start / Restart / Pull & start. Pairing then replaces `127.0.0.1` with the phone's
+Wi-Fi address (`HeadsetPairing.phoneWifiAddresses`: Wi-Fi and hotspot interfaces first, mobile-data interfaces left out) and runs the
+checks against that address. The code's name is "Phone server (<address>)". While the switch is on, anything on the Wi-Fi can reach
+the server; it still needs the key, which travels unencrypted over plain http.
 
 Nothing here can test the route from the headset itself: a server that passes may still be unreachable from it (another Wi-Fi, a
 firewall).
@@ -47,6 +57,8 @@ per-device key would need backend work (per-device keys do not exist yet).
 
 ## Tests
 
-`client/test/headset_pairing_test.dart` (16): every address rule, the check order (a local address makes no request), a down server, a
-wrong key, a server too old, a server without Scenes (warning), the payload round trip, and the screen (code shown, hides itself,
-shown again, hidden; refused for the on-phone server). Not seen on a device; not scanned by a headset.
+`client/test/headset_pairing_test.dart` (20): every address rule, the check order (the phone's server with the switch off makes no
+request), a down server, a wrong key, a server too old, a server without Scenes (warning), the phone's server (refused with the switch
+off or no Wi-Fi; paired at its Wi-Fi address and checked only there; "Restart" when it does not answer there), the payload round trip,
+and the screen. `test/server_management/termux_commands_test.dart`: the switch's `0.0.0.0` on Start, Restart and Pull & start. Not
+seen on a device; `NetworkInterface.list` on Android not tried; not scanned by a headset.

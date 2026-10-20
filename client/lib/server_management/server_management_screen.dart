@@ -30,6 +30,7 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
   final _controller = TermuxController();
 
   bool? _hasPermission;
+  bool _onWifi = ApiConfig.localServerOnWifi;
   bool _busy = false;
   String? _statusMessage;
   ServerReachability _reachability = ServerReachability.unknown;
@@ -69,6 +70,15 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
       _checkingLiveStatus = false;
       _liveStatus = status;
     });
+  }
+
+  Future<void> _setOnWifi(bool value) async {
+    setState(() => _onWifi = value);
+    await ApiConfig.saveLocalServerOnWifi(value);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Restart the server for this to take effect.')),
+    );
   }
 
   Future<void> _grantPermission() async {
@@ -275,6 +285,18 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
                 label: const Text('Show last Termux result'),
               ),
             ],
+          ),
+          const SizedBox(height: 8),
+          // Connect a VR headset to this phone's server (vr_pairing/): listen on the Wi-Fi as well as inside the phone.
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Let VR headsets on this Wi-Fi connect'),
+            subtitle: const Text(
+              'Takes effect when the server next starts (Restart). Anything on this Wi-Fi can then reach the server; it still needs '
+              'the API key, which travels unencrypted over plain http.',
+            ),
+            value: _onWifi,
+            onChanged: _busy ? null : _setOnWifi,
           ),
           const SizedBox(height: 24),
           if (_statusMessage != null)

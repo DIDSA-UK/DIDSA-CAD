@@ -3745,3 +3745,9 @@ alias, link-local and, for now, any `http://`, which Android on the headset bloc
 Appearance / Scenes is a warning). The code is `didsa-vr:1?n=&u=&k=` and hides itself after 60 s, since it carries the API key.
 Contract and rules: `docs/vr-headset-pairing.md`. New dependency `qr_flutter` (BSD-3-Clause). Tests: `test/headset_pairing_test.dart`
 (16). Not seen on a device; the headset side is not built yet.
+
+Same day, follow-up: **the phone's own server pairs too.** Server Management has **Let VR headsets on this Wi-Fi connect**
+(`ApiConfig.localServerOnWifi`, off by default): the Termux server then starts with `--host 0.0.0.0`, and pairing swaps `127.0.0.1` for
+the phone's Wi-Fi address (mobile-data interfaces skipped) and checks the server answers there. Plain `http://` on the local network
+now pairs with a warning (the headset's requests use Godot's own sockets, which Android's cleartext rule is not expected to cover;
+not tried on a headset). Tests: 20 in `headset_pairing_test.dart`, plus the bind address in `termux_commands_test.dart`.

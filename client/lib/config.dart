@@ -17,10 +17,12 @@ class ApiConfig {
   static const String serverUrlPrefKey = 'server_url';
   static const String apiKeyPrefKey = 'api_key';
   static const String localApiKeyPrefKey = 'local_api_key';
+  static const String localServerOnWifiPrefKey = 'local_server_on_wifi';
 
   static String _baseUrl = '';
   static String _apiKey = '';
   static String _localApiKey = '';
+  static bool _localServerOnWifi = false;
   static String? _sessionId;
 
   /// The backend base URL, e.g. `https://cad-api.snail-shell.uk` - empty
@@ -41,6 +43,11 @@ class ApiConfig {
   /// actually last told to use. Empty until a local start/restart has
   /// happened at least once, on this device, since install.
   static String get localApiKey => _localApiKey;
+
+  /// Server Management's "Let VR headsets on this Wi-Fi connect": the on-device server listens on every network interface
+  /// (`0.0.0.0`) instead of only inside the phone (`127.0.0.1`), so a headset on the same Wi-Fi can reach it at the phone's
+  /// Wi-Fi address (see `vr_pairing/headset_pairing.dart`). Off by default; takes effect the next time the server starts.
+  static bool get localServerOnWifi => _localServerOnWifi;
 
   /// Whether both [baseUrl] and [apiKey] are non-empty - drives whether
   /// [ConnectionScreen] can pre-fill its fields and offer Connect on cold
@@ -79,6 +86,7 @@ class ApiConfig {
     _baseUrl = prefs.getString(serverUrlPrefKey) ?? '';
     _apiKey = prefs.getString(apiKeyPrefKey) ?? '';
     _localApiKey = prefs.getString(localApiKeyPrefKey) ?? '';
+    _localServerOnWifi = prefs.getBool(localServerOnWifiPrefKey) ?? false;
   }
 
   /// Persists [baseUrl]/[apiKey] to `shared_preferences` and updates the
@@ -107,6 +115,12 @@ class ApiConfig {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(localApiKeyPrefKey, key);
     _localApiKey = key;
+  }
+
+  static Future<void> saveLocalServerOnWifi(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(localServerOnWifiPrefKey, value);
+    _localServerOnWifi = value;
   }
 
   /// Returns [localApiKey], generating and persisting a fresh random one

@@ -63,6 +63,19 @@ void main() {
       expect(script, contains('exec python -m uvicorn'));
     });
 
+    test('onWifi listens on every interface, for a VR headset on the same Wi-Fi; off stays inside the phone', () {
+      for (final script in [
+        TermuxCommands.startServer('key', onWifi: true).last,
+        TermuxCommands.restartServer('key', onWifi: true).last,
+        TermuxCommands.pullAndStart('main', 'key', onWifi: true).last,
+      ]) {
+        expect(script, contains('uvicorn app.main:app --host 0.0.0.0 --port 8000'));
+        expect(script, isNot(contains('--host 127.0.0.1')));
+      }
+      expect(TermuxCommands.restartServer('key').last, contains('--host 127.0.0.1 --port 8000'));
+      expect(TermuxCommands.pullAndStart('main', 'key').last, contains('--host 127.0.0.1 --port 8000'));
+    });
+
     test('startServer runs uvicorn in the foreground (exec), not backgrounded', () {
       final script = TermuxCommands.startServer('key').last;
       expect(script, isNot(contains('setsid')));
