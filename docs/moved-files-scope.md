@@ -9,10 +9,28 @@ moved files") into a scope of its own.
 | Phase | Summary | Status | Where |
 |---|---|---|---|
 | F1 | Backend: `Occurrence.ref_part_id`, native round trip, API; the lookup rule + golden vectors | Done (not merged) | CAD `claude/appearance-and-scenes` |
-| F2 | DIDSA-VR | Not started | VR |
+| F2 | DIDSA-VR: index, rule (vectors), compose, Files > References, Locate... | Done (not merged; headless and live-backend tested, not on the headset) | VR `claude/appearance-and-scenes` (its CHANGELOG and `docs/status.md`) |
 | F3 | Flat app | Not started | CAD |
 
 Update this table with every milestone.
+
+## F2 implementation notes (DIDSA-VR, branch `claude/appearance-and-scenes`)
+
+- `scripts/file_lookup.gd` is the GDScript copy of the rule (passes all 16 vectors, `tests/file_lookup_vectors.gd`);
+  `scripts/file_index.gd` is the index (the opened file's folder, the project folder, the models folders, every subfolder, dot-folders
+  skipped, at most 5000 files and 12 folders deep, ids cached per file and last-modified time); `scripts/native_compose.gd` runs the
+  rule only when a path misses or finds a file with another id, so an assembly whose files are where they were costs nothing new.
+- **The stored id** is the occurrence's `ref_part_id`, else (a file saved before F1) its stored `resolved_part_id`, as the backend
+  seeds it.
+- **Found by id:** the occurrence's `external_ref` becomes the path under the folder it was found in; the status line names the
+  move, Files > References lists it, and the document is marked unsaved (DIDSA-VR saves with Save as new file, so the corrected path
+  reaches disk in that new file).
+- **Files > References** (the tablet's Files category): each reference to review with why, its candidates (Use; a file that is
+  not the placed part needs a second press, the side panel's existing confirm), Locate... (every model file in the searched folders)
+  and Leave missing. A pick is applied by opening the file again with the pick (`main.choose_reference`), not by a PATCH, so F1
+  needed no endpoint for it. When the only unsaved change is a corrected path from that same open, the re-open doesn't ask to discard.
+- **Not built:** picks for a file brought in with Add or added to a room (their moves are found by id and reported on the status line;
+  the rest stay unresolved with the reason).
 
 ## F1 implementation notes (backend)
 
