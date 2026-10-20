@@ -49,7 +49,9 @@ Update this table with every milestone.
   use them, but are not listed); a report is not restored if the assembly is re-opened without going through Open.
 - **Tests:** `test/file_lookup_rule_test.dart`, `test/moved_files_composer_test.dart` (composer cases mirroring DIDSA-VR's
   `tests/moved_files.gd`, the index, save-time id stamping, Save All order), `test/references_sheet_test.dart`, and a banner / sheet case
-  in `test/part_screen_test.dart`.
+  in `test/part_screen_test.dart`. `test/live/moved_files_live_test.dart` runs against a real backend and real files (skipped unless
+  `DIDSA_LIVE_BACKEND` is set; `DIDSA_LIVE_KEY` is the API key): a moved file found by id and written by Save All, a mismatch kept
+  unresolved with its id through a save, and a re-minted clash saved parent-first then with Save All, each reopened with nothing to report.
 
 ## F2 implementation notes (DIDSA-VR, branch `claude/appearance-and-scenes`)
 
