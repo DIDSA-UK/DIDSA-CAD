@@ -2023,6 +2023,9 @@ def _occurrence_to_dict(occurrence: Occurrence) -> dict:
         # key and imports as `None` (no colour override), matching every
         # pre-existing Occurrence's actual unset state exactly.
         "color": occurrence.color,
+        # Finding moved files (`docs/moved-files-scope.md` F1): the placed file's root Part id, written only when known,
+        # so a reference that was never resolved writes nothing new.
+        **({"ref_part_id": occurrence.placed_part_id} if occurrence.placed_part_id else {}),
     }
 
 
@@ -2031,7 +2034,17 @@ def _occurrence_from_dict(data: dict) -> Occurrence:
     yet validated, since at this point not every Part in the payload has
     necessarily been built yet. `import_native` validates it afterward
     (`_resolve_occurrence_part_ids`), clearing it back to `None` unless it
-    actually names another Part present in this same payload."""
+    actually names another Part present in this same payload.
+
+    `ref_part_id` is kept whether or not the target is in the payload (the
+    point of it, `docs/moved-files-scope.md`). A file saved before it existed
+    seeds it from the stored `resolved_part_id`, before that is checked: the
+    id the target had when the file was last saved."""
+    ref_part_id = data.get("ref_part_id")
+    if ref_part_id is None:
+        ref_part_id = data.get("resolved_part_id")
+    if ref_part_id is not None and not isinstance(ref_part_id, str):
+        raise NativeFormatError(f"Occurrence {data.get('id')!r}: ref_part_id must be a string")
     return Occurrence(
         id=_require(data, "id"),
         part_id=data.get("resolved_part_id"),
@@ -2042,6 +2055,7 @@ def _occurrence_from_dict(data: dict) -> Occurrence:
         hidden=data.get("hidden", False),
         fixed=data.get("fixed", False),
         color=data.get("color"),
+        ref_part_id=ref_part_id or None,
     )
 
 

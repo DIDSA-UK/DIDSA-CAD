@@ -3455,6 +3455,7 @@ def _occurrence_response(occurrence: Occurrence) -> OccurrenceResponse:
         id=occurrence.id,
         external_ref=occurrence.external_ref,
         resolved_part_id=occurrence.part_id,
+        ref_part_id=occurrence.placed_part_id,
         name_override=occurrence.name_override,
         transform=RigidTransformResponse(
             translation=occurrence.transform.translation,
@@ -3670,6 +3671,7 @@ def create_occurrence(part_id: str, payload: OccurrenceCreate) -> OccurrenceResp
         hidden=payload.hidden,
         fixed=payload.fixed,
         color=payload.color,
+        ref_part_id=payload.ref_part_id or payload.resolved_part_id,
     )
     part.occurrences.append(occurrence)
     return _occurrence_response(occurrence)

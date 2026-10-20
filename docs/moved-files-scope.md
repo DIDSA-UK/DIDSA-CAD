@@ -1,8 +1,40 @@
 # Finding moved files — scope
 
-**Status:** draft for the owner's approval, 20 Oct 2026; nothing built. Grows `docs/scenes-scope.md` D11 and the roadmap entry
-("Finding moved files") into a scope of its own. **Owner** marks the owner's words; **Recommendation** marks proposals still to be
-approved (section 6 lists the questions).
+**Status:** approved by the owner on 20 Oct 2026 with every recommendation (section 6); being built on branch
+`claude/appearance-and-scenes`, phase by phase (Progress below). Grows `docs/scenes-scope.md` D11 and the roadmap entry ("Finding
+moved files") into a scope of its own.
+
+## Progress
+
+| Phase | Summary | Status | Where |
+|---|---|---|---|
+| F1 | Backend: `Occurrence.ref_part_id`, native round trip, API; the lookup rule + golden vectors | Done (not merged) | CAD `claude/appearance-and-scenes` |
+| F2 | DIDSA-VR | Not started | VR |
+| F3 | Flat app | Not started | CAD |
+
+Update this table with every milestone.
+
+## F1 implementation notes (backend)
+
+- **The rule:** `backend/app/document/file_lookup.py` (`find_file`, `name_key`), pure Python. Its answer always has the same keys:
+  `result` (`found` / `ask` / `suggest` / `missing`), `path`, `via` (`path` / `id`), `candidates` (sorted) and `path_mismatch`.
+  Golden vectors: `tools/file_lookup_vectors/generate.py` -> `docs/file-lookup/vectors.json` (16 cases; the backend's copy is
+  `backend/tests/data/file_lookup_vectors.json`, `--check` keeps the two in step). A file at the path whose id could not be read
+  counts as a different file (a suggestion, never used silently). Name matches set the native extension and letter case aside, as the
+  existing path lookup does.
+- **`Occurrence.ref_part_id`** (wire key `ref_part_id`, in the native file, `OccurrenceResponse` and `OccurrenceCreate`): what is
+  written is `placed_part_id`, the resolved target's id when there is one, else the stored value. So it follows the session while the
+  reference resolves, and is kept, not dropped, while it doesn't (a root file opened on its own, a missing file). A file saved before
+  the field existed seeds it from its stored `resolved_part_id` (the target's id at its last save). A reference with no id anywhere
+  writes no key, so such a file saves exactly as before. A non-string value is a 422 on import. Add-component records the placed
+  file's root Part id; Undo after a delete (`POST .../occurrences`) restores it.
+- **For F3 (ids re-minted during compose):** the flat app re-mints a clashing file's ids, so the session id, and so the
+  `ref_part_id` the parent saves, is the new one, while the file on disk keeps the old id until it is saved. F3 must save a re-minted
+  file with its new ids, or write the on-disk id into the parent itself. Otherwise the next open reports a mismatch at the path: a
+  suggestion, never a wrong file, but a needless question. DIDSA-VR does not re-mint.
+- **No endpoint for re-pointing a reference:** both clients compose a payload before importing it, so a corrected path and id go
+  in through the payload. F2 / F3 add a PATCH only if their review screens need one after the assembly is open.
+- **Tests:** `backend/tests/test_file_lookup.py`.
 
 ## 1. Today
 
@@ -73,7 +105,7 @@ copied into Dart and GDScript, each tested against the same vectors. It runs on 
 
 Each phase is one milestone, with the usual report and wait between them. F2 and F3 are independent of each other after F1.
 
-## 6. Questions for the owner
+## 6. Questions for the owner (settled 20 Oct 2026: **Owner** approved every recommendation)
 
 1. **One match by id:** use it straight away and tell the user (**Recommendation**, D11's wording), or always ask first?
 2. **Older references (no stored id):** name-only matches are suggestions only, never used without a click (**Recommendation**). Or

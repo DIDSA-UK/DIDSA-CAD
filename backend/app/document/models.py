@@ -3588,6 +3588,15 @@ class Occurrence:
     # per-instance (not inherited-down-the-tree) shape it already gives
     # `hidden`.
     color: str | None = None
+    # Finding moved files (`docs/moved-files-scope.md` F1): the root Part id of the file this Occurrence places, kept
+    # even while the Occurrence is unresolved (unlike `part_id`, which a single-file reload drops), so a client can
+    # look the file up by id when `external_ref` misses (`app.document.file_lookup`). `placed_part_id` is what is
+    # written: the resolved target's id when there is one, else this stored value.
+    ref_part_id: str | None = None
+
+    @property
+    def placed_part_id(self) -> str | None:
+        return self.part_id or self.ref_part_id
 
 
 class ComponentPatternType(str, Enum):

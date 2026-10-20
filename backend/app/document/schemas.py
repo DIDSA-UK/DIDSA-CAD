@@ -3293,11 +3293,15 @@ class OccurrenceResponse(BaseModel):
     `resolved_part_id` mirrors `Occurrence.part_id` (see that field's own
     docstring for why it's session-local, `None` until something resolves
     it) - named `resolved_part_id` here, not `part_id`, so a client can't
-    mistake it for a stable, always-present identity the way `id` is."""
+    mistake it for a stable, always-present identity the way `id` is.
+    `ref_part_id` is the placed file's root Part id (`Occurrence.placed_part_id`,
+    `docs/moved-files-scope.md`): known even while unresolved, so a client can
+    look a moved file up by it."""
 
     id: str
     external_ref: str | None = None
     resolved_part_id: str | None = None
+    ref_part_id: str | None = None
     name_override: str | None = None
     transform: RigidTransformResponse
     suppressed: bool = False
@@ -3417,6 +3421,9 @@ class OccurrenceCreate(BaseModel):
     fixed: bool = False
     color: str | None = None
     resolved_part_id: str | None = None
+    # Finding moved files (`docs/moved-files-scope.md`): the deleted Occurrence's `ref_part_id`, restored as it was
+    # (stored whether or not `resolved_part_id` resolves).
+    ref_part_id: str | None = None
 
 
 class MidplaneRefSchema(BaseModel):

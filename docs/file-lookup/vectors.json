@@ -1,0 +1,415 @@
+{
+ "cases": [
+  {
+   "at_path": {
+    "part_id": "f676588a-frame",
+    "path": "parts/Frame A.didsa"
+   },
+   "expected": {
+    "candidates": [],
+    "path": "parts/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "found",
+    "via": "path"
+   },
+   "index": [
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/Frame A.didsa"
+    },
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/frames/Frame A.didsa"
+    }
+   ],
+   "name": "path_with_its_id",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 1: the file at the path carries the stored id."
+  },
+  {
+   "at_path": {
+    "part_id": "0b1d2e3f-other",
+    "path": "parts/Frame A.didsa"
+   },
+   "expected": {
+    "candidates": [],
+    "path": "parts/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "found",
+    "via": "path"
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/Frame A.didsa"
+    }
+   ],
+   "name": "path_older_reference",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 1: an older reference (no stored id) takes whatever file is at the path, as before."
+  },
+  {
+   "at_path": {
+    "part_id": "f676588a-frame",
+    "path": "parts/frame a.DIDSAprt"
+   },
+   "expected": {
+    "candidates": [],
+    "path": "parts/frame a.DIDSAprt",
+    "path_mismatch": false,
+    "result": "found",
+    "via": "path"
+   },
+   "index": [
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/frame a.DIDSAprt"
+    }
+   ],
+   "name": "path_other_extension",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 1: the client's path lookup found it under another native extension; that path is used."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": "parts/frames/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "found",
+    "via": "id"
+   },
+   "index": [
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/frames/Frame A.didsa"
+    },
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/Bolt.didsa"
+    }
+   ],
+   "name": "moved_found_by_id",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 2: the path misses; exactly one file in the project folder has the id: use it."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": "parts/Frame A (left).didsa",
+    "path_mismatch": false,
+    "result": "found",
+    "via": "id"
+   },
+   "index": [
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/Frame A (left).didsa"
+    },
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/Frame B.didsa"
+    }
+   ],
+   "name": "renamed_found_by_id",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 2: renamed outside the app: a different name, the same id."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": "parts/frames/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "found",
+    "via": "id"
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "old/Frame A.didsa"
+    },
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/frames/Frame A.didsa"
+    }
+   ],
+   "name": "id_beats_name",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 2 before step 3: a same-name file with another id is not offered when the id is found."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [
+     "parts/a/Frame A.didsa",
+     "parts/b/Frame A.didsa"
+    ],
+    "path": null,
+    "path_mismatch": false,
+    "result": "ask",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/b/Frame A.didsa"
+    },
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/a/Frame A.didsa"
+    }
+   ],
+   "name": "two_copies_ask",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 2: two files carry the id (a copy made outside the app): ask, nothing loaded."
+  },
+  {
+   "at_path": {
+    "part_id": "0b1d2e3f-other",
+    "path": "parts/Frame A.didsa"
+   },
+   "expected": {
+    "candidates": [],
+    "path": "archive/Frame A.didsa",
+    "path_mismatch": true,
+    "result": "found",
+    "via": "id"
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/Frame A.didsa"
+    },
+    {
+     "part_id": "f676588a-frame",
+     "path": "archive/Frame A.didsa"
+    }
+   ],
+   "name": "path_mismatch_found_by_id",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Steps 1 and 2: the path now holds another file, the real one moved: use the id match, report the mismatch."
+  },
+  {
+   "at_path": {
+    "part_id": "0b1d2e3f-other",
+    "path": "parts/Frame A.didsa"
+   },
+   "expected": {
+    "candidates": [
+     "parts/Frame A.didsa"
+    ],
+    "path": null,
+    "path_mismatch": true,
+    "result": "suggest",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/Frame A.didsa"
+    }
+   ],
+   "name": "path_mismatch_suggest",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 3: the path holds another file and the id is nowhere: that file is only a suggestion."
+  },
+  {
+   "at_path": {
+    "part_id": null,
+    "path": "parts/Frame A.didsa"
+   },
+   "expected": {
+    "candidates": [
+     "parts/Frame A.didsa"
+    ],
+    "path": null,
+    "path_mismatch": true,
+    "result": "suggest",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": null,
+     "path": "parts/Frame A.didsa"
+    }
+   ],
+   "name": "path_mismatch_unread_file",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 1: a file at the path whose id could not be read is not taken as a match."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [
+     "old/Frame A.DIDSAprt",
+     "parts/frames/frame a.didsa"
+    ],
+    "path": null,
+    "path_mismatch": false,
+    "result": "suggest",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/frames/frame a.didsa"
+    },
+    {
+     "part_id": null,
+     "path": "old/Frame A.DIDSAprt"
+    },
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/Bolt.didsa"
+    }
+   ],
+   "name": "older_reference_name_suggest",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 3: an older reference, the path misses: same-name files are suggestions, never used."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [
+     "parts/frames/Frame A.didsa"
+    ],
+    "path": null,
+    "path_mismatch": false,
+    "result": "suggest",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/frames/Frame A.didsa"
+    }
+   ],
+   "name": "id_missing_name_suggest",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 3: the id is not in the index; a same-name file with another id is a suggestion."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": null,
+    "path_mismatch": false,
+    "result": "missing",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/Bolt.didsa"
+    }
+   ],
+   "name": "missing",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 4: nothing with the id or the name: missing (Locate...)."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": null,
+    "path_mismatch": false,
+    "result": "missing",
+    "via": null
+   },
+   "index": [],
+   "name": "missing_empty_index",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 4: an empty project folder."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": null,
+    "path_mismatch": false,
+    "result": "missing",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/Frame A.didsa"
+    }
+   ],
+   "name": "no_external_ref",
+   "reference": {
+    "external_ref": null,
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 4: an occurrence with no path and an id nowhere to be found."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": "parts/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "found",
+    "via": "id"
+   },
+   "index": [
+    {
+     "part_id": "f676588a-frame",
+     "path": "parts/Frame A.didsa"
+    }
+   ],
+   "name": "no_external_ref_found_by_id",
+   "reference": {
+    "external_ref": null,
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 2 needs no path: the id alone finds the file."
+  }
+ ],
+ "source": "tools/file_lookup_vectors/generate.py (reference: backend/app/document/file_lookup.py)",
+ "version": 1
+}
