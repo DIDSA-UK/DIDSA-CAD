@@ -62,6 +62,7 @@ import '../storage/native_file_listing.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
+import '../vr_pairing/headset_pairing_screen.dart';
 import 'add_button_menu.dart';
 import 'assembly_tree_panel.dart';
 import 'body_naming.dart';
@@ -14783,6 +14784,12 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
+  /// File > Connect a VR headset (see `HeadsetPairingScreen`).
+  Future<void> _openHeadsetPairing() async {
+    setState(() => _toolbarOpen = false);
+    await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const HeadsetPairingScreen()));
+  }
+
   /// File > Part Properties: the app's MBD metadata screen for the current
   /// Part - see `PartPropertiesScreen`'s own doc comment for why this is a
   /// File-menu entry rather than a Settings-page one.
@@ -24301,6 +24308,7 @@ class _PartScreenState extends State<PartScreen> {
                     onExportPart: _exportPart,
                     onImportGeometry: _importGeometry,
                     onPartProperties: _openPartProperties,
+                    onConnectHeadset: _openHeadsetPairing,
                     bgColourHex: _bgColourHex,
                     bodyColourHex: _bodyColourHex,
                     bodyOpacity: _bodyOpacity,

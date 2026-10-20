@@ -3734,3 +3734,14 @@ Open: instance-creating transforms (Mirror / Pattern copies, Move Body copy) and
 ## 2026-10-14 - Native file extension: `.didsa` is current, `.DIDSAprt`/`.didsacad` are legacy read-only
 
 Decision (confirmed with the tester; record: `docs/bug-report-2026-10-14-plan.md` item 9). `.didsa` is the current native extension and the only one the app writes (Save, Save As, auto-assigned component paths, AI-created files). `.DIDSAprt` and the pre-July `.didsacad` still open and are listed, but are never created. An existing file keeps its own path and extension on Save and on tree Rename - never renamed implicitly, because other assemblies' `external_ref`s point at that exact path. All three hold the same `schema_version: 1` JSON; the backend never sees file names. `withDefaultExtension` now appends `.didsa` unless the name already ends with a native extension (so `Frame 1.5m` no longer saves without one and vanishes from Open), and `X.didsa` / `X.DIDSAprt` in one folder count as the same name for collision checks (`nativeBaseNameKey`). Earlier comments calling `.didsa` "legacy" were wrong and are fixed.
+
+## 2026-10-20 - Connect a VR headset (pairing QR code)
+
+The flat app shows a QR code that DIDSA-VR will scan to add this server, so nobody types a URL and key on a VR keyboard: the
+connection screen's **Connect a VR headset** button and File > **Connect a VR headset...** open `client/lib/vr_pairing/`. Before
+showing it, it checks the saved server: set; an address a headset can reach (refuses the on-phone `localhost` server, the emulator
+alias, link-local and, for now, any `http://`, which Android on the headset blocks; warns for `.local`, Tailscale and private
+`https://`); `GET /health` with the key; and the endpoints the headset needs, read from `/openapi.json` (missing Mates / Measure /
+Appearance / Scenes is a warning). The code is `didsa-vr:1?n=&u=&k=` and hides itself after 60 s, since it carries the API key.
+Contract and rules: `docs/vr-headset-pairing.md`. New dependency `qr_flutter` (BSD-3-Clause). Tests: `test/headset_pairing_test.dart`
+(16). Not seen on a device; the headset side is not built yet.
