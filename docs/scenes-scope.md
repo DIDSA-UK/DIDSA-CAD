@@ -237,7 +237,7 @@ simply not found. What CAD systems usually do:
 
 **Recommendation:** a short scope of its own (backend: an optional `ref_root_part_id` on `Occurrence`, written on save and checked on
 resolve; both clients: a project-folder index and the lookup above, sharing one rule). It is independent of scenes and can go first,
-after or alongside.
+after or alongside. **Now scoped in `docs/moved-files-scope.md`** (draft, 20 Oct 2026).
 
 ## 4. Data model sketch (D1 B)
 
