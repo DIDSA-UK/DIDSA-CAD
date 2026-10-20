@@ -14,6 +14,7 @@ import 'package:didsa_cad_client/appearance/scenes_panel.dart';
 import 'package:didsa_cad_client/assembly/assembly_document_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
+import 'package:didsa_cad_client/assembly/reference_report.dart';
 import 'package:didsa_cad_client/assembly/relative_path.dart';
 import 'package:didsa_cad_client/storage/file_cache.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
@@ -6979,5 +6980,58 @@ void main() {
       expect(find.textContaining('Showing the default'), findsOneWidget);
       expect(backend.occurrences.last['hidden'], isFalse);
     });
+  });
+  testWidgets('a project opened with moved references shows the banner, and Review lists them', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final documentApi = DocumentApiClient(
+      httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          initialReferenceReports: const [
+            ReferenceReport(
+              parentPartId: 'root',
+              parentPath: 'root.didsa',
+              occurrenceId: 'o-frame',
+              requestedPath: 'Frame_A.didsa',
+              storedPartId: 'frame',
+              outcome: ReferenceOutcome.movedById,
+              foundPath: 'parts/frames/Frame_A.didsa',
+            ),
+            ReferenceReport(
+              parentPartId: 'root',
+              parentPath: 'root.didsa',
+              occurrenceId: 'o-gone',
+              requestedPath: 'Gone.didsa',
+              storedPartId: 'gone',
+              outcome: ReferenceOutcome.missing,
+            ),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await _pumpUntil(tester, () => find.byKey(const Key('references-banner')).evaluate().isNotEmpty);
+
+    await tester.pump(const Duration(milliseconds: 500)); // the banner slides in
+    expect(find.text('1 file was found in new places, 1 needs you'), findsOneWidget);
+
+    await tester.tap(find.text('Review'));
+    await _pumpUntil(tester, () => find.byKey(const Key('reference-o-frame')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 500)); // the sheet slides up
+    expect(find.byKey(const Key('reference-o-frame')), findsOneWidget);
+    expect(find.byKey(const Key('reference-o-gone')), findsOneWidget);
+    expect(find.byKey(const Key('locate-o-gone')), findsOneWidget);
+
+    // Leave missing drops that row; the one found by id has nothing to leave.
+    await tester.tap(find.byKey(const Key('leave-o-gone')));
+    await tester.pump();
+    expect(find.byKey(const Key('reference-o-gone')), findsNothing);
+    expect(find.byKey(const Key('reference-o-frame')), findsOneWidget);
   });
 }

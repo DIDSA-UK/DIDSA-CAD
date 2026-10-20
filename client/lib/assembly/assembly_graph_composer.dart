@@ -3,6 +3,9 @@ import 'dart:convert';
 import '../storage/file_cache.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
+import 'file_lookup_rule.dart';
+import 'project_file_index.dart';
+import 'reference_report.dart';
 import 'relative_path.dart';
 import 'remint_identity.dart';
 
@@ -32,7 +35,17 @@ class ComposedAssemblyGraph {
     required this.relativePathByPartId,
     required this.staleRelativePaths,
     this.rootClientExtras = const {},
+    this.rootDiskPartId,
+    this.references = const [],
   });
+
+  /// The root file's Part id as it is on disk. Differs from [rootPartId] when the compose re-minted the file's ids because
+  /// they clashed with another file's; what a "this is not the file that was placed here" check compares.
+  final String? rootDiskPartId;
+
+  /// References whose file was not simply where the path said (`docs/moved-files-scope.md`): found by id in a new place (the
+  /// Occurrence's `external_ref` already holds the new path - an unsaved change), or left unresolved with candidates.
+  final List<ReferenceReport> references;
 
   /// The root file's client-only top-level keys (`hidden_feature_ids`,
   /// `section_planes`) - never part of [documentPayload]'s Parts, kept so the
@@ -85,12 +98,16 @@ class ComposedAssemblyGraph {
 /// same relative path, hit the same cache entry in [_resolvedByPath], and
 /// end up as one Part entry in the composed payload either way.
 class AssemblyGraphComposer {
-  AssemblyGraphComposer({required StorageService storageService, FileCache? fileCache})
-    : _storageService = storageService,
-      _fileCache = fileCache ?? FileCache();
+  AssemblyGraphComposer({required StorageService storageService, FileCache? fileCache, ProjectFileIndex? fileIndex})
+      : _storageService = storageService,
+        _fileCache = fileCache ?? FileCache(),
+        fileIndex = fileIndex ?? ProjectFileIndex(storageService);
 
   final StorageService _storageService;
   final FileCache _fileCache;
+
+  /// The project-folder index a missed reference is looked up in (shared with saving, which reads on-disk ids from it).
+  final ProjectFileIndex fileIndex;
 
   /// Resolves [rootRelativePath] (and everything it references) under
   /// [root] into one composed graph. Throws [AssemblyGraphCycleException]
@@ -105,7 +122,9 @@ class AssemblyGraphComposer {
     final partIdByPath = <String, String>{};
     final sketchesById = <String, Map<String, dynamic>>{};
     final stalePaths = <String>{};
+    final reports = <ReferenceReport>[];
     var rootClientExtras = <String, dynamic>{};
+    String? rootDiskPartId;
 
     Future<Map<String, dynamic>> readAndDecode(String relativePath) async {
       try {
@@ -123,6 +142,26 @@ class AssemblyGraphComposer {
         stalePaths.add(relativePath);
         return jsonDecode(utf8.decode(cached.bytes)) as Map<String, dynamic>;
       }
+    }
+
+    // A live read only (no cache fallback): null when the file is missing or can't be read. A referenced file is read this
+    // way first so its id can be checked against the reference before it is used; the cache is the last resort.
+    final liveByPath = <String, Map<String, dynamic>?>{};
+    Future<Map<String, dynamic>?> readLive(String relativePath) async {
+      if (liveByPath.containsKey(relativePath)) return liveByPath[relativePath];
+      Map<String, dynamic>? payload;
+      try {
+        final handle = await _storageService.resolve(root, relativePath);
+        if (handle != null) {
+          final bytes = await _storageService.readFile(handle);
+          final lastModified = await _storageService.lastModified(handle);
+          await _fileCache.put(root, relativePath, bytes, lastKnownModified: lastModified);
+          payload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+        }
+      } on StorageException {
+        payload = null;
+      }
+      return liveByPath[relativePath] = payload;
     }
 
     // An `external_ref` written under one native extension (a legacy
@@ -149,23 +188,122 @@ class AssemblyGraphComposer {
       return found;
     }
 
-    Future<String?> resolvePart(String requestedPath, List<String> ancestorPath) async {
-      final relativePath = await canonicalPath(requestedPath);
+    // The project-folder index, built the first time a reference misses (or a file at its path is not the placed part) and
+    // then shared by the rest of this compose.
+    List<IndexedFile>? index;
+
+    // [resolveOccurrence] and [resolvePart] call each other.
+    late Future<String?> Function(String relativePath, List<String> ancestorPath, {Map<String, dynamic>? preloaded})
+        resolvePart;
+
+    // Finding moved files (`docs/moved-files-scope.md` section 2): looks the file an Occurrence places up and, when it resolves,
+    // points the Occurrence at it (`resolved_part_id`, and `external_ref` as the file was actually found - an unsaved change).
+    // [preloaded] on [resolvePart] spares re-reading a file already read.
+    Future<void> resolveOccurrence(
+      Map<String, dynamic> occurrence,
+      String externalRef,
+      String parentPartId,
+      String parentPath,
+      List<String> ancestorPath,
+    ) async {
+      void bind(String? resolvedId, String foundPath) {
+        if (resolvedId == null) return;
+        occurrence['resolved_part_id'] = resolvedId;
+        occurrence['external_ref'] = foundPath;
+      }
+
+      final storedId = _storedPartId(occurrence);
+      final path = await canonicalPath(externalRef);
+      final live = await readLive(path);
+      final liveId = live == null ? null : rootPartIdOf(live);
+      // A file at the path is taken as it always was when the reference has no `ref_part_id` of its own: the
+      // `resolved_part_id` an older file was saved with can be a session id (a re-minted one) that the file on disk never
+      // carried, so it is only good for searching when the path misses, not as proof the file at the path is wrong.
+      if (live != null && (occurrence['ref_part_id'] is! String || liveId == storedId)) {
+        bind(await resolvePart(path, ancestorPath, preloaded: live), path);
+        return;
+      }
+
+      index ??= await fileIndex.build(root);
+      final lookup = findFile(
+        externalRef: externalRef,
+        refPartId: storedId,
+        atPath: live == null ? null : IndexedFile(path, liveId),
+        // The unreadable file at the path itself is no candidate for anything.
+        index: [
+          for (final entry in index!)
+            if (live != null || entry.path != path) entry
+        ],
+      );
+
+      ReferenceReport report({bool stale = false, String? foundPath}) => ReferenceReport(
+            parentPartId: parentPartId,
+            parentPath: parentPath,
+            occurrenceId: occurrence['id'] as String? ?? '',
+            requestedPath: externalRef,
+            storedPartId: storedId,
+            outcome: ReferenceReport.outcomeOf(lookup.result),
+            foundPath: foundPath,
+            candidates: lookup.candidates,
+            pathMismatch: lookup.pathMismatch,
+            staleCopy: stale,
+          );
+
+      if (lookup.result == LookupResult.found) {
+        final target = lookup.path!;
+        final targetPayload = target == path ? live : await readLive(target);
+        if (targetPayload != null) {
+          final resolved = await resolvePart(target, ancestorPath, preloaded: targetPayload);
+          if (resolved != null) {
+            reports.add(report(foundPath: target));
+            bind(resolved, target);
+            return;
+          }
+        }
+      }
+
+      // Nothing usable by id. A file at the path with another id is never swapped in; a file that could not be read at
+      // all still shows its last cached copy, marked stale (`docs/assembly-scope.md` decision #5).
+      if (live == null) {
+        final cached = await _fileCache.get(root, path);
+        if (cached != null) {
+          stalePaths.add(path);
+          final resolved = await resolvePart(
+            path,
+            ancestorPath,
+            preloaded: jsonDecode(utf8.decode(cached.bytes)) as Map<String, dynamic>,
+          );
+          if (resolved != null) {
+            reports.add(report(stale: true));
+            bind(resolved, path);
+            return;
+          }
+        }
+      }
+      reports.add(report());
+    }
+
+    resolvePart = (
+      String relativePath,
+      List<String> ancestorPath, {
+      Map<String, dynamic>? preloaded,
+    }) async {
       if (ancestorPath.contains(relativePath)) {
         throw AssemblyGraphCycleException([...ancestorPath, relativePath]);
       }
       final alreadyResolved = partIdByPath[relativePath];
       if (alreadyResolved != null) return alreadyResolved;
 
-      Map<String, dynamic> payload;
-      try {
-        payload = await readAndDecode(relativePath);
-      } on StorageException {
-        // A referenced child that can't be read at all (live or cached) -
-        // not fatal for the graph as a whole; the Occurrence pointing at
-        // it just stays unresolved (per ComposedAssemblyGraph's own doc
-        // comment, mirroring the backend's own assembly-mesh behavior).
-        return null;
+      var payload = preloaded;
+      if (payload == null) {
+        try {
+          payload = await readAndDecode(relativePath);
+        } on StorageException {
+          // The root file can't be read at all (live or cached): the caller reports it. A child never gets here - it is
+          // read by [resolveOccurrence] first, which leaves the Occurrence unresolved (per ComposedAssemblyGraph's own doc
+          // comment, mirroring the backend's own assembly-mesh behavior).
+          return null;
+        }
       }
 
       final readParts = ((payload['document'] as Map<String, dynamic>)['parts'] as List).cast<Map<String, dynamic>>();
@@ -174,6 +312,7 @@ class AssemblyGraphComposer {
           '$relativePath is not a valid single-file .didsa save (expected exactly one Part, found ${readParts.length})',
         );
       }
+      if (ancestorPath.isEmpty) rootDiskPartId = readParts.single['id'] as String?;
 
       // Heal id collisions between *different* files (bug report 2026-10-14,
       // item 3). The Part and sketch ids are session-global on the backend,
@@ -186,7 +325,9 @@ class AssemblyGraphComposer {
       // before it is folded in. The new ids live only in this session; the
       // next Save of that Part writes them to disk, so the files heal
       // themselves. (Resolving the *same* path twice never reaches here - the
-      // `partIdByPath` hit above is the ordinary diamond dedup.)
+      // `partIdByPath` hit above is the ordinary diamond dedup.) The reference
+      // that points at such a file keeps the id on disk until then: saving
+      // writes it (`AssemblyDocumentClient.savePart`).
       final partIdTaken = partIdByPath.values.contains(readParts.single['id']);
       final sketchCollides = (payload['sketches'] as List? ?? const []).any((sketch) {
         final existing = sketchesById[(sketch as Map<String, dynamic>)['id']];
@@ -219,18 +360,14 @@ class AssemblyGraphComposer {
       for (final occurrence in occurrences) {
         final externalRef = occurrence['external_ref'] as String?;
         if (externalRef == null) continue;
-        final resolvedId = await resolvePart(externalRef, nextAncestorPath);
-        if (resolvedId != null) {
-          occurrence['resolved_part_id'] = resolvedId;
-          occurrence['external_ref'] = await canonicalPath(externalRef);
-        }
+        await resolveOccurrence(occurrence, externalRef, partId, relativePath, nextAncestorPath);
       }
 
       resolvedByPath[relativePath] = partDict;
       return partId;
-    }
+    };
 
-    final rootPartId = await resolvePart(rootRelativePath, const []);
+    final rootPartId = await resolvePart(await canonicalPath(rootRelativePath), const []);
     if (rootPartId == null) {
       throw StorageException('Could not read the root assembly file: $rootRelativePath');
     }
@@ -249,6 +386,18 @@ class AssemblyGraphComposer {
       relativePathByPartId: {for (final entry in partIdByPath.entries) entry.value: entry.key},
       staleRelativePaths: stalePaths,
       rootClientExtras: rootClientExtras,
+      rootDiskPartId: rootDiskPartId,
+      references: reports,
     );
   }
+}
+
+/// The id of the file an Occurrence placed: its `ref_part_id`, else (a file saved before that field existed) the
+/// `resolved_part_id` it was saved with, as the backend seeds it. Null for an older reference with neither.
+String? _storedPartId(Map<String, dynamic> occurrence) {
+  for (final key in const ['ref_part_id', 'resolved_part_id']) {
+    final value = occurrence[key];
+    if (value is String && value.isNotEmpty) return value;
+  }
+  return null;
 }

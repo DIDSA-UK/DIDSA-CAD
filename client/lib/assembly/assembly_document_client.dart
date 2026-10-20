@@ -4,6 +4,7 @@ import '../api/document_api_client.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'assembly_graph_composer.dart';
+import 'reference_report.dart';
 import 'remint_identity.dart';
 import 'save_all.dart';
 
@@ -20,7 +21,12 @@ class OpenedAssembly {
     required this.relativePathByPartId,
     required this.staleRelativePaths,
     this.rootClientExtras = const {},
+    this.references = const [],
   });
+
+  /// References that were not simply where their path said (found by id in a new place, or left unresolved with candidates).
+  /// A reference found by id already holds its new path in the session: the assembly is changed until it is saved.
+  final List<ReferenceReport> references;
 
   final String rootPartId;
 
@@ -81,9 +87,9 @@ class AssemblyDocumentClient {
     required StorageService storageService,
     DocumentApiClient? documentApiClient,
     AssemblyGraphComposer? composer,
-  }) : _storageService = storageService,
-       _documentApiClient = documentApiClient ?? DocumentApiClient(),
-       _composer = composer ?? AssemblyGraphComposer(storageService: storageService);
+  })  : _storageService = storageService,
+        _documentApiClient = documentApiClient ?? DocumentApiClient(),
+        _composer = composer ?? AssemblyGraphComposer(storageService: storageService);
 
   final StorageService _storageService;
   final DocumentApiClient _documentApiClient;
@@ -104,6 +110,7 @@ class AssemblyDocumentClient {
       relativePathByPartId: composed.relativePathByPartId,
       staleRelativePaths: composed.staleRelativePaths,
       rootClientExtras: composed.rootClientExtras,
+      references: composed.references,
     );
   }
 
@@ -143,7 +150,9 @@ class AssemblyDocumentClient {
     bool remintIdentity = false,
     Map<String, dynamic>? extras,
   }) async {
-    var exported = stripSessionResolvedIds(await _documentApiClient.exportNative(partId: partId));
+    var exported = stripSessionResolvedIds(
+      await _stampOnDiskRefIds(root, await _documentApiClient.exportNative(partId: partId)),
+    );
     if (remintIdentity) exported = remintNativeIdentity(exported);
     // Client-only state the backend's export knows nothing about
     // (`hidden_feature_ids`, `section_planes` - see
@@ -153,6 +162,45 @@ class AssemblyDocumentClient {
     if (extras != null && extras.isNotEmpty) exported = {...exported, ...extras};
     final bytes = utf8.encode(jsonEncode(exported));
     await _storageService.writeFile(root, relativePath, bytes);
+    _composer.fileIndex.forget(root, relativePath);
+  }
+
+  /// Finding moved files: a resolved reference is saved with the id its file has **on disk**, not the id in the session. They
+  /// differ when the compose re-minted a clashing file's ids and that file has not been saved yet, and writing the session id
+  /// would make the next open report a mismatch at a path that is right. An unresolved reference keeps its stored id as it is
+  /// (it is the id the file is looked for by); a file that isn't on disk yet is left to be saved with the session id.
+  Future<Map<String, dynamic>> _stampOnDiskRefIds(ProjectRoot root, Map<String, dynamic> exported) async {
+    final document = exported['document'];
+    if (document is! Map || document['parts'] is! List) return exported;
+    final onDisk = <String, String?>{};
+    var changed = false;
+    final parts = <Object?>[];
+    for (final part in document['parts'] as List) {
+      if (part is! Map || part['occurrences'] is! List) {
+        parts.add(part);
+        continue;
+      }
+      final occurrences = <Object?>[];
+      for (final occurrence in part['occurrences'] as List) {
+        final path = occurrence is Map ? occurrence['external_ref'] : null;
+        final stored = occurrence is Map ? occurrence['ref_part_id'] : null;
+        if (path is String && stored is String && occurrence['resolved_part_id'] is String) {
+          final id = onDisk[path] ??= await _composer.fileIndex.partIdAt(root, path);
+          if (id != null && id != stored) {
+            changed = true;
+            occurrences.add({...(occurrence as Map<String, dynamic>), 'ref_part_id': id});
+            continue;
+          }
+        }
+        occurrences.add(occurrence);
+      }
+      parts.add({...(part as Map<String, dynamic>), 'occurrences': occurrences});
+    }
+    if (!changed) return exported;
+    return {
+      ...exported,
+      'document': {...(document as Map<String, dynamic>), 'parts': parts},
+    };
   }
 
   /// Saves every Part named in [relativePathByPartId] back to its own file
@@ -186,7 +234,10 @@ class AssemblyDocumentClient {
 
     final saved = <String>[];
     final failures = <PartSaveFailure>[];
-    for (final entry in relativePathByPartId.entries) {
+    // A file placed by another is written first, so the id a reference to it holds on disk is already the new one (a re-minted
+    // file is saved with its session ids).
+    for (final partId in _placedFirst(relativePathByPartId.keys, stamped)) {
+      final entry = MapEntry(partId, relativePathByPartId[partId]!);
       try {
         await savePart(root, entry.key, entry.value, extras: extrasByPartId[entry.key]);
         saved.add(entry.value);
@@ -196,4 +247,31 @@ class AssemblyDocumentClient {
     }
     return SaveAllResult(savedRelativePaths: saved, failures: failures);
   }
+}
+
+/// [partIds] ordered so that a Part comes after every Part its Occurrences place (children first), by `resolved_part_id` in
+/// [documentPayload]. Parts that don't place each other keep their given order.
+List<String> _placedFirst(Iterable<String> partIds, Map<String, dynamic> documentPayload) {
+  final wanted = partIds.toSet();
+  final placed = <String, List<String>>{};
+  final parts = (documentPayload['document'] is Map ? (documentPayload['document'] as Map)['parts'] : null);
+  for (final part in parts is List ? parts : const []) {
+    if (part is! Map || part['id'] is! String) continue;
+    placed[part['id'] as String] = [
+      for (final occurrence in (part['occurrences'] as List? ?? const []))
+        if (occurrence is Map && occurrence['resolved_part_id'] is String) occurrence['resolved_part_id'] as String,
+    ];
+  }
+  final ordered = <String>[];
+  final visited = <String>{};
+  void visit(String id) {
+    if (!visited.add(id)) return;
+    for (final child in placed[id] ?? const <String>[]) {
+      visit(child);
+    }
+    if (wanted.contains(id)) ordered.add(id);
+  }
+
+  partIds.forEach(visit);
+  return ordered;
 }

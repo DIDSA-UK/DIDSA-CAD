@@ -38,6 +38,8 @@ import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
 import '../assembly/native_file_shape.dart';
 import '../assembly/occurrence_visibility.dart';
+import '../assembly/reference_report.dart';
+import '../assembly/references_sheet.dart';
 import '../assembly/relative_path.dart';
 import '../assembly/remint_identity.dart';
 import '../assembly/save_all.dart' show stampExternalRefs;
@@ -436,6 +438,11 @@ class PartScreen extends StatefulWidget {
   /// through a `pushReplacement` alongside it. Empty by default.
   final Map<String, String> initialRelativePathByPartId;
 
+  /// Finding moved files (`docs/moved-files-scope.md`): the references the open that built this screen found in new places
+  /// or could not resolve (`OpenedAssembly.references`). Any found by id make the session unsaved from the start (the
+  /// corrected path is written by the next Save); the banner and the Review sheet list them.
+  final List<ReferenceReport> initialReferenceReports;
+
   /// Multi-part/assembly overhaul, Phase E (`docs/ai-modelling/13-multi-
   /// part-assembly-overhaul.md`): which lens this screen opens showing -
   /// `AssemblyLens.part` (the default, unchanged for every pre-Phase-E
@@ -460,6 +467,7 @@ class PartScreen extends StatefulWidget {
     this.assemblyDocumentClient,
     this.initialProjectRoot,
     this.initialRelativePathByPartId = const {},
+    this.initialReferenceReports = const [],
     this.initialLens = AssemblyLens.part,
   });
 
@@ -3104,6 +3112,10 @@ class _PartScreenState extends State<PartScreen> {
   /// path ([_saveNativeFile]/[_saveFocusedPart]/[_saveAsNativeFile]/
   /// [_saveFocusedPartAs]/[_onSaveAllPressed]).
   bool _isDirty = false;
+
+  /// Finding moved files: the references still to review (see [PartScreen.initialReferenceReports]); the Review sheet listens
+  /// to it, and an entry goes when it is used, located or left missing.
+  final ValueNotifier<List<ReferenceReport>> _referenceReports = ValueNotifier(const []);
 
   /// Prompt D: true while the Feature tree is acting as a Sketch picker for
   /// a pending Extrude - entered by [_extrudeSelectedFeature] when no
@@ -10239,6 +10251,12 @@ class _PartScreenState extends State<PartScreen> {
         AssemblyDocumentClient(storageService: _storageService, documentApiClient: _api);
     _projectRoot = widget.initialProjectRoot;
     _relativePathByPartId = Map.of(widget.initialRelativePathByPartId);
+    _referenceReports.value = widget.initialReferenceReports;
+    // A reference found by id already holds its corrected path in the session; it reaches disk with the next Save.
+    if (widget.initialReferenceReports.any((report) => !report.needsYou)) _isDirty = true;
+    if (widget.initialReferenceReports.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showReferencesBanner());
+    }
     // Native Load: restores whichever Features a just-opened file's own
     // `hidden_feature_ids` named - see [PartScreen.initialHiddenFeatureIds]'s
     // own doc comment. A no-op (empty) for every non-native-Load launch.
@@ -11337,6 +11355,7 @@ class _PartScreenState extends State<PartScreen> {
           initialPartId: result.rootPartId,
           initialProjectRoot: root,
           initialRelativePathByPartId: result.relativePathByPartId,
+          initialReferenceReports: result.references,
           initialHiddenFeatureIds: extras.hiddenFeatureIds,
           initialSectionPlanes: extras.sectionPlanes,
         ),
@@ -11455,6 +11474,7 @@ class _PartScreenState extends State<PartScreen> {
 
   @override
   void dispose() {
+    _referenceReports.dispose();
     _extrudeDebounce?.cancel();
     _surfaceDebounce?.cancel();
     _sectionPreviewDebounce?.cancel();
@@ -13237,7 +13257,15 @@ class _PartScreenState extends State<PartScreen> {
       },
     );
     if (relativePath == null || !mounted) return null;
+    return _composeProjectFile(root, relativePath);
+  }
 
+  /// Composes the file at [relativePath] under [root] (and everything it references) for [_pickAndComposeComponent] and the
+  /// Review sheet's Use; null, with the error shown, when it can't be read.
+  Future<({ComposedAssemblyGraph graph, String relativePath})?> _composeProjectFile(
+    ProjectRoot root,
+    String relativePath,
+  ) async {
     ComposedAssemblyGraph? graph;
     await _runGuarded(() async {
       try {
@@ -13286,6 +13314,12 @@ class _PartScreenState extends State<PartScreen> {
   /// merge-then-`importNative` shape [_onInsertComponentPressed] already
   /// uses, just updating [occurrence] in place instead of adding a new one.
   Future<void> _onLocateMissingFilePressed(OccurrenceDto occurrence) async {
+    // A reference the open reported (found by id, several copies, a suggestion, missing) opens the Review sheet, which has the
+    // candidates and Locate... too; this plain confirm-and-pick flow is for an Occurrence that went missing some other way.
+    if (_referenceReports.value.any((report) => report.occurrenceId == occurrence.id)) {
+      _openReferencesSheet();
+      return;
+    }
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
     final index = _displayOccurrences.indexWhere((o) => o.id == occurrence.id);
@@ -13309,6 +13343,17 @@ class _PartScreenState extends State<PartScreen> {
     final picked = await _pickAndComposeComponent();
     if (picked == null || !mounted) return;
 
+    await _relinkOccurrence(rootPartId, occurrence.id, picked);
+  }
+
+  /// Re-links the Occurrence [occurrenceId] on Part [partId] to the file [picked] was composed from: the merge-then-
+  /// `importNative` shape [_onInsertComponentPressed] already uses, updating the Occurrence in place. Returns whether it worked.
+  Future<bool> _relinkOccurrence(
+    String partId,
+    String occurrenceId,
+    ({ComposedAssemblyGraph graph, String relativePath}) picked,
+  ) async {
+    var relinked = false;
     await _runGuarded(() async {
       final currentPayload = await _api.exportNative();
       Map<String, dynamic> merged;
@@ -13316,8 +13361,8 @@ class _PartScreenState extends State<PartScreen> {
         merged = relocateOccurrenceInDocument(
           currentPayload: currentPayload,
           componentPayload: picked.graph.documentPayload,
-          rootPartId: rootPartId,
-          occurrenceId: occurrence.id,
+          rootPartId: partId,
+          occurrenceId: occurrenceId,
           newExternalRef: picked.relativePath,
           relativePathByPartId: _relativePathByPartId,
         );
@@ -13329,9 +13374,82 @@ class _PartScreenState extends State<PartScreen> {
       _learnRelativePaths(merged);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
+      relinked = true;
     });
+    return relinked;
   }
 
+  /// Finding moved files: the banner shown once when the open found references in new places or could not resolve some.
+  void _showReferencesBanner() {
+    if (!mounted) return;
+    final summary = referenceSummary(_referenceReports.value);
+    if (summary == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final needsYou = _referenceReports.value.any((report) => report.needsYou);
+    messenger.showMaterialBanner(
+      MaterialBanner(
+        key: const Key('references-banner'),
+        backgroundColor: (needsYou ? Colors.amber : Colors.green).withValues(alpha: 0.15),
+        leading: Icon(needsYou ? Icons.link_off : Icons.check_circle_outline, color: needsYou ? Colors.amber : Colors.green),
+        content: Text(summary[0].toUpperCase() + summary.substring(1)),
+        actions: [
+          TextButton(
+            onPressed: () {
+              messenger.hideCurrentMaterialBanner();
+              _openReferencesSheet();
+            },
+            child: const Text('Review'),
+          ),
+          TextButton(onPressed: () => messenger.hideCurrentMaterialBanner(), child: const Text('Dismiss')),
+        ],
+      ),
+    );
+  }
+
+  /// Finding moved files: the Review sheet (`ReferencesSheet`).
+  void _openReferencesSheet() {
+    if (!mounted) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) => ReferencesSheet(
+        reports: _referenceReports,
+        onUse: (report, path) => _useReferenceFile(report, path, sheetContext),
+        onLocate: (report) => _locateReferenceFile(report, sheetContext),
+        onLeaveMissing: _dropReferenceReport,
+      ),
+    );
+  }
+
+  void _dropReferenceReport(ReferenceReport report) {
+    _referenceReports.value = [
+      for (final other in _referenceReports.value)
+        if (other != report) other,
+    ];
+    if (_referenceReports.value.isEmpty && mounted) Navigator.of(context).maybePop();
+  }
+
+  /// The Review sheet's Use: composes the chosen file and re-links the Occurrence to it.
+  Future<void> _useReferenceFile(ReferenceReport report, String relativePath, BuildContext sheetContext) async {
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) return;
+    final picked = await _composeProjectFile(root, relativePath);
+    if (picked == null || !mounted) return;
+    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) _dropReferenceReport(report);
+  }
+
+  /// The Review sheet's Locate...: the usual file prompt, with a confirmation when the file picked is not the part that was
+  /// placed (its on-disk id is not the stored one).
+  Future<void> _locateReferenceFile(ReferenceReport report, BuildContext sheetContext) async {
+    final picked = await _pickAndComposeComponent();
+    if (picked == null || !mounted) return;
+    final stored = report.storedPartId;
+    if (stored != null && picked.graph.rootDiskPartId != stored) {
+      // ignore: use_build_context_synchronously
+      if (!await ReferencesSheet.confirmDifferentFile(sheetContext, picked.relativePath)) return;
+    }
+    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) _dropReferenceReport(report);
+  }
   /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): lazily
   /// acquires [_projectRoot] the first time "Save All"/"Create Component…"
   /// needs one. Phase 16 (§2s) fix: tries [StorageService.lastUsedProjectRoot]

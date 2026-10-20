@@ -1,6 +1,6 @@
 # Finding moved files — scope
 
-**Status:** approved by the owner on 20 Oct 2026 with every recommendation (section 6); being built on branch
+**Status:** approved by the owner on 20 Oct 2026 with every recommendation (section 6); built (F1, F2, F3) on branch
 `claude/appearance-and-scenes`, phase by phase (Progress below). Grows `docs/scenes-scope.md` D11 and the roadmap entry ("Finding
 moved files") into a scope of its own.
 
@@ -10,9 +10,46 @@ moved files") into a scope of its own.
 |---|---|---|---|
 | F1 | Backend: `Occurrence.ref_part_id`, native round trip, API; the lookup rule + golden vectors | Done (not merged) | CAD `claude/appearance-and-scenes` |
 | F2 | DIDSA-VR: index, rule (vectors), compose, Files > References, Locate... | Done (not merged; headless and live-backend tested, not on the headset) | VR `claude/appearance-and-scenes` (its CHANGELOG and `docs/status.md`) |
-| F3 | Flat app | Not started | CAD |
+| F3 | Flat app: rule (vectors), index, composer, banner + Review sheet | Done (not merged; unit, widget and fake-storage tested, not run on a device) | CAD `claude/appearance-and-scenes` (`client/`) |
 
 Update this table with every milestone.
+
+## F3 implementation notes (flat app, `client/`, branch `claude/appearance-and-scenes`)
+
+- **Rule and index:** `client/lib/assembly/file_lookup_rule.dart` is the Dart copy of the rule (`test/file_lookup_rule_test.dart` reads
+  `docs/file-lookup/vectors.json` in place: 16 cases). `project_file_index.dart` is the index: every native file under the project folder
+  (`StorageService.listFiles`, dot-folders skipped, at most 5000), each with its root Part id, ids cached per file and last-modified time
+  for the life of the `AssemblyGraphComposer`. It is built the first time a reference misses (or the file at its path carries another id),
+  once per compose; an assembly whose files are where they were never lists the folder.
+- **The composer** (`assembly_graph_composer.dart`) reads a referenced file live first and checks its id: the stored id (`ref_part_id`,
+  else the stored `resolved_part_id`) matching, or no stored id, means it is used as before. Otherwise the rule runs. One match by id is
+  used and its path written onto the Occurrence (an unsaved change); ask / suggest / missing leave it unresolved, and a file at the path
+  with another id is never swapped in. **One narrowing of section 2 step 1:** a reference with no `ref_part_id` of its own (only the
+  older `resolved_part_id`) keeps the file at its path whatever id it has, as before; that older id is used to search only when the path
+  misses. Files saved by earlier flat-app versions carry a session (re-minted) id there that the file on disk never had, so a mismatch is
+  no evidence (the reporter's own `Frame` fixture, `test/frame_nested_insert_test.dart`, is exactly this). The next save writes the
+  real `ref_part_id`, after which the strict rule applies. The id search comes before the stale `FileCache` fallback, which still shows the cached copy
+  (marked stale, and reported) when nothing is found. `ComposedAssemblyGraph.references` (`ReferenceReport`: outcome, found path,
+  candidates, path mismatch, stale copy) reaches the screen through `OpenedAssembly.references`; `rootDiskPartId` is the picked file's
+  id on disk, for the "not the placed part" check.
+- **Re-minted ids:** the composer still re-mints a clashing file's ids (`remintNativeIdentity` rewrites every id string, a `ref_part_id`
+  that equals one of the file's own ids included, so a file's own occurrences stay consistent). The parent's reference is made right at
+  save time: `AssemblyDocumentClient.savePart` writes, for each *resolved* reference, the id the file at `external_ref` has **on disk**
+  (read through the index), not the session id; an unresolved reference keeps its stored id (so a mismatch is never turned into a match
+  silently); a file not yet on disk keeps the session id. Save All writes a placed file before the file that places it, so a re-minted
+  child is on disk with its new ids by the time its parent is written. **Not covered:** saving a re-minted child *alone* after its parent
+  has been saved changes the id on disk; the next open of the parent reports a suggestion at that path (never a wrong file).
+- **UI:** `PartScreen.initialReferenceReports` (set by Open): a banner ("2 files were found in new places, 1 needs you", Review /
+  Dismiss) and `references_sheet.dart`'s Review sheet: one row per reference (found by id / pick one / suggestion / missing) with Use per
+  candidate, Locate... and Leave missing. Use on a suggestion, and Locate... on a file whose id isn't the stored one, ask "This is not the
+  file that was placed here. Use it anyway?". A pick is applied in the open session (`relocateOccurrenceInDocument`, the existing Locate
+  path), not by re-opening, so unsaved work is kept. Found-by-id makes the session unsaved from the start. The assembly tree's missing-file
+  badge opens the sheet for an Occurrence the open reported; otherwise it keeps its old confirm-and-pick flow.
+- **Not built:** reports for references inside a file brought in with Add Component or a Locate pick (their composes find moves by id and
+  use them, but are not listed); a report is not restored if the assembly is re-opened without going through Open.
+- **Tests:** `test/file_lookup_rule_test.dart`, `test/moved_files_composer_test.dart` (composer cases mirroring DIDSA-VR's
+  `tests/moved_files.gd`, the index, save-time id stamping, Save All order), `test/references_sheet_test.dart`, and a banner / sheet case
+  in `test/part_screen_test.dart`.
 
 ## F2 implementation notes (DIDSA-VR, branch `claude/appearance-and-scenes`)
 
