@@ -17,6 +17,7 @@ import 'server_management/termux_controller.dart';
 import 'sketch/sketcher_settings_screen.dart';
 import 'tool_chooser_screen.dart';
 import 'viewport3d/svg_icon.dart';
+import 'vr_pairing/headset_pairing_screen.dart';
 
 /// Stage 18's splash/connection screen - shown on cold launch before
 /// [ToolChooserScreen] (which then leads to either `PartScreen` or a
@@ -352,6 +353,25 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                       ),
                       icon: const Icon(Icons.dns_outlined, size: 20),
                       label: const Text('Server Management'),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  // Shows a QR code the VR app scans to add this server (after checking the headset could use it) - see
+                  // vr_pairing/headset_pairing.dart. Uses the saved connection, not the fields above, so Connect first.
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white70,
+                        side: const BorderSide(color: Colors.white24),
+                        shape: const StadiumBorder(),
+                      ),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(builder: (_) => HeadsetPairingScreen(httpClient: widget.httpClient)),
+                      ),
+                      icon: const Icon(Icons.vrpano_outlined, size: 20),
+                      label: const Text('Connect a VR headset'),
                     ),
                   ),
                   // On-device feedback: "View Complex Mesh" (see

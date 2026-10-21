@@ -106,6 +106,8 @@ dependencies:
   # `saf_util`/`saf_stream` dependency) - pinned here as a direct
   # dependency now that `add_component.dart` imports it directly.
   uuid: ^4.5.3
+  # QR code for Connect a VR headset (vr_pairing/). BSD-3-Clause.
+  qr_flutter: ^4.1.0
 
 dev_dependencies:
   flutter_test:

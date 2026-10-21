@@ -128,6 +128,9 @@ class PartToolbar extends StatelessWidget {
   /// the Materials Manager, not per-document data).
   final VoidCallback? onPartProperties;
 
+  /// File > Connect a VR headset: the pairing QR code for this app's server (`vr_pairing/headset_pairing_screen.dart`).
+  final VoidCallback? onConnectHeadset;
+
   /// Stage 18: current 3D-viewport appearance preferences (see
   /// [ViewPreferences]) and their change callbacks - [PartScreen] owns the
   /// state and persistence, this just renders the entries that open each
@@ -216,6 +219,7 @@ class PartToolbar extends StatelessWidget {
     this.onExportPart,
     this.onImportGeometry,
     this.onPartProperties,
+    this.onConnectHeadset,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
@@ -360,6 +364,11 @@ class PartToolbar extends StatelessWidget {
           leading: const Icon(Icons.description_outlined),
           title: const Text('Part Properties…'),
           onTap: onPartProperties,
+        ),
+        ListTile(
+          leading: const Icon(Icons.vrpano_outlined),
+          title: const Text('Connect a VR headset…'),
+          onTap: onConnectHeadset,
         ),
         ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_exit.svg'),

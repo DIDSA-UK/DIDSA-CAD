@@ -91,7 +91,7 @@ class TermuxController {
   /// user having to Pull, wait, then separately remember to Start.
   Future<bool> pullAndStart(String branch) async {
     final key = await ApiConfig.ensureLocalApiKey();
-    return _dispatch(TermuxCommands.pullAndStart(branch, key));
+    return _dispatch(TermuxCommands.pullAndStart(branch, key, onWifi: ApiConfig.localServerOnWifi));
   }
 
   /// Uses [ApiConfig.ensureLocalApiKey] - not [ApiConfig.apiKey] - as the
@@ -102,14 +102,14 @@ class TermuxController {
   /// on first install, doesn't exist until something starts it).
   Future<bool> startServer() async {
     final key = await ApiConfig.ensureLocalApiKey();
-    return _dispatch(TermuxCommands.startServer(key));
+    return _dispatch(TermuxCommands.startServer(key, onWifi: ApiConfig.localServerOnWifi));
   }
 
   Future<bool> stopServer() => _dispatch(TermuxCommands.stopServer());
 
   Future<bool> restartServer() async {
     final key = await ApiConfig.ensureLocalApiKey();
-    return _dispatch(TermuxCommands.restartServer(key));
+    return _dispatch(TermuxCommands.restartServer(key, onWifi: ApiConfig.localServerOnWifi));
   }
 
   /// A single GET /health round trip against [localBaseUrl] - always uses
