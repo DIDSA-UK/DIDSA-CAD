@@ -68,6 +68,7 @@ from app.document.assembly_solver import (
     _vec_sub,
     solve_occurrence_from_guess,
 )
+from app.document.coupler import coupler_rows, is_coupler, travel_along, turn_about
 from app.document.constraint_model import (
     ConstraintModel,
     export_constraint_model,
@@ -229,11 +230,44 @@ class GroupModel:
             placed[oid] = base[oid] if delta is None or not np.any(delta) else apply_delta(base[oid], delta)
         out: list[float] = []
         for mate, a, b in self.sides:
+            if is_coupler(mate):
+                out.extend(self._coupler_rows(mate, a, b, placed))
+                continue
             out.extend(_mate_residual_vector(mate, self._world(a, placed), self._world(b, placed)))
             for side in (a, b):
                 if side.partner is not None:
                     out.extend(self._parallel_rows(side, placed))
         return np.asarray(out, dtype=float)
+
+    def _coupler_rows(self, mate: Mate, a: _Side, b: _Side, placed: dict[str, RigidTransform]) -> list[float]:
+        """The row of a coupler mate (`app.document.coupler`): each side's turn and travel since the BASE pose, about / along its
+        axis as it stood at the base pose. A side that is not a member (fixed, or the root part's own geometry) does not move."""
+
+        def base_axis(side: _Side) -> np.ndarray:
+            direction = np.array(side.geometry.direction, float)
+            direction /= float(np.linalg.norm(direction))
+            if side.occurrence_id in self._index:
+                return rigid_to_pose(self.base_transforms[side.occurrence_id])[0] @ direction
+            if side.frozen_transform is not None:
+                return rigid_to_pose(side.frozen_transform)[0] @ direction
+            return direction
+
+        def motion(side: _Side, axis: np.ndarray) -> tuple[float, float]:
+            if side.occurrence_id not in self._index:
+                return 0.0, 0.0
+            r0, t0 = rigid_to_pose(self.base_transforms[side.occurrence_id])
+            r, t = rigid_to_pose(placed[side.occurrence_id])
+            point = np.array(side.geometry.axis_origin, float)
+            return turn_about(r, r0, axis), travel_along(point, r, t, r0, t0, axis)
+
+        axis_a, axis_b = base_axis(a), base_axis(b)
+        if mate.type == MateType.GEAR:
+            return coupler_rows(mate, motion(a, axis_a)[0], 0.0, motion(b, axis_b)[0], 0.0)
+        if mate.type == MateType.RACK_PINION:
+            return coupler_rows(mate, motion(a, axis_a)[0], 0.0, 0.0, motion(b, axis_b)[1])
+        turn_a, move_a = motion(a, axis_a)
+        turn_b, move_b = motion(b, axis_a)  # a screw: everything along / about the screw's axis
+        return coupler_rows(mate, turn_a, move_a, turn_b, move_b)
 
     @staticmethod
     def _world_one(side: _Side, placed: dict[str, RigidTransform]) -> _ResolvedGeometry:
@@ -330,7 +364,11 @@ def build_group_model(
         first, second = mate.references
         # Orient like `_applicable_mates`: the movable side is "driven" when
         # the other side is frozen (the residual is only sign-asymmetric).
-        swapped = not any(t in members for t in mate_ref_tops(first)) and any(t in members for t in mate_ref_tops(second))
+        swapped = (
+            not is_coupler(mate)  # a coupler is never swapped: its rows are in the references' order
+            and not any(t in members for t in mate_ref_tops(first))
+            and any(t in members for t in mate_ref_tops(second))
+        )
         if swapped:
             first, second = second, first
         a_side, b_side = side(first), side(second)
@@ -352,6 +390,11 @@ def build_group_model(
     placed = dict(model.base_transforms)
     resolved_sides = []
     for (mate, a, b), swapped in zip(model.sides, swaps):
+        if is_coupler(mate):
+            # no branch to resolve: the sense is stored (`secondary_flip` is never None on a coupler)
+            model.branches[mate.id] = (None, mate.secondary_flip)
+            resolved_sides.append((mate, a, b))
+            continue
         # `mate` is resolved in the orientation this model uses (`swapped`: reference 1 is the mover); the branch it is stored
         # in (relative to the references' order, what a commit writes back) is kept in `model.branches`.
         mate, canonical = resolve_oriented_branch(mate, model._world(a, placed), model._world(b, placed), swapped)
@@ -365,6 +408,10 @@ def build_group_model(
     # A mate whose two geometries can't form its residual (e.g. CONCENTRIC on two planar
     # faces) would silently contribute nothing; reject it like the py-slvs path always did.
     for mate, a, b in model.sides:
+        if is_coupler(mate):
+            if a.geometry.axis_origin is None or a.geometry.direction is None or b.geometry.axis_origin is None or b.geometry.direction is None:
+                raise _unsupported_mate_geometry(mate.references[0], "an axis on each side")
+            continue
         if not _mate_residual_vector(mate, model._world(a, placed), model._world(b, placed)):
             ref = mate.references[0]
             raise _unsupported_mate_geometry(ref, "a compatible point, plane or axis on each side")
@@ -446,6 +493,8 @@ def validate_mate_geometry(document: Document, part: Part, mate: Mate) -> None:
     unsolvable mate is never left in the document - once stored, `build_group_model` raises the same error for every
     solve of any group containing it, blocking all of that group's occurrences until the mate is deleted."""
     first, second = mate_world_geometries(document, part, mate)
+    if is_coupler(mate):
+        return  # `coupler.prepare_coupler` validates a coupler
     if not _mate_residual_vector(mate, first, second):
         raise _unsupported_mate_geometry(mate.references[0], "a compatible point, plane or axis on each side")
 
@@ -454,6 +503,8 @@ def mate_with_flipped_alias(document: Document, part: Part, mate: Mate, override
     """`mate` with the deprecated `flipped` flag read into `alignment` / `secondary_flip` (COINCIDENT plane-plane, ANGLE),
     for a payload that carried only `flipped`. Needs the geometry (see `apply_flipped_alias`); `override` replaces a branch
     the mate already names."""
+    if is_coupler(mate):
+        return mate
     first, second = mate_world_geometries(document, part, mate)
     aliased = apply_flipped_alias(mate, first, second, override)
     sync_flipped(aliased)
@@ -686,6 +737,8 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
     The mover is always the mate's first side (`build_group_model` orients it)."""
     by_mover: dict[str, list[tuple[Mate, _Side, _Side]]] = {}
     for entry in model.sides:
+        if is_coupler(entry[0]):
+            continue  # a coupler has no dead point to seed out of: its rows are zero at the base pose
         by_mover.setdefault(entry[1].occurrence_id, []).append(entry)
     for mover, entries in by_mover.items():
         placed = {oid: poses[oid] for oid in model.member_ids}
@@ -704,6 +757,8 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
             if rotation is not None:
                 _rotate_member(poses, mover, rotvec_from_rot(rotation))
     for mate, first, second in model.sides:
+        if is_coupler(mate):
+            continue
         placed = {oid: poses[oid] for oid in model.member_ids}
         d, f = model._world(first, placed), model._world(second, placed)
         mover = first.occurrence_id
@@ -1164,8 +1219,8 @@ def branch_options(
                 queue.append(nxt)
     options: list[BranchOption] = []
     for mate, a, b in model.sides:
-        if mate.id in skip_mate_ids or mate.id not in stored:
-            continue
+        if mate.id in skip_mate_ids or mate.id not in stored or is_coupler(mate):
+            continue  # a coupler's sense is the user's (or its default), never searched
         d, f = model._world(a, placed), model._world(b, placed)
         fields = branch_fields(mate, d, f)
         alignment, flip = model.branches.get(mate.id, (None, None))
@@ -1293,6 +1348,8 @@ def mate_branch_controls(document: Document, part: Part, mate: Mate) -> tuple[st
     show as controls. Empty when the geometry cannot be resolved (a payload still being filled in)."""
     from fastapi import HTTPException  # local: this module is otherwise HTTP-free
 
+    if is_coupler(mate):
+        return ("secondary_flip",)  # the Reverse switch
     try:
         first, second = mate_world_geometries(document, part, mate)
     except HTTPException:

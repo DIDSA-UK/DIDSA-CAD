@@ -49,7 +49,8 @@ from app.document.assembly_group import (
     validate_mate_geometry,
 )
 from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
-from app.document.models import BRANCH_AUTO, BRANCH_USER
+from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES
+from app.document.coupler import prepare_coupler
 from app.document.assembly_group import GroupSolveQuality
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
@@ -3897,8 +3898,12 @@ def create_mate(
         alignment=payload.alignment,
         secondary_flip=payload.secondary_flip,
     )
-    validate_mate_geometry(get_document(), part, mate)  # never store a mate no solve can use
-    mate = _mate_with_branch_fields(get_document(), part, mate, payload.model_fields_set)
+    if mate.type in COUPLER_TYPES:
+        # validated and filled in (ratio, sense) by its own rules; a coupler moves nothing when it is made
+        mate = prepare_coupler(get_document(), part, mate, "secondary_flip" in payload.model_fields_set)
+    else:
+        validate_mate_geometry(get_document(), part, mate)  # never store a mate no solve can use
+        mate = _mate_with_branch_fields(get_document(), part, mate, payload.model_fields_set)
     if solve is not None:
         driven = _mate_solve_target(part, mate, occurrence_id)
         if driven is not None:
@@ -3962,6 +3967,8 @@ def update_mate(
     values, nothing moves, and the 422 is returned."""
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
+    if mate.type in COUPLER_TYPES:
+        return _update_coupler(mate, payload)
     _reject_negative_distance(mate.type.value, payload.value)
     previous = (mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip, mate.branch_source)
     driven = _mate_solve_target(part, mate, occurrence_id) if solve is not None else None
@@ -4011,6 +4018,24 @@ def update_mate(
         _apply_branch_changes(part, outcome.changes)
         _commit_group(part, outcome.result)
         response.headers["X-Movement-Used"] = outcome.used
+    return _mate_response(mate)
+
+
+def _update_coupler(mate: Mate, payload: MateUpdate) -> MateResponse:
+    """A coupler's PATCH: `value` (above zero), `secondary_flip` (a bool: the user's sense) and `suppressed`. Nothing moves (its
+    rows are zero at the poses the next solve starts from), so there is no solve; the other fields do not apply to it."""
+    if payload.value is not None:
+        if not (math.isfinite(payload.value) and payload.value > 0):
+            raise HTTPException(
+                status_code=422,
+                detail={"type": "invalid_coupler_value", "detail": f"The value of a {mate.type.value} mate must be a number above zero, got {payload.value!r}"},
+            )
+        mate.value = payload.value
+    if payload.secondary_flip is not None:
+        mate.secondary_flip = payload.secondary_flip
+        mate.branch_source = BRANCH_USER
+    if payload.suppressed is not None:
+        mate.suppressed = payload.suppressed
     return _mate_response(mate)
 
 
@@ -4670,6 +4695,31 @@ def preview_mate_solve_endpoint(
         for ref in payload.references:
             _validate_mate_entity_ref(part, ref, payload.type)
         _reject_negative_distance(payload.type, payload.value)
+        if payload.type in [t.value for t in COUPLER_TYPES]:
+            # a coupler moves nothing when it is made (D1): the ghost is the current pose; the answer carries the ratio and sense it
+            # would be made with, so the panel can show them
+            coupler = prepare_coupler(
+                get_document(),
+                solve_part,
+                Mate(
+                    id="preview",
+                    type=MateType(payload.type),
+                    references=[_mate_entity_ref_to_domain(ref) for ref in payload.references],
+                    value=payload.value,
+                    secondary_flip=payload.secondary_flip,
+                ),
+                "secondary_flip" in payload.model_fields_set,
+            )
+            current = _rigid_transform_response(occurrence.transform)
+            return MateSolvePreviewResponse(
+                converged=True,
+                transform=current,
+                movement_used="group",
+                members=[MateSolvePreviewMember(occurrence_id=occurrence_id, transform=current)],
+                resolved=MateBranchValues(secondary_flip=coupler.secondary_flip),
+                controls=["secondary_flip"],
+                coupler_value=coupler.value,
+            )
         extra_mate = Mate(
             id="preview",
             type=MateType(payload.type),

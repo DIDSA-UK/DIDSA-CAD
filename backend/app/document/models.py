@@ -3411,6 +3411,14 @@ class MateType(str, Enum):
     PARALLEL = "parallel"
     DISTANCE = "distance"
     ANGLE = "angle"
+    # Coupler ("motion") mates (`docs/gears-and-motion-plan.md` 3.3): they do not place anything, they keep a relation between the
+    # MOVES of two parts (see `app.document.coupler`). `value` is the ratio / travel per turn / lead, `secondary_flip` the sense.
+    GEAR = "gear"
+    RACK_PINION = "rack_pinion"
+    SCREW = "screw"
+
+
+COUPLER_TYPES = (MateType.GEAR, MateType.RACK_PINION, MateType.SCREW)
 
 
 # `Mate.alignment` values (`docs/mate-solution-choice-plan.md`): whether the driven direction points the same way as the fixed one.

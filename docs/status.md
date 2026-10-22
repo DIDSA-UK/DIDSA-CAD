@@ -3751,3 +3751,24 @@ Same day, follow-up: **the phone's own server pairs too.** Server Management has
 the phone's Wi-Fi address (mobile-data interfaces skipped) and checks the server answers there. Plain `http://` on the local network
 now pairs with a warning (the headset's requests use Godot's own sockets, which Android's cleartext rule is not expected to cover;
 not tried on a headset). Tests: 20 in `headset_pairing_test.dart`, plus the bind address in `termux_commands_test.dart`.
+
+---
+
+## 2026-10-22 — Gears and motion, M1 and M3 (branch `claude/gears-and-motion`; plan in `DIDSA-VR/docs/gears-and-motion-plan.md`)
+
+**M1, gear bore.** `bore_diameter` (mm, default 0 = none, written to `.didsa` only when above 0) on `GearFeature` and `BevelGearFeature`: a through
+bore on the gear's axis (real and coarse builds), refused with 422 `invalid_bore` / `bore_on_internal_gear` / `bore_too_large` (90% of the root
+diameter, the toe's for a bevel gear). The flat app's gear and bevel screens have a Bore diameter field and presets store it. `backend/tests/test_gear_bore.py`.
+
+**M3, coupler mates in the backend.** New mate types `gear`, `rack_pinion`, `screw` (`models.COUPLER_TYPES`), `app/document/coupler.py`. They do not
+place anything: each keeps a relation between the MOVES of its two parts from the pose a solve started from (turn about / travel along each side's axis,
+measured against `GroupModel.base_transforms`), so creating one, Solve and Enforce all never move anything. `Mate.value` is the ratio (turns of B per
+turn of A), the travel per pinion turn (mm) or the lead (mm per turn), always above zero; `secondary_flip` True / False is the sense k = +1 / -1.
+Left empty on create, the value comes from the tooth counts of the one gear / rack feature in each part (422 `gear_ratio_required` when there is
+not exactly one) and the sense from the axis directions at the stored poses. 422s: `invalid_coupler_value`, `screw_lead_required`,
+`rack_reference_not_straight_edge`, a Width reference, the same occurrence twice, a reference that is not an axis. The group model gets one residual
+row per coupler (`GroupModel._coupler_rows`; couplers are never swapped); py-slvs paths, branch search and the seed ignore them;
+`export_constraint_model` is `None` for a group with a coupler (the clients keep projecting on the backend; the analytic v5 model is M6).
+`preview-mate-solve` answers a coupler with the current pose, its default sense and `coupler_value`. An AI plan cannot make a coupler.
+Tests: `test_coupler_mates.py`, `test_coupler_mates_gears.py`.
+

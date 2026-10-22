@@ -3480,7 +3480,7 @@ class MateResponse(BaseModel):
     models.Mate` itself, the Assembly tree's own Mates list."""
 
     id: str
-    type: Literal["coincident", "concentric", "parallel", "distance", "angle"]
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw"]
     references: list[MateEntityRefResponse]
     value: float | None = None
     flipped: bool = False
@@ -3510,7 +3510,7 @@ class MateCreate(BaseModel):
     (payload shape here, referential/geometric validity in the router/
     resolver, this codebase's standing split)."""
 
-    type: Literal["coincident", "concentric", "parallel", "distance", "angle"]
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw"]
     references: list[MateEntityRefResponse]
     value: float | None = None
     flipped: bool = False
@@ -3690,6 +3690,9 @@ class MateSolvePreviewResponse(BaseModel):
     # Every combination of the new mate's controls that converges (the other mates keep their persisted branches), nearest to the
     # start first: "Next solution" steps through these. Empty when the mate has no controls or nothing else converges.
     alternatives: list[MateSolveAlternative] = []
+    # A gear / rack and pinion / screw mate: the ratio, travel per turn or lead it would be made with (the typed one, or the one read
+    # from the parts' gear features); null for every other mate.
+    coupler_value: float | None = None
 
 
 class ComponentPatternAxisSchema(BaseModel):

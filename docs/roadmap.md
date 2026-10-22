@@ -592,6 +592,7 @@ Advanced mates (tangent, gear, slider, hinge, path, symmetry, width, limit) exis
 3. **Gears on the table.** Generate gears as table features; the backend is complete (gear, rack, chain, planetary, bevel, bevel pair) and the flat app has the design screens.
    A gear next to its mate at true scale is the natural demo.
    **Planned 2026-10-22, with motion folded in:** `DIDSA-VR/docs/gears-and-motion-plan.md` (gear bore, VR gear tools, coupler mates gear / rack and pinion / screw in backend, flat app and VR, constraint model v5, a VR Drive tool; branch `claude/gears-and-motion` in both repos). Further motion mates (belt, worm, path, cam, angle limits...) are listed there as future features, §5a.
+   **Progress 2026-10-22:** M1 (gear bore) and M3 (coupler mates in the backend) are on `claude/gears-and-motion`; see `docs/status.md`.
 4. **Sketch ergonomics and picks (moved up from fifth to fourth; widened 2026-10-12 with the items Phase 7 deferred).**
    - Sketch: constrained drag of sketch entities, auto-constraint inference while drawing (parallel, perpendicular, tangent, collinear, point-on-curve; VR has axis inference only), sketch-level Pattern / Mirror
      instances, offset of a whole chain, explode polygon / slot / rectangle, DOF and open-profile feedback, `spline_tangent`.

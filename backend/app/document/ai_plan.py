@@ -129,6 +129,7 @@ from app.document.models import (
     MateEntityRef,
     MidplaneRef,
     MateType,
+    COUPLER_TYPES,
     MergeFeature,
     MirrorFeature,
     MoveBodyFeature,
@@ -1156,6 +1157,8 @@ def _handle_mate(v: _PlanValidator, step: MateStep) -> None:
     already gives."""
     if len(step.references) != 2:
         raise _StepError({"type": "invalid_step_payload", "message": "A Mate must have exactly 2 references"})
+    if step.type in COUPLER_TYPES:
+        raise _StepError({"type": "invalid_step_payload", "message": f"A {step.type.value} mate cannot be made by an AI plan"})
     resolved_pairs = [
         _mate_entity_ref_from_step(v, ref, f"references[{i}]") for i, ref in enumerate(step.references)
     ]
