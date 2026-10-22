@@ -1826,6 +1826,8 @@ class GearFeatureCreate(BaseModel):
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
     points_per_flank: int = 12
+    # Through bore (mm) on the gear's axis, `0.0` = none; see `GearFeature.bore_diameter`.
+    bore_diameter: float = 0.0
 
 
 class GearFeatureUpdate(BaseModel):
@@ -1851,6 +1853,7 @@ class GearFeatureUpdate(BaseModel):
     helix_angle_degrees: float | None = None
     herringbone: bool | None = None
     points_per_flank: int | None = None
+    bore_diameter: float | None = None
 
 
 class GearFeatureResponse(FeatureResponseBase):
@@ -1871,6 +1874,7 @@ class GearFeatureResponse(FeatureResponseBase):
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
     points_per_flank: int = 12
+    bore_diameter: float = 0.0
     # The *resolved* profile_shift (app.document.gear.resolve_gear_profile_
     # shift) - identical to profile_shift above when it's an explicit
     # value, but the actual computed number (not None) whenever that field
@@ -1977,6 +1981,8 @@ class BevelGearFeatureCreate(BaseModel):
     # docstring for the "0.0 is a literal no-op" contract.
     spiral_angle_degrees: float = 0.0
     spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
+    # Through bore (mm) on the cone axis, `0.0` = none; see `BevelGearFeature.bore_diameter`.
+    bore_diameter: float = 0.0
 
 
 class BevelGearFeatureUpdate(BaseModel):
@@ -1996,6 +2002,7 @@ class BevelGearFeatureUpdate(BaseModel):
     points_per_flank: int | None = None
     spiral_angle_degrees: float | None = None
     spiral_hand: SpiralBevelHand | None = None
+    bore_diameter: float | None = None
 
 
 class BevelGearFeatureResponse(FeatureResponseBase):
@@ -2014,6 +2021,7 @@ class BevelGearFeatureResponse(FeatureResponseBase):
     points_per_flank: int = 12
     spiral_angle_degrees: float = 0.0
     spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
+    bore_diameter: float = 0.0
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # BevelGearFeature.

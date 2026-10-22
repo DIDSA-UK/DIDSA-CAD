@@ -126,6 +126,10 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
   final _toothCountController = TextEditingController(text: '20');
   final _faceWidthController = TextEditingController(text: '5');
   final _outerDiameterController = TextEditingController();
+
+  /// Through bore on an external gear's axis (`GearFeatureCreate.bore_diameter`),
+  /// blank = none.
+  final _boreDiameterController = TextEditingController();
   final _backingHeightController = TextEditingController();
   final _profileShiftController = TextEditingController(text: '0');
 
@@ -244,6 +248,8 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
       _herringbone = json['herringbone'] as bool? ?? _herringbone;
       final outerDiameter = json['outer_diameter'] as num?;
       if (outerDiameter != null) _outerDiameterController.text = _formatDouble(outerDiameter.toDouble());
+      final boreDiameter = (json['bore_diameter'] as num?)?.toDouble() ?? 0.0;
+      _boreDiameterController.text = boreDiameter > 0 ? _formatDouble(boreDiameter) : '';
       final pointsPerFlank = json['points_per_flank'] as num?;
       if (pointsPerFlank != null) _pointsPerFlank = pointsPerFlank.toInt();
     }
@@ -266,11 +272,17 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
     _toothCountController.dispose();
     _faceWidthController.dispose();
     _outerDiameterController.dispose();
+    _boreDiameterController.dispose();
     _backingHeightController.dispose();
     _profileShiftController.dispose();
     if (widget.documentApi == null) _api.close();
     super.dispose();
   }
+
+  /// The bore sent to the backend: 0 (none) for a blank or unparsable field
+  /// and for anything but an external gear (an internal gear takes none).
+  double get _boreDiameter =>
+      _kind == GearDesignKind.external ? (double.tryParse(_boreDiameterController.text) ?? 0.0) : 0.0;
 
   void _schedulePreview() {
     _previewDebounce?.cancel();
@@ -454,6 +466,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
             helixAngleDegrees: _helixAngleDegrees,
             herringbone: _herringbone,
             pointsPerFlank: _pointsPerFlank,
+            boreDiameter: _boreDiameter,
           );
         }
         if (!mounted) return;
@@ -501,6 +514,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
           helixAngleDegrees: _helixAngleDegrees,
           herringbone: _herringbone,
           pointsPerFlank: _pointsPerFlank,
+          boreDiameter: _boreDiameter,
         );
         warnings = feature.warnings;
       }
@@ -888,6 +902,21 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
             onChanged: (_) => _schedulePreview(),
           ),
         ],
+        if (_kind == GearDesignKind.external) ...[
+          const SizedBox(height: 12),
+          TextField(
+            controller: _boreDiameterController,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: 'Bore diameter',
+              hintText: 'None',
+              suffixIcon: fieldHelpIcon(
+                'A through hole on the gear\'s axis, so it can be mated concentric to a shaft. '
+                'Leave blank for a solid gear.',
+              ),
+            ),
+          ),
+        ],
         if (_kind == GearDesignKind.rack) ...[
           const SizedBox(height: 12),
           TextField(
@@ -987,6 +1016,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
         'herringbone': _herringbone,
         'pointsPerFlank': _pointsPerFlank,
         'outerDiameter': _outerDiameterController.text,
+        'boreDiameter': _boreDiameterController.text,
         'backingHeight': _backingHeightController.text,
         'plane': _plane,
       };
@@ -1027,6 +1057,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
       _herringbone = fields['herringbone'] as bool? ?? _herringbone;
       _pointsPerFlank = (fields['pointsPerFlank'] as num?)?.toInt() ?? _pointsPerFlank;
       if (fields['outerDiameter'] is String) _outerDiameterController.text = fields['outerDiameter'] as String;
+      _boreDiameterController.text = fields['boreDiameter'] is String ? fields['boreDiameter'] as String : '';
       if (fields['backingHeight'] is String) _backingHeightController.text = fields['backingHeight'] as String;
       _plane = fields['plane'] as String? ?? _plane;
     });

@@ -573,4 +573,52 @@ void main() {
     expect((pairBody?['member_1'] as Map)['spiral_hand'], 'right');
     expect((pairBody?['member_2'] as Map)['spiral_hand'], 'right');
   });
+
+  testWidgets('Bore diameter is posted when typed', (tester) async {
+    Map<String, dynamic>? gearBody;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(bevelGearPreviewResponse());
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Bevel Gear Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/bevel-gear-features') {
+          gearBody = jsonDecode(request.body) as Map<String, dynamic>;
+          return jsonResponse({
+            'type': 'bevel_gear',
+            'id': 'bevel-1',
+            'locked': false,
+            'produces': 'body',
+            'bevel_type': 'boss',
+            'module': 4.0,
+            'tooth_count': 20,
+            'face_width': 15.0,
+            'pitch_cone_angle_degrees': 30.0,
+            'pressure_angle_degrees': 20.0,
+            'backlash': 0.0,
+            'profile_shift': 0.0,
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Bevel Gear Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: BevelDesignScreen(documentApi: client)));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.widgetWithText(TextField, 'Bore diameter'));
+    await tester.enterText(find.widgetWithText(TextField, 'Bore diameter'), '10');
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gearBody, isNotNull);
+    expect(gearBody!['bore_diameter'], 10.0);
+  });
 }

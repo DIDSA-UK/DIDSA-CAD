@@ -83,6 +83,10 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   // Single bevel gear mode.
   final _toothCountController = TextEditingController(text: '20');
   final _faceWidthController = TextEditingController(text: '15');
+
+  /// Through bore on the cone axis (`BevelGearFeatureCreate.bore_diameter`),
+  /// blank = none. Single-gear mode only.
+  final _boreDiameterController = TextEditingController();
   final _pitchConeAngleController = TextEditingController(text: '30');
   final _backlashController = TextEditingController(text: '0');
   final _profileShiftController = TextEditingController(text: '0');
@@ -237,6 +241,8 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       if (toothCount != null) _toothCountController.text = toothCount.toInt().toString();
       final faceWidth = json['face_width'] as num?;
       if (faceWidth != null) _faceWidthController.text = faceWidth.toString();
+      final boreDiameter = (json['bore_diameter'] as num?)?.toDouble() ?? 0.0;
+      _boreDiameterController.text = boreDiameter > 0 ? boreDiameter.toString() : '';
       final pitchConeAngle = json['pitch_cone_angle_degrees'] as num?;
       if (pitchConeAngle != null) _pitchConeAngleController.text = pitchConeAngle.toString();
       final backlash = json['backlash'] as num?;
@@ -308,6 +314,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
     _previewDebounce?.cancel();
     _toothCountController.dispose();
     _faceWidthController.dispose();
+    _boreDiameterController.dispose();
     _pitchConeAngleController.dispose();
     _backlashController.dispose();
     _profileShiftController.dispose();
@@ -446,6 +453,8 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
   /// never see the spiral angle field - validated separately here so a bad
   /// value while [_spiralEnabled] blocks Create the same way a bad preview
   /// field does.
+  double get _boreDiameter => double.tryParse(_boreDiameterController.text) ?? 0.0;
+
   bool get _spiralAngleFieldValid => !_spiralEnabled || double.tryParse(_spiralAngleController.text) != null;
 
   /// `0.0` whenever [_pairSpiralEnabled] is off - the pair-mode counterpart
@@ -499,6 +508,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
             pointsPerFlank: _pointsPerFlank,
             spiralAngleDegrees: _effectiveSpiralAngleDegrees,
             spiralHand: _spiralHand,
+            boreDiameter: _boreDiameter,
           );
         } else {
           await _api.updateBevelPairFeature(
@@ -551,6 +561,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           pointsPerFlank: _pointsPerFlank,
           spiralAngleDegrees: _effectiveSpiralAngleDegrees,
           spiralHand: _spiralHand,
+          boreDiameter: _boreDiameter,
         );
         warnings = feature.warnings;
       } else {
@@ -809,6 +820,19 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
           suffixIcon: fieldHelpIcon('How far the tooth runs along the cone, from the outer (back) end inward.'),
         ),
         onChanged: (_) => _schedulePreview(),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: _boreDiameterController,
+        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+        decoration: InputDecoration(
+          labelText: 'Bore diameter',
+          hintText: 'None',
+          suffixIcon: fieldHelpIcon(
+            'A through hole on the gear\'s axis, so it can be mated concentric to a shaft. '
+            'Leave blank for a solid gear.',
+          ),
+        ),
       ),
       const SizedBox(height: 12),
       if (_mode == BevelMultiKind.crown)
@@ -1130,6 +1154,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
         'plane': _plane,
         'toothCount': _toothCountController.text,
         'faceWidth': _faceWidthController.text,
+        'boreDiameter': _boreDiameterController.text,
         'pitchConeAngle': _pitchConeAngleController.text,
         'backlash': _backlashController.text,
         'profileShift': _profileShiftController.text,
@@ -1163,6 +1188,7 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
       _plane = fields['plane'] as String? ?? _plane;
       if (fields['toothCount'] is String) _toothCountController.text = fields['toothCount'] as String;
       if (fields['faceWidth'] is String) _faceWidthController.text = fields['faceWidth'] as String;
+      _boreDiameterController.text = fields['boreDiameter'] is String ? fields['boreDiameter'] as String : '';
       if (fields['pitchConeAngle'] is String) _pitchConeAngleController.text = fields['pitchConeAngle'] as String;
       if (fields['backlash'] is String) _backlashController.text = fields['backlash'] as String;
       if (fields['profileShift'] is String) _profileShiftController.text = fields['profileShift'] as String;

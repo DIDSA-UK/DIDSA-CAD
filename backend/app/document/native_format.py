@@ -1483,6 +1483,9 @@ def _feature_to_dict(feature: Feature) -> dict:
             # this field existed - see GearFeature.points_per_flank's own
             # docstring.
             "points_per_flank": feature.points_per_flank,
+            # Written only when set, so a gear without a bore saves
+            # byte-identically to before the field existed.
+            **({"bore_diameter": feature.bore_diameter} if feature.bore_diameter > 0 else {}),
         }
     if isinstance(feature, RackFeature):
         return {
@@ -1515,6 +1518,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "points_per_flank": feature.points_per_flank,
             "spiral_angle_degrees": feature.spiral_angle_degrees,
             "spiral_hand": feature.spiral_hand.value,
+            **({"bore_diameter": feature.bore_diameter} if feature.bore_diameter > 0 else {}),
         }
     if isinstance(feature, BevelPairFeature):
         return {
@@ -1878,6 +1882,7 @@ def _feature_from_dict(data: dict) -> Feature:
             helix_angle_degrees=data.get("helix_angle_degrees", 0.0),
             herringbone=data.get("herringbone", False),
             points_per_flank=data.get("points_per_flank", 12),
+            bore_diameter=data.get("bore_diameter", 0.0),
         )
     if feature_type == "rack":
         return RackFeature(
@@ -1908,6 +1913,7 @@ def _feature_from_dict(data: dict) -> Feature:
             points_per_flank=data.get("points_per_flank", 12),
             spiral_angle_degrees=data.get("spiral_angle_degrees", 0.0),
             spiral_hand=SpiralBevelHand(data.get("spiral_hand", "right")),
+            bore_diameter=data.get("bore_diameter", 0.0),
         )
     if feature_type == "bevel_pair":
         return BevelPairFeature(

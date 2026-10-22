@@ -1791,6 +1791,11 @@ class GearFeature(Feature):
     target_body_ids: list[str] = field(default_factory=list)
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
+    # Gears-and-motion plan M1 (D3): a through bore (mm) on the gear's own
+    # axis, so the gear has a round face to mate concentric to a shaft. `0.0`
+    # (the default) is no bore: the original code path, untouched, and the
+    # native format writes the key only when it is above zero.
+    bore_diameter: float = 0.0
 
     # On-device feedback (herringbone/complex-gear timeout investigation):
     # how many points `app.document.gear` samples per tooth flank when
@@ -2657,6 +2662,9 @@ class BevelGearFeature(Feature):
     points_per_flank: int = 12
     spiral_angle_degrees: float = 0.0
     spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
+    # See `GearFeature.bore_diameter`: a through bore on the cone axis, `0.0`
+    # (the default) is no bore.
+    bore_diameter: float = 0.0
 
     @property
     def type(self) -> str:

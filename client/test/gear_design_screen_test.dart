@@ -463,4 +463,62 @@ void main() {
     final toothCountField = tester.widget<TextField>(find.widgetWithText(TextField, 'Tooth count'));
     expect(toothCountField.controller?.text, '24');
   });
+
+  testWidgets('Bore diameter is external-only, omitted when blank and posted when typed', (tester) async {
+    final gearBodies = <Map<String, dynamic>>[];
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/gear/preview') {
+          return jsonResponse(defaultPreviewResponse());
+        }
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'Gear Part', 'feature_ids': []}, status: 201);
+        }
+        if (request.url.path == '/document/parts/part-1/gear-features') {
+          gearBodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return jsonResponse({
+            'type': 'gear',
+            'id': 'gear-1',
+            'locked': false,
+            'produces': 'body',
+            'gear_type': 'boss',
+            'is_internal': false,
+            'module': 2.0,
+            'tooth_count': 20,
+            'face_width': 5.0,
+            'pressure_angle_degrees': 20.0,
+            'profile_shift': 0.0,
+            'backlash': 0.0,
+            'root_fillet_radius': 0.0,
+          }, status: 201);
+        }
+        return jsonResponse({'id': 'part-1', 'name': 'Gear Part', 'feature_ids': []});
+      }),
+    );
+
+    await tester.pumpWidget(MaterialApp(home: GearDesignScreen(documentApi: client)));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Bore diameter'), findsOneWidget);
+    await tester.tap(find.text('Internal'));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+    expect(find.text('Bore diameter'), findsNothing);
+    await tester.tap(find.text('External'));
+    await tester.pump(const Duration(milliseconds: 600));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.widgetWithText(TextField, 'Bore diameter'));
+    await tester.enterText(find.widgetWithText(TextField, 'Bore diameter'), '8');
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(gearBodies, hasLength(1));
+    expect(gearBodies.single['bore_diameter'], 8.0);
+  });
 }

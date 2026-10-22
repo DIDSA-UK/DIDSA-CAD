@@ -6082,6 +6082,7 @@ class DocumentApiClient {
     double helixAngleDegrees = 0.0,
     bool herringbone = false,
     int pointsPerFlank = 12,
+    double boreDiameter = 0.0,
   }) =>
       _send(
         () => _httpClient.post(
@@ -6103,6 +6104,7 @@ class DocumentApiClient {
                 'helix_angle_degrees': helixAngleDegrees,
                 'herringbone': herringbone,
                 'points_per_flank': pointsPerFlank,
+                if (boreDiameter > 0) 'bore_diameter': boreDiameter,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -6136,6 +6138,7 @@ class DocumentApiClient {
     double? helixAngleDegrees,
     bool? herringbone,
     int? pointsPerFlank,
+    double? boreDiameter,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -6157,6 +6160,7 @@ class DocumentApiClient {
                 if (helixAngleDegrees != null) 'helix_angle_degrees': helixAngleDegrees,
                 if (herringbone != null) 'herringbone': herringbone,
                 if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
+                if (boreDiameter != null) 'bore_diameter': boreDiameter,
               }),
             ),
         (body) => body as Map<String, dynamic>,
@@ -6595,6 +6599,7 @@ class DocumentApiClient {
     int pointsPerFlank = 12,
     double spiralAngleDegrees = 0.0,
     String spiralHand = 'right',
+    double boreDiameter = 0.0,
   }) =>
       _send(
         () => _httpClient.post(
@@ -6614,6 +6619,7 @@ class DocumentApiClient {
                 'points_per_flank': pointsPerFlank,
                 'spiral_angle_degrees': spiralAngleDegrees,
                 'spiral_hand': spiralHand,
+                if (boreDiameter > 0) 'bore_diameter': boreDiameter,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -6637,6 +6643,7 @@ class DocumentApiClient {
     int? pointsPerFlank,
     double? spiralAngleDegrees,
     String? spiralHand,
+    double? boreDiameter,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -6656,6 +6663,7 @@ class DocumentApiClient {
                 if (pointsPerFlank != null) 'points_per_flank': pointsPerFlank,
                 if (spiralAngleDegrees != null) 'spiral_angle_degrees': spiralAngleDegrees,
                 if (spiralHand != null) 'spiral_hand': spiralHand,
+                if (boreDiameter != null) 'bore_diameter': boreDiameter,
               }),
             ),
         (body) => body as Map<String, dynamic>,

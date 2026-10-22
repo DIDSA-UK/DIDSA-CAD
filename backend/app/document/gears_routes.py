@@ -84,6 +84,7 @@ def create_gear_feature(part_id: str, payload: GearFeatureCreate) -> GearFeature
         helix_angle_degrees=payload.helix_angle_degrees,
         herringbone=payload.herringbone,
         points_per_flank=payload.points_per_flank,
+        bore_diameter=payload.bore_diameter,
     )
     _, warnings = resolve_gear(part, feature)  # raises on an unresolvable/invalid gear
     part.add_feature(feature)
@@ -125,6 +126,7 @@ def preview_gear_feature_coarse(
         helix_angle_degrees=payload.helix_angle_degrees,
         herringbone=payload.herringbone,
         points_per_flank=payload.points_per_flank,
+        bore_diameter=payload.bore_diameter,
     )
     shape = resolve_gear_coarse(part, feature)  # raises on an unresolvable/invalid gear
     return _coarse_preview_response(shape, mesh_quality)
@@ -178,6 +180,7 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
     new_points_per_flank = (
         payload.points_per_flank if payload.points_per_flank is not None else feature.points_per_flank
     )
+    new_bore_diameter = payload.bore_diameter if payload.bore_diameter is not None else feature.bore_diameter
 
     _validate_gear_feature_payload(new_is_internal, new_outer_diameter)
     _validate_plane_ref(part, new_plane_ref)
@@ -200,6 +203,7 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
         helix_angle_degrees=new_helix_angle_degrees,
         herringbone=new_herringbone,
         points_per_flank=new_points_per_flank,
+        bore_diameter=new_bore_diameter,
     )
     _, warnings = resolve_gear(part, candidate)  # raises on an unresolvable/invalid gear
 
@@ -218,6 +222,7 @@ def update_gear_feature(part_id: str, feature_id: str, payload: GearFeatureUpdat
     feature.helix_angle_degrees = candidate.helix_angle_degrees
     feature.herringbone = candidate.herringbone
     feature.points_per_flank = candidate.points_per_flank
+    feature.bore_diameter = candidate.bore_diameter
     return _gear_feature_response(part, feature, warnings)
 
 
@@ -343,6 +348,7 @@ def create_bevel_gear_feature(part_id: str, payload: BevelGearFeatureCreate) -> 
         points_per_flank=payload.points_per_flank,
         spiral_angle_degrees=payload.spiral_angle_degrees,
         spiral_hand=payload.spiral_hand,
+        bore_diameter=payload.bore_diameter,
     )
     _, warnings = resolve_bevel_gear(part, feature)  # raises on an unresolvable/invalid bevel gear
     part.add_feature(feature)
@@ -378,6 +384,7 @@ def preview_bevel_gear_feature_coarse(
         points_per_flank=payload.points_per_flank,
         spiral_angle_degrees=payload.spiral_angle_degrees,
         spiral_hand=payload.spiral_hand,
+        bore_diameter=payload.bore_diameter,
     )
     shape = resolve_bevel_gear_coarse(part, feature)  # raises on an unresolvable/invalid bevel gear
     return _coarse_preview_response(shape, mesh_quality)
@@ -424,6 +431,7 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
         payload.spiral_angle_degrees if payload.spiral_angle_degrees is not None else feature.spiral_angle_degrees
     )
     new_spiral_hand = payload.spiral_hand if payload.spiral_hand is not None else feature.spiral_hand
+    new_bore_diameter = payload.bore_diameter if payload.bore_diameter is not None else feature.bore_diameter
 
     _validate_plane_ref(part, new_plane_ref)
     _validate_target_body_ids(part, new_bevel_type == BevelGearType.CUT, new_target_body_ids)
@@ -443,6 +451,7 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
         points_per_flank=new_points_per_flank,
         spiral_angle_degrees=new_spiral_angle_degrees,
         spiral_hand=new_spiral_hand,
+        bore_diameter=new_bore_diameter,
     )
     _, warnings = resolve_bevel_gear(part, candidate)  # raises on an unresolvable/invalid bevel gear
 
@@ -459,6 +468,7 @@ def update_bevel_gear_feature(part_id: str, feature_id: str, payload: BevelGearF
     feature.points_per_flank = candidate.points_per_flank
     feature.spiral_angle_degrees = candidate.spiral_angle_degrees
     feature.spiral_hand = candidate.spiral_hand
+    feature.bore_diameter = candidate.bore_diameter
     return _bevel_gear_feature_response(part, feature, warnings)
 
 
