@@ -298,7 +298,9 @@ class GroupModel:
             if self._spec:
                 base = self.base_transforms if poses is None else poses
                 placed = [rigid_to_pose(base[oid]) for oid in self.member_ids]
-                return ConstraintModel(self._spec).residual(placed)[1]
+                # a coupler's rows are measured from THIS model's base poses (a cached spec may carry the anchors of an earlier one)
+                anchors = [rigid_to_pose(self.base_transforms[oid]) for oid in self.member_ids]
+                return ConstraintModel(self._spec, anchors).residual(placed)[1]
         return self._jacobian_differences(poses, step)
 
     def _jacobian_differences(self, poses: dict[str, RigidTransform] | None, step: float) -> np.ndarray:

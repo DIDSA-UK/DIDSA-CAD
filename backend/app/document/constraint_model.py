@@ -18,7 +18,9 @@ import numpy as np
 
 MODEL_VERSION = 3  # 3: an ANGLE about a hinge (`hinge_direction` on a side) also fixes the swing sense; 2: branch-specific residuals (`alignment` / `side` / `perp` per mate, linear signed DISTANCE, mm-scaled squared ones)
 PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces on two members); emitted ONLY when some side has one, else 3
-SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance")
+COUPLER_MODEL_VERSION = 5  # 5: coupler mates (gear / rack_pinion / screw: rows on the MOVE of each side from its `anchor` pose); emitted ONLY when the model has one
+COUPLER_TYPES = ("gear", "rack_pinion", "screw")
+SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance", *COUPLER_TYPES)
 
 # Constants of spec section 4b (also in docs/motion/vectors.json -> constants).
 LOCAL_FOLLOWER = 1e-2  # follower weight of the local retraction (the PROJECTION metric keeps 1e-4)
@@ -139,6 +141,7 @@ def export_constraint_model(model) -> dict | None:
     ids = list(model.member_ids)
     mates = []
     has_pair = False
+    has_coupler = False
     for mate, a, b in model.sides:
         if mate.type.value not in SUPPORTED_TYPES:
             return None
@@ -150,6 +153,10 @@ def export_constraint_model(model) -> dict | None:
             if s.frozen_transform is not None:
                 r, t = rigid_to_pose(s.frozen_transform)
                 out["frozen"] = {"r": r.tolist(), "t": t.tolist()}
+            if mate.type.value in COUPLER_TYPES and s.occurrence_id in ids:
+                # a coupler measures a member's MOVE from the pose the solve started from: its base pose (clients refresh it at every anchor)
+                ar, at = rigid_to_pose(model.base_transforms[s.occurrence_id])
+                out["anchor"] = {"r": ar.tolist(), "t": at.tolist()}
             for name in ("point", "axis_origin", "direction", "perp"):
                 v = getattr(g, name)
                 if v is not None:
@@ -176,6 +183,12 @@ def export_constraint_model(model) -> dict | None:
         from app.document.assembly_solver import _effective_mate
 
         mate = _effective_mate(mate, a.geometry, b.geometry)
+        if mate.type.value in COUPLER_TYPES:
+            has_coupler = True
+            mates.append(
+                {"type": mate.type.value, "value": float(mate.value), "k": 1 if mate.secondary_flip else -1, "a": side(a), "b": side(b)}
+            )
+            continue
         mates.append(
             {
                 "type": mate.type.value,
@@ -191,7 +204,8 @@ def export_constraint_model(model) -> dict | None:
                 "b": side(b),
             }
         )
-    return {"version": PAIR_MODEL_VERSION if has_pair else MODEL_VERSION, "members": ids, "mates": mates}
+    version = COUPLER_MODEL_VERSION if has_coupler else (PAIR_MODEL_VERSION if has_pair else MODEL_VERSION)
+    return {"version": version, "members": ids, "mates": mates}
 
 
 # ---- residual + analytic Jacobian --------------------------------------------------------------------------------
@@ -235,12 +249,36 @@ def _unit(a: _V) -> _V:
     return _V(u, (np.eye(3) - np.outer(u, u)) @ a.d / n)
 
 
+def _quaternion_wv(r: np.ndarray):
+    """(w, v) of a rotation matrix, w >= 0 (the same as `app.document.coupler._quaternion`)."""
+    t = float(np.trace(r))
+    if t > 0.0:
+        s = math.sqrt(t + 1.0) * 2.0
+        w, v = 0.25 * s, np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]]) / s
+    else:
+        i = int(np.argmax(np.diag(r)))
+        j, k = (i + 1) % 3, (i + 2) % 3
+        s = math.sqrt(r[i, i] - r[j, j] - r[k, k] + 1.0) * 2.0
+        v = np.zeros(3)
+        v[i] = 0.25 * s
+        v[j] = (r[j, i] + r[i, j]) / s
+        v[k] = (r[k, i] + r[i, k]) / s
+        w = (r[k, j] - r[j, k]) / s
+    if w < 0.0:
+        w, v = -w, -v
+    return w, v
+
+
 class ConstraintModel:
     """Mate residuals of an exported model, `residual(poses)` -> `(r, J)` with `J` the twist Jacobian
-    (`6k` columns, `[v, w]` per member, left-multiplied: `t += v`, `R = exp(w) R`)."""
+    (`6k` columns, `[v, w]` per member, left-multiplied: `t += v`, `R = exp(w) R`).
 
-    def __init__(self, spec: dict):
+    A coupler mate (version 5) measures each side's move from its `anchor` pose; `anchors` (a list of `(R, t)` per member) replaces
+    the exported ones - the retraction's start poses of the moment, which clients refresh at every accepted anchor."""
+
+    def __init__(self, spec: dict, anchors=None):
         self.spec = spec
+        self.anchors = anchors
         self.k = len(spec["members"])
         self.n = 6 * self.k
         self.mates = spec["mates"]
@@ -289,6 +327,65 @@ class ConstraintModel:
                 g["pair_normal"] = self._world(pair, poses, "normal", "dir", plane=True)
         return g
 
+    def _anchor(self, side: dict, m: int):
+        if self.anchors is not None:
+            return self.anchors[m]
+        a = side["anchor"]
+        return np.array(a["r"], float), np.array(a["t"], float)
+
+    def _base_axis(self, side: dict) -> np.ndarray:
+        """The side's axis direction in the world at the base pose (a constant)."""
+        local = np.array(side["direction"], float)
+        local = local / float(np.linalg.norm(local))
+        m = side["member"]
+        if m >= 0:
+            return self._anchor(side, m)[0] @ local
+        fz = side.get("frozen")
+        return (np.array(fz["r"], float) @ local) if fz is not None else local
+
+    def _motion(self, side: dict, poses, axis: np.ndarray):
+        """`(turn, d turn, travel, d travel)` of a member side about / along the world unit `axis` since its anchor pose; zeros for a
+        side that does not move. The derivatives are rows of `n` entries in the twist chart."""
+        n = self.n
+        zero = np.zeros(n)
+        m = side["member"]
+        if m < 0:
+            return 0.0, zero, 0.0, zero
+        r0, t0 = self._anchor(side, m)
+        r, t = poses[m]
+        w, v = _quaternion_wv(r @ r0.T)
+        a = float(v @ axis)
+        turn = 2.0 * math.atan2(a, w)
+        grad = (w * w * axis + w * np.cross(v, axis) + a * v) / (w * w + a * a)
+        gturn = zero.copy()
+        gturn[6 * m + 3 : 6 * m + 6] = grad
+        p = np.array(side["axis_origin"], float)
+        q = r @ p
+        travel = float(((q + t) - (r0 @ p + t0)) @ axis)
+        gtravel = zero.copy()
+        gtravel[6 * m : 6 * m + 3] = axis
+        gtravel[6 * m + 3 : 6 * m + 6] = np.cross(q, axis)
+        return turn, gturn, travel, gtravel
+
+    def _coupler(self, mate: dict, poses):
+        """`(value, gradient)` of the one row of a coupler mate (see `app.document.coupler`)."""
+        t, k, val = mate["type"], float(mate["k"]), float(mate["value"])
+        a, b = mate["a"], mate["b"]
+        axis_a = self._base_axis(a)
+        if t == "gear":
+            ta, ga, _, _ = self._motion(a, poses, axis_a)
+            tb, gb, _, _ = self._motion(b, poses, self._base_axis(b))
+            return tb - k * val * ta, gb - k * val * ga
+        if t == "rack_pinion":
+            ta, ga, _, _ = self._motion(a, poses, axis_a)
+            _, _, sb, gsb = self._motion(b, poses, self._base_axis(b))
+            c = k * val / (2.0 * math.pi)
+            return sb - c * ta, gsb - c * ga
+        ta, ga, sa, gsa = self._motion(a, poses, axis_a)
+        tb, gb, sb, gsb = self._motion(b, poses, axis_a)  # a screw: everything about / along the screw's axis
+        c = k * val / (2.0 * math.pi)
+        return (sb - sa) - c * (tb - ta), (gsb - gsa) - c * (gb - ga)
+
     def residual(self, poses, with_jacobian: bool = True):
         rows: list = []
         jac: list = []
@@ -310,8 +407,13 @@ class ConstraintModel:
             addv(_sub(a, _scale(b, s)))
 
         for mate in self.mates:
-            d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
             t = mate["type"]
+            if t in COUPLER_TYPES:
+                value, gradient = self._coupler(mate, poses)
+                rows.append(float(value))
+                jac.append(gradient)
+                continue
+            d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
             s = sign(mate, "alignment")
             if t == "coincident":
                 if "porigin" in d and "porigin" in f:

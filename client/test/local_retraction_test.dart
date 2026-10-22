@@ -60,6 +60,7 @@ void main() {
     expect((constants['local_accept_distance'] as num).toDouble(), kLocalAcceptDistance);
     expect((constants['local_model_version'] as num).toInt(), kLocalModelVersion);
     expect((constants['local_pair_model_version'] as num).toInt(), kLocalPairModelVersion);
+    expect((constants['local_coupler_model_version'] as num?)?.toInt() ?? kLocalCouplerModelVersion, kLocalCouplerModelVersion);
     expect(cases.length, greaterThanOrEqualTo(12));
   });
 
@@ -133,11 +134,11 @@ void main() {
     test('a valid model parses', () => expect(LocalRetractor.tryParse(base()), isNotNull));
     test('null, another version, an unknown mate type, a missing side field or an out-of-range member -> projection only', () {
       expect(LocalRetractor.tryParse(null), isNull);
-      expect(LocalRetractor.tryParse(base()..['version'] = kLocalPairModelVersion + 1), isNull);
+      expect(LocalRetractor.tryParse(base()..['version'] = kLocalCouplerModelVersion + 1), isNull);
       expect(LocalRetractor.tryParse(base()..['version'] = 1), isNull, reason: 'the pre-branch model (sign-agnostic residuals) is not evaluated');
       expect(LocalRetractor.tryParse(base()..['version'] = 2), isNull, reason: 'a version-2 model has no swing sense for an ANGLE about a hinge');
       final unknown = base();
-      ((unknown['mates'] as List).first as Map<String, dynamic>)['type'] = 'gear';
+      ((unknown['mates'] as List).first as Map<String, dynamic>)['type'] = 'weld';
       expect(LocalRetractor.tryParse(unknown), isNull);
       final missing = base();
       (((missing['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>).remove('axis_origin');
@@ -146,13 +147,15 @@ void main() {
       (((badMember['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>)['member'] = 5;
       expect(LocalRetractor.tryParse(badMember), isNull);
     });
-    test('every golden model carries the current version (4 exactly when a side has a pair) and a branch on each mate', () {
+    test('every golden model carries the current version (5 when a coupler mate is in it, else 4 exactly when a side has a pair) and a branch on each mate', () {
       for (final c in cases) {
         final model = (c['input'] as Map<String, dynamic>)['model'] as Map<String, dynamic>;
         final hasPair = (model['mates'] as List).any((m) => ((m as Map)['a'] as Map).containsKey('pair') || (m['b'] as Map).containsKey('pair'));
-        expect(model['version'], hasPair ? kLocalPairModelVersion : kLocalModelVersion, reason: c['id'] as String);
+        final hasCoupler = (model['mates'] as List).any((m) => const ['gear', 'rack_pinion', 'screw'].contains((m as Map)['type']));
+        expect(model['version'], hasCoupler ? kLocalCouplerModelVersion : hasPair ? kLocalPairModelVersion : kLocalModelVersion, reason: c['id'] as String);
         for (final m in model['mates'] as List) {
           final mate = m as Map<String, dynamic>;
+          if (const ['gear', 'rack_pinion', 'screw'].contains(mate['type'])) continue;
           for (final key in <String>['alignment', 'side', 'perp']) {
             expect(<int>[-1, 1], contains(mate[key]), reason: '${c['id']} $key');
           }

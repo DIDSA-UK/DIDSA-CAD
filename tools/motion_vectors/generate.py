@@ -56,6 +56,7 @@ LOCAL_ACCEPT_RESIDUAL = 1e-6
 LOCAL_DISTANCE_FLOOR = 1e-3  # mm: divisor floor of the mm-scaled squared DISTANCE residuals (axis-axis, point-point)
 LOCAL_MODEL_VERSION = 3      # 3: an ANGLE about a hinge also fixes the swing sense (hinge_direction on a side); 2: branch-specific residuals (alignment / side / perp per mate), see docs/mate-solution-choice-plan.md
 LOCAL_PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces on two members); a model without any pair stays at LOCAL_MODEL_VERSION
+LOCAL_COUPLER_MODEL_VERSION = 5  # 5: coupler mates (gear / rack_pinion / screw): rows on each side's MOVE from its `anchor` pose; emitted only when the model has one
 LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
 
 
@@ -347,12 +348,77 @@ def _vunit(a):
     return _V(u, (np.eye(3) - np.outer(u, u)) @ a.d / n)
 
 
+def _quaternion_wv(r):
+    """(w, v) of a rotation matrix, w >= 0."""
+    t = float(np.trace(r))
+    if t > 0.0:
+        s = math.sqrt(t + 1.0) * 2.0
+        w, v = 0.25 * s, np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]]) / s
+    else:
+        i = int(np.argmax(np.diag(r)))
+        j, k = (i + 1) % 3, (i + 2) % 3
+        s = math.sqrt(r[i, i] - r[j, j] - r[k, k] + 1.0) * 2.0
+        v = np.zeros(3)
+        v[i] = 0.25 * s
+        v[j] = (r[j, i] + r[i, j]) / s
+        v[k] = (r[k, i] + r[i, k]) / s
+        w = (r[k, j] - r[j, k]) / s
+    if w < 0.0:
+        w, v = -w, -v
+    return w, v
+
+
 class ConstraintModel:
     """`spec` = the `constraint_model` of a mate-motion answer (see the spec, section 4b)."""
 
     def __init__(self, spec):
         self.spec, self.k = spec, len(spec["members"])
         self.n = 6 * self.k
+
+    def _base_axis(self, side):
+        local = np.array(side["direction"], float)
+        local = local / float(np.linalg.norm(local))
+        if side["member"] >= 0:
+            return np.array(side["anchor"]["r"], float) @ local
+        fz = side.get("frozen")
+        return (np.array(fz["r"], float) @ local) if fz is not None else local
+
+    def _motion(self, side, poses, axis):
+        """(turn, d turn, travel, d travel) of a member side about / along the world unit `axis` since its anchor pose (zeros for a side that does not move)."""
+        zero = np.zeros(self.n)
+        m = side["member"]
+        if m < 0:
+            return 0.0, zero, 0.0, zero
+        r0, t0 = np.array(side["anchor"]["r"], float), np.array(side["anchor"]["t"], float)
+        r, t = poses[m]
+        w, v = _quaternion_wv(r @ r0.T)
+        a = float(v @ axis)
+        gturn = zero.copy()
+        gturn[6 * m + 3 : 6 * m + 6] = (w * w * axis + w * np.cross(v, axis) + a * v) / (w * w + a * a)
+        p = np.array(side["axis_origin"], float)
+        q = r @ p
+        gtravel = zero.copy()
+        gtravel[6 * m : 6 * m + 3] = axis
+        gtravel[6 * m + 3 : 6 * m + 6] = np.cross(q, axis)
+        return 2.0 * math.atan2(a, w), gturn, float(((q + t) - (r0 @ p + t0)) @ axis), gtravel
+
+    def _coupler(self, mate, poses):
+        kind, k, val = mate["type"], float(mate["k"]), float(mate["value"])
+        a, b = mate["a"], mate["b"]
+        axis_a = self._base_axis(a)
+        if kind == "gear":
+            ta, ga, _, _ = self._motion(a, poses, axis_a)
+            tb, gb, _, _ = self._motion(b, poses, self._base_axis(b))
+            return tb - k * val * ta, gb - k * val * ga
+        if kind == "rack_pinion":
+            ta, ga, _, _ = self._motion(a, poses, axis_a)
+            _, _, sb, gsb = self._motion(b, poses, self._base_axis(b))
+            c = k * val / (2.0 * math.pi)
+            return sb - c * ta, gsb - c * ga
+        ta, ga, sa, gsa = self._motion(a, poses, axis_a)
+        tb, gb, sb, gsb = self._motion(b, poses, axis_a)
+        c = k * val / (2.0 * math.pi)
+        return (sb - sa) - c * (tb - ta), (gsb - gsa) - c * (gb - ga)
 
     def _world(self, side, poses, name, kind, plane=False):
         local = np.array(side["plane"][name] if plane else side[name], float)
@@ -416,6 +482,11 @@ class ConstraintModel:
             addv(_vsub(a, _vscale(b, s)))  # `a - s b`: zero only on the alignment branch
 
         for mate in self.spec["mates"]:
+            if mate["type"] in ("gear", "rack_pinion", "screw"):
+                value, gradient = self._coupler(mate, poses)
+                rows.append(float(value))
+                jac.append(gradient)
+                continue
             d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
             t = mate["type"]
             s = sign(mate, "alignment")
@@ -1147,6 +1218,74 @@ def build():
                locked_model, [bolt_start], [turned(moved(bolt_start, (10, 0, 5)), 30)], 10.0)
     local_case("local-guard-distance", "The local answer converges but lies more than 0.5 L from the fallback (a far projector output): rejected, fallback shown",
                bolt_fixed, [bolt_start], [moved(bolt_start, (6, -3, 0))], 10.0, fallback=[moved(bolt_start, (6, -3, 0))])
+
+    # ---- constraint model v5: coupler mates (gear / rack and pinion / screw). Rows on each side's MOVE from its `anchor` pose, so the cases carry
+    # anchors (the pose each member had when the backend answered) and the frame's start poses may already have moved from them.
+    COUPLER_VERSION = LOCAL_COUPLER_MODEL_VERSION
+
+    def anchored(side_dict, pose):
+        out = dict(side_dict)
+        out["anchor"] = {"r": pose.r.tolist(), "t": [float(x) for x in pose.t]}
+        return out
+
+    def coupler(kind, a, b, value, k):
+        return {"type": kind, "value": value, "k": k, "a": a, "b": b}
+
+    gear_a0, gear_b0 = P((0.0, 0.0, 0.0)), P((60.0, 0.0, 0.0))
+    FROZEN_HOLE_B = {"r": I3, "t": [60.0, 0.0, 0.0]}
+
+    def gear_pair(k, members=("gearA", "gearB"), anchors=(gear_a0, gear_b0)):
+        # 1:2 (r = 0.5), each gear concentric to a fixed hole; the gear mate couples the two spins
+        a_idx, b_idx = 0, 1
+        holes = {"gearA": axis_side(-1, (0, 0, 0), (0, 0, 1), frozen=FROZEN0), "gearB": axis_side(-1, (0, 0, 0), (0, 0, 1), frozen=FROZEN_HOLE_B)}
+        shaft = lambda name, idx: axis_side(idx, (0, 0, 0), (0, 0, 1))
+        ids = list(members)
+        pose_of = {"gearA": anchors[0], "gearB": anchors[1]}
+        gear_a_side = anchored(shaft("gearA", ids.index("gearA")), pose_of["gearA"])
+        gear_b_side = anchored(shaft("gearB", ids.index("gearB")), pose_of["gearB"])
+        return {"version": COUPLER_VERSION, "members": ids, "mates": [
+            mate("concentric", shaft("gearA", ids.index("gearA")), holes["gearA"]),
+            mate("concentric", shaft("gearB", ids.index("gearB")), holes["gearB"]),
+            coupler("gear", gear_a_side, gear_b_side, 0.5, k)]}
+
+    local_case("local-gear-pair-turn-a-30", "Gear mate r = 0.5, k = -1 (two external gears on parallel shafts, each concentric to a fixed hole): gear A (grabbed) turned 30 deg - gear B must turn "
+               "15 deg the OPPOSITE way (the row dtheta_B - k r dtheta_A)", gear_pair(-1), [gear_a0, gear_b0], [turned(gear_a0, 30), gear_b0], 10.0)
+    local_case("local-gear-pair-turn-a-reverse", "The same pair with Reverse (k = +1): gear A turned 30 deg turns gear B 15 deg the SAME way",
+               gear_pair(1), [gear_a0, gear_b0], [turned(gear_a0, 30), gear_b0], 10.0)
+    local_case("local-gear-pair-grab-b", "Gear B grabbed (member 0): 60 deg on B turns A 120 deg the opposite way (the ratio read from B's side)",
+               gear_pair(-1, members=("gearB", "gearA")), [gear_b0, gear_a0], [turned(gear_b0, 60), gear_a0], 10.0)
+    gear_a_moved, gear_b_moved = turned(gear_a0, 80), turned(gear_b0, -40)
+    local_case("local-gear-pair-from-a-later-frame", "The frame starts where an earlier frame left the pair (A 80 deg, B -40 deg: on the relation measured from the ANCHOR poses at 0 deg); a further "
+               "10 deg on A -> B at -45", gear_pair(-1, anchors=(gear_a0, gear_b0)), [gear_a_moved, gear_b_moved], [turned(gear_a_moved, 10), gear_b_moved], 10.0)
+    local_case("local-gear-pair-near-150-deg", "A turned 150 deg from its anchor (the twist is read in (-pi, pi]): B must be at -75 deg",
+               gear_pair(-1), [gear_a0, gear_b0], [turned(gear_a0, 150), gear_b0], 10.0)
+
+    rack0 = P((0.0, 20.0, 0.0))
+    FROZEN_RAIL = {"r": I3, "t": [0.0, 20.0, 0.0]}
+    PITCH_TRAVEL = 2.0 * math.pi * 10.0  # a 10 mm radius pinion: 62.832 mm of rack per turn
+    rack_model = lambda k: {"version": COUPLER_VERSION, "members": ["pinion", "rack"], "mates": [
+        mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1)), axis_side(-1, (0, 0, 0), (0, 0, 1), frozen=FROZEN0)),
+        mate("concentric", axis_side(1, (0, 0, 0), (1, 0, 0)), axis_side(-1, (0, 0, 0), (1, 0, 0), frozen=FROZEN_RAIL)),
+        coupler("rack_pinion", anchored(axis_side(0, (0, 0, 0), (0, 0, 1)), plate0), anchored(axis_side(1, (0, 0, 0), (1, 0, 0)), rack0), PITCH_TRAVEL, k)]}
+    local_case("local-rack-pinion-quarter-turn", "Rack and pinion (62.832 mm per turn, k = +1): the pinion (grabbed) turned 90 deg pushes the rack 15.708 mm along +x (ds_B = k p / 2 pi dtheta_A)",
+               rack_model(1), [plate0, rack0], [turned(plate0, 90), rack0], 10.0)
+    local_case("local-rack-pinion-reverse", "The same with k = -1: the rack goes the other way (-15.708 mm for +90 deg)", rack_model(-1), [plate0, rack0], [turned(plate0, 90), rack0], 10.0)
+    local_case("local-rack-pinion-drag-the-rack", "The rack is grabbed (member 0) and pulled 20 mm along its rail: the pinion must turn 20 / 62.832 turn = 114.6 deg (the sense of k)",
+               {"version": COUPLER_VERSION, "members": ["rack", "pinion"], "mates": [
+                   mate("concentric", axis_side(0, (0, 0, 0), (1, 0, 0)), axis_side(-1, (0, 0, 0), (1, 0, 0), frozen=FROZEN_RAIL)),
+                   mate("concentric", axis_side(1, (0, 0, 0), (0, 0, 1)), axis_side(-1, (0, 0, 0), (0, 0, 1), frozen=FROZEN0)),
+                   coupler("rack_pinion", anchored(axis_side(1, (0, 0, 0), (0, 0, 1)), plate0), anchored(axis_side(0, (0, 0, 0), (1, 0, 0)), rack0), PITCH_TRAVEL, 1)]},
+               [rack0, plate0], [moved(rack0, (20, 0, 0)), plate0], 10.0)
+
+    nut0 = P((0.0, 0.0, 10.0))
+    screw_model = lambda k: {"version": COUPLER_VERSION, "members": ["nut"], "mates": [
+        mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1)), axis_side(-1, (0, 0, 0), (0, 0, 1), frozen=FROZEN0)),
+        coupler("screw", axis_side(-1, (0, 0, 0), (0, 0, 1), frozen=FROZEN0), anchored(axis_side(0, (0, 0, 0), (0, 0, 1)), nut0), 2.0, k)]}
+    local_case("local-screw-nut-quarter-turn", "Screw, lead 2 mm, right-handed (k = +1), screw fixed: the nut turned 90 deg climbs 0.5 mm ((ds_B - ds_A) = k L / 2 pi (dtheta_B - dtheta_A))",
+               screw_model(1), [nut0], [turned(nut0, 90)], 10.0)
+    local_case("local-screw-left-hand", "Left-hand (k = -1): the same 90 deg turn lowers the nut 0.5 mm", screw_model(-1), [nut0], [turned(nut0, 90)], 10.0)
+    local_case("local-screw-push-the-nut", "The nut is pushed 0.9 mm up the screw (the hand pulls along the axis only): the nearest pose splits the correction between the climb and the turn the lead demands (a 0.9 mm climb is 162 deg of turn, shared in the weighted metric)",
+               screw_model(1), [nut0], [moved(nut0, (0, 0, 0.9))], 10.0)
 
     # ---- branch-specific residuals (docs/mate-solution-choice-plan.md): each mate is zero only on the branch it names -------
     def z_of(p, v=(0.0, 0.0, 1.0)):

@@ -339,6 +339,8 @@ class ConstrainedDragSession {
     } else if (_local != null && !_sameIds(_local!.memberIds, ids)) {
       _local = null;
     }
+    // A coupler's rows are relative to the accepted pose (the twist is only good within ~170 degrees): re-base them at every anchor.
+    _local?.setAnchors(model.refs);
     _sched.onAccepted(maxStep: r.quality.maxStep, sigmaGap: r.quality.sigmaGap);
     counters.recordAccepted();
     _dirty = true;

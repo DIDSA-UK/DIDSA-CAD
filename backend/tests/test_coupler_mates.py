@@ -164,14 +164,14 @@ def test_solve_with_a_coupler_present_moves_nothing():
 # ---- motion ----------------------------------------------------------------------------------------------------------
 
 
-def test_group_dof_is_one_and_the_central_difference_jacobian_converges():
+def test_group_dof_is_one_and_a_model_of_version_5_comes_with_it():
     root, _plate, shaft = gear_scene()
     free = _motion(root, "shaft-a", {})
     assert free["dof"] == 1 and [m["occurrence_id"] for m in free["members"]] == ["shaft-a"]  # alone: its own spin
     _gear_mate(root, shaft)
     body = _motion(root, "shaft-a", {})
     assert body["converged"] and body["dof"] == 1 and body["grounded"] is True
-    assert body["constraint_model"] is None  # no analytic model for a coupler yet: clients keep projecting on the backend
+    assert body["constraint_model"]["version"] == 5  # the analytic model (M6): clients can retract locally
     assert [m["occurrence_id"] for m in body["members"]] == ["shaft-a", "shaft-b"]
 
 
@@ -231,7 +231,8 @@ def _box_with_edge(name, size, depth):
     return part, _find_straight_edge(part["id"], part["body_id"], (1, 0, 0))
 
 
-def test_rack_and_pinion_and_the_reverse_switch():
+def rack_scene():
+    """A pinion on a hole plate and a rack block that can only slide along x (flat on the plate, side face on a fixed guide); rack and pinion mate, 10 mm per turn."""
     plate = _plate_with_hole("PinionPlate")
     shaft = _make_cylinder_part("PinionShaft", radius=4.0, depth=20.0)
     guide = _make_box_part("Guide", size=10.0, depth=10.0)
@@ -245,6 +246,23 @@ def test_rack_and_pinion_and_the_reverse_switch():
     fix(root, "guide")
     made = _post_mate(root, "rack_pinion", _ref("pinion", _cyl(shaft)), _ref("rack", {"subshape_ref": {"body_id": rack["body_id"], "shape_type": "edge", "index": edge}}), value=10.0)
     assert made.status_code == 201, made.text
+    return root, made
+
+
+def screw_scene():
+    """A fixed screw and a nut plate concentric to it (free to turn and slide); screw mate, lead 2 mm."""
+    plate = _plate_with_hole("NutPlate", size=40.0, depth=6.0, at=(20.0, 20.0))
+    screw = _make_cylinder_part("Screw", radius=4.0, depth=40.0)
+    root = _compose(_create_part("ScrewAssembly"), [("screw", screw, (20, 20, -10)), ("nut", plate, (0, 0, 10))])
+    _mate(root, "concentric", "nut", _cyl(plate), "screw", _cyl(screw))
+    fix(root, "screw")
+    made = _post_mate(root, "screw", _ref("screw", _cyl(screw)), _ref("nut", _cyl(plate)), value=2.0)
+    assert made.status_code == 201, made.text
+    return root, made
+
+
+def test_rack_and_pinion_and_the_reverse_switch():
+    root, made = rack_scene()
     stored = _occs(root)
     body = _motion(root, "pinion", {"transform": _wish(stored["pinion"], 180.0)})
     assert body["converged"], body
@@ -258,13 +276,7 @@ def test_rack_and_pinion_and_the_reverse_switch():
 
 
 def test_screw_nut_climbs_its_lead():
-    plate = _plate_with_hole("NutPlate", size=40.0, depth=6.0, at=(20.0, 20.0))
-    screw = _make_cylinder_part("Screw", radius=4.0, depth=40.0)
-    root = _compose(_create_part("ScrewAssembly"), [("screw", screw, (20, 20, -10)), ("nut", plate, (0, 0, 10))])
-    _mate(root, "concentric", "nut", _cyl(plate), "screw", _cyl(screw))
-    fix(root, "screw")
-    made = _post_mate(root, "screw", _ref("screw", _cyl(screw)), _ref("nut", _cyl(plate)), value=2.0)
-    assert made.status_code == 201, made.text
+    root, made = screw_scene()
     assert made.json()["secondary_flip"] is True  # right-hand
     start = _occs(root)
     reference = [{"occurrence_id": "nut", "transform": start["nut"]}]

@@ -43,10 +43,15 @@ const int kLocalModelVersion = 3;
 /// backend emits 4 only for a component that has one, so every other scene keeps version 3 (and an old client keeps projecting).
 const int kLocalPairModelVersion = 4;
 
+/// Version 5 = coupler mates (gear / rack_pinion / screw): rows on each side's MOVE from its `anchor` pose (`LocalRetractor.setAnchors`
+/// replaces the anchors at every accepted anchor). Emitted by the backend only when the group holds a coupler.
+const int kLocalCouplerModelVersion = 5;
+
 /// Divisor floor (mm) of the mm-scaled squared DISTANCE residuals (axis-axis, point-point): `(x² - d²) / (2 max(d, floor))`.
 const double kLocalDistanceFloor = 1e-3;
 
 const Set<String> _types = <String>{'coincident', 'concentric', 'parallel', 'angle', 'distance'};
+const Set<String> _couplerTypes = <String>{'gear', 'rack_pinion', 'screw'};
 
 class _Side {
   final int member;
@@ -61,7 +66,11 @@ class _Side {
   /// then (the average of the two world origins, this side's normal) and the mate adds the rows "the two normals stay parallel".
   final _Side? pair;
 
-  const _Side(this.member, this.frozenR, this.frozenT, this.geometry, [this.pair]);
+  /// Version 5 (a coupler's member side): the pose the member had when the solve started, as exported; [LocalRetractor.setAnchors] overrides it.
+  final Mat3? anchorR;
+  final List<double>? anchorT;
+
+  const _Side(this.member, this.frozenR, this.frozenT, this.geometry, [this.pair, this.anchorR, this.anchorT]);
 }
 
 class _Mate {
@@ -77,7 +86,10 @@ class _Mate {
   final _Side a;
   final _Side b;
 
-  const _Mate(this.type, this.value, this.allowRotation, this.alignment, this.side, this.perp, this.a, this.b);
+  /// A coupler's sense, +1 / -1 (`k`).
+  final double k;
+
+  const _Mate(this.type, this.value, this.allowRotation, this.alignment, this.side, this.perp, this.a, this.b, [this.k = 1.0]);
 }
 
 double _sign(Object? o) => (o is num && o < 0) ? -1.0 : 1.0;
@@ -129,7 +141,14 @@ _Side _parseSide(Map<String, dynamic> j) {
       <String, List<double>>{'porigin': _vec(pp['origin']), 'pnormal': _vec(pp['normal'])},
     );
   }
-  return _Side((j['member'] as num).toInt(), fr, ft, geo, pair);
+  Mat3? ar;
+  List<double>? at;
+  final anchor = j['anchor'];
+  if (anchor != null) {
+    ar = Mat3(<double>[for (final row in (anchor as Map)['r'] as List) ..._vec(row)]);
+    at = _vec(anchor['t']);
+  }
+  return _Side((j['member'] as num).toInt(), fr, ft, geo, pair, ar, at);
 }
 
 class LocalFrameResult {
@@ -159,7 +178,18 @@ class LocalRetractor {
   final List<_Mate> _mates;
   final int rows;
 
+  /// Version 5: the pose each member had at the latest accepted anchor (the base of a coupler's rows), by member index; null = the exported ones.
+  List<Pose>? _anchors;
+
   LocalRetractor._(this.members, this.memberIds, this._mates, this.rows);
+
+  /// Whether the model holds a coupler mate (rows measured from anchors).
+  bool get hasCoupler => _mates.any((m) => _couplerTypes.contains(m.type));
+
+  /// Re-bases a coupler's rows on [poses] (one per member, the model's member order): call it with the members' poses of every accepted anchor.
+  void setAnchors(List<Pose> poses) {
+    if (poses.length == members) _anchors = List<Pose>.of(poses);
+  }
 
   /// Parses an anchor's `constraint_model`; `null` (= keep projecting) for no model, another `version`, an unknown mate type,
   /// a side missing geometry its residual needs, or a group the local solve is not meant for (spec §4b.2).
@@ -167,14 +197,15 @@ class LocalRetractor {
     if (json == null) return null;
     try {
       final version = (json['version'] as num?)?.toInt();
-      if (version != kLocalModelVersion && version != kLocalPairModelVersion) return null;
+      if (version != kLocalModelVersion && version != kLocalPairModelVersion && version != kLocalCouplerModelVersion) return null;
       final ids = <String>[for (final m in json['members'] as List) m as String];
       if (ids.isEmpty || ids.length > maxMembers) return null;
       final mates = <_Mate>[];
       for (final raw in json['mates'] as List) {
         final m = raw as Map<String, dynamic>;
         final type = m['type'] as String;
-        if (!_types.contains(type)) return null;
+        final coupler = _couplerTypes.contains(type);
+        if (!_types.contains(type) && !(coupler && version == kLocalCouplerModelVersion)) return null;
         final side = _Mate(
           type,
           (m['value'] as num?)?.toDouble(),
@@ -184,11 +215,15 @@ class LocalRetractor {
           _sign(m['perp']),
           _parseSide(m['a'] as Map<String, dynamic>),
           _parseSide(m['b'] as Map<String, dynamic>),
+          _sign(m['k']),
         );
+        if (coupler && !_couplerSidesOk(side)) return null;
         if (side.a.member >= ids.length || side.b.member >= ids.length) return null;
         if ((side.a.pair?.member ?? -1) >= ids.length || (side.b.pair?.member ?? -1) >= ids.length) return null;
         // `pair` belongs to version 4 only: a version-3 model that carries one is malformed, not "version 3 plus extras".
         if (version == kLocalModelVersion && (side.a.pair != null || side.b.pair != null)) return null;
+        // `anchor` and the coupler types belong to version 5 only.
+        if (version != kLocalCouplerModelVersion && (side.a.anchorR != null || side.b.anchorR != null)) return null;
         mates.add(side);
       }
       final probe = LocalRetractor._(ids.length, ids, mates, 0);
@@ -202,7 +237,118 @@ class LocalRetractor {
     }
   }
 
+  /// A coupler's two sides each need an axis (`axis_origin`, `direction`), a member side its anchor, and a positive value.
+  static bool _couplerSidesOk(_Mate m) {
+    if (m.value == null || m.value! <= 0) return false;
+    for (final s in <_Side>[m.a, m.b]) {
+      if (!s.geometry.containsKey('axis_origin') || !s.geometry.containsKey('direction')) return false;
+      if (s.member >= 0 && s.anchorR == null) return false;
+    }
+    return true;
+  }
+
   int get n => 6 * members;
+
+  // ---- coupler rows (version 5, projector-spec §4b "gear, rack_pinion, screw") ---------------------------------------
+
+  /// The side's axis in the world at its base pose (a constant).
+  List<double> _baseAxis(_Side s) {
+    final local = s.geometry['direction']!;
+    final nn = norm3(local);
+    final u = <double>[local[0] / nn, local[1] / nn, local[2] / nn];
+    if (s.member >= 0) {
+      final r0 = _anchors != null ? _anchors![s.member].r : s.anchorR!;
+      return r0.mulVec(u);
+    }
+    return s.frozenR != null ? s.frozenR!.mulVec(u) : u;
+  }
+
+  /// `(turn, d turn, travel, d travel)` of a member side about / along the world unit [axis] since its anchor pose.
+  (double, List<double>, double, List<double>) _motion(_Side s, List<Pose> poses, List<double> axis) {
+    final zero = List<double>.filled(n, 0.0);
+    final m = s.member;
+    if (m < 0) return (0.0, zero, 0.0, zero);
+    final Mat3 r0;
+    final List<double> t0;
+    if (_anchors != null) {
+      r0 = _anchors![m].r;
+      t0 = _anchors![m].t;
+    } else {
+      r0 = s.anchorR!;
+      t0 = s.anchorT!;
+    }
+    final r = poses[m].r;
+    final t = poses[m].t;
+    final q = r * r0.transposed;
+    // unit quaternion of q, w >= 0 (same branch as the backend)
+    double w;
+    List<double> v;
+    final tr = q.trace;
+    if (tr > 0.0) {
+      final sc = math.sqrt(tr + 1.0) * 2.0;
+      w = 0.25 * sc;
+      v = <double>[(q.at(2, 1) - q.at(1, 2)) / sc, (q.at(0, 2) - q.at(2, 0)) / sc, (q.at(1, 0) - q.at(0, 1)) / sc];
+    } else {
+      var i = 0;
+      if (q.at(1, 1) > q.at(i, i)) i = 1;
+      if (q.at(2, 2) > q.at(i, i)) i = 2;
+      final j = (i + 1) % 3, k = (i + 2) % 3;
+      final sc = math.sqrt(q.at(i, i) - q.at(j, j) - q.at(k, k) + 1.0) * 2.0;
+      v = <double>[0, 0, 0];
+      v[i] = 0.25 * sc;
+      v[j] = (q.at(j, i) + q.at(i, j)) / sc;
+      v[k] = (q.at(k, i) + q.at(i, k)) / sc;
+      w = (q.at(k, j) - q.at(j, k)) / sc;
+    }
+    if (w < 0.0) {
+      w = -w;
+      v = <double>[-v[0], -v[1], -v[2]];
+    }
+    final a = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+    final vxa = cross3(v, axis);
+    final den = w * w + a * a;
+    final gturn = List<double>.of(zero);
+    for (var i = 0; i < 3; i++) {
+      gturn[6 * m + 3 + i] = (w * w * axis[i] + w * vxa[i] + a * v[i]) / den;
+    }
+    final p = s.geometry['axis_origin']!;
+    final rp = r.mulVec(p);
+    final r0p = r0.mulVec(p);
+    final travel = ((rp[0] + t[0]) - (r0p[0] + t0[0])) * axis[0] +
+        ((rp[1] + t[1]) - (r0p[1] + t0[1])) * axis[1] +
+        ((rp[2] + t[2]) - (r0p[2] + t0[2])) * axis[2];
+    final gtravel = List<double>.of(zero);
+    final qxa = cross3(rp, axis);
+    for (var i = 0; i < 3; i++) {
+      gtravel[6 * m + i] = axis[i];
+      gtravel[6 * m + 3 + i] = qxa[i];
+    }
+    return (2.0 * math.atan2(a, w), gturn, travel, gtravel);
+  }
+
+  /// The one row of a coupler mate: `(value, gradient)`.
+  (double, List<double>) _couplerRow(_Mate mate, List<Pose> poses) {
+    final axisA = _baseAxis(mate.a);
+    final value = mate.value!;
+    List<double> lin(List<double> x, double ca, List<double> y) => <double>[for (var i = 0; i < n; i++) x[i] - ca * y[i]];
+    switch (mate.type) {
+      case 'gear':
+        final a = _motion(mate.a, poses, axisA);
+        final b = _motion(mate.b, poses, _baseAxis(mate.b));
+        return (b.$1 - mate.k * value * a.$1, lin(b.$2, mate.k * value, a.$2));
+      case 'rack_pinion':
+        final a = _motion(mate.a, poses, axisA);
+        final b = _motion(mate.b, poses, _baseAxis(mate.b));
+        final c = mate.k * value / (2.0 * math.pi);
+        return (b.$3 - c * a.$1, lin(b.$4, c, a.$2));
+      default: // screw: everything about / along the screw's (A's) axis
+        final a = _motion(mate.a, poses, axisA);
+        final b = _motion(mate.b, poses, axisA);
+        final c = mate.k * value / (2.0 * math.pi);
+        final grad = <double>[for (var i = 0; i < n; i++) (b.$4[i] - a.$4[i]) - c * (b.$2[i] - a.$2[i])];
+        return ((b.$3 - a.$3) - c * (b.$1 - a.$1), grad);
+    }
+  }
 
   // ---- residual + analytic Jacobian ---------------------------------------------------------------------------------
 
@@ -337,6 +483,11 @@ class LocalRetractor {
     }
 
     for (final mate in _mates) {
+      if (_couplerTypes.contains(mate.type)) {
+        final (value, gradient) = _couplerRow(mate, poses);
+        add(value, gradient);
+        continue;
+      }
       final d = _geo(mate.a, poses);
       final f = _geo(mate.b, poses);
       final s = mate.alignment;
