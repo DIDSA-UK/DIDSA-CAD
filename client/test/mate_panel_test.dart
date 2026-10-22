@@ -254,8 +254,8 @@ void main() {
   });
 
   group('kMateTypes', () {
-    test('has exactly the five backend-supported types', () {
-      expect(kMateTypes, ['coincident', 'concentric', 'parallel', 'distance', 'angle']);
+    test('has exactly the backend-supported types (the five placing mates and the three couplers)', () {
+      expect(kMateTypes, ['coincident', 'concentric', 'parallel', 'distance', 'angle', 'gear', 'rack_pinion', 'screw']);
     });
   });
 

@@ -3772,3 +3772,12 @@ row per coupler (`GroupModel._coupler_rows`; couplers are never swapped); py-slv
 `preview-mate-solve` answers a coupler with the current pose, its default sense and `coupler_value`. An AI plan cannot make a coupler.
 Tests: `test_coupler_mates.py`, `test_coupler_mates_gears.py`.
 
+**M4, coupler mates in the flat app.** `kMateTypes` gains Gear, Rack and pinion, Screw (`kCouplerMateTypes`). The Add Mate panel shows a value field for them
+(Ratio (B turns per A turn) / Travel per turn (mm) / Lead (mm per turn)); empty is allowed for gear and rack and pinion and shows the backend's value as
+"Auto: ..." (the preview's new `coupler_value`, `MateSolvePreviewDto.couplerValue`); the screw needs its lead. The sense control reads **Reverse** (**Left-hand**
+for a screw) and is relative to the sense the backend chose by default (`MateBranchControls.senseBase`), because the raw `secondary_flip` depends on which way each
+axis points. The Edit Mate dialog has the same value field and control (relative to the sense the mate had when it opened). The Assembly tree names the mates
+("Gear 1") and shows "1 : 2", "62.832 mm per turn" or "lead 2 mm" under them. Dragging is unchanged: `constraint_model` is null for a group with a coupler, which
+the local retraction already treats as "keep projecting on the backend" (`constrained_drag_local_test.dart`, `sendModel: false`). Not done: picks are not
+filtered to axis kinds in the panel (the backend's 422 is shown). Tests: `coupler_mate_test.dart` (15), `mate_panel_test.dart` updated. `flutter test` 2942 passed, 38 skipped.
+

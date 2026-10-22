@@ -12,7 +12,14 @@ import 'width_pick.dart';
 /// `String` wire value directly (matching `MateDto.type`'s own shape)
 /// rather than a Dart enum with its own to/from-wire mapping, since nothing
 /// else client-side needs a richer type for this yet.
-const List<String> kMateTypes = ['coincident', 'concentric', 'parallel', 'distance', 'angle'];
+const List<String> kMateTypes = ['coincident', 'concentric', 'parallel', 'distance', 'angle', 'gear', 'rack_pinion', 'screw'];
+
+/// The coupler ("motion") mates (`docs/gears-and-motion-plan.md`): they place nothing, they keep a relation between how far the two
+/// parts MOVE. Two axis picks (a round face, a circular or a straight edge; the rack's second a straight edge), a value (ratio, travel
+/// per turn, lead) and a sense. `value` stays empty for gear and rack and pinion to take it from the parts' gear features.
+const List<String> kCouplerMateTypes = ['gear', 'rack_pinion', 'screw'];
+
+bool isCouplerMateType(String type) => kCouplerMateTypes.contains(type);
 
 String mateTypeLabel(String type) => switch (type) {
       'coincident' => 'Coincident',
@@ -20,6 +27,9 @@ String mateTypeLabel(String type) => switch (type) {
       'parallel' => 'Parallel',
       'distance' => 'Distance',
       'angle' => 'Angle',
+      'gear' => 'Gear',
+      'rack_pinion' => 'Rack and pinion',
+      'screw' => 'Screw',
       kWidthMateType => 'Width',
       kSymmetricMateType => 'Symmetric',
       _ => type,
@@ -68,7 +78,39 @@ String? mateBranchNotice(
 /// missing `value` with a 422) exactly, so the Confirm button's own
 /// `_canConfirm` never lets a request through the backend would reject
 /// anyway.
-bool mateTypeNeedsValue(String type) => type == 'distance' || type == 'angle';
+bool mateTypeNeedsValue(String type) => type == 'distance' || type == 'angle' || type == 'screw';
+
+/// Whether the panel shows a value field for [type]: the ones that need one, and the couplers that may leave it empty (Auto).
+bool mateTypeHasValueField(String type) => mateTypeNeedsValue(type) || isCouplerMateType(type);
+
+/// The label of [type]'s value field.
+String mateValueLabel(String type) => switch (type) {
+      'angle' => 'Angle (degrees)',
+      'gear' => 'Ratio (B turns per A turn)',
+      'rack_pinion' => 'Travel per turn (mm)',
+      'screw' => 'Lead (mm per turn)',
+      _ => 'Distance (mm)',
+    };
+
+/// The hint under [type]'s value field when it is empty and may stay so (gear, rack and pinion: taken from the teeth), else `null`.
+String? mateValueHelper(String type, {double? autoValue}) {
+  if (type != 'gear' && type != 'rack_pinion') return null;
+  if (autoValue != null) return 'Auto: ${_trimNumber(autoValue)}${type == 'rack_pinion' ? ' mm per turn' : ''} (from the teeth)';
+  return 'Leave empty to take it from the teeth';
+}
+
+String _trimNumber(double x) => x.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+
+/// The second line of a coupler mate's row: "1 : 2" (A turns for one of B), "62.832 mm per turn", "lead 2 mm". `null` for other mates.
+String? mateValueSummary(MateDto mate) {
+  final value = mate.value;
+  if (value == null || !isCouplerMateType(mate.type)) return null;
+  return switch (mate.type) {
+    'gear' => '1 : ${_trimNumber(1 / value)}',
+    'rack_pinion' => '${_trimNumber(value)} mm per turn',
+    _ => 'lead ${_trimNumber(value)} mm',
+  };
+}
 
 /// Phase 3: the label of the `secondary_flip` control for a mate of [type] - what the flag means there. (Which mates HAVE the
 /// control, and which have an alignment, is the backend's call: `MateSolvePreviewDto.controls`.)
@@ -76,6 +118,8 @@ String mateSecondaryFlipLabel(String type) => switch (type) {
       'distance' => 'Flip side',
       'concentric' => 'Flip spin',
       'angle' => 'Supplement',
+      'gear' || 'rack_pinion' => 'Reverse',
+      'screw' => 'Left-hand',
       _ => 'Flip',
     };
 
@@ -92,6 +136,7 @@ double? parseMateValue(String type, String text) {
   final value = double.tryParse(text);
   if (value == null) return null;
   if (type == 'distance' && value < 0) return null;
+  if (isCouplerMateType(type) && value <= 0) return null;
   return value;
 }
 
@@ -112,6 +157,9 @@ String? widthOffsetError(String text) {
 /// The hint under a value field for [text], or `null` when it is fine.
 String? mateValueError(String type, String text) {
   final value = double.tryParse(text);
+  if (isCouplerMateType(type) && text.trim().isNotEmpty && (value == null || value <= 0)) {
+    return type == 'screw' ? 'Enter a number above zero' : 'Enter a number above zero, or leave empty for Auto';
+  }
   return type == 'distance' && value != null && value < 0 ? 'A distance cannot be negative - use Flip side' : null;
 }
 
@@ -148,6 +196,11 @@ class MateBranchControls extends StatelessWidget {
   final String? resolvedAlignment;
   final bool? secondaryFlip;
   final bool? resolvedSecondaryFlip;
+
+  /// A coupler's sense (`secondary_flip`) means nothing on its own (it depends on which way each axis happens to point), so the
+  /// control reads "Reverse" / "Left-hand" RELATIVE to [senseBase]: the sense the backend chose by default (new mate), or the one the
+  /// mate had when the editor opened. Null for every other mate.
+  final bool? senseBase;
   final int alternativeCount;
   final int? alternativeIndex;
   final ValueChanged<String> onAlignmentChanged;
@@ -162,6 +215,7 @@ class MateBranchControls extends StatelessWidget {
     required this.resolvedAlignment,
     required this.secondaryFlip,
     required this.resolvedSecondaryFlip,
+    this.senseBase,
     required this.alternativeCount,
     required this.alternativeIndex,
     required this.onAlignmentChanged,
@@ -205,7 +259,17 @@ class MateBranchControls extends StatelessWidget {
             },
           ),
         ],
-        if (hasFlip)
+        if (hasFlip && isCouplerMateType(mateType) && senseBase != null)
+          CheckboxListTile(
+            key: const ValueKey('mate-secondary-flip'),
+            value: (secondaryFlip ?? senseBase) != senseBase,
+            onChanged: (checked) => onSecondaryFlipChanged((checked ?? false) ? !senseBase! : senseBase!),
+            title: Text(mateSecondaryFlipLabel(mateType)),
+            controlAffinity: ListTileControlAffinity.leading,
+            contentPadding: EdgeInsets.zero,
+            dense: true,
+          )
+        else if (hasFlip)
           CheckboxListTile(
             key: const ValueKey('mate-secondary-flip'),
             value: effectiveFlip,
@@ -262,6 +326,9 @@ class MatePanel extends StatelessWidget {
   /// Phase 3: the branch controls (see [MateBranchControls]) - `null` while there is no preview to take them from.
   final MateBranchControls? branchControls;
 
+  /// A gear / rack and pinion mate with its value left empty: the value the backend would take from the teeth (the preview's `coupler_value`).
+  final double? autoValue;
+
   /// Test report item 4: [mateTypeHasAllowRotation]'s own live value -
   /// meaningless (but still passed) while `mateType != 'concentric'`.
   final bool allowRotation;
@@ -308,6 +375,7 @@ class MatePanel extends StatelessWidget {
     required this.mateType,
     required this.value,
     this.branchControls,
+    this.autoValue,
     required this.allowRotation,
     required this.onMateTypeChanged,
     required this.onValueChanged,
@@ -371,13 +439,13 @@ class MatePanel extends StatelessWidget {
               if (type != null) onMateTypeChanged(type);
             },
           ),
-          if (mateTypeNeedsValue(mateType)) ...[
+          if (mateTypeHasValueField(mateType)) ...[
             const SizedBox(height: 8),
             TextFormField(
               key: ValueKey('mate-value-$mateType'),
               initialValue: value?.toString() ?? '',
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(labelText: mateType == 'angle' ? 'Angle (degrees)' : 'Distance (mm)'),
+              decoration: InputDecoration(labelText: mateValueLabel(mateType), helperText: mateValueHelper(mateType, autoValue: value == null ? autoValue : null)),
               autovalidateMode: AutovalidateMode.always,
               validator: (text) => mateValueError(mateType, text ?? ''),
               onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),

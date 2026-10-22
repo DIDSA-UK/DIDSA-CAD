@@ -2023,6 +2023,10 @@ class MateSolvePreviewDto {
   final MateBranchValuesDto? resolved;
   final List<MateSolveAlternativeDto> alternatives;
 
+  /// A gear / rack and pinion / screw mate: the ratio, travel per turn or lead the mate would be made with (the typed one, or the one the
+  /// backend read from the parts' gear features); null for every other mate.
+  final double? couplerValue;
+
   const MateSolvePreviewDto({
     required this.converged,
     this.transform,
@@ -2033,6 +2037,7 @@ class MateSolvePreviewDto {
     this.controls = const [],
     this.resolved,
     this.alternatives = const [],
+    this.couplerValue,
   });
 
   factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
@@ -2058,6 +2063,7 @@ class MateSolvePreviewDto {
           for (final a in (json['alternatives'] as List<dynamic>? ?? const []))
             MateSolveAlternativeDto.fromJson(a as Map<String, dynamic>),
         ],
+        couplerValue: (json['coupler_value'] as num?)?.toDouble(),
       );
 }
 

@@ -3792,10 +3792,17 @@ class _PartScreenState extends State<PartScreen> {
   MateBranchValuesDto? _mateResolved;
   List<MateSolveAlternativeDto> _mateAlternatives = const [];
 
+  /// A gear / rack and pinion / screw mate being authored: the sense the backend chose by default (the "Reverse" / "Left-hand" control
+  /// is relative to it) and the value it would take when the field is left empty.
+  bool? _mateSenseBase;
+  double? _mateAutoValue;
+
   void _resetMateBranchChoice() {
     _mateAlignment = null;
     _mateSecondaryFlip = null;
     _mateGeometryKey = null;
+    _mateSenseBase = null;
+    _mateAutoValue = null;
   }
 
   /// The values the ghost shows, restricted to the controls the geometry has.
@@ -3811,6 +3818,7 @@ class _PartScreenState extends State<PartScreen> {
         resolvedAlignment: _mateResolved?.alignment,
         secondaryFlip: _mateSecondaryFlip,
         resolvedSecondaryFlip: _mateResolved?.secondaryFlip,
+        senseBase: isCouplerMateType(_mateType) ? _mateSenseBase : null,
         alternativeCount: _mateAlternatives.length,
         alternativeIndex: mateAlternativeIndex(_mateAlternatives, _mateEffectiveAlignment, _mateEffectiveSecondaryFlip),
         onAlignmentChanged: (alignment) {
@@ -3837,6 +3845,11 @@ class _PartScreenState extends State<PartScreen> {
     _mateResolved = result?.resolved;
     _mateAlternatives = result?.alternatives ?? const [];
     _mateBranchChanges = result?.branchChanges ?? const [];
+    if (isCouplerMateType(_mateType)) {
+      // The sense the backend picks when the user has not chosen one is what Reverse / Left-hand is measured from.
+      if (_mateSecondaryFlip == null && result?.resolved?.secondaryFlip != null) _mateSenseBase = result!.resolved!.secondaryFlip;
+      _mateAutoValue = result?.couplerValue;
+    }
     _mateNotice = result == null
         ? null
         : mateBranchNotice(result.branchChanges, _mates, blockedBy: result.blockedBy, conflicting: result.conflicting);
@@ -22782,14 +22795,12 @@ class _PartScreenState extends State<PartScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (mateTypeNeedsValue(mate.type))
+              if (mateTypeHasValueField(mate.type))
                 TextFormField(
                   initialValue: value?.toString() ?? '',
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   decoration: InputDecoration(
-                    labelText: mate.type == 'angle'
-                        ? 'Angle (degrees)'
-                        : (isWidthMate(mate) ? 'Offset from centre (mm)' : 'Distance (mm)'),
+                    labelText: isWidthMate(mate) ? 'Offset from centre (mm)' : mateValueLabel(mate.type),
                   ),
                   autovalidateMode: AutovalidateMode.always,
                   validator: (text) => mateValueError(mate.type, text ?? ''),
@@ -22806,6 +22817,7 @@ class _PartScreenState extends State<PartScreen> {
                 resolvedAlignment: resolved?.alignment,
                 secondaryFlip: secondaryFlip,
                 resolvedSecondaryFlip: resolved?.secondaryFlip,
+                senseBase: isCouplerMateType(mate.type) ? mate.secondaryFlip : null,
                 alternativeCount: alternatives.length,
                 alternativeIndex: mateAlternativeIndex(
                   alternatives,
@@ -24469,6 +24481,7 @@ class _PartScreenState extends State<PartScreen> {
                       mateType: _mateType,
                       value: _mateValue,
                       branchControls: _mateBranchControls(),
+                      autoValue: _mateAutoValue,
                       allowRotation: _mateAllowRotation,
                       onMateTypeChanged: (type) {
                         setState(() {
@@ -24479,6 +24492,8 @@ class _PartScreenState extends State<PartScreen> {
                             _resetWidth();
                             _mateValue = null;
                           }
+                          // A distance typed for one type is not a ratio, a travel or a lead.
+                          if (isCouplerMateType(type) || isCouplerMateType(_mateType)) _mateValue = null;
                           _mateType = type;
                         });
                         unawaited(_scheduleMatePreview());
