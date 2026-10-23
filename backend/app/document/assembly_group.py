@@ -69,6 +69,7 @@ from app.document.assembly_solver import (
     solve_occurrence_from_guess,
 )
 from app.document.coupler import coupler_rows, is_coupler, travel_along, turn_about
+from app.document.limit import is_limit, limit_value, row_unit, violated_bound
 from app.document.constraint_model import (
     ConstraintModel,
     export_constraint_model,
@@ -211,6 +212,9 @@ class GroupModel:
     # `{mate_id: (alignment, secondary_flip)}`: the branch each mate of the component resolved to, in the convention it is stored in
     # (relative to its `references` order); `sides` carry the same branch in this model's own orientation.
     branches: dict[str, tuple[str | None, bool | None]] = field(default_factory=dict)
+    # Limit mates (`app.document.limit`) are inequalities: they add NO rows unless listed here, `{mate_id: bound}` - the limits a solve
+    # is currently holding at a bound (`solve_group`'s active set). A listed limit adds the row `value - bound`.
+    active_limits: dict[str, float] = field(default_factory=dict)
 
     @property
     def member_ids(self) -> tuple[str, ...]:
@@ -233,11 +237,35 @@ class GroupModel:
             if is_coupler(mate):
                 out.extend(self._coupler_rows(mate, a, b, placed))
                 continue
+            if is_limit(mate):
+                if mate.id in self.active_limits:
+                    out.append((self.limit_value(mate, a, b, placed) - self.active_limits[mate.id]) * row_unit(mate))
+                continue
             out.extend(_mate_residual_vector(mate, self._world(a, placed), self._world(b, placed)))
             for side in (a, b):
                 if side.partner is not None:
                     out.extend(self._parallel_rows(side, placed))
         return np.asarray(out, dtype=float)
+
+    def limit_value(self, mate: Mate, a: _Side, b: _Side, placed: dict[str, RigidTransform]) -> float:
+        value = limit_value(mate, self._world(a, placed), self._world(b, placed))
+        if value is None:
+            raise ValueError(f"limit mate {mate.id} has no measurable value")
+        return value
+
+    def violated_limits(self, poses: dict[str, RigidTransform] | None = None) -> dict[str, float]:
+        """`{mate_id: bound}` of the limits (not already held) whose range the `poses` (default: stored) leave."""
+        placed = dict(self.base_transforms if poses is None else poses)
+        out: dict[str, float] = {}
+        for mate, a, b in self.sides:
+            if is_limit(mate) and mate.id not in self.active_limits:
+                bound = violated_bound(mate, self.limit_value(mate, a, b, placed))
+                if bound is not None:
+                    out[mate.id] = bound
+        return out
+
+    def has_limits(self) -> bool:
+        return any(is_limit(m) for m, _a, _b in self.sides)
 
     def _coupler_rows(self, mate: Mate, a: _Side, b: _Side, placed: dict[str, RigidTransform]) -> list[float]:
         """The row of a coupler mate (`app.document.coupler`): each side's turn and travel since the BASE pose, about / along its
@@ -300,7 +328,7 @@ class GroupModel:
                 placed = [rigid_to_pose(base[oid]) for oid in self.member_ids]
                 # a coupler's rows are measured from THIS model's base poses (a cached spec may carry the anchors of an earlier one)
                 anchors = [rigid_to_pose(self.base_transforms[oid]) for oid in self.member_ids]
-                return ConstraintModel(self._spec, anchors).residual(placed)[1]
+                return ConstraintModel(self._spec, anchors, active=self.active_limits).residual(placed)[1]
         return self._jacobian_differences(poses, step)
 
     def _jacobian_differences(self, poses: dict[str, RigidTransform] | None, step: float) -> np.ndarray:
@@ -368,13 +396,14 @@ def build_group_model(
         # the other side is frozen (the residual is only sign-asymmetric).
         swapped = (
             not is_coupler(mate)  # a coupler is never swapped: its rows are in the references' order
+            and not is_limit(mate)  # nor is a limit: its value is measured in the references' order
             and not any(t in members for t in mate_ref_tops(first))
             and any(t in members for t in mate_ref_tops(second))
         )
         if swapped:
             first, second = second, first
         a_side, b_side = side(first), side(second)
-        if mate.type == MateType.ANGLE:
+        if mate.type in (MateType.ANGLE, MateType.LIMIT_ANGLE):
             a_side, b_side = _with_hinge(mate, component.mates, side, a_side, b_side)
         sides.append((mate, a_side, b_side))
         swaps.append(swapped)
@@ -397,6 +426,10 @@ def build_group_model(
             model.branches[mate.id] = (None, mate.secondary_flip)
             resolved_sides.append((mate, a, b))
             continue
+        if is_limit(mate):
+            model.branches[mate.id] = (None, None)  # a limit has no branch
+            resolved_sides.append((mate, a, b))
+            continue
         # `mate` is resolved in the orientation this model uses (`swapped`: reference 1 is the mover); the branch it is stored
         # in (relative to the references' order, what a commit writes back) is kept in `model.branches`.
         mate, canonical = resolve_oriented_branch(mate, model._world(a, placed), model._world(b, placed), swapped)
@@ -413,6 +446,10 @@ def build_group_model(
         if is_coupler(mate):
             if a.geometry.axis_origin is None or a.geometry.direction is None or b.geometry.axis_origin is None or b.geometry.direction is None:
                 raise _unsupported_mate_geometry(mate.references[0], "an axis on each side")
+            continue
+        if is_limit(mate):
+            if limit_value(mate, model._world(a, placed), model._world(b, placed)) is None:
+                raise _unsupported_mate_geometry(mate.references[0], "a plane (distance limit) or two directions about a hinge (angle limit)")
             continue
         if not _mate_residual_vector(mate, model._world(a, placed), model._world(b, placed)):
             ref = mate.references[0]
@@ -458,7 +495,7 @@ def mate_world_geometries(document: Document, part: Part, mate: Mate) -> tuple[_
             cache[target.id] = compute_part_bodies(target)
         geometry = _resolve_local_geometry(target, cache[target.id], ref, document, part)
         worlds.append(geometry if transform is None else _place_in_world(geometry, transform))
-    if mate.type == MateType.ANGLE:
+    if mate.type in (MateType.ANGLE, MateType.LIMIT_ANGLE):
         worlds = _with_world_hinge(document, part, mate, worlds, cache)
     return worlds[0], worlds[1]
 
@@ -495,8 +532,8 @@ def validate_mate_geometry(document: Document, part: Part, mate: Mate) -> None:
     unsolvable mate is never left in the document - once stored, `build_group_model` raises the same error for every
     solve of any group containing it, blocking all of that group's occurrences until the mate is deleted."""
     first, second = mate_world_geometries(document, part, mate)
-    if is_coupler(mate):
-        return  # `coupler.prepare_coupler` validates a coupler
+    if is_coupler(mate) or is_limit(mate):
+        return  # `coupler.prepare_coupler` / `limit.prepare_limit` validate those
     if not _mate_residual_vector(mate, first, second):
         raise _unsupported_mate_geometry(mate.references[0], "a compatible point, plane or axis on each side")
 
@@ -505,7 +542,7 @@ def mate_with_flipped_alias(document: Document, part: Part, mate: Mate, override
     """`mate` with the deprecated `flipped` flag read into `alignment` / `secondary_flip` (COINCIDENT plane-plane, ANGLE),
     for a payload that carried only `flipped`. Needs the geometry (see `apply_flipped_alias`); `override` replaces a branch
     the mate already names."""
-    if is_coupler(mate):
+    if is_coupler(mate) or is_limit(mate):
         return mate
     first, second = mate_world_geometries(document, part, mate)
     aliased = apply_flipped_alias(mate, first, second, override)
@@ -739,7 +776,7 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
     The mover is always the mate's first side (`build_group_model` orients it)."""
     by_mover: dict[str, list[tuple[Mate, _Side, _Side]]] = {}
     for entry in model.sides:
-        if is_coupler(entry[0]):
+        if is_coupler(entry[0]) or is_limit(entry[0]):
             continue  # a coupler has no dead point to seed out of: its rows are zero at the base pose
         by_mover.setdefault(entry[1].occurrence_id, []).append(entry)
     for mover, entries in by_mover.items():
@@ -759,7 +796,7 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
             if rotation is not None:
                 _rotate_member(poses, mover, rotvec_from_rot(rotation))
     for mate, first, second in model.sides:
-        if is_coupler(mate):
+        if is_coupler(mate) or is_limit(mate):
             continue
         placed = {oid: poses[oid] for oid in model.member_ids}
         d, f = model._world(first, placed), model._world(second, placed)
@@ -921,13 +958,51 @@ def solve_group(
 
     A single-member group that Gauss-Newton fails on is retried from the
     py-slvs single-occurrence solution (`solve_occurrence_from_guess`) as a
-    seed - py-slvs is a fallback seed only, never the verifier."""
+    seed - py-slvs is a fallback seed only, never the verifier.
+
+    Limit mates (`app.document.limit`) are inequalities and add no rows: the group is solved without them, any limit the answer
+    violates is held at its nearest bound (an equality row) and the group is solved again from the same start and wish - at
+    most `_LIMIT_ROUNDS` times, each round only ever adding limits. A range that cannot be met is not converged."""
     model = build_group_model(document, part, grabbed_id, also_frozen, extra_mates)
     if reference:
         # Warm start: the members' current poses are the client's last accepted ones, not the stored ones.
         model = replace(model, base_transforms={**model.base_transforms, **{k: v for k, v in reference.items() if k in model.member_ids}})
     if lever_arm is None:
         lever_arm = bounding_radius(document, part, grabbed_id)
+    if not model.has_limits():
+        return _solve_model(document, part, model, grabbed_id, wanted_pose, lever_arm, extra_mates, with_jump)
+    active: dict[str, float] = {}
+    for _ in range(_LIMIT_ROUNDS + 1):
+        held = replace(model, active_limits=dict(active))
+        result = _solve_model(document, part, held, grabbed_id, wanted_pose, lever_arm, extra_mates, with_jump)
+        if not result.converged:
+            return result
+        violated = held.violated_limits(result.poses)
+        if not violated:
+            return result
+        active.update(violated)
+    return replace(result, converged=False, analysis=None, constraint_model=None)  # the range cannot be met together
+
+
+_LIMIT_ROUNDS = 3
+
+
+def _free(model: GroupModel, poses: dict[str, RigidTransform]) -> GroupModel:
+    """`model` at `poses` with no limit held: the analysis (the free motion) and the first-order prediction never see a bound."""
+    return replace(model, base_transforms=dict(poses), active_limits={})
+
+
+def _solve_model(
+    document: Document,
+    part: Part,
+    model: GroupModel,
+    grabbed_id: str,
+    wanted_pose: RigidTransform | None,
+    lever_arm: float,
+    extra_mates: tuple[Mate, ...],
+    with_jump: bool,
+) -> GroupSolveResult:
+    """One solve of `model` (`solve_group`'s body; `model.active_limits` are the limits held at a bound)."""
     weights = _solve_weights(model, grabbed_id, lever_arm)
     stored = dict(model.base_transforms)
 
@@ -973,7 +1048,7 @@ def solve_group(
             # group. Retry from the client's own prediction - the wish projected onto the stored pose's free motion,
             # integrated as a screw - then, if the wish is reachable, pin the grabbed member at it and let only the
             # followers correct. Adopted only if it converges and lands nearer the wish.
-            at_rest = analyze_model(replace(model, base_transforms=dict(stored)), lever_arm)
+            at_rest = analyze_model(_free(model, stored), lever_arm)
             predicted = _predicted_seed(model, stored, wanted_pose, grabbed_id, lever_arm, at_rest)
             if predicted is not None:
                 seed_poses, on_manifold = predicted
@@ -1005,8 +1080,7 @@ def solve_group(
             seeded_by += "+nearest"
     analysis, jump, max_step = None, None, None
     if converged:
-        solved = replace(model, base_transforms=dict(poses))
-        analysis = analyze_model(solved, lever_arm)
+        analysis = analyze_model(_free(model, poses), lever_arm)
         if with_jump:
             jump, max_step = _jump(model, stored, poses, seed_wish=wanted_pose, grabbed_id=grabbed_id, lever_arm=lever_arm, at_rest_analysis=at_rest)
     return GroupSolveResult(
@@ -1039,7 +1113,7 @@ def _nearest_point_stage(
     move least; the metric is the local one (follower weight 1e-2, see the spec). Returns the new poses, or `None` when
     the refinement did not converge or is not nearer (the caller keeps its own answer)."""
     ids = list(model.member_ids)
-    cm = ConstraintModel(spec)
+    cm = ConstraintModel(spec, active=model.active_limits)
     w = _local_weights(len(ids), lever_arm, grabbed=ids.index(grabbed_id))
     start = [rigid_to_pose(poses[oid]) for oid in ids]
     wishes = [rigid_to_pose(wanted if oid == grabbed_id else stored[oid]) for oid in ids]
@@ -1099,7 +1173,7 @@ def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_a
     grabbed member - how far the first-order model was off (curved mates). It is ~0 on every screw orbit (flat mates,
     concentric about any axis). `max_step`: see the rule above."""
     ids = model.member_ids
-    analysis = at_rest_analysis or analyze_model(replace(model, base_transforms=dict(stored)), lever_arm)
+    analysis = at_rest_analysis or analyze_model(_free(model, stored), lever_arm)
     w = _solve_weights(model, grabbed_id, lever_arm)
     stored_poses = {oid: rigid_to_pose(stored[oid]) for oid in ids}
     want = np.zeros(6 * len(ids))
@@ -1221,7 +1295,7 @@ def branch_options(
                 queue.append(nxt)
     options: list[BranchOption] = []
     for mate, a, b in model.sides:
-        if mate.id in skip_mate_ids or mate.id not in stored or is_coupler(mate):
+        if mate.id in skip_mate_ids or mate.id not in stored or is_coupler(mate) or is_limit(mate):
             continue  # a coupler's sense is the user's (or its default), never searched
         d, f = model._world(a, placed), model._world(b, placed)
         fields = branch_fields(mate, d, f)
@@ -1350,6 +1424,8 @@ def mate_branch_controls(document: Document, part: Part, mate: Mate) -> tuple[st
     show as controls. Empty when the geometry cannot be resolved (a payload still being filled in)."""
     from fastapi import HTTPException  # local: this module is otherwise HTTP-free
 
+    if is_limit(mate):
+        return ()
     if is_coupler(mate):
         return ("secondary_flip",)  # the Reverse switch
     try:

@@ -65,6 +65,7 @@ from app.document.models import (
     LoftSection,
     LoftSurfaceFeature,
     MaterialAssignment,
+    LIMIT_TYPES,
     Mate,
     MateEntityRef,
     MidplaneRef,
@@ -2107,6 +2108,15 @@ def _mate_entity_ref_from_dict(data: dict) -> MateEntityRef:
 
 
 def _mate_to_dict(mate: Mate) -> dict:
+    out = _mate_base_dict(mate)
+    if mate.type in LIMIT_TYPES:
+        # only a limit mate carries the keys: every other mate (and so every file without limits) is written exactly as before
+        out["limit_min"] = mate.limit_min
+        out["limit_max"] = mate.limit_max
+    return out
+
+
+def _mate_base_dict(mate: Mate) -> dict:
     return {
         "id": mate.id,
         "type": mate.type.value,
@@ -2155,6 +2165,8 @@ def _mate_from_dict(data: dict) -> Mate:
         # as `True` (free spin), matching the dataclass field's own default
         # and every pre-existing Mate's actual solved behavior exactly.
         allow_rotation=data.get("allow_rotation", True),
+        limit_min=data.get("limit_min"),
+        limit_max=data.get("limit_max"),
     )
 
 

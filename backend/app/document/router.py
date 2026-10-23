@@ -49,7 +49,8 @@ from app.document.assembly_group import (
     validate_mate_geometry,
 )
 from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
-from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES
+from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES
+from app.document.limit import current_limit_value, prepare_limit, validate_limit_fields
 from app.document.coupler import prepare_coupler
 from app.document.assembly_group import GroupSolveQuality
 from app.document.bevel_pair import resolve_member_profile_shifts
@@ -3490,7 +3491,7 @@ def _midplane_ref_to_domain(schema: MidplaneRefSchema) -> MidplaneRef:
     return MidplaneRef(a=_plane_ref_to_domain(schema.a), b=_plane_ref_to_domain(schema.b), b_occurrence_id=schema.b_occurrence_id)
 
 
-def _mate_response(mate: Mate) -> MateResponse:
+def _mate_response(mate: Mate, part: Part | None = None) -> MateResponse:
     return MateResponse(
         id=mate.id,
         type=mate.type.value,
@@ -3502,6 +3503,9 @@ def _mate_response(mate: Mate) -> MateResponse:
         alignment=mate.alignment,
         secondary_flip=mate.secondary_flip,
         branch_source=mate.branch_source,
+        limit_min=mate.limit_min,
+        limit_max=mate.limit_max,
+        limit_value=current_limit_value(get_document(), part, mate) if part is not None and mate.type in LIMIT_TYPES else None,
     )
 
 
@@ -3538,7 +3542,7 @@ def list_mates(part_id: str) -> list[MateResponse]:
     Mates list - `part_id`'s own `mates`, full detail (unlike
     `PartResponse.mate_ids`, ids only)."""
     part = get_part_or_404(part_id)
-    return [_mate_response(mate) for mate in part.mates]
+    return [_mate_response(mate, part) for mate in part.mates]
 
 
 def _get_occurrence_or_404(part: Part, occurrence_id: str) -> Occurrence:
@@ -3897,7 +3901,14 @@ def create_mate(
         allow_rotation=payload.allow_rotation,
         alignment=payload.alignment,
         secondary_flip=payload.secondary_flip,
+        limit_min=payload.limit_min,
+        limit_max=payload.limit_max,
     )
+    if mate.type in LIMIT_TYPES:
+        # validated by its own rules; a limit moves nothing when it is made (a part outside the range is brought in by the next solve or drag)
+        mate = prepare_limit(get_document(), part, mate)
+        part.mates.append(mate)
+        return _mate_response(mate, part)
     if mate.type in COUPLER_TYPES:
         # validated and filled in (ratio, sense) by its own rules; a coupler moves nothing when it is made
         mate = prepare_coupler(get_document(), part, mate, "secondary_flip" in payload.model_fields_set)
@@ -3969,6 +3980,8 @@ def update_mate(
     mate = _get_mate_or_404(part, mate_id)
     if mate.type in COUPLER_TYPES:
         return _update_coupler(mate, payload)
+    if mate.type in LIMIT_TYPES:
+        return _update_limit(part, mate, payload)
     _reject_negative_distance(mate.type.value, payload.value)
     previous = (mate.value, mate.flipped, mate.suppressed, mate.allow_rotation, mate.alignment, mate.secondary_flip, mate.branch_source)
     driven = _mate_solve_target(part, mate, occurrence_id) if solve is not None else None
@@ -4037,6 +4050,21 @@ def _update_coupler(mate: Mate, payload: MateUpdate) -> MateResponse:
     if payload.suppressed is not None:
         mate.suppressed = payload.suppressed
     return _mate_response(mate)
+
+
+def _update_limit(part: Part, mate: Mate, payload: MateUpdate) -> MateResponse:
+    """A limit's PATCH: `limit_min` / `limit_max` (a number sets, null removes) and `suppressed`. Nothing moves, so there is no solve."""
+    fields = payload.model_fields_set
+    edited = dataclasses.replace(mate)
+    if "limit_min" in fields:
+        edited.limit_min = payload.limit_min
+    if "limit_max" in fields:
+        edited.limit_max = payload.limit_max
+    validate_limit_fields(edited)
+    mate.limit_min, mate.limit_max = edited.limit_min, edited.limit_max
+    if payload.suppressed is not None:
+        mate.suppressed = payload.suppressed
+    return _mate_response(mate, part)
 
 
 @router.delete("/parts/{part_id}/mates/{mate_id}", status_code=204)
@@ -4695,6 +4723,27 @@ def preview_mate_solve_endpoint(
         for ref in payload.references:
             _validate_mate_entity_ref(part, ref, payload.type)
         _reject_negative_distance(payload.type, payload.value)
+        if payload.type in [t.value for t in LIMIT_TYPES]:
+            # a limit moves nothing when it is made: the ghost is the current pose (the range is checked like a create would)
+            limit = prepare_limit(
+                get_document(),
+                solve_part,
+                Mate(
+                    id="preview",
+                    type=MateType(payload.type),
+                    references=[_mate_entity_ref_to_domain(ref) for ref in payload.references],
+                    limit_min=payload.limit_min,
+                    limit_max=payload.limit_max,
+                ),
+            )
+            current = _rigid_transform_response(occurrence.transform)
+            return MateSolvePreviewResponse(
+                converged=True,
+                transform=current,
+                movement_used="group",
+                members=[MateSolvePreviewMember(occurrence_id=occurrence_id, transform=current)],
+                limit_value=current_limit_value(get_document(), solve_part, limit),
+            )
         if payload.type in [t.value for t in COUPLER_TYPES]:
             # a coupler moves nothing when it is made (D1): the ghost is the current pose; the answer carries the ratio and sense it
             # would be made with, so the panel can show them

@@ -47,11 +47,21 @@ const int kLocalPairModelVersion = 4;
 /// replaces the anchors at every accepted anchor). Emitted by the backend only when the group holds a coupler.
 const int kLocalCouplerModelVersion = 5;
 
+/// Version 6 = limit mates (`limit_distance` / `limit_angle`): an inequality row with `min` / `max`, held at the nearest bound only while it
+/// would be violated (see [LocalRetractor.retract]). Emitted by the backend only when the group holds a limit; it may also hold couplers
+/// (anchors) and pairs, so it is a superset of 3 to 5.
+const int kLocalLimitModelVersion = 6;
+
+/// Active-set rounds of one retraction, and how far (mm / degrees) a value may sit outside its range before the limit counts as violated.
+const int kLocalLimitRounds = 3;
+const double kLocalLimitTol = 1e-6;
+
 /// Divisor floor (mm) of the mm-scaled squared DISTANCE residuals (axis-axis, point-point): `(x² - d²) / (2 max(d, floor))`.
 const double kLocalDistanceFloor = 1e-3;
 
 const Set<String> _types = <String>{'coincident', 'concentric', 'parallel', 'angle', 'distance'};
 const Set<String> _couplerTypes = <String>{'gear', 'rack_pinion', 'screw'};
+const Set<String> _limitTypes = <String>{'limit_distance', 'limit_angle'};
 
 class _Side {
   final int member;
@@ -89,7 +99,13 @@ class _Mate {
   /// A coupler's sense, +1 / -1 (`k`).
   final double k;
 
-  const _Mate(this.type, this.value, this.allowRotation, this.alignment, this.side, this.perp, this.a, this.b, [this.k = 1.0]);
+  /// A limit mate (version 6): its id (the active set's key) and its range (either bound may be absent).
+  final String? limitId;
+  final double? limitMin;
+  final double? limitMax;
+
+  const _Mate(this.type, this.value, this.allowRotation, this.alignment, this.side, this.perp, this.a, this.b,
+      [this.k = 1.0, this.limitId, this.limitMin, this.limitMax]);
 }
 
 double _sign(Object? o) => (o is num && o < 0) ? -1.0 : 1.0;
@@ -178,6 +194,16 @@ class LocalRetractor {
   final List<_Mate> _mates;
   final int rows;
 
+  /// The limits [retract] is holding at a bound, `{mate id: bound}`: set by the latest [retract] (reset at its start), so [residual] /
+  /// [residualInf] right after it include the held rows.
+  Map<String, double> _held = <String, double>{};
+
+  /// The limits the latest [retract] held (a copy).
+  Map<String, double> get heldLimits => Map<String, double>.of(_held);
+
+  /// Whether the model holds a limit mate.
+  bool get hasLimits => _mates.any((m) => _limitTypes.contains(m.type));
+
   /// Version 5: the pose each member had at the latest accepted anchor (the base of a coupler's rows), by member index; null = the exported ones.
   List<Pose>? _anchors;
 
@@ -197,7 +223,13 @@ class LocalRetractor {
     if (json == null) return null;
     try {
       final version = (json['version'] as num?)?.toInt();
-      if (version != kLocalModelVersion && version != kLocalPairModelVersion && version != kLocalCouplerModelVersion) return null;
+      if (version != kLocalModelVersion &&
+          version != kLocalPairModelVersion &&
+          version != kLocalCouplerModelVersion &&
+          version != kLocalLimitModelVersion) {
+        return null;
+      }
+      final v6 = version == kLocalLimitModelVersion;
       final ids = <String>[for (final m in json['members'] as List) m as String];
       if (ids.isEmpty || ids.length > maxMembers) return null;
       final mates = <_Mate>[];
@@ -205,7 +237,9 @@ class LocalRetractor {
         final m = raw as Map<String, dynamic>;
         final type = m['type'] as String;
         final coupler = _couplerTypes.contains(type);
-        if (!_types.contains(type) && !(coupler && version == kLocalCouplerModelVersion)) return null;
+        final limit = _limitTypes.contains(type);
+        if (!_types.contains(type) && !(coupler && (version == kLocalCouplerModelVersion || v6)) && !(limit && v6)) return null;
+        if (limit && (m['id'] is! String)) return null;
         final side = _Mate(
           type,
           (m['value'] as num?)?.toDouble(),
@@ -216,21 +250,28 @@ class LocalRetractor {
           _parseSide(m['a'] as Map<String, dynamic>),
           _parseSide(m['b'] as Map<String, dynamic>),
           _sign(m['k']),
+          limit ? m['id'] as String : null,
+          limit ? (m['min'] as num?)?.toDouble() : null,
+          limit ? (m['max'] as num?)?.toDouble() : null,
         );
+        if (limit && side.limitMin == null && side.limitMax == null) return null;
         if (coupler && !_couplerSidesOk(side)) return null;
         if (side.a.member >= ids.length || side.b.member >= ids.length) return null;
         if ((side.a.pair?.member ?? -1) >= ids.length || (side.b.pair?.member ?? -1) >= ids.length) return null;
         // `pair` belongs to version 4 only: a version-3 model that carries one is malformed, not "version 3 plus extras".
         if (version == kLocalModelVersion && (side.a.pair != null || side.b.pair != null)) return null;
         // `anchor` and the coupler types belong to version 5 only.
-        if (version != kLocalCouplerModelVersion && (side.a.anchorR != null || side.b.anchorR != null)) return null;
+        if (version != kLocalCouplerModelVersion && !v6 && (side.a.anchorR != null || side.b.anchorR != null)) return null;
         mates.add(side);
       }
       final probe = LocalRetractor._(ids.length, ids, mates, 0);
       // A dry evaluation at identity poses: throws on a missing field, tells the row count.
       final identity = <Pose>[for (var i = 0; i < ids.length; i++) Pose(<double>[0, 0, 0], Mat3.identity())];
       final r = probe._evaluate(identity, false).$1;
-      if (r.length > kLocalMaxRows) return null;
+      if (r.length + mates.where((m) => _limitTypes.contains(m.type)).length > kLocalMaxRows) return null;
+      for (final m in mates.where((m) => _limitTypes.contains(m.type))) {
+        probe._limitRow(m, identity); // throws (-> null) for a side missing the geometry the limit measures
+      }
       return LocalRetractor._(ids.length, ids, mates, r.length);
     } catch (_) {
       return null;
@@ -324,6 +365,45 @@ class LocalRetractor {
       gtravel[6 * m + 3 + i] = qxa[i];
     }
     return (2.0 * math.atan2(a, w), gturn, travel, gtravel);
+  }
+
+  /// `(value, gradient)` of a limit mate's measured value, mm for `limit_distance` (`(P_a - P_b) . N`, N = B's plane normal, else A's), degrees for
+  /// `limit_angle` (the signed angle from A's direction to B's about the hinge, `atan2((a x b) . h, a . b)`); the gradient is per unit of that value.
+  (double, List<double>) _limitRow(_Mate mate, List<Pose> poses) {
+    final d = _geo(mate.a, poses);
+    final f = _geo(mate.b, poses);
+    if (mate.type == 'limit_distance') {
+      _V origin(Map<String, _V> g) => g['porigin'] ?? g['point']!;
+      final normal = f.containsKey('pnormal') ? f['pnormal']! : d['pnormal']!;
+      final sg = _dot(_sub(origin(d), origin(f)), _unit(normal));
+      return (sg.v, sg.d);
+    }
+    final hinge = d['hinge_direction'] ?? f['hinge_direction']!;
+    final na = _unit(d['direction']!);
+    final nb = _unit(f['direction']!);
+    final sn = _dot(_cross(na, nb), _unit(hinge));
+    final cs = _dot(na, nb);
+    final den = sn.v * sn.v + cs.v * cs.v;
+    final deg = 180.0 / math.pi;
+    return (
+      math.atan2(sn.v, cs.v) * deg,
+      <double>[for (var c = 0; c < n; c++) (cs.v * sn.d[c] - sn.v * cs.d[c]) / den * deg],
+    );
+  }
+
+  /// `{mate id: bound}` of the limits not yet held whose range [poses] leave.
+  Map<String, double> _violated(List<Pose> poses, Map<String, double> held) {
+    final out = <String, double>{};
+    for (final m in _mates) {
+      if (!_limitTypes.contains(m.type) || held.containsKey(m.limitId)) continue;
+      final value = _limitRow(m, poses).$1;
+      if (m.limitMax != null && value > m.limitMax! + kLocalLimitTol) {
+        out[m.limitId!] = m.limitMax!;
+      } else if (m.limitMin != null && value < m.limitMin! - kLocalLimitTol) {
+        out[m.limitId!] = m.limitMin!;
+      }
+    }
+    return out;
   }
 
   /// The one row of a coupler mate: `(value, gradient)`.
@@ -483,6 +563,15 @@ class LocalRetractor {
     }
 
     for (final mate in _mates) {
+      if (_limitTypes.contains(mate.type)) {
+        final bound = _held[mate.limitId];
+        if (bound != null) {
+          final (value, gradient) = _limitRow(mate, poses);
+          final unit = mate.type == 'limit_angle' ? math.pi / 180.0 : 1.0;
+          add((value - bound) * unit, <double>[for (final x in gradient) x * unit]);
+        }
+        continue;
+      }
       if (_couplerTypes.contains(mate.type)) {
         final (value, gradient) = _couplerRow(mate, poses);
         add(value, gradient);
@@ -613,8 +702,25 @@ class LocalRetractor {
 
   /// Sequential nearest-point retraction (spec §4b): `kLocalIterations` trust-region steps towards [wishes] then
   /// [polish] constraint-only steps. [w] = per-coordinate metric (see [localScale]).
+  ///
+  /// With limit mates (version 6) it is the active-set rounds: retract with none held, hold every limit the answer leaves at its nearest bound
+  /// (an equality row) and retract again from the SAME start and wish, at most [kLocalLimitRounds] times. Nothing is carried to the next call
+  /// (a limit is released the moment the wish no longer pushes past it); [heldLimits] says which were held.
   List<Pose> retract(List<Pose> poses, List<Pose> wishes, List<double> w,
       {int iterations = kLocalIterations, int polish = kLocalPolish}) {
+    _held = <String, double>{};
+    var got = _retractOnce(poses, wishes, w, iterations, polish);
+    if (!hasLimits) return got;
+    for (var round = 0; round < kLocalLimitRounds; round++) {
+      final violated = _violated(got, _held);
+      if (violated.isEmpty) break;
+      _held = <String, double>{..._held, ...violated};
+      got = _retractOnce(poses, wishes, w, iterations, polish);
+    }
+    return got;
+  }
+
+  List<Pose> _retractOnce(List<Pose> poses, List<Pose> wishes, List<double> w, int iterations, int polish) {
     var cur = List<Pose>.of(poses);
     for (var it = 0; it < iterations; it++) {
       final (r, jac) = _evaluate(cur, true);
@@ -678,7 +784,9 @@ class LocalRetractor {
     final got = retract(poses, wishes, w, iterations: localIterations(wishStep));
     final res = residualInf(got);
     final dist = weightedDist(got[0], fallback[0], lever);
-    final ok = res <= kLocalAcceptResidual && dist <= kLocalAcceptDistance * math.max(lever, wishStep);
+    // A held limit is a stop the projector (the fallback) knows nothing of - it would show the part going on through it - so the distance guard
+    // cannot judge the answer: a converged result with a limit held is accepted as it is.
+    final ok = res <= kLocalAcceptResidual && (_held.isNotEmpty || dist <= kLocalAcceptDistance * math.max(lever, wishStep));
     return LocalFrameResult(
       accepted: ok,
       poses: ok ? got : fallback,

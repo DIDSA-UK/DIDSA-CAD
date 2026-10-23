@@ -3480,7 +3480,7 @@ class MateResponse(BaseModel):
     models.Mate` itself, the Assembly tree's own Mates list."""
 
     id: str
-    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw"]
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw", "limit_distance", "limit_angle"]
     references: list[MateEntityRefResponse]
     value: float | None = None
     flipped: bool = False
@@ -3495,6 +3495,11 @@ class MateResponse(BaseModel):
     alignment: Literal["aligned", "anti_aligned"] | None = None
     secondary_flip: bool | None = None
     branch_source: Literal["auto", "user"] = "auto"
+    # Limit mates only (mm, or degrees for `limit_angle`): the measured value stays within [limit_min, limit_max]; either may be null.
+    limit_min: float | None = None
+    limit_max: float | None = None
+    # Limit mates only: the measured value at the stored poses (mm / degrees), so a range can be typed against where the parts are now.
+    limit_value: float | None = None
 
 
 class MateCreate(BaseModel):
@@ -3510,7 +3515,7 @@ class MateCreate(BaseModel):
     (payload shape here, referential/geometric validity in the router/
     resolver, this codebase's standing split)."""
 
-    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw"]
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw", "limit_distance", "limit_angle"]
     references: list[MateEntityRefResponse]
     value: float | None = None
     flipped: bool = False
@@ -3527,6 +3532,8 @@ class MateCreate(BaseModel):
     # Earlier mates to move to their other branch - exactly the `branch_changes` of the preview the user confirmed. Only read
     # by `POST /mates?solve=` (never by the preview, which proposes them).
     branch_changes: list[BranchChangeRequest] = []
+    limit_min: float | None = None  # limit mates only, see `MateResponse`
+    limit_max: float | None = None
 
 
 class MateUpdate(BaseModel):
@@ -3550,6 +3557,9 @@ class MateUpdate(BaseModel):
     secondary_flip: bool | None = None
     # As `MateCreate.branch_changes`: earlier mates the user confirmed moving so this edit can be met.
     branch_changes: list[BranchChangeRequest] = []
+    # Limit mates only: sent as a number they set the bound, sent as null they remove it (the endpoint reads `model_fields_set`).
+    limit_min: float | None = None
+    limit_max: float | None = None
 
 
 class MateMotionReferencePose(BaseModel):
@@ -3693,6 +3703,7 @@ class MateSolvePreviewResponse(BaseModel):
     # A gear / rack and pinion / screw mate: the ratio, travel per turn or lead it would be made with (the typed one, or the one read
     # from the parts' gear features); null for every other mate.
     coupler_value: float | None = None
+    limit_value: float | None = None  # a limit mate preview: the measured value at the current poses
 
 
 class ComponentPatternAxisSchema(BaseModel):

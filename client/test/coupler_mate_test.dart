@@ -21,7 +21,7 @@ void main() {
   group('types, labels and values', () {
     test('the three couplers are listed and labelled', () {
       expect(kCouplerMateTypes, ['gear', 'rack_pinion', 'screw']);
-      expect(kMateTypes.sublist(kMateTypes.length - 3), kCouplerMateTypes);
+      expect(kMateTypes.sublist(kMateTypes.length - 5, kMateTypes.length - 2), kCouplerMateTypes, reason: 'the couplers come after the placing mates and before the two limits');
       expect(mateTypeLabel('gear'), 'Gear');
       expect(mateTypeLabel('rack_pinion'), 'Rack and pinion');
       expect(mateTypeLabel('screw'), 'Screw');

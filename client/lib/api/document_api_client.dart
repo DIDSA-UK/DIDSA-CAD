@@ -1952,6 +1952,13 @@ class MateDto {
   final String? alignment;
   final bool? secondaryFlip;
 
+  /// A limit mate (`limit_distance` mm / `limit_angle` degrees): the measured value stays within [limitMin, limitMax]; either may be null.
+  final double? limitMin;
+  final double? limitMax;
+
+  /// A limit mate: the measured value at the stored poses.
+  final double? limitValue;
+
   MateDto({
     required this.id,
     required this.type,
@@ -1962,6 +1969,9 @@ class MateDto {
     this.allowRotation = true,
     this.alignment,
     this.secondaryFlip,
+    this.limitMin,
+    this.limitMax,
+    this.limitValue,
   });
 
   factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
@@ -1976,6 +1986,9 @@ class MateDto {
         allowRotation: json['allow_rotation'] as bool? ?? true,
         alignment: json['alignment'] as String?,
         secondaryFlip: json['secondary_flip'] as bool?,
+        limitMin: (json['limit_min'] as num?)?.toDouble(),
+        limitMax: (json['limit_max'] as num?)?.toDouble(),
+        limitValue: (json['limit_value'] as num?)?.toDouble(),
       );
 }
 
@@ -2027,6 +2040,9 @@ class MateSolvePreviewDto {
   /// backend read from the parts' gear features); null for every other mate.
   final double? couplerValue;
 
+  /// A limit mate preview: the measured value (mm / degrees) at the current poses, to type a range against.
+  final double? limitValue;
+
   const MateSolvePreviewDto({
     required this.converged,
     this.transform,
@@ -2038,6 +2054,7 @@ class MateSolvePreviewDto {
     this.resolved,
     this.alternatives = const [],
     this.couplerValue,
+    this.limitValue,
   });
 
   factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
@@ -2064,6 +2081,7 @@ class MateSolvePreviewDto {
             MateSolveAlternativeDto.fromJson(a as Map<String, dynamic>),
         ],
         couplerValue: (json['coupler_value'] as num?)?.toDouble(),
+        limitValue: (json['limit_value'] as num?)?.toDouble(),
       );
 }
 
@@ -5510,6 +5528,9 @@ class DocumentApiClient {
     // Earlier mates the user confirmed moving to their other branch (the preview's `branchChanges`); without them a mate
     // that needs them is refused with 422 `branch_change_needed`.
     List<BranchChangeDto> branchChanges = const [],
+    // A limit mate's range (`limit_distance` / `limit_angle`); either bound may be left out.
+    double? limitMin,
+    double? limitMax,
   }) =>
       _send(
         () => _httpClient.post(
@@ -5528,6 +5549,8 @@ class DocumentApiClient {
                 if (alignment != null) 'alignment': alignment,
                 if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
                 if (branchChanges.isNotEmpty) 'branch_changes': [for (final c in branchChanges) c.toJson()],
+                if (limitMin != null) 'limit_min': limitMin,
+                if (limitMax != null) 'limit_max': limitMax,
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),
@@ -5553,6 +5576,10 @@ class DocumentApiClient {
     // Setting either makes the branch the user's own (`branch_source: user`); leave both `null` to keep the stored branch.
     String? alignment,
     bool? secondaryFlip,
+    // A limit mate's range: with [setLimitRange] both bounds are sent as they are (a null removes that bound).
+    bool setLimitRange = false,
+    double? limitMin,
+    double? limitMax,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -5570,6 +5597,8 @@ class DocumentApiClient {
                 if (alignment != null) 'alignment': alignment,
                 if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
                 if (branchChanges.isNotEmpty) 'branch_changes': [for (final c in branchChanges) c.toJson()],
+                if (setLimitRange) 'limit_min': limitMin,
+                if (setLimitRange) 'limit_max': limitMax,
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),
@@ -5633,6 +5662,8 @@ class DocumentApiClient {
     // The branch to preview (`null` = Closest: the solve resolves it, and the answer's `resolved` says which).
     String? alignment,
     bool? secondaryFlip,
+    double? limitMin,
+    double? limitMax,
   }) =>
       _send(
         () => _httpClient.post(
@@ -5653,6 +5684,8 @@ class DocumentApiClient {
                 'allow_rotation': allowRotation,
                 if (alignment != null) 'alignment': alignment,
                 if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
+                if (limitMin != null) 'limit_min': limitMin,
+                if (limitMax != null) 'limit_max': limitMax,
               }),
             ),
         (body) => MateSolvePreviewDto.fromJson(body as Map<String, dynamic>),

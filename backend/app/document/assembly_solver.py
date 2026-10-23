@@ -106,6 +106,7 @@ from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodi
 from app.document.measure import single_shape_geometry
 from app.document.models import (
     COUPLER_TYPES,
+    LIMIT_TYPES,
     Document,
     MATE_ALIGNED,
     MATE_ANTI_ALIGNED,
@@ -1599,8 +1600,8 @@ def _applicable_mates(
     be a self-mate, which nothing in this codebase can create)."""
     applicable = []
     for mate in (*part.mates, *extra_mates):
-        if mate.suppressed or len(mate.references) != 2 or mate.type in COUPLER_TYPES:
-            continue  # a coupler is a group-model mate only (`app.document.coupler`); py-slvs knows nothing of it
+        if mate.suppressed or len(mate.references) != 2 or mate.type in COUPLER_TYPES or mate.type in LIMIT_TYPES:
+            continue  # a coupler / limit is a group-model mate only (`app.document.coupler`, `app.document.limit`); py-slvs knows nothing of it
         first, second = mate.references
         # A reference into a sub-assembly (`outer/inner`) belongs to the
         # top-level Occurrence `outer`: that is what moves when it is driven.

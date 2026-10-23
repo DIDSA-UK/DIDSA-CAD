@@ -97,6 +97,10 @@ class ConstrainedDragSession {
   MotionBlender _blender = MotionBlender(1);
   LocalRetractor? _local;
 
+  /// The last local frame held a limit mate at its bound (the part is stopped by a limit; reset every frame).
+  bool _atLimit = false;
+  bool get atLimit => _atLimit;
+
   /// Sent on every request until the first accepted anchor, afterwards the echoed `chart.lever_arm`. 0 = unknown (omitted).
   double _lever;
 
@@ -205,6 +209,7 @@ class ConstrainedDragSession {
       lever: _lever,
     );
     counters.recordLocal(accepted: result.accepted, residualInf: result.residualInf);
+    _atLimit = result.accepted && local.heldLimits.isNotEmpty;
     return result.accepted ? result.poses : null;
   }
 

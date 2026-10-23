@@ -12,7 +12,7 @@ import 'width_pick.dart';
 /// `String` wire value directly (matching `MateDto.type`'s own shape)
 /// rather than a Dart enum with its own to/from-wire mapping, since nothing
 /// else client-side needs a richer type for this yet.
-const List<String> kMateTypes = ['coincident', 'concentric', 'parallel', 'distance', 'angle', 'gear', 'rack_pinion', 'screw'];
+const List<String> kMateTypes = ['coincident', 'concentric', 'parallel', 'distance', 'angle', 'gear', 'rack_pinion', 'screw', 'limit_distance', 'limit_angle'];
 
 /// The coupler ("motion") mates (`docs/gears-and-motion-plan.md`): they place nothing, they keep a relation between how far the two
 /// parts MOVE. Two axis picks (a round face, a circular or a straight edge; the rack's second a straight edge), a value (ratio, travel
@@ -20,6 +20,33 @@ const List<String> kMateTypes = ['coincident', 'concentric', 'parallel', 'distan
 const List<String> kCouplerMateTypes = ['gear', 'rack_pinion', 'screw'];
 
 bool isCouplerMateType(String type) => kCouplerMateTypes.contains(type);
+
+/// The limit mates (`docs/limit-mates-scope.md`): they place nothing and keep a distance or an angle between a minimum and a maximum.
+/// Two picks like Distance / Angle (a plane on at least one side for a distance; a hinge for an angle), and a range instead of a value.
+const List<String> kLimitMateTypes = ['limit_distance', 'limit_angle'];
+
+bool isLimitMateType(String type) => kLimitMateTypes.contains(type);
+
+/// The unit of a limit's bounds.
+String mateLimitUnit(String type) => type == 'limit_angle' ? '\u00b0' : ' mm';
+
+/// [text] as one limit bound: empty = no bound (`null`), a number = that bound; anything else is `null` too (see [mateLimitError]).
+double? parseLimitBound(String text) => double.tryParse(text.trim());
+
+/// The hint for a limit range typed as [minText] / [maxText] (either may be empty), or `null` when it is fine.
+String? mateLimitError(String type, String minText, String maxText) {
+  final lo = minText.trim().isEmpty ? null : double.tryParse(minText.trim());
+  final hi = maxText.trim().isEmpty ? null : double.tryParse(maxText.trim());
+  if (minText.trim().isNotEmpty && lo == null || maxText.trim().isNotEmpty && hi == null) return 'Enter numbers, or leave a bound empty';
+  if (lo == null && hi == null) return 'Enter a minimum, a maximum, or both';
+  if (lo != null && hi != null && lo > hi) return 'The minimum is above the maximum';
+  if (type == 'limit_angle' && (lo != null && lo.abs() > 180 || hi != null && hi.abs() > 180)) return 'Angles run from -180 to 180 degrees';
+  return null;
+}
+
+/// Whether [min] / [max] form a range the backend accepts for [type].
+bool mateLimitValid(String type, double? min, double? max) =>
+    mateLimitError(type, min?.toString() ?? '', max?.toString() ?? '') == null;
 
 String mateTypeLabel(String type) => switch (type) {
       'coincident' => 'Coincident',
@@ -30,6 +57,8 @@ String mateTypeLabel(String type) => switch (type) {
       'gear' => 'Gear',
       'rack_pinion' => 'Rack and pinion',
       'screw' => 'Screw',
+      'limit_distance' => 'Limit distance',
+      'limit_angle' => 'Limit angle',
       kWidthMateType => 'Width',
       kSymmetricMateType => 'Symmetric',
       _ => type,
@@ -103,6 +132,15 @@ String _trimNumber(double x) => x.toStringAsFixed(3).replaceFirst(RegExp(r'0+$')
 
 /// The second line of a coupler mate's row: "1 : 2" (A turns for one of B), "62.832 mm per turn", "lead 2 mm". `null` for other mates.
 String? mateValueSummary(MateDto mate) {
+  if (isLimitMateType(mate.type)) {
+    final unit = mateLimitUnit(mate.type);
+    final lo = mate.limitMin, hi = mate.limitMax;
+    final now = mate.limitValue == null ? '' : ' (now ${_trimNumber(mate.limitValue!)}$unit)';
+    if (lo != null && hi != null) return '${_trimNumber(lo)}$unit to ${_trimNumber(hi)}$unit$now';
+    if (lo != null) return 'min ${_trimNumber(lo)}$unit$now';
+    if (hi != null) return 'max ${_trimNumber(hi)}$unit$now';
+    return null;
+  }
   final value = mate.value;
   if (value == null || !isCouplerMateType(mate.type)) return null;
   return switch (mate.type) {
@@ -337,6 +375,14 @@ class MatePanel extends StatelessWidget {
   final ValueChanged<double?> onValueChanged;
   final ValueChanged<bool> onAllowRotationChanged;
 
+  /// A limit mate's range (`mateType` a [kLimitMateTypes] one): the two bounds as typed (null = empty) and their change callback. Null for every other type.
+  final double? limitMin;
+  final double? limitMax;
+  final void Function(double? min, double? max)? onLimitChanged;
+
+  /// The measured value of the picked pair now (the preview's `limit_value`), shown under the range so it can be typed against where the parts are.
+  final double? limitCurrent;
+
   /// Minimal movement: move only the mated part when that is enough, and let connected parts follow only when it is
   /// not (the app asks the backend for its `auto` movement mode). The checkbox is shown only when
   /// [onMinimalMovementChanged] is given.
@@ -380,6 +426,10 @@ class MatePanel extends StatelessWidget {
     required this.onMateTypeChanged,
     required this.onValueChanged,
     required this.onAllowRotationChanged,
+    this.limitMin,
+    this.limitMax,
+    this.onLimitChanged,
+    this.limitCurrent,
     this.minimalMovement = false,
     this.onMinimalMovementChanged,
     required this.saving,
@@ -451,6 +501,17 @@ class MatePanel extends StatelessWidget {
               onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),
             ),
           ],
+          if (isLimitMateType(mateType) && onLimitChanged != null) ...[
+            const SizedBox(height: 8),
+            LimitFields(
+              key: ValueKey('mate-limit-$mateType'),
+              type: mateType,
+              initialMin: limitMin,
+              initialMax: limitMax,
+              current: limitCurrent,
+              onChanged: onLimitChanged!,
+            ),
+          ],
           if (_isWidth && mateType == kWidthMateType && onWidthOffsetChanged != null) ...[
             const SizedBox(height: 8),
             TextFormField(
@@ -477,7 +538,7 @@ class MatePanel extends StatelessWidget {
               contentPadding: EdgeInsets.zero,
               dense: true,
             ),
-          if (onMinimalMovementChanged != null)
+          if (onMinimalMovementChanged != null && !isLimitMateType(mateType)) // (a limit moves nothing: no movement to minimise)
             CheckboxListTile(
               value: minimalMovement,
               onChanged: (checked) => onMinimalMovementChanged!(checked ?? false),
@@ -612,5 +673,83 @@ class MatePanel extends StatelessWidget {
     final componentName = entity.occurrenceId.isEmpty ? null : bodyNames[entity.occurrenceId];
     final owner = componentName ?? (entity.occurrenceId.isEmpty ? bodyName : '$bodyName (component)');
     return '$owner - ${_labelFor(entity.kind)} #${entity.id}';
+  }
+}
+
+
+/// The Minimum / Maximum fields of a limit mate (`limit_distance` mm, `limit_angle` degrees): either may stay empty (a one-sided limit),
+/// not both. [onChanged] gets the parsed bounds on every edit (an unparsable one reads as empty; the hint says so).
+class LimitFields extends StatefulWidget {
+  final String type;
+  final double? initialMin;
+  final double? initialMax;
+  final double? current;
+  final void Function(double? min, double? max) onChanged;
+
+  const LimitFields({super.key, required this.type, this.initialMin, this.initialMax, this.current, required this.onChanged});
+
+  @override
+  State<LimitFields> createState() => _LimitFieldsState();
+}
+
+class _LimitFieldsState extends State<LimitFields> {
+  late final TextEditingController _min = TextEditingController(text: widget.initialMin == null ? '' : _trimNumber(widget.initialMin!));
+  late final TextEditingController _max = TextEditingController(text: widget.initialMax == null ? '' : _trimNumber(widget.initialMax!));
+
+  @override
+  void dispose() {
+    _min.dispose();
+    _max.dispose();
+    super.dispose();
+  }
+
+  void _changed() {
+    setState(() {});
+    widget.onChanged(parseLimitBound(_min.text), parseLimitBound(_max.text));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final unit = widget.type == 'limit_angle' ? 'degrees' : 'mm';
+    final error = _min.text.trim().isEmpty && _max.text.trim().isEmpty ? null : mateLimitError(widget.type, _min.text, _max.text);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: TextField(
+                key: const ValueKey('limit-min'),
+                controller: _min,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                decoration: InputDecoration(labelText: 'Minimum ($unit)'),
+                onChanged: (_) => _changed(),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextField(
+                key: const ValueKey('limit-max'),
+                controller: _max,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                decoration: InputDecoration(labelText: 'Maximum ($unit)'),
+                onChanged: (_) => _changed(),
+              ),
+            ),
+          ],
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            error ??
+                '${widget.current == null ? '' : 'Now ${_trimNumber(widget.current!)}${mateLimitUnit(widget.type)}. '}'
+                    '${widget.type == 'limit_angle' ? 'The signed swing about the hinge (give the parts a concentric mate first).' : 'The signed distance of the first pick from the second pick\'s plane.'} '
+                    'Leave a bound empty for one side only.',
+            key: const ValueKey('limit-hint'),
+            style: TextStyle(fontSize: 11, color: error == null ? null : Theme.of(context).colorScheme.error),
+          ),
+        ),
+      ],
+    );
   }
 }

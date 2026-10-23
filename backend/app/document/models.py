@@ -3416,9 +3416,14 @@ class MateType(str, Enum):
     GEAR = "gear"
     RACK_PINION = "rack_pinion"
     SCREW = "screw"
+    # Limit mates (`docs/limit-mates-scope.md`): a distance / angle kept between `limit_min` and `limit_max` instead of at one value.
+    # They place nothing and are inequalities: a solve holds one at its nearest bound only while it would otherwise be violated.
+    LIMIT_DISTANCE = "limit_distance"
+    LIMIT_ANGLE = "limit_angle"
 
 
 COUPLER_TYPES = (MateType.GEAR, MateType.RACK_PINION, MateType.SCREW)
+LIMIT_TYPES = (MateType.LIMIT_DISTANCE, MateType.LIMIT_ANGLE)
 
 
 # `Mate.alignment` values (`docs/mate-solution-choice-plan.md`): whether the driven direction points the same way as the fixed one.
@@ -3518,6 +3523,10 @@ class Mate:
     alignment: str | None = None
     secondary_flip: bool | None = None
     branch_source: str = "auto"
+    # LIMIT_DISTANCE / LIMIT_ANGLE only (mm / degrees; either may be None = one-sided, never both): the measured value
+    # (`app.document.limit`) stays within [limit_min, limit_max].
+    limit_min: float | None = None
+    limit_max: float | None = None
 
 
 @dataclass

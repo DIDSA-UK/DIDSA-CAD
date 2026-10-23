@@ -57,6 +57,9 @@ LOCAL_DISTANCE_FLOOR = 1e-3  # mm: divisor floor of the mm-scaled squared DISTAN
 LOCAL_MODEL_VERSION = 3      # 3: an ANGLE about a hinge also fixes the swing sense (hinge_direction on a side); 2: branch-specific residuals (alignment / side / perp per mate), see docs/mate-solution-choice-plan.md
 LOCAL_PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces on two members); a model without any pair stays at LOCAL_MODEL_VERSION
 LOCAL_COUPLER_MODEL_VERSION = 5  # 5: coupler mates (gear / rack_pinion / screw): rows on each side's MOVE from its `anchor` pose; emitted only when the model has one
+LOCAL_LIMIT_MODEL_VERSION = 6  # 6: limit mates (limit_distance / limit_angle): an inequality row with `min` / `max`, held at the nearest bound only when violated; emitted only when the model has one
+LOCAL_LIMIT_ROUNDS = 3       # active-set rounds of one retraction: each adds the violated limits as equalities and retracts again from the SAME start and wish
+LOCAL_LIMIT_TOL = 1e-6       # mm / degrees a value may sit outside its range before the limit counts as violated
 LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
 
 
@@ -371,9 +374,37 @@ def _quaternion_wv(r):
 class ConstraintModel:
     """`spec` = the `constraint_model` of a mate-motion answer (see the spec, section 4b)."""
 
-    def __init__(self, spec):
+    def __init__(self, spec, active=None):
         self.spec, self.k = spec, len(spec["members"])
         self.n = 6 * self.k
+        self.active = dict(active or {})  # limit mate id -> the bound it is held at (a limit adds a row only while held)
+
+    def _limit(self, mate, poses):
+        """`(value, gradient)` of a limit mate's measured value: mm for limit_distance, degrees (signed, about the hinge) for limit_angle."""
+        d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
+        if mate["type"] == "limit_distance":
+            origin = lambda g: g["porigin"] if "porigin" in g else g["point"]
+            normal = f["pnormal"] if "pnormal" in f else d["pnormal"]
+            sg = _vdot(_vsub(origin(d), origin(f)), _vunit(normal))
+            return sg.v, sg.d
+        hinge = d.get("hinge_direction") or f.get("hinge_direction")
+        na, nb = _vunit(d["direction"]), _vunit(f["direction"])
+        s_, c_ = _vdot(_vcross(na, nb), _vunit(hinge)), _vdot(na, nb)
+        den = s_.v * s_.v + c_.v * c_.v
+        return math.degrees(math.atan2(s_.v, c_.v)), (c_.v * s_.d - s_.v * c_.d) / den * (180.0 / math.pi)
+
+    def violated(self, poses):
+        out = {}
+        for mate in self.spec["mates"]:
+            if mate["type"] not in ("limit_distance", "limit_angle") or mate["id"] in self.active:
+                continue
+            value, _ = self._limit(mate, poses)
+            lo, hi = mate.get("min"), mate.get("max")
+            if hi is not None and value > hi + LOCAL_LIMIT_TOL:
+                out[mate["id"]] = float(hi)
+            elif lo is not None and value < lo - LOCAL_LIMIT_TOL:
+                out[mate["id"]] = float(lo)
+        return out
 
     def _base_axis(self, side):
         local = np.array(side["direction"], float)
@@ -482,6 +513,13 @@ class ConstraintModel:
             addv(_vsub(a, _vscale(b, s)))  # `a - s b`: zero only on the alignment branch
 
         for mate in self.spec["mates"]:
+            if mate["type"] in ("limit_distance", "limit_angle"):
+                if mate["id"] in self.active:
+                    value, gradient = self._limit(mate, poses)
+                    unit = math.pi / 180.0 if mate["type"] == "limit_angle" else 1.0
+                    rows.append((float(value) - self.active[mate["id"]]) * unit)
+                    jac.append(gradient * unit)
+                continue
             if mate["type"] in ("gear", "rack_pinion", "screw"):
                 value, gradient = self._coupler(mate, poses)
                 rows.append(float(value))
@@ -587,6 +625,22 @@ def local_retract(model, poses, wishes, w, iters=LOCAL_ITERS, polish=LOCAL_POLIS
     return [Pose(t, r) for r, t in cur]
 
 
+def local_retract_limits(spec, poses, wishes, w, iters=LOCAL_ITERS, polish=LOCAL_POLISH):
+    """`local_retract` on a model that may have limit mates: retract with none held; every limit the answer leaves is held at its nearest bound
+    (an equality row) and the retraction is run again from the SAME start and wish, at most LOCAL_LIMIT_ROUNDS times. Stateless between frames.
+    Returns `(poses, held)` with `held` the `{limit id: bound}` of the last round."""
+    active = {}
+    got = list(poses)
+    for _ in range(LOCAL_LIMIT_ROUNDS + 1):
+        model = ConstraintModel(spec, active)
+        got = local_retract(model, poses, wishes, w, iters=iters, polish=polish)
+        violated = model.violated([(p.r, p.t) for p in got])
+        if not violated:
+            break
+        active.update(violated)
+    return got, active
+
+
 def local_residual_inf(model, poses):
     r, _ = model.residual([(p.r, p.t) for p in poses])
     return float(np.max(np.abs(r))) if r.size else 0.0
@@ -599,17 +653,19 @@ def local_iterations(wish_step):
 
 def local_frame(i):
     """One frame of the client's local retraction with the acceptance guard (spec section 4b)."""
-    model = ConstraintModel(i["model"])
     lever = i["lever_arm"]
     poses = [Pose.from_json(p) for p in i["poses"]]
     wishes = [Pose.from_json(p) for p in i["wishes"]]
     fallback = [Pose.from_json(p) for p in i["fallback_poses"]]
     w = local_weights(len(poses), lever)
     wish_step = weighted_dist(wishes[0], poses[0], lever)  # how far the hand is from the pose the frame starts at
-    got = local_retract(model, poses, wishes, w, iters=local_iterations(wish_step))
+    got, held = local_retract_limits(i["model"], poses, wishes, w, iters=local_iterations(wish_step))
+    model = ConstraintModel(i["model"], held)  # the residual the frame is judged on includes the limits it holds
     res = local_residual_inf(model, got)
     dist = weighted_dist(got[0], fallback[0], lever)
-    accepted = res <= LOCAL_ACCEPT_RESIDUAL and dist <= LOCAL_ACCEPT_DISTANCE * max(lever, wish_step)
+    # A held limit is a stop the projector (the fallback) knows nothing of: it would show the part going on through it, so the distance guard
+    # cannot judge the answer - a converged result with a limit held is accepted as it is.
+    accepted = res <= LOCAL_ACCEPT_RESIDUAL and (bool(held) or dist <= LOCAL_ACCEPT_DISTANCE * max(lever, wish_step))
     shown = got if accepted else fallback
     return {
         "accepted": bool(accepted),
@@ -617,6 +673,7 @@ def local_frame(i):
         "local_poses": [p.out() for p in got],
         "residual_inf": res,
         "fallback_distance": dist,
+        **({"held_limits": sorted(held)} if "limit" in json.dumps([m["type"] for m in i["model"]["mates"]]) else {}),
     }
 
 # ---- output helpers ---------------------------------------------------------------------------------------
@@ -1260,6 +1317,50 @@ def build():
     local_case("local-gear-pair-near-150-deg", "A turned 150 deg from its anchor (the twist is read in (-pi, pi]): B must be at -75 deg",
                gear_pair(-1), [gear_a0, gear_b0], [turned(gear_a0, 150), gear_b0], 10.0)
 
+    # ---- constraint model v6: limit mates (limit_distance / limit_angle). An inequality row with `min` / `max`: none while the value is in range; the
+    # active-set rounds hold a violated one at its nearest bound (an equality row) and retract again from the same start and wish.
+    LIMIT_VERSION = LOCAL_LIMIT_MODEL_VERSION
+
+    def limit(kind, a, b, lo, hi, mate_id):
+        return {"type": kind, "id": mate_id, "min": lo, "max": hi, "a": a, "b": b}
+
+    # a block flat on a fixed plate (world z 10) with its +y face on a fixed guide (world y 60): it can only slide along x; a stop whose -x face
+    # is at world x 40 sits ahead of its +x face (world x 20 at the start): the gap is the limit_distance value, 20 mm, limited to [5, 30]
+    slider = {"version": LIMIT_VERSION, "members": ["block"], "mates": [
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 10), (0, 0, 1), frozen=FROZEN0), alignment=-1),
+        mate("coincident", plane_side(0, (0, 10, 0), (0, 1, 0)), plane_side(-1, (0, 60, 0), (0, -1, 0), frozen=FROZEN0), alignment=-1),
+        limit("limit_distance", plane_side(0, (10, 0, 0), (1, 0, 0)), plane_side(-1, (40, 0, 0), (-1, 0, 0), frozen=FROZEN0), 5.0, 30.0, "gap")]}
+    slider0 = P((10.0, 50.0, 10.0))
+    local_case("local-limit-distance-inside", "Slider with a [5, 30] mm gap limit (gap 20 at the start): a 8 mm slide towards the stop stays inside the range - the limit is not "
+               "held and the result is the plain nearest point", slider, [slider0], [moved(slider0, (8, 0, 0))], 10.0, fallback=[moved(slider0, (8, 0, 0))])
+    local_case("local-limit-distance-stops-at-min", "The same slider pulled 40 mm towards the stop: the gap would go to -20, below the minimum - the limit is held at 5 mm "
+               "(the block stops 15 mm along) and the rest of the wish is dropped", slider, [slider0], [moved(slider0, (40, 0, 0))], 10.0, fallback=[moved(slider0, (40, 0, 0))])
+    local_case("local-limit-distance-stops-at-max", "Pulled 40 mm AWAY from the stop: the gap would be 60, above the maximum - held at 30 (the block stops 10 mm back)",
+               slider, [slider0], [moved(slider0, (-40, 0, 0))], 10.0, fallback=[moved(slider0, (-40, 0, 0))])
+    slider_at_min = moved(slider0, (15.0, 0, 0))
+    local_case("local-limit-distance-released", "The block rests AT the minimum (gap 5) and the hand now pulls it back 4 mm: the limit is not held (stateless), the block follows - "
+               "the next frame, not an earlier hold, decides", slider, [slider_at_min], [moved(slider_at_min, (-4, 0, 0))], 10.0)
+    local_case("local-limit-distance-slides-along", "The block rests at the minimum and the hand moves 10 mm further towards the stop and 3 mm sideways: the sideways part is "
+               "removed by the guide, the stop holds the rest - the block stays where it is", slider, [slider_at_min], [moved(slider_at_min, (10, -3, 0))], 10.0, fallback=[moved(slider_at_min, (10, 0, 0))])
+
+    # a leaf on a fixed hinge pin (axis through world (20, 20), the leaf's bottom flat on the plate at z 5): the angle limit measures the signed angle
+    # from the leaf's x direction to the fixed one about the pin - the NEGATIVE of the leaf's own turn - limited to [-20, 50]
+    hinge_leaf = {"version": LIMIT_VERSION, "members": ["leaf"], "mates": [
+        mate("concentric", axis_side(0, (20, 20, 0), (0, 0, 1)), axis_side(-1, (20, 20, 0), (0, 0, 1), frozen=FROZEN0)),
+        mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 5), (0, 0, 1), frozen=FROZEN0), alignment=-1),
+        limit("limit_angle", side(0, direction=[1.0, 0.0, 0.0]), side(-1, direction=[1.0, 0.0, 0.0], hinge_direction=[0.0, 0.0, 1.0], frozen=FROZEN0), -20.0, 50.0, "swing")]}
+
+    def leaf_at(deg):
+        c, sn = math.cos(D(deg)), math.sin(D(deg))
+        return P((20.0 - (c * 20.0 - sn * 20.0), 20.0 - (sn * 20.0 + c * 20.0), 5.0), (0, 0, 1), deg)
+
+    local_case("local-limit-angle-inside", "Leaf on a hinge with a [-20, 50] deg angle limit: a 10 deg swing of the leaf (value -10) is inside - the limit is not held",
+               hinge_leaf, [leaf_at(0.0)], [leaf_at(10.0)], 20.0, fallback=[leaf_at(10.0)])
+    local_case("local-limit-angle-stops-at-min", "A 60 deg swing of the leaf (value -60, below the minimum -20): held at -20, so the leaf stops at 20 deg",
+               hinge_leaf, [leaf_at(0.0)], [leaf_at(60.0)], 20.0, fallback=[leaf_at(60.0)])
+    local_case("local-limit-angle-stops-at-max", "A -80 deg swing (value +80, above the maximum 50): held at 50, so the leaf stops at -50 deg",
+               hinge_leaf, [leaf_at(0.0)], [leaf_at(-80.0)], 20.0, fallback=[leaf_at(-80.0)])
+
     rack0 = P((0.0, 20.0, 0.0))
     FROZEN_RAIL = {"r": I3, "t": [0.0, 20.0, 0.0]}
     PITCH_TRAVEL = 2.0 * math.pi * 10.0  # a 10 mm radius pinion: 62.832 mm of rack per turn
@@ -1518,6 +1619,7 @@ def main():
             "local_follower": LOCAL_FOLLOWER, "local_iters": LOCAL_ITERS, "local_iters_max": LOCAL_ITERS_MAX, "local_polish": LOCAL_POLISH, "local_trust": LOCAL_TRUST,
             "local_rot_cap": LOCAL_ROT_CAP, "local_lam_abs": LOCAL_LAM_ABS, "local_accept_residual": LOCAL_ACCEPT_RESIDUAL,
             "local_accept_distance": LOCAL_ACCEPT_DISTANCE,
+            "local_limit_model_version": LOCAL_LIMIT_MODEL_VERSION, "local_limit_rounds": LOCAL_LIMIT_ROUNDS, "local_limit_tol": LOCAL_LIMIT_TOL,
             "local_distance_floor": LOCAL_DISTANCE_FLOOR, "local_model_version": LOCAL_MODEL_VERSION, "local_pair_model_version": LOCAL_PAIR_MODEL_VERSION,
         },
         "conventions": {

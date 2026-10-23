@@ -108,6 +108,8 @@ String mateDisplayName(List<MateDto> mates, int index) {
     'gear' => 'Gear',
     'rack_pinion' => 'Rack and pinion',
     'screw' => 'Screw',
+    'limit_distance' => 'Limit distance',
+    'limit_angle' => 'Limit angle',
     _ => mate.type,
   };
   final ordinal = mates.take(index + 1).where((m) => m.type == mate.type && !isWidthMate(m) && !isSymmetricMate(m)).length;
