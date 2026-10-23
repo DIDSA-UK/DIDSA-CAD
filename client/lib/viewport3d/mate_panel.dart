@@ -607,7 +607,10 @@ class MatePanel extends StatelessWidget {
 
   String _titleFor(SelectionEntityRef entity) {
     final bodyName = bodyNames[entity.bodyId] ?? 'Body';
-    final owner = entity.occurrenceId.isEmpty ? bodyName : '$bodyName (component)';
+    // A pick on a placed component reads as that component's name ("Gear (40 teeth)", else "Component 3"), the one the assembly tree
+    // shows, so two picks on two parts are told apart (`bodyNames` also carries the occurrence names, keyed by occurrence id).
+    final componentName = entity.occurrenceId.isEmpty ? null : bodyNames[entity.occurrenceId];
+    final owner = componentName ?? (entity.occurrenceId.isEmpty ? bodyName : '$bodyName (component)');
     return '$owner - ${_labelFor(entity.kind)} #${entity.id}';
   }
 }

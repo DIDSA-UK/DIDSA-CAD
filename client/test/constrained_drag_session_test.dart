@@ -117,6 +117,7 @@ ConstrainedDragSession _session(_FakeBackend api, _Clock clock, {void Function(S
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  _shortfallTests();
   group('ConstrainedDragSession', () {
     test('60-frame drag = 1 grab anchor + 1 per ~150 ms + 1 commit; blocked z is dropped, in-plane follows', () async {
       final api = _FakeBackend();
@@ -411,3 +412,25 @@ void main() {
     });
   });
 }
+
+void _shortfallTests() {
+  group('constrainedShortfallNotice', () {
+    Pose pose(double x, double degrees) => Pose.fromWire(translation: [x, 0, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: degrees);
+
+    test('says nothing when the component got where it was asked', () {
+      expect(constrainedShortfallNotice(pose(10, 90), pose(10.2, 90.3)), isNull);
+    });
+
+    test('says so when the mates let only part of a typed turn through', () {
+      final notice = constrainedShortfallNotice(pose(0, 90), pose(0, 31));
+      expect(notice, isNotNull);
+      expect(notice, contains('as far as its mates allow'));
+      expect(notice, contains('59.0'));
+    });
+
+    test('and for a typed move', () {
+      expect(constrainedShortfallNotice(pose(30, 0), pose(12, 0)), contains('18.0 mm'));
+    });
+  });
+}
+

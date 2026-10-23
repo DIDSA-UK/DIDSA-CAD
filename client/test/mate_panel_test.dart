@@ -456,6 +456,30 @@ void main() {
       expect(find.text('Bracket Body (component) - Vertex #0'), findsOneWidget);
     });
 
+    testWidgets('names a pick on a placed component by the component, so two picks on two parts differ', (tester) async {
+      await tester.pumpWidget(wrap(MatePanel(
+        selectedEntities: {
+          const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'b1', id: 4, occurrenceId: 'occ-plate'),
+          const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'b2', id: 4, occurrenceId: 'occ-gear'),
+        },
+        // the part screen's names map also carries each occurrence's display name, keyed by occurrence id
+        bodyNames: const {'b1': 'Body 1', 'b2': 'Body 1', 'occ-plate': 'Plate', 'occ-gear': 'Gear (40 teeth)'},
+        mateType: 'gear',
+        value: null,
+        onMateTypeChanged: (_) {},
+        onValueChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+
+      expect(find.text('Plate - Face #4'), findsOneWidget);
+      expect(find.text('Gear (40 teeth) - Face #4'), findsOneWidget);
+    });
+
     testWidgets('shows the error text when given one', (tester) async {
       await tester.pumpWidget(wrap(MatePanel(
         selectedEntities: const {},

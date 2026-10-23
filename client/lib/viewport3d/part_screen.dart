@@ -11895,7 +11895,12 @@ class _PartScreenState extends State<PartScreen> {
       if (commit.committed) {
         _applyConstrainedCommit(occurrence, commit);
         await _refreshAssemblyMesh();
-        final notice = constrainedDragNotice(commit.response);
+        var notice = constrainedDragNotice(commit.response);
+        if (notice == null) {
+          // The wish was typed (Move / Rotate): say so when the mates let only part of it through.
+          final grabbed = commit.poses[occurrence.id];
+          if (grabbed != null) notice = constrainedShortfallNotice(poseOfDto(_localOfWorld(newWorldTransform)), grabbed);
+        }
         if (notice != null && mounted) _showSnack(notice);
       } else if (mounted) {
         _showSnack("Can't follow that move - the mates don't allow it. Nothing was changed.");

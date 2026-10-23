@@ -554,7 +554,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
                 )
               : LayoutBuilder(
         builder: (context, constraints) {
-          final canvas = GearPreviewCanvas(preview: _preview, showReferenceOverlay: _showReferenceOverlay);
+          final canvas = GearPreviewCanvas(preview: _preview, showReferenceOverlay: _showReferenceOverlay, boreDiameter: _boreDiameter);
           final form = SingleChildScrollView(padding: const EdgeInsets.all(16), child: _buildForm());
           if (constraints.maxWidth < 700) {
             return Column(
@@ -915,6 +915,7 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
                 'Leave blank for a solid gear.',
               ),
             ),
+            onChanged: (_) => setState(() {}), // the preview draws the bore as typed
           ),
         ],
         if (_kind == GearDesignKind.rack) ...[

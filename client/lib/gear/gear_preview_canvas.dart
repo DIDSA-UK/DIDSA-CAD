@@ -15,7 +15,10 @@ class GearPreviewCanvas extends StatefulWidget {
   final GearPreviewDto? preview;
   final bool showReferenceOverlay;
 
-  const GearPreviewCanvas({super.key, required this.preview, required this.showReferenceOverlay});
+  /// The centre bore (mm) of an external gear, drawn as a circle inside the teeth; 0 = none.
+  final double boreDiameter;
+
+  const GearPreviewCanvas({super.key, required this.preview, required this.showReferenceOverlay, this.boreDiameter = 0});
 
   @override
   State<GearPreviewCanvas> createState() => _GearPreviewCanvasState();
@@ -95,6 +98,7 @@ class _GearPreviewCanvasState extends State<GearPreviewCanvas> {
                     painter: _GearPreviewPainter(
                       preview: widget.preview,
                       showReferenceOverlay: widget.showReferenceOverlay,
+                      boreDiameter: widget.boreDiameter,
                       zoomScale: _transformController.value.getMaxScaleOnAxis(),
                     ),
                     child: child,
@@ -141,6 +145,7 @@ const double _referenceStrokeWidth = 0.6;
 class _GearPreviewPainter extends CustomPainter {
   final GearPreviewDto? preview;
   final bool showReferenceOverlay;
+  final double boreDiameter;
 
   /// The `InteractiveViewer` ancestor's current zoom factor
   /// (`TransformationController.value.getMaxScaleOnAxis()`) - divided into
@@ -152,7 +157,7 @@ class _GearPreviewPainter extends CustomPainter {
   /// coordinate space, not 2 screen px, once that space itself is scaled).
   final double zoomScale;
 
-  _GearPreviewPainter({required this.preview, required this.showReferenceOverlay, required this.zoomScale});
+  _GearPreviewPainter({required this.preview, required this.showReferenceOverlay, required this.zoomScale, this.boreDiameter = 0});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -201,6 +206,16 @@ class _GearPreviewPainter extends CustomPainter {
     }
     path.close();
     canvas.drawPath(path, outlinePaint);
+    if (boreDiameter > 0) {
+      // The bore: a circle about the gear's centre (the profile's own origin), as the backend cuts it.
+      final boreCircle = Path();
+      for (var i = 0; i <= 96; i++) {
+        final angle = 2 * math.pi * i / 96;
+        final point = toCanvas(boreDiameter / 2 * math.cos(angle), boreDiameter / 2 * math.sin(angle));
+        i == 0 ? boreCircle.moveTo(point.dx, point.dy) : boreCircle.lineTo(point.dx, point.dy);
+      }
+      canvas.drawPath(boreCircle, outlinePaint);
+    }
   }
 
   void _paintReferenceOverlay(
@@ -264,5 +279,6 @@ class _GearPreviewPainter extends CustomPainter {
   bool shouldRepaint(covariant _GearPreviewPainter oldDelegate) =>
       oldDelegate.preview != preview ||
       oldDelegate.showReferenceOverlay != showReferenceOverlay ||
+      oldDelegate.boreDiameter != boreDiameter ||
       oldDelegate.zoomScale != zoomScale;
 }

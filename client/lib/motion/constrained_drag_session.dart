@@ -16,6 +16,7 @@
 /// current model projects the same wish to.
 library;
 
+import 'dart:math' as math;
 import 'dart:async';
 
 import '../api/document_api_client.dart';
@@ -432,4 +433,16 @@ String? constrainedDragNotice(MateMotionDto? r) {
   if (r.dof == 0) return "Fully constrained by its mates - it can't be moved.";
   if (r.members.isNotEmpty && r.members.first.mobility == 0) return 'Its mates lock this component in place.';
   return null;
+}
+
+/// A typed move or turn (the Move / Rotate panel) that the mates only let through in part: the stored pose of the grabbed component against the pose that
+/// was asked for. `null` when it got there (within 0.5 mm and 0.5 degrees), else a line saying so, so "turn it 90 degrees, it turned 31" is not silent.
+String? constrainedShortfallNotice(Pose wish, Pose result) {
+  final dx = wish.t[0] - result.t[0], dy = wish.t[1] - result.t[1], dz = wish.t[2] - result.t[2];
+  final distance = math.sqrt(dx * dx + dy * dy + dz * dz);
+  final relative = wish.r.transposed * result.r;
+  final cosine = ((relative.trace - 1.0) / 2.0).clamp(-1.0, 1.0);
+  final degrees = math.acos(cosine) * 180.0 / math.pi;
+  if (distance <= 0.5 && degrees <= 0.5) return null;
+  return 'Moved as far as its mates allow: it cannot go exactly there (${distance.toStringAsFixed(1)} mm and ${degrees.toStringAsFixed(1)}\u00b0 short).';
 }
