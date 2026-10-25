@@ -1211,6 +1211,7 @@ def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_a
 
 BRANCH_SEARCH_MAX_SOLVES = 24
 BRANCH_SEARCH_SECONDS = 1.5
+BRANCH_SEARCH_MIN_SOLVES = 8  # solves a search always gets, whatever the clock says
 _CONFLICT_RESERVE = 4  # solves kept back for the "which mate does it fight with" step
 _PAIR_CANDIDATES = 6  # pairs are tried among this many of the best-ordered single changes
 
@@ -1321,7 +1322,7 @@ def search_branch_changes(
     skip_mate_ids: frozenset[str] = frozenset(),
     failed: GroupSolveResult | None = None,
     max_solves: int = BRANCH_SEARCH_MAX_SOLVES,
-    seconds: float = BRANCH_SEARCH_SECONDS,
+    seconds: float | None = None,  # None = BRANCH_SEARCH_SECONDS, read when the search runs (a test can change it)
 ) -> BranchSearchOutcome:
     """The fewest earlier mates to move to their other branch so the new mate (`new_mate`, or an already-edited stored one) can
     be met. `solve(part) -> (result, movement_used)` is the caller's own solve of the new mate against the mates `part` carries.
@@ -1332,12 +1333,15 @@ def search_branch_changes(
     3. If no `auto` change works but one on a `user` mate would: `blocked_by` names it (never changed for the user).
     4. If no branch combination works: `conflicting` = the existing mates that, suppressed one at a time, let it converge.
     A budget of solves and seconds bounds all of it; the conflict step keeps a few solves in reserve."""
+    seconds = BRANCH_SEARCH_SECONDS if seconds is None else seconds
     started = time.monotonic()
     outcome = BranchSearchOutcome()
     extra = (new_mate,) if new_mate is not None else ()
 
     def spent(reserve: int = 0) -> bool:
-        return outcome.solves >= max_solves - reserve or time.monotonic() - started > seconds
+        # The clock only ends a search that has had its minimum: a cold server (the first solve builds every body) or a slow CI runner
+        # would otherwise stop it before it tried a single change and answer "no branch works".
+        return outcome.solves >= max_solves - reserve or (outcome.solves >= BRANCH_SEARCH_MIN_SOLVES and time.monotonic() - started > seconds)
 
     def run(trial: Part) -> tuple[GroupSolveResult, str]:
         outcome.solves += 1
