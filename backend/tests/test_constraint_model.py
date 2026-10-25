@@ -25,6 +25,7 @@ from app.document.constraint_model import (
     rigid_to_pose,
     rotvec_from_rot,
     sqp_nearest,
+    sqp_nearest_limits,
     weights,
     wish_cost,
 )
@@ -33,6 +34,7 @@ from tests import motion_scenes as ms
 from tests.test_assembly_group import _plate_bcd
 from tests.test_assembly_group_solve import _L, _floating_bolt_scene, _offset_pin_scene, _plate_scene
 from tests.test_assembly_solver import client
+from tests.timing import check_timing
 
 
 def _first_occurrence(root):
@@ -416,7 +418,10 @@ def test_backend_retraction_reproduces_the_golden_vectors():
         w = weights(len(poses), inp["lever_arm"], follower=inp["local_follower"])
         wish_step = float(np.linalg.norm(np.concatenate([wishes[0][1] - poses[0][1], rotvec_from_rot(wishes[0][0] @ poses[0][0].T) * inp["lever_arm"]])))
         iters = int(min(c["local_iters_max"], max(c["local_iters"], c["local_iters"] + math.ceil((wish_step - c["local_trust"]) / c["local_trust"]))))
-        got = sqp_nearest(cm, poses, wishes, w, iters=iters, polish=c["local_polish"])
+        got, held = sqp_nearest_limits(inp["model"], None, poses, wishes, w, iters=iters, polish=c["local_polish"])
+        if "held_limits" in exp:
+            assert sorted(held) == exp["held_limits"], case["id"]
+        cm = ConstraintModel(inp["model"], active=held)  # the residual the frame is judged on includes the limits it holds
         for i, p in enumerate(got):
             if exp["residual_inf"] > 1e-9:
                 break  # a raw answer not converged TIGHTLY is a sensitive function of the linear solve; only tight ones are pinned
@@ -426,7 +431,8 @@ def test_backend_retraction_reproduces_the_golden_vectors():
             assert abs(residual_inf(cm, got) - exp["residual_inf"]) < 1e-9, case["id"]
         elif exp["residual_inf"] > ACCEPT_RESIDUAL:
             assert residual_inf(cm, got) > ACCEPT_RESIDUAL, case["id"]
-        accepted = residual_inf(cm, got) <= ACCEPT_RESIDUAL and exp["fallback_distance"] <= c["local_accept_distance"] * max(inp["lever_arm"], wish_step)
+        # a held limit is a stop the limit-blind projector (the fallback) knows nothing of: the distance guard does not judge such an answer
+        accepted = residual_inf(cm, got) <= ACCEPT_RESIDUAL and (bool(held) or exp["fallback_distance"] <= c["local_accept_distance"] * max(inp["lever_arm"], wish_step))
         assert accepted == exp["accepted"], case["id"]
 
 
@@ -464,7 +470,7 @@ def test_solve_group_latency_with_the_nearest_point_stage(capsys):
         rows.append((k, min(times), result.quality.seeded_by))
     with capsys.disabled():
         print("\nSOLVE_GROUP LATENCY (best of 7, ms):", ", ".join(f"k={k}: {t:.1f} ({how})" for k, t, how in rows))
-    assert rows[-1][1] < 1000.0, rows
+    check_timing(rows[-1][1], 1000.0, "solve_group k=8 (best of runs)", unit="ms")
 
 
 def test_one_frame_convergence_at_realistic_hand_steps_on_every_scene_family():

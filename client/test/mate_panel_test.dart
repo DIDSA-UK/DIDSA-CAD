@@ -254,8 +254,8 @@ void main() {
   });
 
   group('kMateTypes', () {
-    test('has exactly the five backend-supported types', () {
-      expect(kMateTypes, ['coincident', 'concentric', 'parallel', 'distance', 'angle']);
+    test('has exactly the backend-supported types (the five placing mates, the three couplers and the two limits)', () {
+      expect(kMateTypes, ['coincident', 'concentric', 'parallel', 'distance', 'angle', 'gear', 'rack_pinion', 'screw', 'limit_distance', 'limit_angle']);
     });
   });
 
@@ -456,6 +456,30 @@ void main() {
       expect(find.text('Bracket Body (component) - Vertex #0'), findsOneWidget);
     });
 
+    testWidgets('names a pick on a placed component by the component, so two picks on two parts differ', (tester) async {
+      await tester.pumpWidget(wrap(MatePanel(
+        selectedEntities: {
+          const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'b1', id: 4, occurrenceId: 'occ-plate'),
+          const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'b2', id: 4, occurrenceId: 'occ-gear'),
+        },
+        // the part screen's names map also carries each occurrence's display name, keyed by occurrence id
+        bodyNames: const {'b1': 'Body 1', 'b2': 'Body 1', 'occ-plate': 'Plate', 'occ-gear': 'Gear (40 teeth)'},
+        mateType: 'gear',
+        value: null,
+        onMateTypeChanged: (_) {},
+        onValueChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+
+      expect(find.text('Plate - Face #4'), findsOneWidget);
+      expect(find.text('Gear (40 teeth) - Face #4'), findsOneWidget);
+    });
+
     testWidgets('shows the error text when given one', (tester) async {
       await tester.pumpWidget(wrap(MatePanel(
         selectedEntities: const {},
@@ -617,6 +641,141 @@ void main() {
         expect(selected, hasLength(1));
         expect(find.byTooltip('Remove from selection'), findsOneWidget);
       });
+    });
+  });
+
+  group('limit mates (M9)', () {
+    Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
+
+    test('labels, kinds and units', () {
+      expect(mateTypeLabel('limit_distance'), 'Limit distance');
+      expect(mateTypeLabel('limit_angle'), 'Limit angle');
+      expect(isLimitMateType('limit_angle'), isTrue);
+      expect(isLimitMateType('angle'), isFalse);
+      expect(mateTypeNeedsValue('limit_distance'), isFalse, reason: 'a limit has a range, not a value');
+      expect(mateTypeHasValueField('limit_angle'), isFalse);
+      expect(mateLimitUnit('limit_distance'), ' mm');
+      expect(mateLimitUnit('limit_angle'), '\u00b0');
+    });
+
+    test('the range checks mirror the backend: one bound or both, min <= max, angles within 180', () {
+      expect(mateLimitError('limit_distance', '', ''), isNotNull);
+      expect(mateLimitError('limit_distance', '5', ''), isNull);
+      expect(mateLimitError('limit_distance', '', '30'), isNull);
+      expect(mateLimitError('limit_distance', '5', '30'), isNull);
+      expect(mateLimitError('limit_distance', '30', '5'), 'The minimum is above the maximum');
+      expect(mateLimitError('limit_distance', 'x', '5'), isNotNull);
+      expect(mateLimitError('limit_angle', '-190', '10'), isNotNull);
+      expect(mateLimitError('limit_angle', '-20', '50'), isNull);
+      expect(mateLimitValid('limit_angle', -20, 50), isTrue);
+      expect(mateLimitValid('limit_angle', null, null), isFalse);
+      expect(mateLimitValid('limit_distance', 30, 5), isFalse);
+      expect(mateLimitValid('limit_distance', -12.5, null), isTrue, reason: 'a distance limit is a signed gap: negative is fine');
+    });
+
+    test('a limit row says its range and where the parts are now', () {
+      MateDto limit({double? lo, double? hi, double? now, String type = 'limit_distance'}) =>
+          MateDto(id: 'm', type: type, references: const [], limitMin: lo, limitMax: hi, limitValue: now);
+      expect(mateValueSummary(limit(lo: 0, hi: 30, now: 20)), '0 mm to 30 mm (now 20 mm)');
+      expect(mateValueSummary(limit(lo: 5)), 'min 5 mm');
+      expect(mateValueSummary(limit(hi: 110, now: 12.5, type: 'limit_angle')), 'max 110\u00b0 (now 12.5\u00b0)');
+      expect(mateValueSummary(limit()), isNull);
+    });
+
+    test('MateDto reads the range and the current value', () {
+      final dto = MateDto.fromJson({
+        'id': 'a',
+        'type': 'limit_angle',
+        'references': <Object>[],
+        'limit_min': -20,
+        'limit_max': 50.5,
+        'limit_value': 3,
+      });
+      expect(dto.limitMin, -20.0);
+      expect(dto.limitMax, 50.5);
+      expect(dto.limitValue, 3.0);
+      expect(MateDto.fromJson({'id': 'b', 'type': 'distance', 'references': <Object>[]}).limitMin, isNull);
+    });
+
+    testWidgets('the panel shows Minimum / Maximum for a limit, reports typed bounds and hints the current value', (tester) async {
+      double? gotMin, gotMax;
+      await tester.pumpWidget(wrap(MatePanel(
+        selectedEntities: const {},
+        bodyNames: const {},
+        mateType: 'limit_distance',
+        value: null,
+        onMateTypeChanged: (_) {},
+        onValueChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
+        limitCurrent: 20,
+        onLimitChanged: (lo, hi) {
+          gotMin = lo;
+          gotMax = hi;
+        },
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+      expect(find.byKey(const ValueKey('limit-min')), findsOneWidget);
+      expect(find.byKey(const ValueKey('limit-max')), findsOneWidget);
+      expect(find.byKey(const ValueKey('mate-value-limit_distance')), findsNothing);
+      expect(find.textContaining('Now 20 mm'), findsOneWidget);
+      await tester.enterText(find.byKey(const ValueKey('limit-min')), '5');
+      await tester.enterText(find.byKey(const ValueKey('limit-max')), '30');
+      expect(gotMin, 5.0);
+      expect(gotMax, 30.0);
+      await tester.enterText(find.byKey(const ValueKey('limit-min')), '40');
+      await tester.pump();
+      expect(find.text('The minimum is above the maximum'), findsOneWidget);
+      await tester.enterText(find.byKey(const ValueKey('limit-min')), '');
+      await tester.enterText(find.byKey(const ValueKey('limit-max')), '');
+      expect(gotMin, isNull);
+      expect(gotMax, isNull);
+    });
+
+    testWidgets('a limit has no Minimal movement checkbox (it moves nothing); a distance mate keeps it', (tester) async {
+      Widget panel(String type) => wrap(MatePanel(
+            selectedEntities: const {},
+            bodyNames: const {},
+            mateType: type,
+            value: 5,
+            onMateTypeChanged: (_) {},
+            onValueChanged: (_) {},
+            allowRotation: false,
+            onAllowRotationChanged: (_) {},
+            onLimitChanged: (_, __) {},
+            minimalMovement: true,
+            onMinimalMovementChanged: (_) {},
+            saving: false,
+            error: null,
+            onConfirm: null,
+            onCancel: () {},
+          ));
+      await tester.pumpWidget(panel('limit_angle'));
+      expect(find.text('Minimal movement'), findsNothing);
+      await tester.pumpWidget(panel('distance'));
+      expect(find.text('Minimal movement'), findsOneWidget);
+    });
+
+    testWidgets('other mate types do not show the range fields', (tester) async {
+      await tester.pumpWidget(wrap(MatePanel(
+        selectedEntities: const {},
+        bodyNames: const {},
+        mateType: 'distance',
+        value: 5,
+        onMateTypeChanged: (_) {},
+        onValueChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
+        onLimitChanged: (_, __) {},
+        saving: false,
+        error: null,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+      expect(find.byKey(const ValueKey('limit-min')), findsNothing);
     });
   });
 }

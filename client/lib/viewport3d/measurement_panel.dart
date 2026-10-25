@@ -122,7 +122,9 @@ class MeasurementPanel extends StatelessWidget {
       };
 
   String _titleFor(SelectionEntityRef entity) {
-    final bodyName = bodyNames[entity.bodyId] ?? 'Body';
+    // A pick on a placed component reads as that component's name (the assembly tree's), so picks on two parts are told apart.
+    final componentName = entity.occurrenceId.isEmpty ? null : bodyNames[entity.occurrenceId];
+    final bodyName = componentName ?? bodyNames[entity.bodyId] ?? 'Body';
     // A body-kind entity's own `id` is always 0 (no sub-shape index to show -
     // see SelectionEntityRef's own doc comment), so naming it "Body #0" would
     // be redundant noise; just the body's own name/label is the whole story.

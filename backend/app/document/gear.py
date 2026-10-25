@@ -34,7 +34,7 @@ from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
 from OCC.Core.GeomAPI import GeomAPI_Interpolate
-from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Vec
+from OCC.Core.gp import gp_Ax2, gp_Circ, gp_Pnt, gp_Vec
 from OCC.Core.TColgp import TColgp_HArray1OfPnt
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer
@@ -61,6 +61,45 @@ def _invalid_gear_parameters(detail: str) -> HTTPException:
     (`GearGeometryError`) - mirrors `app.document.sweep._invalid_path_ref`'s
     own "client-supplied-parameters problem" 422 convention."""
     return HTTPException(status_code=422, detail={"type": "invalid_gear_parameters", "detail": detail})
+
+
+def _bore_error(error_type: str, detail: str) -> HTTPException:
+    """Gears-and-motion plan M1: a `bore_diameter` the gear cannot take."""
+    return HTTPException(status_code=422, detail={"type": error_type, "detail": detail})
+
+
+def validate_bore(bore_diameter: float, root_diameter: float, *, is_internal: bool = False) -> None:
+    """`bore_diameter` 0 is no bore. Negative -> `invalid_bore`; any bore on an
+    internal gear -> `bore_on_internal_gear` (its middle is already empty); a
+    bore reaching `0.9 * root_diameter` (the smallest root diameter, so the
+    toe of a bevel gear) -> `bore_too_large`, since no rim would be left."""
+    if bore_diameter < 0:
+        raise _bore_error("invalid_bore", f"bore_diameter must not be negative, got {bore_diameter!r}")
+    if bore_diameter == 0:
+        return
+    if is_internal:
+        raise _bore_error("bore_on_internal_gear", "an internal gear is a ring already; it cannot take a bore")
+    if bore_diameter >= 0.9 * root_diameter:
+        raise _bore_error(
+            "bore_too_large",
+            f"bore_diameter ({bore_diameter!r}) must stay under 90% of the root diameter ({root_diameter!r})",
+        )
+
+
+def cut_axial_bore(
+    solid: TopoDS_Shape, basis: ResolvedPlane, bore_diameter: float, axial_start: float, axial_length: float
+) -> TopoDS_Shape:
+    """Cut a through cylinder of `bore_diameter` on `basis`'s own axis (its
+    origin and normal), from `axial_start` along the normal for `axial_length`
+    (callers pass the gear's extent plus a margin so the cut goes clean
+    through). Shared by the spur and the bevel gear."""
+    origin = basis_point_to_world(basis, 0.0, 0.0)
+    normal = basis_normal(basis)
+    start = gp_Pnt(
+        origin.X() + normal.X() * axial_start, origin.Y() + normal.Y() * axial_start, origin.Z() + normal.Z() * axial_start
+    )
+    cylinder = BRepPrimAPI_MakeCylinder(gp_Ax2(start, normal), bore_diameter / 2.0, axial_length).Shape()
+    return BRepAlgoAPI_Cut(solid, cylinder).Shape()
 
 
 def _gear_failed(detail: str) -> HTTPException:
@@ -651,10 +690,14 @@ def resolve_gear_from_bodies(
         if warning is not None:
             warnings.append(warning)
 
+    validate_bore(feature.bore_diameter, geometry.dedendum_radius * 2, is_internal=feature.is_internal)
+
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
 
     if feature.helix_angle_degrees != 0.0 or feature.herringbone:
         solid, build_warnings = _helical_or_herringbone_solid(basis, feature, geometry, feature.points_per_flank)
+        if feature.bore_diameter > 0:
+            solid = _cut_gear_bore(solid, basis, feature)
         return solid, warnings + build_warnings
 
     wire, root_corner_vertices = _gear_outline_wire(basis, geometry, feature.points_per_flank)
@@ -672,7 +715,16 @@ def resolve_gear_from_bodies(
         if fillet_warning is not None:
             warnings.append(fillet_warning)
 
+    if feature.bore_diameter > 0:
+        solid = _cut_gear_bore(solid, basis, feature)
     return solid, warnings
+
+
+def _cut_gear_bore(solid: TopoDS_Shape, basis: ResolvedPlane, feature: GearFeature) -> TopoDS_Shape:
+    """The gear spans `0..face_width` along the plane normal; the cut runs a
+    margin past both faces."""
+    margin = max(1.0, feature.face_width * 0.1)
+    return cut_axial_bore(solid, basis, feature.bore_diameter, -margin, feature.face_width + 2 * margin)
 
 
 def resolve_gear(
@@ -791,6 +843,31 @@ def coarse_gear_radius(feature: GearFeature) -> float:
         raise _invalid_gear_parameters(str(exc)) from exc
 
 
+def _gear_root_diameter(feature: GearFeature) -> float:
+    """Pure-math root diameter for the coarse path's bore check (same
+    resolved profile shift as the real build)."""
+    shift = resolve_gear_profile_shift(
+        module=feature.module,
+        tooth_count=feature.tooth_count,
+        pressure_angle_degrees=feature.pressure_angle_degrees,
+        backlash=feature.backlash,
+        profile_shift=feature.profile_shift,
+        is_internal=feature.is_internal,
+    )
+    try:
+        geometry = spur_gear_geometry(
+            module=feature.module,
+            tooth_count=feature.tooth_count,
+            pressure_angle_degrees=feature.pressure_angle_degrees,
+            profile_shift=shift,
+            backlash=feature.backlash,
+            is_internal=feature.is_internal,
+        )
+    except GearGeometryError as exc:
+        raise _invalid_gear_parameters(str(exc)) from exc
+    return geometry.dedendum_radius * 2
+
+
 def resolve_gear_coarse_from_bodies(
     feature: GearFeature,
     part: Part,
@@ -809,7 +886,11 @@ def resolve_gear_coarse_from_bodies(
         raise _invalid_gear_parameters(f"face_width must be positive, got {feature.face_width!r}")
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
     radius = coarse_gear_radius(feature)
-    return coarse_gear_solid(basis, radius, feature.face_width)
+    solid = coarse_gear_solid(basis, radius, feature.face_width)
+    if feature.bore_diameter != 0:
+        validate_bore(feature.bore_diameter, _gear_root_diameter(feature), is_internal=feature.is_internal)
+        solid = _cut_gear_bore(solid, basis, feature)
+    return solid
 
 
 def resolve_gear_coarse(

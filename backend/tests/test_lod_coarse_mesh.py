@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from tests.conftest import TEST_API_KEY
+from tests.timing import check_timing
 
 client = TestClient(app)
 client.headers.update({"X-API-Key": TEST_API_KEY})
@@ -92,7 +93,7 @@ def test_gear_tier_coarse_is_a_fast_real_cylinder_roughly_matching_the_full_gear
     start = time.perf_counter()
     coarse_mesh = _mesh(part["id"], tier="coarse")
     elapsed = time.perf_counter() - start
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     assert len(coarse_mesh) == 1
     assert coarse_mesh[0]["source"] == "coarse"
@@ -113,7 +114,7 @@ def test_gear_coarse_preview_returns_a_real_solid_and_persists_nothing():
     response = client.post(f"/document/parts/{part['id']}/gear-features/coarse-preview", json=payload)
     elapsed = time.perf_counter() - start
     assert response.status_code == 200, response.json()
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     bodies = response.json()
     assert len(bodies) == 1
@@ -170,7 +171,7 @@ def test_bevel_gear_tier_coarse_is_a_fast_real_cone_roughly_matching_the_full_ge
     start = time.perf_counter()
     coarse_mesh = _mesh(part["id"], tier="coarse")
     elapsed = time.perf_counter() - start
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     assert len(coarse_mesh) == 1
     assert coarse_mesh[0]["source"] == "coarse"
@@ -228,7 +229,7 @@ def test_bevel_pair_tier_coarse_returns_two_cones_without_a_phase_search():
     elapsed = time.perf_counter() - start
     # The single biggest win this chunk claims: no per-build meshing-phase
     # ProcessPoolExecutor search at all for the coarse pass.
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     assert len(coarse_mesh) == 2
     assert all(entry["source"] == "coarse" for entry in coarse_mesh)
@@ -248,7 +249,7 @@ def test_bevel_pair_coarse_preview_returns_two_solids_and_persists_nothing():
     response = client.post(f"/document/parts/{part['id']}/bevel-pair-features/coarse-preview", json=payload)
     elapsed = time.perf_counter() - start
     assert response.status_code == 200, response.json()
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     bodies = response.json()
     assert len(bodies) == 2
@@ -302,7 +303,7 @@ def test_gear_chain_tier_coarse_returns_one_cylinder_per_member():
     start = time.perf_counter()
     coarse_mesh = _mesh(part["id"], tier="coarse")
     elapsed = time.perf_counter() - start
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     assert len(coarse_mesh) == 2
     assert all(entry["source"] == "coarse" for entry in coarse_mesh)
@@ -357,7 +358,7 @@ def test_planetary_tier_coarse_returns_sun_ring_and_every_planet():
     start = time.perf_counter()
     coarse_mesh = _mesh(part["id"], tier="coarse")
     elapsed = time.perf_counter() - start
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     assert len(coarse_mesh) == 7
     assert all(entry["source"] == "coarse" for entry in coarse_mesh)

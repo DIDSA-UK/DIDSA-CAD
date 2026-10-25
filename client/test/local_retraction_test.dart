@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/motion/local_retraction.dart';
 import 'package:didsa_cad_client/motion/se3.dart';
+import 'support/timing.dart';
 
 const String _vectorsPath = '../docs/motion/vectors.json';
 
@@ -60,6 +61,10 @@ void main() {
     expect((constants['local_accept_distance'] as num).toDouble(), kLocalAcceptDistance);
     expect((constants['local_model_version'] as num).toInt(), kLocalModelVersion);
     expect((constants['local_pair_model_version'] as num).toInt(), kLocalPairModelVersion);
+    expect((constants['local_coupler_model_version'] as num?)?.toInt() ?? kLocalCouplerModelVersion, kLocalCouplerModelVersion);
+    expect((constants['local_limit_model_version'] as num).toInt(), kLocalLimitModelVersion);
+    expect((constants['local_limit_rounds'] as num).toInt(), kLocalLimitRounds);
+    expect((constants['local_limit_tol'] as num).toDouble(), kLocalLimitTol);
     expect(cases.length, greaterThanOrEqualTo(12));
   });
 
@@ -84,6 +89,9 @@ void main() {
       final lever = (inp['lever_arm'] as num).toDouble();
       final r = model!.frame(poses: poses, wishes: wishes, fallback: fallback, lever: lever);
       expect(r.accepted, exp['accepted'], reason: '$id accepted');
+      if (exp.containsKey('held_limits')) {
+        expect(model.heldLimits.keys.toList()..sort(), (exp['held_limits'] as List).cast<String>(), reason: '$id held limits');
+      }
       for (var i = 0; i < poses.length; i++) {
         // A raw answer that is not converged TIGHTLY (residual above 1e-9: slow, ill-conditioned convergence) is a sensitive
         // function of the rounding of the linear solve; only tightly converged ones are pinned.
@@ -133,11 +141,11 @@ void main() {
     test('a valid model parses', () => expect(LocalRetractor.tryParse(base()), isNotNull));
     test('null, another version, an unknown mate type, a missing side field or an out-of-range member -> projection only', () {
       expect(LocalRetractor.tryParse(null), isNull);
-      expect(LocalRetractor.tryParse(base()..['version'] = kLocalPairModelVersion + 1), isNull);
+      expect(LocalRetractor.tryParse(base()..['version'] = kLocalLimitModelVersion + 1), isNull);
       expect(LocalRetractor.tryParse(base()..['version'] = 1), isNull, reason: 'the pre-branch model (sign-agnostic residuals) is not evaluated');
       expect(LocalRetractor.tryParse(base()..['version'] = 2), isNull, reason: 'a version-2 model has no swing sense for an ANGLE about a hinge');
       final unknown = base();
-      ((unknown['mates'] as List).first as Map<String, dynamic>)['type'] = 'gear';
+      ((unknown['mates'] as List).first as Map<String, dynamic>)['type'] = 'weld';
       expect(LocalRetractor.tryParse(unknown), isNull);
       final missing = base();
       (((missing['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>).remove('axis_origin');
@@ -146,18 +154,67 @@ void main() {
       (((badMember['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>)['member'] = 5;
       expect(LocalRetractor.tryParse(badMember), isNull);
     });
-    test('every golden model carries the current version (4 exactly when a side has a pair) and a branch on each mate', () {
+    test('every golden model carries the current version (5 when a coupler mate is in it, else 4 exactly when a side has a pair) and a branch on each mate', () {
       for (final c in cases) {
         final model = (c['input'] as Map<String, dynamic>)['model'] as Map<String, dynamic>;
         final hasPair = (model['mates'] as List).any((m) => ((m as Map)['a'] as Map).containsKey('pair') || (m['b'] as Map).containsKey('pair'));
-        expect(model['version'], hasPair ? kLocalPairModelVersion : kLocalModelVersion, reason: c['id'] as String);
+        final hasCoupler = (model['mates'] as List).any((m) => const ['gear', 'rack_pinion', 'screw'].contains((m as Map)['type']));
+        final hasLimit = (model['mates'] as List).any((m) => const ['limit_distance', 'limit_angle'].contains((m as Map)['type']));
+        expect(model['version'], hasLimit ? kLocalLimitModelVersion : hasCoupler ? kLocalCouplerModelVersion : hasPair ? kLocalPairModelVersion : kLocalModelVersion,
+            reason: c['id'] as String);
         for (final m in model['mates'] as List) {
           final mate = m as Map<String, dynamic>;
+          if (const ['gear', 'rack_pinion', 'screw', 'limit_distance', 'limit_angle'].contains(mate['type'])) continue;
           for (final key in <String>['alignment', 'side', 'perp']) {
             expect(<int>[-1, 1], contains(mate[key]), reason: '${c['id']} $key');
           }
         }
       }
+    });
+    group('version 6 (limit mates)', () {
+      Map<String, dynamic> limitModel(String id) =>
+          jsonDecode(jsonEncode((cases.firstWhere((c) => c['id'] == id)['input'] as Map<String, dynamic>)['model'])) as Map<String, dynamic>;
+      Map<String, dynamic> limitMate(Map<String, dynamic> model) =>
+          (model['mates'] as List).cast<Map<String, dynamic>>().firstWhere((m) => (m['type'] as String).startsWith('limit_'));
+
+      test('a version-6 model parses; a limit needs an id and a range; other versions refuse limit types', () {
+        expect(LocalRetractor.tryParse(limitModel('local-limit-distance-inside')), isNotNull);
+        expect(LocalRetractor.tryParse(limitModel('local-limit-angle-inside')), isNotNull);
+        for (final id in <String>['local-limit-distance-inside', 'local-limit-angle-inside']) {
+          expect(LocalRetractor.tryParse(limitModel(id)..['version'] = kLocalCouplerModelVersion), isNull, reason: '$id as version 5');
+          final noId = limitModel(id);
+          limitMate(noId).remove('id');
+          expect(LocalRetractor.tryParse(noId), isNull, reason: '$id without an id');
+          final noRange = limitModel(id);
+          limitMate(noRange)
+            ..['min'] = null
+            ..['max'] = null;
+          expect(LocalRetractor.tryParse(noRange), isNull, reason: '$id without a range');
+        }
+        final noHinge = limitModel('local-limit-angle-inside');
+        (limitMate(noHinge)['b'] as Map<String, dynamic>).remove('hinge_direction');
+        expect(LocalRetractor.tryParse(noHinge), isNull, reason: 'an angle limit needs a hinge');
+        final noPlane = limitModel('local-limit-distance-inside');
+        for (final side in <String>['a', 'b']) {
+          (limitMate(noPlane)[side] as Map<String, dynamic>).remove('plane');
+        }
+        expect(LocalRetractor.tryParse(noPlane), isNull, reason: 'a distance limit needs a plane');
+      });
+      test('the held set is rebuilt every frame: stopped at the minimum, then released the next frame the hand pulls back', () {
+        final inp = cases.firstWhere((c) => c['id'] == 'local-limit-distance-stops-at-min')['input'] as Map<String, dynamic>;
+        final model = LocalRetractor.tryParse(inp['model'] as Map<String, dynamic>)!;
+        final lever = (inp['lever_arm'] as num).toDouble();
+        final start = [for (final p in inp['poses'] as List) _poseIn(p)];
+        final w = localScale(1, lever);
+        final far = applyDelta(start.first, <double>[40, 0, 0, 0, 0, 0]);
+        final stopped = model.retract(start, [far], w);
+        expect(model.heldLimits.keys, ['gap']);
+        expect(stopped.first.t[0], closeTo(start.first.t[0] + 15.0, 1e-6));
+        final back = applyDelta(stopped.first, <double>[-4, 0, 0, 0, 0, 0]);
+        final freed = model.retract(stopped, [back], w);
+        expect(model.heldLimits, isEmpty);
+        expect(freed.first.t[0], closeTo(stopped.first.t[0] - 4.0, 1e-6));
+      });
     });
     group('version 4 (a side with a pair)', () {
       Map<String, dynamic> pairModel() => jsonDecode(
@@ -244,7 +301,7 @@ void localBenchmark() {
       final us = sw.elapsedMicroseconds / n;
       // ignore: avoid_print
       print('local frame $id: members=${model.members} rows=${model.rows} -> ${us.toStringAsFixed(1)} us/frame (JIT, debug)');
-      expect(us, lessThan(5000), reason: 'a frame must stay far below a 16 ms budget');
+      expectWithin(us, 5000, 'local frame $id', unit: 'us'); // (a frame must stay far below a 16 ms budget; see benchmark docs)
     });
   }
 
@@ -279,7 +336,7 @@ void localBenchmark() {
       // ignore: avoid_print
       print('pair vs plain twin $id: plain ${us['plain_rows']!.toInt()} rows ${us['plain']!.toStringAsFixed(1)} us/frame, '
           'pair ${us['pair_rows']!.toInt()} rows ${us['pair']!.toStringAsFixed(1)} us/frame (JIT, debug)');
-      expect(us['pair']!, lessThan(5000));
+      expectWithin(us['pair']!, 5000, 'pair frame', unit: 'us');
     }
   });
 }

@@ -43,10 +43,25 @@ const int kLocalModelVersion = 3;
 /// backend emits 4 only for a component that has one, so every other scene keeps version 3 (and an old client keeps projecting).
 const int kLocalPairModelVersion = 4;
 
+/// Version 5 = coupler mates (gear / rack_pinion / screw): rows on each side's MOVE from its `anchor` pose (`LocalRetractor.setAnchors`
+/// replaces the anchors at every accepted anchor). Emitted by the backend only when the group holds a coupler.
+const int kLocalCouplerModelVersion = 5;
+
+/// Version 6 = limit mates (`limit_distance` / `limit_angle`): an inequality row with `min` / `max`, held at the nearest bound only while it
+/// would be violated (see [LocalRetractor.retract]). Emitted by the backend only when the group holds a limit; it may also hold couplers
+/// (anchors) and pairs, so it is a superset of 3 to 5.
+const int kLocalLimitModelVersion = 6;
+
+/// Active-set rounds of one retraction, and how far (mm / degrees) a value may sit outside its range before the limit counts as violated.
+const int kLocalLimitRounds = 3;
+const double kLocalLimitTol = 1e-6;
+
 /// Divisor floor (mm) of the mm-scaled squared DISTANCE residuals (axis-axis, point-point): `(x² - d²) / (2 max(d, floor))`.
 const double kLocalDistanceFloor = 1e-3;
 
 const Set<String> _types = <String>{'coincident', 'concentric', 'parallel', 'angle', 'distance'};
+const Set<String> _couplerTypes = <String>{'gear', 'rack_pinion', 'screw'};
+const Set<String> _limitTypes = <String>{'limit_distance', 'limit_angle'};
 
 class _Side {
   final int member;
@@ -61,7 +76,11 @@ class _Side {
   /// then (the average of the two world origins, this side's normal) and the mate adds the rows "the two normals stay parallel".
   final _Side? pair;
 
-  const _Side(this.member, this.frozenR, this.frozenT, this.geometry, [this.pair]);
+  /// Version 5 (a coupler's member side): the pose the member had when the solve started, as exported; [LocalRetractor.setAnchors] overrides it.
+  final Mat3? anchorR;
+  final List<double>? anchorT;
+
+  const _Side(this.member, this.frozenR, this.frozenT, this.geometry, [this.pair, this.anchorR, this.anchorT]);
 }
 
 class _Mate {
@@ -77,7 +96,16 @@ class _Mate {
   final _Side a;
   final _Side b;
 
-  const _Mate(this.type, this.value, this.allowRotation, this.alignment, this.side, this.perp, this.a, this.b);
+  /// A coupler's sense, +1 / -1 (`k`).
+  final double k;
+
+  /// A limit mate (version 6): its id (the active set's key) and its range (either bound may be absent).
+  final String? limitId;
+  final double? limitMin;
+  final double? limitMax;
+
+  const _Mate(this.type, this.value, this.allowRotation, this.alignment, this.side, this.perp, this.a, this.b,
+      [this.k = 1.0, this.limitId, this.limitMin, this.limitMax]);
 }
 
 double _sign(Object? o) => (o is num && o < 0) ? -1.0 : 1.0;
@@ -129,7 +157,14 @@ _Side _parseSide(Map<String, dynamic> j) {
       <String, List<double>>{'porigin': _vec(pp['origin']), 'pnormal': _vec(pp['normal'])},
     );
   }
-  return _Side((j['member'] as num).toInt(), fr, ft, geo, pair);
+  Mat3? ar;
+  List<double>? at;
+  final anchor = j['anchor'];
+  if (anchor != null) {
+    ar = Mat3(<double>[for (final row in (anchor as Map)['r'] as List) ..._vec(row)]);
+    at = _vec(anchor['t']);
+  }
+  return _Side((j['member'] as num).toInt(), fr, ft, geo, pair, ar, at);
 }
 
 class LocalFrameResult {
@@ -159,7 +194,28 @@ class LocalRetractor {
   final List<_Mate> _mates;
   final int rows;
 
+  /// The limits [retract] is holding at a bound, `{mate id: bound}`: set by the latest [retract] (reset at its start), so [residual] /
+  /// [residualInf] right after it include the held rows.
+  Map<String, double> _held = <String, double>{};
+
+  /// The limits the latest [retract] held (a copy).
+  Map<String, double> get heldLimits => Map<String, double>.of(_held);
+
+  /// Whether the model holds a limit mate.
+  bool get hasLimits => _mates.any((m) => _limitTypes.contains(m.type));
+
+  /// Version 5: the pose each member had at the latest accepted anchor (the base of a coupler's rows), by member index; null = the exported ones.
+  List<Pose>? _anchors;
+
   LocalRetractor._(this.members, this.memberIds, this._mates, this.rows);
+
+  /// Whether the model holds a coupler mate (rows measured from anchors).
+  bool get hasCoupler => _mates.any((m) => _couplerTypes.contains(m.type));
+
+  /// Re-bases a coupler's rows on [poses] (one per member, the model's member order): call it with the members' poses of every accepted anchor.
+  void setAnchors(List<Pose> poses) {
+    if (poses.length == members) _anchors = List<Pose>.of(poses);
+  }
 
   /// Parses an anchor's `constraint_model`; `null` (= keep projecting) for no model, another `version`, an unknown mate type,
   /// a side missing geometry its residual needs, or a group the local solve is not meant for (spec §4b.2).
@@ -167,14 +223,23 @@ class LocalRetractor {
     if (json == null) return null;
     try {
       final version = (json['version'] as num?)?.toInt();
-      if (version != kLocalModelVersion && version != kLocalPairModelVersion) return null;
+      if (version != kLocalModelVersion &&
+          version != kLocalPairModelVersion &&
+          version != kLocalCouplerModelVersion &&
+          version != kLocalLimitModelVersion) {
+        return null;
+      }
+      final v6 = version == kLocalLimitModelVersion;
       final ids = <String>[for (final m in json['members'] as List) m as String];
       if (ids.isEmpty || ids.length > maxMembers) return null;
       final mates = <_Mate>[];
       for (final raw in json['mates'] as List) {
         final m = raw as Map<String, dynamic>;
         final type = m['type'] as String;
-        if (!_types.contains(type)) return null;
+        final coupler = _couplerTypes.contains(type);
+        final limit = _limitTypes.contains(type);
+        if (!_types.contains(type) && !(coupler && (version == kLocalCouplerModelVersion || v6)) && !(limit && v6)) return null;
+        if (limit && (m['id'] is! String)) return null;
         final side = _Mate(
           type,
           (m['value'] as num?)?.toDouble(),
@@ -184,25 +249,186 @@ class LocalRetractor {
           _sign(m['perp']),
           _parseSide(m['a'] as Map<String, dynamic>),
           _parseSide(m['b'] as Map<String, dynamic>),
+          _sign(m['k']),
+          limit ? m['id'] as String : null,
+          limit ? (m['min'] as num?)?.toDouble() : null,
+          limit ? (m['max'] as num?)?.toDouble() : null,
         );
+        if (limit && side.limitMin == null && side.limitMax == null) return null;
+        if (coupler && !_couplerSidesOk(side)) return null;
         if (side.a.member >= ids.length || side.b.member >= ids.length) return null;
         if ((side.a.pair?.member ?? -1) >= ids.length || (side.b.pair?.member ?? -1) >= ids.length) return null;
         // `pair` belongs to version 4 only: a version-3 model that carries one is malformed, not "version 3 plus extras".
         if (version == kLocalModelVersion && (side.a.pair != null || side.b.pair != null)) return null;
+        // `anchor` and the coupler types belong to version 5 only.
+        if (version != kLocalCouplerModelVersion && !v6 && (side.a.anchorR != null || side.b.anchorR != null)) return null;
         mates.add(side);
       }
       final probe = LocalRetractor._(ids.length, ids, mates, 0);
       // A dry evaluation at identity poses: throws on a missing field, tells the row count.
       final identity = <Pose>[for (var i = 0; i < ids.length; i++) Pose(<double>[0, 0, 0], Mat3.identity())];
       final r = probe._evaluate(identity, false).$1;
-      if (r.length > kLocalMaxRows) return null;
+      if (r.length + mates.where((m) => _limitTypes.contains(m.type)).length > kLocalMaxRows) return null;
+      for (final m in mates.where((m) => _limitTypes.contains(m.type))) {
+        probe._limitRow(m, identity); // throws (-> null) for a side missing the geometry the limit measures
+      }
       return LocalRetractor._(ids.length, ids, mates, r.length);
     } catch (_) {
       return null;
     }
   }
 
+  /// A coupler's two sides each need an axis (`axis_origin`, `direction`), a member side its anchor, and a positive value.
+  static bool _couplerSidesOk(_Mate m) {
+    if (m.value == null || m.value! <= 0) return false;
+    for (final s in <_Side>[m.a, m.b]) {
+      if (!s.geometry.containsKey('axis_origin') || !s.geometry.containsKey('direction')) return false;
+      if (s.member >= 0 && s.anchorR == null) return false;
+    }
+    return true;
+  }
+
   int get n => 6 * members;
+
+  // ---- coupler rows (version 5, projector-spec §4b "gear, rack_pinion, screw") ---------------------------------------
+
+  /// The side's axis in the world at its base pose (a constant).
+  List<double> _baseAxis(_Side s) {
+    final local = s.geometry['direction']!;
+    final nn = norm3(local);
+    final u = <double>[local[0] / nn, local[1] / nn, local[2] / nn];
+    if (s.member >= 0) {
+      final r0 = _anchors != null ? _anchors![s.member].r : s.anchorR!;
+      return r0.mulVec(u);
+    }
+    return s.frozenR != null ? s.frozenR!.mulVec(u) : u;
+  }
+
+  /// `(turn, d turn, travel, d travel)` of a member side about / along the world unit [axis] since its anchor pose.
+  (double, List<double>, double, List<double>) _motion(_Side s, List<Pose> poses, List<double> axis) {
+    final zero = List<double>.filled(n, 0.0);
+    final m = s.member;
+    if (m < 0) return (0.0, zero, 0.0, zero);
+    final Mat3 r0;
+    final List<double> t0;
+    if (_anchors != null) {
+      r0 = _anchors![m].r;
+      t0 = _anchors![m].t;
+    } else {
+      r0 = s.anchorR!;
+      t0 = s.anchorT!;
+    }
+    final r = poses[m].r;
+    final t = poses[m].t;
+    final q = r * r0.transposed;
+    // unit quaternion of q, w >= 0 (same branch as the backend)
+    double w;
+    List<double> v;
+    final tr = q.trace;
+    if (tr > 0.0) {
+      final sc = math.sqrt(tr + 1.0) * 2.0;
+      w = 0.25 * sc;
+      v = <double>[(q.at(2, 1) - q.at(1, 2)) / sc, (q.at(0, 2) - q.at(2, 0)) / sc, (q.at(1, 0) - q.at(0, 1)) / sc];
+    } else {
+      var i = 0;
+      if (q.at(1, 1) > q.at(i, i)) i = 1;
+      if (q.at(2, 2) > q.at(i, i)) i = 2;
+      final j = (i + 1) % 3, k = (i + 2) % 3;
+      final sc = math.sqrt(q.at(i, i) - q.at(j, j) - q.at(k, k) + 1.0) * 2.0;
+      v = <double>[0, 0, 0];
+      v[i] = 0.25 * sc;
+      v[j] = (q.at(j, i) + q.at(i, j)) / sc;
+      v[k] = (q.at(k, i) + q.at(i, k)) / sc;
+      w = (q.at(k, j) - q.at(j, k)) / sc;
+    }
+    if (w < 0.0) {
+      w = -w;
+      v = <double>[-v[0], -v[1], -v[2]];
+    }
+    final a = v[0] * axis[0] + v[1] * axis[1] + v[2] * axis[2];
+    final vxa = cross3(v, axis);
+    final den = w * w + a * a;
+    final gturn = List<double>.of(zero);
+    for (var i = 0; i < 3; i++) {
+      gturn[6 * m + 3 + i] = (w * w * axis[i] + w * vxa[i] + a * v[i]) / den;
+    }
+    final p = s.geometry['axis_origin']!;
+    final rp = r.mulVec(p);
+    final r0p = r0.mulVec(p);
+    final travel = ((rp[0] + t[0]) - (r0p[0] + t0[0])) * axis[0] +
+        ((rp[1] + t[1]) - (r0p[1] + t0[1])) * axis[1] +
+        ((rp[2] + t[2]) - (r0p[2] + t0[2])) * axis[2];
+    final gtravel = List<double>.of(zero);
+    final qxa = cross3(rp, axis);
+    for (var i = 0; i < 3; i++) {
+      gtravel[6 * m + i] = axis[i];
+      gtravel[6 * m + 3 + i] = qxa[i];
+    }
+    return (2.0 * math.atan2(a, w), gturn, travel, gtravel);
+  }
+
+  /// `(value, gradient)` of a limit mate's measured value, mm for `limit_distance` (`(P_a - P_b) . N`, N = B's plane normal, else A's), degrees for
+  /// `limit_angle` (the signed angle from A's direction to B's about the hinge, `atan2((a x b) . h, a . b)`); the gradient is per unit of that value.
+  (double, List<double>) _limitRow(_Mate mate, List<Pose> poses) {
+    final d = _geo(mate.a, poses);
+    final f = _geo(mate.b, poses);
+    if (mate.type == 'limit_distance') {
+      _V origin(Map<String, _V> g) => g['porigin'] ?? g['point']!;
+      final normal = f.containsKey('pnormal') ? f['pnormal']! : d['pnormal']!;
+      final sg = _dot(_sub(origin(d), origin(f)), _unit(normal));
+      return (sg.v, sg.d);
+    }
+    final hinge = d['hinge_direction'] ?? f['hinge_direction']!;
+    final na = _unit(d['direction']!);
+    final nb = _unit(f['direction']!);
+    final sn = _dot(_cross(na, nb), _unit(hinge));
+    final cs = _dot(na, nb);
+    final den = sn.v * sn.v + cs.v * cs.v;
+    final deg = 180.0 / math.pi;
+    return (
+      math.atan2(sn.v, cs.v) * deg,
+      <double>[for (var c = 0; c < n; c++) (cs.v * sn.d[c] - sn.v * cs.d[c]) / den * deg],
+    );
+  }
+
+  /// `{mate id: bound}` of the limits not yet held whose range [poses] leave.
+  Map<String, double> _violated(List<Pose> poses, Map<String, double> held) {
+    final out = <String, double>{};
+    for (final m in _mates) {
+      if (!_limitTypes.contains(m.type) || held.containsKey(m.limitId)) continue;
+      final value = _limitRow(m, poses).$1;
+      if (m.limitMax != null && value > m.limitMax! + kLocalLimitTol) {
+        out[m.limitId!] = m.limitMax!;
+      } else if (m.limitMin != null && value < m.limitMin! - kLocalLimitTol) {
+        out[m.limitId!] = m.limitMin!;
+      }
+    }
+    return out;
+  }
+
+  /// The one row of a coupler mate: `(value, gradient)`.
+  (double, List<double>) _couplerRow(_Mate mate, List<Pose> poses) {
+    final axisA = _baseAxis(mate.a);
+    final value = mate.value!;
+    List<double> lin(List<double> x, double ca, List<double> y) => <double>[for (var i = 0; i < n; i++) x[i] - ca * y[i]];
+    switch (mate.type) {
+      case 'gear':
+        final a = _motion(mate.a, poses, axisA);
+        final b = _motion(mate.b, poses, _baseAxis(mate.b));
+        return (b.$1 - mate.k * value * a.$1, lin(b.$2, mate.k * value, a.$2));
+      case 'rack_pinion':
+        final a = _motion(mate.a, poses, axisA);
+        final b = _motion(mate.b, poses, _baseAxis(mate.b));
+        final c = mate.k * value / (2.0 * math.pi);
+        return (b.$3 - c * a.$1, lin(b.$4, c, a.$2));
+      default: // screw: everything about / along the screw's (A's) axis
+        final a = _motion(mate.a, poses, axisA);
+        final b = _motion(mate.b, poses, axisA);
+        final c = mate.k * value / (2.0 * math.pi);
+        final grad = <double>[for (var i = 0; i < n; i++) (b.$4[i] - a.$4[i]) - c * (b.$2[i] - a.$2[i])];
+        return ((b.$3 - a.$3) - c * (b.$1 - a.$1), grad);
+    }
+  }
 
   // ---- residual + analytic Jacobian ---------------------------------------------------------------------------------
 
@@ -337,6 +563,20 @@ class LocalRetractor {
     }
 
     for (final mate in _mates) {
+      if (_limitTypes.contains(mate.type)) {
+        final bound = _held[mate.limitId];
+        if (bound != null) {
+          final (value, gradient) = _limitRow(mate, poses);
+          final unit = mate.type == 'limit_angle' ? math.pi / 180.0 : 1.0;
+          add((value - bound) * unit, <double>[for (final x in gradient) x * unit]);
+        }
+        continue;
+      }
+      if (_couplerTypes.contains(mate.type)) {
+        final (value, gradient) = _couplerRow(mate, poses);
+        add(value, gradient);
+        continue;
+      }
       final d = _geo(mate.a, poses);
       final f = _geo(mate.b, poses);
       final s = mate.alignment;
@@ -462,8 +702,25 @@ class LocalRetractor {
 
   /// Sequential nearest-point retraction (spec §4b): `kLocalIterations` trust-region steps towards [wishes] then
   /// [polish] constraint-only steps. [w] = per-coordinate metric (see [localScale]).
+  ///
+  /// With limit mates (version 6) it is the active-set rounds: retract with none held, hold every limit the answer leaves at its nearest bound
+  /// (an equality row) and retract again from the SAME start and wish, at most [kLocalLimitRounds] times. Nothing is carried to the next call
+  /// (a limit is released the moment the wish no longer pushes past it); [heldLimits] says which were held.
   List<Pose> retract(List<Pose> poses, List<Pose> wishes, List<double> w,
       {int iterations = kLocalIterations, int polish = kLocalPolish}) {
+    _held = <String, double>{};
+    var got = _retractOnce(poses, wishes, w, iterations, polish);
+    if (!hasLimits) return got;
+    for (var round = 0; round < kLocalLimitRounds; round++) {
+      final violated = _violated(got, _held);
+      if (violated.isEmpty) break;
+      _held = <String, double>{..._held, ...violated};
+      got = _retractOnce(poses, wishes, w, iterations, polish);
+    }
+    return got;
+  }
+
+  List<Pose> _retractOnce(List<Pose> poses, List<Pose> wishes, List<double> w, int iterations, int polish) {
     var cur = List<Pose>.of(poses);
     for (var it = 0; it < iterations; it++) {
       final (r, jac) = _evaluate(cur, true);
@@ -527,7 +784,9 @@ class LocalRetractor {
     final got = retract(poses, wishes, w, iterations: localIterations(wishStep));
     final res = residualInf(got);
     final dist = weightedDist(got[0], fallback[0], lever);
-    final ok = res <= kLocalAcceptResidual && dist <= kLocalAcceptDistance * math.max(lever, wishStep);
+    // A held limit is a stop the projector (the fallback) knows nothing of - it would show the part going on through it - so the distance guard
+    // cannot judge the answer: a converged result with a limit held is accepted as it is.
+    final ok = res <= kLocalAcceptResidual && (_held.isNotEmpty || dist <= kLocalAcceptDistance * math.max(lever, wishStep));
     return LocalFrameResult(
       accepted: ok,
       poses: ok ? got : fallback,

@@ -3647,6 +3647,11 @@ class _PartScreenState extends State<PartScreen> {
   String _mateType = kMateTypes.first;
   double? _mateValue;
 
+  /// A limit mate's typed range and the measured value of the picked pair now (the preview's `limit_value`).
+  double? _mateLimitMin;
+  double? _mateLimitMax;
+  double? _mateLimitCurrent;
+
   /// The Width flow (`docs/width-mate-plan.md`, [kWidthMateType]): the four picks, the optional offset from the centre, and the
   /// error of a pair whose faces are not parallel. [_selectedEntities] mirrors the picks (so the faces are highlighted while
   /// picking); nothing here is saved, drawn or sent until Confirm, and Cancel drops it all.
@@ -3792,10 +3797,18 @@ class _PartScreenState extends State<PartScreen> {
   MateBranchValuesDto? _mateResolved;
   List<MateSolveAlternativeDto> _mateAlternatives = const [];
 
+  /// A gear / rack and pinion / screw mate being authored: the sense the backend chose by default (the "Reverse" / "Left-hand" control
+  /// is relative to it) and the value it would take when the field is left empty.
+  bool? _mateSenseBase;
+  double? _mateAutoValue;
+
   void _resetMateBranchChoice() {
     _mateAlignment = null;
     _mateSecondaryFlip = null;
     _mateGeometryKey = null;
+    _mateSenseBase = null;
+    _mateAutoValue = null;
+    _mateLimitCurrent = null;
   }
 
   /// The values the ghost shows, restricted to the controls the geometry has.
@@ -3811,6 +3824,7 @@ class _PartScreenState extends State<PartScreen> {
         resolvedAlignment: _mateResolved?.alignment,
         secondaryFlip: _mateSecondaryFlip,
         resolvedSecondaryFlip: _mateResolved?.secondaryFlip,
+        senseBase: isCouplerMateType(_mateType) ? _mateSenseBase : null,
         alternativeCount: _mateAlternatives.length,
         alternativeIndex: mateAlternativeIndex(_mateAlternatives, _mateEffectiveAlignment, _mateEffectiveSecondaryFlip),
         onAlignmentChanged: (alignment) {
@@ -3837,6 +3851,12 @@ class _PartScreenState extends State<PartScreen> {
     _mateResolved = result?.resolved;
     _mateAlternatives = result?.alternatives ?? const [];
     _mateBranchChanges = result?.branchChanges ?? const [];
+    if (isCouplerMateType(_mateType)) {
+      // The sense the backend picks when the user has not chosen one is what Reverse / Left-hand is measured from.
+      if (_mateSecondaryFlip == null && result?.resolved?.secondaryFlip != null) _mateSenseBase = result!.resolved!.secondaryFlip;
+      _mateAutoValue = result?.couplerValue;
+    }
+    _mateLimitCurrent = isLimitMateType(_mateType) ? result?.limitValue : null;
     _mateNotice = result == null
         ? null
         : mateBranchNotice(result.branchChanges, _mates, blockedBy: result.blockedBy, conflicting: result.conflicting);
@@ -4406,6 +4426,8 @@ class _PartScreenState extends State<PartScreen> {
       _selectedEntities = {};
       _mateType = kMateTypes.first;
       _mateValue = null;
+      _mateLimitMin = null;
+      _mateLimitMax = null;
       _resetWidth();
       _resetMateBranchChoice();
       _mateAllowRotation = true;
@@ -4539,6 +4561,8 @@ class _PartScreenState extends State<PartScreen> {
         movement: _mateMovement,
         alignment: _mateAlignment,
         secondaryFlip: _mateSecondaryFlip,
+        limitMin: isLimitMateType(_mateType) ? _mateLimitMin : null,
+        limitMax: isLimitMateType(_mateType) ? _mateLimitMax : null,
       );
       if (!mounted || token != _matePreviewRequestToken) return;
       setState(() {
@@ -4593,9 +4617,11 @@ class _PartScreenState extends State<PartScreen> {
         allowRotation: _mateAllowRotation,
         alignment: _mateAlignment,
         secondaryFlip: _mateSecondaryFlip,
-        solve: drivenOccurrenceId == null ? null : _mateMovement,
+        solve: drivenOccurrenceId == null || isLimitMateType(_mateType) ? null : _mateMovement,
         solveOccurrenceId: drivenOccurrenceId,
         branchChanges: _mateBranchChanges,
+        limitMin: isLimitMateType(_mateType) ? _mateLimitMin : null,
+        limitMax: isLimitMateType(_mateType) ? _mateLimitMax : null,
       );
       if (!mounted) return;
       setState(() {
@@ -11854,6 +11880,7 @@ class _PartScreenState extends State<PartScreen> {
         if (commit.committed) {
           _applyConstrainedCommit(grabbedOccurrence, commit);
           await _refreshAssemblyMesh();
+          if (session.atLimit && mounted) _showSnack('Stopped at its limit.');
         } else if (mounted) {
           _showSnack("Couldn't keep that move - nothing was changed. ${commit.message ?? ''}".trim());
         }
@@ -11882,7 +11909,12 @@ class _PartScreenState extends State<PartScreen> {
       if (commit.committed) {
         _applyConstrainedCommit(occurrence, commit);
         await _refreshAssemblyMesh();
-        final notice = constrainedDragNotice(commit.response);
+        var notice = constrainedDragNotice(commit.response);
+        if (notice == null) {
+          // The wish was typed (Move / Rotate): say so when the mates let only part of it through.
+          final grabbed = commit.poses[occurrence.id];
+          if (grabbed != null) notice = constrainedShortfallNotice(poseOfDto(_localOfWorld(newWorldTransform)), grabbed);
+        }
         if (notice != null && mounted) _showSnack(notice);
       } else if (mounted) {
         _showSnack("Can't follow that move - the mates don't allow it. Nothing was changed.");
@@ -22710,6 +22742,9 @@ class _PartScreenState extends State<PartScreen> {
     final focusPartId = _focusStack?.current ?? part?.id;
     if (part == null || focusPartId == null) return;
     double? value = mate.value;
+    double? limitMin = mate.limitMin;
+    double? limitMax = mate.limitMax;
+    final isLimit = isLimitMateType(mate.type);
     bool allowRotation = mate.allowRotation;
     // Phase 2b: earlier mates the edit needs on their other branch, as the live preview last reported them.
     List<BranchChangeDto> branchChanges = const [];
@@ -22730,9 +22765,9 @@ class _PartScreenState extends State<PartScreen> {
     Future<void> refreshPreview() async {
       final token = ++_matePreviewRequestToken;
       final drivenId = drivenOccurrenceId;
-      if (drivenId == null || (mateTypeNeedsValue(mate.type) && value == null)) {
+      if (isLimit || drivenId == null || (mateTypeNeedsValue(mate.type) && value == null)) {
         if (mounted) setState(() => _matePreviewMembers = const []);
-        return;
+        return; // a limit moves nothing, so there is no ghost to show
       }
       void remember(MateSolvePreviewDto? result) {
         controls = result?.controls ?? const [];
@@ -22782,14 +22817,23 @@ class _PartScreenState extends State<PartScreen> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              if (mateTypeNeedsValue(mate.type))
+              if (isLimit)
+                LimitFields(
+                  type: mate.type,
+                  initialMin: limitMin,
+                  initialMax: limitMax,
+                  current: mate.limitValue,
+                  onChanged: (min, max) => setDialogState(() {
+                    limitMin = min;
+                    limitMax = max;
+                  }),
+                ),
+              if (mateTypeHasValueField(mate.type))
                 TextFormField(
                   initialValue: value?.toString() ?? '',
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   decoration: InputDecoration(
-                    labelText: mate.type == 'angle'
-                        ? 'Angle (degrees)'
-                        : (isWidthMate(mate) ? 'Offset from centre (mm)' : 'Distance (mm)'),
+                    labelText: isWidthMate(mate) ? 'Offset from centre (mm)' : mateValueLabel(mate.type),
                   ),
                   autovalidateMode: AutovalidateMode.always,
                   validator: (text) => mateValueError(mate.type, text ?? ''),
@@ -22806,6 +22850,7 @@ class _PartScreenState extends State<PartScreen> {
                 resolvedAlignment: resolved?.alignment,
                 secondaryFlip: secondaryFlip,
                 resolvedSecondaryFlip: resolved?.secondaryFlip,
+                senseBase: isCouplerMateType(mate.type) ? mate.secondaryFlip : null,
                 alternativeCount: alternatives.length,
                 alternativeIndex: mateAlternativeIndex(
                   alternatives,
@@ -22868,7 +22913,7 @@ class _PartScreenState extends State<PartScreen> {
           actions: [
             TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
             FilledButton(
-              onPressed: (mateTypeNeedsValue(mate.type) && value == null)
+              onPressed: (mateTypeNeedsValue(mate.type) && value == null) || (isLimit && !mateLimitValid(mate.type, limitMin, limitMax))
                   ? null
                   : () => Navigator.of(context).pop(true),
               child: const Text('Save'),
@@ -22892,9 +22937,12 @@ class _PartScreenState extends State<PartScreen> {
         allowRotation: allowRotation,
         alignment: alignmentTouched ? alignment : null,
         secondaryFlip: flipTouched ? secondaryFlip : null,
-        solve: drivenOccurrenceId == null ? null : _mateMovement,
+        solve: drivenOccurrenceId == null || isLimit ? null : _mateMovement,
         solveOccurrenceId: drivenOccurrenceId,
         branchChanges: branchChanges,
+        setLimitRange: isLimit,
+        limitMin: limitMin,
+        limitMax: limitMax,
       );
       if (!mounted) return;
       await _refreshAssemblyTree();
@@ -24469,6 +24517,7 @@ class _PartScreenState extends State<PartScreen> {
                       mateType: _mateType,
                       value: _mateValue,
                       branchControls: _mateBranchControls(),
+                      autoValue: _mateAutoValue,
                       allowRotation: _mateAllowRotation,
                       onMateTypeChanged: (type) {
                         setState(() {
@@ -24478,6 +24527,13 @@ class _PartScreenState extends State<PartScreen> {
                             _mateType = type;
                             _resetWidth();
                             _mateValue = null;
+                          }
+                          // A distance typed for one type is not a ratio, a travel or a lead.
+                          if (isCouplerMateType(type) || isCouplerMateType(_mateType)) _mateValue = null;
+                          if (isLimitMateType(type) != isLimitMateType(_mateType) || type != _mateType) {
+                            _mateLimitMin = null;
+                            _mateLimitMax = null;
+                            _mateLimitCurrent = null;
                           }
                           _mateType = type;
                         });
@@ -24495,6 +24551,16 @@ class _PartScreenState extends State<PartScreen> {
                         setState(() => _mateValue = value);
                         unawaited(_scheduleMatePreview());
                       },
+                      limitMin: _mateLimitMin,
+                      limitMax: _mateLimitMax,
+                      limitCurrent: _mateLimitCurrent,
+                      onLimitChanged: (min, max) {
+                        setState(() {
+                          _mateLimitMin = min;
+                          _mateLimitMax = max;
+                        });
+                        unawaited(_scheduleMatePreview());
+                      },
                       onAllowRotationChanged: (allow) {
                         setState(() => _mateAllowRotation = allow);
                         unawaited(_scheduleMatePreview());
@@ -24507,7 +24573,9 @@ class _PartScreenState extends State<PartScreen> {
                       saving: _mateSaving,
                       error: _mateError,
                       notice: _mateNotice,
-                      onConfirm: _matePicksComplete && (!mateTypeNeedsValue(_mateType) || _mateValue != null)
+                      onConfirm: _matePicksComplete &&
+                              (!mateTypeNeedsValue(_mateType) || _mateValue != null) &&
+                              (!isLimitMateType(_mateType) || mateLimitValid(_mateType, _mateLimitMin, _mateLimitMax))
                           ? _confirmMate
                           : null,
                       onCancel: _closeMate,

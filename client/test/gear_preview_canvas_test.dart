@@ -16,6 +16,7 @@ import 'package:didsa_cad_client/gear/gear_preview_canvas.dart';
 /// click-drag pan, since `InteractiveViewer` handles both gestures through
 /// the same recognizer).
 void main() {
+  _boreTest();
   testWidgets('shows pitch diameter for a gear preview', (tester) async {
     final preview = GearPreviewDto.fromJson({
       'gear_kind': 'external',
@@ -177,4 +178,51 @@ double _verticalWhiteCoverageMass(ByteData byteData, int width, int height, int 
     if (coverage > 0) mass += coverage;
   }
   return mass;
+}
+
+/// A bore typed on the gear screen is drawn in the preview (it was only in the 3D part after Create).
+void _boreTest() {
+  testWidgets('draws the bore circle when a bore diameter is given', (tester) async {
+    final preview = GearPreviewDto.fromJson({
+      'gear_kind': 'external',
+      'outline_points': [
+        [10.0, 10.0],
+        [-10.0, 10.0],
+        [-10.0, -10.0],
+        [10.0, -10.0],
+      ],
+      'pitch_radius': 10.0,
+      'warnings': [],
+    });
+    final boundaryKey = GlobalKey();
+    Widget app(double bore) => MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 300,
+              height: 300,
+              child: RepaintBoundary(
+                key: boundaryKey,
+                child: GearPreviewCanvas(preview: preview, showReferenceOverlay: false, boreDiameter: bore),
+              ),
+            ),
+          ),
+        );
+    Future<int> whitePixels() async => (await tester.runAsync(() async {
+          final boundary = boundaryKey.currentContext!.findRenderObject() as RenderRepaintBoundary;
+          final image = await boundary.toImage();
+          final data = (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+          var count = 0;
+          for (var i = 0; i < data.lengthInBytes; i += 4) {
+            if (data.getUint8(i) > 200 && data.getUint8(i + 1) > 200 && data.getUint8(i + 2) > 200) count++;
+          }
+          return count;
+        }))!;
+    await tester.pumpWidget(app(0));
+    await tester.pumpAndSettle();
+    final solid = await whitePixels();
+    await tester.pumpWidget(app(8));
+    await tester.pumpAndSettle();
+    final bored = await whitePixels();
+    expect(bored, greaterThan(solid + 50), reason: 'the bore circle adds outline pixels inside the teeth');
+  });
 }

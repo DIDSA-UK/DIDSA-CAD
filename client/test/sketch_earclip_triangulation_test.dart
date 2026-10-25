@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'support/timing.dart';
 
 double _polygonArea(List<(double, double)> polygon) {
   var area = 0.0;
@@ -65,7 +66,7 @@ void main() {
 
     expect(indices.length, (n - 2) * 3);
     expect(_triangulatedArea(polygon, indices), closeTo(_polygonArea(polygon), 1e-6));
-    expect(stopwatch.elapsedMilliseconds, lessThan(2000));
+    expectWithin(stopwatch.elapsedMilliseconds, 2000, 'ear clip, 64-gon');
   });
 
   test('degenerate input (fewer than 3 points) returns empty rather than throwing', () {
@@ -81,7 +82,7 @@ void main() {
     stopwatch.stop();
     // The real assertion: this terminates at all (proof against the
     // dashedSegments-class of bug), not any particular triangle count.
-    expect(stopwatch.elapsedMilliseconds, lessThan(2000));
+    expectWithin(stopwatch.elapsedMilliseconds, 2000, 'ear clip, bowtie');
     expect(indices.length % 3, 0);
   });
 }

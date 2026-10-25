@@ -282,3 +282,12 @@ def test_table_top_the_other_axis_offers_the_other_flip_and_together_they_centre
     pose = _pose(root, tt.PLATE)
     assert np.allclose(pose["translation"], tt.CORRECT_PLATE_TRANSLATION, atol=1e-5)
     assert all(m["secondary_flip"] is True for m in _mates(root) if m["type"] == "distance" and m["id"] in (near_y["id"], near_z["id"]))
+
+
+def test_a_search_that_is_out_of_time_still_gets_its_minimum_solves(monkeypatch):
+    """A cold server or a slow runner must not end the search before it has tried a change (CI failed on this once the first solve got slow)."""
+    import app.document.assembly_group as ag
+
+    monkeypatch.setattr(ag, "BRANCH_SEARCH_SECONDS", 0.0)
+    test_table_top_the_other_axis_offers_the_other_flip_and_together_they_centre_the_plate()
+

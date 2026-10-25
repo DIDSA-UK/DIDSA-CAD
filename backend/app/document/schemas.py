@@ -1826,6 +1826,8 @@ class GearFeatureCreate(BaseModel):
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
     points_per_flank: int = 12
+    # Through bore (mm) on the gear's axis, `0.0` = none; see `GearFeature.bore_diameter`.
+    bore_diameter: float = 0.0
 
 
 class GearFeatureUpdate(BaseModel):
@@ -1851,6 +1853,7 @@ class GearFeatureUpdate(BaseModel):
     helix_angle_degrees: float | None = None
     herringbone: bool | None = None
     points_per_flank: int | None = None
+    bore_diameter: float | None = None
 
 
 class GearFeatureResponse(FeatureResponseBase):
@@ -1871,6 +1874,7 @@ class GearFeatureResponse(FeatureResponseBase):
     helix_angle_degrees: float = 0.0
     herringbone: bool = False
     points_per_flank: int = 12
+    bore_diameter: float = 0.0
     # The *resolved* profile_shift (app.document.gear.resolve_gear_profile_
     # shift) - identical to profile_shift above when it's an explicit
     # value, but the actual computed number (not None) whenever that field
@@ -1977,6 +1981,8 @@ class BevelGearFeatureCreate(BaseModel):
     # docstring for the "0.0 is a literal no-op" contract.
     spiral_angle_degrees: float = 0.0
     spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
+    # Through bore (mm) on the cone axis, `0.0` = none; see `BevelGearFeature.bore_diameter`.
+    bore_diameter: float = 0.0
 
 
 class BevelGearFeatureUpdate(BaseModel):
@@ -1996,6 +2002,7 @@ class BevelGearFeatureUpdate(BaseModel):
     points_per_flank: int | None = None
     spiral_angle_degrees: float | None = None
     spiral_hand: SpiralBevelHand | None = None
+    bore_diameter: float | None = None
 
 
 class BevelGearFeatureResponse(FeatureResponseBase):
@@ -2014,6 +2021,7 @@ class BevelGearFeatureResponse(FeatureResponseBase):
     points_per_flank: int = 12
     spiral_angle_degrees: float = 0.0
     spiral_hand: SpiralBevelHand = SpiralBevelHand.RIGHT
+    bore_diameter: float = 0.0
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # BevelGearFeature.
@@ -3472,7 +3480,7 @@ class MateResponse(BaseModel):
     models.Mate` itself, the Assembly tree's own Mates list."""
 
     id: str
-    type: Literal["coincident", "concentric", "parallel", "distance", "angle"]
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw", "limit_distance", "limit_angle"]
     references: list[MateEntityRefResponse]
     value: float | None = None
     flipped: bool = False
@@ -3487,6 +3495,11 @@ class MateResponse(BaseModel):
     alignment: Literal["aligned", "anti_aligned"] | None = None
     secondary_flip: bool | None = None
     branch_source: Literal["auto", "user"] = "auto"
+    # Limit mates only (mm, or degrees for `limit_angle`): the measured value stays within [limit_min, limit_max]; either may be null.
+    limit_min: float | None = None
+    limit_max: float | None = None
+    # Limit mates only: the measured value at the stored poses (mm / degrees), so a range can be typed against where the parts are now.
+    limit_value: float | None = None
 
 
 class MateCreate(BaseModel):
@@ -3502,7 +3515,7 @@ class MateCreate(BaseModel):
     (payload shape here, referential/geometric validity in the router/
     resolver, this codebase's standing split)."""
 
-    type: Literal["coincident", "concentric", "parallel", "distance", "angle"]
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw", "limit_distance", "limit_angle"]
     references: list[MateEntityRefResponse]
     value: float | None = None
     flipped: bool = False
@@ -3519,6 +3532,8 @@ class MateCreate(BaseModel):
     # Earlier mates to move to their other branch - exactly the `branch_changes` of the preview the user confirmed. Only read
     # by `POST /mates?solve=` (never by the preview, which proposes them).
     branch_changes: list[BranchChangeRequest] = []
+    limit_min: float | None = None  # limit mates only, see `MateResponse`
+    limit_max: float | None = None
 
 
 class MateUpdate(BaseModel):
@@ -3542,6 +3557,9 @@ class MateUpdate(BaseModel):
     secondary_flip: bool | None = None
     # As `MateCreate.branch_changes`: earlier mates the user confirmed moving so this edit can be met.
     branch_changes: list[BranchChangeRequest] = []
+    # Limit mates only: sent as a number they set the bound, sent as null they remove it (the endpoint reads `model_fields_set`).
+    limit_min: float | None = None
+    limit_max: float | None = None
 
 
 class MateMotionReferencePose(BaseModel):
@@ -3682,6 +3700,10 @@ class MateSolvePreviewResponse(BaseModel):
     # Every combination of the new mate's controls that converges (the other mates keep their persisted branches), nearest to the
     # start first: "Next solution" steps through these. Empty when the mate has no controls or nothing else converges.
     alternatives: list[MateSolveAlternative] = []
+    # A gear / rack and pinion / screw mate: the ratio, travel per turn or lead it would be made with (the typed one, or the one read
+    # from the parts' gear features); null for every other mate.
+    coupler_value: float | None = None
+    limit_value: float | None = None  # a limit mate preview: the measured value at the current poses
 
 
 class ComponentPatternAxisSchema(BaseModel):

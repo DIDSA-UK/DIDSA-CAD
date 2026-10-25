@@ -16,6 +16,7 @@
 /// current model projects the same wish to.
 library;
 
+import 'dart:math' as math;
 import 'dart:async';
 
 import '../api/document_api_client.dart';
@@ -95,6 +96,10 @@ class ConstrainedDragSession {
   final ReanchorScheduler _sched;
   MotionBlender _blender = MotionBlender(1);
   LocalRetractor? _local;
+
+  /// The last local frame held a limit mate at its bound (the part is stopped by a limit; reset every frame).
+  bool _atLimit = false;
+  bool get atLimit => _atLimit;
 
   /// Sent on every request until the first accepted anchor, afterwards the echoed `chart.lever_arm`. 0 = unknown (omitted).
   double _lever;
@@ -204,6 +209,7 @@ class ConstrainedDragSession {
       lever: _lever,
     );
     counters.recordLocal(accepted: result.accepted, residualInf: result.residualInf);
+    _atLimit = result.accepted && local.heldLimits.isNotEmpty;
     return result.accepted ? result.poses : null;
   }
 
@@ -339,6 +345,8 @@ class ConstrainedDragSession {
     } else if (_local != null && !_sameIds(_local!.memberIds, ids)) {
       _local = null;
     }
+    // A coupler's rows are relative to the accepted pose (the twist is only good within ~170 degrees): re-base them at every anchor.
+    _local?.setAnchors(model.refs);
     _sched.onAccepted(maxStep: r.quality.maxStep, sigmaGap: r.quality.sigmaGap);
     counters.recordAccepted();
     _dirty = true;
@@ -430,4 +438,16 @@ String? constrainedDragNotice(MateMotionDto? r) {
   if (r.dof == 0) return "Fully constrained by its mates - it can't be moved.";
   if (r.members.isNotEmpty && r.members.first.mobility == 0) return 'Its mates lock this component in place.';
   return null;
+}
+
+/// A typed move or turn (the Move / Rotate panel) that the mates only let through in part: the stored pose of the grabbed component against the pose that
+/// was asked for. `null` when it got there (within 0.5 mm and 0.5 degrees), else a line saying so, so "turn it 90 degrees, it turned 31" is not silent.
+String? constrainedShortfallNotice(Pose wish, Pose result) {
+  final dx = wish.t[0] - result.t[0], dy = wish.t[1] - result.t[1], dz = wish.t[2] - result.t[2];
+  final distance = math.sqrt(dx * dx + dy * dy + dz * dz);
+  final relative = wish.r.transposed * result.r;
+  final cosine = ((relative.trace - 1.0) / 2.0).clamp(-1.0, 1.0);
+  final degrees = math.acos(cosine) * 180.0 / math.pi;
+  if (distance <= 0.5 && degrees <= 0.5) return null;
+  return 'Moved as far as its mates allow: it cannot go exactly there (${distance.toStringAsFixed(1)} mm and ${degrees.toStringAsFixed(1)}\u00b0 short).';
 }

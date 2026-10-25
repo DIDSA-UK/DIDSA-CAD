@@ -115,6 +115,7 @@ from app.document.bevel_math import (
 )
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import basis_normal, compute_part_bodies
+from app.document.gear import cut_axial_bore, validate_bore
 from app.document.models import BevelGearFeature, Part, ResolvedPlane, SpiralBevelHand
 
 
@@ -1432,6 +1433,21 @@ def _assemble_gear_solid(
 # ---------------------------------------------------------------------------
 
 
+def _toe_root_diameter(geometry: BevelGearGeometry) -> float:
+    """Root diameter at the inner (toe) end, where the gear is slimmest."""
+    return 2.0 * geometry.inner_cone_distance * math.sin(geometry.root_cone_angle)
+
+
+def _cut_bevel_bore(
+    solid: TopoDS_Shape, basis: ResolvedPlane, geometry: BevelGearGeometry, bore_diameter: float
+) -> TopoDS_Shape:
+    """Through bore on the cone axis. The gear lies between the apex and
+    `cone_distance * cos(pitch_cone_angle)` along it; cut a margin past both."""
+    axial_height = geometry.cone_distance * math.cos(geometry.pitch_cone_angle)
+    margin = max(1.0, axial_height * 0.1)
+    return cut_axial_bore(solid, basis, bore_diameter, -margin, axial_height + 2 * margin)
+
+
 def resolve_bevel_gear_from_bodies(
     feature: BevelGearFeature,
     part: Part,
@@ -1484,6 +1500,7 @@ def resolve_bevel_gear_from_bodies(
     if cost_warning:
         warnings.append(cost_warning)
 
+    validate_bore(feature.bore_diameter, _toe_root_diameter(geometry))
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
     try:
         solid, assembly_warnings = _assemble_gear_solid(
@@ -1511,6 +1528,8 @@ def resolve_bevel_gear_from_bodies(
     # fallback this module surfaces (immediately, obviously wrong on
     # inspection, unlike an advisory margin warning), so it belongs first,
     # not buried after warnings the user is far more likely to shrug off.
+    if feature.bore_diameter > 0:
+        solid = _cut_bevel_bore(solid, basis, geometry, feature.bore_diameter)
     return solid, assembly_warnings + warnings
 
 
@@ -1597,9 +1616,13 @@ def resolve_bevel_gear_coarse_from_bodies(
         raise _invalid_bevel_parameters(f"face_width must be positive, got {feature.face_width!r}")
     basis = resolve_plane_ref(part, bodies, feature.plane_ref, excluded_feature_ids)
     try:
-        return coarse_bevel_cone_solid(basis, geometry)
+        solid = coarse_bevel_cone_solid(basis, geometry)
     except GearGeometryError as exc:
         raise _invalid_bevel_parameters(str(exc)) from exc
+    if feature.bore_diameter != 0:
+        validate_bore(feature.bore_diameter, _toe_root_diameter(geometry))
+        solid = _cut_bevel_bore(solid, basis, geometry, feature.bore_diameter)
+    return solid
 
 
 def resolve_bevel_gear_coarse(

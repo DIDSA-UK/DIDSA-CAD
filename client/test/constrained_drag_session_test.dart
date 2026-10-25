@@ -24,9 +24,13 @@ class _Clock {
 /// grabbed occurrence `B`, optionally with a follower `D` that rides along in x (rank-1 coupling) - the basis
 /// rows are in the response's equal-weight metric ([1,1,1,L,L,L] per member).
 class _FakeBackend {
-  _FakeBackend({this.withFollower = false});
+  _FakeBackend({this.withFollower = false, this.withLimit = false});
 
   final bool withFollower;
+
+  /// A slider with a limit (version-6 model): B is a block on a plate and a guide that can only slide along x, 20 mm short of a stop,
+  /// the gap limited to [5, 30] mm - so x may go -10 .. +15.
+  final bool withLimit;
   Map<String, List<double>> stored = <String, List<double>>{
     'B': [0, 0, 0],
     'D': [30, 0, 0],
@@ -88,11 +92,12 @@ class _FakeBackend {
     }
 
     final basis = <List<double>>[
-      if (withFollower) row([0, 6], [1 / 1.4142135623730951, 1 / 1.4142135623730951]) else row([0], [1]),
-      row([1], [1]),
-      row([5], [1 / _lever]),
+      if (withLimit) row([0], [1]) else if (withFollower) row([0, 6], [1 / 1.4142135623730951, 1 / 1.4142135623730951]) else row([0], [1]),
+      if (!withLimit) row([1], [1]),
+      if (!withLimit) row([5], [1 / _lever]),
     ];
     return MateMotionDto(
+      constraintModel: withLimit && includeConstraintModel ? _sliderLimitModel : null,
       converged: true,
       dof: basis.length,
       grounded: true,
@@ -104,6 +109,42 @@ class _FakeBackend {
     );
   }
 }
+
+Map<String, dynamic> _plane(int member, List<double> origin, List<double> normal, {bool frozen = false}) => {
+      'member': member,
+      'point': origin,
+      'direction': normal,
+      'plane': {'origin': origin, 'normal': normal},
+      if (frozen)
+        'frozen': {
+          'r': [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+          ],
+          't': [0.0, 0.0, 0.0],
+        },
+    };
+
+Map<String, dynamic> _flatMate(Map<String, dynamic> a, Map<String, dynamic> b) =>
+    {'type': 'coincident', 'value': null, 'allow_rotation': true, 'alignment': -1, 'side': 1, 'perp': 1, 'a': a, 'b': b};
+
+final Map<String, dynamic> _sliderLimitModel = {
+  'version': 6,
+  'members': ['B'],
+  'mates': [
+    _flatMate(_plane(0, [0.0, 0.0, 0.0], [0.0, 0.0, -1.0]), _plane(-1, [0.0, 0.0, 0.0], [0.0, 0.0, 1.0], frozen: true)),
+    _flatMate(_plane(0, [0.0, 10.0, 0.0], [0.0, 1.0, 0.0]), _plane(-1, [0.0, 10.0, 0.0], [0.0, -1.0, 0.0], frozen: true)),
+    {
+      'type': 'limit_distance',
+      'id': 'gap',
+      'min': 5.0,
+      'max': 30.0,
+      'a': _plane(0, [10.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+      'b': _plane(-1, [30.0, 0.0, 0.0], [-1.0, 0.0, 0.0], frozen: true),
+    },
+  ],
+};
 
 ConstrainedDragSession _session(_FakeBackend api, _Clock clock, {void Function(String)? onCue}) => ConstrainedDragSession(
       call: api.call,
@@ -117,6 +158,32 @@ ConstrainedDragSession _session(_FakeBackend api, _Clock clock, {void Function(S
 Future<void> _settle() => Future<void>.delayed(Duration.zero);
 
 void main() {
+  _shortfallTests();
+  group('limit mates (version-6 model)', () {
+    test('a drag past the limit stops at it, says so, and follows the hand again as soon as it comes back inside', () async {
+      final api = _FakeBackend(withLimit: true);
+      final clock = _Clock();
+      final s = _session(api, clock);
+      await s.begin();
+      expect(s.hasModel, isTrue);
+      DragFrame? last;
+      var worst = double.negativeInfinity;
+      for (var f = 1; f <= 60; f++) {
+        clock.now += 1000 / 60;
+        last = s.update(_at(f * 40.0 / 60.0, 0, 0)); // 0 -> 40 mm towards the stop
+        await _settle();
+        worst = last == null ? worst : (last.poses[0].t[0] > worst ? last.poses[0].t[0] : worst);
+      }
+      expect(last!.poses[0].t[0], closeTo(15.0, 1e-5), reason: 'the stop: gap 5 mm');
+      expect(worst, lessThan(15.0 + 1e-5), reason: 'it never went through the limit on the way');
+      expect(s.atLimit, isTrue);
+      clock.now += 16;
+      final back = s.update(_at(10, 0, 0))!;
+      await _settle();
+      expect(back.poses[0].t[0], closeTo(10.0, 1e-5));
+      expect(s.atLimit, isFalse);
+    });
+  });
   group('ConstrainedDragSession', () {
     test('60-frame drag = 1 grab anchor + 1 per ~150 ms + 1 commit; blocked z is dropped, in-plane follows', () async {
       final api = _FakeBackend();
@@ -411,3 +478,25 @@ void main() {
     });
   });
 }
+
+void _shortfallTests() {
+  group('constrainedShortfallNotice', () {
+    Pose pose(double x, double degrees) => Pose.fromWire(translation: [x, 0, 0], rotationAxis: [0, 0, 1], rotationAngleDegrees: degrees);
+
+    test('says nothing when the component got where it was asked', () {
+      expect(constrainedShortfallNotice(pose(10, 90), pose(10.2, 90.3)), isNull);
+    });
+
+    test('says so when the mates let only part of a typed turn through', () {
+      final notice = constrainedShortfallNotice(pose(0, 90), pose(0, 31));
+      expect(notice, isNotNull);
+      expect(notice, contains('as far as its mates allow'));
+      expect(notice, contains('59.0'));
+    });
+
+    test('and for a typed move', () {
+      expect(constrainedShortfallNotice(pose(30, 0), pose(12, 0)), contains('18.0 mm'));
+    });
+  });
+}
+

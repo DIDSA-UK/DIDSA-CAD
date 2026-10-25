@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from tests.conftest import TEST_API_KEY
+from tests.timing import check_timing
 
 client = TestClient(app)
 client.headers.update({"X-API-Key": TEST_API_KEY})
@@ -192,7 +193,7 @@ def test_pattern_tier_coarse_returns_every_instance_unfused_even_with_merge_fuse
     start = time.perf_counter()
     coarse_mesh = _mesh(part["id"], tier="coarse")
     elapsed = time.perf_counter() - start
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     # Only the 3 new instances - the seed Body's own `base_feature_id` is
     # the *Extrude* that made it, not this Pattern, so `tier=coarse`'s own
@@ -213,7 +214,7 @@ def test_pattern_coarse_preview_returns_the_new_instance_count_and_persists_noth
     response = client.post(f"/document/parts/{part['id']}/pattern-features/coarse-preview", json=payload)
     elapsed = time.perf_counter() - start
     assert response.status_code == 200, response.json()
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     bodies = response.json()
     # Index 0 is the untouched seed, never part of either resolver's own
@@ -411,7 +412,7 @@ def test_loft_tier_coarse_skips_the_bulging_middle_section():
     start = time.perf_counter()
     coarse_mesh = _mesh(part["id"], tier="coarse")
     elapsed = time.perf_counter() - start
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     assert len(coarse_mesh) == 1
     assert coarse_mesh[0]["source"] == "coarse"
@@ -433,7 +434,7 @@ def test_loft_coarse_preview_returns_a_solid_and_persists_nothing():
     response = client.post(f"/document/parts/{part['id']}/loft-features/coarse-preview", json=payload)
     elapsed = time.perf_counter() - start
     assert response.status_code == 200, response.json()
-    assert elapsed < _COARSE_WALL_CLOCK_CEILING_SECONDS
+    check_timing(elapsed, _COARSE_WALL_CLOCK_CEILING_SECONDS, "coarse tier")
 
     bodies = response.json()
     assert len(bodies) == 1

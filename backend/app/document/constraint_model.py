@@ -18,7 +18,13 @@ import numpy as np
 
 MODEL_VERSION = 3  # 3: an ANGLE about a hinge (`hinge_direction` on a side) also fixes the swing sense; 2: branch-specific residuals (`alignment` / `side` / `perp` per mate, linear signed DISTANCE, mm-scaled squared ones)
 PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces on two members); emitted ONLY when some side has one, else 3
-SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance")
+COUPLER_MODEL_VERSION = 5  # 5: coupler mates (gear / rack_pinion / screw: rows on the MOVE of each side from its `anchor` pose); emitted ONLY when the model has one
+LIMIT_MODEL_VERSION = 6  # 6: limit mates (limit_distance / limit_angle: an inequality row with `min` / `max`, held only when violated); emitted ONLY when the model has one
+COUPLER_TYPES = ("gear", "rack_pinion", "screw")
+LIMIT_TYPES = ("limit_distance", "limit_angle")
+SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance", *COUPLER_TYPES, *LIMIT_TYPES)
+LIMIT_ROUNDS = 3  # active-set rounds of one retraction (a limit held at its bound is added, never dropped, within a frame)
+LIMIT_TOL = 1e-6  # mm / degrees a value may sit outside its range before the limit counts as violated (the client's tolerance)
 
 # Constants of spec section 4b (also in docs/motion/vectors.json -> constants).
 LOCAL_FOLLOWER = 1e-2  # follower weight of the local retraction (the PROJECTION metric keeps 1e-4)
@@ -139,6 +145,8 @@ def export_constraint_model(model) -> dict | None:
     ids = list(model.member_ids)
     mates = []
     has_pair = False
+    has_coupler = False
+    has_limit = False
     for mate, a, b in model.sides:
         if mate.type.value not in SUPPORTED_TYPES:
             return None
@@ -150,11 +158,15 @@ def export_constraint_model(model) -> dict | None:
             if s.frozen_transform is not None:
                 r, t = rigid_to_pose(s.frozen_transform)
                 out["frozen"] = {"r": r.tolist(), "t": t.tolist()}
+            if mate.type.value in COUPLER_TYPES and s.occurrence_id in ids:
+                # a coupler measures a member's MOVE from the pose the solve started from: its base pose (clients refresh it at every anchor)
+                ar, at = rigid_to_pose(model.base_transforms[s.occurrence_id])
+                out["anchor"] = {"r": ar.tolist(), "t": at.tolist()}
             for name in ("point", "axis_origin", "direction", "perp"):
                 v = getattr(g, name)
                 if v is not None:
                     out[name] = [float(c) for c in v]
-            if g.hinge is not None and mate.type.value == "angle":
+            if g.hinge is not None and mate.type.value in ("angle", "limit_angle"):
                 # the hinge an ANGLE swings about (the direction only: the residual needs no point on it)
                 out["hinge_direction"] = [float(c) for c in g.hinge[1]]
             if g.plane is not None:
@@ -175,7 +187,19 @@ def export_constraint_model(model) -> dict | None:
 
         from app.document.assembly_solver import _effective_mate
 
+        if mate.type.value in LIMIT_TYPES:
+            has_limit = True
+            mates.append(
+                {"type": mate.type.value, "id": mate.id, "min": mate.limit_min, "max": mate.limit_max, "a": side(a), "b": side(b)}
+            )
+            continue
         mate = _effective_mate(mate, a.geometry, b.geometry)
+        if mate.type.value in COUPLER_TYPES:
+            has_coupler = True
+            mates.append(
+                {"type": mate.type.value, "value": float(mate.value), "k": 1 if mate.secondary_flip else -1, "a": side(a), "b": side(b)}
+            )
+            continue
         mates.append(
             {
                 "type": mate.type.value,
@@ -191,7 +215,8 @@ def export_constraint_model(model) -> dict | None:
                 "b": side(b),
             }
         )
-    return {"version": PAIR_MODEL_VERSION if has_pair else MODEL_VERSION, "members": ids, "mates": mates}
+    version = LIMIT_MODEL_VERSION if has_limit else (COUPLER_MODEL_VERSION if has_coupler else (PAIR_MODEL_VERSION if has_pair else MODEL_VERSION))
+    return {"version": version, "members": ids, "mates": mates}
 
 
 # ---- residual + analytic Jacobian --------------------------------------------------------------------------------
@@ -235,12 +260,40 @@ def _unit(a: _V) -> _V:
     return _V(u, (np.eye(3) - np.outer(u, u)) @ a.d / n)
 
 
+def _quaternion_wv(r: np.ndarray):
+    """(w, v) of a rotation matrix, w >= 0 (the same as `app.document.coupler._quaternion`)."""
+    t = float(np.trace(r))
+    if t > 0.0:
+        s = math.sqrt(t + 1.0) * 2.0
+        w, v = 0.25 * s, np.array([r[2, 1] - r[1, 2], r[0, 2] - r[2, 0], r[1, 0] - r[0, 1]]) / s
+    else:
+        i = int(np.argmax(np.diag(r)))
+        j, k = (i + 1) % 3, (i + 2) % 3
+        s = math.sqrt(r[i, i] - r[j, j] - r[k, k] + 1.0) * 2.0
+        v = np.zeros(3)
+        v[i] = 0.25 * s
+        v[j] = (r[j, i] + r[i, j]) / s
+        v[k] = (r[k, i] + r[i, k]) / s
+        w = (r[k, j] - r[j, k]) / s
+    if w < 0.0:
+        w, v = -w, -v
+    return w, v
+
+
 class ConstraintModel:
     """Mate residuals of an exported model, `residual(poses)` -> `(r, J)` with `J` the twist Jacobian
-    (`6k` columns, `[v, w]` per member, left-multiplied: `t += v`, `R = exp(w) R`)."""
+    (`6k` columns, `[v, w]` per member, left-multiplied: `t += v`, `R = exp(w) R`).
 
-    def __init__(self, spec: dict):
+    A coupler mate (version 5) measures each side's move from its `anchor` pose; `anchors` (a list of `(R, t)` per member) replaces
+    the exported ones - the retraction's start poses of the moment, which clients refresh at every accepted anchor.
+
+    A limit mate (version 6) is an inequality: it adds no row unless its id is in `active` (`{mate id: bound}`, the limits a retraction
+    is currently holding), when it adds `(value - bound)` (radians for an angle). `violated(poses)` lists the ones to add next."""
+
+    def __init__(self, spec: dict, anchors=None, active=None):
         self.spec = spec
+        self.anchors = anchors
+        self.active = dict(active or {})
         self.k = len(spec["members"])
         self.n = 6 * self.k
         self.mates = spec["mates"]
@@ -289,6 +342,100 @@ class ConstraintModel:
                 g["pair_normal"] = self._world(pair, poses, "normal", "dir", plane=True)
         return g
 
+    def _anchor(self, side: dict, m: int):
+        if self.anchors is not None:
+            return self.anchors[m]
+        a = side["anchor"]
+        return np.array(a["r"], float), np.array(a["t"], float)
+
+    def _base_axis(self, side: dict) -> np.ndarray:
+        """The side's axis direction in the world at the base pose (a constant)."""
+        local = np.array(side["direction"], float)
+        local = local / float(np.linalg.norm(local))
+        m = side["member"]
+        if m >= 0:
+            return self._anchor(side, m)[0] @ local
+        fz = side.get("frozen")
+        return (np.array(fz["r"], float) @ local) if fz is not None else local
+
+    def _motion(self, side: dict, poses, axis: np.ndarray):
+        """`(turn, d turn, travel, d travel)` of a member side about / along the world unit `axis` since its anchor pose; zeros for a
+        side that does not move. The derivatives are rows of `n` entries in the twist chart."""
+        n = self.n
+        zero = np.zeros(n)
+        m = side["member"]
+        if m < 0:
+            return 0.0, zero, 0.0, zero
+        r0, t0 = self._anchor(side, m)
+        r, t = poses[m]
+        w, v = _quaternion_wv(r @ r0.T)
+        a = float(v @ axis)
+        turn = 2.0 * math.atan2(a, w)
+        grad = (w * w * axis + w * np.cross(v, axis) + a * v) / (w * w + a * a)
+        gturn = zero.copy()
+        gturn[6 * m + 3 : 6 * m + 6] = grad
+        p = np.array(side["axis_origin"], float)
+        q = r @ p
+        travel = float(((q + t) - (r0 @ p + t0)) @ axis)
+        gtravel = zero.copy()
+        gtravel[6 * m : 6 * m + 3] = axis
+        gtravel[6 * m + 3 : 6 * m + 6] = np.cross(q, axis)
+        return turn, gturn, travel, gtravel
+
+    def _coupler(self, mate: dict, poses):
+        """`(value, gradient)` of the one row of a coupler mate (see `app.document.coupler`)."""
+        t, k, val = mate["type"], float(mate["k"]), float(mate["value"])
+        a, b = mate["a"], mate["b"]
+        axis_a = self._base_axis(a)
+        if t == "gear":
+            ta, ga, _, _ = self._motion(a, poses, axis_a)
+            tb, gb, _, _ = self._motion(b, poses, self._base_axis(b))
+            return tb - k * val * ta, gb - k * val * ga
+        if t == "rack_pinion":
+            ta, ga, _, _ = self._motion(a, poses, axis_a)
+            _, _, sb, gsb = self._motion(b, poses, self._base_axis(b))
+            c = k * val / (2.0 * math.pi)
+            return sb - c * ta, gsb - c * ga
+        ta, ga, sa, gsa = self._motion(a, poses, axis_a)
+        tb, gb, sb, gsb = self._motion(b, poses, axis_a)  # a screw: everything about / along the screw's axis
+        c = k * val / (2.0 * math.pi)
+        return (sb - sa) - c * (tb - ta), (gsb - gsa) - c * (gb - ga)
+
+    def _limit(self, mate: dict, poses):
+        """`(value, gradient)` of a limit mate's measured value (mm, or degrees for an angle); see `app.document.limit`."""
+        a, b = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
+        if mate["type"] == "limit_distance":
+            def origin(g):
+                return g.get("porigin", g.get("point"))
+
+            if "pnormal" in b:
+                normal = b["pnormal"]
+            else:
+                normal = a["pnormal"]
+            sg = _dot(_sub(origin(a), origin(b)), _unit(normal))
+            return sg.v, sg.d
+        hinge = a.get("hinge_direction") or b.get("hinge_direction")
+        na, nb = _unit(a["direction"]), _unit(b["direction"])
+        s = _dot(_cross(na, nb), _unit(hinge))
+        c = _dot(na, nb)
+        den = s.v * s.v + c.v * c.v
+        deg = 180.0 / math.pi
+        return math.degrees(math.atan2(s.v, c.v)), (c.v * s.d - s.v * c.d) / den * deg
+
+    def violated(self, poses) -> dict:
+        """`{mate id: bound}` of the limits not already held whose range `poses` leave."""
+        out = {}
+        for mate in self.mates:
+            if mate["type"] not in LIMIT_TYPES or mate["id"] in self.active:
+                continue
+            value, _g = self._limit(mate, poses)
+            lo, hi = mate.get("min"), mate.get("max")
+            if hi is not None and value > hi + LIMIT_TOL:
+                out[mate["id"]] = float(hi)
+            elif lo is not None and value < lo - LIMIT_TOL:
+                out[mate["id"]] = float(lo)
+        return out
+
     def residual(self, poses, with_jacobian: bool = True):
         rows: list = []
         jac: list = []
@@ -310,8 +457,20 @@ class ConstraintModel:
             addv(_sub(a, _scale(b, s)))
 
         for mate in self.mates:
-            d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
             t = mate["type"]
+            if t in LIMIT_TYPES:
+                if mate["id"] in self.active:
+                    value, gradient = self._limit(mate, poses)
+                    unit = math.pi / 180.0 if t == "limit_angle" else 1.0
+                    rows.append((float(value) - self.active[mate["id"]]) * unit)
+                    jac.append(gradient * unit)
+                continue
+            if t in COUPLER_TYPES:
+                value, gradient = self._coupler(mate, poses)
+                rows.append(float(value))
+                jac.append(gradient)
+                continue
+            d, f = self._geo(mate["a"], poses), self._geo(mate["b"], poses)
             s = sign(mate, "alignment")
             if t == "coincident":
                 if "porigin" in d and "porigin" in f:
@@ -441,3 +600,20 @@ def wish_cost(poses, wishes, w: np.ndarray) -> float:
     """The objective the retraction minimises: weighted squared distance of every member from its wished pose."""
     g = np.concatenate([log_delta(poses[i], wishes[i]) for i in range(len(poses))])
     return float(np.sum((w * g) ** 2))
+
+
+def sqp_nearest_limits(spec: dict, anchors, poses, wishes, w: np.ndarray, iters: int = ITERS, polish: int = POLISH, **kw):
+    """`sqp_nearest` on a model with limit mates: the active-set rounds of the clients (`docs/motion/projector-spec.md`, limits).
+    Retract with no limit held; every limit the answer leaves is held at its nearest bound (an equality row) and the retraction is
+    run again from the SAME start and wish, at most `LIMIT_ROUNDS` times. Stateless: nothing is carried from one call to the next, so
+    a limit is released the moment the wish no longer pushes past it. Returns `(poses, {held mate id: bound})`."""
+    active: dict = {}
+    cand = list(poses)
+    for _ in range(LIMIT_ROUNDS + 1):
+        cm = ConstraintModel(spec, anchors, active=active)
+        cand = sqp_nearest(cm, poses, wishes, w, iters=iters, polish=polish, **kw)
+        violated = cm.violated(cand)
+        if not violated:
+            break
+        active.update(violated)
+    return cand, active

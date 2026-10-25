@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
+import 'mate_panel.dart' show mateValueSummary;
 import 'view_preferences.dart' show colorFromHex;
 import 'width_pick.dart' show isSymmetricMate, isWidthMate;
 
@@ -104,6 +105,11 @@ String mateDisplayName(List<MateDto> mates, int index) {
     'parallel' => 'Parallel',
     'distance' => 'Distance',
     'angle' => 'Angle',
+    'gear' => 'Gear',
+    'rack_pinion' => 'Rack and pinion',
+    'screw' => 'Screw',
+    'limit_distance' => 'Limit distance',
+    'limit_angle' => 'Limit angle',
     _ => mate.type,
   };
   final ordinal = mates.take(index + 1).where((m) => m.type == mate.type && !isWidthMate(m) && !isSymmetricMate(m)).length;
@@ -788,6 +794,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           overflow: TextOverflow.ellipsis,
           style: _rowTitleStyle,
         ),
+        subtitle: mateValueSummary(mate) == null ? null : Text(mateValueSummary(mate)!, maxLines: 1, overflow: TextOverflow.ellipsis),
         trailing: mate.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
         onTap: widget.onMateTap == null || widget.isMultiSelectMode ? null : () => widget.onMateTap!(mate),
         onLongPress:
