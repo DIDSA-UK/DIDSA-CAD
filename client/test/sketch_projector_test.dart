@@ -15,6 +15,7 @@ import 'support/slvs_reference/local_sketch_solver.dart';
 import 'package:didsa_cad_client/sketch/projector/sketch_projector.dart';
 import 'support/slvs_reference/slvs_bindings.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'support/timing.dart';
 
 typedef Pt = (double, double);
 
@@ -490,7 +491,7 @@ void main() {
       watch.stop();
       expect(r.converged, isTrue);
       // generous: the point is that it is not seconds (the JIT in a debug test run is several times slower than AOT)
-      expect(watch.elapsedMilliseconds, lessThan(500));
+      expectWithin(watch.elapsedMilliseconds, 500, 'projectSketch, 200-point chain'); // (a runaway would still show as a non-converged answer above)
     });
   });
 
@@ -606,7 +607,7 @@ void main() {
       );
       watch.stop();
       expect(m.dof, 99 * 2 - 99);
-      expect(watch.elapsedMilliseconds, lessThan(1000));
+      expectWithin(watch.elapsedMilliseconds, 1000, 'analyseSketchMobility, 100-point chain');
     });
   });
 

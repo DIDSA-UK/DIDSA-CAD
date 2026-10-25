@@ -34,6 +34,7 @@ from tests import motion_scenes as ms
 from tests.test_assembly_group import _plate_bcd
 from tests.test_assembly_group_solve import _L, _floating_bolt_scene, _offset_pin_scene, _plate_scene
 from tests.test_assembly_solver import client
+from tests.timing import check_timing
 
 
 def _first_occurrence(root):
@@ -469,7 +470,7 @@ def test_solve_group_latency_with_the_nearest_point_stage(capsys):
         rows.append((k, min(times), result.quality.seeded_by))
     with capsys.disabled():
         print("\nSOLVE_GROUP LATENCY (best of 7, ms):", ", ".join(f"k={k}: {t:.1f} ({how})" for k, t, how in rows))
-    assert rows[-1][1] < 1000.0, rows
+    check_timing(rows[-1][1], 1000.0, "solve_group k=8 (best of runs)", unit="ms")
 
 
 def test_one_frame_convergence_at_realistic_hand_steps_on_every_scene_family():

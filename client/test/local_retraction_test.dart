@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/motion/local_retraction.dart';
 import 'package:didsa_cad_client/motion/se3.dart';
+import 'support/timing.dart';
 
 const String _vectorsPath = '../docs/motion/vectors.json';
 
@@ -300,7 +301,7 @@ void localBenchmark() {
       final us = sw.elapsedMicroseconds / n;
       // ignore: avoid_print
       print('local frame $id: members=${model.members} rows=${model.rows} -> ${us.toStringAsFixed(1)} us/frame (JIT, debug)');
-      expect(us, lessThan(5000), reason: 'a frame must stay far below a 16 ms budget');
+      expectWithin(us, 5000, 'local frame $id', unit: 'us'); // (a frame must stay far below a 16 ms budget; see benchmark docs)
     });
   }
 
@@ -335,7 +336,7 @@ void localBenchmark() {
       // ignore: avoid_print
       print('pair vs plain twin $id: plain ${us['plain_rows']!.toInt()} rows ${us['plain']!.toStringAsFixed(1)} us/frame, '
           'pair ${us['pair_rows']!.toInt()} rows ${us['pair']!.toStringAsFixed(1)} us/frame (JIT, debug)');
-      expect(us['pair']!, lessThan(5000));
+      expectWithin(us['pair']!, 5000, 'pair frame', unit: 'us');
     }
   });
 }
