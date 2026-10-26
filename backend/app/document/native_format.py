@@ -1223,7 +1223,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "id": feature.id,
             "sections": [_loft_section_to_dict(section) for section in feature.sections],
             "ruled": feature.ruled,
-            "guide_curve_refs": [_sketch_or_edge_ref_to_dict(r) for r in feature.guide_curve_refs],
+            "guide_curves": [[_sketch_or_edge_ref_to_dict(r) for r in guide] for guide in feature.guide_curves],
         }
     if isinstance(feature, RuledSurfaceFeature):
         return {
@@ -1546,7 +1546,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "target_body_ids": list(feature.target_body_ids),
             "thickness": feature.thickness,
             "thin_from_closed_profile": feature.thin_from_closed_profile,
-            "guide_curve_refs": [_sketch_or_edge_ref_to_dict(r) for r in feature.guide_curve_refs],
+            "guide_curves": [[_sketch_or_edge_ref_to_dict(r) for r in guide] for guide in feature.guide_curves],
         }
     if isinstance(feature, GearChainFeature):
         return {
@@ -1634,7 +1634,7 @@ def _feature_from_dict(data: dict) -> Feature:
             id=feature_id,
             sections=[_loft_section_from_dict(s) for s in data.get("sections", [])],
             ruled=data.get("ruled", False),
-            guide_curve_refs=[_sketch_or_edge_ref_from_dict(r) for r in data.get("guide_curve_refs", [])],
+            guide_curves=[[_sketch_or_edge_ref_from_dict(r) for r in guide] for guide in data.get("guide_curves", [])],
         )
     if feature_type == "ruled_surface":
         return RuledSurfaceFeature(
@@ -1939,7 +1939,7 @@ def _feature_from_dict(data: dict) -> Feature:
             target_body_ids=list(data.get("target_body_ids", [])),
             thickness=data.get("thickness"),
             thin_from_closed_profile=data.get("thin_from_closed_profile", False),
-            guide_curve_refs=[_sketch_or_edge_ref_from_dict(r) for r in data.get("guide_curve_refs", [])],
+            guide_curves=[[_sketch_or_edge_ref_from_dict(r) for r in guide] for guide in data.get("guide_curves", [])],
         )
     if feature_type == "gear_chain":
         return GearChainFeature(

@@ -30,25 +30,13 @@ genuinely new OCCT technique, verified so far only by code review (same
 - treat it with the same "needs a real on-device/CI pass" caution as
 everything else in this docstring until `docs/status.md` says otherwise.
 
-**Guide curves + vertex-to-vertex alignment (`LoftFeature.guide_curve_refs`/
-`LoftSection.alignment_point`)**: a third, later addition, orthogonal to
-both of the above (composes with either the closed-solid or the open-
-thickness path, and with `reference_point`'s own separate rotation).
-`alignment_point` is a rigid *translation*, applied after any
-`reference_point` rotation, that slides a section (in-plane only, never
-off its own plane) so that one designated point on it lands exactly on a
-target: the ordered `guide_curve_refs` chain's own intersection with that
-section's plane if set (reusing `app.document.sweep.resolve_path_wire`'s
-identical cross-Sketch path-resolution machinery, just as a rail here
-rather than an extrusion direction), or otherwise the first alignment_point-
-bearing section's own position (projected into this section's own plane) -
-see `_apply_alignment_point_translation`'s own docstring for the exact
-rule, and `LoftFeature.guide_curve_refs`'/`LoftSection.alignment_point`'s
-own docstrings for why this is a deliberately narrower, honest v1 (one
-point per section rides the rail exactly; the rest of each section's own
-boundary is carried along rigidly, not reshaped to hug the curve).
-Verified so far only by code review, same sandbox constraint as the rest
-of this module.
+**Gordon surfaces and guide curves (`LoftFeature.guide_curves`)**: the side surface is built by
+`app.document.loft_gordon` as a Gordon network through the sections and any number of guide
+curves (hidden guides through corresponding section vertices when there are none), one face per
+section edge. Guides really reshape the loft; they no longer move sections. `ThruSections` stays
+only as the fallback when a loft *without* guides cannot be built as a network (see
+`_loft_shape`). `LoftSection.alignment_point` remains the unguided "line the sections up" rigid
+translation (`_apply_alignment_point_translation`).
 """
 
 import logging
@@ -90,6 +78,7 @@ from app.document.extrude import (
     select_profiles,
     wire_for_profile,
 )
+from app.document.loft_gordon import GordonLoftError, capped_solid, loft_faces, sew_shell
 from app.document.loft_seam import allocate_splits, best_alignment, locate_seam, reseam_order
 from app.document.models import LoftFeature, LoftSection, Part, ResolvedPlane, SketchFeature
 from app.document.shell_ops import thicken_shell_to_solid
@@ -118,18 +107,16 @@ def _invalid_loft_section(index: int, detail: str) -> HTTPException:
     return HTTPException(status_code=422, detail={"type": "invalid_loft_section", "index": index, "detail": detail})
 
 
-def _invalid_guide_curve_ref(index: int, detail: str) -> HTTPException:
-    """A `guide_curve_refs`-driven alignment that can't be resolved for
-    section `index` - a real geometric crossing-count problem (see
-    `_guide_curve_intersection`), not a payload-shape one (those are
-    `app.document.sweep.resolve_path_wire`'s own `invalid_path_ref`/
-    `disconnected_path`, left to propagate as-is rather than rewrapped -
-    the guide curve chain itself is resolved by that exact same machinery
-    `SweepFeature.path_refs` already uses, so its own errors are already
-    clear and actionable without translation)."""
-    return HTTPException(
-        status_code=422, detail={"type": "invalid_guide_curve_ref", "index": index, "detail": detail}
-    )
+def _invalid_guide_curve_ref(index: int, detail: str, section: int | None = None) -> HTTPException:
+    """A guide that cannot shape the loft: `index` is the 0-based guide in `guide_curves`, `section`
+    (when it is a particular section's fault) the 0-based section. Resolution problems of the
+    guide chain itself are `app.document.sweep.resolve_path_wire`'s own `invalid_path_ref`/
+    `disconnected_path`, left to propagate as-is - the chain is resolved by the same machinery
+    `SweepFeature.path_refs` uses, so those errors are already clear without translation."""
+    body: dict = {"type": "invalid_guide_curve_ref", "index": index, "detail": detail}
+    if section is not None:
+        body["section"] = section
+    return HTTPException(status_code=422, detail=body)
 
 
 def _loft_failed(detail: str) -> HTTPException:
@@ -518,96 +505,27 @@ def _rotate_point(point: gp_Pnt, basis: ResolvedPlane, angle: float) -> gp_Pnt:
     return point.Transformed(trsf)
 
 
-def _guide_curve_intersection(guide_wire: TopoDS_Wire, basis: ResolvedPlane, section_index: int) -> gp_Pnt:
-    """The single point where `guide_wire` (already embedded in world space
-    via `app.document.sweep.resolve_path_wire`) crosses the plane through
-    `basis.origin` normal to `basis.normal` - the world-space target
-    `_apply_alignment_point_translation` slides that section's own
-    `alignment_point` onto. Exactly one crossing is required - zero means
-    the guide curve doesn't reach this section's plane at all, 2+ means it
-    crosses back and forth with no unique target to pick."""
-    ox, oy, oz = basis.origin
-    nx, ny, nz = basis.normal
-    section = BRepAlgoAPI_Section(guide_wire, gp_Pln(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz)))
-    section.Build()
-    points: list[gp_Pnt] = []
-    if section.IsDone():
-        explorer = TopExp_Explorer(section.Shape(), TopAbs_VERTEX)
-        while explorer.More():
-            points.append(BRep_Tool.Pnt(topods.Vertex(explorer.Current())))
-            explorer.Next()
-    # Distinct crossings only - BRepAlgoAPI_Section can report the same
-    # geometric point more than once (e.g. once per incident guide-curve
-    # edge at a shared vertex) without that being a genuine second
-    # crossing.
-    distinct: list[gp_Pnt] = []
-    for point in points:
-        if not any(point.Distance(existing) < 1e-6 for existing in distinct):
-            distinct.append(point)
-    if len(distinct) != 1:
-        raise _invalid_guide_curve_ref(
-            section_index,
-            f"guide curve crosses section {section_index}'s own plane {len(distinct)} time(s), expected exactly 1",
-        )
-    return distinct[0]
-
-
 def _apply_alignment_point_translation(
-    feature: LoftFeature,
     resolved: list,
     wires: list[TopoDS_Wire],
-    part: Part,
-    bodies_so_far: dict[str, TopoDS_Shape],
-    excluded_feature_ids: frozenset[str],
 ) -> list[TopoDS_Wire]:
-    """Translates each section's own (already `reference_point`-rotated, if
-    applicable) wire so its `alignment_point` lands on its own target -
-    `feature.guide_curve_refs`' own crossing with that section's plane
-    (`_guide_curve_intersection`) if set, or otherwise the first alignment_
-    point-bearing section's own world position, projected into *this*
-    section's own plane (subtracting the delta's component along this
-    section's own normal, so a section only ever slides *within* its own
-    plane, never off it) - see `LoftFeature.guide_curve_refs`'s own
-    docstring for the two behaviours this dispatches between. A no-op
-    (returns `wires` completely unchanged) when no section has an
-    `alignment_point` set at all - this only ever changes behaviour for a
-    Loft that opts in, same "no opt-in, no change" guarantee `reference_
-    point`'s own rotation already gives.
-
-    Deliberately only ever a rigid translation of the *whole* wire, never a
-    reshape of individual boundary points to hug the guide curve more
-    closely - `LoftFeature.guide_curve_refs`'s own docstring explains why
-    that harder problem is out of this v1's scope."""
+    """Translates each section's own (already `reference_point`-rotated, if applicable) wire so its
+    `alignment_point` lands on the first section's own, projected into *this* section's own plane
+    (subtracting the delta's component along this section's own normal, so a section only ever
+    slides *within* its own plane, never off it). A no-op (returns `wires` completely unchanged)
+    when no section has an `alignment_point` set at all - this only ever changes behaviour for a
+    Loft that opts in, same "no opt-in, no change" guarantee `reference_point`'s own rotation
+    already gives. Guide curves have nothing to do with this: they shape the surface
+    (`app.document.loft_gordon`) and never move a section."""
     if not any(entry.alignment_local is not None for entry in resolved):
         return wires
 
-    if feature.guide_curve_refs:
-        for index, entry in enumerate(resolved):
-            if entry.alignment_local is None:
-                raise _invalid_loft_section(
-                    index, "every section needs an alignment_point when guide_curve_refs is set"
-                )
-        # `resolve_path_wire`'s second element (a Sweep-specific fixed-
-        # binormal fix - see `app.document.sweep._sweep_wire`'s own doc
-        # comment) doesn't apply to a Loft guide curve, which is never fed
-        # to `BRepOffsetAPI_MakePipeShell` here - only the wire itself is
-        # used, for `_guide_curve_intersection`'s own ray-vs-curve math.
-        guide_wire, _fixed_binormal = resolve_path_wire(
-            part, feature.guide_curve_refs, bodies_so_far, excluded_feature_ids
-        )
-        targets = [_guide_curve_intersection(guide_wire, entry.basis, i) for i, entry in enumerate(resolved)]
-    else:
-        first_with_alignment = next(
-            (i for i, entry in enumerate(resolved) if entry.alignment_local is not None), None
-        )
-        if first_with_alignment != 0:
-            raise _invalid_loft_section(
-                0, "the first section must have an alignment_point too, to align the others against"
-            )
-        first_entry = resolved[0]
-        fx, fy = first_entry.alignment_local
-        first_world = basis_point_to_world(first_entry.basis, fx, fy)
-        targets = [first_world for _ in resolved]
+    first_with_alignment = next((i for i, entry in enumerate(resolved) if entry.alignment_local is not None), None)
+    if first_with_alignment != 0:
+        raise _invalid_loft_section(0, "the first section must have an alignment_point too, to align the others against")
+    first_entry = resolved[0]
+    fx, fy = first_entry.alignment_local
+    target = basis_point_to_world(first_entry.basis, fx, fy)
 
     new_wires: list[TopoDS_Wire] = []
     for index, (entry, wire) in enumerate(zip(resolved, wires)):
@@ -619,18 +537,84 @@ def _apply_alignment_point_translation(
         if index > 0 and resolved[0].reference_angle is not None and entry.reference_angle is not None:
             twist = resolved[0].reference_angle - entry.reference_angle
             current_world = _rotate_point(current_world, entry.basis, twist)
-        target = targets[index]
         delta = gp_Vec(current_world, target)
-        if not feature.guide_curve_refs:
-            nx, ny, nz = entry.basis.normal
-            normal_dir = gp_Vec(nx, ny, nz)
-            delta = delta.Subtracted(normal_dir.Multiplied(delta.Dot(normal_dir)))
+        nx, ny, nz = entry.basis.normal
+        normal_dir = gp_Vec(nx, ny, nz)
+        delta = delta.Subtracted(normal_dir.Multiplied(delta.Dot(normal_dir)))
         if delta.Magnitude() > 1e-9:
             trsf = gp_Trsf()
             trsf.SetTranslation(delta)
             wire = topods.Wire(BRepBuilderAPI_Transform(wire, trsf, True).Shape())
         new_wires.append(wire)
     return new_wires
+
+
+def resolve_guide_wires(
+    part: Part,
+    guide_curves: list,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> list[TopoDS_Wire]:
+    """Each guide (an ordered chain of refs) as one wire, via `sweep.resolve_path_wire`. That
+    function's second result (a Sweep-specific fixed-binormal fix) does not apply to a loft guide,
+    which is never fed to `MakePipeShell`."""
+    wires = []
+    for chain in guide_curves:
+        wire, _fixed_binormal = resolve_path_wire(part, chain, bodies_so_far, excluded_feature_ids)
+        wires.append(wire)
+    return wires
+
+
+def _loft_shape(
+    wires: list[TopoDS_Wire],
+    *,
+    solid: bool,
+    ruled: bool,
+    guide_wires: list[TopoDS_Wire],
+    explicit_seams: bool,
+    failure: str,
+) -> tuple[TopoDS_Shape, list[str]]:
+    """The lofted solid (`solid`) or open shell through the harmonised section `wires`, plus
+    warnings (guides snapped to sections, approximate networks).
+
+    Built as a Gordon network (`app.document.loft_gordon`). Guides must not silently degrade, so a
+    guided loft that cannot be built is a 422 naming the guide and section. A loft *without*
+    guides that the network cannot build falls back to `ThruSections` (the pre-Gordon
+    construction, whose correspondence the section wires were prepared for) instead of failing.
+    """
+    try:
+        gordon = loft_faces(wires, ruled=ruled, guides=guide_wires)
+        shape = capped_solid(gordon.faces, wires) if solid else sew_shell(gordon.faces)
+        return shape, gordon.warnings
+    except GordonLoftError as error:
+        if guide_wires:
+            if error.guide is not None:
+                raise _invalid_guide_curve_ref(error.guide, error.detail, error.section) from None
+            raise _loft_failed(f"{failure}: {error.detail}") from None
+        logger.warning("Gordon loft failed (%s); falling back to ThruSections", error.detail)
+    return _thru_sections(wires, solid=solid, ruled=ruled, explicit_seams=explicit_seams, failure=failure), []
+
+
+def _thru_sections(
+    wires: list[TopoDS_Wire], *, solid: bool, ruled: bool, explicit_seams: bool, failure: str
+) -> TopoDS_Shape:
+    """The pre-Gordon `ThruSections` loft: the fallback for unguided lofts the Gordon network could
+    not build. An explicit seam/direction fixes the vertex correspondence, so the compatibility
+    search is off; if that does not loft, let OCCT search instead."""
+    loft_maker = BRepOffsetAPI_ThruSections(solid, ruled)
+    if explicit_seams:
+        loft_maker.CheckCompatibility(False)
+    for wire in wires:
+        loft_maker.AddWire(wire)
+    loft_maker.Build()
+    if not loft_maker.IsDone() and explicit_seams:
+        loft_maker = BRepOffsetAPI_ThruSections(solid, ruled)
+        for wire in wires:
+            loft_maker.AddWire(wire)
+        loft_maker.Build()
+    if not loft_maker.IsDone():
+        raise _loft_failed(failure)
+    return loft_maker.Shape()
 
 
 def _mid_section_warnings(solid: TopoDS_Shape, basis_a: ResolvedPlane, basis_b: ResolvedPlane) -> list[str]:
@@ -749,14 +733,12 @@ _AUTO_ALIGN_SAMPLES = 48
 
 
 def _wants_auto_align(entry) -> bool:
-    """A closed section the user left on automatic: no explicit seam or direction, and no
-    reference point (that older twist control keeps its own rotation behaviour)."""
-    return (
-        isinstance(entry, _ResolvedClosedSection)
-        and entry.seam_param is None
-        and not entry.reverse
-        and entry.reference_angle is None
-    )
+    """A closed section the user left on automatic: no explicit seam or direction. A section with
+    a `reference_point` is rotated first (`_rotate_wire`) and then still gets its start vertex
+    chosen here: `ThruSections` always searched for the least-twisted correspondence, and a
+    Gordon network pairs vertices by index, so without this a rotated rectangle would be lofted
+    with its full rotation as twist instead of the nearest-vertex match it always had."""
+    return isinstance(entry, _ResolvedClosedSection) and entry.seam_param is None and not entry.reverse
 
 
 def _sample_wire(wire: TopoDS_Wire, count: int) -> list[tuple[float, float, float]]:
@@ -983,79 +965,60 @@ def resolve_loft_from_bodies(
     if len(feature.sections) < 2:
         raise _invalid_loft_section(0, "a Loft needs at least 2 sections")
 
+    guide_wires = resolve_guide_wires(part, feature.guide_curves, bodies_so_far, excluded_feature_ids)
+
     if feature.thickness is None:
         resolved = [
             _resolve_closed_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
             for index, section in enumerate(feature.sections)
         ]
         wires = _wires_from_resolved(resolved, auto_align=True)
-        wires = _apply_alignment_point_translation(
-            feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
-        )
+        wires = _apply_alignment_point_translation(resolved, wires)
         wires = _harmonize_section_wire_edge_counts(wires)
 
-        loft_maker = BRepOffsetAPI_ThruSections(True, feature.ruled)
-        if any(_is_reseamed(entry) for entry in resolved):
-            # An explicit seam/direction fixes the vertex correspondence; the default search would undo it.
-            loft_maker.CheckCompatibility(False)
-        for wire in wires:
-            loft_maker.AddWire(wire)
-        loft_maker.Build()
-        if not loft_maker.IsDone() and any(_is_reseamed(entry) for entry in resolved):
-            # The explicit start vertices did not loft; let OCCT search for a correspondence instead.
-            loft_maker = BRepOffsetAPI_ThruSections(True, feature.ruled)
-            for wire in wires:
-                loft_maker.AddWire(wire)
-            loft_maker.Build()
-        if not loft_maker.IsDone():
-            raise _loft_failed("could not loft between the given sections")
-        solid = loft_maker.Shape()
-
-        warnings = _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
+        solid, build_warnings = _loft_shape(
+            wires,
+            solid=True,
+            ruled=feature.ruled,
+            guide_wires=guide_wires,
+            explicit_seams=any(_is_reseamed(entry) for entry in resolved),
+            failure="could not loft between the given sections",
+        )
+        warnings = build_warnings + _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
         return solid, warnings
 
     if feature.thin_from_closed_profile:
         # Thin loft, closed-profile source: the exact same per-section
         # resolution the solid path above uses (_resolve_closed_section) -
         # each section is still a closed Profile, not an open chain - but
-        # lofted with isSolid=False (like the open-chain thin path below)
-        # instead of directly into a solid. A closed wire lofted this way
-        # produces a closed *shell* with no end caps (a hollow tube), which
-        # thicken_shell_to_solid then thickens into a uniform-wall-thickness
-        # tube, open at both ends - the standard way to get a thin-walled
-        # loft without requiring the user to redraw their sketches as open
-        # chains.
+        # lofted as a shell (no end caps) instead of directly into a solid.
+        # A closed wire lofted this way produces a closed *shell* with no end
+        # caps (a hollow tube), which thicken_shell_to_solid then thickens
+        # into a uniform-wall-thickness tube, open at both ends - the
+        # standard way to get a thin-walled loft without requiring the user
+        # to redraw their sketches as open chains.
         resolved = [
             _resolve_closed_or_edge_section(part, section, bodies_so_far, excluded_feature_ids, index)
             for index, section in enumerate(feature.sections)
         ]
         wires = _wires_from_resolved(resolved, auto_align=True)
-        wires = _apply_alignment_point_translation(
-            feature, resolved, wires, part, bodies_so_far, excluded_feature_ids
-        )
+        wires = _apply_alignment_point_translation(resolved, wires)
         wires = _harmonize_section_wire_edge_counts(wires)
 
-        loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
-        if any(_is_reseamed(entry) for entry in resolved):
-            loft_maker.CheckCompatibility(False)
-        for wire in wires:
-            loft_maker.AddWire(wire)
-        loft_maker.Build()
-        if not loft_maker.IsDone() and any(_is_reseamed(entry) for entry in resolved):
-            loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
-            for wire in wires:
-                loft_maker.AddWire(wire)
-            loft_maker.Build()
-        if not loft_maker.IsDone():
-            raise _loft_failed("could not loft a surface between the given closed sections")
-        shell = loft_maker.Shape()
-
+        shell, build_warnings = _loft_shape(
+            wires,
+            solid=False,
+            ruled=feature.ruled,
+            guide_wires=guide_wires,
+            explicit_seams=any(_is_reseamed(entry) for entry in resolved),
+            failure="could not loft a surface between the given closed sections",
+        )
         try:
             solid = thicken_shell_to_solid(shell, feature.thickness)
         except ValueError:
             raise _loft_failed("could not thicken the lofted surface by the given thickness") from None
 
-        warnings = _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
+        warnings = build_warnings + _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
         return solid, warnings
 
     resolved = [
@@ -1063,23 +1026,23 @@ def resolve_loft_from_bodies(
         for index, section in enumerate(feature.sections)
     ]
     wires = _wires_from_resolved(resolved)
-    wires = _apply_alignment_point_translation(feature, resolved, wires, part, bodies_so_far, excluded_feature_ids)
+    wires = _apply_alignment_point_translation(resolved, wires)
     wires = _harmonize_section_wire_edge_counts(wires)
 
-    loft_maker = BRepOffsetAPI_ThruSections(False, feature.ruled)
-    for wire in wires:
-        loft_maker.AddWire(wire)
-    loft_maker.Build()
-    if not loft_maker.IsDone():
-        raise _loft_failed("could not loft a surface between the given open sections")
-    shell = loft_maker.Shape()
-
+    shell, build_warnings = _loft_shape(
+        wires,
+        solid=False,
+        ruled=feature.ruled,
+        guide_wires=guide_wires,
+        explicit_seams=False,
+        failure="could not loft a surface between the given open sections",
+    )
     try:
         solid = thicken_shell_to_solid(shell, feature.thickness)
     except ValueError:
         raise _loft_failed("could not thicken the lofted surface by the given thickness") from None
 
-    warnings = _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
+    warnings = build_warnings + _mid_section_warnings(solid, resolved[0].basis, resolved[-1].basis)
     return solid, warnings
 
 

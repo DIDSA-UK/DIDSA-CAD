@@ -596,7 +596,7 @@ Advanced mates (tangent, gear, slider, hinge, path, symmetry, width, limit) exis
 4. **Sketch ergonomics and picks (moved up from fifth to fourth; widened 2026-10-12 with the items Phase 7 deferred).**
    - Sketch: constrained drag of sketch entities, auto-constraint inference while drawing (parallel, perpendicular, tangent, collinear, point-on-curve; VR has axis inference only), sketch-level Pattern / Mirror
      instances, offset of a whole chain, explode polygon / slot / rectangle, DOF and open-profile feedback, `spline_tangent`.
-   - Feature picks: Mirror and Pattern of **features** (`source_feature_ids`; needs a "pick a feature" mode in the Build tree and viewport), Loft **guide curves** (`guide_curve_refs`), Pattern ghost-tap to skip instances.
+   - Feature picks: Mirror and Pattern of **features** (`source_feature_ids`; needs a "pick a feature" mode in the Build tree and viewport), Loft **guide curves** (done 2026-10-26 as `guide_curves` on Gordon surfaces, see `docs/loft-gordon-spike.md`), Pattern ghost-tap to skip instances.
    - Create Plane from sketch things: `normal_to_line_at_point`, `normal_to_curve_at_point` (sketch line or arc plus a sketch point), sketch points in `three_points`; `normal_to_curve_feature_at_parameter` waits for the curves work in step 5.
    - Direct edit leftovers: per-edge chamfer overrides, Move Face by `delta`, Move Body rotation and copy-along.
 5. **Surfacing and curves.** Start with Thicken, Offset Surface and Helix, then the rest of the 11 surface feature types and Intersection curve, with the Planes / Surfaces / Curves Build-tree sections alongside.

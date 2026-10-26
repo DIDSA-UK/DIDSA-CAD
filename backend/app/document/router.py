@@ -704,7 +704,7 @@ def _sketch_or_edge_ref_to_schema(ref: SketchOrEdgeRef) -> SketchOrEdgeRefSchema
 
 def _validate_sketch_or_edge_refs(refs: list[SketchOrEdgeRef]) -> None:
     """Payload-shape validation for a `list[SketchOrEdgeRef]` (Sweep/Swept-
-    Surface `path_refs`, Loft/Loft-Surface `guide_curve_refs`, Fill Surface
+    Surface `path_refs`, Loft/Loft-Surface `guide_curves` (each guide), Fill Surface
     `boundary_refs`) - each entry must set exactly one of `sketch_entity_
     ref`/`edge_ref`/`curve_feature_id`, mirroring `PointRef`'s identical
     "exactly one of N" convention and its own validation site (`_validate_
@@ -1538,7 +1538,7 @@ def _loft_feature_response(part: Part, feature: LoftFeature, warnings: list[str]
         target_body_ids=feature.target_body_ids,
         thickness=feature.thickness,
         thin_from_closed_profile=feature.thin_from_closed_profile,
-        guide_curve_refs=[_sketch_or_edge_ref_to_schema(ref) for ref in feature.guide_curve_refs],
+        guide_curves=[[_sketch_or_edge_ref_to_schema(ref) for ref in guide] for guide in feature.guide_curves],
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -1563,7 +1563,7 @@ def _loft_surface_feature_response(
         id=feature.id,
         sections=[_loft_section_to_schema(section) for section in feature.sections],
         ruled=feature.ruled,
-        guide_curve_refs=[_sketch_or_edge_ref_to_schema(ref) for ref in feature.guide_curve_refs],
+        guide_curves=[[_sketch_or_edge_ref_to_schema(ref) for ref in guide] for guide in feature.guide_curves],
         locked=part.is_locked(feature.id),
         produces=feature.produces,
         warnings=warnings,
@@ -2682,7 +2682,7 @@ def _validate_sweep_or_loft_curve_refs(refs: list[SketchOrEdgeRef]) -> None:
     """On-device feedback ("surface tools should support edges, curves, as
     well as sketch lines as inputs"): shared entry-shape check for
     `SweepFeature`/`SweptSurfaceFeature.path_refs` and `LoftFeature`/
-    `LoftSurfaceFeature.guide_curve_refs`, all four now `list[SketchOrEdge
+    `LoftSurfaceFeature.guide_curves` (each guide), all four now `list[SketchOrEdge
     Ref]` - `_validate_sketch_or_edge_refs` checks the generic "exactly one
     of `sketch_entity_ref`/`edge_ref`" shape every such list shares; a
     `sketch_entity_ref` entry is further restricted to the same entity
@@ -2758,25 +2758,21 @@ def _validate_thickness_nonzero(thickness: float | None) -> None:
         raise HTTPException(status_code=400, detail="thickness must not be 0")
 
 
-def _validate_loft_guide_curve_refs(guide_curve_refs: list[SketchOrEdgeRef]) -> None:
-    """A `LoftFeatureCreate`/`Update.guide_curve_refs`, if provided at all,
-    must name only Line/Arc/Ellipse/Spline entities or Body edges - mirrors
-    `_validate_sweep_or_loft_curve_refs`'s own identical entry-shape gate
-    exactly (this reuses the very same `_SWEEP_PATH_ENTITY_TYPES` set and
-    the very same resolution machinery, `app.document.sweep.resolve_path_
-    wire`, just as a rail rather than an extrusion direction - see
-    `LoftFeature.guide_curve_refs`'s own docstring). Unlike a Sweep's
-    `path_refs`, an empty list is perfectly valid here (it means "no guide
-    curve", not "nothing to loft along") - so, unlike `_validate_sweep_
-    path_refs`, there is no "at least one entry" rule. Whether the named
-    entities actually resolve, chain into one connected path, and (once
-    every section requires an `alignment_point`, see `app.document.loft.
-    _apply_alignment_point_translation`) cross each section's own plane
-    exactly once is a referential/geometric check made by `app.document.
-    loft.resolve_loft` instead, same "payload shape in the router,
-    resolution in the OCCT module" split every other structured Feature
-    error here already uses."""
-    _validate_sweep_or_loft_curve_refs(guide_curve_refs)
+def _validate_loft_guide_curves(guide_curves: list[list[SketchOrEdgeRef]], ruled: bool) -> None:
+    """A `LoftFeatureCreate`/`Update.guide_curves`, if provided at all: each guide is a chain
+    that must name only Line/Arc/Ellipse/Spline entities or Body edges - mirrors
+    `_validate_sweep_or_loft_curve_refs`'s own identical entry-shape gate exactly (the same
+    `_SWEEP_PATH_ENTITY_TYPES` set and resolution machinery, `app.document.sweep.resolve_path_wire`,
+    see `LoftFeature.guide_curves`'s own docstring). An empty list is valid (no guides) but an empty
+    guide is not. A ruled loft is straight between sections, which contradicts a curved guide, so
+    the two cannot be combined. Whether the entities resolve, chain into one path and reach every
+    section is a referential/geometric check made by `app.document.loft.resolve_loft` instead."""
+    if guide_curves and ruled:
+        raise HTTPException(status_code=422, detail="a ruled loft cannot have guide curves")
+    for index, guide in enumerate(guide_curves):
+        if not guide:
+            raise HTTPException(status_code=422, detail=f"guide curve {index + 1} has no entries")
+        _validate_sweep_or_loft_curve_refs(guide)
 
 
 def _validate_fillet_radius(radius: float) -> None:
@@ -5955,11 +5951,11 @@ def create_loft_surface_feature(part_id: str, payload: LoftSurfaceFeatureCreate)
     exercises."""
     part = get_part_or_404(part_id)
     sections = [_loft_section_to_domain(section) for section in payload.sections]
-    guide_curve_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+    guide_curves = [[_sketch_or_edge_ref_to_domain(ref) for ref in guide] for guide in payload.guide_curves]
     _validate_loft_surface_sections(sections)
-    _validate_loft_guide_curve_refs(guide_curve_refs)
+    _validate_loft_guide_curves(guide_curves, payload.ruled)
     feature = LoftSurfaceFeature(
-        id=str(uuid.uuid4()), sections=sections, ruled=payload.ruled, guide_curve_refs=guide_curve_refs
+        id=str(uuid.uuid4()), sections=sections, ruled=payload.ruled, guide_curves=guide_curves
     )
     _, warnings = resolve_loft_surface(part, feature)  # raises on an unresolvable/invalid loft
     part.add_feature(feature)
@@ -5989,22 +5985,22 @@ def update_loft_surface_feature(
         else feature.sections
     )
     new_ruled = payload.ruled if payload.ruled is not None else feature.ruled
-    new_guide_curve_refs = (
-        [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
-        if payload.guide_curve_refs is not None
-        else feature.guide_curve_refs
+    new_guide_curves = (
+        [[_sketch_or_edge_ref_to_domain(ref) for ref in guide] for guide in payload.guide_curves]
+        if payload.guide_curves is not None
+        else feature.guide_curves
     )
     _validate_loft_surface_sections(new_sections)
-    _validate_loft_guide_curve_refs(new_guide_curve_refs)
+    _validate_loft_guide_curves(new_guide_curves, new_ruled)
 
     candidate = LoftSurfaceFeature(
-        id=feature.id, sections=new_sections, ruled=new_ruled, guide_curve_refs=new_guide_curve_refs
+        id=feature.id, sections=new_sections, ruled=new_ruled, guide_curves=new_guide_curves
     )
     _, warnings = resolve_loft_surface(part, candidate)  # raises on an unresolvable/invalid loft
 
     feature.sections = candidate.sections
     feature.ruled = candidate.ruled
-    feature.guide_curve_refs = candidate.guide_curve_refs
+    feature.guide_curves = candidate.guide_curves
     return _loft_surface_feature_response(part, feature, warnings)
 
 
@@ -7170,10 +7166,10 @@ def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeature
     response rather than re-resolved a second time."""
     part = get_part_or_404(part_id)
     sections = [_loft_section_to_domain(section) for section in payload.sections]
-    guide_curve_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+    guide_curves = [[_sketch_or_edge_ref_to_domain(ref) for ref in guide] for guide in payload.guide_curves]
     _validate_loft_sections(sections)
     _validate_thickness_nonzero(payload.thickness)
-    _validate_loft_guide_curve_refs(guide_curve_refs)
+    _validate_loft_guide_curves(guide_curves, payload.ruled)
     _validate_target_body_ids(part, payload.mode == LoftMode.CUT, payload.target_body_ids)
     feature = LoftFeature(
         id=str(uuid.uuid4()),
@@ -7183,7 +7179,7 @@ def create_loft_feature(part_id: str, payload: LoftFeatureCreate) -> LoftFeature
         target_body_ids=list(payload.target_body_ids),
         thickness=payload.thickness,
         thin_from_closed_profile=payload.thin_from_closed_profile,
-        guide_curve_refs=guide_curve_refs,
+        guide_curves=guide_curves,
     )
     _, warnings = resolve_loft(part, feature)  # raises on an unresolvable/invalid loft
     part.add_feature(feature)
@@ -7204,10 +7200,10 @@ def preview_loft_feature_coarse(
     part = get_part_or_404(part_id)
     mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
     sections = [_loft_section_to_domain(section) for section in payload.sections]
-    guide_curve_refs = [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
+    guide_curves = [[_sketch_or_edge_ref_to_domain(ref) for ref in guide] for guide in payload.guide_curves]
     _validate_loft_sections(sections)
     _validate_thickness_nonzero(payload.thickness)
-    _validate_loft_guide_curve_refs(guide_curve_refs)
+    _validate_loft_guide_curves(guide_curves, payload.ruled)
     _validate_target_body_ids(part, payload.mode == LoftMode.CUT, payload.target_body_ids)
     feature = LoftFeature(
         id=str(uuid.uuid4()),
@@ -7217,7 +7213,7 @@ def preview_loft_feature_coarse(
         target_body_ids=list(payload.target_body_ids),
         thickness=payload.thickness,
         thin_from_closed_profile=payload.thin_from_closed_profile,
-        guide_curve_refs=guide_curve_refs,
+        guide_curves=guide_curves,
     )
     shape = resolve_loft_coarse(part, feature)  # raises on an unresolvable/invalid loft
     return _coarse_preview_response(shape, mesh_quality)
@@ -7265,14 +7261,14 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
         if payload.thin_from_closed_profile is not None
         else feature.thin_from_closed_profile
     )
-    new_guide_curve_refs = (
-        [_sketch_or_edge_ref_to_domain(ref) for ref in payload.guide_curve_refs]
-        if payload.guide_curve_refs is not None
-        else feature.guide_curve_refs
+    new_guide_curves = (
+        [[_sketch_or_edge_ref_to_domain(ref) for ref in guide] for guide in payload.guide_curves]
+        if payload.guide_curves is not None
+        else feature.guide_curves
     )
     _validate_loft_sections(new_sections)
     _validate_thickness_nonzero(new_thickness)
-    _validate_loft_guide_curve_refs(new_guide_curve_refs)
+    _validate_loft_guide_curves(new_guide_curves, new_ruled)
     _validate_target_body_ids(part, new_mode == LoftMode.CUT, new_target_body_ids)
 
     candidate = LoftFeature(
@@ -7283,7 +7279,7 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
         target_body_ids=list(new_target_body_ids),
         thickness=new_thickness,
         thin_from_closed_profile=new_thin_from_closed_profile,
-        guide_curve_refs=new_guide_curve_refs,
+        guide_curves=new_guide_curves,
     )
     _, warnings = resolve_loft(part, candidate)  # raises on an unresolvable/invalid loft
 
@@ -7293,7 +7289,7 @@ def update_loft_feature(part_id: str, feature_id: str, payload: LoftFeatureUpdat
     feature.target_body_ids = candidate.target_body_ids
     feature.thickness = candidate.thickness
     feature.thin_from_closed_profile = candidate.thin_from_closed_profile
-    feature.guide_curve_refs = candidate.guide_curve_refs
+    feature.guide_curves = candidate.guide_curves
     return _loft_feature_response(part, feature, warnings)
 
 

@@ -573,11 +573,11 @@ def test_update_loft_feature_can_change_thickness():
     assert patch_response.json()["thickness"] == 2.0
 
 
-# --- Vertex-to-vertex alignment + guide curves (`alignment_point`/`guide_curve_refs`) ---
+# --- Vertex-to-vertex alignment + guide curves (`alignment_point`/`guide_curves`) ---
 #
-# A third, later addition, orthogonal to both the closed-solid/open-
-# thickness split and to `reference_point`'s own separate rotation - see
-# app.document.loft._apply_alignment_point_translation's own docstring.
+# `alignment_point` is the unguided "line the sections up" translation (see
+# app.document.loft._apply_alignment_point_translation); guide curves shape the
+# surface instead (app.document.loft_gordon) and never move a section.
 
 
 def _guide_curve_xz(part_id: str, start: tuple[float, float], end: tuple[float, float]) -> dict:
@@ -654,71 +654,62 @@ def test_alignment_point_straightens_an_offset_loft():
     assert unaligned_max_x > 5.0 + 1e-6
 
 
-def test_guide_curve_ref_slides_each_section_along_the_rail():
-    """A guide curve running from world `(-0.75, 0, -2)` to
-    `(3.75, 0, 10)` - a straight line of slope `3/8` in `x` per unit `z` -
-    crosses the bottom section's own plane (`z=0`) at `x=0` and the top
-    section's own plane (`z=8`) at `x=3`, both through the guide wire's
-    own interior (overshooting each plane at both ends, not landing
-    exactly on a wire endpoint). Each section's `alignment_point` is its
-    own local origin (`(0, 0)`, a plain center point, no corner needed) -
-    the bottom's needs no translation at all (its own plane's crossing is
-    already at the world origin), the top's slides by `+3` in `x`."""
-    part = _create_part()
-    bottom = _create_sketch_feature(part["id"], "XY")
-    _add_polygon(bottom["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
-    bottom_center = _add_point(bottom["sketch_id"], 0.0, 0.0)
-    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
+def _guide_chain_xz(part_id: str, world_points: list[tuple[float, float]]) -> list[dict]:
+    """A chain of connected Lines in one XZ Sketch through the given world `(x, z)` points (see
+    `_guide_curve_xz` for the plane's local-vs-world mapping): one guide, as a list of refs."""
+    feature = _create_sketch_feature(part_id, "XZ")
+    points = [_add_point(feature["sketch_id"], -x, z) for x, z in world_points]
+    refs = []
+    for a, b in zip(points, points[1:]):
+        line = _add_line(feature["sketch_id"], a["id"], b["id"])
+        refs.append(_guide_curve_ref({"sketch_id": feature["sketch_id"], "entity_id": line["id"]}))
+    return refs
+
+
+def _two_squares(part_id: str) -> tuple[dict, dict]:
+    bottom = _square_sketch(part_id, size=10.0)
+    plane = _move_sketch_feature_up(part_id, bottom, 8.0)
     top_response = client.post(
-        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
+        f"/document/parts/{part_id}/features/sketch", json={"plane_feature_id": plane["id"]}
     )
     assert top_response.status_code == 201, top_response.json()
     top = top_response.json()
     _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
-    top_center = _add_point(top["sketch_id"], 0.0, 0.0)
+    return bottom, top
 
-    guide = _guide_curve_xz(part["id"], (-0.75, -2.0), (3.75, 10.0))
 
-    response = _create_loft(
-        part["id"],
-        [
-            _section(bottom, alignment_point_id=bottom_center["id"]),
-            _section(top, alignment_point_id=top_center["id"]),
-        ],
-        guide_curve_refs=[_guide_curve_ref(guide)],
-    )
+def test_guide_curve_reshapes_the_loft_instead_of_moving_sections():
+    """Replaces the old "slides each section along the rail" test. A guide bulging out through the
+    middle of the right-hand edge of both squares (a two-line chain in the XZ plane, reaching x=8
+    at mid-height) pushes the side wall out: the sections stay exactly where they were (the z=0 and
+    z=8 layers still span x -5..5) and the loft bulges past x=5 in between. No `alignment_point`
+    is needed any more."""
+    part = _create_part()
+    bottom, top = _two_squares(part["id"])
+    guide = _guide_chain_xz(part["id"], [(5.0, 0.0), (8.0, 4.0), (5.0, 8.0)])
+
+    response = _create_loft(part["id"], [_section(bottom), _section(top)], guide_curves=[guide])
     assert response.status_code == 201, response.json()
+    assert response.json()["warnings"] == []
+    assert [[ref["entity_id"] for ref in chain] for chain in response.json()["guide_curves"]] == [
+        [ref["entity_id"] for ref in guide]
+    ]
 
     vertices = _mesh(part["id"])[0]["mesh"]["vertices"]
     bottom_layer_x = [x for x, _y, z in vertices if abs(z) < 1e-6]
     top_layer_x = [x for x, _y, z in vertices if abs(z - 8.0) < 1e-6]
-    assert bottom_layer_x and top_layer_x
-    assert abs(min(bottom_layer_x) - (-5.0)) < 1e-3
-    assert abs(max(bottom_layer_x) - 5.0) < 1e-3
-    # Top square shifted by +3 in X (its own plane's guide-curve crossing).
-    assert abs(min(top_layer_x) - (-2.0)) < 1e-3
-    assert abs(max(top_layer_x) - 8.0) < 1e-3
+    assert abs(max(bottom_layer_x) - 5.0) < 1e-3 and abs(min(bottom_layer_x) + 5.0) < 1e-3
+    assert abs(max(top_layer_x) - 5.0) < 1e-3 and abs(min(top_layer_x) + 5.0) < 1e-3
+    assert max(x for x, _y, _z in vertices) > 7.0
+    assert _volume(part["id"]) > 800.0
 
 
-def test_guide_curve_requires_alignment_point_on_every_section():
+def test_guide_curve_needs_no_alignment_point_on_any_section():
     part = _create_part()
-    bottom = _square_sketch(part["id"])
-    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
-    top_response = client.post(
-        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
-    )
-    top = top_response.json()
-    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
-    top_center = _add_point(top["sketch_id"], 0.0, 0.0)
-    guide = _guide_curve_xz(part["id"], (-0.75, -2.0), (3.75, 10.0))
-
-    response = _create_loft(
-        part["id"],
-        [_section(bottom), _section(top, alignment_point_id=top_center["id"])],
-        guide_curve_refs=[_guide_curve_ref(guide)],
-    )
-    assert response.status_code == 422
-    assert response.json()["detail"]["type"] == "invalid_loft_section"
+    bottom, top = _two_squares(part["id"])
+    guide = _guide_chain_xz(part["id"], [(5.0, 0.0), (7.0, 4.0), (5.0, 8.0)])
+    response = _create_loft(part["id"], [_section(bottom), _section(top)], guide_curves=[guide])
+    assert response.status_code == 201, response.json()
 
 
 def test_vertex_to_vertex_alignment_requires_first_section_alignment_point():
@@ -754,44 +745,28 @@ def test_guide_curve_refs_rejects_a_point_entity_type():
     response = _create_loft(
         part["id"],
         [_section(bottom), _section(top)],
-        guide_curve_refs=[
-            {"sketch_id": guide_sketch["sketch_id"], "entity_type": "point", "entity_id": point["id"]}
+        guide_curves=[
+            [{"sketch_id": guide_sketch["sketch_id"], "entity_type": "point", "entity_id": point["id"]}]
         ],
     )
     assert response.status_code == 422
 
 
-def test_update_loft_feature_can_clear_guide_curve_refs():
+def test_update_loft_feature_can_clear_guide_curves():
     part = _create_part()
-    bottom = _create_sketch_feature(part["id"], "XY")
-    _add_polygon(bottom["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
-    bottom_center = _add_point(bottom["sketch_id"], 0.0, 0.0)
-    plane = _move_sketch_feature_up(part["id"], bottom, 8.0)
-    top_response = client.post(
-        f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}
-    )
-    top = top_response.json()
-    _add_polygon(top["sketch_id"], [(-5, -5), (5, -5), (5, 5), (-5, 5)])
-    top_center = _add_point(top["sketch_id"], 0.0, 0.0)
-    guide = _guide_curve_xz(part["id"], (-0.75, -2.0), (3.75, 10.0))
+    bottom, top = _two_squares(part["id"])
+    guide = _guide_chain_xz(part["id"], [(5.0, 0.0), (7.0, 4.0), (5.0, 8.0)])
 
-    create_response = _create_loft(
-        part["id"],
-        [
-            _section(bottom, alignment_point_id=bottom_center["id"]),
-            _section(top, alignment_point_id=top_center["id"]),
-        ],
-        guide_curve_refs=[_guide_curve_ref(guide)],
-    )
+    create_response = _create_loft(part["id"], [_section(bottom), _section(top)], guide_curves=[guide])
     assert create_response.status_code == 201, create_response.json()
     feature_id = create_response.json()["id"]
-    assert len(create_response.json()["guide_curve_refs"]) == 1
+    assert len(create_response.json()["guide_curves"]) == 1
 
     patch_response = client.patch(
-        f"/document/parts/{part['id']}/loft-features/{feature_id}", json={"guide_curve_refs": []}
+        f"/document/parts/{part['id']}/loft-features/{feature_id}", json={"guide_curves": []}
     )
     assert patch_response.status_code == 200, patch_response.json()
-    assert patch_response.json()["guide_curve_refs"] == []
+    assert patch_response.json()["guide_curves"] == []
 
 
 # --- seam / direction / auto-align ---------------------------------------
@@ -806,7 +781,8 @@ def _volume(part_id: str) -> float:
 
     (solid,) = compute_part_bodies(get_part_or_404(part_id)).values()
     props = GProp_GProps()
-    brepgprop.VolumeProperties(solid, props)
+    # Adaptive integration: the default Gauss order is only ~1% accurate on a few-knot B-spline face.
+    brepgprop.VolumeProperties(solid, props, 1e-6)
     return props.Mass()
 
 
@@ -980,9 +956,11 @@ def test_triangle_to_circle_auto_alignment_is_as_good_as_the_best_explicit_seam(
     on a corner direction: the automatic result should match the best of a sweep of explicit seams."""
     automatic = _triangle_to_circle()
     best_explicit = max(_triangle_to_circle(k / 12, monkeypatch, auto_align=False) for k in range(12))
-    assert automatic >= best_explicit - 1.0
+    # Within 1%, not 1 mm3: the Gordon surface blends differently between neighbouring start vertices
+    # (the best explicit seam was 0.8% above the corner-aligned one), where ThruSections agreed to 0.3%.
+    assert automatic >= best_explicit * 0.99
     default_search = _triangle_to_circle(None, monkeypatch, auto_align=False)
-    assert automatic >= default_search - 0.5
+    assert automatic >= default_search * 0.995
 
 
 def test_seam_handles_report_each_sections_profile_and_the_seam_in_force(monkeypatch):

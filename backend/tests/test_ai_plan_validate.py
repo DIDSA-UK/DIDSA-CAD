@@ -1246,3 +1246,94 @@ def test_step_local_id_cannot_itself_use_the_existing_prefix() -> None:
 
     assert results["existing:sneaky"]["ok"] is False
     assert results["existing:sneaky"]["error"]["type"] == "reserved_local_id_prefix"
+
+
+def _loft_with_guide_steps(guide_end_x: float = -5.0) -> list[dict]:
+    """Two 10 x 10 squares 8 mm apart (the upper one on a plane made normal to a vertical line at its
+    top) and one guide - a two-line chain in the XZ plane bulging out through the middle of the +X
+    edges. XZ's local x runs opposite to world x, so world x = 5 / 8 is local -5 / -8."""
+
+    def square(sketch: str, tag: str, plane_key: str, plane_value: str) -> list[dict]:
+        corners = [(-5, -5), (5, -5), (5, 5), (-5, 5)]
+        return [
+            {"local_id": sketch, "kind": "sketch", plane_key: plane_value},
+            *[
+                {"local_id": f"{tag}{i}", "kind": "sketch_point", "sketch_feature_id": sketch, "x": x, "y": y}
+                for i, (x, y) in enumerate(corners)
+            ],
+            {
+                "local_id": f"{tag}r",
+                "kind": "sketch_rectangle",
+                "sketch_feature_id": sketch,
+                "corner_point_ids": [f"{tag}{i}" for i in range(4)],
+            },
+        ]
+
+    return (
+        square("sk1", "a", "plane", "XY")
+        + [
+            {"local_id": "ax", "kind": "sketch", "plane": "XZ"},
+            {"local_id": "ax0", "kind": "sketch_point", "sketch_feature_id": "ax", "x": 0, "y": 0},
+            {"local_id": "ax1", "kind": "sketch_point", "sketch_feature_id": "ax", "x": 0, "y": 8},
+            {"local_id": "axl", "kind": "sketch_line", "sketch_feature_id": "ax", "start_point_id": "ax0", "end_point_id": "ax1"},
+            {"local_id": "pl", "kind": "create_plane", "plane_type": "normal_to_line_at_point", "line_ref": "axl", "point_ref": "ax1"},
+        ]
+        + square("sk2", "b", "plane_feature_id", "pl")
+        + [
+            {"local_id": "gs", "kind": "sketch", "plane": "XZ"},
+            {"local_id": "g0", "kind": "sketch_point", "sketch_feature_id": "gs", "x": -5, "y": 0},
+            {"local_id": "g1", "kind": "sketch_point", "sketch_feature_id": "gs", "x": -8, "y": 4},
+            {"local_id": "g2", "kind": "sketch_point", "sketch_feature_id": "gs", "x": guide_end_x, "y": 8},
+            {"local_id": "gl1", "kind": "sketch_line", "sketch_feature_id": "gs", "start_point_id": "g0", "end_point_id": "g1"},
+            {"local_id": "gl2", "kind": "sketch_line", "sketch_feature_id": "gs", "start_point_id": "g1", "end_point_id": "g2"},
+        ]
+    )
+
+
+def test_loft_step_takes_a_guide_made_of_a_chain_of_lines() -> None:
+    part = _create_part()
+    steps = _loft_with_guide_steps() + [
+        {
+            "local_id": "lf",
+            "kind": "loft",
+            "sections": [{"sketch_feature_id": "sk1"}, {"sketch_feature_id": "sk2"}],
+            "mode": "boss",
+            "guide_curves": [["gl1", "gl2"]],
+        }
+    ]
+    response = _validate(part["id"], steps)
+    results = _results_by_local_id(response)
+    assert results["lf"]["ok"] is True, results["lf"]
+
+
+def test_loft_step_with_guides_and_ruled_is_an_invalid_payload() -> None:
+    part = _create_part()
+    steps = _loft_with_guide_steps() + [
+        {
+            "local_id": "lf",
+            "kind": "loft",
+            "sections": [{"sketch_feature_id": "sk1"}, {"sketch_feature_id": "sk2"}],
+            "mode": "boss",
+            "ruled": True,
+            "guide_curves": [["gl1", "gl2"]],
+        }
+    ]
+    results = _results_by_local_id(_validate(part["id"], steps))
+    assert results["lf"]["ok"] is False
+    assert results["lf"]["error"]["type"] == "invalid_step_payload"
+
+
+def test_loft_step_reports_a_guide_that_misses_a_section_far_away() -> None:
+    part = _create_part()
+    steps = _loft_with_guide_steps(guide_end_x=-40) + [
+        {
+            "local_id": "lf",
+            "kind": "loft",
+            "sections": [{"sketch_feature_id": "sk1"}, {"sketch_feature_id": "sk2"}],
+            "mode": "boss",
+            "guide_curves": [["gl1", "gl2"]],
+        }
+    ]
+    results = _results_by_local_id(_validate(part["id"], steps))
+    assert results["lf"]["ok"] is False
+    assert results["lf"]["error"]["type"] == "invalid_guide_curve_ref"

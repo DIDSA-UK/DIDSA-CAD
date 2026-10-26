@@ -456,9 +456,10 @@ class LoftStep(BaseModel):
     ruled: bool = False
     target_body_ids: list[str] = []
     thickness: float | None = None
-    # local_ids of earlier Line/Arc/Ellipse steps (Spline excluded - out of
-    # v1 generation scope, same restriction SweepStep.path_refs already has).
-    guide_curve_refs: list[str] = []
+    # Each guide is a chain: the local_ids of earlier Line/Arc/Ellipse steps (Spline excluded - out of
+    # v1 generation scope, same restriction SweepStep.path_refs already has), in order. Guides shape
+    # the loft and should touch every section; a ruled loft cannot have any.
+    guide_curves: list[list[str]] = []
 
 
 class MergeStep(BaseModel):

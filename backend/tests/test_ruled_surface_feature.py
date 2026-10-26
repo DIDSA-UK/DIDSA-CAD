@@ -5,6 +5,7 @@ construction (see `app.document.ruled_surface`'s own module docstring).
 Needs a real pythonocc-core environment (not available in this repo's own
 dev sandbox)."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -169,9 +170,30 @@ def test_ruled_surface_produces_the_same_shape_as_an_equivalent_loft_surface():
     ruled_body = _body(_get_bodies(part_a["id"]), ruled["id"])
     loft_body = _body(_get_bodies(part_b["id"]), loft["id"])
 
-    ruled_vertices = sorted(tuple(round(c, 6) for c in v) for v in ruled_body["mesh"]["vertices"])
-    loft_vertices = sorted(tuple(round(c, 6) for c in v) for v in loft_body["mesh"]["vertices"])
-    assert ruled_vertices == loft_vertices
+    # Loft Surface is now a Gordon network, Ruled Surface still `ThruSections`: the two surfaces are
+    # the same shape but tessellate differently, so compare what the shape is (bounds, area) rather
+    # than the exact mesh vertices this test used to pin.
+    def _bounds_and_area(body):
+        vertices = body["mesh"]["vertices"]
+        bounds = [(min(v[i] for v in vertices), max(v[i] for v in vertices)) for i in range(3)]
+        area = 0.0
+        for a, b, c in body["mesh"]["triangle_indices"]:
+            ab = [vertices[b][i] - vertices[a][i] for i in range(3)]
+            ac = [vertices[c][i] - vertices[a][i] for i in range(3)]
+            cross = (
+                ab[1] * ac[2] - ab[2] * ac[1],
+                ab[2] * ac[0] - ab[0] * ac[2],
+                ab[0] * ac[1] - ab[1] * ac[0],
+            )
+            area += 0.5 * sum(x * x for x in cross) ** 0.5
+        return bounds, area
+
+    ruled_bounds, ruled_area = _bounds_and_area(ruled_body)
+    loft_bounds, loft_area = _bounds_and_area(loft_body)
+    for (low_a, high_a), (low_b, high_b) in zip(ruled_bounds, loft_bounds):
+        assert low_a == pytest.approx(low_b, abs=1e-6)
+        assert high_a == pytest.approx(high_b, abs=1e-6)
+    assert ruled_area == pytest.approx(loft_area, rel=1e-6)
 
 
 # --- native_format round-trip -------------------------------------------------

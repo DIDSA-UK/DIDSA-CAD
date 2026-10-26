@@ -761,13 +761,13 @@ def _loft_surface_dependencies(part: Part, feature: LoftSurfaceFeature) -> tuple
     """Phase 1 surfacing package: `build_feature_graph`'s `LoftSurface
     Feature` dependency-edge logic - mirrors `_loft_dependencies` exactly,
     minus the `target_body_ids` line: every distinct Sketch named across
-    `sections` plus every distinct Sketch named across `guide_curve_refs`."""
+    `sections` plus every distinct Sketch named across `guide_curves`."""
     deps: set[str] = set()
     for section in feature.sections:
         sketch_feature_id = section.sketch_feature_id
         if part.get_feature(sketch_feature_id) is not None:
             deps.add(sketch_feature_id)
-    for ref in feature.guide_curve_refs:
+    for ref in (ref for guide in feature.guide_curves for ref in guide):
         guide_dep = _sketch_or_edge_ref_dependency(part, ref)
         if guide_dep is not None:
             deps.add(guide_dep)
@@ -915,7 +915,7 @@ def _loft_dependencies(part: Part, feature: LoftFeature) -> tuple[str, ...]:
     distinct Sketch named across `sections` (each entry may name a
     different Sketch, mirroring `_sweep_dependencies`' identical
     `path_refs` treatment) via its own owning SketchFeature, every distinct
-    Sketch named across `guide_curve_refs` the same way (mirrors `_sweep_
+    Sketch named across `guide_curves` the same way (mirrors `_sweep_
     dependencies`' own `path_refs` handling exactly - a guide curve is the
     identical "ordered, possibly cross-Sketch chain" shape), plus every
     `target_body_ids` entry's owning Feature for Cut mode, deduplicated via
@@ -929,7 +929,7 @@ def _loft_dependencies(part: Part, feature: LoftFeature) -> tuple[str, ...]:
         sketch_feature_id = section.sketch_feature_id
         if part.get_feature(sketch_feature_id) is not None:
             deps.add(sketch_feature_id)
-    for ref in feature.guide_curve_refs:
+    for ref in (ref for guide in feature.guide_curves for ref in guide):
         guide_dep = _sketch_or_edge_ref_dependency(part, ref)
         if guide_dep is not None:
             deps.add(guide_dep)
