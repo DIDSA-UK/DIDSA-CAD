@@ -1339,9 +1339,12 @@ class FeatureDto {
               (k, v) => MapEntry(int.parse(k), ChamferEdgeOptionsDto.fromJson(v as Map<String, dynamic>)),
             ) ??
             const {},
-        axisRef: json['axis_ref'] == null
-            ? null
-            : SketchEntityRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>),
+        // A Revolve's axis is a Sketch line ref; a Helix curve feature's `axis_ref` is a plane ref
+        // (`fixed_plane` / `face_ref` / `plane_feature_id`) and has no `sketch_id` - reading it as a
+        // line ref threw, so the create response and the whole feature list failed to parse.
+        axisRef: json['axis_ref'] is Map<String, dynamic> && (json['axis_ref'] as Map<String, dynamic>).containsKey('sketch_id')
+            ? SketchEntityRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>)
+            : null,
         angle: (json['angle'] as num?)?.toDouble(),
         mode: json['mode'] as String?,
         profileRefs: (json['profile_refs'] as List?)
