@@ -215,6 +215,40 @@ def test_a_realistic_very_tight_cone_gear_has_no_fold_risk_warning():
     assert not any("fold back on itself" in w for w in warnings)
 
 
+def test_fold_check_grid_normals_are_copies_not_views_into_freed_props():
+    """pythonocc-core 8.0's `GeomLProp_SLProps.Normal()` returns a view into
+    the props object, not a copy. The fold check used to store those views,
+    so after the next sample freed the props they read other grid points'
+    normals (585 of 625 wrong against 8.0.1.2), and fold-free default gears
+    reported a normal sign flip. Every stored normal must match a fresh
+    evaluation at its own (u, v). On 7.9.3 this passes with or without the
+    copy (there `Normal()` returned a copy)."""
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCC.Core.GeomAPI import GeomAPI_PointsToBSplineSurface
+    from OCC.Core.GeomLProp import GeomLProp_SLProps
+    from OCC.Core.TColgp import TColgp_Array2OfPnt
+    from OCC.Core.gp import gp_Pnt
+
+    poles = TColgp_Array2OfPnt(1, 6, 1, 6)
+    for i in range(1, 7):
+        for j in range(1, 7):
+            poles.SetValue(i, j, gp_Pnt(i * 10.0, j * 10.0, 3.0 * math.sin(i) * math.cos(j)))
+    surface = GeomAPI_PointsToBSplineSurface(poles).Surface()
+    face = BRepBuilderAPI_MakeFace(surface, 1e-6).Face()
+
+    samples = bevel_module._flank_surface_grid(face, 25)
+    wrong = 0
+    for u, v, _, normal in samples:
+        fresh = GeomLProp_SLProps(surface, u, v, 1, 1e-6)
+        assert fresh.IsNormalDefined()
+        expected = fresh.Normal()
+        assert normal is not None
+        if max(abs(normal.X() - expected.X()), abs(normal.Y() - expected.Y()), abs(normal.Z() - expected.Z())) > 1e-9:
+            wrong += 1
+    assert wrong == 0, f"{wrong} of {len(samples)} stored normals do not match their own (u, v)"
+    assert bevel_module._flank_fold_warning(face) is None
+
+
 # --- Invalid parameters (bevel_math validation surfacing through the router) --
 
 
