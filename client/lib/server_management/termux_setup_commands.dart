@@ -201,12 +201,15 @@ class TermuxSetupCommands {
   // match, so a genuinely-created env still reported as not-created - a
   // real, confirmed on-device symptom: the checklist never showed the env
   // as created, even long after a manual run had visibly finished creating
-  // it successfully. `micromamba run -n <env> python -c "import uvicorn"`
+  // it successfully. `micromamba run -n <env> python -c "<imports>"`
   // is authoritative instead: it only succeeds if the env exists *and* has
-  // what this project's backend actually needs, which is the real thing
-  // worth confirming here, not merely that some env named "didsa" exists.
+  // what this project's backend actually needs (see
+  // [TermuxCommands.envImportCheck] - including the OCCT 8 import, so an env
+  // built before the pythonocc-core pin moved reads as not ready), which is
+  // the real thing worth confirming here, not merely that some env named
+  // "didsa" exists.
   static const String _condaEnvReadyCheck =
-      '$micromambaBin run -n $condaEnv python -c "import uvicorn" >/dev/null 2>&1';
+      '$micromambaBin run -n $condaEnv python -c "${TermuxCommands.envImportCheck}" >/dev/null 2>&1';
 
   static const String _stage3Body =
       'export DEBIAN_FRONTEND=noninteractive\n'
@@ -248,7 +251,13 @@ class TermuxSetupCommands {
         '  git clone --branch $quotedBranch $repoUrl $repoDir\n'
         'fi\n'
         'if ! $_condaEnvReadyCheck; then\n'
-        '  $micromambaBin create -n $condaEnv -y -f $backendDir/environment.yml\n'
+        // An env that exists but fails the check is stale (built from an older
+        // environment.yml), so bring it up to date instead of trying to re-create it.
+        '  if $micromambaBin run -n $condaEnv true >/dev/null 2>&1; then\n'
+        '    $micromambaBin install -n $condaEnv -y -f $backendDir/environment.yml\n'
+        '  else\n'
+        '    $micromambaBin create -n $condaEnv -y -f $backendDir/environment.yml\n'
+        '  fi\n'
         'fi';
   }
 

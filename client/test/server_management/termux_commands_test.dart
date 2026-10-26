@@ -50,6 +50,14 @@ void main() {
       expect(script, contains('~/DIDSA-CAD'));
     });
 
+    test('pullLatest then brings the didsa env up to date if it cannot import what the backend needs', () {
+      final script = TermuxCommands.pullLatest('main').last;
+      expect(script, contains('from OCC.Core.GeomFill import GeomFill_Gordon'));
+      expect(script, contains('micromamba install -n didsa -y -f ~/DIDSA-CAD/backend/environment.yml'));
+      expect(script.indexOf('git reset --hard FETCH_HEAD'), lessThan(script.indexOf('micromamba install')));
+      expect(TermuxCommands.pullAndStart('main', 'key').last, contains('micromamba install -n didsa'));
+    });
+
     test('pullLatest single-quote-escapes a branch name containing a literal quote', () {
       final script = TermuxCommands.pullLatest("o'brien").last;
       expect(script, contains(r"'o'\''brien'"));
