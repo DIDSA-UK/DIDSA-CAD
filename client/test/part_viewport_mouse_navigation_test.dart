@@ -1,0 +1,105 @@
+import 'package:flutter/gestures.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
+import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
+
+/// Desktop input D1 (`docs/desktop-input-scope.md`): in selection mode (the
+/// mode most tools switch to) a mouse used to be unable to orbit or pan at
+/// all - every drag only moved the cursor. A middle drag now orbits and a
+/// right drag pans in every mode, and neither commits a selection. Needs
+/// the real viewport, so it skips without a GPU backend, as the other
+/// `PartViewport` pointer tests do.
+final _triangle = BodyMeshDto(
+  bodyId: 'body-1',
+  source: 'computed',
+  mesh: MeshDto(
+    vertices: [
+      [0, 0, 0],
+      [10, 0, 0],
+      [0, 10, 0],
+    ],
+    normals: [
+      [0, 0, 1],
+      [0, 0, 1],
+      [0, 0, 1],
+    ],
+    triangleIndices: [
+      [0, 1, 2],
+    ],
+  ),
+);
+
+Future<bool> _pumpUntilGpuReady(WidgetTester tester, {int maxPumps = 300}) async {
+  for (var i = 0; i < maxPumps; i++) {
+    if (find.byType(CircularProgressIndicator).evaluate().isEmpty) return true;
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+  return find.byType(CircularProgressIndicator).evaluate().isEmpty;
+}
+
+void main() {
+  testWidgets('selection mode: middle drag orbits, right drag pans, neither selects', (tester) async {
+    final key = GlobalKey<PartViewportState>();
+    final toggled = <SelectionEntityRef>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 400,
+            height: 400,
+            child: PartViewport(
+              key: key,
+              bodies: [_triangle],
+              selectedPlane: null,
+              onPlaneTap: (_) {},
+              onBackgroundTap: () {},
+              selectionMode: true,
+              onSelectionToggle: toggled.add,
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!await _pumpUntilGpuReady(tester)) {
+      markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+      return;
+    }
+    await tester.pump();
+    final state = key.currentState!;
+
+    final orientationBefore = state.debugCameraOrientation.clone();
+    final targetBefore = state.debugCameraTarget.clone();
+    final middle = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kMiddleMouseButton);
+    await middle.down(const Offset(200, 200));
+    await tester.pump();
+    await middle.moveBy(const Offset(40, 0));
+    await tester.pump();
+    await middle.up();
+    await tester.pump();
+    expect(state.debugCameraOrientation != orientationBefore, isTrue, reason: 'a middle drag orbits');
+    expect(state.debugCameraTarget, targetBefore, reason: 'a middle drag does not pan');
+    expect(state.debugMouseDriven, isTrue);
+
+    final right = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+    await right.down(const Offset(100, 100));
+    await tester.pump();
+    await right.moveBy(const Offset(0, 40));
+    await tester.pump();
+    await right.up();
+    await tester.pump();
+    expect(state.debugCameraTarget != targetBefore, isTrue, reason: 'a right drag pans');
+
+    // A right click (no drag) over the body commits nothing.
+    final click = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+    await click.down(const Offset(120, 220));
+    await tester.pump();
+    await click.up();
+    await tester.pump();
+    expect(toggled, isEmpty, reason: 'no middle or right drag or click may commit a selection');
+    expect(tester.takeException(), isNull);
+  });
+}

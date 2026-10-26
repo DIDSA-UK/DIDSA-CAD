@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/sketch_api_client.dart';
+import '../viewport3d/mouse_navigation.dart';
 import 'pattern_mirror_expansion.dart';
 import 'plane_indicator.dart';
 import 'sketch_controller.dart';
@@ -94,6 +95,32 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// separately from the single-finger cursor drag, which only applies
   /// while exactly one touch is active.
   final Map<int, Offset> _activeTouches = {};
+
+  /// Desktop input D1: the kind of the last pointer seen. While it's a mouse
+  /// the painted crosshair is skipped (the system cursor is already there -
+  /// see [_canvasMouseCursor]); a touch brings it back.
+  PointerDeviceKind? _lastPointerKind;
+
+  /// Where the current middle/right mouse drag was pressed (the point a
+  /// Shift+middle drag zooms toward) and what it last did - see
+  /// `mouse_navigation.dart`. A 2D canvas has nothing to orbit, so the
+  /// middle button's orbit pans here.
+  Offset? _mouseNavAnchor;
+  MouseNavAction? _mouseNavAction;
+
+  void _noteDeviceKind(PointerDeviceKind kind) {
+    if (_lastPointerKind == kind) return;
+    setState(() => _lastPointerKind = kind);
+  }
+
+  /// The system cursor over the canvas: what a view drag is doing, else a
+  /// crosshair for drawing and the arrow for selecting (the painted
+  /// crosshair's green/red, as a shape).
+  MouseCursor get _canvasMouseCursor {
+    final navAction = _mouseNavAction;
+    if (navAction != null) return mouseNavCursor(navAction == MouseNavAction.orbit ? MouseNavAction.pan : navAction);
+    return widget.controller.mode == SketchMode.draw ? SystemMouseCursors.precise : SystemMouseCursors.basic;
+  }
 
   /// Cumulative single-finger travel (pixels) since the touch that's about
   /// to end started - used to tell a tap (select gesture) apart from a
@@ -440,6 +467,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // Hover events only fire for a mouse with no buttons pressed - real
     // mouse movement drives the cursor directly, 1:1.
     if (event.kind != PointerDeviceKind.mouse) return;
+    _noteDeviceKind(event.kind);
     _refreshCursorMoveTimeIfMoved(event.localPosition);
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
     // Drag-mode's "swipe to move" for a mouse: since a grab/drop is two
@@ -701,6 +729,11 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // feeding into the pinch/pan handling below, which would otherwise
     // fight the marquee over what the gesture even means.
     if (_marqueeActive) return;
+    _noteDeviceKind(event.kind);
+    if (isMouseNavPress(event)) {
+      _mouseNavAnchor = event.localPosition;
+      return;
+    }
     if (event.kind == PointerDeviceKind.mouse) {
       // Only the primary (left) button counts as a bare tap, same as a
       // touch tap - a right-click starts a pan drag instead (see
@@ -759,13 +792,26 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // own early-return/intercept branch the way the old continuous-hold
     // label drag did.
     if (event.kind == PointerDeviceKind.mouse) {
-      if (event.buttons & kSecondaryMouseButton != 0) {
+      final navAction = mouseNavActionForEvent(event);
+      if (navAction != null) {
         // Panning never itself touches the cursor's sketch-space position
         // (see SketchController's class doc comment) - it may simply drift
         // off-canvas as a result, which is fine: the crosshair just stops
         // rendering (see _SketchPainter's isCursorVisible check) until the
         // next cursor-moving interaction brings it back.
-        setState(() => _viewport.panByScreenDelta(event.delta));
+        setState(() {
+          _mouseNavAction = navAction;
+          if (navAction == MouseNavAction.zoom) {
+            _viewport.zoomAtScreenPoint(
+              _mouseNavAnchor ?? event.localPosition,
+              1 / dragZoomFactor(event.delta.dy),
+              size,
+              contentBoundingBox: widget.controller.geometryBoundingBox,
+            );
+          } else {
+            _viewport.panByScreenDelta(event.delta);
+          }
+        });
       } else {
         _refreshCursorMoveTimeIfMoved(event.localPosition);
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
@@ -815,7 +861,11 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // fire if its pointer lifts first - same as any other gesture that's
     // still ambiguous when the pointer ends.
     _cancelLongPress();
-    if (event.kind == PointerDeviceKind.mouse) return;
+    if (event.kind == PointerDeviceKind.mouse) {
+      _mouseNavAnchor = null;
+      if (_mouseNavAction != null) setState(() => _mouseNavAction = null);
+      return;
+    }
 
     // A lone finger lifting (not the tail end of a pinch) after barely
     // moving is a tap - the select/draw/dimension gesture - rather than a
@@ -839,7 +889,10 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     if (event is PointerScrollEvent) {
       // Scrolling "down" (positive dy) zooms out, matching common map/CAD
       // tool conventions.
-      final scaleFactor = event.scrollDelta.dy > 0 ? 0.9 : 1 / 0.9;
+      // Desktop input D1: scaled by the scroll distance (one notch keeps the
+      // old 10 %) - see [wheelZoomFactor]; inverted, since a bigger zoom
+      // here means zoomed in.
+      final scaleFactor = 1 / wheelZoomFactor(event.scrollDelta.dy, perNotch: 1 / 0.9);
       setState(() => _viewport.zoomAtScreenPoint(
             event.localPosition,
             scaleFactor,
@@ -899,31 +952,36 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         final transform = _viewport.transformFor(size);
         return Stack(
           children: [
-            Listener(
-              onPointerDown: (e) => _handlePointerDown(e, transform),
-              onPointerHover: (e) => _handlePointerHover(e, transform),
-              onPointerMove: (e) => _handlePointerMove(e, transform, size),
-              onPointerUp: (e) => _handlePointerEnd(e, transform),
-              onPointerCancel: (e) => _handlePointerEnd(e, transform),
-              onPointerSignal: (e) => _handlePointerSignal(e, size),
-              child: AnimatedBuilder(
-                animation: widget.controller,
-                builder: (context, _) {
-                  return CustomPaint(
-                    size: size,
-                    painter: _SketchPainter(
-                      controller: widget.controller,
-                      transform: transform,
-                      referenceGhostSegments: widget.referenceGhostSegments,
-                      referenceGhostVertices: widget.referenceGhostVertices,
-                      referenceGhostEdges: widget.referenceGhostEdges,
-                      referenceBodyHidden: widget.referenceBodyHidden,
-                      labelsVisible: widget.constraintLabelsVisible,
-                      canvasColor: widget.canvasColor,
-                      canvasOpacity: widget.canvasOpacity,
-                    ),
-                  );
-                },
+            AnimatedBuilder(
+              animation: widget.controller,
+              builder: (context, child) => MouseRegion(cursor: _canvasMouseCursor, child: child),
+              child: Listener(
+                onPointerDown: (e) => _handlePointerDown(e, transform),
+                onPointerHover: (e) => _handlePointerHover(e, transform),
+                onPointerMove: (e) => _handlePointerMove(e, transform, size),
+                onPointerUp: (e) => _handlePointerEnd(e, transform),
+                onPointerCancel: (e) => _handlePointerEnd(e, transform),
+                onPointerSignal: (e) => _handlePointerSignal(e, size),
+                child: AnimatedBuilder(
+                  animation: widget.controller,
+                  builder: (context, _) {
+                    return CustomPaint(
+                      size: size,
+                      painter: _SketchPainter(
+                        controller: widget.controller,
+                        transform: transform,
+                        referenceGhostSegments: widget.referenceGhostSegments,
+                        referenceGhostVertices: widget.referenceGhostVertices,
+                        referenceGhostEdges: widget.referenceGhostEdges,
+                        referenceBodyHidden: widget.referenceBodyHidden,
+                        labelsVisible: widget.constraintLabelsVisible,
+                        canvasColor: widget.canvasColor,
+                        canvasOpacity: widget.canvasOpacity,
+                        hideCrosshair: _lastPointerKind == PointerDeviceKind.mouse,
+                      ),
+                    );
+                  },
+                ),
               ),
             ),
             AnimatedBuilder(
@@ -2203,6 +2261,10 @@ class _SketchPainter extends CustomPainter {
   final Color canvasColor;
   final double canvasOpacity;
 
+  /// Desktop input D1: skip the crosshair while a mouse drives the cursor -
+  /// the system cursor is already drawn at the same spot.
+  final bool hideCrosshair;
+
   _SketchPainter({
     required this.controller,
     required this.transform,
@@ -2213,6 +2275,7 @@ class _SketchPainter extends CustomPainter {
     this.labelsVisible = true,
     this.canvasColor = SketchCanvas.defaultColor,
     this.canvasOpacity = 1.0,
+    this.hideCrosshair = false,
   });
 
   /// Stage 12 item 9's ghost wireframe color - faint and thinner than every
@@ -4848,7 +4911,7 @@ class _SketchPainter extends CustomPainter {
     // SketchController.isEntityGrabbed) - the grabbed entity's own
     // highlight (see _grabbedColor above) *is* the cursor at that point,
     // showing both would be redundant/confusing.
-    if (controller.isCursorVisible(size, transform) && !controller.isEntityGrabbed) {
+    if (!hideCrosshair && controller.isCursorVisible(size, transform) && !controller.isEntityGrabbed) {
       final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
       final crosshairPaint = Paint()
         ..color = controller.mode == SketchMode.draw ? _sketchingCursorColor : _selectCursorColor

@@ -20,6 +20,7 @@ import '../sketch/sketch_controller.dart'
 import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
+import 'mouse_navigation.dart';
 import 'orbit_camera.dart';
 import 'orthographic_camera.dart';
 import 'reference_planes.dart';
@@ -1551,6 +1552,31 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Live touch pointers by id, for pinch-zoom/two-finger-pan - same
   /// approach as [SketchCanvas]'s `_activeTouches`.
   final Map<int, Offset> _activeTouches = {};
+
+  /// The kind of the last pointer seen (down, move or hover). While it's a
+  /// mouse the painted crosshairs are skipped and the system cursor shows
+  /// instead (see [_viewportMouseCursor]) - otherwise the two sit on top of
+  /// each other. A touch brings the painted crosshair back.
+  PointerDeviceKind? _lastPointerKind;
+
+  /// The mouse pointer currently dragging the view with the middle or
+  /// right button ([isMouseNavPress]), whatever mode the viewport is in -
+  /// see `mouse_navigation.dart`. Its press, moves and release never reach
+  /// the select/draw/orbit handlers, so a right click never commits a
+  /// selection and a middle drag orbits even in selection mode.
+  int? _mouseNavPointer;
+
+  /// Where [_mouseNavPointer] was pressed - the point a Shift+middle drag
+  /// zooms toward.
+  Offset? _mouseNavAnchor;
+
+  /// What [_mouseNavPointer]'s drag last did, for [_viewportMouseCursor].
+  MouseNavAction? _mouseNavAction;
+
+  bool get _mouseDriven => _lastPointerKind == PointerDeviceKind.mouse;
+
+  @visibleForTesting
+  bool get debugMouseDriven => _mouseDriven;
 
   /// The viewport's current size, refreshed every build - needed by
   /// [_handleTap] to build a [PerspectiveCamera.screenPointToRay] ray, which
@@ -4187,10 +4213,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _handlePointerMove(PointerMoveEvent event) {
     _gestureTravel += event.delta.distance;
     if (event.kind == PointerDeviceKind.mouse) {
+      // Right and middle drags never get here - see [_mouseNavPointer].
       if (event.buttons & kPrimaryMouseButton != 0) {
         setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
-      } else if (event.buttons & kSecondaryMouseButton != 0) {
-        setState(() => _camera.panByScreenDelta(event.delta.dx, event.delta.dy));
       }
       return;
     }
@@ -4453,7 +4478,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // zoom a bigger `fovRadiansY`/`halfHeight` means the same thing (a
       // wider-angle lens sees more of the scene, reading as "further away"),
       // so the same [scaleFactor] convention carries over unchanged.
-      final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 1 / 1.1;
+      // Desktop input D1: scaled by the scroll distance (one notch keeps the
+      // old 10 %) so a trackpad's stream of small deltas doesn't zoom a full
+      // notch per event - see [wheelZoomFactor].
+      final scaleFactor = wheelZoomFactor(event.scrollDelta.dy);
       // Item 6 (on-device feedback, repeated across several rounds:
       // zooming in on a Body's corner lost it from view far too soon): a
       // prior fix (zoomTowardScreenPoint) only anchored *which* point a
@@ -4464,13 +4492,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // own doc comment - branching on [OrbitCamera.isPerspective] since
       // the two projections track independent live zoom state
       // ([OrbitCamera.fovRadiansY] vs. [OrbitCamera.halfHeight]).
-      setState(() {
-        if (_camera.isPerspective) {
-          _camera.zoomFovTowardScreenPoint(scaleFactor, event.localPosition, _viewportSize);
-        } else {
-          _camera.zoomHalfHeightTowardScreenPoint(scaleFactor, event.localPosition, _viewportSize);
-        }
-      });
+      setState(() => _zoomCameraToward(scaleFactor, event.localPosition));
+    }
+  }
+
+  /// The lens zoom shared by the wheel and a Shift+middle drag: a
+  /// [scaleFactor] above 1 zooms out, anchored on [screenPoint].
+  void _zoomCameraToward(double scaleFactor, Offset screenPoint) {
+    if (_camera.isPerspective) {
+      _camera.zoomFovTowardScreenPoint(scaleFactor, screenPoint, _viewportSize);
+    } else {
+      _camera.zoomHalfHeightTowardScreenPoint(scaleFactor, screenPoint, _viewportSize);
     }
   }
 
@@ -4545,6 +4577,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Offset _viewportCenter() => Offset(_viewportSize.width / 2, _viewportSize.height / 2);
 
   void _onPointerDown(PointerDownEvent event) {
+    _noteDeviceKind(event.kind);
+    // Desktop input D1: a middle or right press drags the view in every
+    // mode, ahead of gizmos, marquee and select - see [_mouseNavPointer].
+    if (isMouseNavPress(event)) {
+      _mouseNavPointer = event.pointer;
+      _mouseNavAnchor = event.localPosition;
+      return;
+    }
     // Sectioning Tool: a gizmo-handle grab takes top priority over every
     // other pointer behavior (orbit, marquee-select, draw-cursor) - the
     // same "checked first, ahead of everything else" precedence
@@ -4630,6 +4670,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    if (event.pointer == _mouseNavPointer) {
+      _applyMouseNavigation(event);
+      return;
+    }
+    _noteDeviceKind(event.kind);
     // Bug fix: only the pointer that started this drag continues it - see
     // [_sectionDragPointerId]'s own doc comment. Any other pointer's move
     // falls through to the normal handling below, which keeps
@@ -4714,6 +4759,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerEnd(PointerEvent event) {
+    if (event.pointer == _mouseNavPointer) {
+      _endMouseNavigation(event);
+      return;
+    }
     // Bug fix: only the pointer that started this drag can end it - see
     // [_sectionDragPointerId]'s own doc comment. Any other pointer's
     // up/cancel event falls through to the normal handling below, which
@@ -4840,6 +4889,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerHover(PointerHoverEvent event) {
+    _noteDeviceKind(event.kind);
     if (widget.selectionMode) {
       _handleSelectionPointerHover(event.localPosition);
       return;
@@ -4849,6 +4899,61 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       return;
     }
     // No orbit-mode hover handling exists.
+  }
+
+  void _noteDeviceKind(PointerDeviceKind kind) {
+    if (_lastPointerKind == kind) return;
+    setState(() => _lastPointerKind = kind);
+  }
+
+  /// Desktop input D1: one move of a middle/right drag - see
+  /// `mouse_navigation.dart` for the bindings. The modifiers are read live,
+  /// so pressing Ctrl or Shift mid-drag switches to pan or zoom.
+  void _applyMouseNavigation(PointerMoveEvent event) {
+    final action = mouseNavActionForEvent(event);
+    if (action == null) return;
+    setState(() {
+      _mouseNavAction = action;
+      switch (action) {
+        case MouseNavAction.orbit:
+          _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy);
+        case MouseNavAction.pan:
+          _camera.panByScreenDelta(event.delta.dx, event.delta.dy);
+        case MouseNavAction.zoom:
+          _zoomCameraToward(dragZoomFactor(event.delta.dy), _mouseNavAnchor ?? event.localPosition);
+      }
+    });
+  }
+
+  /// Ends a middle/right drag: no tap, no selection commit (a right click
+  /// does nothing until the context menus of D4). The camera moved, so the
+  /// camera-dependent overlays resync, and the hover under the cursor is
+  /// recomputed where it now is.
+  void _endMouseNavigation(PointerEvent event) {
+    _mouseNavPointer = null;
+    _mouseNavAnchor = null;
+    setState(() {
+      _mouseNavAction = null;
+      _resyncCameraDependentOverlays();
+    });
+    if (event is! PointerUpEvent) return;
+    if (widget.selectionMode) {
+      _handleSelectionPointerHover(event.localPosition);
+    } else if (widget.drawCursorMode) {
+      _handleDrawCursorHover(event.localPosition);
+    }
+  }
+
+  /// The system cursor over the viewport: what a view drag is doing, a hand
+  /// while a gizmo handle is held, a crosshair for the draw cursor (which
+  /// is no longer painted for a mouse - see [_lastPointerKind]), else the
+  /// arrow.
+  MouseCursor get _viewportMouseCursor {
+    final navAction = _mouseNavAction;
+    if (navAction != null) return mouseNavCursor(navAction);
+    if (_sectionDragHandle != null || _componentGizmoDragHandle != null) return SystemMouseCursors.grabbing;
+    if (widget.drawCursorMode && !widget.suppressDrawCursor) return SystemMouseCursors.precise;
+    return SystemMouseCursors.basic;
   }
 
   /// Item 2: "Drag moves cursor relatively (sensitivity-scaled, not 1:1);
@@ -6840,59 +6945,62 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   painter: _OriginMarkerPainter(position: originMarkerScreen),
                 ),
               ),
-            Listener(
-              onPointerDown: _onPointerDown,
-              onPointerMove: _onPointerMove,
-              onPointerUp: _onPointerEnd,
-              onPointerCancel: _onPointerEnd,
-              onPointerHover: _onPointerHover,
-              onPointerSignal: _onPointerSignal,
-              child: CustomPaint(
-                size: size,
-                painter: _ScenePainter(
-                  scene: scene,
-                  camera: _camera,
+            MouseRegion(
+              cursor: _viewportMouseCursor,
+              child: Listener(
+                onPointerDown: _onPointerDown,
+                onPointerMove: _onPointerMove,
+                onPointerUp: _onPointerEnd,
+                onPointerCancel: _onPointerEnd,
+                onPointerHover: _onPointerHover,
+                onPointerSignal: _onPointerSignal,
+                child: CustomPaint(
                   size: size,
-                  polylineCarryingNodes: [
-                    ..._planeNodes.values,
-                    // Bug report ("the triad for moving and rotating the
-                    // section plane is not visible at all"): the section
-                    // gizmo/quad are built from `PolylineGeometry` too (see
-                    // `buildSectionGizmoNode`/`buildSectionPlaneQuadNode`,
-                    // `section_gizmo.dart`) and need the same per-frame
-                    // `updateForCamera` call every other polyline node here
-                    // gets (see `_ScenePainter.paint`'s own loop over this
-                    // list) - without it their camera-facing strip geometry
-                    // never gets built, so they render as degenerate/
-                    // invisible despite being added to the Scene.
-                    ..._sectionQuadNodes.values,
-                    if (_sectionGizmoNode != null) _sectionGizmoNode!,
-                    // Bug fix ("the Move/Rotate gizmo does not render in
-                    // Assembly mode"): same root cause the section-gizmo
-                    // comment right above already documents - built from
-                    // `PolylineGeometry` (see `buildComponentGizmoNode`) but
-                    // never added to this list, so its camera-facing strip
-                    // geometry never got built and it rendered as
-                    // degenerate/invisible despite being added to the Scene.
-                    if (_componentGizmoNode != null) _componentGizmoNode!,
-                    if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
-                    if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
-                    if (_drawGhostGuideNode != null) _drawGhostGuideNode!,
-                    if (_drawGhostNode != null) _drawGhostNode!,
-                    if (_drawIndicatorsNode != null) _drawIndicatorsNode!,
-                    if (_profileFillNode != null) _profileFillNode!,
-                    if (_profileBranchMarkersNode != null) _profileBranchMarkersNode!,
-                    ..._sketchNodes.values,
-                    ..._createPlaneNodes.values,
-                    ..._edgesNodes.values,
-                    ..._assemblyInstanceEdgesNodes.values,
-                    if (_hoverNode != null) _hoverNode!,
-                    if (_selectedEdgesNode != null) _selectedEdgesNode!,
-                    if (_selectedVerticesNode != null) _selectedVerticesNode!,
-                    if (_selectedActiveSketchEdgesNode != null) _selectedActiveSketchEdgesNode!,
-                    if (_selectedActiveSketchVerticesNode != null) _selectedActiveSketchVerticesNode!,
-                  ],
-                  anchorTriadAtOrigin: widget.anchorTriadAtOrigin,
+                  painter: _ScenePainter(
+                    scene: scene,
+                    camera: _camera,
+                    size: size,
+                    polylineCarryingNodes: [
+                      ..._planeNodes.values,
+                      // Bug report ("the triad for moving and rotating the
+                      // section plane is not visible at all"): the section
+                      // gizmo/quad are built from `PolylineGeometry` too (see
+                      // `buildSectionGizmoNode`/`buildSectionPlaneQuadNode`,
+                      // `section_gizmo.dart`) and need the same per-frame
+                      // `updateForCamera` call every other polyline node here
+                      // gets (see `_ScenePainter.paint`'s own loop over this
+                      // list) - without it their camera-facing strip geometry
+                      // never gets built, so they render as degenerate/
+                      // invisible despite being added to the Scene.
+                      ..._sectionQuadNodes.values,
+                      if (_sectionGizmoNode != null) _sectionGizmoNode!,
+                      // Bug fix ("the Move/Rotate gizmo does not render in
+                      // Assembly mode"): same root cause the section-gizmo
+                      // comment right above already documents - built from
+                      // `PolylineGeometry` (see `buildComponentGizmoNode`) but
+                      // never added to this list, so its camera-facing strip
+                      // geometry never got built and it rendered as
+                      // degenerate/invisible despite being added to the Scene.
+                      if (_componentGizmoNode != null) _componentGizmoNode!,
+                      if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
+                      if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
+                      if (_drawGhostGuideNode != null) _drawGhostGuideNode!,
+                      if (_drawGhostNode != null) _drawGhostNode!,
+                      if (_drawIndicatorsNode != null) _drawIndicatorsNode!,
+                      if (_profileFillNode != null) _profileFillNode!,
+                      if (_profileBranchMarkersNode != null) _profileBranchMarkersNode!,
+                      ..._sketchNodes.values,
+                      ..._createPlaneNodes.values,
+                      ..._edgesNodes.values,
+                      ..._assemblyInstanceEdgesNodes.values,
+                      if (_hoverNode != null) _hoverNode!,
+                      if (_selectedEdgesNode != null) _selectedEdgesNode!,
+                      if (_selectedVerticesNode != null) _selectedVerticesNode!,
+                      if (_selectedActiveSketchEdgesNode != null) _selectedActiveSketchEdgesNode!,
+                      if (_selectedActiveSketchVerticesNode != null) _selectedActiveSketchVerticesNode!,
+                    ],
+                    anchorTriadAtOrigin: widget.anchorTriadAtOrigin,
+                  ),
                 ),
               ),
             ),
@@ -6962,7 +7070,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 if (anchor == null) return const SizedBox.shrink();
                 return widget.activeConstraintOverlayItemBuilder!(anchor);
               }),
-            if (widget.selectionMode && _displayCursorPosition != null)
+            // Desktop input D1: not for a mouse - the system cursor is
+            // already there, and the hover pre-highlight shows what's under
+            // it (see [_lastPointerKind]).
+            if (widget.selectionMode && _displayCursorPosition != null && !_mouseDriven)
               IgnorePointer(
                 child: CustomPaint(
                   size: size,
@@ -6995,7 +7106,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // [PartViewport.drawCursorHoverColor]'s own doc comment - Trim/
             // Extend now shares this same crosshair but with 2D's own
             // red-for-non-draw tint instead).
-            if (widget.drawCursorMode && _displayCursorPosition != null && !widget.suppressDrawCursor)
+            // Desktop input D1: likewise skipped for a mouse (the system
+            // crosshair, [_viewportMouseCursor], takes its place).
+            if (widget.drawCursorMode && _displayCursorPosition != null && !widget.suppressDrawCursor && !_mouseDriven)
               IgnorePointer(
                 child: CustomPaint(
                   size: size,

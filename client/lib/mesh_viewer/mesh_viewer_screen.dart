@@ -23,6 +23,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/orbit_camera.dart';
 import '../viewport3d/scene_controls_panel.dart';
 import '../viewport3d/scene_preferences.dart';
@@ -895,10 +896,20 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
 
   void _handlePointerMove(PointerMoveEvent event) {
     if (event.kind == PointerDeviceKind.mouse) {
-      if (event.buttons & kPrimaryMouseButton != 0) {
-        setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
-      } else if (event.buttons & kSecondaryMouseButton != 0) {
-        setState(() => _camera.panByScreenDelta(event.delta.dx, event.delta.dy));
+      // Desktop input D1: the shared middle/right bindings (see
+      // `mouse_navigation.dart`); the left button still orbits here, since
+      // a viewer has nothing to select.
+      final navAction = mouseNavActionForEvent(event) ??
+          (event.buttons & kPrimaryMouseButton != 0 ? MouseNavAction.orbit : null);
+      switch (navAction) {
+        case MouseNavAction.orbit:
+          setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
+        case MouseNavAction.pan:
+          setState(() => _camera.panByScreenDelta(event.delta.dx, event.delta.dy));
+        case MouseNavAction.zoom:
+          setState(() => _camera.zoomByFactor(dragZoomFactor(event.delta.dy)));
+        case null:
+          break;
       }
       return;
     }
@@ -917,8 +928,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
 
   void _handlePointerSignal(PointerSignalEvent event) {
     if (event is PointerScrollEvent) {
-      final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 1 / 1.1;
-      setState(() => _camera.zoomByFactor(scaleFactor));
+      setState(() => _camera.zoomByFactor(wheelZoomFactor(event.scrollDelta.dy)));
     }
   }
 

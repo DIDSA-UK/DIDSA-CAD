@@ -1,7 +1,7 @@
 # Mouse, keyboard and big-screen use — scope
 
-**Status:** recommendations only, for the owner to approve or change (section 7). Nothing built yet. Written 26 Oct 2026 from a read of
-`client/lib` on `main` and the owner's first test on a Samsung phone in DeX (external monitor, mouse, keyboard): "reasonable, but needs
+**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 built on branch `claude/flutter-desktop-mode-ui-pxmq0q`
+(Progress below). Written 26 Oct 2026 from a read of `client/lib` on `main` and the owner's first test on a Samsung phone in DeX (external monitor, mouse, keyboard): "reasonable, but needs
 polish and alignment with desktop CAD controls. Middle click drag to orbit; mouse cursors are on top of each other."
 
 **Target:** an Android device driving an external monitor with a mouse and keyboard: Samsung DeX, and the same thing on non-Samsung
@@ -9,7 +9,39 @@ devices (Android 16 desktop windowing, Motorola Ready For, a plain USB-C monitor
 touch screen, so touch must keep working everywhere but must not be needed for anything. The same work helps the Windows build, which
 has the same gaps.
 
-## 1. What the app does today
+## Progress
+
+| Phase | Summary | Status | Where |
+|---|---|---|---|
+| D1 | Middle/right mouse drags navigate in every mode (SOLIDWORKS bindings), one cursor, scroll-scaled wheel zoom | Done (not merged; unit and widget tested, the 3D viewport test skips without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
+| D2-D6 | | Not started | |
+
+Update this table with every milestone.
+
+### D1 implementation notes
+
+- `client/lib/viewport3d/mouse_navigation.dart`: the bindings (`mouseNavActionFor`: middle orbit, Ctrl+middle pan, Shift+middle
+  zoom, right pan; modifiers read live on every move), `wheelZoomFactor` (one notch, taken as 50 px of scroll, keeps the old 10 %;
+  smaller deltas zoom in proportion; never more than a notch per event), `dragZoomFactor` (drag up zooms in) and the cursor per
+  action. Tests: `test/mouse_navigation_test.dart`.
+- **3D viewport** (`part_viewport.dart`): a middle or right mouse press is taken first in `_onPointerDown`, ahead of gizmos, marquee,
+  select and draw cursor (`_mouseNavPointer`); its moves and release never reach those handlers, so a right click no longer commits a
+  selection (or fires a background tap in orbit mode) and a middle drag orbits in selection and draw-cursor modes. On release the hover
+  is recomputed at the pointer. Left drag in orbit mode still orbits (the Orbit/Select button stays until D6 hides it for a mouse).
+  The painted crosshairs are skipped while the last pointer was a mouse (`_lastPointerKind`); a `MouseRegion` shows the system cursor:
+  crosshair (`precise`) for the draw cursor, a hand while a gizmo is held, `allScroll`/`grabbing`/`zoomIn` while orbiting/panning/
+  zooming, else the arrow. Test: `test/part_viewport_mouse_navigation_test.dart` (skips without a GPU backend, as the other viewport
+  pointer tests do here and in CI).
+- **2D sketch canvas** (`sketch_canvas.dart`): middle drag pans (nothing to orbit), Ctrl+middle and right drag pan, Shift+middle zooms
+  about the press point; the crosshair is not painted for a mouse; the cursor is a crosshair in draw mode and the arrow in select mode.
+  Test: `test/sketch_canvas_mouse_navigation_test.dart`.
+- **Mesh viewer**: the same middle/right bindings; left drag still orbits (nothing to select).
+- What D1 loses for a mouse: the painted crosshair's colour (blue over geometry in select, green over a valid draw point). The hover
+  pre-highlight still shows what's under the cursor in select; the draw case has only the cursor shape. Worth judging on the device.
+- Not checked: the wheel notch size DeX reports (if under 50 px, each notch zooms a little less than before), and the Shift+middle
+  zoom direction against SOLIDWORKS' (chosen as drag up = zoom in).
+
+## 1. What the app did before D1
 
 ### 3D viewport (`viewport3d/part_viewport.dart`)
 
@@ -90,15 +122,16 @@ What they all share, and what a user expects:
 
 ### R1. A mouse binding map, without modes (viewport, mesh viewer, embedded sketch, 2D sketch)
 
-One small class, say `viewport3d/navigation_bindings.dart`, that turns `(buttons, modifiers, drag or click)` into an intent: `orbit`,
-`pan`, `zoom`, `select`, `contextMenu`. All three canvases call it instead of each testing `kPrimaryMouseButton` itself. Default
-("DIDSA"), what the owner asked for and close to SolidWorks and Blender:
+One small module (built in D1 as `viewport3d/mouse_navigation.dart`) that turns buttons and modifiers into an intent. All three
+canvases call it instead of each testing `kPrimaryMouseButton` itself. **SOLIDWORKS is the template** (owner, 26 Oct 2026), with right
+drag kept as pan so there's a pan with no keyboard attached:
 
 | Mouse | Action |
 |---|---|
 | MMB drag | orbit (2D sketch canvas: pan) |
-| Shift+MMB or Ctrl+MMB drag | pan |
-| RMB drag (past the tap threshold) | pan (as today) |
+| Ctrl+MMB drag | pan |
+| Shift+MMB drag | zoom |
+| RMB drag (past the tap threshold) | pan (as before; SOLIDWORKS uses it for mouse gestures - owner to reassess in testing) |
 | RMB click (no drag) | context menu at the cursor (R4) |
 | Wheel | zoom to cursor, scaled by how far it scrolled (R1c) |
 | LMB click | select / draw / commit (as the current mode says) |
@@ -117,7 +150,7 @@ view moves with the middle and right buttons. The FAB is still there for touch a
 - **R1c, wheel and trackpad scaling:** `factor = pow(1.0015, scrollDelta.dy)` (tune the base) instead of a flat 1.1 per event, in
   both the 3D viewport and the sketch canvas. Also handle `PointerPanZoomUpdateEvent` (precision trackpads, Chromebooks, Windows)
   as pinch plus pan.
-- **R1d, presets** (Settings, stored with the other client settings): DIDSA (above), SolidWorks (Ctrl+MMB pan), Fusion 360
+- **R1d, presets** (Settings, stored with the other client settings): SOLIDWORKS (above, the default), Fusion 360
   (Shift+MMB orbit, MMB pan), Onshape (RMB drag orbit, MMB pan, RMB click menu), Blender (Shift+MMB pan). Plus "invert wheel
   zoom" and an orbit speed slider. Cheap once R1 is a table, and it matters to people coming from any one of them.
 
@@ -153,8 +186,13 @@ Suggested first set:
 | Ctrl+S, Ctrl+Shift+S, Ctrl+O, Ctrl+N | save, save as, open, new |
 | Ctrl+A | select all (sketch) |
 | F | fit all (Reset view) |
-| 1-7 or numpad | front, back, left, right, top, bottom, isometric (`animateToPlane` / `animateToIsometric` exist) |
-| 5 or P | perspective / orthographic toggle |
+| Ctrl+1 ... Ctrl+7 | front, back, left, right, top, bottom, isometric, as SOLIDWORKS (`animateToPlane` / `animateToIsometric` exist) |
+| Ctrl+8 | normal to the selected face or plane (SOLIDWORKS) |
+| Space | the view orientation picker (SOLIDWORKS) |
+| Z / Shift+Z | zoom out / in (SOLIDWORKS) |
+| Arrow keys, Shift+arrows, Ctrl+arrows | rotate the view, rotate 90°, pan (SOLIDWORKS) |
+| Ctrl+B | rebuild / recompute (SOLIDWORKS) |
+| P | perspective / orthographic toggle |
 | S | the sketch tool menu; in a sketch: L line, C circle, A arc, R rectangle, D dimension, T trim, X construction |
 | E, V | extrude, revolve (the tool shortcuts follow Fusion where they don't clash) |
 | Shift+/ (?) or F1 | the shortcut sheet |
@@ -195,8 +233,8 @@ Don't decide by platform (DeX reports Android). Decide by **window size** and **
 - Hover highlights on tree rows and toolbar buttons (Material gives most of this once controls are proper buttons; check the custom
   rows in `feature_tree_panel.dart` / `assembly_tree_panel.dart`).
 - Double-click a feature row to edit it; double-click a dimension to edit its value (already one click on touch; keep both).
-- Ctrl+click adds to / removes from the selection, plain click replaces it (desktop CAD's rule). Today every click toggles, which on
-  touch is right but with a mouse means clicking empty space or Esc to clear. Apply only to mouse clicks.
+- Ctrl+click adds to / removes from the selection, plain click replaces it, a click on empty space clears it (SOLIDWORKS' rule; the
+  owner chose it for the mouse). Today every click toggles, which stays for touch. **Moved into D2.**
 - A middle click in a sketch tool ends the current chain (like Enter), as SolidWorks does.
 - Number fields: the wheel over a focused field nudges the value (Fusion), Up/Down arrows likewise.
 - DeX window resize: check that panels clamp sensibly when the window is narrow or short (the resizable panels store fractions, so
@@ -207,11 +245,11 @@ Don't decide by platform (DeX reports Android). Decide by **window size** and **
 | Phase | Covers | Size | Notes |
 |---|---|---|---|
 | D1 | R1a, R1c, R2: middle and right drag navigate in every mode; one cursor; scaled wheel zoom | small | Fixes both things from the first test. Widget-testable with `tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kMiddleMouseButton)`. |
-| D2 | R1b, R1 binding table, plain-drag box select, MMB double-click fit | small-medium | Orbit about the cursor needs a hit-test on press; there's no extra round trip to the backend. |
+| D2 | R1b, plain-drag box select, MMB double-click fit, desktop click selection for a mouse (R6) | small-medium | Orbit about the cursor needs a hit-test on press; there's no extra round trip to the backend. |
 | D3 | R3: shortcut table, Esc/Enter/Delete/undo/save/views/fit, sketch tool keys, `?` sheet, tooltip hints | medium | Esc must never fall through to Android Back. |
 | D4 | R4: right-click popups via `showActionSheet(position:)` | small-medium | One helper, then each call site. |
 | D5 | R1d presets + settings, R6 polish | small | |
-| D6 | R5: `InputModality`, desktop layout ≥ 1000 dp | large | Scope separately once D1-D3 have been used in DeX for a while. |
+| D6 | R5: `InputModality`, the full desktop layout ≥ 1000 dp | large | The owner wants "a full desktop CAD experience" from a docked phone. Scope it separately (it touches every screen). |
 
 D1 to D3 make DeX feel like a desktop CAD tool without touching the layout; D6 is what makes it look like one.
 
@@ -236,12 +274,11 @@ Nothing here has been run; this is from reading the code. In particular, check o
 - that `SystemMouseCursors.precise`, `grab` and `none` show in DeX (Flutter maps them to Android pointer icons, API 24+);
 - the trackpad case: DeX on a laptop-style touchpad, or the phone screen used as a touchpad, delivers scroll events, not pan-zoom ones.
 
-## 7. Decisions for the owner
+## 7. Decisions (owner, 26 Oct 2026)
 
-1. **Default mapping:** DIDSA as in R1 (MMB orbit, Shift/Ctrl+MMB or RMB drag pan, RMB click menu), or straight SolidWorks, Fusion or
-   Onshape as the default?
-2. **Right drag:** pan (as now, recommended), or orbit like Onshape?
-3. **Selection with a mouse:** keep "every click toggles" or switch to "click replaces, Ctrl+click adds" for mouse clicks only (R6)?
-4. **How far to take the layout (R5/D6):** the docked panels and top toolbar described, something lighter (same layout, compact
-   density, popovers instead of sheets), or leave it until D1-D3 have had some use?
-5. Order: D1 → D2 → D3 → D4 → D5, D6 last. Change if keyboard shortcuts matter more than orbit about the cursor.
+1. **Template: SOLIDWORKS** (the larger user base). MMB orbit, Ctrl+MMB pan, Shift+MMB zoom, its view keys (R3).
+2. **Right drag stays pan** for now (it gives a pan with no keyboard); the owner will reassess in testing. Ctrl+MMB pans too.
+3. **Selection with a mouse matches desktop CAD:** click replaces, Ctrl+click adds/removes, click on empty space clears. Touch keeps
+   toggling.
+4. **Layout: up to a full desktop-style experience** - dock a phone and get a full desktop CAD app (D6, scoped on its own).
+5. Order as section 4: D1 → D2 → D3 → D4 → D5, D6 scoped separately.
