@@ -568,7 +568,7 @@ class CurveType(str, Enum):
     """Which curve-construction method a `CurveFeature` uses - mirrors
     `PlaneType`'s own "one Feature class, many construction methods" str-Enum
     pattern:
-    - `HELIX`: a constant-pitch helix around `axis_ref` (a `PlaneRef` - its
+    - `HELIX`: a helix (optionally tapered, with pitch segments) around `axis_ref` (a `PlaneRef` - its
       origin is the helix's start point, its normal the axis direction).
     - `INTERSECTION`: the 3D curve where two Sketches' profiles, each
       extruded along its own sketch plane's normal, intersect - the standard
@@ -580,13 +580,24 @@ class CurveType(str, Enum):
     INTERSECTION = "intersection"
 
 
+@dataclass(frozen=True)
+class HelixSegment:
+    """One stretch of a helix: `turns` revolutions at `pitch` (axis advance per revolution; its sign is
+    the direction along the axis, and every segment of a helix has the same sign). A helix is a list
+    of these, so the pitch can change along it (a spring with tight end coils). Its total height is
+    the sum of pitch x turns."""
+
+    pitch: float
+    turns: float
+
+
 @dataclass
 class CurveFeature(Feature):
     """A 3D curve, fully determined by one of two construction methods,
     never more than one at once - mirrors `CreatePlaneFeature`'s "one
     dataclass, `router`-validated field combination per type" convention
     rather than splitting into `HelixFeature`/`IntersectionCurveFeature`:
-    - `HELIX`: `axis_ref`/`radius`/`pitch`/`turns`/`right_handed` set.
+    - `HELIX`: `axis_ref`/`radius`/`segments`/`right_handed` set, `end_radius` optionally.
     - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`/
       `sketch_feature_id_b`/`profile_refs_b` set - `profile_refs_a`/`_b`
       pick which entities of each Sketch form the profile to extrude and
@@ -602,6 +613,9 @@ class CurveFeature(Feature):
     a `SketchOrEdgeRef.curve_feature_id` is accepted (a Sweep/Swept-Surface
     path, a Fill Surface boundary) and as the curve source for
     `CreatePlaneFeature.plane_type == NORMAL_TO_CURVE_FEATURE_AT_PARAMETER`.
+    A helix starts at `radius` and, when `end_radius` is set, tapers linearly with height to it
+    (`None`: constant radius). The API also accepts a taper angle in place of `end_radius`
+    (`end_radius = radius + height * tan(angle)`) and returns both; only `end_radius` is stored.
     The actual OCCT resolution lives in `app.document.curve` (this module
     stays OCCT-free, mirroring `ResolvedPlane`'s own "coordinates only"
     convention - the resolved curve geometry itself, `ResolvedCurve`, lives
@@ -612,8 +626,8 @@ class CurveFeature(Feature):
     curve_type: CurveType
     axis_ref: PlaneRef | None = None
     radius: float | None = None
-    pitch: float | None = None
-    turns: float | None = None
+    end_radius: float | None = None
+    segments: list["HelixSegment"] = field(default_factory=list)
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRef] = field(default_factory=list)
@@ -1936,13 +1950,14 @@ class LoftSection:
     `alignment_point` (optional, same `SketchEntityRef`-restricted-to-
     `POINT`-in-this-section's-own-Sketch shape as `reference_point`, but a
     genuinely separate field - never conflated with it) is a second,
-    independent alignment mechanism, added later alongside `LoftFeature.
-    guide_curve_refs`: a *translation*, not a rotation, applied after
-    `reference_point`'s rotation (if any) - see `app.document.loft`'s own
-    `_apply_alignment_point_translation` for the exact rule (follow a
-    guide curve if `LoftFeature.guide_curve_refs` is set, otherwise track
-    the first section's own `alignment_point`). Deliberately its own field
-    rather than reusing `reference_point` for this too: `reference_point`'s
+    independent alignment mechanism: a *translation*, not a rotation,
+    applied after `reference_point`'s rotation (if any) - see
+    `app.document.loft`'s own `_apply_alignment_point_translation` for the
+    rule: every section's chosen point is slid, within its own plane, onto
+    the first section's. It is only for that unguided "line the sections
+    up" use; guide curves (`LoftFeature.guide_curves`) never move a section
+    and need no alignment point. Deliberately its own field rather than
+    reusing `reference_point` for this too: `reference_point`'s
     rotation-only behaviour is load-bearing for helical/herringbone gear
     teeth (`app.document.gear`'s loft-between-two-rotated-copies technique
     - a *translation* there would slide a tooth off its own gear axis,
@@ -1985,14 +2000,13 @@ class LoftFeature(Feature):
     """`docs/gear-design/04-helical-herringbone-loft.md` (4b): a genuinely
     standalone Feature (useful on its own, not gear-specific - same
     "useful on its own" status `SweepFeature` already has), lofting a
-    solid through 2+ ordered `sections` via `BRepOffsetAPI_ThruSections`
-    (`isSolid=True`) - the OCCT-dependent construction lives in
-    `app.document.loft`, not here, same module split every other Feature
-    type here already keeps.
+    solid through 2+ ordered `sections` as a Gordon surface network
+    (`app.document.loft_gordon`: the sections plus `guide_curves`) - the
+    OCCT-dependent construction lives in `app.document.loft`, not here,
+    same module split every other Feature type here already keeps.
 
-    `ruled` selects `ThruSections`' own ruled-vs-smooth surface mode
-    (straight-line-interpolated between consecutive sections vs. a smooth
-    spline blend) - per the 04 doc's own spike, this makes no measurable
+    `ruled` selects ruled-vs-smooth spans (straight-line-interpolated
+    between consecutive sections vs. a smooth spline blend) - per the 04 doc's own spike, this makes no measurable
     difference for exactly 2 sections (a spline fit through 2 points
     degenerates to the same result as a straight line), only relevant once
     3+ sections are involved.
@@ -2030,25 +2044,17 @@ class LoftFeature(Feature):
     sections, nor mixes thin-wall sources - whichever mode applies, it
     applies to every section at once, not per-section.
 
-    `guide_curve_refs` (optional, empty by default - completely unchanged
-    behaviour when omitted): an ordered, possibly cross-Sketch chain of
-    Line/Arc/Ellipse/Spline references - the exact same shape and the same
-    resolution machinery (`app.document.sweep.resolve_path_wire`) as
-    `SweepFeature.path_refs`, just used as a *rail* here rather than an
-    extrusion direction. When set, every `sections` entry must carry a
-    `LoftSection.alignment_point` (`app.document.router._validate_loft_
-    guide_curve_refs`) - `app.document.loft._apply_alignment_point_
-    translation` then slides each section (a rigid in-plane translation,
-    never a reshape) so its own `alignment_point` lands exactly on this
-    curve's own intersection with that section's plane, letting the loft
-    follow a curved backbone (e.g. a bent handle/pipe transition) rather
-    than a straight line between each section's own local origin. Not a
-    reshape of the rest of each section's own boundary to hug the curve
-    (a materially harder, still-unsolved multi-guide-curve surface-fitting
-    problem real CAD tools handle with their own dedicated algorithms) -
-    an honest, narrower v1: one designated point per section rides the
-    rail exactly, the rest of that section's own shape is carried along
-    rigidly with it."""
+    `guide_curves` (optional, empty by default): any number of guide curves
+    that *shape* the loft. Each guide is itself an ordered, possibly
+    cross-Sketch chain of Line/Arc/Ellipse/Spline references - the shape and
+    the resolution machinery (`app.document.sweep.resolve_path_wire`) of
+    `SweepFeature.path_refs` - and should touch every section: the surface
+    is built through the network of sections and guides
+    (`app.document.loft_gordon`). A guide that misses a section by a little
+    is bent to meet it and reported as a warning; one that misses by a lot,
+    or stays on different edges of different sections, is a 422. Guides
+    cannot be combined with `ruled`. No section needs an `alignment_point`.
+    """
 
     id: str
     sections: list[LoftSection]
@@ -2057,7 +2063,7 @@ class LoftFeature(Feature):
     target_body_ids: list[str] = field(default_factory=list)
     thickness: float | None = None
     thin_from_closed_profile: bool = False
-    guide_curve_refs: list[SketchOrEdgeRef] = field(default_factory=list)
+    guide_curves: list[list[SketchOrEdgeRef]] = field(default_factory=list)
 
     @property
     def type(self) -> str:
@@ -2076,8 +2082,8 @@ class LoftFeature(Feature):
 class LoftSurfaceFeature(Feature):
     """Phase 1 surfacing package: the Loft-Surface counterpart of
     `LoftFeature` - lofts between 2+ ordered `sections` (reusing `LoftSection`
-    verbatim, see that dataclass's own docstring) via `BRepOffsetAPI_
-    ThruSections(isSolid=False, ...)`, always into an open `TopoDS_Shell` -
+    verbatim, see that dataclass's own docstring) as a Gordon network
+    (`app.document.loft_gordon`), always into an open `TopoDS_Shell` -
     unlike `LoftFeature`, there is no `thickness` field to switch between a
     closed-profile and an open-chain path (`app.document.loft_surface`'s own
     dispatcher instead *probes*: try every section as a closed Profile
@@ -2087,7 +2093,7 @@ class LoftSurfaceFeature(Feature):
     onto this Feature's own output afterward. No Boss/Cut, no `target_body_
     ids` - always a brand-new, standalone Surface, same as `SurfaceFeature`.
 
-    `ruled`/`guide_curve_refs` mirror `LoftFeature`'s own fields exactly -
+    `ruled`/`guide_curves` mirror `LoftFeature`'s own fields exactly -
     see that dataclass's own docstring for what each does.
 
     Resolves eagerly at create/update time (see `app.document.loft_surface.
@@ -2099,7 +2105,7 @@ class LoftSurfaceFeature(Feature):
     id: str
     sections: list[LoftSection]
     ruled: bool = False
-    guide_curve_refs: list[SketchOrEdgeRef] = field(default_factory=list)
+    guide_curves: list[list[SketchOrEdgeRef]] = field(default_factory=list)
 
     @property
     def type(self) -> str:
@@ -2131,7 +2137,7 @@ class RuledSurfaceFeature(Feature):
     RuledSurfaceSectionSchema`). `app.document.ruled_surface.resolve_ruled_
     surface_from_bodies` is a thin delegating wrapper, not a reimplementation
     - it builds a scratch `LoftSurfaceFeature(sections=feature.sections,
-    ruled=True, guide_curve_refs=[])` sharing this Feature's own id and calls
+    ruled=True, guide_curves=[])` sharing this Feature's own id and calls
     `app.document.loft_surface.resolve_loft_surface_from_bodies` directly,
     discarding its own non-blocking self-intersection warnings (not
     meaningful for a 2-section ruled surface).

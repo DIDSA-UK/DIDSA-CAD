@@ -755,7 +755,9 @@ class PlanTranslator {
           ruled: step.ruled,
           targetBodyIds: [for (final t in step.targetBodyIds) _resolveId(t, ids)],
           thickness: step.thickness,
-          guideCurveRefs: _entityRefs(plan, ids, sketchIds, step.guideCurveRefs),
+          guideCurves: [
+            for (final guide in step.guideCurves) _entityRefs(plan, ids, sketchIds, guide),
+          ],
         );
         return feature.id;
 

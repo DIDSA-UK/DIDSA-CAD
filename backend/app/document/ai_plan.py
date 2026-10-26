@@ -141,6 +141,7 @@ from app.document.models import (
     PatternFeature,
     PlaneRef,
     PlaneType,
+    SketchOrEdgeRef,
     PointRef,
     Produces,
     RevolveFeature,
@@ -863,6 +864,12 @@ def _handle_revolve(v: _PlanValidator, step: RevolveStep) -> None:
     v.resolved[step.local_id] = _Resolved(kind="revolve", feature_id=feature.id, hole_count=hole_count)
 
 
+def _curve_ref(v: _PlanValidator, resolved: "_Resolved") -> SketchOrEdgeRef:
+    """A Sweep `path_refs` / Loft `guide_curves` entry: those fields hold `SketchOrEdgeRef`s (a Sketch
+    entity, a Body edge or a curve feature), a plan's local ids can only name the first kind."""
+    return SketchOrEdgeRef(sketch_entity_ref=v._entity_ref(resolved, _ENTITY_TYPE_FOR_KIND[resolved.kind]))
+
+
 def _handle_sweep(v: _PlanValidator, step: SweepStep) -> None:
     sk = v._lookup(step.sketch_feature_id, frozenset({"sketch"}), "sketch_feature_id")
     if not step.path_refs:
@@ -870,7 +877,7 @@ def _handle_sweep(v: _PlanValidator, step: SweepStep) -> None:
     path_refs = []
     for p in step.path_refs:
         resolved = v._lookup(p, _PATH_ELIGIBLE_KINDS, "path_refs")
-        path_refs.append(v._entity_ref(resolved, _ENTITY_TYPE_FOR_KIND[resolved.kind]))
+        path_refs.append(_curve_ref(v, resolved))
     target_body_ids = [v._lookup_body(t, "target_body_ids").feature_id for t in step.target_body_ids]
     if step.mode == SweepMode.CUT and not target_body_ids:
         raise _StepError({"type": "invalid_step_payload", "message": "cut requires at least one target_body_ids entry"})
@@ -925,10 +932,18 @@ def _handle_loft(v: _PlanValidator, step: LoftStep) -> None:
         raise _StepError({"type": "invalid_step_payload", "message": "cut requires at least one target_body_ids entry"})
     if step.thickness == 0:
         raise _StepError({"type": "invalid_step_payload", "message": "thickness must not be 0"})
-    guide_curve_refs = [
-        v._entity_ref(resolved, _ENTITY_TYPE_FOR_KIND[resolved.kind])
-        for resolved in (v._lookup(local_id, _PATH_ELIGIBLE_KINDS, "guide_curve_refs") for local_id in step.guide_curve_refs)
-    ]
+    if step.guide_curves and step.ruled:
+        raise _StepError({"type": "invalid_step_payload", "message": "a ruled loft cannot have guide_curves"})
+    guide_curves = []
+    for guide_index, chain in enumerate(step.guide_curves):
+        if not chain:
+            raise _StepError({"type": "invalid_step_payload", "message": f"guide_curves[{guide_index}] is empty"})
+        guide_curves.append(
+            [
+                _curve_ref(v, v._lookup(local_id, _PATH_ELIGIBLE_KINDS, f"guide_curves[{guide_index}]"))
+                for local_id in chain
+            ]
+        )
 
     feature = LoftFeature(
         id=str(uuid.uuid4()),
@@ -937,7 +952,7 @@ def _handle_loft(v: _PlanValidator, step: LoftStep) -> None:
         ruled=step.ruled,
         target_body_ids=target_body_ids,
         thickness=step.thickness,
-        guide_curve_refs=guide_curve_refs,
+        guide_curves=guide_curves,
     )
     resolve_loft(v.part, feature)  # raises a structured HTTPException on failure; result (solid+warnings) unused here
     v.part.add_feature(feature)

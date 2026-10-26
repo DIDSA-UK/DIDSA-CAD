@@ -13,19 +13,30 @@ import 'package:didsa_cad_client/viewport3d/loft_surface_panel.dart';
 /// anywhere in `loft_surface_panel.dart`'s import chain, so this is a real,
 /// runnable widget test in this sandbox.
 void main() {
+  // The panel is taller now (a collapsed "Guide curves" tile sits above the alignment tile): give the
+  // test surface room so every button is on screen.
+  void useTallView(WidgetTester tester) {
+    tester.view.devicePixelRatio = 1.0;
+    tester.view.physicalSize = const Size(900, 1600);
+    addTearDown(tester.view.reset);
+  }
+
   Widget buildPanel({
     String title = 'Loft Surface',
     bool initialRuled = false,
     int sectionCount = 2,
     List<bool> alignmentPointsSet = const [],
-    bool guideCurveSet = false,
+    List<int> guideSegmentCounts = const [],
+    int draftGuideSegments = 0,
+    List<String> warnings = const [],
     bool pickingGuideCurve = false,
     int? pickingAlignmentPointIndex,
     void Function(int)? onPickAlignmentPoint,
     void Function(int)? onClearAlignmentPoint,
     VoidCallback? onCancelAlignmentPointPick,
     VoidCallback? onPickGuideCurve,
-    VoidCallback? onClearGuideCurve,
+    VoidCallback? onFinishGuideCurve,
+    void Function(int)? onRemoveGuideCurve,
     VoidCallback? onCancelGuideCurvePick,
     void Function(bool ruled)? onChanged,
     VoidCallback? onConfirm,
@@ -38,14 +49,17 @@ void main() {
           initialRuled: initialRuled,
           sectionCount: sectionCount,
           alignmentPointsSet: alignmentPointsSet,
-          guideCurveSet: guideCurveSet,
+          guideSegmentCounts: guideSegmentCounts,
+          draftGuideSegments: draftGuideSegments,
+          warnings: warnings,
           pickingGuideCurve: pickingGuideCurve,
           pickingAlignmentPointIndex: pickingAlignmentPointIndex,
           onPickAlignmentPoint: onPickAlignmentPoint ?? (_) {},
           onClearAlignmentPoint: onClearAlignmentPoint ?? (_) {},
           onCancelAlignmentPointPick: onCancelAlignmentPointPick ?? () {},
           onPickGuideCurve: onPickGuideCurve ?? () {},
-          onClearGuideCurve: onClearGuideCurve ?? () {},
+          onFinishGuideCurve: onFinishGuideCurve ?? () {},
+          onRemoveGuideCurve: onRemoveGuideCurve ?? (_) {},
           onCancelGuideCurvePick: onCancelGuideCurvePick ?? () {},
           onChanged: onChanged ?? (_) {},
           onConfirm: onConfirm ?? () {},
@@ -76,67 +90,62 @@ void main() {
     });
   });
 
-  group('LoftSurfacePanel guide curve row', () {
-    // Bug fix ("Guide curve option in loft surface doesn't seem to do
-    // anything"): now lives inside the "Guide curve & alignment points
-    // (advanced)" ExpansionTile (mirrors LoftPanel exactly), collapsed by
-    // default - every test below expands it first.
-    Future<void> expandAdvanced(WidgetTester tester) async {
-      await tester.tap(find.text('Guide curve & alignment points (advanced)'));
-      await tester.pumpAndSettle();
-    }
-
-    testWidgets('shows "Not set" and a Pick button by default', (tester) async {
-      await tester.pumpWidget(buildPanel(sectionCount: 0, guideCurveSet: false, pickingGuideCurve: false));
-      await expandAdvanced(tester);
-      expect(find.text('Not set'), findsOneWidget);
-      expect(find.widgetWithText(TextButton, 'Pick'), findsOneWidget);
-    });
-
-    testWidgets('tapping Pick invokes onPickGuideCurve', (tester) async {
+  group('LoftSurfacePanel guide curves', () {
+    setUp(() {});
+    testWidgets('no guides: an "Add guide" button that invokes onPickGuideCurve', (tester) async {
+      useTallView(tester);
       var picked = false;
       await tester.pumpWidget(buildPanel(sectionCount: 0, onPickGuideCurve: () => picked = true));
-      await expandAdvanced(tester);
-      await tester.tap(find.widgetWithText(TextButton, 'Pick'));
+      await tester.tap(find.text('Guide curves'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('No guides'), findsOneWidget);
+      await tester.tap(find.text('Add guide'));
       await tester.pump();
       expect(picked, isTrue);
     });
 
-    testWidgets('while picking, shows a prompt and a Cancel button instead', (tester) async {
-      await tester.pumpWidget(buildPanel(sectionCount: 0, pickingGuideCurve: true));
-      await expandAdvanced(tester);
-      expect(find.textContaining('Tap a line, arc, ellipse or spline'), findsOneWidget);
-      expect(find.widgetWithText(TextButton, 'Cancel'), findsWidgets);
-      expect(find.widgetWithText(TextButton, 'Pick'), findsNothing);
+    testWidgets('while picking, shows the count so far, Done and Cancel', (tester) async {
+      useTallView(tester);
+      var finished = false;
+      await tester.pumpWidget(buildPanel(
+        sectionCount: 0,
+        pickingGuideCurve: true,
+        draftGuideSegments: 1,
+        onFinishGuideCurve: () => finished = true,
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('1 curve picked'), findsOneWidget);
+      expect(find.text('Add guide'), findsNothing);
+      await tester.tap(find.text('Done'));
+      expect(finished, isTrue);
     });
 
-    testWidgets('once set, shows "Set", a Change button, and a Clear icon', (tester) async {
-      await tester.pumpWidget(buildPanel(sectionCount: 0, guideCurveSet: true, pickingGuideCurve: false));
-      await expandAdvanced(tester);
-      expect(find.text('Set'), findsOneWidget);
-      expect(find.widgetWithText(TextButton, 'Change'), findsOneWidget);
-      expect(find.byTooltip('Clear guide curve'), findsOneWidget);
+    testWidgets('lists the guides and removes one', (tester) async {
+      useTallView(tester);
+      final removed = <int>[];
+      await tester.pumpWidget(buildPanel(sectionCount: 0, guideSegmentCounts: const [2], onRemoveGuideCurve: removed.add));
+      await tester.pumpAndSettle();
+      expect(find.text('Guide 1'), findsOneWidget);
+      expect(find.text('2 curves'), findsOneWidget);
+      await tester.tap(find.byTooltip('Remove guide 1'));
+      expect(removed, [0]);
     });
 
-    testWidgets('tapping the Clear icon invokes onClearGuideCurve', (tester) async {
-      var cleared = false;
-      await tester.pumpWidget(
-          buildPanel(sectionCount: 0, guideCurveSet: true, onClearGuideCurve: () => cleared = true));
-      await expandAdvanced(tester);
-      await tester.tap(find.byTooltip('Clear guide curve'));
-      await tester.pump();
-      expect(cleared, isTrue);
+    testWidgets('shows warnings from the backend', (tester) async {
+      useTallView(tester);
+      await tester.pumpWidget(buildPanel(warnings: const ['Guide 2 misses section 1 by 0.2 mm']));
+      expect(find.textContaining('Guide 2 misses section 1'), findsOneWidget);
     });
   });
 
   group('LoftSurfacePanel alignment point rows', () {
     testWidgets('shows one row per section, "Not set" by default', (tester) async {
       await tester.pumpWidget(buildPanel(sectionCount: 2, alignmentPointsSet: const [false, false]));
-      await tester.tap(find.text('Guide curve & alignment points (advanced)'));
+      await tester.tap(find.text('Alignment points (advanced)'));
       await tester.pumpAndSettle();
       expect(find.text('Section 1 alignment point'), findsOneWidget);
       expect(find.text('Section 2 alignment point'), findsOneWidget);
-      expect(find.text('Not set'), findsNWidgets(3)); // guide curve + 2 sections
+      expect(find.text('Not set'), findsNWidgets(2)); // 2 sections
     });
 
     testWidgets('tapping Pick for a section invokes onPickAlignmentPoint with its index', (tester) async {
@@ -146,7 +155,7 @@ void main() {
         alignmentPointsSet: const [false, false],
         onPickAlignmentPoint: (i) => pickedIndex = i,
       ));
-      await tester.tap(find.text('Guide curve & alignment points (advanced)'));
+      await tester.tap(find.text('Alignment points (advanced)'));
       await tester.pumpAndSettle();
       final pickButtons = find.widgetWithText(TextButton, 'Pick');
       await tester.ensureVisible(pickButtons.last);
@@ -158,7 +167,7 @@ void main() {
 
     testWidgets('once set, shows "Set" and a Clear icon for that section', (tester) async {
       await tester.pumpWidget(buildPanel(sectionCount: 2, alignmentPointsSet: const [true, false]));
-      await tester.tap(find.text('Guide curve & alignment points (advanced)'));
+      await tester.tap(find.text('Alignment points (advanced)'));
       await tester.pumpAndSettle();
       expect(find.byTooltip('Clear alignment point'), findsOneWidget);
     });
@@ -166,6 +175,7 @@ void main() {
 
   group('LoftSurfacePanel Confirm/Cancel', () {
     testWidgets('Confirm is always enabled', (tester) async {
+      useTallView(tester);
       await tester.pumpWidget(buildPanel());
       expect(
         tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
@@ -174,6 +184,7 @@ void main() {
     });
 
     testWidgets('tapping Cancel invokes onCancel', (tester) async {
+      useTallView(tester);
       var cancelled = false;
       await tester.pumpWidget(buildPanel(onCancel: () => cancelled = true));
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));

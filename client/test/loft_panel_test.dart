@@ -14,6 +14,14 @@ void main() {
     void Function(int, bool)? onReverse,
     void Function(int)? onPick,
     void Function(int)? onClear,
+    List<int> guideSegmentCounts = const [],
+    int draftGuideSegments = 0,
+    bool pickingGuide = false,
+    List<String> warnings = const [],
+    VoidCallback? onAddGuide,
+    VoidCallback? onFinishGuide,
+    VoidCallback? onCancelGuide,
+    void Function(int)? onRemoveGuide,
   }) async {
     tester.view.devicePixelRatio = 1.0;
     tester.view.physicalSize = const Size(900, 1600);
@@ -25,15 +33,18 @@ void main() {
             sectionCount: 2,
             targetBodyCount: 0,
             alignmentPointsSet: const [false, false],
-            guideCurveSet: false,
+            guideSegmentCounts: guideSegmentCounts,
+            draftGuideSegments: draftGuideSegments,
+            warnings: warnings,
             pickingAlignmentPointIndex: null,
-            pickingGuideCurve: false,
+            pickingGuideCurve: pickingGuide,
             onPickAlignmentPoint: (_) {},
             onClearAlignmentPoint: (_) {},
             onCancelAlignmentPointPick: () {},
-            onPickGuideCurve: () {},
-            onClearGuideCurve: () {},
-            onCancelGuideCurvePick: () {},
+            onPickGuideCurve: onAddGuide ?? () {},
+            onFinishGuideCurve: onFinishGuide ?? () {},
+            onRemoveGuideCurve: onRemoveGuide ?? (_) {},
+            onCancelGuideCurvePick: onCancelGuide ?? () {},
             onChanged: (_, __, ___, ____) {},
             onConfirm: () {},
             onCancel: () {},
@@ -91,5 +102,65 @@ void main() {
   testWidgets('while picking a profile the row asks for a tap in the viewport', (tester) async {
     await pumpPanel(tester, pickingProfile: 0);
     expect(find.text('Tap one of its lines or curves in the viewport…'), findsOneWidget);
+  });
+
+  group('guide curves', () {
+    testWidgets('start collapsed with no guides and "Add guide" reports a pick', (tester) async {
+      var added = 0;
+      await pumpPanel(tester, onAddGuide: () => added++);
+      await tester.ensureVisible(find.text('Guide curves'));
+      await tester.tap(find.text('Guide curves'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('No guides'), findsOneWidget);
+      await tester.ensureVisible(find.text('Add guide'));
+      await tester.tap(find.text('Add guide'));
+      expect(added, 1);
+    });
+
+    testWidgets('lists each guide and removes the one whose X is tapped', (tester) async {
+      final removed = <int>[];
+      await pumpPanel(tester, guideSegmentCounts: const [1, 3], onRemoveGuide: removed.add);
+      // Guides exist, so the tile starts expanded.
+      expect(find.text('Guide curves (2)'), findsOneWidget);
+      expect(find.text('Guide 1'), findsOneWidget);
+      expect(find.text('1 curve'), findsOneWidget);
+      expect(find.text('Guide 2'), findsOneWidget);
+      expect(find.text('3 curves'), findsOneWidget);
+      await tester.ensureVisible(find.byTooltip('Remove guide 2'));
+      await tester.tap(find.byTooltip('Remove guide 2'));
+      expect(removed, [1]);
+    });
+
+    testWidgets('while picking, shows the count so far with Done and Cancel', (tester) async {
+      var done = 0;
+      var cancelled = 0;
+      await pumpPanel(
+        tester,
+        guideSegmentCounts: const [2],
+        pickingGuide: true,
+        draftGuideSegments: 2,
+        onFinishGuide: () => done++,
+        onCancelGuide: () => cancelled++,
+      );
+      expect(find.text('Guide 2'), findsOneWidget);
+      expect(find.text('2 curves picked'), findsOneWidget);
+      await tester.ensureVisible(find.text('Done'));
+      await tester.tap(find.text('Done'));
+      await tester.ensureVisible(find.byKey(const ValueKey('loft-guide-draft')));
+      await tester.tap(find.descendant(of: find.byKey(const ValueKey('loft-guide-draft')), matching: find.text('Cancel')));
+      expect(done, 1);
+      expect(cancelled, 1);
+      expect(find.text('Add guide'), findsNothing);
+    });
+
+    testWidgets('Done is disabled until a curve is picked', (tester) async {
+      await pumpPanel(tester, pickingGuide: true, draftGuideSegments: 0);
+      expect(tester.widget<TextButton>(find.widgetWithText(TextButton, 'Done')).onPressed, isNull);
+    });
+
+    testWidgets('shows the backend warnings for the built loft', (tester) async {
+      await pumpPanel(tester, warnings: const ['Guide 1 misses section 2 by 0.30 mm; the surface was bent to meet both.']);
+      expect(find.textContaining('Guide 1 misses section 2'), findsOneWidget);
+    });
   });
 }

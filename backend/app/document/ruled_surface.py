@@ -7,7 +7,7 @@ difference this tool offers is UX: an exactly-2-pick tree entry with no
 ruled toggle, no reference/alignment-point UI, no guide-curve UI).
 
 Builds a scratch `LoftSurfaceFeature(sections=feature.sections, ruled=True,
-guide_curve_refs=[])` sharing this Feature's own id, and delegates entirely
+guide_curves=[])` sharing this Feature's own id, and delegates entirely
 to `app.document.loft_surface.resolve_loft_surface_from_bodies` - not a
 reimplementation. The router enforces `sections` has exactly 2 entries
 (`_validate_ruled_surface_sections`); `LoftSection.reference_point`/
@@ -52,8 +52,10 @@ def resolve_ruled_surface_from_bodies(
     surface - see this module's own docstring)."""
     if len(feature.sections) != 2:
         raise _invalid_ruled_surface_sections(f"a Ruled Surface needs exactly 2 sections, got {len(feature.sections)}")
-    scratch = LoftSurfaceFeature(id=feature.id, sections=feature.sections, ruled=True, guide_curve_refs=[])
-    shell, _warnings = resolve_loft_surface_from_bodies(scratch, part, bodies_so_far, excluded_feature_ids)
+    scratch = LoftSurfaceFeature(id=feature.id, sections=feature.sections, ruled=True, guide_curves=[])
+    shell, _warnings = resolve_loft_surface_from_bodies(
+        scratch, part, bodies_so_far, excluded_feature_ids, use_gordon=False
+    )
     return shell
 
 

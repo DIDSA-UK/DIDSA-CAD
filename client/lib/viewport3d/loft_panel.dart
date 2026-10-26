@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'loft_guides.dart';
+
 import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
 
@@ -42,20 +44,16 @@ enum LoftMode {
 /// the resulting PATCH/POST and mesh refresh is [PartScreen]'s job, not this
 /// widget's, same as [SweepPanel].
 ///
-/// The "Guide curve & alignment points (advanced)" section exposes the
-/// backend's own `LoftSection.alignment_point`/`LoftFeature.guide_curve_
-/// refs` - see that dataclass's own docstring for what each does
-/// geometrically. Picking itself (a Point per section, or a single curve
-/// entity for the guide curve) happens in the 3D viewport behind this
-/// panel, driven by [PartScreen] exactly like target-body picking already
-/// is - this panel only ever shows whether each is currently set and
-/// offers "Pick"/"Clear" buttons, the same "picking lives in the
-/// viewport, this panel just reflects state" split [targetBodyCount]
-/// already uses. This session's own UI only ever lets a single entity
-/// stand in for the backend's `guide_curve_refs` (an ordered *list*, in
-/// principle a multi-segment chain) - a deliberate v1 narrowing, not a
-/// backend limitation; a multi-segment guide curve is still reachable via
-/// a direct API call.
+/// The "Guide curves" section exposes the backend's `LoftFeature.guide_curves`
+/// (any number of guides, each an ordered chain of curves; see [LoftGuidesSection])
+/// and the "Alignment points (advanced)" section the unguided
+/// `LoftSection.alignment_point` "line the sections up" translation. Picking
+/// itself happens in the 3D viewport behind this panel, driven by [PartScreen]
+/// exactly like target-body picking already is - this panel only ever shows
+/// what is currently set and offers the buttons, the same "picking lives in the
+/// viewport, this panel just reflects state" split [targetBodyCount] already
+/// uses. [warnings] are the backend's non-blocking messages for the loft that
+/// was last built (a guide bent to meet a section, an approximated network).
 void _ignoreSeam(int index, double? seam) {}
 void _ignoreReverse(int index, bool reverse) {}
 void _ignoreIndex(int index) {}
@@ -106,8 +104,14 @@ class LoftPanel extends StatefulWidget {
   final void Function(int sectionIndex) onPickProfile;
   final void Function(int sectionIndex) onClearProfile;
 
-  /// Whether a `guide_curve_refs` entity is currently picked.
-  final bool guideCurveSet;
+  /// One entry per finished guide: how many curves it is made of (the backend's `guide_curves`).
+  final List<int> guideSegmentCounts;
+
+  /// How many curves the guide being picked has so far (meaningful while [pickingGuideCurve]).
+  final int draftGuideSegments;
+
+  /// The backend's warnings for the loft that was last built.
+  final List<String> warnings;
 
   /// Non-null while [PartScreen] is currently picking an `alignment_point`
   /// for that section index in the 3D viewport - that row shows "tap in
@@ -125,7 +129,8 @@ class LoftPanel extends StatefulWidget {
   final void Function(int sectionIndex) onClearAlignmentPoint;
   final VoidCallback onCancelAlignmentPointPick;
   final VoidCallback onPickGuideCurve;
-  final VoidCallback onClearGuideCurve;
+  final VoidCallback onFinishGuideCurve;
+  final void Function(int guideIndex) onRemoveGuideCurve;
   final VoidCallback onCancelGuideCurvePick;
 
   final void Function(LoftMode mode, bool ruled, double? thickness, bool thinFromClosedProfile)
@@ -152,14 +157,17 @@ class LoftPanel extends StatefulWidget {
     this.pickingProfileIndex,
     this.onPickProfile = _ignoreIndex,
     this.onClearProfile = _ignoreIndex,
-    this.guideCurveSet = false,
+    this.guideSegmentCounts = const [],
+    this.draftGuideSegments = 0,
+    this.warnings = const [],
     this.pickingAlignmentPointIndex,
     this.pickingGuideCurve = false,
     required this.onPickAlignmentPoint,
     required this.onClearAlignmentPoint,
     required this.onCancelAlignmentPointPick,
     required this.onPickGuideCurve,
-    required this.onClearGuideCurve,
+    required this.onFinishGuideCurve,
+    required this.onRemoveGuideCurve,
     required this.onCancelGuideCurvePick,
     required this.onChanged,
     required this.onConfirm,
@@ -436,42 +444,41 @@ class _LoftPanelState extends State<LoftPanel> {
           Theme(
             data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
             child: ExpansionTile(
+              key: ValueKey('loft-guides-tile-${widget.guideSegmentCounts.isNotEmpty || widget.pickingGuideCurve}'),
               tilePadding: EdgeInsets.zero,
-              title: const Text('Guide curve & alignment points (advanced)', style: TextStyle(fontSize: 13)),
+              initiallyExpanded: widget.guideSegmentCounts.isNotEmpty || widget.pickingGuideCurve,
+              title: Text(
+                widget.guideSegmentCounts.isEmpty
+                    ? 'Guide curves'
+                    : 'Guide curves (${widget.guideSegmentCounts.length})',
+                style: const TextStyle(fontSize: 13),
+              ),
+              subtitle: Text(
+                _ruled ? 'Ignored while Ruled is on' : 'Curves through every section that shape the surface',
+                style: const TextStyle(fontSize: 11),
+              ),
               childrenPadding: EdgeInsets.zero,
               children: [
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  title: const Text('Guide curve'),
-                  subtitle: Text(
-                    widget.pickingGuideCurve
-                        ? 'Tap a line, arc, ellipse or spline in the viewport…'
-                        : (widget.guideCurveSet ? 'Set' : 'Not set'),
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: widget.pickingGuideCurve
-                        ? [
-                            TextButton(
-                              onPressed: widget.onCancelGuideCurvePick,
-                              child: const Text('Cancel'),
-                            ),
-                          ]
-                        : [
-                            TextButton(
-                              onPressed: widget.onPickGuideCurve,
-                              child: Text(widget.guideCurveSet ? 'Change' : 'Pick'),
-                            ),
-                            if (widget.guideCurveSet)
-                              IconButton(
-                                tooltip: 'Clear guide curve',
-                                icon: const Icon(Icons.close, size: 18),
-                                onPressed: widget.onClearGuideCurve,
-                              ),
-                          ],
-                  ),
+                LoftGuidesSection(
+                  guideSegmentCounts: widget.guideSegmentCounts,
+                  picking: widget.pickingGuideCurve,
+                  draftSegments: widget.draftGuideSegments,
+                  onAddGuide: widget.onPickGuideCurve,
+                  onFinishGuide: widget.onFinishGuideCurve,
+                  onCancelGuide: widget.onCancelGuideCurvePick,
+                  onRemoveGuide: widget.onRemoveGuideCurve,
                 ),
+              ],
+            ),
+          ),
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Alignment points (advanced)', style: TextStyle(fontSize: 13)),
+              subtitle: const Text('Slide a section so its point meets the first section\'s', style: TextStyle(fontSize: 11)),
+              childrenPadding: EdgeInsets.zero,
+              children: [
                 for (var i = 0; i < widget.sectionCount; i++)
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -516,6 +523,7 @@ class _LoftPanelState extends State<LoftPanel> {
               ],
             ),
           ),
+          LoftWarnings(warnings: widget.warnings),
           const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,

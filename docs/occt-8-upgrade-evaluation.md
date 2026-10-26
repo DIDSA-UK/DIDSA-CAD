@@ -62,7 +62,9 @@ which way a swept, extruded or revolved surface faces. Measured on 7.9.3 before 
 Server restarts and reloads could therefore change a saved model. Now the walk starts at the end on the earliest-drawn
 entity; `test_an_open_chain_is_always_walked_from_the_end_drawn_first` fails on the old code.
 
-### 1c. Open: thin Loft through a multi-segment open chain
+### 1c. Thin Loft through a multi-segment open chain (fixed 2026-10-26, see `docs/loft-gordon-spike.md` item 8)
+
+*Fixed: the loft was right; `thicken_shell_to_solid` fell back to `MakeThickSolidBySimple`. The new `_thicken_by_offset_and_walls` gives 136 / 120 mm³ exactly. The text below is the original finding.*
 
 Same on both kernels, not fixed here. Two identical L-shaped open chains (10 mm and 6 mm legs) 8 mm apart, thickness 1:
 every cross-section is the right L-shaped 1 mm wall (which implies ~136 mm³), point sampling gives ~117 mm³, GProp gives

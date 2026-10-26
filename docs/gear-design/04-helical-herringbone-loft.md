@@ -292,6 +292,13 @@ vertex-to-vertex alignment" entry for the full design, scope (an honest,
 narrower v1 - one point per section, not a full multi-point surface
 reshape), and verification-status detail.
 
+**Superseded (2026-10-26):** guide curves no longer translate sections. A
+loft is a Gordon surface network through the sections and any number of
+`LoftFeature.guide_curves` (`app.document.loft_gordon`; results in
+`docs/loft-gordon-spike.md`), and the translation is gone; `alignment_point`
+remains only for the unguided "line the sections up" use. The gear code's own
+`ThruSections` calls (`gear.py`, `bevel*.py`) are unchanged.
+
 ## 2026-08-06 addendum — real reported bug: wrong vertex correspondence at a large helix angle, root cause + fix, root fillet added
 
 A real user reported a helical gear built at a large helix angle (~45deg)

@@ -676,7 +676,7 @@ class PointRefSchema(BaseModel):
 class SketchOrEdgeRefSchema(BaseModel):
     """The wire counterpart to `app.document.models.SketchOrEdgeRef` - used
     wherever `SweepFeature`/`SweptSurfaceFeature.path_refs` and
-    `LoftFeature`/`LoftSurfaceFeature.guide_curve_refs` previously accepted
+    `LoftFeature`/`LoftSurfaceFeature.guide_curves` (each guide a list) previously accepted
     a plain `SketchEntityRefSchema`.
 
     Deliberately NOT `PointRefSchema`'s own two-nested-field shape
@@ -684,7 +684,7 @@ class SketchOrEdgeRefSchema(BaseModel):
     `edge_ref: SubShapeRefSchema | None`) - `sketch_id`/`entity_type`/
     `entity_id` are inlined flat instead, exactly matching
     `SketchEntityRefSchema`'s own field names, so every existing `path_refs`/
-    `guide_curve_refs` entry already sent by this app's client (and every
+    `guide_curves` entry already sent by this app's client (and every
     existing test payload) keeps parsing identically, unchanged, with
     `edge_ref` left unset - this new field is purely additive. Exactly one
     of (`sketch_id`+`entity_type`+`entity_id` all set) or (`edge_ref` set)
@@ -811,10 +811,20 @@ class CreatePlaneFeatureResponse(FeatureResponseBase):
     produces: Produces
 
 
+class HelixSegmentSchema(BaseModel):
+    """One stretch of a helix: `turns` revolutions at `pitch` (axis advance per revolution; its sign
+    is the direction along the axis, the same for every segment of a helix)."""
+
+    pitch: float
+    turns: float
+
+
 class CurveFeatureCreate(BaseModel):
     """Creates a `CurveFeature` - exactly one combination of fields should
     be supplied, matching `curve_type`:
-    - `HELIX`: `axis_ref`, `radius`, `pitch`, `turns`, `right_handed`.
+    - `HELIX`: `axis_ref`, `radius`, `segments` (at least one `{pitch, turns}`), `right_handed`,
+      and optionally a taper: `end_radius` *or* `taper_angle_degrees` (not both; the angle is
+      converted to `end_radius = radius + height * tan(angle)`, positive widening along the helix).
     - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`,
       `sketch_feature_id_b`/`profile_refs_b`.
     See `app.document.router._validate_curve_payload` for the exact
@@ -824,8 +834,9 @@ class CurveFeatureCreate(BaseModel):
     curve_type: CurveType
     axis_ref: PlaneRefSchema | None = None
     radius: float | None = None
-    pitch: float | None = None
-    turns: float | None = None
+    end_radius: float | None = None
+    taper_angle_degrees: float | None = None
+    segments: list[HelixSegmentSchema] = []
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] = []
@@ -840,8 +851,10 @@ class CurveFeatureUpdate(BaseModel):
 
     axis_ref: PlaneRefSchema | None = None
     radius: float | None = None
-    pitch: float | None = None
-    turns: float | None = None
+    # An explicit null clears the taper (constant radius); omitting keeps the current one.
+    end_radius: float | None = None
+    taper_angle_degrees: float | None = None
+    segments: list[HelixSegmentSchema] | None = None
     right_handed: bool | None = None
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] | None = None
@@ -855,8 +868,12 @@ class CurveFeatureResponse(FeatureResponseBase):
     curve_type: CurveType
     axis_ref: PlaneRefSchema | None = None
     radius: float | None = None
-    pitch: float | None = None
-    turns: float | None = None
+    # The taper as stored (`end_radius`) and as an angle - both always returned; null: constant radius.
+    end_radius: float | None = None
+    taper_angle_degrees: float | None = None
+    segments: list[HelixSegmentSchema] = []
+    # Sum of pitch x turns over the segments (signed like the pitch); null for an intersection curve.
+    total_height: float | None = None
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] = []
@@ -2149,16 +2166,16 @@ class LoftSectionSchema(BaseModel):
 class LoftFeatureCreate(BaseModel):
     """Creates a `LoftFeature` lofting between `sections` (2+ required - see
     `app.document.router._validate_loft_sections`) via `BRepOffsetAPI_
-    ThruSections`. Boss/Cut + `target_body_ids` follow `SweepFeatureCreate`'s
+    a Gordon surface network. Boss/Cut + `target_body_ids` follow `SweepFeatureCreate`'s
     exact convention. `thickness`, if set (see `app.document.router.
     _validate_thickness_nonzero`), switches every section from a closed Profile
     to a single open chain and thickens the resulting lofted shell by this
     signed value instead of lofting directly into a solid - see
-    `LoftFeature`'s own docstring. `guide_curve_refs`, if set (see
-    `app.document.router._validate_loft_guide_curve_refs`), is the same
-    ordered, cross-Sketch Line/Arc/Ellipse/Spline chain shape as
-    `SweepFeatureCreate.path_refs` - see `LoftFeature.guide_curve_refs`'s
-    own docstring for what it does here."""
+    `LoftFeature`'s own docstring. `guide_curves`, if set (see
+    `app.document.router._validate_loft_guide_curves`), is a list of guides, each
+    the same ordered, cross-Sketch Line/Arc/Ellipse/Spline chain shape as
+    `SweepFeatureCreate.path_refs` - see `LoftFeature.guide_curves`'s
+    own docstring for what they do here."""
 
     sections: list[LoftSectionSchema]
     mode: LoftMode
@@ -2170,7 +2187,7 @@ class LoftFeatureCreate(BaseModel):
     # closed Profile, lofted as a hollow, cap-less tube instead - see
     # `LoftFeature`'s own docstring.
     thin_from_closed_profile: bool = False
-    guide_curve_refs: list[SketchOrEdgeRefSchema] = []
+    guide_curves: list[list[SketchOrEdgeRefSchema]] = []
 
 
 class LoftFeatureUpdate(BaseModel):
@@ -2180,10 +2197,9 @@ class LoftFeatureUpdate(BaseModel):
     `None`, i.e. closed-profile mode), and an explicit `null` turns the thin
     wall off again (the same omitted-vs-null convention
     `ExtrudeFeatureUpdate.thickness` uses; `model_fields_set` tells them
-    apart). `guide_
-    curve_refs` follows the same convention: `None` (the default) keeps
+    apart). `guide_curves` follows the same convention: `None` (the default) keeps
     whatever the Feature already has; passing `[]` explicitly clears it
-    back to "no guide curve" (an empty list is itself a real, meaningful
+    back to "no guide curves" (an empty list is itself a real, meaningful
     value here, unlike a bare omission)."""
 
     sections: list[LoftSectionSchema] | None = None
@@ -2192,7 +2208,7 @@ class LoftFeatureUpdate(BaseModel):
     target_body_ids: list[str] | None = None
     thickness: float | None = None
     thin_from_closed_profile: bool | None = None
-    guide_curve_refs: list[SketchOrEdgeRefSchema] | None = None
+    guide_curves: list[list[SketchOrEdgeRefSchema]] | None = None
 
 
 class LoftSeamHandleSchema(BaseModel):
@@ -2215,7 +2231,7 @@ class LoftFeatureResponse(FeatureResponseBase):
     target_body_ids: list[str] = []
     thickness: float | None = None
     thin_from_closed_profile: bool = False
-    guide_curve_refs: list[SketchOrEdgeRefSchema] = []
+    guide_curves: list[list[SketchOrEdgeRefSchema]] = []
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # LoftFeature.
@@ -2237,13 +2253,13 @@ class LoftSurfaceFeatureCreate(BaseModel):
 
     sections: list[LoftSectionSchema]
     ruled: bool = False
-    guide_curve_refs: list[SketchOrEdgeRefSchema] = []
+    guide_curves: list[list[SketchOrEdgeRefSchema]] = []
 
 
 class LoftSurfaceFeatureUpdate(BaseModel):
     sections: list[LoftSectionSchema] | None = None
     ruled: bool | None = None
-    guide_curve_refs: list[SketchOrEdgeRefSchema] | None = None
+    guide_curves: list[list[SketchOrEdgeRefSchema]] | None = None
 
 
 class LoftSurfaceFeatureResponse(FeatureResponseBase):
@@ -2251,7 +2267,7 @@ class LoftSurfaceFeatureResponse(FeatureResponseBase):
     id: str
     sections: list[LoftSectionSchema]
     ruled: bool
-    guide_curve_refs: list[SketchOrEdgeRefSchema] = []
+    guide_curves: list[list[SketchOrEdgeRefSchema]] = []
     locked: bool
     # B1: always SURFACE for a LoftSurfaceFeature.
     produces: Produces
