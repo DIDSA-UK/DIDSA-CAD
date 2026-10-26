@@ -122,6 +122,7 @@ from app.document.models import (
     ComponentPatternType,
     CreatePlaneFeature,
     CurveFeature,
+    HelixSegment,
     CurveType,
     DeleteBodyFeature,
     DeleteFaceFeature,
@@ -263,6 +264,7 @@ from app.document.schemas import (
     CurveFeatureCreate,
     CurveFeatureResponse,
     CurveFeatureUpdate,
+    HelixSegmentSchema,
     DeleteBodyFeatureCreate,
     DeleteBodyFeatureResponse,
     DeleteBodyFeatureUpdate,
@@ -876,8 +878,10 @@ def _curve_feature_response(part: Part, feature: CurveFeature) -> CurveFeatureRe
         curve_type=feature.curve_type,
         axis_ref=_plane_ref_to_schema(feature.axis_ref) if feature.axis_ref else None,
         radius=feature.radius,
-        pitch=feature.pitch,
-        turns=feature.turns,
+        end_radius=feature.end_radius,
+        taper_angle_degrees=_helix_taper_angle_degrees(feature.radius, feature.end_radius, feature.segments),
+        segments=[HelixSegmentSchema(pitch=seg.pitch, turns=seg.turns) for seg in feature.segments],
+        total_height=_helix_total_height(feature.segments) if feature.segments else None,
         right_handed=feature.right_handed,
         sketch_feature_id_a=feature.sketch_feature_id_a,
         profile_refs_a=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs_a],
@@ -3231,13 +3235,48 @@ def _validate_create_plane_payload(
                 )
 
 
+def _helix_total_height(segments: list[HelixSegment]) -> float:
+    """Sum of pitch x turns (signed like the pitch)."""
+    return sum(seg.pitch * seg.turns for seg in segments)
+
+
+def _helix_taper_angle_degrees(radius: float | None, end_radius: float | None, segments: list[HelixSegment]) -> float | None:
+    """The taper as an angle: `atan((end_radius - radius) / height)`, positive when the helix widens
+    along its way. `None` for a constant-radius helix (and for anything that is not a helix)."""
+    if radius is None or end_radius is None or not segments:
+        return None
+    height = abs(_helix_total_height(segments))
+    if height == 0.0:
+        return None
+    return math.degrees(math.atan((end_radius - radius) / height))
+
+
+def _resolve_helix_end_radius(
+    radius: float | None,
+    end_radius: float | None,
+    taper_angle_degrees: float | None,
+    segments: list[HelixSegment],
+) -> float | None:
+    """The `end_radius` to store: as given, or computed from `taper_angle_degrees` (the two cannot
+    be combined). 422 if both are given or the angle is not a usable taper."""
+    if end_radius is not None and taper_angle_degrees is not None:
+        raise HTTPException(status_code=422, detail="give end_radius or taper_angle_degrees, not both")
+    if taper_angle_degrees is None:
+        return end_radius
+    if not -90.0 < taper_angle_degrees < 90.0:
+        raise HTTPException(status_code=422, detail="taper_angle_degrees must be between -90 and 90")
+    if radius is None or not segments:
+        raise HTTPException(status_code=422, detail="taper_angle_degrees needs radius and segments")
+    return radius + abs(_helix_total_height(segments)) * math.tan(math.radians(taper_angle_degrees))
+
+
 def _validate_curve_payload(
     part: Part,
     curve_type: CurveType,
     axis_ref: PlaneRef | None,
     radius: float | None,
-    pitch: float | None,
-    turns: float | None,
+    end_radius: float | None,
+    segments: list[HelixSegment],
     sketch_feature_id_a: str | None,
     sketch_feature_id_b: str | None,
 ) -> None:
@@ -3247,10 +3286,10 @@ def _validate_curve_payload(
     refs_a`/`_b`/`right_handed` need no such check (they're either always
     optional or always have a valid default), so they aren't passed here."""
     if curve_type == CurveType.HELIX:
-        if axis_ref is None or radius is None or pitch is None or turns is None:
+        if axis_ref is None or radius is None or not segments:
             raise HTTPException(
                 status_code=422,
-                detail="HELIX requires axis_ref, radius, pitch, and turns",
+                detail="HELIX requires axis_ref, radius and at least one segment (pitch, turns)",
             )
         if sketch_feature_id_a is not None or sketch_feature_id_b is not None:
             raise HTTPException(
@@ -3260,10 +3299,15 @@ def _validate_curve_payload(
         _validate_plane_ref(part, axis_ref)
         if radius <= 0.0:
             raise HTTPException(status_code=422, detail="radius must be positive")
-        if pitch == 0.0:
-            raise HTTPException(status_code=422, detail="pitch must be non-zero")
-        if turns <= 0.0:
-            raise HTTPException(status_code=422, detail="turns must be positive")
+        if end_radius is not None and end_radius <= 0.0:
+            raise HTTPException(status_code=422, detail="end_radius must be positive")
+        for index, seg in enumerate(segments):
+            if seg.pitch == 0.0:
+                raise HTTPException(status_code=422, detail=f"segment {index + 1}: pitch must be non-zero")
+            if seg.turns <= 0.0:
+                raise HTTPException(status_code=422, detail=f"segment {index + 1}: turns must be positive")
+        if len({seg.pitch > 0.0 for seg in segments}) != 1:
+            raise HTTPException(status_code=422, detail="every segment must advance the same way along the axis (pitch signs differ)")
         return
     assert curve_type == CurveType.INTERSECTION
     if sketch_feature_id_a is None or sketch_feature_id_b is None:
@@ -3271,10 +3315,10 @@ def _validate_curve_payload(
             status_code=422,
             detail="INTERSECTION requires sketch_feature_id_a and sketch_feature_id_b",
         )
-    if axis_ref is not None or radius is not None or pitch is not None or turns is not None:
+    if axis_ref is not None or radius is not None or end_radius is not None or segments:
         raise HTTPException(
             status_code=422,
-            detail="INTERSECTION must not set axis_ref/radius/pitch/turns",
+            detail="INTERSECTION must not set axis_ref/radius/end_radius/segments",
         )
     if not isinstance(part.get_feature(sketch_feature_id_a), SketchFeature):
         raise HTTPException(status_code=422, detail="sketch_feature_id_a must name an existing Sketch feature")
@@ -6534,13 +6578,15 @@ def create_curve_feature(part_id: str, payload: CurveFeatureCreate) -> CurveFeat
     axis_ref = _plane_ref_to_domain(payload.axis_ref) if payload.axis_ref else None
     profile_refs_a = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs_a]
     profile_refs_b = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs_b]
+    segments = [HelixSegment(pitch=seg.pitch, turns=seg.turns) for seg in payload.segments]
+    end_radius = _resolve_helix_end_radius(payload.radius, payload.end_radius, payload.taper_angle_degrees, segments)
     _validate_curve_payload(
         part,
         payload.curve_type,
         axis_ref,
         payload.radius,
-        payload.pitch,
-        payload.turns,
+        end_radius,
+        segments,
         payload.sketch_feature_id_a,
         payload.sketch_feature_id_b,
     )
@@ -6549,8 +6595,8 @@ def create_curve_feature(part_id: str, payload: CurveFeatureCreate) -> CurveFeat
         curve_type=payload.curve_type,
         axis_ref=axis_ref,
         radius=payload.radius,
-        pitch=payload.pitch,
-        turns=payload.turns,
+        end_radius=end_radius,
+        segments=segments,
         right_handed=payload.right_handed,
         sketch_feature_id_a=payload.sketch_feature_id_a,
         profile_refs_a=profile_refs_a,
@@ -6580,8 +6626,19 @@ def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpd
 
     new_axis_ref = _plane_ref_to_domain(payload.axis_ref) if payload.axis_ref is not None else feature.axis_ref
     new_radius = payload.radius if payload.radius is not None else feature.radius
-    new_pitch = payload.pitch if payload.pitch is not None else feature.pitch
-    new_turns = payload.turns if payload.turns is not None else feature.turns
+    new_segments = (
+        [HelixSegment(pitch=seg.pitch, turns=seg.turns) for seg in payload.segments]
+        if payload.segments is not None
+        else feature.segments
+    )
+    if payload.taper_angle_degrees is not None:
+        new_end_radius = _resolve_helix_end_radius(
+            new_radius, payload.end_radius, payload.taper_angle_degrees, new_segments
+        )
+    elif "end_radius" in payload.model_fields_set:
+        new_end_radius = payload.end_radius  # an explicit null clears the taper
+    else:
+        new_end_radius = feature.end_radius
     new_right_handed = payload.right_handed if payload.right_handed is not None else feature.right_handed
     new_sketch_feature_id_a = (
         payload.sketch_feature_id_a if payload.sketch_feature_id_a is not None else feature.sketch_feature_id_a
@@ -6605,8 +6662,8 @@ def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpd
         feature.curve_type,
         new_axis_ref,
         new_radius,
-        new_pitch,
-        new_turns,
+        new_end_radius,
+        new_segments,
         new_sketch_feature_id_a,
         new_sketch_feature_id_b,
     )
@@ -6615,8 +6672,8 @@ def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpd
         curve_type=feature.curve_type,
         axis_ref=new_axis_ref,
         radius=new_radius,
-        pitch=new_pitch,
-        turns=new_turns,
+        end_radius=new_end_radius,
+        segments=new_segments,
         right_handed=new_right_handed,
         sketch_feature_id_a=new_sketch_feature_id_a,
         profile_refs_a=new_profile_refs_a,
@@ -6627,8 +6684,8 @@ def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpd
 
     feature.axis_ref = candidate.axis_ref
     feature.radius = candidate.radius
-    feature.pitch = candidate.pitch
-    feature.turns = candidate.turns
+    feature.end_radius = candidate.end_radius
+    feature.segments = candidate.segments
     feature.right_handed = candidate.right_handed
     feature.sketch_feature_id_a = candidate.sketch_feature_id_a
     feature.profile_refs_a = candidate.profile_refs_a

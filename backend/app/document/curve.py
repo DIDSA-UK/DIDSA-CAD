@@ -13,7 +13,6 @@ resolution) resolves it fresh on demand, exactly the way `CreatePlaneFeature`
 (`Produces.PLANE`) already is.
 """
 
-import math
 from dataclasses import dataclass
 
 from fastapi import HTTPException
@@ -21,16 +20,14 @@ from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_CompCurve
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Section
 from OCC.Core.BRepBuilderAPI import (
-    BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeWire,
     BRepBuilderAPI_Transform,
 )
 from OCC.Core.BRepGProp import brepgprop
-from OCC.Core.BRepLib import breplib
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
-from OCC.Core.Geom import Geom_CylindricalSurface
-from OCC.Core.Geom2d import Geom2d_Line, Geom2d_TrimmedCurve
-from OCC.Core.gp import gp_Ax3, gp_Dir, gp_Dir2d, gp_Pnt, gp_Pnt2d, gp_Trsf, gp_Vec
+from OCC.Core.gp import gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.HelixBRep import HelixBRep_BuilderHelix
+from OCC.Core.TColStd import TColStd_Array1OfReal
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer
@@ -138,55 +135,75 @@ def point_and_tangent_at_fraction(wire: TopoDS_Wire, length: float, fraction: fl
     return point, tangent
 
 
+def _real_array(values: list[float]) -> TColStd_Array1OfReal:
+    array = TColStd_Array1OfReal(1, len(values))
+    for position, value in enumerate(values, start=1):
+        array.SetValue(position, value)
+    return array
+
+
+def _mirrored(wire: TopoDS_Wire, origin: gp_Pnt, plane_normal: gp_Dir) -> TopoDS_Wire:
+    transform = gp_Trsf()
+    transform.SetMirror(gp_Ax2(origin, plane_normal))
+    return topods.Wire(BRepBuilderAPI_Transform(wire, transform, True).Shape())
+
+
 def _resolve_helix_from_bodies(
     part: Part,
     feature: CurveFeature,
     bodies_so_far: dict[str, TopoDS_Shape],
     excluded_feature_ids: frozenset[str],
 ) -> ResolvedCurve:
-    """A constant-pitch helix around `feature.axis_ref` (its origin = the
-    helix's start point, its normal = the axis direction), built via the
-    standard OCCT "2D line in a cylinder's own (angle, height) parameter
-    space, mapped to 3D through that surface" recipe: a `Geom2d_Line` with
-    direction `(+-2*pi, pitch)` (one revolution's worth of (angle, height))
-    trimmed to `turns` revolutions, handed to `BRepBuilderAPI_MakeEdge`
-    together with the `Geom_CylindricalSurface` it lies on - the overload
-    that builds a 3D edge by evaluating a UV curve through a surface, not by
-    interpolating points. `right_handed=False` negates the angular
-    component only (not the pitch), which reverses winding direction
-    (clockwise vs counterclockwise viewed along the axis) while keeping
-    the same axis-progression direction for a given `pitch` sign."""
-    assert feature.axis_ref is not None and feature.radius is not None
-    assert feature.pitch is not None and feature.turns is not None
-    if feature.radius <= 0.0:
-        raise _curve_construction_failed(feature.id, "helix radius must be positive")
-    if feature.pitch == 0.0:
-        raise _curve_construction_failed(feature.id, "helix pitch must be non-zero")
-    if feature.turns <= 0.0:
-        raise _curve_construction_failed(feature.id, "helix turns must be positive")
+    """A helix around `feature.axis_ref` (its origin = the helix's start axis point, its normal =
+    the axis direction, its x axis = where the start lies, at `radius`), built by OCCT 8's
+    `HelixBRep_BuilderHelix`: a composite helix of `feature.segments` (each `turns` revolutions at
+    its own `pitch`), whose diameter runs linearly with height from `radius` to `end_radius` (a
+    constant `radius` when that is None).
+
+    The builder only makes a counterclockwise (viewed down the axis) helix that advances along the
+    axis (it rejects a negative pitch, error status 12), so the other cases are mirrors of it:
+    `right_handed=False` mirrors across the plane through the axis and the x axis (it winds the
+    other way, the start point stays), a negative pitch across the plane normal to the axis at the
+    origin (it advances the other way, the winding stays). `right_handed` is therefore the winding
+    direction and the pitch's sign the axis direction, as in the 7.9 construction this replaced
+    (a 2D line on a cylinder, approximated into 3D)."""
+    assert feature.axis_ref is not None and feature.radius is not None and feature.segments
+    if feature.radius <= 0.0 or (feature.end_radius is not None and feature.end_radius <= 0.0):
+        raise _curve_construction_failed(feature.id, "helix radii must be positive")
+    if any(seg.pitch == 0.0 or seg.turns <= 0.0 for seg in feature.segments):
+        raise _curve_construction_failed(feature.id, "helix pitch must be non-zero and turns positive")
+    advances_up = feature.segments[0].pitch > 0.0
+    if any((seg.pitch > 0.0) != advances_up for seg in feature.segments):
+        raise _curve_construction_failed(feature.id, "every helix segment must advance the same way along the axis")
 
     axis_plane = resolve_plane_ref(part, bodies_so_far, feature.axis_ref, excluded_feature_ids)
     origin = gp_Pnt(*axis_plane.origin)
     axis_dir = gp_Dir(*axis_plane.normal)
     x_dir = gp_Dir(*axis_plane.x_axis)
-    cylinder = Geom_CylindricalSurface(gp_Ax3(origin, axis_dir, x_dir), feature.radius)
 
-    angular_sign = 1.0 if feature.right_handed else -1.0
-    revolution_step = math.sqrt((2.0 * math.pi) ** 2 + feature.pitch**2)
-    line_2d = Geom2d_Line(gp_Pnt2d(0.0, 0.0), gp_Dir2d(angular_sign * 2.0 * math.pi, feature.pitch))
-    segment_2d = Geom2d_TrimmedCurve(line_2d, 0.0, feature.turns * revolution_step)
+    pitches = [abs(seg.pitch) for seg in feature.segments]
+    turns = [seg.turns for seg in feature.segments]
+    heights = [pitch * turn for pitch, turn in zip(pitches, turns)]
+    total = sum(heights)
+    end_radius = feature.radius if feature.end_radius is None else feature.end_radius
+    diameters = [2.0 * feature.radius]
+    travelled = 0.0
+    for height in heights:
+        travelled += height
+        diameters.append(2.0 * (feature.radius + (end_radius - feature.radius) * travelled / total))
 
-    edge = BRepBuilderAPI_MakeEdge(segment_2d, cylinder).Edge()
-    # `BRepBuilderAPI_MakeEdge(Geom2d_Curve, Geom_Surface)` only gives the
-    # edge a pcurve-on-surface representation, no actual 3D `Geom_Curve` -
-    # confirmed on-device: `BRep_Tool.Curve` returns `None` for it, and
-    # `BRepOffsetAPI_MakePipeShell.Build()` (a Sweep along this Helix)
-    # fails outright with a bare `Standard_NullObject` because of it.
-    # `BRepLib.BuildCurves3d` computes and attaches the missing 3D curve
-    # from the pcurve+surface pair - the standard OCCT fix for a
-    # surface-parametrized edge that a 3D-curve-only consumer needs.
-    breplib.BuildCurves3d(edge)
-    wire = BRepBuilderAPI_MakeWire(edge).Wire()
+    builder = HelixBRep_BuilderHelix()
+    builder.SetParameters(gp_Ax3(origin, axis_dir, x_dir), _real_array(diameters), _real_array(pitches), _real_array(turns))
+    builder.Perform()
+    shape = builder.Shape()
+    if builder.ErrorStatus() != 0 or shape is None or shape.IsNull():
+        raise _curve_construction_failed(feature.id, f"helix builder failed (status {builder.ErrorStatus()})")
+    wire = topods.Wire(shape)
+
+    if not feature.right_handed:
+        wire = _mirrored(wire, origin, gp_Dir(axis_dir.Crossed(x_dir)))
+    if not advances_up:
+        wire = _mirrored(wire, origin, axis_dir)
     return ResolvedCurve(wire=wire, length=_wire_length(wire), closed=False)
 
 

@@ -13880,7 +13880,7 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// The "Add" FAB's Helix entry. [CurvePanel] itself collects every numeric
-  /// parameter (radius, pitch, turns, handedness) via its own form fields -
+  /// parameter (radius, taper, the pitch/turns segments, handedness) via its own form fields -
   /// unlike Sweep/Extrude/etc. there is no dedicated picker-mode step. The
   /// axis itself, though, prefers whatever plane-like entity ([_helixAxisKinds])
   /// is already selected when this is invoked (the same "picks already made
@@ -13897,8 +13897,9 @@ class _PartScreenState extends State<PartScreen> {
 
     var helixAxisPlane = 'XY';
     var helixRadius = 5.0;
-    var helixPitch = 2.0;
-    var helixTurns = 3.0;
+    double? helixEndRadius;
+    double? helixTaperAngle;
+    var helixSegments = const [HelixSegmentValue(pitch: 2, turns: 3)];
     var helixRightHanded = true;
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
@@ -13910,14 +13911,16 @@ class _PartScreenState extends State<PartScreen> {
         onHelixChanged: ({
           required String axisPlane,
           required double radius,
-          required double pitch,
-          required double turns,
+          double? endRadius,
+          double? taperAngleDegrees,
+          required List<HelixSegmentValue> segments,
           required bool rightHanded,
         }) {
           helixAxisPlane = axisPlane;
           helixRadius = radius;
-          helixPitch = pitch;
-          helixTurns = turns;
+          helixEndRadius = endRadius;
+          helixTaperAngle = taperAngleDegrees;
+          helixSegments = segments;
           helixRightHanded = rightHanded;
         },
         onConfirm: () => Navigator.of(sheetContext).pop(true),
@@ -13931,8 +13934,9 @@ class _PartScreenState extends State<PartScreen> {
         curveType: 'helix',
         axisRef: preSelectedAxisRef ?? PlaneRefDto(fixedPlane: helixAxisPlane),
         radius: helixRadius,
-        pitch: helixPitch,
-        turns: helixTurns,
+        endRadius: helixEndRadius,
+        taperAngleDegrees: helixTaperAngle,
+        segments: [for (final s in helixSegments) (pitch: s.pitch, turns: s.turns)],
         rightHanded: helixRightHanded,
       );
       await _refreshFeatures();

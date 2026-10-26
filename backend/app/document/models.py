@@ -568,7 +568,7 @@ class CurveType(str, Enum):
     """Which curve-construction method a `CurveFeature` uses - mirrors
     `PlaneType`'s own "one Feature class, many construction methods" str-Enum
     pattern:
-    - `HELIX`: a constant-pitch helix around `axis_ref` (a `PlaneRef` - its
+    - `HELIX`: a helix (optionally tapered, with pitch segments) around `axis_ref` (a `PlaneRef` - its
       origin is the helix's start point, its normal the axis direction).
     - `INTERSECTION`: the 3D curve where two Sketches' profiles, each
       extruded along its own sketch plane's normal, intersect - the standard
@@ -580,13 +580,24 @@ class CurveType(str, Enum):
     INTERSECTION = "intersection"
 
 
+@dataclass(frozen=True)
+class HelixSegment:
+    """One stretch of a helix: `turns` revolutions at `pitch` (axis advance per revolution; its sign is
+    the direction along the axis, and every segment of a helix has the same sign). A helix is a list
+    of these, so the pitch can change along it (a spring with tight end coils). Its total height is
+    the sum of pitch x turns."""
+
+    pitch: float
+    turns: float
+
+
 @dataclass
 class CurveFeature(Feature):
     """A 3D curve, fully determined by one of two construction methods,
     never more than one at once - mirrors `CreatePlaneFeature`'s "one
     dataclass, `router`-validated field combination per type" convention
     rather than splitting into `HelixFeature`/`IntersectionCurveFeature`:
-    - `HELIX`: `axis_ref`/`radius`/`pitch`/`turns`/`right_handed` set.
+    - `HELIX`: `axis_ref`/`radius`/`segments`/`right_handed` set, `end_radius` optionally.
     - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`/
       `sketch_feature_id_b`/`profile_refs_b` set - `profile_refs_a`/`_b`
       pick which entities of each Sketch form the profile to extrude and
@@ -602,6 +613,9 @@ class CurveFeature(Feature):
     a `SketchOrEdgeRef.curve_feature_id` is accepted (a Sweep/Swept-Surface
     path, a Fill Surface boundary) and as the curve source for
     `CreatePlaneFeature.plane_type == NORMAL_TO_CURVE_FEATURE_AT_PARAMETER`.
+    A helix starts at `radius` and, when `end_radius` is set, tapers linearly with height to it
+    (`None`: constant radius). The API also accepts a taper angle in place of `end_radius`
+    (`end_radius = radius + height * tan(angle)`) and returns both; only `end_radius` is stored.
     The actual OCCT resolution lives in `app.document.curve` (this module
     stays OCCT-free, mirroring `ResolvedPlane`'s own "coordinates only"
     convention - the resolved curve geometry itself, `ResolvedCurve`, lives
@@ -612,8 +626,8 @@ class CurveFeature(Feature):
     curve_type: CurveType
     axis_ref: PlaneRef | None = None
     radius: float | None = None
-    pitch: float | None = None
-    turns: float | None = None
+    end_radius: float | None = None
+    segments: list["HelixSegment"] = field(default_factory=list)
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRef] = field(default_factory=list)

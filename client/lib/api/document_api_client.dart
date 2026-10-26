@@ -5066,8 +5066,8 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
-  /// Creates a CurveFeature - either a `"helix"` ([axisRef]/[radius]/[pitch]/
-  /// [turns]/[rightHanded]) or an `"intersection"` curve ([sketchFeatureIdA]/
+  /// Creates a CurveFeature - either a `"helix"` ([axisRef]/[radius]/[segments] (each `{pitch, turns}`)/
+  /// [rightHanded], tapered by [endRadius] or [taperAngleDegrees] - not both) or an `"intersection"` curve ([sketchFeatureIdA]/
   /// [sketchFeatureIdB], each Sketch's whole closed profile or open chain -
   /// see the backend `CurveFeature`'s own docstring for why `profile_refs_a`/
   /// `_b` aren't exposed here yet: v1 only supports a Sketch with exactly
@@ -5077,8 +5077,9 @@ class DocumentApiClient {
     required String curveType,
     PlaneRefDto? axisRef,
     double? radius,
-    double? pitch,
-    double? turns,
+    double? endRadius,
+    double? taperAngleDegrees,
+    List<({double pitch, double turns})> segments = const [],
     bool rightHanded = true,
     String? sketchFeatureIdA,
     String? sketchFeatureIdB,
@@ -5091,8 +5092,12 @@ class DocumentApiClient {
                 'curve_type': curveType,
                 if (axisRef != null) 'axis_ref': axisRef.toJson(),
                 if (radius != null) 'radius': radius,
-                if (pitch != null) 'pitch': pitch,
-                if (turns != null) 'turns': turns,
+                if (endRadius != null) 'end_radius': endRadius,
+                if (taperAngleDegrees != null) 'taper_angle_degrees': taperAngleDegrees,
+                if (segments.isNotEmpty)
+                  'segments': [
+                    for (final s in segments) {'pitch': s.pitch, 'turns': s.turns},
+                  ],
                 'right_handed': rightHanded,
                 if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
                 if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,
@@ -5108,8 +5113,9 @@ class DocumentApiClient {
     String featureId, {
     PlaneRefDto? axisRef,
     double? radius,
-    double? pitch,
-    double? turns,
+    double? endRadius,
+    double? taperAngleDegrees,
+    List<({double pitch, double turns})>? segments,
     bool? rightHanded,
     String? sketchFeatureIdA,
     String? sketchFeatureIdB,
@@ -5121,8 +5127,12 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (axisRef != null) 'axis_ref': axisRef.toJson(),
                 if (radius != null) 'radius': radius,
-                if (pitch != null) 'pitch': pitch,
-                if (turns != null) 'turns': turns,
+                if (endRadius != null) 'end_radius': endRadius,
+                if (taperAngleDegrees != null) 'taper_angle_degrees': taperAngleDegrees,
+                if (segments != null)
+                  'segments': [
+                    for (final s in segments) {'pitch': s.pitch, 'turns': s.turns},
+                  ],
                 if (rightHanded != null) 'right_handed': rightHanded,
                 if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
                 if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,

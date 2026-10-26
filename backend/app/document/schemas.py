@@ -811,10 +811,20 @@ class CreatePlaneFeatureResponse(FeatureResponseBase):
     produces: Produces
 
 
+class HelixSegmentSchema(BaseModel):
+    """One stretch of a helix: `turns` revolutions at `pitch` (axis advance per revolution; its sign
+    is the direction along the axis, the same for every segment of a helix)."""
+
+    pitch: float
+    turns: float
+
+
 class CurveFeatureCreate(BaseModel):
     """Creates a `CurveFeature` - exactly one combination of fields should
     be supplied, matching `curve_type`:
-    - `HELIX`: `axis_ref`, `radius`, `pitch`, `turns`, `right_handed`.
+    - `HELIX`: `axis_ref`, `radius`, `segments` (at least one `{pitch, turns}`), `right_handed`,
+      and optionally a taper: `end_radius` *or* `taper_angle_degrees` (not both; the angle is
+      converted to `end_radius = radius + height * tan(angle)`, positive widening along the helix).
     - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`,
       `sketch_feature_id_b`/`profile_refs_b`.
     See `app.document.router._validate_curve_payload` for the exact
@@ -824,8 +834,9 @@ class CurveFeatureCreate(BaseModel):
     curve_type: CurveType
     axis_ref: PlaneRefSchema | None = None
     radius: float | None = None
-    pitch: float | None = None
-    turns: float | None = None
+    end_radius: float | None = None
+    taper_angle_degrees: float | None = None
+    segments: list[HelixSegmentSchema] = []
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] = []
@@ -840,8 +851,10 @@ class CurveFeatureUpdate(BaseModel):
 
     axis_ref: PlaneRefSchema | None = None
     radius: float | None = None
-    pitch: float | None = None
-    turns: float | None = None
+    # An explicit null clears the taper (constant radius); omitting keeps the current one.
+    end_radius: float | None = None
+    taper_angle_degrees: float | None = None
+    segments: list[HelixSegmentSchema] | None = None
     right_handed: bool | None = None
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] | None = None
@@ -855,8 +868,12 @@ class CurveFeatureResponse(FeatureResponseBase):
     curve_type: CurveType
     axis_ref: PlaneRefSchema | None = None
     radius: float | None = None
-    pitch: float | None = None
-    turns: float | None = None
+    # The taper as stored (`end_radius`) and as an angle - both always returned; null: constant radius.
+    end_radius: float | None = None
+    taper_angle_degrees: float | None = None
+    segments: list[HelixSegmentSchema] = []
+    # Sum of pitch x turns over the segments (signed like the pitch); null for an intersection curve.
+    total_height: float | None = None
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] = []
