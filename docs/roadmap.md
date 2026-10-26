@@ -854,3 +854,18 @@ Order of work:
 3. **Delete without healing -> surface body** only as an explicit per-feature option, as its own project: a non-solid body kind in the document model, a visible "surface" marker in the Build tree and the Parts list, downstream features (Fillet, Shell, Mirror, Pattern, Boolean, Split, Merge, scale) refusing it with a clear named error, and export / volume behaviour decided. Needs a decision on how a surface body is meshed and picked in the VR table.
 
 Not started; the community-practice notes above are background knowledge, not a sourced survey.
+
+## Candidate: spike OCCT 8's topology graph (`BRepGraph`) for reference identity (added 2026-10-26)
+
+OCCT 8 adds `BRepGraph`: topology and geometry as a graph next to `TopoDS_Shape`, with durable ids (`UID`, `RefUID`, `ItemUID`, stable across compaction and reordering), a history layer and conversion both ways. pythonocc-core 8.0.1 wraps it (157 classes). It is aimed at the problem `docs/reference-identity-design.md` solves today with signatures plus `BRepTools_History` lineage (`reference_signature.py`, `reference_history.py`). Too new to adopt (rebuilt in 8.0.0p1, still being hardened), so a time-boxed spike only:
+
+1. Build a graph from a Body, apply one in-place operation the recorder already hooks (a fillet, a cut), and see whether faces, edges and vertices keep their `UID`s where our lineage says they survive, and get new ones where it says they were replaced.
+2. Compare against the four reference-identity probes and the drift cases in `docs/reference-identity-design.md`.
+3. Measure the cost of building the graph for a gear-sized Body.
+4. Write down whether it could replace, back up or not help the signature and history scheme, and what pythonocc gaps there are.
+
+Background: `docs/occt-8-upgrade-evaluation.md` section 4. Not started.
+
+## Candidate: Thread feature (added 2026-10-26)
+
+A modelled thread (external on a cylinder face, internal in a hole) built by sweeping a thread profile along a helix, now that OCCT 8's `HelixBRep` builds tapered helices (pipe threads) and sweeps along a helix about 8x faster than our old recipe (`docs/occt-8-upgrade-evaluation.md`). Needs scoping first: standards and sizes (ISO metric coarse/fine first, then UNC/UNF, BSP/NPT tapered), picking the target face and its start edge, run-out at the end, left/right hand, a cosmetic (texture-only) option for the many-threads case, and how it shows on the VR table. Depends on the helix adoption in the loft-and-helix plan. Not started.
