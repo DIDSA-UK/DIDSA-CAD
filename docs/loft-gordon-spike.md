@@ -122,8 +122,9 @@ Every body from the loft tests (`test_loft_feature`, `test_loft_seam`, `test_lof
 `test_lod_pattern_loft`, `test_edge_ref_surface_inputs`, `test_body_cache_get_features_fix`, `test_thicken_feature`; 106
 tests) built both ways with `tools/occt_compare/geomdiff.py`, `main` against this branch, same machine:
 
-- **Every loft test passes.** Four needed changes, none for a Gordon defect: three guide tests that pinned the old
-  translation behaviour (replaced, see the PR), the triangle-to-circle test (it required the automatic seam within 1 mm³
+- **Every loft test passes.** Some needed changes, none for a Gordon defect: two guide tests pinned the old translation
+  behaviour ("slides each section along the rail", "requires an alignment point on every section"; replaced), two more
+  only renamed the field (`guide_curves`), the triangle-to-circle test (it required the automatic seam within 1 mm³
   of the best of twelve explicit seams; the Gordon surface blends differently between neighbouring start vertices and the
   best seam is 0.8% above the corner-aligned one, so the tolerance is now 1% of the volume, the plan's own figure), and
   the ruled-surface equivalence test (it compared exact mesh vertices of a `ThruSections` ruled surface against a Loft
