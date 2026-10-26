@@ -527,6 +527,28 @@ void main() {
     });
   });
 
+  group('FeatureDto.fromJson for a curve Feature', () {
+    test('a helix whose axis_ref is a plane ref parses (it is not a Revolve line ref)', () {
+      final dto = FeatureDto.fromJson({
+        'type': 'curve',
+        'id': 'curve-1',
+        'locked': false,
+        'produces': 'curve',
+        'curve_type': 'helix',
+        'axis_ref': {'fixed_plane': 'XY'},
+        'radius': 5.0,
+        'segments': [
+          {'pitch': 2.0, 'turns': 3.0},
+        ],
+        'right_handed': true,
+      });
+
+      expect(dto.curveType, 'helix');
+      expect(dto.axisRef, isNull);
+      expect(dto.radius, 5.0);
+    });
+  });
+
   group('FeatureDto.fromJson for a create_plane Feature', () {
     test('parses an offset_face Feature with resolved origin/normal', () {
       final dto = FeatureDto.fromJson({
