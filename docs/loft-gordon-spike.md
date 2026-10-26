@@ -128,20 +128,24 @@ tests) built both ways with `tools/occt_compare/geomdiff.py`, `main` against thi
   best seam is 0.8% above the corner-aligned one, so the tolerance is now 1% of the volume, the plan's own figure), and
   the ruled-surface equivalence test (it compared exact mesh vertices of a `ThruSections` ruled surface against a Loft
   Surface; now they are compared by bounds and area).
-- **Validity:** all 185 bodies valid on both sides.
-- **Topology:** the same face/edge/vertex counts everywhere except one body, a case where the old result was inside out.
-  Face counts per section edge are unchanged, circles stay one face.
-- **Volume:** the differences are all in the test cases where `ThruSections` and Gordon use a different vertex
+- **Validity:** 184 bodies compared (one more on each side that only one run produced), 185 of 185 valid on both sides.
+- **Topology:** the same face/edge/vertex counts for every body but one. Face counts per section edge are unchanged,
+  circles stay one face. The exception is `test_reference_point_alignment_changes_the_lofted_geometry`: a 10 x 4 rectangle
+  twisted by 223 degrees through a `reference_point`. `ThruSections` joined it to the nearest corner match (290.6 mm³
+  against the 320 mm³ prism, 6 faces); the section now goes through the same automatic alignment as every other closed
+  section (before, `reference_point` opted out of it, because only `ThruSections` searched for a correspondence), whose
+  best start lies mid-edge, so one edge splits into two: 7 faces, 311.9 mm³ (less twist). This is the one place the face
+  count differs from the old result; it is a better-aligned loft with one more face.
+- **Volume:** the other differences are all test cases where `ThruSections` and Gordon use a different vertex
   correspondence, and each was inspected: (i) `test_square_to_circle...` and `test_triangle_to_circle...` deliberately
   switch the automatic alignment *off* to measure a poor correspondence, and `ThruSections` then silently searched for a
-  better one while Gordon honours index correspondence, so the "bad" body is worse than it was (the user-facing default,
+  better one while Gordon honours index correspondence, so that "bad" body is worse than it was (the user-facing default,
   auto-align on, is the same shape as before, within 0.2%); (ii) `ThruSections` returned **negative-volume (inside-out)
-  solids** for some poor seams (-127 mm³ against Gordon's +130); (iii) the reference-point test: a rectangle twisted by
-  223 degrees, where `ThruSections` quietly chose the nearest corner match. A section with a `reference_point` is now
-  auto-aligned too, which restores that; (iv) open-shell "volumes" are signs of an open surface and not meaningful.
-- **Speed:** summed feature-step time 20.2 s against 24.2 s over 125 steps (+20%), slowest loft step 2.7x
-  (7 ms against 3 ms). Before the planar-face change the slowest was 11x. The criterion is "no case more than 3x slower":
-  met (the 3.3x row in the comparison is a *Swept Surface* step of 3 ms, which this change does not touch).
+  solids** for some poor seams (-127 mm³ against Gordon's +130); (iii) open-shell "volumes" are the signed volume of an
+  open surface and not meaningful (the signs differ with the shell's orientation; the normals themselves match, item 8).
+- **Speed:** summed feature-step time 20.2 s against 21.5 s over 125 steps (+6%); the slowest loft step is 1.6x (0.24 s
+  against 0.38 s for the twisted rectangle, whose seam splits an edge). Before the planar-face change the slowest was 11x
+  (`_mid_section_warnings` cutting a flat B-spline face). The criterion is "no case more than 3x slower": met.
 - **`ThruSections` stays as the safety net for unguided lofts.** Gordon cannot build every network: sections that
   intersect each other (a loft between a vertical edge and a horizontal one that crosses it, exercised by
   `test_loft_surface_between_a_body_edge_and_an_open_sketch_chain_succeeds`) fail with an OCCT `Standard_OutOfRange`
