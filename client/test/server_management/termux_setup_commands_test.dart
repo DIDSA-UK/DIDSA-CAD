@@ -61,7 +61,12 @@ void main() {
         'showing as created', () {
       final script = TermuxSetupCommands.checkStatus().last;
       expect(script, isNot(contains('env list')));
-      expect(script, contains('micromamba run -n didsa python -c "import uvicorn"'));
+      expect(script, contains('micromamba run -n didsa python -c "import uvicorn; from OCC.Core.GeomFill import GeomFill_Gordon"'));
+    });
+
+    test('checkStatus treats an env without OCCT 8 (GeomFill_Gordon) as not ready, so a stale env is not reported as created', () {
+      final script = TermuxSetupCommands.checkStatus().last;
+      expect(script, contains('from OCC.Core.GeomFill import GeomFill_Gordon'));
     });
 
     test('checkStatus prints exactly one JSON object with every expected field', () {
@@ -185,8 +190,16 @@ void main() {
       final script = TermuxSetupCommands.installStage5().last;
       expect(script, isNot(contains('env list')));
       expect(script, isNot(contains('grep')));
-      expect(script, contains('micromamba run -n didsa python -c "import uvicorn"'));
+      expect(script, contains('micromamba run -n didsa python -c "import uvicorn; from OCC.Core.GeomFill import GeomFill_Gordon"'));
       expect(script, contains('micromamba create -n didsa -y -f ~/DIDSA-CAD/backend/environment.yml'));
+    });
+
+    test('stage 5 updates an existing env that fails the readiness check (older pythonocc-core) instead of '
+        'skipping it or re-creating it', () {
+      final script = TermuxSetupCommands.installStage5().last;
+      expect(script, contains('micromamba run -n didsa true'));
+      expect(script, contains('micromamba install -n didsa -y -f ~/DIDSA-CAD/backend/environment.yml'));
+      expect(script.indexOf('micromamba install -n didsa'), lessThan(script.indexOf('micromamba create -n didsa')));
     });
 
     test('installAllRemaining chains every stage in order inside one dispatched command', () {
