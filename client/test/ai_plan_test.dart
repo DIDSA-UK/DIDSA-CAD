@@ -168,7 +168,7 @@ void main() {
     expect(loft.ruled, isTrue);
     expect(loft.targetBodyIds, isEmpty);
     expect(loft.thickness, isNull);
-    expect(loft.guideCurveRefs, isEmpty);
+    expect(loft.guideCurves, isEmpty);
 
     final roundTripped = AiGenerationPlan.fromJson({'version': 1, 'steps': [loft.toJson()]}).steps.single as AiLoftStep;
     expect(roundTripped.sections, hasLength(2));

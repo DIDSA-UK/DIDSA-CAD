@@ -7861,8 +7861,8 @@ class _PartScreenState extends State<PartScreen> {
   String? _editingLoftFeatureId;
 
   /// The edited Feature's own stored values from just before editing started
-  /// - mirrors [_sweepEditSnapshot]. `alignmentPoints`/`guideCurveRef`
-  /// snapshot [_loftAlignmentPoints]/[_loftGuideCurveRef]'s own pre-edit
+  /// - mirrors [_sweepEditSnapshot]. `alignmentPoints`/`guideCurves`
+  /// snapshot [_loftAlignmentPoints]/[_loftGuideCurves]'s own pre-edit
   /// values (unlike `sections` themselves, both of those *can* change
   /// mid-edit-session via this panel's own advanced picker, so Cancel needs
   /// its own copy to revert to - same reasoning as `mode`/`ruled`/etc).
@@ -7875,7 +7875,7 @@ class _PartScreenState extends State<PartScreen> {
     List<SketchEntityRefDto?> alignmentPoints,
     List<double?> seamParams,
     List<bool> reverseFlags,
-    SketchEntityRefDto? guideCurveRef,
+    List<List<SketchEntityRefDto>> guideCurves,
   })? _loftEditSnapshot;
 
   LoftMode _loftMode = LoftMode.boss;
@@ -7918,11 +7918,15 @@ class _PartScreenState extends State<PartScreen> {
   /// stored/default one. Needed when a sketch has several closed loops.
   List<List<SketchEntityRefDto>?> _loftProfileRefs = [];
 
-  /// The picked `guide_curve_refs` entity - this session's own UI
-  /// simplification of the backend's ordered chain to a single entity
-  /// (see [LoftPanel]'s own doc comment for why) - sent as a one-element
-  /// list, or `[]` if null.
-  SketchEntityRefDto? _loftGuideCurveRef;
+  /// The finished guides (the backend `guide_curves`): each an ordered chain of picked curves.
+  List<List<SketchEntityRefDto>> _loftGuideCurves = [];
+
+  /// The curves picked so far for the guide being built while [_loftPickingGuideCurve]; "Done" turns
+  /// it into an entry of [_loftGuideCurves].
+  List<SketchEntityRefDto> _loftGuideDraft = [];
+
+  /// The backend's non-blocking warnings for the loft last built (a guide bent to meet a section).
+  List<String> _loftWarnings = [];
 
   /// Whether the guide-curve pick is currently active in the viewport.
   bool _loftPickingGuideCurve = false;
@@ -8026,7 +8030,9 @@ class _PartScreenState extends State<PartScreen> {
       _loftReverseFlags = List.filled(sections.length, false);
       _loftProfileRefs = List.filled(sections.length, null);
       _loftStoredSections = null;
-      _loftGuideCurveRef = null;
+      _loftGuideCurves = [];
+      _loftGuideDraft = [];
+      _loftWarnings = [];
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {};
       _selectionMode = true;
@@ -8053,7 +8059,7 @@ class _PartScreenState extends State<PartScreen> {
     final alignmentPoints = [for (final section in feature.sections) section.alignmentPoint];
     final seamParams = [for (final section in feature.sections) section.seamParam];
     final reverseFlags = [for (final section in feature.sections) section.reverse];
-    final guideCurveRef = feature.guideCurveRefs.isNotEmpty ? feature.guideCurveRefs.first : null;
+    final guideCurves = [for (final guide in feature.guideCurves) List<SketchEntityRefDto>.of(guide)];
 
     setState(() {
       _loftSections = resolvedSections;
@@ -8068,7 +8074,7 @@ class _PartScreenState extends State<PartScreen> {
         alignmentPoints: alignmentPoints,
         seamParams: seamParams,
         reverseFlags: reverseFlags,
-        guideCurveRef: guideCurveRef,
+        guideCurves: guideCurves,
       );
       _meshBeforeLoft = _bodies;
       _loftMode = mode;
@@ -8080,7 +8086,9 @@ class _PartScreenState extends State<PartScreen> {
       _loftReverseFlags = reverseFlags;
       _loftStoredSections = feature.sections;
       _loftProfileRefs = List.filled(feature.sections.length, null);
-      _loftGuideCurveRef = guideCurveRef;
+      _loftGuideCurves = [for (final guide in guideCurves) List<SketchEntityRefDto>.of(guide)];
+      _loftGuideDraft = [];
+      _loftWarnings = feature.warnings;
       _entitiesBeforeLoft = _selectedEntities;
       _selectedEntities = {
         for (final bodyId in targetBodyIds)
@@ -8094,7 +8102,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_ensureSweepFeatureExists] exactly, substituting the fixed,
   /// ordered [_loftSections] for Sweep's single sketchFeature + path.
-  /// Threads [_loftAlignmentPoints]/[_loftGuideCurveRef] through on every
+  /// Threads [_loftAlignmentPoints]/[_loftGuideCurves] through on every
   /// call (including the debounced live-preview ones) - the same "always
   /// resend, even unchanged" convention [_ensureSweepFeatureExists] already
   /// uses for its own `pathRefs`.
@@ -8112,7 +8120,9 @@ class _PartScreenState extends State<PartScreen> {
       for (var i = 0; i < _loftSections.length; i++)
         _loftSectionDto(i),
     ];
-    final guideCurveRefs = _loftGuideCurveRef == null ? <SketchEntityRefDto>[] : [_loftGuideCurveRef!];
+    // Guides cannot be combined with a ruled loft (the backend rejects it); a ruled loft just ignores them.
+    final guideCurves = ruled ? <List<SketchEntityRefDto>>[] : _loftGuideCurves;
+    final FeatureDto built;
 
     final existingId = _previewLoftFeatureId;
     if (existingId == null) {
@@ -8120,7 +8130,7 @@ class _PartScreenState extends State<PartScreen> {
       // via [_patternFeatureCreateInFlight] - see that field's doc comment.
       if (_loftFeatureCreateInFlight != null) {
         final created = await _loftFeatureCreateInFlight!;
-        await _api.updateLoftFeature(
+        built = await _api.updateLoftFeature(
           _focusPartId,
           created.id,
           sections: sections,
@@ -8129,7 +8139,7 @@ class _PartScreenState extends State<PartScreen> {
           targetBodyIds: targetBodyIds,
           thickness: thickness,
           thinFromClosedProfile: thinFromClosedProfile,
-          guideCurveRefs: guideCurveRefs,
+          guideCurves: guideCurves,
         );
       } else {
         final generation = ++_createCoarsePreviewGeneration;
@@ -8140,7 +8150,7 @@ class _PartScreenState extends State<PartScreen> {
           ruled: ruled,
           targetBodyIds: targetBodyIds,
           thickness: thickness,
-          guideCurveRefs: guideCurveRefs,
+          guideCurves: guideCurves,
         ));
         final createFuture = _api.createLoftFeature(
           _focusPartId,
@@ -8150,19 +8160,20 @@ class _PartScreenState extends State<PartScreen> {
           targetBodyIds: targetBodyIds,
           thickness: thickness,
           thinFromClosedProfile: thinFromClosedProfile,
-          guideCurveRefs: guideCurveRefs,
+          guideCurves: guideCurves,
         );
         _loftFeatureCreateInFlight = createFuture;
         try {
           final created = await createFuture;
           _previewLoftFeatureId = created.id;
+          built = created;
         } finally {
           _loftFeatureCreateInFlight = null;
           _clearPendingCreateCoarsePreview();
         }
       }
     } else {
-      await _api.updateLoftFeature(
+      built = await _api.updateLoftFeature(
         _focusPartId,
         existingId,
         sections: sections,
@@ -8171,9 +8182,10 @@ class _PartScreenState extends State<PartScreen> {
         targetBodyIds: targetBodyIds,
         thickness: thickness,
         thinFromClosedProfile: thinFromClosedProfile,
-        guideCurveRefs: guideCurveRefs,
+        guideCurves: guideCurves,
       );
     }
+    if (mounted) setState(() => _loftWarnings = built.warnings);
     await _refreshMesh();
     unawaited(_refreshLoftSeamHandles());
   }
@@ -8259,7 +8271,9 @@ class _PartScreenState extends State<PartScreen> {
       _loftSeamHandles = const [];
       _loftProfileRefs = [];
       _loftStoredSections = null;
-      _loftGuideCurveRef = null;
+      _loftGuideCurves = [];
+      _loftGuideDraft = [];
+      _loftWarnings = [];
       // Defensive: abandons an in-flight alignment-point/guide-curve
       // sub-pick if Confirm was pressed without finishing it first - pops
       // its own filter override before the main panel's own pop just below
@@ -8310,7 +8324,9 @@ class _PartScreenState extends State<PartScreen> {
       _loftSeamHandles = const [];
       _loftProfileRefs = [];
       _loftStoredSections = null;
-      _loftGuideCurveRef = null;
+      _loftGuideCurves = [];
+      _loftGuideDraft = [];
+      _loftWarnings = [];
       // Mirrors _confirmLoft's own identical defensive cleanup above.
       if (_loftAlignmentPickIndex != null || _loftPickingGuideCurve) {
         _loftAlignmentPickIndex = null;
@@ -8344,8 +8360,6 @@ class _PartScreenState extends State<PartScreen> {
                 reverse: i < editSnapshot.reverseFlags.length && editSnapshot.reverseFlags[i],
               ),
           ];
-          final revertGuideCurveRefs =
-              editSnapshot.guideCurveRef == null ? <SketchEntityRefDto>[] : [editSnapshot.guideCurveRef!];
           await _api.updateLoftFeature(
             _focusPartId,
             previewId,
@@ -8355,7 +8369,7 @@ class _PartScreenState extends State<PartScreen> {
             targetBodyIds: editSnapshot.targetBodyIds,
             thickness: editSnapshot.thickness,
             thinFromClosedProfile: editSnapshot.thinFromClosedProfile,
-            guideCurveRefs: revertGuideCurveRefs,
+            guideCurves: editSnapshot.guideCurves,
           );
           await _refreshFeatures();
         });
@@ -8511,41 +8525,57 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// [LoftPanel.onPickGuideCurve] - mirrors [_startLoftAlignmentPointPick]
-  /// exactly, substituting the guide-curve selection filter (Line/Arc/
-  /// Ellipse/Spline) for Sketch Points.
+  /// [LoftPanel.onPickGuideCurve] ("Add guide") - enters the viewport picking sub-mode for a new
+  /// guide, stashing the target-body picker's own [_selectedEntities] like the alignment-point
+  /// sub-pick does. Unlike that one, it stays open across taps: each tap adds one curve to the guide
+  /// being built, and Done / Cancel end it.
   void _startLoftGuideCurvePick() {
     setState(() {
       _loftPickingGuideCurve = true;
+      _loftGuideDraft = [];
       _entitiesBeforeLoftSubPick = _selectedEntities;
       _selectedEntities = {};
       _selectionFilterOverrides.push(_loftGuideCurveSelectionFilter);
     });
   }
 
-  /// [_toggleSelectedEntity]'s own Loft-guide-curve special case - mirrors
-  /// [_setLoftAlignmentPoint]'s exact shape, resolving [entity]'s own
-  /// concrete curve-entity-type string from its [SelectionEntityKind]
-  /// (this session's own UI narrows `guide_curve_refs` to a single entity
-  /// - see [LoftPanel]'s own doc comment).
+  /// The backend entity type for a curve [kind] a guide can be made of, or null.
+  String? _guideEntityTypeFor(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.sketchLine => 'line',
+        SelectionEntityKind.sketchArc => 'arc',
+        SelectionEntityKind.sketchEllipse => 'ellipse',
+        SelectionEntityKind.sketchSpline => 'spline',
+        _ => null,
+      };
+
+  /// [_toggleSelectedEntity]'s Loft guide special case: a tap adds the curve to the guide being built
+  /// (a second tap on the same curve takes it out again).
   void _setLoftGuideCurve(SelectionEntityRef entity) {
     if (!_loftPickingGuideCurve) return;
     final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
     if (sketchId == null) return;
-    final entityType = switch (entity.kind) {
-      SelectionEntityKind.sketchLine => 'line',
-      SelectionEntityKind.sketchArc => 'arc',
-      SelectionEntityKind.sketchEllipse => 'ellipse',
-      SelectionEntityKind.sketchSpline => 'spline',
-      _ => null,
-    };
+    final entityType = _guideEntityTypeFor(entity.kind);
     if (entityType == null) return; // Defensive - the selection filter already excludes every other kind.
     setState(() {
-      _loftGuideCurveRef = SketchEntityRefDto(
-        sketchId: sketchId,
-        entityType: entityType,
-        entityId: entity.sketchEntityId,
-      );
+      final existing = _loftGuideDraft.indexWhere((r) => r.sketchId == sketchId && r.entityId == entity.sketchEntityId);
+      if (existing >= 0) {
+        _loftGuideDraft = [..._loftGuideDraft]..removeAt(existing);
+        _selectedEntities = {..._selectedEntities}..remove(entity);
+      } else {
+        _loftGuideDraft = [
+          ..._loftGuideDraft,
+          SketchEntityRefDto(sketchId: sketchId, entityType: entityType, entityId: entity.sketchEntityId),
+        ];
+        _selectedEntities = {..._selectedEntities, entity}; // highlights the curve in the viewport
+      }
+    });
+  }
+
+  /// [LoftPanel.onFinishGuideCurve] ("Done"): the picked curves become one more guide.
+  void _finishLoftGuideCurve() {
+    setState(() {
+      if (_loftGuideDraft.isNotEmpty) _loftGuideCurves = [..._loftGuideCurves, _loftGuideDraft];
+      _loftGuideDraft = [];
       _loftPickingGuideCurve = false;
       _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
       _entitiesBeforeLoftSubPick = null;
@@ -8554,15 +8584,17 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleLoftPreview();
   }
 
-  /// [LoftPanel.onClearGuideCurve].
-  void _clearLoftGuideCurve() {
-    setState(() => _loftGuideCurveRef = null);
+  /// [LoftPanel.onRemoveGuideCurve].
+  void _removeLoftGuideCurve(int index) {
+    if (index < 0 || index >= _loftGuideCurves.length) return;
+    setState(() => _loftGuideCurves = [..._loftGuideCurves]..removeAt(index));
     _scheduleLoftPreview();
   }
 
-  /// Mirrors [_cancelLoftAlignmentPointPick] exactly.
+  /// [LoftPanel.onCancelGuideCurvePick]: drops the guide being built.
   void _cancelLoftGuideCurvePick() {
     setState(() {
+      _loftGuideDraft = [];
       _loftPickingGuideCurve = false;
       _selectedEntities = _entitiesBeforeLoftSubPick ?? {};
       _entitiesBeforeLoftSubPick = null;
@@ -8675,22 +8707,19 @@ class _PartScreenState extends State<PartScreen> {
   String? _editingLoftSurfaceFeatureId;
 
   /// Mirrors [_loftEditSnapshot], minus `mode`/`thickness`/`targetBodyIds`.
-  ({bool ruled, List<SketchEntityRefDto?> alignmentPoints, SketchEntityRefDto? guideCurveRef})?
+  ({bool ruled, List<SketchEntityRefDto?> alignmentPoints, List<List<SketchEntityRefDto>> guideCurves})?
       _loftSurfaceEditSnapshot;
 
   bool _loftSurfaceRuled = false;
 
-  /// Mirrors [_loftGuideCurveRef]/[_loftPickingGuideCurve] exactly.
-  SketchEntityRefDto? _loftSurfaceGuideCurveRef;
+  /// Mirrors [_loftGuideCurves]/[_loftGuideDraft]/[_loftPickingGuideCurve]/[_loftWarnings] exactly.
+  List<List<SketchEntityRefDto>> _loftSurfaceGuideCurves = [];
+  List<SketchEntityRefDto> _loftSurfaceGuideDraft = [];
   bool _loftSurfacePickingGuideCurve = false;
+  List<String> _loftSurfaceWarnings = [];
 
-  /// Mirrors [_loftAlignmentPoints] exactly - without a per-section
-  /// alignment_point, `_apply_alignment_point_translation` (backend
-  /// `app.document.loft`) never reads `guide_curve_refs` at all (its own
-  /// early-return fires whenever no section has an alignment point), so a
-  /// Loft Surface guide curve was previously always a no-op. Kept the same
-  /// length as [_loftSurfaceSections] by [_openLoftSurfacePanel]/
-  /// [_openLoftSurfacePanelForEdit].
+  /// Mirrors [_loftAlignmentPoints] exactly: the unguided "line the sections up" translation. Kept the
+  /// same length as [_loftSurfaceSections] by [_openLoftSurfacePanel]/[_openLoftSurfacePanelForEdit].
   List<SketchEntityRefDto?> _loftSurfaceAlignmentPoints = [];
 
   /// Mirrors [_loftAlignmentPickIndex] exactly.
@@ -8777,7 +8806,9 @@ class _PartScreenState extends State<PartScreen> {
       _meshBeforeLoftSurface = _bodies;
       _loftSurfaceRuled = false;
       _loftSurfaceAlignmentPoints = List.filled(sections.length, null);
-      _loftSurfaceGuideCurveRef = null;
+      _loftSurfaceGuideCurves = [];
+      _loftSurfaceGuideDraft = [];
+      _loftSurfaceWarnings = [];
     });
   }
 
@@ -8793,7 +8824,7 @@ class _PartScreenState extends State<PartScreen> {
 
     final ruled = feature.ruled;
     final alignmentPoints = [for (final section in feature.sections) section.alignmentPoint];
-    final guideCurveRef = feature.guideCurveRefs.isNotEmpty ? feature.guideCurveRefs.first : null;
+    final guideCurves = [for (final guide in feature.guideCurves) List<SketchEntityRefDto>.of(guide)];
 
     setState(() {
       _loftSurfaceSections = resolvedSections;
@@ -8802,12 +8833,14 @@ class _PartScreenState extends State<PartScreen> {
       _loftSurfaceEditSnapshot = (
         ruled: ruled,
         alignmentPoints: alignmentPoints,
-        guideCurveRef: guideCurveRef,
+        guideCurves: guideCurves,
       );
       _meshBeforeLoftSurface = _bodies;
       _loftSurfaceRuled = ruled;
       _loftSurfaceAlignmentPoints = alignmentPoints;
-      _loftSurfaceGuideCurveRef = guideCurveRef;
+      _loftSurfaceGuideCurves = [for (final guide in guideCurves) List<SketchEntityRefDto>.of(guide)];
+      _loftSurfaceGuideDraft = [];
+      _loftSurfaceWarnings = feature.warnings;
     });
     return true;
   }
@@ -8825,27 +8858,29 @@ class _PartScreenState extends State<PartScreen> {
               i < _loftSurfaceAlignmentPoints.length ? _loftSurfaceAlignmentPoints[i] : null,
         ),
     ];
-    final guideCurveRefs =
-        _loftSurfaceGuideCurveRef == null ? <SketchEntityRefDto>[] : [_loftSurfaceGuideCurveRef!];
+    // Guides cannot be combined with a ruled loft (the backend rejects it); a ruled loft just ignores them.
+    final guideCurves = ruled ? <List<SketchEntityRefDto>>[] : _loftSurfaceGuideCurves;
 
+    final FeatureDto built;
     final existingId = _previewLoftSurfaceFeatureId;
     if (existingId == null) {
-      final created = await _api.createLoftSurfaceFeature(
+      built = await _api.createLoftSurfaceFeature(
         _focusPartId,
         sections: sections,
         ruled: ruled,
-        guideCurveRefs: guideCurveRefs,
+        guideCurves: guideCurves,
       );
-      _previewLoftSurfaceFeatureId = created.id;
+      _previewLoftSurfaceFeatureId = built.id;
     } else {
-      await _api.updateLoftSurfaceFeature(
+      built = await _api.updateLoftSurfaceFeature(
         _focusPartId,
         existingId,
         sections: sections,
         ruled: ruled,
-        guideCurveRefs: guideCurveRefs,
+        guideCurves: guideCurves,
       );
     }
+    if (mounted) setState(() => _loftSurfaceWarnings = built.warnings);
     await _refreshMesh();
   }
 
@@ -8891,7 +8926,9 @@ class _PartScreenState extends State<PartScreen> {
       _editingLoftSurfaceFeatureId = null;
       _loftSurfaceEditSnapshot = null;
       _loftSurfaceAlignmentPoints = [];
-      _loftSurfaceGuideCurveRef = null;
+      _loftSurfaceGuideCurves = [];
+      _loftSurfaceGuideDraft = [];
+      _loftSurfaceWarnings = [];
       // Defensive: abandons an in-flight alignment-point/guide-curve
       // sub-pick if Confirm was pressed without finishing it first - mirrors
       // [_confirmLoft]'s own identical defensive cleanup.
@@ -8926,7 +8963,9 @@ class _PartScreenState extends State<PartScreen> {
       _editingLoftSurfaceFeatureId = null;
       _loftSurfaceEditSnapshot = null;
       _loftSurfaceAlignmentPoints = [];
-      _loftSurfaceGuideCurveRef = null;
+      _loftSurfaceGuideCurves = [];
+      _loftSurfaceGuideDraft = [];
+      _loftSurfaceWarnings = [];
       if (_loftSurfaceAlignmentPickIndex != null || _loftSurfacePickingGuideCurve) {
         _loftSurfaceAlignmentPickIndex = null;
         _loftSurfacePickingGuideCurve = false;
@@ -8949,14 +8988,12 @@ class _PartScreenState extends State<PartScreen> {
                     i < editSnapshot.alignmentPoints.length ? editSnapshot.alignmentPoints[i] : null,
               ),
           ];
-          final revertGuideCurveRefs =
-              editSnapshot.guideCurveRef == null ? <SketchEntityRefDto>[] : [editSnapshot.guideCurveRef!];
           await _api.updateLoftSurfaceFeature(
             _focusPartId,
             previewId,
             sections: revertSections,
             ruled: editSnapshot.ruled,
-            guideCurveRefs: revertGuideCurveRefs,
+            guideCurves: editSnapshot.guideCurves,
           );
           await _refreshFeatures();
         });
@@ -9028,34 +9065,48 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
-  /// [LoftSurfacePanel.onPickGuideCurve] - mirrors [_startLoftGuideCurvePick]
-  /// exactly, minus the target-body-picking stash (there is none here).
+  /// [LoftSurfacePanel.onPickGuideCurve] ("Add guide") - mirrors [_startLoftGuideCurvePick] exactly,
+  /// minus the target-body-picking stash (there is none here).
   void _startLoftSurfaceGuideCurvePick() {
     setState(() {
       _loftSurfacePickingGuideCurve = true;
+      _loftSurfaceGuideDraft = [];
       _entitiesBeforeLoftSurfaceSubPick = _selectedEntities;
-      _selectedEntities = _loftSurfaceGuideCurveRef == null
-          ? {}
-          : {
-              SelectionEntityRef(
-                kind: SelectionEntityKind.sketchLine,
-                sketchFeatureId:
-                    _sketchFeatureIdForSketchId(_loftSurfaceGuideCurveRef!.sketchId) ?? '',
-                sketchEntityId: _loftSurfaceGuideCurveRef!.entityId,
-              ),
-            };
+      _selectedEntities = {};
       _selectionFilterOverrides.push(_loftSurfaceGuideCurveSelectionFilter);
     });
   }
 
-  /// [_toggleSelectedEntity]'s Loft Surface guide-curve special-case -
-  /// mirrors [_setLoftGuideCurve] exactly.
+  /// [_toggleSelectedEntity]'s Loft Surface guide special-case - mirrors [_setLoftGuideCurve] exactly.
   void _setLoftSurfaceGuideCurve(SelectionEntityRef entity) {
+    if (!_loftSurfacePickingGuideCurve) return;
     final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
     if (sketchId == null) return;
+    final entityType = _guideEntityTypeFor(entity.kind);
+    if (entityType == null) return;
     setState(() {
-      _loftSurfaceGuideCurveRef =
-          SketchEntityRefDto(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId);
+      final existing =
+          _loftSurfaceGuideDraft.indexWhere((r) => r.sketchId == sketchId && r.entityId == entity.sketchEntityId);
+      if (existing >= 0) {
+        _loftSurfaceGuideDraft = [..._loftSurfaceGuideDraft]..removeAt(existing);
+        _selectedEntities = {..._selectedEntities}..remove(entity);
+      } else {
+        _loftSurfaceGuideDraft = [
+          ..._loftSurfaceGuideDraft,
+          SketchEntityRefDto(sketchId: sketchId, entityType: entityType, entityId: entity.sketchEntityId),
+        ];
+        _selectedEntities = {..._selectedEntities, entity};
+      }
+    });
+  }
+
+  /// [LoftSurfacePanel.onFinishGuideCurve] ("Done").
+  void _finishLoftSurfaceGuideCurve() {
+    setState(() {
+      if (_loftSurfaceGuideDraft.isNotEmpty) {
+        _loftSurfaceGuideCurves = [..._loftSurfaceGuideCurves, _loftSurfaceGuideDraft];
+      }
+      _loftSurfaceGuideDraft = [];
       _loftSurfacePickingGuideCurve = false;
       _selectedEntities = _entitiesBeforeLoftSurfaceSubPick ?? {};
       _entitiesBeforeLoftSurfaceSubPick = null;
@@ -9064,15 +9115,17 @@ class _PartScreenState extends State<PartScreen> {
     _scheduleLoftSurfacePreview();
   }
 
-  /// Mirrors [_clearLoftGuideCurve] exactly.
-  void _clearLoftSurfaceGuideCurve() {
-    setState(() => _loftSurfaceGuideCurveRef = null);
+  /// [LoftSurfacePanel.onRemoveGuideCurve].
+  void _removeLoftSurfaceGuideCurve(int index) {
+    if (index < 0 || index >= _loftSurfaceGuideCurves.length) return;
+    setState(() => _loftSurfaceGuideCurves = [..._loftSurfaceGuideCurves]..removeAt(index));
     _scheduleLoftSurfacePreview();
   }
 
   /// Mirrors [_cancelLoftGuideCurvePick] exactly.
   void _cancelLoftSurfaceGuideCurvePick() {
     setState(() {
+      _loftSurfaceGuideDraft = [];
       _loftSurfacePickingGuideCurve = false;
       _selectedEntities = _entitiesBeforeLoftSurfaceSubPick ?? {};
       _entitiesBeforeLoftSurfaceSubPick = null;
@@ -12387,7 +12440,7 @@ class _PartScreenState extends State<PartScreen> {
     bool ruled = false,
     List<String> targetBodyIds = const [],
     double? thickness,
-    List<SketchEntityRefDto> guideCurveRefs = const [],
+    List<List<SketchEntityRefDto>> guideCurves = const [],
   }) async {
     final part = _part;
     if (part == null) return;
@@ -12400,7 +12453,7 @@ class _PartScreenState extends State<PartScreen> {
         ruled: ruled,
         targetBodyIds: targetBodyIds,
         thickness: thickness,
-        guideCurveRefs: guideCurveRefs,
+        guideCurves: guideCurves,
       );
     } catch (_) {
       return;
@@ -25060,14 +25113,17 @@ class _PartScreenState extends State<PartScreen> {
                       onClearProfile: _clearLoftProfile,
                       onSeamChanged: _setLoftSeam,
                       onReverseChanged: _setLoftReverse,
-                      guideCurveSet: _loftGuideCurveRef != null,
+                      guideSegmentCounts: [for (final guide in _loftGuideCurves) guide.length],
+                      draftGuideSegments: _loftGuideDraft.length,
+                      warnings: _loftWarnings,
                       pickingAlignmentPointIndex: _loftAlignmentPickIndex,
                       pickingGuideCurve: _loftPickingGuideCurve,
                       onPickAlignmentPoint: _startLoftAlignmentPointPick,
                       onClearAlignmentPoint: _clearLoftAlignmentPoint,
                       onCancelAlignmentPointPick: _cancelLoftAlignmentPointPick,
                       onPickGuideCurve: _startLoftGuideCurvePick,
-                      onClearGuideCurve: _clearLoftGuideCurve,
+                      onFinishGuideCurve: _finishLoftGuideCurve,
+                      onRemoveGuideCurve: _removeLoftGuideCurve,
                       onCancelGuideCurvePick: _cancelLoftGuideCurvePick,
                       onChanged: _onLoftValuesChanged,
                       onConfirm: _confirmLoft,
@@ -25122,14 +25178,17 @@ class _PartScreenState extends State<PartScreen> {
                       initialRuled: _loftSurfaceRuled,
                       sectionCount: _loftSurfaceSections.length,
                       alignmentPointsSet: [for (final ref in _loftSurfaceAlignmentPoints) ref != null],
-                      guideCurveSet: _loftSurfaceGuideCurveRef != null,
+                      guideSegmentCounts: [for (final guide in _loftSurfaceGuideCurves) guide.length],
+                      draftGuideSegments: _loftSurfaceGuideDraft.length,
+                      warnings: _loftSurfaceWarnings,
                       pickingAlignmentPointIndex: _loftSurfaceAlignmentPickIndex,
                       pickingGuideCurve: _loftSurfacePickingGuideCurve,
                       onPickAlignmentPoint: _startLoftSurfaceAlignmentPointPick,
                       onClearAlignmentPoint: _clearLoftSurfaceAlignmentPoint,
                       onCancelAlignmentPointPick: _cancelLoftSurfaceAlignmentPointPick,
                       onPickGuideCurve: _startLoftSurfaceGuideCurvePick,
-                      onClearGuideCurve: _clearLoftSurfaceGuideCurve,
+                      onFinishGuideCurve: _finishLoftSurfaceGuideCurve,
+                      onRemoveGuideCurve: _removeLoftSurfaceGuideCurve,
                       onCancelGuideCurvePick: _cancelLoftSurfaceGuideCurvePick,
                       onChanged: _onLoftSurfaceValuesChanged,
                       onConfirm: _confirmLoftSurface,

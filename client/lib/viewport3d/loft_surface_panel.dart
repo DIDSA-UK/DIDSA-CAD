@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'loft_guides.dart';
 import 'resizable_tool_panel.dart';
 
 /// The bottom-sheet-style panel [PartScreen] opens for a Loft Surface -
@@ -30,9 +31,12 @@ class LoftSurfacePanel extends StatefulWidget {
   /// Mirrors [LoftPanel.alignmentPointsSet] exactly.
   final List<bool> alignmentPointsSet;
 
-  /// Mirrors [LoftPanel.guideCurveSet]/[LoftPanel.pickingGuideCurve] exactly.
-  final bool guideCurveSet;
+  /// Mirror [LoftPanel.guideSegmentCounts]/[LoftPanel.draftGuideSegments]/[LoftPanel.pickingGuideCurve]/
+  /// [LoftPanel.warnings] exactly.
+  final List<int> guideSegmentCounts;
+  final int draftGuideSegments;
   final bool pickingGuideCurve;
+  final List<String> warnings;
 
   /// Mirrors [LoftPanel.pickingAlignmentPointIndex] exactly.
   final int? pickingAlignmentPointIndex;
@@ -44,7 +48,8 @@ class LoftSurfacePanel extends StatefulWidget {
   final VoidCallback onCancelAlignmentPointPick;
 
   final VoidCallback onPickGuideCurve;
-  final VoidCallback onClearGuideCurve;
+  final VoidCallback onFinishGuideCurve;
+  final void Function(int guideIndex) onRemoveGuideCurve;
   final VoidCallback onCancelGuideCurvePick;
 
   final void Function(bool ruled) onChanged;
@@ -58,14 +63,17 @@ class LoftSurfacePanel extends StatefulWidget {
     this.initialRuled = false,
     required this.sectionCount,
     this.alignmentPointsSet = const [],
-    this.guideCurveSet = false,
+    this.guideSegmentCounts = const [],
+    this.draftGuideSegments = 0,
     this.pickingGuideCurve = false,
+    this.warnings = const [],
     this.pickingAlignmentPointIndex,
     required this.onPickAlignmentPoint,
     required this.onClearAlignmentPoint,
     required this.onCancelAlignmentPointPick,
     required this.onPickGuideCurve,
-    required this.onClearGuideCurve,
+    required this.onFinishGuideCurve,
+    required this.onRemoveGuideCurve,
     required this.onCancelGuideCurvePick,
     required this.onChanged,
     required this.onConfirm,
@@ -125,42 +133,41 @@ class _LoftSurfacePanelState extends State<LoftSurfacePanel> {
           Theme(
             data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
             child: ExpansionTile(
+              key: ValueKey('loft-guides-tile-${widget.guideSegmentCounts.isNotEmpty || widget.pickingGuideCurve}'),
               tilePadding: EdgeInsets.zero,
-              title: const Text('Guide curve & alignment points (advanced)', style: TextStyle(fontSize: 13)),
+              initiallyExpanded: widget.guideSegmentCounts.isNotEmpty || widget.pickingGuideCurve,
+              title: Text(
+                widget.guideSegmentCounts.isEmpty
+                    ? 'Guide curves'
+                    : 'Guide curves (${widget.guideSegmentCounts.length})',
+                style: const TextStyle(fontSize: 13),
+              ),
+              subtitle: Text(
+                _ruled ? 'Ignored while Ruled is on' : 'Curves through every section that shape the surface',
+                style: const TextStyle(fontSize: 11),
+              ),
               childrenPadding: EdgeInsets.zero,
               children: [
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  dense: true,
-                  title: const Text('Guide curve'),
-                  subtitle: Text(
-                    widget.pickingGuideCurve
-                        ? 'Tap a line, arc, ellipse or spline in the viewport…'
-                        : (widget.guideCurveSet ? 'Set' : 'Not set'),
-                  ),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: widget.pickingGuideCurve
-                        ? [
-                            TextButton(
-                              onPressed: widget.onCancelGuideCurvePick,
-                              child: const Text('Cancel'),
-                            ),
-                          ]
-                        : [
-                            TextButton(
-                              onPressed: widget.onPickGuideCurve,
-                              child: Text(widget.guideCurveSet ? 'Change' : 'Pick'),
-                            ),
-                            if (widget.guideCurveSet)
-                              IconButton(
-                                tooltip: 'Clear guide curve',
-                                icon: const Icon(Icons.close, size: 18),
-                                onPressed: widget.onClearGuideCurve,
-                              ),
-                          ],
-                  ),
+                LoftGuidesSection(
+                  guideSegmentCounts: widget.guideSegmentCounts,
+                  picking: widget.pickingGuideCurve,
+                  draftSegments: widget.draftGuideSegments,
+                  onAddGuide: widget.onPickGuideCurve,
+                  onFinishGuide: widget.onFinishGuideCurve,
+                  onCancelGuide: widget.onCancelGuideCurvePick,
+                  onRemoveGuide: widget.onRemoveGuideCurve,
                 ),
+              ],
+            ),
+          ),
+          Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text('Alignment points (advanced)', style: TextStyle(fontSize: 13)),
+              subtitle: const Text('Slide a section so its point meets the first section\'s', style: TextStyle(fontSize: 11)),
+              childrenPadding: EdgeInsets.zero,
+              children: [
                 for (var i = 0; i < widget.sectionCount; i++)
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -205,6 +212,7 @@ class _LoftSurfacePanelState extends State<LoftSurfacePanel> {
               ],
             ),
           ),
+          LoftWarnings(warnings: widget.warnings),
           const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,

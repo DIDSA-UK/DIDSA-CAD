@@ -280,8 +280,8 @@ earlier local_id that happens to exist:
   name a create_plane step.
 - Every loft "sections[].sketch_feature_id" must name a "sketch" step
   (exactly like "sketch_feature_id" elsewhere) - each section may name a
-  DIFFERENT sketch step. "sections[].profile_refs"/"guide_curve_refs" (loft)
-  follow the same entity-kind rule as "profile_refs" above.
+  DIFFERENT sketch step. "sections[].profile_refs" and each local_id inside
+  "guide_curves" (loft) follow the same entity-kind rule as "profile_refs" above.
 - "body_ids"/"body_id"/"target_body_ids"/"tool_body_ids" (merge, boolean,
   delete_body, scale_body, move_body) follow the identical Body-producing-
   step rule as "target_body_ids"/"source_body_ids" above.
@@ -328,7 +328,7 @@ const String loftVocabularyText = '''
 - loft: {local_id, kind:"loft", sections: [ {sketch_feature_id,
   profile_refs?, reference_point?, alignment_point?}, ... ] (2+ entries
   required), mode:"boss"|"cut", ruled?, target_body_ids?, thickness?,
-  guide_curve_refs?}
+  guide_curves?}
   Lofts a solid through 2+ ordered cross-sections, in order from first to
   last. Each section names its own "sketch_feature_id" - sections may live
   on DIFFERENT sketches/planes, which is exactly what makes a transition
@@ -338,13 +338,19 @@ const String loftVocabularyText = '''
   sketch steps' local_ids). "ruled" (default false) picks a straight-line
   blend between sections instead of a smooth spline blend - only matters
   with 3+ sections. "mode"/"target_body_ids" follow the identical Boss/Cut
-  convention extrude/revolve/sweep already use above. "thickness"/
-  "guide_curve_refs" are advanced and rarely needed: a nonzero "thickness"
-  (mm) thickens an open-profile loft into a thin shell instead of lofting
-  directly into a solid; "guide_curve_refs" (an ordered, connected chain of
-  sketch_line/sketch_arc/sketch_ellipse local_ids) rail-guides the blend
-  between sections instead of a plain interpolation. Leave both out unless
-  the user specifically describes a thin shell or a non-obvious blend path.''';
+  convention extrude/revolve/sweep already use above. "thickness"
+  is advanced and rarely needed: a nonzero "thickness" (mm) thickens an
+  open-profile loft into a thin shell instead of lofting directly into a
+  solid. "guide_curves" is a list of guides that SHAPE the surface between
+  the sections (e.g. a bulging vase or a swelling handle); each guide is
+  itself an ordered, connected chain of sketch_line/sketch_arc/
+  sketch_ellipse local_ids, drawn in a sketch on a plane that cuts through
+  every section (a side-view plane), and every guide must touch every
+  section - start it on the first section's outline and end it on the
+  last's, passing through each section in between. Use as many guides as
+  the shape needs (typically 1-4); guides cannot be combined with "ruled".
+  Leave "thickness" and "guide_curves" out unless the user describes a thin
+  shell or a bulging/curved side profile.''';
 
 /// `MergeStep`/`BooleanStep`/`DeleteBodyStep`/`ScaleBodyStep`/`MoveBodyStep`
 /// vocabulary (`ai_tool_groups.dart`'s `'direct_editing_boolean'` group).

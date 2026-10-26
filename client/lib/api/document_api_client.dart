@@ -891,14 +891,10 @@ class FeatureDto {
   /// `LoftFeature.thin_from_closed_profile`.
   final bool? thinFromClosedProfile;
 
-  /// Only present on a `"loft"` Feature - the ordered, possibly cross-
-  /// Sketch Line/Arc/Ellipse/Spline chain (the backend `LoftFeature.
-  /// guide_curve_refs`, same shape as [pathRefs]) each `sections` entry
-  /// with an `alignment_point` set is rigidly translated to follow. Empty
-  /// (the default) means no guide curve - vertex-to-vertex alignment
-  /// against the first alignment_point-bearing section instead (see the
-  /// backend's own docstring).
-  final List<SketchEntityRefDto> guideCurveRefs;
+  /// Only present on a `"loft"` / `"loft_surface"` Feature - the backend `guide_curves`: any number
+  /// of guides, each an ordered, possibly cross-Sketch Line/Arc/Ellipse/Spline chain (same shape as
+  /// [pathRefs]) that shapes the loft surface. Empty (the default) means no guides.
+  final List<List<SketchEntityRefDto>> guideCurves;
 
   /// Sketcher-roadmap Phase 4.3 v1: only meaningful on a `"sketch"`
   /// Feature - true whenever at least one of its Sketch's external Body-
@@ -1240,7 +1236,7 @@ class FeatureDto {
     this.draftAngle,
     this.draftOutward = true,
     this.thinFromClosedProfile,
-    this.guideCurveRefs = const [],
+    this.guideCurves = const [],
     this.hasLostReference = false,
     this.lostReferencePointIds = const [],
     this.movedReferencePointIds = const [],
@@ -1366,8 +1362,10 @@ class FeatureDto {
         draftAngle: (json['draft_angle'] as num?)?.toDouble(),
         draftOutward: json['draft_outward'] as bool? ?? true,
         thinFromClosedProfile: json['thin_from_closed_profile'] as bool?,
-        guideCurveRefs: (json['guide_curve_refs'] as List?)
-                ?.map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+        guideCurves: (json['guide_curves'] as List?)
+                ?.map((guide) => (guide as List)
+                    .map((r) => SketchEntityRefDto.fromJson(r as Map<String, dynamic>))
+                    .toList())
                 .toList() ??
             const [],
         hasLostReference: json['has_lost_reference'] as bool? ?? false,
@@ -4478,7 +4476,7 @@ class DocumentApiClient {
     List<String> targetBodyIds = const [],
     double? thickness,
     bool thinFromClosedProfile = false,
-    List<SketchEntityRefDto> guideCurveRefs = const [],
+    List<List<SketchEntityRefDto>> guideCurves = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -4491,7 +4489,9 @@ class DocumentApiClient {
                 'target_body_ids': targetBodyIds,
                 if (thickness != null) 'thickness': thickness,
                 'thin_from_closed_profile': thinFromClosedProfile,
-                'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+                'guide_curves': [
+                  for (final guide in guideCurves) [for (final r in guide) r.toJson()],
+                ],
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4512,7 +4512,7 @@ class DocumentApiClient {
     bool ruled = false,
     List<String> targetBodyIds = const [],
     double? thickness,
-    List<SketchEntityRefDto> guideCurveRefs = const [],
+    List<List<SketchEntityRefDto>> guideCurves = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -4524,7 +4524,9 @@ class DocumentApiClient {
                 'ruled': ruled,
                 'target_body_ids': targetBodyIds,
                 if (thickness != null) 'thickness': thickness,
-                'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+                'guide_curves': [
+                  for (final guide in guideCurves) [for (final r in guide) r.toJson()],
+                ],
               }),
             ),
         (body) =>
@@ -4532,13 +4534,13 @@ class DocumentApiClient {
       );
 
   /// Partial update for an existing LoftFeature - any subset of
-  /// [sections]/[mode]/[ruled]/[targetBodyIds]/[thickness]/[guideCurveRefs]
+  /// [sections]/[mode]/[ruled]/[targetBodyIds]/[thickness]/[guideCurves]
   /// may be supplied, mirroring [updateSweepFeature]'s omitted-vs-current-
-  /// value convention - including for [guideCurveRefs]: omitting it keeps
+  /// value convention - including for [guideCurves]: omitting it keeps
   /// the Feature's current value, passing `[]` explicitly clears it back
-  /// to "no guide curve" (see the backend `LoftFeatureUpdate.guide_curve_
-  /// refs`'s own docstring for why an empty list is itself meaningful
-  /// here, unlike a bare omission). Used for the live-preview debounced
+  /// to "no guide curves" (see the backend `LoftFeatureUpdate.guide_curves`'s
+  /// own docstring for why an empty list is itself meaningful here, unlike
+  /// a bare omission). Used for the live-preview debounced
   /// re-solve.
   Future<FeatureDto> updateLoftFeature(
     String partId,
@@ -4549,7 +4551,7 @@ class DocumentApiClient {
     List<String>? targetBodyIds,
     double? thickness,
     bool? thinFromClosedProfile,
-    List<SketchEntityRefDto>? guideCurveRefs,
+    List<List<SketchEntityRefDto>>? guideCurves,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4563,8 +4565,10 @@ class DocumentApiClient {
                 if (thickness != null) 'thickness': thickness,
                 if (thinFromClosedProfile != null)
                   'thin_from_closed_profile': thinFromClosedProfile,
-                if (guideCurveRefs != null)
-                  'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+                if (guideCurves != null)
+                  'guide_curves': [
+                    for (final guide in guideCurves) [for (final r in guide) r.toJson()],
+                  ],
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4734,7 +4738,7 @@ class DocumentApiClient {
     String partId, {
     required List<LoftSectionDto> sections,
     bool ruled = false,
-    List<SketchEntityRefDto> guideCurveRefs = const [],
+    List<List<SketchEntityRefDto>> guideCurves = const [],
   }) =>
       _send(
         () => _httpClient.post(
@@ -4743,7 +4747,9 @@ class DocumentApiClient {
               body: jsonEncode({
                 'sections': sections.map((s) => s.toJson()).toList(),
                 'ruled': ruled,
-                'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+                'guide_curves': [
+                  for (final guide in guideCurves) [for (final r in guide) r.toJson()],
+                ],
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4751,14 +4757,14 @@ class DocumentApiClient {
 
   /// Partial update for an existing LoftSurfaceFeature - mirrors
   /// [updateLoftFeature]'s omitted-vs-current-value convention (including for
-  /// [guideCurveRefs] - omitting keeps the current value, `[]` explicitly
+  /// [guideCurves] - omitting keeps the current value, `[]` explicitly
   /// clears it), minus `mode`/`targetBodyIds`/`thickness`.
   Future<FeatureDto> updateLoftSurfaceFeature(
     String partId,
     String featureId, {
     List<LoftSectionDto>? sections,
     bool? ruled,
-    List<SketchEntityRefDto>? guideCurveRefs,
+    List<List<SketchEntityRefDto>>? guideCurves,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4767,8 +4773,10 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (sections != null) 'sections': sections.map((s) => s.toJson()).toList(),
                 if (ruled != null) 'ruled': ruled,
-                if (guideCurveRefs != null)
-                  'guide_curve_refs': guideCurveRefs.map((r) => r.toJson()).toList(),
+                if (guideCurves != null)
+                  'guide_curves': [
+                    for (final guide in guideCurves) [for (final r in guide) r.toJson()],
+                  ],
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

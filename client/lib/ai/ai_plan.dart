@@ -1081,7 +1081,8 @@ class AiLoftStep extends AiPlanStep {
   final bool ruled;
   final List<String> targetBodyIds;
   final double? thickness;
-  final List<String> guideCurveRefs;
+  /// Each guide is a chain: the local_ids of earlier sketch_line/sketch_arc/sketch_ellipse steps, in order.
+  final List<List<String>> guideCurves;
 
   const AiLoftStep({
     required super.localId,
@@ -1090,7 +1091,7 @@ class AiLoftStep extends AiPlanStep {
     this.ruled = false,
     this.targetBodyIds = const [],
     this.thickness,
-    this.guideCurveRefs = const [],
+    this.guideCurves = const [],
   }) : super(kind: 'loft');
 
   factory AiLoftStep.fromJson(Map<String, dynamic> json) => AiLoftStep(
@@ -1100,7 +1101,9 @@ class AiLoftStep extends AiPlanStep {
         ruled: json['ruled'] as bool? ?? false,
         targetBodyIds: _asStringList(json['target_body_ids']),
         thickness: _asDoubleOrNull(json['thickness']),
-        guideCurveRefs: _asStringList(json['guide_curve_refs']),
+        guideCurves: [
+          for (final guide in (json['guide_curves'] as List? ?? const [])) _asStringList(guide),
+        ],
       );
 
   @override
@@ -1112,7 +1115,7 @@ class AiLoftStep extends AiPlanStep {
         'ruled': ruled,
         'target_body_ids': targetBodyIds,
         if (thickness != null) 'thickness': thickness,
-        'guide_curve_refs': guideCurveRefs,
+        'guide_curves': guideCurves,
       };
 }
 
