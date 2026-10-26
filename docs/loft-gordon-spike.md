@@ -107,14 +107,23 @@ the opposite way to its neighbour is reversed, otherwise a loft between two body
 
 - Open-chain and closed-profile thin lofts go through the same `thicken_shell_to_solid` as before. The shells have the
   same faces and the same normals as `ThruSections`' (checked on five chains, including reversed and slanted ones).
-- **The L-chain (10 and 6 mm legs, 8 mm apart, thickness 1) still gives ~88 mm³, not ~136, and that is not the loft's
-  fault.** Gordon's shell is identical to `ThruSections`' (2 planar faces, area 128 = 16 x 8). The wrong volume comes from
-  `thicken_shell_to_solid`: `_thicken_by_join` returns `None` for this shell, `_thicken_by_capping_free_bounds` too (the
-  shell's free boundary is one *non-planar* loop - the two L's plus the two side edges - so `MakeFace` on it fails), and
-  the fallback `MakeThickSolidBySimple` offsets each face by itself and leaves the corner open. This is the open item 1c
-  of the evaluation, now with a diagnosis; fixing it means thickening multi-face open shells with a mitred join (or
-  building the walls from the chain directly) and is **not** part of this plan. `test_thin_loft_between_two_l_shaped_open_chains`
-  pins the loft (area, face count) and only the solid's validity.
+- **The L-chain (10 and 6 mm legs, 8 mm apart, thickness 1) gave ~88 mm³ instead of ~136, and that was not the loft's
+  fault; it is fixed on this branch.** Gordon's shell is identical to `ThruSections`' (2 planar faces, area 128 = 16 x 8).
+  The wrong volume came from `thicken_shell_to_solid`: `_thicken_by_join` returns only the offset *shell* (no solid) when
+  there are no closing faces, `_thicken_by_capping_free_bounds` cannot cap this shell (its free boundary is one
+  non-planar loop), and the fallback `MakeThickSolidBySimple` offsets each face by itself and leaves the corner open.
+  The right answers are analytic: 8 x (10 + 6 + 1) = **136** with the material on the outside of the bend (the mitre adds
+  a 1 mm corner square) and 8 x (10 + 6 - 1) = **120** on the inside.
+  - New path `shell_ops._thicken_by_offset_and_walls`, tried after the two existing ones and before `Simple`: the mitred
+    offset shell (`MakeThickSolidByJoin`, `GeomAbs_Intersection`, no closing faces) plus a `brepfill.Face` wall between
+    every free edge and its offset partner, sewn and made a solid. It gives exactly 136 and 120, a valid solid, for both
+    signs; the sides of the thickness are the same ones `Simple` used. Edge ends must be read in the edge's *oriented*
+    direction (`TopExp::FirstVertex(edge, True)`), not the curve's parameter direction, or the walls twist.
+  - Found on the way: for a single flat wall with a negative thickness `_thicken_by_capping_free_bounds` returned a valid
+    solid of volume **0.0**. Every path's result is now checked for a plausible volume (0.3-3 x area x |thickness|) and
+    falls through to the next path when it is not.
+  - Tests: `tests/test_shell_ops_open_walls.py` (flat, L, U, two 45-degree bends, quarter-cylinder; analytic volumes on both
+    sides) and `test_thin_loft_between_two_l_shaped_open_chains` (136 and 120 through the loft).
 
 ## 9. Unguided comparison
 

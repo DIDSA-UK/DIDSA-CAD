@@ -46,7 +46,10 @@ from OCC.Core.BRepBuilderAPI import (
     BRepBuilderAPI_MakeSolid,
     BRepBuilderAPI_Sewing,
 )
+from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
 from OCC.Core.BRepCheck import BRepCheck_Analyzer
+from OCC.Core.BRepFill import brepfill
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepOffset import BRepOffset_Skin
 from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_MakeThickSolid
@@ -54,10 +57,10 @@ from OCC.Core.GeomAbs import GeomAbs_Intersection
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.ShapeAnalysis import ShapeAnalysis_FreeBounds
 from OCC.Core.ShapeFix import ShapeFix_Solid
-from OCC.Core.TopAbs import TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
-from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopoDS import TopoDS_Shape, topods
-from OCC.Core.TopTools import TopTools_ListOfShape
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
+from OCC.Core.TopExp import TopExp_Explorer, topexp
+from OCC.Core.TopoDS import TopoDS_Edge, TopoDS_Shape, topods
+from OCC.Core.TopTools import TopTools_IndexedDataMapOfShapeListOfShape, TopTools_ListOfShape
 
 
 def _thicken_by_join(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shape | None:
@@ -219,6 +222,109 @@ def _thicken_by_capping_free_bounds(shell: TopoDS_Shape, thickness: float) -> To
         return None
 
 
+def _free_edges(shape: TopoDS_Shape) -> list[TopoDS_Edge]:
+    """The edges of `shape` that belong to exactly one face (its open boundary)."""
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    topexp.MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
+    free = []
+    for index in range(1, ancestors.Extent() + 1):
+        edge = topods.Edge(ancestors.FindKey(index))
+        if not BRep_Tool.Degenerated(edge) and ancestors.FindFromIndex(index).Size() == 1:
+            free.append(edge)
+    return free
+
+
+def _edge_midpoint(edge: TopoDS_Edge):
+    curve = BRepAdaptor_Curve(edge)
+    return curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter()))
+
+
+def _edge_ends(edge: TopoDS_Edge):
+    """Start and end points *as the edge is oriented in its shape* (a curve's own parameter
+    direction is not that when the edge is reversed)."""
+    return BRep_Tool.Pnt(topexp.FirstVertex(edge, True)), BRep_Tool.Pnt(topexp.LastVertex(edge, True))
+
+
+def _volume_is_plausible(shell: TopoDS_Shape, solid: TopoDS_Shape, thickness: float) -> bool:
+    """Whether `solid` could be `shell` thickened by `thickness`: about area x |thickness| (corners
+    add or remove a little, so the window is wide). Catches a "valid" but empty result: capping the
+    free boundary of a single flat wall returned a solid of volume 0.0 for one sign of the thickness."""
+    area_props = GProp_GProps()
+    brepgprop.SurfaceProperties(shell, area_props)
+    volume_props = GProp_GProps()
+    brepgprop.VolumeProperties(solid, volume_props, 1.0e-6)
+    expected = area_props.Mass() * abs(thickness)
+    return 0.3 * expected <= abs(volume_props.Mass()) <= 3.0 * expected
+
+
+def _thicken_by_offset_and_walls(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shape | None:
+    """Thickens an open shell of any number of faces (an L-shaped wall, an arc-and-line wall) by
+    building the solid explicitly: the shell, its mitred offset (`MakeThickSolidByJoin` with no
+    closing faces returns just the offset shell, with `GeomAbs_Intersection` corners), and a ruled
+    wall between every free edge and its offset edge, all sewn.
+
+    This replaces `MakeThickSolidBySimple` for shells [_thicken_by_join] and
+    [_thicken_by_capping_free_bounds] decline. Simple offsets each face on its own and leaves the
+    corners open: two 10 mm and 6 mm walls 8 mm tall, 1 mm thick, came out at 88-108 mm3 instead of
+    the 136 (material on the outside of the bend) or 120 (inside) this gives exactly. Each free
+    edge is matched to the nearest offset free edge (their midpoints are about |t| apart), the
+    offset edge flipped if it runs the other way, and the walls built with `brepfill.Face`.
+
+    Returns `None` (never raises) if the shell cannot be offset, an edge has no partner, the sewn
+    result is not a closed valid solid, or its volume is implausible for the shell's area."""
+    offset_maker = BRepOffsetAPI_MakeThickSolid()
+    try:
+        offset_maker.MakeThickSolidByJoin(
+            shell, TopTools_ListOfShape(), thickness, 1.0e-6, BRepOffset_Skin, False, False, GeomAbs_Intersection, False
+        )
+        offset_maker.Build()
+    except (RuntimeError, TypeError):
+        return None
+    if not offset_maker.IsDone():
+        return None
+    offset = offset_maker.Shape()
+    if offset is None or offset.IsNull():
+        return None
+
+    originals = _free_edges(shell)
+    candidates = _free_edges(offset)
+    if not originals or len(originals) != len(candidates):
+        return None
+
+    sewing = BRepBuilderAPI_Sewing(1.0e-6)
+    sewing.Add(shell)
+    sewing.Add(offset)
+    taken: set[int] = set()
+    try:
+        for edge in originals:
+            middle = _edge_midpoint(edge)
+            best = min(range(len(candidates)), key=lambda i: middle.Distance(_edge_midpoint(candidates[i])))
+            if best in taken or middle.Distance(_edge_midpoint(candidates[best])) > 2.0 * abs(thickness):
+                return None
+            taken.add(best)
+            partner = candidates[best]
+            start, end = _edge_ends(edge)
+            partner_start, partner_end = _edge_ends(partner)
+            if start.Distance(partner_start) + end.Distance(partner_end) > start.Distance(partner_end) + end.Distance(
+                partner_start
+            ):
+                partner = topods.Edge(partner.Reversed())
+            sewing.Add(brepfill.Face(edge, partner))
+        sewing.Perform()
+    except RuntimeError:
+        return None
+    sewn = sewing.SewedShape()
+    if sewn is None or sewn.IsNull() or sewn.ShapeType() != TopAbs_SHELL or _free_edges(sewn):
+        return None
+    fixer = ShapeFix_Solid(BRepBuilderAPI_MakeSolid(topods.Shell(sewn)).Solid())
+    fixer.Perform()
+    solid = fixer.Solid()
+    if solid is None or solid.IsNull() or not BRepCheck_Analyzer(solid).IsValid():
+        return None
+
+    return solid if _volume_is_plausible(shell, solid, thickness) else None
+
+
 def thicken_shell_to_solid(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shape:
     """Thickens an open shell into a solid via OCCT's standard
     BRepOffsetAPI_MakeThickSolid idiom.
@@ -227,9 +333,11 @@ def thicken_shell_to_solid(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shap
     see that function's own doc comment for the rectangular-corner bug
     this fixes), then [_thicken_by_capping_free_bounds] (a genuinely
     open, multi-face, cap-less shell - see that function's own doc
-    comment), falling back to the original `MakeThickSolidBySimple` call -
-    kept exactly as before, unconditionally, for a shell neither upgrade
-    successfully handles - rather than risk regressing a shape that
+    comment), then [_thicken_by_offset_and_walls] (the mitred offset plus
+    ruled walls along the free edges - what a multi-face open wall, whose
+    free boundary has no planar cap, needs), falling back to the original
+    `MakeThickSolidBySimple` call - kept unconditionally for a shell none of
+    the upgrades handles - rather than risk regressing a shape that
     already thickened correctly under it.
 
     Either path includes the volume-sign fixup a real on-device/CI run
@@ -246,8 +354,14 @@ def thicken_shell_to_solid(shell: TopoDS_Shape, thickness: float) -> TopoDS_Shap
     already has this be a no-op check, not a blind flip). Raises
     `ValueError` if no path completes."""
     solid = _thicken_by_join(shell, thickness)
+    if solid is not None and not _volume_is_plausible(shell, solid, thickness):
+        solid = None
     if solid is None:
         solid = _thicken_by_capping_free_bounds(shell, thickness)
+        if solid is not None and not _volume_is_plausible(shell, solid, thickness):
+            solid = None
+    if solid is None:
+        solid = _thicken_by_offset_and_walls(shell, thickness)
     if solid is None:
         thicken = BRepOffsetAPI_MakeThickSolid()
         thicken.MakeThickSolidBySimple(shell, thickness)

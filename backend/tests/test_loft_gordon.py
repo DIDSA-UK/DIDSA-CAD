@@ -361,12 +361,11 @@ def _l_chain_sketch(part_id: str, plane_feature_id: str | None, legs: tuple[floa
 
 def test_thin_loft_between_two_l_shaped_open_chains():
     """Two identical L chains (10 and 6 mm legs) 8 mm apart: the shape the OCCT 8 evaluation
-    (`docs/occt-8-upgrade-evaluation.md` 1c) found malformed. The loft itself is right under Gordon
-    (two planar faces, area (10 + 6) x 8 = 128); the thickened solid is valid but its volume is
-    still the wrong ~88 mm3 instead of ~136, because `thicken_shell_to_solid` declines the shell
-    (its free boundary is one non-planar loop, so there is no cap to close it with) and falls back to
-    `MakeThickSolidBySimple`, which leaves the corner open. That is a thickening defect, not a loft
-    one - see docs/loft-gordon-spike.md - so this test pins the loft and only the solid's validity."""
+    (`docs/occt-8-upgrade-evaluation.md` 1c) found malformed. The loft is two planar faces, area
+    (10 + 6) x 8 = 128. Thickened by 1 mm the wall is 8 mm tall and L-shaped: with the material on
+    the outside of the bend its section is 10 + 6 + 1 (the mitred corner square) = 17 mm2 -> 136 mm3;
+    on the inside the two legs overlap in the corner square, 15 mm2 -> 120 mm3. Before
+    `shell_ops._thicken_by_offset_and_walls` this came out at 88 mm3 from `MakeThickSolidBySimple`."""
     part = _create_part()
     bottom = _l_chain_sketch(part["id"], None, (10.0, 6.0))
     plane = _move_sketch_feature_up(part["id"], bottom, HEIGHT)
@@ -385,14 +384,17 @@ def test_thin_loft_between_two_l_shaped_open_chains():
     assert props.Mass() == pytest.approx(128.0, rel=1e-6)
     assert _count(shell, TopAbs_FACE) == 2
 
-    thin_part = _create_part("Thin L")
-    bottom = _l_chain_sketch(thin_part["id"], None, (10.0, 6.0))
-    plane = _move_sketch_feature_up(thin_part["id"], bottom, HEIGHT)
-    top = _l_chain_sketch(thin_part["id"], plane["id"], (10.0, 6.0))
-    response = _create_loft(thin_part["id"], [_section(bottom), _section(top)], thickness=1.0)
-    assert response.status_code == 201, response.json()
-    assert BRepCheck_Analyzer(_solid(thin_part["id"])).IsValid()
-    assert _volume(thin_part["id"]) > 80.0
+    volumes = {}
+    for thickness in (1.0, -1.0):
+        thin_part = _create_part(f"Thin L {thickness}")
+        bottom = _l_chain_sketch(thin_part["id"], None, (10.0, 6.0))
+        plane = _move_sketch_feature_up(thin_part["id"], bottom, HEIGHT)
+        top = _l_chain_sketch(thin_part["id"], plane["id"], (10.0, 6.0))
+        response = _create_loft(thin_part["id"], [_section(bottom), _section(top)], thickness=thickness)
+        assert response.status_code == 201, response.json()
+        assert BRepCheck_Analyzer(_solid(thin_part["id"])).IsValid()
+        volumes[thickness] = _volume(thin_part["id"])
+    assert sorted(volumes.values()) == pytest.approx([120.0, 136.0], rel=1e-6)
 
 
 def test_coarse_preview_keeps_the_guides():
