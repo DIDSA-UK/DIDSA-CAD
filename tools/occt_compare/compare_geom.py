@@ -49,3 +49,15 @@ for row in worst["topology"][:12]: print("   ", row)
 print("validity changes:", worst["validity"][:20])
 tests_a = {k[0] for k in a}; tests_b = {k[0] for k in b}
 print("tests with differing step counts:", sorted(t for t in tests_a & tests_b if max((k[1] for k in a if k[0]==t), default=-1) != max((k[1] for k in b if k[0]==t), default=-1))[:15])
+
+# Build time of the feature step (recorded per body, so count each step once): slowest ratios.
+steps = defaultdict(dict)
+for side, recs in (("a", a), ("b", b)):
+    for (test, step, body), r in recs.items():
+        if "seconds" in r:
+            steps[(test, step)][side] = (r["seconds"], r["feature"])
+ratios = sorted(((v["b"][0] / max(v["a"][0], 1e-4), k, v["a"][1], v["a"][0], v["b"][0]) for k, v in steps.items() if "a" in v and "b" in v), reverse=True)
+if ratios:
+    total_a = sum(v["a"][0] for v in steps.values() if "a" in v and "b" in v); total_b = sum(v["b"][0] for v in steps.values() if "a" in v and "b" in v)
+    print(f"feature-step time: A {total_a:.2f}s, B {total_b:.2f}s over {len(ratios)} steps; slowest B/A ratios:")
+    for row in ratios[:8]: print("   ", row)

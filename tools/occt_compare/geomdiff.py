@@ -5,6 +5,7 @@ Output: one JSONL per xdist worker in $GEOMDIFF_OUT.
 """
 import json
 import os
+import time
 
 import pytest
 
@@ -23,9 +24,10 @@ def _props(shape):
 
     out = {}
     vol = GProp_GProps()
-    brepgprop.VolumeProperties(shape, vol)
+    # Adaptive integration: the default Gauss order is only ~1% accurate on a few-knot B-spline face.
+    brepgprop.VolumeProperties(shape, vol, 1e-6)
     area = GProp_GProps()
-    brepgprop.SurfaceProperties(shape, area)
+    brepgprop.SurfaceProperties(shape, area, 1e-6)
     c = vol.CentreOfMass()
     out["volume"] = vol.Mass()
     out["area"] = area.Mass()
@@ -44,12 +46,14 @@ def _install():
     original = extrude._apply_feature_to_bodies
 
     def wrapped(feature, part, bodies, *args, **kwargs):
+        started = time.perf_counter()
         result = original(feature, part, bodies, *args, **kwargs)
+        seconds = time.perf_counter() - started
         node = os.environ.get("PYTEST_CURRENT_TEST", "?").rsplit(" ", 1)[0]
         step = _counters.get(node, 0)
         _counters[node] = step + 1
         for index, (body_id, shape) in enumerate(list(bodies.items())):
-            record = {"test": node, "step": step, "body": index, "feature": type(feature).__name__}
+            record = {"test": node, "step": step, "body": index, "feature": type(feature).__name__, "seconds": seconds}
             try:
                 if shape is None or shape.IsNull():
                     record["null"] = True
