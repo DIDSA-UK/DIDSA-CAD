@@ -204,3 +204,38 @@ def test_a_coincident_constraint_alone_does_not_fabricate_a_loop_out_of_an_open_
     result = detect_profile(sketch)
 
     assert result.status == ProfileStatus.NO_LOOP
+
+
+def test_an_open_chain_is_always_walked_from_the_end_drawn_first():
+    """`detect_open_chain` used to start at whichever end a set of random
+    uuid strings yielded first, so the same sketch was walked either way
+    from run to run, and with it the side a thin Loft's wall landed on and
+    the way a swept or extruded surface faced. It now starts at the end on
+    the earliest-drawn entity (that entity's own start for a single one).
+    Thirty fresh sketches, so the old coin flip cannot pass by luck."""
+    from app.sketch.profile import OpenChainStatus, detect_open_chain
+
+    for _ in range(30):
+        sketch = Sketch(id="s", plane=Plane.XY)
+        a = sketch.add_point(0.0, 0.0)
+        b = sketch.add_point(10.0, 0.0)
+        c = sketch.add_point(10.0, 6.0)
+        sketch.add_line(a.id, b.id)
+        sketch.add_line(b.id, c.id)
+        result = detect_open_chain(sketch)
+        assert result.status == OpenChainStatus.SINGLE_CHAIN
+        assert result.chain.point_ids == [a.id, b.id, c.id]
+
+        single = Sketch(id="t", plane=Plane.XY)
+        start = single.add_point(0.0, 0.0)
+        end = single.add_point(5.0, 0.0)
+        single.add_line(start.id, end.id)
+        assert detect_open_chain(single).chain.point_ids == [start.id, end.id]
+
+        backwards = Sketch(id="u", plane=Plane.XY)
+        p = backwards.add_point(0.0, 0.0)
+        q = backwards.add_point(10.0, 0.0)
+        r = backwards.add_point(10.0, 6.0)
+        backwards.add_line(r.id, q.id)  # drawn from the far end first
+        backwards.add_line(q.id, p.id)
+        assert detect_open_chain(backwards).chain.point_ids == [r.id, q.id, p.id]

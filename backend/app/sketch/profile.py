@@ -791,6 +791,10 @@ def detect_open_chain(sketch: Sketch) -> OpenChainDetectionResult:
         adjacency.setdefault(b, []).append((entity_id, a))
 
     any_branch_point = any(len(edges) > 2 for edges in adjacency.values())
+    drawn_order: dict[str, tuple[int, int]] = {}
+    for index, (_entity_id, ends) in enumerate(connections):
+        for end, point_id in enumerate(ends):
+            drawn_order.setdefault(point_id, (index, end))
 
     visited: set[str] = set()
     chains: list[OpenChain] = []
@@ -804,7 +808,12 @@ def detect_open_chain(sketch: Sketch) -> OpenChainDetectionResult:
         component_endpoints = [point_id for point_id in component if len(adjacency[point_id]) == 1]
         if len(component_endpoints) != 2:
             continue  # a closed loop (0 open ends) - not a candidate open chain
-        point_ids, line_ids = _trace_chain(component_endpoints[0], adjacency)
+        # `component` is a set of random uuid strings, so taking whichever
+        # end it yields first walked the chain a different way from run to
+        # run, and the direction decides which side a thin Loft's wall or a
+        # surface's normal is on. Start at the end on the earliest-drawn
+        # entity instead (that entity's own start when it is both ends).
+        point_ids, line_ids = _trace_chain(min(component_endpoints, key=lambda p: drawn_order[p]), adjacency)
         chains.append(OpenChain(sketch_id=sketch.id, point_ids=point_ids, line_ids=line_ids))
 
     if not chains:

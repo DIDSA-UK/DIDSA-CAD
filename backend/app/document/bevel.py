@@ -895,6 +895,33 @@ def _single_solid_face_count(shape: TopoDS_Shape) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _flank_surface_grid(
+    face: TopoDS_Face, grid_size: int
+) -> list[tuple[float, float, gp_Pnt, gp_Dir | None]]:
+    """`(u, v, point, normal)` on a `grid_size x grid_size` grid over
+    `face`'s UV bounds, row-major in u; `normal` is `None` where the surface
+    has none. Every point and normal is a copy: from pythonocc-core 8.0
+    `GeomLProp_SLProps.Normal()` returns a view into the props object, not a
+    copy, so a stored one reads freed memory once the next sample replaces
+    it. Kept against 8.0.1.2, almost every stored normal then held another
+    grid point's normal, enough to report a sign flip on fold-free default
+    gears."""
+    surface = BRep_Tool.Surface(face)
+    u1, u2, v1, v2 = breptools.UVBounds(face)
+    samples: list[tuple[float, float, gp_Pnt, gp_Dir | None]] = []
+    for i in range(grid_size):
+        u = u1 + (u2 - u1) * i / (grid_size - 1)
+        for j in range(grid_size):
+            v = v1 + (v2 - v1) * j / (grid_size - 1)
+            props = GeomLProp_SLProps(surface, u, v, 1, 1e-6)
+            normal = None
+            if props.IsNormalDefined():
+                view = props.Normal()
+                normal = gp_Dir(view.X(), view.Y(), view.Z())
+            samples.append((u, v, gp_Pnt(props.Value().XYZ()), normal))
+    return samples
+
+
 def _flank_fold_warning(face: TopoDS_Face, grid_size: int = _FOLD_GRID_SIZE) -> str | None:
     """A real fold/self-intersection detector for one flank surface -
     `10-bevel-gear.md`'s own §7/§8: `BRepCheck_Analyzer`/`IsDone()` are
@@ -919,18 +946,9 @@ def _flank_fold_warning(face: TopoDS_Face, grid_size: int = _FOLD_GRID_SIZE) -> 
     flank would be redundant, not more thorough), before assembly -
     `00-conventions.md`'s non-blocking validation-banner convention.
     Returns a warning message, or `None` if no fold was detected."""
-    surface = BRep_Tool.Surface(face)
-    u1, u2, v1, v2 = breptools.UVBounds(face)
-
-    grid_points: list[gp_Pnt] = []
-    grid_normals: list[gp_Vec | None] = []
-    for i in range(grid_size):
-        u = u1 + (u2 - u1) * i / (grid_size - 1)
-        for j in range(grid_size):
-            v = v1 + (v2 - v1) * j / (grid_size - 1)
-            props = GeomLProp_SLProps(surface, u, v, 1, 1e-6)
-            grid_points.append(props.Value())
-            grid_normals.append(props.Normal() if props.IsNormalDefined() else None)
+    samples = _flank_surface_grid(face, grid_size)
+    grid_points = [point for _, _, point, _ in samples]
+    grid_normals = [normal for _, _, _, normal in samples]
 
     # Point coincidence: only compare non-adjacent grid points (index
     # difference in EITHER the flattened i or j sense) - immediate
