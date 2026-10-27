@@ -321,10 +321,76 @@ Don't decide by platform (DeX reports Android). Decide by **window size** and **
 | D1 | R1a, R1c, R2: middle and right drag navigate in every mode; one cursor; scaled wheel zoom | small | Fixes both things from the first test. Widget-testable with `tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kMiddleMouseButton)`. |
 | D2 | R1b, plain-drag box select, MMB double-click fit, desktop click selection for a mouse (R6) | small-medium | Built (Progress above). |
 | D3 | R3: shortcut table, Esc/Enter/Delete/undo/save/views/fit, sketch tool keys, `?` sheet, tooltip hints. **Also from D2:** a fit action for the mesh viewer (F needs one), wired to its middle double-click too; the part screen's click rule moved into a pure, unit-tested function (Esc and Delete act on the same selection) | medium | Built (Progress above; what it left out is listed there). |
-| D4 | R4: right-click popups via `showActionSheet(position:)` | small-medium | One helper, then each call site. |
-| D5 | R1d presets + settings, R6 polish. **Also from D3:** Ctrl+8 normal to, the Space view picker, Tab order through panel fields | small-medium | |
-| D6 | R5: `InputModality`, the full desktop layout ≥ 1000 dp. **Also from D3:** keys for the part tools (S, E, V ...) with the desktop toolbar | large | The owner wants "a full desktop CAD experience" from a docked phone. Scope it separately (it touches every screen). |
+| D4 | R4: right-click menus - the helper, every tree/viewport/sketch menu, new 3D geometry and view menus | medium | Scoped below. |
+| D5 | R1d presets + Controls settings, R6 polish. **Also from D3:** Ctrl+8 normal to, the Space view cube, Tab order through panel fields | medium | Scoped below. |
+| D6 | R5: `InputModality`, the full desktop layout ≥ 1000 dp. **Also from D3:** keys for the part tools (S, E, V ...) with the desktop toolbar | large | Scoped in `docs/desktop-layout-scope.md`. |
 | D7 | 3D box select (part and assembly): visible geometry only, edges by default, mouse drag and touch tap-hold-drag | medium | A revisit of a feature the owner parked in June; questions answered 27 Oct (below). |
+
+### D4: right-click menus (scoped 27 Oct 2026)
+
+**Rule (SOLIDWORKS):** a right click without a drag on something that isn't selected selects it (as a plain click would) and opens
+its menu at the cursor; on something already in the selection it keeps the selection. A right drag still pans (D1). Touch keeps
+its long-presses and bottom sheets unchanged.
+
+**One helper:** `showContextMenu<T>(context, entries, {Offset? at})` beside `showActionSheet` in `action_sheet.dart`. With `at`
+(a mouse) it shows a desktop popup (`showMenu`, icon + label, a disabled entry's reason as its tooltip) at that point; without, the
+bottom sheet as now. Every existing menu function takes the same optional `at` and passes it on: `showComponentContextMenu`,
+`showMateContextMenu`, `showFeatureContextMenu`, `showBodyContextMenu` (these two build their own sheets today - move them onto
+the helper), `showPlaneContextSheet`, `showCreatePlaneContextSheet`, `showAddButtonMenu` / `showAssemblyAddMenu`.
+
+**Where right click opens what:**
+
+| Where | Menu |
+|---|---|
+| Feature tree rows (feature, body, surface, curve - the 5 `onLongPress` rows in `feature_tree_panel.dart`) | the row's existing long-press menu, via `onSecondaryTapUp` |
+| Assembly tree rows (occurrence, mate, pattern - 3 in `assembly_tree_panel.dart`) | the row's existing menu |
+| 3D view, a component (assembly) | the component menu |
+| 3D view, a reference plane / created plane | the plane sheets, as a popup |
+| 3D view, a face, edge or vertex of a part (**owner: SOLIDWORKS-style**) | new geometry menu: Select Other (the existing Select Other list, for the point clicked), Zoom to selection, Normal to (a planar face; shares Ctrl+8, D5), Measure (opens Measure with it picked), Appearance (opens the Appearance tool on that face/body), Hide / Show body, then the owning body's own menu items (`showBodyContextMenu`'s) |
+| 3D view, empty space | view menu: Zoom to fit, Standard views (submenu, with their Ctrl+numbers), Perspective / Orthographic, Show / Hide planes, Reset view |
+| Sketch (2D canvas and Orbit View), an entity | its main ribbon actions: Delete, Construction on/off, Fix / Unfix, the constraint chips the ribbon offers for the selection |
+| Sketch, empty canvas | the tools (Line, Circle, Arc, Rectangle, Dimension, Trim, with their keys), Select all, Zoom to fit |
+
+**Wiring:** `PartViewport` gets `onContextMenuRequested(HoverHit? hit, Offset globalPosition)`, fired from D1's middle/right
+release (`_endMouseNavigation`) when the right button travelled less than the tap threshold - the hit-test is the one hover
+already runs, at that point. The part screen picks the menu from the hit. In the 2D canvas the same on a right release without a
+drag. New "Zoom to selection" = frame the entity's bounds (`_doRecentre`'s framing on a given box, orientation kept).
+
+**Tests:** the helper (popup with `at`, sheet without); a right click on a tree row opens the row's menu (widget test, no GPU);
+the sketch canvas right click (widget test); the viewport path is GPU-gated like the other viewport pointer tests. **Size:**
+medium (about a dozen call sites plus two new menus).
+
+### D5: presets, Controls settings, view cube, polish (scoped 27 Oct 2026)
+
+- **Presets (owner: SOLIDWORKS, Fusion 360, Onshape)** - `mouseNavActionFor` takes a `NavigationPreset`:
+
+  | | Orbit | Pan | Zoom drag | Right drag |
+  |---|---|---|---|---|
+  | SOLIDWORKS (default) | MMB | Ctrl+MMB, RMB | Shift+MMB | pan |
+  | Fusion 360 | Shift+MMB | MMB, RMB | - | pan |
+  | Onshape | RMB | MMB, Ctrl+RMB | - | orbit |
+
+  Right click without a drag opens the menu (D4) in all three; wheel zoom is the same. Plus **invert wheel zoom** and an **orbit
+  speed** slider (scales `OrbitCamera.orbitSensitivity` for mouse and keys).
+- **Controls settings screen (owner: a new screen)** - `ControlsPreferences` (shared_preferences, like `ScenePreferences`), a
+  `ControlsSettingsScreen` with the preset, invert wheel, orbit speed and a button for the shortcut sheet. Opened from the part
+  screen's View menu, the sketch's menu and the tool chooser.
+- **View cube on Space (owner: a view cube, not a list)** - a popup at the cursor showing a small cube drawn with the current camera
+  orientation (`CustomPainter`, faces labelled Front/Top/Right..., SOLIDWORKS' names); clicking a face, edge or corner animates to
+  that view (26 targets: 6 faces, 12 edges, 8 corners - `OrbitCamera.orientationLookingFrom`), plus a Normal to button when a planar
+  face or plane is selected. Esc or a click outside closes it. The same cube can later sit in the viewport's corner (D6).
+- **Ctrl+8 normal to** - a selected reference/created plane: `animateToBasis` (exists); a selected face: its normal from
+  `faceTrianglesForId` (planar if every triangle's normal agrees within a tolerance; otherwise the key does nothing), the view
+  turned to look at it, up kept as close to the current up as possible.
+- **Polish (R6):** Tab order through every tool panel's fields (audit, `FocusTraversalGroup` where needed); hover highlight on tree
+  rows; double-click a feature row to edit it; a middle click in a sketch tool ends the chain (as Enter); the wheel and Up/Down over
+  a focused number field nudge the value; DeX window resize checked at narrow and short sizes.
+- **Size:** medium (the view cube is most of it).
+
+### D6: the desktop layout
+
+Scoped in its own document, **`docs/desktop-layout-scope.md`** (owner: SOLIDWORKS-style; automatic with a manual override;
+every screen in one pass). It also takes D3's part tool keys.
 
 ### D7: 3D box select (revisit)
 
@@ -353,7 +419,33 @@ inside, a crossing box what touches; respect the selection filter; Ctrl adds.
 3. **Touch: tap and hold, then drag**, as the sketcher does (the 500 ms long-press on empty space; the old attempt's
    double-tap-then-drag is not brought back).
 
-Approved to build after D3 (the owner said "start D3" with these answers). Kept out of D5 because it is a feature, not polish, and out of D6
+4. **In an assembly the box picks whole components** (SOLIDWORKS); inside a part, or a focused component, it picks edges by default.
+
+Approved to build after D3 (the owner said "start D3" with these answers).
+
+**Plan (scoped 27 Oct 2026):**
+
+- A new pure module, `viewport3d/box_select.dart`: `boxSelect(camera, viewportSize, focusTransform, candidates, rect, {crossing,
+  filter, occluders})` returning the picked `SelectionEntityRef`s. Pure, so it is unit-tested headless against known perspective and
+  orthographic cameras - the piece every June attempt lacked.
+- **Projection:** `worldToScreenFocused` (`screen_projection.dart`, the projection every overlay already uses on the device). The
+  mesh data is all there: `edgeSegmentsForId`, `faceTrianglesForId`, `topologyVerticesFromMesh` (`selection_hit_test.dart`), and
+  the component instances' meshes and transforms.
+- **Visible only:** sample each edge (and each face's triangle centroids, each vertex) and ray-test the sample against the shaded
+  faces (`hitTestFaces`'s triangle test): a sample is visible when no face is nearer than it by more than
+  `kFaceOcclusionEpsilon`. Wireframe mode and hidden bodies have nothing to occlude.
+- **Window** (left to right): an edge is picked when all its samples are inside the box and at least one is visible; a face when all
+  its boundary edges' samples are inside and one of its centroids is visible; a vertex when inside and visible; a component when its
+  projected bounds are inside and some of it is visible. **Crossing** (right to left): any visible sample inside, or a visible
+  segment crossing the box (the 2D `polylineTouchesRect`). Ctrl adds.
+- **What's picked:** the selection filter decides, edges by default in a part; whole top-level components in an assembly; inside a
+  focused component, its edges.
+- **Gestures:** the mouse box from D2 now also starts outside a sketch; touch gets tap-hold-drag on empty space (the existing 500 ms
+  marquee long-press, which today only selects in a sketch). Computed once, on release.
+- **Cost:** sampling is per edge, so a large assembly could be slow on a phone - measure on the device; cap samples per edge and skip
+  the occlusion test for components whose bounds are outside the box.
+- **Tests:** `test/box_select_test.dart` - a box seen from the front and from the side, perspective and orthographic: window vs
+  crossing, a hidden back edge not picked, a box behind another not picked, a focus transform, components vs edges. **Size:** medium. Kept out of D5 because it is a feature, not polish, and out of D6
 because it doesn't depend on the layout.
 
 D1 to D3 make DeX feel like a desktop CAD tool without touching the layout; D6 is what makes it look like one.
@@ -406,4 +498,9 @@ From D3:
    toggling.
 4. **Layout: up to a full desktop-style experience** - dock a phone and get a full desktop CAD app (D6, scoped on its own).
 5. Order as section 4: D1 → D2 → D3 → D4 → D5, D6 scoped separately.
-6. **3D box select (D7), 27 Oct 2026:** revisit it after D3; visible geometry only, edges by default, touch is tap-hold-drag.
+6. **3D box select (D7), 27 Oct 2026:** revisit it after D3; visible geometry only, edges by default, touch is tap-hold-drag;
+   whole components in an assembly.
+7. **D4-D6, 27 Oct 2026:** right click on part geometry gets a SOLIDWORKS-style menu; presets SOLIDWORKS + Fusion 360 + Onshape in
+   a new Controls settings screen; Space opens a view cube; the desktop layout is SOLIDWORKS-style (ribbon on top, tree left, tool
+   panels docking in place of the tree), switches on automatically with a manual override, and covers every screen in one pass.
+8. **Order:** D4 → D5 → D7 → D6 (D6 is the largest; D7 can go before or after it). Each phase in its own session.

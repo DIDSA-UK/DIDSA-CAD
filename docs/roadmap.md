@@ -634,7 +634,9 @@ Anything promoted out of this list should get its own scoping doc before it is b
   mode, keyboard shortcuts, right-click menus, navigation presets, and up to a full desktop layout for a docked phone. **Scoped in
   `docs/desktop-input-scope.md` (decisions 26 Oct 2026); D1 (middle/right drag navigation, one cursor, scaled wheel zoom) and D2 (orbit about the
   cursor, mouse box select with window/crossing, middle double-click fit, SOLIDWORKS click selection) and D3 (keyboard
-  shortcuts, Enter/Esc on every tool panel) built on `claude/flutter-desktop-mode-ui-pxmq0q`, not merged.**
+  shortcuts, Enter/Esc on every tool panel) built on `claude/flutter-desktop-mode-ui-pxmq0q`, not merged. D4 (right-click
+  menus), D5 (presets, Controls settings, view cube), D7 (3D box select) scoped there; D6 (the desktop layout) in
+  `docs/desktop-layout-scope.md`.**
 - **Redo, and undo for Part features:** the flat app has no redo anywhere (the sketch's is a `TODO`) and the part screen can only
   undo assembly moves/deletes. Found while binding Ctrl+Z / Ctrl+Y (`docs/desktop-input-scope.md` D3); not scoped.
 - **Shared network storage + server-side assembly composition for a
