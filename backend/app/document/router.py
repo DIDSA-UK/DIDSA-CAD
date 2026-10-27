@@ -174,6 +174,7 @@ from app.document.models import (
     Produces,
     RackFeature,
     RevolveFeature,
+    SpringFeature,
     RevolveMode,
     RevolveSurfaceFeature,
     RigidTransform,
@@ -354,6 +355,7 @@ from app.document.schemas import (
     PointRefSchema,
     RackFeatureResponse,
     RevolveFeatureCreate,
+    SpringFeatureResponse,
     RevolveFeatureResponse,
     RevolveFeatureUpdate,
     RevolveSurfaceFeatureCreate,
@@ -914,6 +916,34 @@ def _helix_turns_or_none(feature: CurveFeature) -> float | None:
         return None
 
 
+def _spring_feature_response(part: Part, feature: SpringFeature) -> SpringFeatureResponse:
+    """The stored numbers plus what they work out to (`spring_layout`), null when they make no
+    spring (the create/update checks refuse that; an old file could still hold one)."""
+    from app.document.spring import spring_layout
+
+    try:
+        layout = spring_layout(feature)
+        active_pitch, total_coils, solid_length = layout.active_pitch, layout.total_coils, layout.solid_length
+    except HTTPException:
+        active_pitch = total_coils = solid_length = None
+    return SpringFeatureResponse(
+        id=feature.id,
+        plane_ref=_plane_ref_to_schema(feature.plane_ref),
+        mean_diameter=feature.mean_diameter,
+        wire_diameter=feature.wire_diameter,
+        free_length=feature.free_length,
+        active_coils=feature.active_coils,
+        start_end=feature.start_end,
+        finish_end=feature.finish_end,
+        right_handed=feature.right_handed,
+        active_pitch=active_pitch,
+        total_coils=total_coils,
+        solid_length=solid_length,
+        locked=part.is_locked(feature.id),
+        produces=feature.produces,
+    )
+
+
 def _fill_surface_feature_response(part: Part, feature: FillSurfaceFeature) -> FillSurfaceFeatureResponse:
     return FillSurfaceFeatureResponse(
         id=feature.id,
@@ -1283,6 +1313,8 @@ def _feature_response_unflagged(part: Part, feature: Feature) -> FeatureResponse
             locked=part.is_locked(feature.id),
             produces=feature.produces,
         )
+    if isinstance(feature, SpringFeature):
+        return _spring_feature_response(part, feature)
     if isinstance(feature, BevelGearFeature):
         return _bevel_gear_feature_response(part, feature)
     if isinstance(feature, BevelPairFeature):
@@ -1752,6 +1784,7 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
                 ImportFeature,
                 GearFeature,
                 RackFeature,
+                SpringFeature,
                 LoftFeature,
                 GearChainFeature,
                 PlanetaryGearFeature,
@@ -1762,7 +1795,7 @@ def _validate_target_body_ids(part: Part, is_cut: bool, target_body_ids: list[st
             raise HTTPException(
                 status_code=400,
                 detail=f"target_body_ids entry {target_id!r} does not refer to an ExtrudeFeature, "
-                "RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature, LoftFeature, "
+                "RevolveFeature, SweepFeature, ImportFeature, GearFeature, RackFeature, SpringFeature, LoftFeature, "
                 "GearChainFeature, PlanetaryGearFeature, BevelGearFeature, or BevelPairFeature in this Part",
             )
 
@@ -2109,6 +2142,7 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
     PatternFeature,
     GearFeature,
     RackFeature,
+    SpringFeature,
     LoftFeature,
     GearChainFeature,
     PlanetaryGearFeature,
@@ -2127,7 +2161,7 @@ _PATTERN_MIRROR_SOURCE_FEATURE_TYPES = (
 )
 _PATTERN_MIRROR_SOURCE_FEATURE_TYPES_DESCRIPTION = (
     "ExtrudeFeature, RevolveFeature, SweepFeature, ImportFeature, MirrorFeature, PatternFeature, "
-    "GearFeature, RackFeature, LoftFeature, GearChainFeature, PlanetaryGearFeature, BevelGearFeature, "
+    "GearFeature, RackFeature, SpringFeature, LoftFeature, GearChainFeature, PlanetaryGearFeature, BevelGearFeature, "
     "BevelPairFeature, SurfaceFeature, PlanarSurfaceFeature, RevolveSurfaceFeature, "
     "SweptSurfaceFeature, LoftSurfaceFeature, RuledSurfaceFeature, KnitSurfaceFeature, "
     "OffsetSurfaceFeature, ThickenFeature, or SolidFromSurfacesFeature"
@@ -9458,7 +9492,9 @@ def export_part_assembly_glb(part_id: str) -> Response:
 
 # Gear-family routes live in gears_routes.py; included last so every helper they import from this module exists.
 from app.document.gears_routes import gear_router  # noqa: E402
+from app.document.spring_routes import spring_router  # noqa: E402
 
 router.include_router(gear_router)
+router.include_router(spring_router)
 router.include_router(appearance_router)
 router.include_router(scenes_router)

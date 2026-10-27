@@ -658,6 +658,53 @@ class CurveFeature(Feature):
         return Produces.CURVE
 
 
+class SpringEnd(str, Enum):
+    """How one end of a `SpringFeature` is finished (owner's feature request: "flat ends for springs
+    ... ground flat"): `OPEN` - the coils run at the working pitch right to the end; `CLOSED` - the
+    last coil is closed down onto its neighbour (a dead coil at the wire's own pitch) and the pitch
+    then rises smoothly to the working pitch; `CLOSED_GROUND` - closed, then ground flat square to
+    the axis so the spring stands on it."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    CLOSED_GROUND = "closed_ground"
+
+
+@dataclass
+class SpringFeature(Feature):
+    """A helical compression spring, made from its numbers as one solid Body (owner's request: a
+    dedicated Spring feature rather than a helix and a sweep). It stands on `plane_ref`: the plane's
+    normal is the spring's axis, its origin the centre of the spring's base (the spring rises from
+    the plane by `free_length`), its x axis the direction the wire starts at.
+
+    `mean_diameter` is through the wire centre (outside diameter = mean + wire); `active_coils`
+    counts the coils that work, the dead end coils of a closed end are extra. Each end is a
+    `SpringEnd`; `right_handed` is the winding (counterclockwise viewed down the axis as it rises).
+    The geometry (`app.document.spring`) works out the working pitch that gives `free_length`."""
+
+    id: str
+    plane_ref: PlaneRef
+    mean_diameter: float
+    wire_diameter: float
+    free_length: float
+    active_coils: float
+    start_end: SpringEnd = SpringEnd.CLOSED_GROUND
+    finish_end: SpringEnd = SpringEnd.CLOSED_GROUND
+    right_handed: bool = True
+
+    @property
+    def type(self) -> str:
+        return "spring"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
+
+
 @dataclass
 class FilletFeature(Feature):
     """Prompt D: rounds every edge named in `edge_refs` (all of which must

@@ -161,7 +161,7 @@ def sampled_helix_wire(
     `app.document.helix_profile`), its radius `radius_at_height(z)`, starting on `frame`'s x axis:
     one C2 cubic BSpline edge interpolated through the points at their turn counts. Used where the
     pitch varies smoothly, which `HelixBRep_BuilderHelix` (constant-pitch segments only) cannot make:
-    a variable-pitch Helix and a Spring's centreline (`app.document.spring`)."""
+    a variable-pitch Helix and a Spring's centreline (`app.document.spring`). One edge per turn."""
     origin = frame.Location()
     axis = gp_Vec(frame.Direction())
     x_dir = gp_Vec(frame.XDirection())
@@ -182,8 +182,15 @@ def sampled_helix_wire(
     interpolate.Perform()
     if not interpolate.IsDone():
         raise _curve_construction_failed("", "could not interpolate the helix")
-    edge = BRepBuilderAPI_MakeEdge(interpolate.Curve()).Edge()
-    return BRepBuilderAPI_MakeWire(edge).Wire()
+    # One edge per turn (the curve's parameter is the turn count), as `HelixBRep_BuilderHelix` makes
+    # it: a Sweep of a thin profile (a 0.3 mm wire) along one many-turn edge fails, per turn it does not.
+    curve = interpolate.Curve()
+    end = samples[-1].t
+    bounds = [0.0, *(float(k) for k in range(1, math.ceil(end - 1e-6))), end]
+    wire_maker = BRepBuilderAPI_MakeWire()
+    for low, high in zip(bounds, bounds[1:]):
+        wire_maker.Add(BRepBuilderAPI_MakeEdge(curve, low, high).Edge())
+    return wire_maker.Wire()
 
 
 def helix_height(feature: CurveFeature) -> float:

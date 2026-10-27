@@ -18,6 +18,7 @@ from app.document.models import (
     PlaneType,
     Produces,
     RackType,
+    SpringEnd,
     RevolveMode,
     SpiralBevelHand,
     SubShapeType,
@@ -1929,6 +1930,55 @@ class GearFeatureResponse(FeatureResponseBase):
     warnings: list[str] = []
 
 
+class SpringFeatureCreate(BaseModel):
+    """Creates a `SpringFeature`: a helical compression spring as one solid Body. `plane_ref` as the
+    gears' (optional, the XY plane by default): its normal is the axis, its origin the base centre.
+    Lengths in mm; `mean_diameter` through the wire centre; `active_coils` excludes a closed end's
+    dead coil."""
+
+    plane_ref: PlaneRefSchema | None = None
+    mean_diameter: float
+    wire_diameter: float
+    free_length: float
+    active_coils: float
+    start_end: SpringEnd = SpringEnd.CLOSED_GROUND
+    finish_end: SpringEnd = SpringEnd.CLOSED_GROUND
+    right_handed: bool = True
+
+
+class SpringFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as `RackFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    mean_diameter: float | None = None
+    wire_diameter: float | None = None
+    free_length: float | None = None
+    active_coils: float | None = None
+    start_end: SpringEnd | None = None
+    finish_end: SpringEnd | None = None
+    right_handed: bool | None = None
+
+
+class SpringFeatureResponse(FeatureResponseBase):
+    type: Literal["spring"] = "spring"
+    id: str
+    plane_ref: PlaneRefSchema
+    mean_diameter: float
+    wire_diameter: float
+    free_length: float
+    active_coils: float
+    start_end: SpringEnd
+    finish_end: SpringEnd
+    right_handed: bool
+    # Worked out from the numbers (`app.document.spring.spring_layout`); null if they make no spring.
+    active_pitch: float | None = None
+    total_coils: float | None = None
+    # The shortest free length these coils allow (closed up solid).
+    solid_length: float | None = None
+    locked: bool
+    produces: Produces
+
+
 class RackFeatureCreate(BaseModel):
     """`docs/gear-design/03-rack.md`: creates a `RackFeature` - a standalone
     linear trapezoidal-tooth rack over `tooth_count` teeth, no backing
@@ -2963,6 +3013,7 @@ FeatureResponse = Union[
     ImportFeatureResponse,
     GearFeatureResponse,
     RackFeatureResponse,
+    SpringFeatureResponse,
     LoftFeatureResponse,
     BevelGearFeatureResponse,
     BevelPairFeatureResponse,
