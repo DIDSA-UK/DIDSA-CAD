@@ -528,6 +528,65 @@ class PointRefDto {
 /// MIDPLANE/PARALLEL_TO_FACE_THROUGH_VERTEX) is now one of these, not a
 /// bare [SubShapeRefDto], so a Plane can be built from another Plane or a
 /// fixed reference plane, not just a Body face.
+/// A Spring feature's numbers (the backend's `SpringFeatureResponse`): lengths in mm, the mean
+/// diameter through the wire centre, each end `"open"` / `"closed"` / `"closed_ground"`; the working
+/// pitch, total coils and solid length are worked out by the backend (null if the numbers make no
+/// spring).
+class SpringDto {
+  final PlaneRefDto? planeRef;
+  final double meanDiameter;
+  final double wireDiameter;
+  final double freeLength;
+  final double activeCoils;
+  final String startEnd;
+  final String finishEnd;
+  final bool rightHanded;
+  final double? activePitch;
+  final double? totalCoils;
+  final double? solidLength;
+
+  const SpringDto({
+    this.planeRef,
+    required this.meanDiameter,
+    required this.wireDiameter,
+    required this.freeLength,
+    required this.activeCoils,
+    this.startEnd = 'closed_ground',
+    this.finishEnd = 'closed_ground',
+    this.rightHanded = true,
+    this.activePitch,
+    this.totalCoils,
+    this.solidLength,
+  });
+
+  factory SpringDto.fromJson(Map<String, dynamic> json) => SpringDto(
+        planeRef: json['plane_ref'] is Map<String, dynamic>
+            ? PlaneRefDto.fromJson(json['plane_ref'] as Map<String, dynamic>)
+            : null,
+        meanDiameter: (json['mean_diameter'] as num).toDouble(),
+        wireDiameter: (json['wire_diameter'] as num).toDouble(),
+        freeLength: (json['free_length'] as num).toDouble(),
+        activeCoils: (json['active_coils'] as num).toDouble(),
+        startEnd: json['start_end'] as String? ?? 'closed_ground',
+        finishEnd: json['finish_end'] as String? ?? 'closed_ground',
+        rightHanded: json['right_handed'] as bool? ?? true,
+        activePitch: (json['active_pitch'] as num?)?.toDouble(),
+        totalCoils: (json['total_coils'] as num?)?.toDouble(),
+        solidLength: (json['solid_length'] as num?)?.toDouble(),
+      );
+
+  /// The create / update body (without the plane, which the caller adds).
+  Map<String, dynamic> toJson() => {
+        'mean_diameter': meanDiameter,
+        'wire_diameter': wireDiameter,
+        'free_length': freeLength,
+        'active_coils': activeCoils,
+        'start_end': startEnd,
+        'finish_end': finishEnd,
+        'right_handed': rightHanded,
+      };
+}
+
 class PlaneRefDto {
   final SubShapeRefDto? faceRef;
   final String? fixedPlane;
@@ -1056,6 +1115,21 @@ class FeatureDto {
   /// don't both show up as an undifferentiated "Curve".
   final String? curveType;
 
+  /// Helix only (a `"curve"` Feature with [curveType] `"helix"`; [radius] holds its start radius): the
+  /// end radius when tapered (null: constant), its `{pitch, turns}` segments and its hand - what the
+  /// Helix edit panel opens with.
+  final double? helixEndRadius;
+  final List<({double pitch, double turns})> helixSegments;
+  final bool helixRightHanded;
+  final PlaneRefDto? helixAxisRef;
+
+  /// Variable-pitch Helix: its pitch at axial distances from the start (`{at, pitch}`, the backend's
+  /// `pitch_points`), empty when its pitch is [helixSegments] instead.
+  final List<({double at, double pitch})> helixPitchPoints;
+
+  /// Only on a `"spring"` Feature: its numbers and what they work out to.
+  final SpringDto? spring;
+
   /// Boolean family, Subtract/Common - only present on a `"boolean"`
   /// Feature: which Bodies (1+ ids, the backend's `BooleanFeature.tool_
   /// body_ids`) are folded into/against [targetBodyIds] (also 1+ entries
@@ -1270,6 +1344,12 @@ class FeatureDto {
     this.bodyIds = const [],
     this.operation,
     this.curveType,
+    this.helixEndRadius,
+    this.helixSegments = const [],
+    this.helixRightHanded = true,
+    this.helixAxisRef,
+    this.helixPitchPoints = const [],
+    this.spring,
     this.toolBodyIds = const [],
     this.consumeToolBodies = true,
     this.targetBodyId,
@@ -1414,6 +1494,24 @@ class FeatureDto {
         bodyIds: (json['body_ids'] as List?)?.cast<String>() ?? const [],
         operation: json['operation'] as String?,
         curveType: json['curve_type'] as String?,
+        helixEndRadius: json['curve_type'] == 'helix' ? (json['end_radius'] as num?)?.toDouble() : null,
+        helixSegments: json['curve_type'] == 'helix'
+            ? [
+                for (final s in (json['segments'] as List? ?? const []).cast<Map<String, dynamic>>())
+                  (pitch: (s['pitch'] as num).toDouble(), turns: (s['turns'] as num).toDouble()),
+              ]
+            : const [],
+        helixRightHanded: json['right_handed'] as bool? ?? true,
+        helixAxisRef: json['curve_type'] == 'helix' && json['axis_ref'] is Map<String, dynamic>
+            ? PlaneRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>)
+            : null,
+        helixPitchPoints: json['curve_type'] == 'helix'
+            ? [
+                for (final p in (json['pitch_points'] as List? ?? const []).cast<Map<String, dynamic>>())
+                  (at: (p['at'] as num).toDouble(), pitch: (p['pitch'] as num).toDouble()),
+              ]
+            : const [],
+        spring: json['type'] == 'spring' ? SpringDto.fromJson(json) : null,
         toolBodyIds: (json['tool_body_ids'] as List?)?.cast<String>() ?? const [],
         consumeToolBodies: json['consume_tool_bodies'] as bool? ?? true,
         targetBodyId: json['target_body_id'] as String?,
@@ -5083,6 +5181,7 @@ class DocumentApiClient {
     double? endRadius,
     double? taperAngleDegrees,
     List<({double pitch, double turns})> segments = const [],
+    List<({double at, double pitch})> pitchPoints = const [],
     bool rightHanded = true,
     String? sketchFeatureIdA,
     String? sketchFeatureIdB,
@@ -5101,6 +5200,10 @@ class DocumentApiClient {
                   'segments': [
                     for (final s in segments) {'pitch': s.pitch, 'turns': s.turns},
                   ],
+                if (pitchPoints.isNotEmpty)
+                  'pitch_points': [
+                    for (final p in pitchPoints) {'at': p.at, 'pitch': p.pitch},
+                  ],
                 'right_handed': rightHanded,
                 if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
                 if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,
@@ -5109,8 +5212,38 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Creates a Spring feature (a compression spring as one Body) standing on [planeRef] (null: the
+  /// XY plane) - see [SpringDto].
+  Future<FeatureDto> createSpringFeature(String partId, SpringDto spring, {PlaneRefDto? planeRef}) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/spring-features'),
+              headers: _headers,
+              body: jsonEncode({
+                ...spring.toJson(),
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Replaces a Spring feature's numbers (its plane stays unless [planeRef] is given).
+  Future<FeatureDto> updateSpringFeature(String partId, String featureId, SpringDto spring,
+          {PlaneRefDto? planeRef}) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/spring-features/$featureId'),
+              headers: _headers,
+              body: jsonEncode({
+                ...spring.toJson(),
+                if (planeRef != null) 'plane_ref': planeRef.toJson(),
+              }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Partial update for an existing CurveFeature - `curve_type` itself is
-  /// never sent (see the backend's `CurveFeatureUpdate`).
+  /// never sent (see the backend's `CurveFeatureUpdate`). [clearEndRadius] sends an explicit null
+  /// `end_radius` (back to a constant radius); omitting it keeps the stored taper.
   Future<FeatureDto> updateCurveFeature(
     String partId,
     String featureId, {
@@ -5119,7 +5252,9 @@ class DocumentApiClient {
     double? endRadius,
     double? taperAngleDegrees,
     List<({double pitch, double turns})>? segments,
+    List<({double at, double pitch})>? pitchPoints,
     bool? rightHanded,
+    bool clearEndRadius = false,
     String? sketchFeatureIdA,
     String? sketchFeatureIdB,
   }) =>
@@ -5130,11 +5265,15 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (axisRef != null) 'axis_ref': axisRef.toJson(),
                 if (radius != null) 'radius': radius,
-                if (endRadius != null) 'end_radius': endRadius,
+                if (endRadius != null || clearEndRadius) 'end_radius': endRadius,
                 if (taperAngleDegrees != null) 'taper_angle_degrees': taperAngleDegrees,
                 if (segments != null)
                   'segments': [
                     for (final s in segments) {'pitch': s.pitch, 'turns': s.turns},
+                  ],
+                if (pitchPoints != null)
+                  'pitch_points': [
+                    for (final p in pitchPoints) {'at': p.at, 'pitch': p.pitch},
                   ],
                 if (rightHanded != null) 'right_handed': rightHanded,
                 if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,

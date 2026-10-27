@@ -68,6 +68,7 @@ from app.document.models import (
     PlaneType,
     Produces,
     RackFeature,
+    SpringFeature,
     RevolveFeature,
     RevolveMode,
     RevolveSurfaceFeature,
@@ -664,6 +665,8 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
             depends_on = _gear_dependencies(feature)
         elif isinstance(feature, RackFeature):
             depends_on = _rack_dependencies(feature)
+        elif isinstance(feature, SpringFeature):
+            depends_on = _plane_ref_only_dependencies(feature.plane_ref)
         elif isinstance(feature, BevelGearFeature):
             depends_on = _bevel_gear_dependencies(feature)
         elif isinstance(feature, LoftFeature):

@@ -40,6 +40,7 @@ from app.document.models import (
     ComponentPatternType,
     CreatePlaneFeature,
     CurveFeature,
+    HelixPitchPoint,
     HelixSegment,
     CurveType,
     DeleteBodyFeature,
@@ -91,6 +92,8 @@ from app.document.models import (
     PlaneType,
     PointRef,
     RackFeature,
+    SpringEnd,
+    SpringFeature,
     RackType,
     RevolveFeature,
     RevolveMode,
@@ -1282,6 +1285,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "radius": feature.radius,
             "end_radius": feature.end_radius,
             "segments": [{"pitch": seg.pitch, "turns": seg.turns} for seg in feature.segments],
+            "pitch_points": [{"at": point.at, "pitch": point.pitch} for point in feature.pitch_points],
             "right_handed": feature.right_handed,
             "sketch_feature_id_a": feature.sketch_feature_id_a,
             "profile_refs_a": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs_a],
@@ -1503,6 +1507,19 @@ def _feature_to_dict(feature: Feature) -> dict:
             "backing_height": feature.backing_height,
             "target_body_ids": list(feature.target_body_ids),
         }
+    if isinstance(feature, SpringFeature):
+        return {
+            "type": "spring",
+            "id": feature.id,
+            "plane_ref": _plane_ref_to_dict(feature.plane_ref),
+            "mean_diameter": feature.mean_diameter,
+            "wire_diameter": feature.wire_diameter,
+            "free_length": feature.free_length,
+            "active_coils": feature.active_coils,
+            "start_end": feature.start_end.value,
+            "finish_end": feature.finish_end.value,
+            "right_handed": feature.right_handed,
+        }
     if isinstance(feature, BevelGearFeature):
         return {
             "type": "bevel_gear",
@@ -1686,6 +1703,7 @@ def _feature_from_dict(data: dict) -> Feature:
             radius=data.get("radius"),
             end_radius=data.get("end_radius"),
             segments=[HelixSegment(pitch=seg["pitch"], turns=seg["turns"]) for seg in data.get("segments", [])],
+            pitch_points=[HelixPitchPoint(at=p["at"], pitch=p["pitch"]) for p in data.get("pitch_points", [])],
             right_handed=data.get("right_handed", True),
             sketch_feature_id_a=data.get("sketch_feature_id_a"),
             profile_refs_a=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs_a", [])],
@@ -1898,6 +1916,18 @@ def _feature_from_dict(data: dict) -> Feature:
             backlash=data.get("backlash", 0.0),
             backing_height=data.get("backing_height"),
             target_body_ids=list(data.get("target_body_ids", [])),
+        )
+    if feature_type == "spring":
+        return SpringFeature(
+            id=feature_id,
+            plane_ref=_plane_ref_from_dict(_require(data, "plane_ref")),
+            mean_diameter=_require(data, "mean_diameter"),
+            wire_diameter=_require(data, "wire_diameter"),
+            free_length=_require(data, "free_length"),
+            active_coils=_require(data, "active_coils"),
+            start_end=SpringEnd(data.get("start_end", SpringEnd.CLOSED_GROUND.value)),
+            finish_end=SpringEnd(data.get("finish_end", SpringEnd.CLOSED_GROUND.value)),
+            right_handed=data.get("right_handed", True),
         )
     if feature_type == "bevel_gear":
         return BevelGearFeature(

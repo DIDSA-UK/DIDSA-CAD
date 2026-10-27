@@ -98,6 +98,7 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     // display label - same "shared type, per-value label" convention
     // `'boolean'` above already uses for Subtract/Common.
     'curve' => feature.curveType == 'intersection' ? 'Intersection Curve' : 'Helix',
+    'spring' => 'Spring',
     'fill_surface' => 'Fill Surface',
     _ => 'Sketch',
   };
@@ -114,10 +115,15 @@ String featureDisplayName(List<FeatureDto> features, int index) {
 /// for any Feature since B4 - not just the last one) - this stays a plain
 /// negative check rather than an allow-list so it doesn't need updating for
 /// every future Feature type that keeps following that same pattern.
-// Curve/Fill Surface features: no edit panel yet (v1 client scope is
-// create-only - see `part_screen.dart`'s own Curve/Fill Surface starters),
-// same "not every Feature type has one" treatment `'import'` already gets.
-bool _hasEditPanel(String type) => type != 'import' && type != 'curve' && type != 'fill_surface';
+// Fill Surface and Intersection curve features: no edit panel yet (v1 client
+// scope is create-only - see `part_screen.dart`'s own Curve/Fill Surface
+// starters), same "not every Feature type has one" treatment `'import'`
+// already gets. A Helix has one (bug report: "unable to edit helix").
+bool _hasEditPanel(FeatureDto feature) => switch (feature.type) {
+      'import' || 'fill_surface' => false,
+      'curve' => feature.curveType == 'helix',
+      _ => true,
+    };
 
 /// Maps a Feature's `type` string to its tree-row glyph. `'sketch'` and
 /// `'create_plane'` reuse the same asset their own dedicated section already
@@ -203,6 +209,7 @@ String _featureTypeAsset(String type) => switch (type) {
       // shared/borrowed glyph until a dedicated one exists" precedent
       // Revolve/Swept/Loft Surface already establish above.
       'curve' => 'assets/icons/feature/feature_sweep.svg',
+      'spring' => 'assets/icons/feature/feature_spring.svg',
       // Fill Surface: reuses the generic Surface glyph (`'surface'`'s own
       // asset) - a filling surface has no more specific existing silhouette
       // to borrow, and it genuinely is a Surface-producing tool.
@@ -1060,7 +1067,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                   ? 'Reference may have moved - open to check'
               : hasPendingDetail
                   ? 'Loading full detail…'
-                  : _hasEditPanel(feature.type)
+                  : _hasEditPanel(feature)
                       ? 'Editable'
                       : 'Imported',
           maxLines: 1,

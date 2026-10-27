@@ -73,6 +73,7 @@ import 'create_plane_context_sheet.dart';
 import 'create_plane_geometry_3d.dart';
 import 'create_plane_panel.dart';
 import 'curve_panel.dart';
+import 'spring_panel.dart';
 import 'delete_body_panel.dart';
 import 'delete_face_panel.dart';
 import 'extrude_panel.dart';
@@ -13847,6 +13848,8 @@ class _PartScreenState extends State<PartScreen> {
         await _startHelix();
       case FeaturePickerAction.intersectionCurve:
         await _startIntersectionCurve();
+      case FeaturePickerAction.spring:
+        await _startSpring();
       case FeaturePickerAction.fillSurface:
         await _startFillSurface();
     }
@@ -13900,6 +13903,7 @@ class _PartScreenState extends State<PartScreen> {
     double? helixEndRadius;
     double? helixTaperAngle;
     var helixSegments = const [HelixSegmentValue(pitch: 2, turns: 3)];
+    var helixPitchPoints = const <HelixPitchPointValue>[];
     var helixRightHanded = true;
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
@@ -13914,6 +13918,7 @@ class _PartScreenState extends State<PartScreen> {
           double? endRadius,
           double? taperAngleDegrees,
           required List<HelixSegmentValue> segments,
+          required List<HelixPitchPointValue> pitchPoints,
           required bool rightHanded,
         }) {
           helixAxisPlane = axisPlane;
@@ -13921,6 +13926,7 @@ class _PartScreenState extends State<PartScreen> {
           helixEndRadius = endRadius;
           helixTaperAngle = taperAngleDegrees;
           helixSegments = segments;
+          helixPitchPoints = pitchPoints;
           helixRightHanded = rightHanded;
         },
         onConfirm: () => Navigator.of(sheetContext).pop(true),
@@ -13937,8 +13943,149 @@ class _PartScreenState extends State<PartScreen> {
         endRadius: helixEndRadius,
         taperAngleDegrees: helixTaperAngle,
         segments: [for (final s in helixSegments) (pitch: s.pitch, turns: s.turns)],
+        pitchPoints: [for (final p in helixPitchPoints) (at: p.at, pitch: p.pitch)],
         rightHanded: helixRightHanded,
       );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The read-only axis row for an existing Helix: its fixed plane, Plane feature or face.
+  String _describeHelixAxis(PlaneRefDto? axis) {
+    if (axis == null) return 'Unchanged';
+    if (axis.fixedPlane != null) return '${axis.fixedPlane} plane';
+    final planeFeatureId = axis.planeFeatureId;
+    if (planeFeatureId != null) {
+      final index = _features.indexWhere((f) => f.id == planeFeatureId);
+      return index == -1 ? 'Plane' : featureDisplayName(_features, index);
+    }
+    return 'Selected face';
+  }
+
+  /// [_onFeatureTap]'s Helix branch: [CurvePanel] opened on [feature]'s stored values, PATCHed on
+  /// Confirm. The axis stays as it is (shown read-only).
+  Future<void> _openHelixForEdit(FeatureDto feature) async {
+    var newRadius = feature.radius ?? 5.0;
+    var newEndRadius = feature.helixEndRadius;
+    double? newTaperAngle;
+    var newSegments = [for (final s in feature.helixSegments) HelixSegmentValue(pitch: s.pitch, turns: s.turns)];
+    var newPitchPoints = [
+      for (final p in feature.helixPitchPoints) HelixPitchPointValue(at: p.at, pitch: p.pitch),
+    ];
+    if (newSegments.isEmpty && newPitchPoints.isEmpty) newSegments = const [HelixSegmentValue(pitch: 2, turns: 3)];
+    var newRightHanded = feature.helixRightHanded;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CurvePanel(
+        title: 'Edit Helix',
+        preSelectedAxisLabel: _describeHelixAxis(feature.helixAxisRef),
+        initialHelix: HelixInitialValues(
+          radius: newRadius,
+          endRadius: newEndRadius,
+          segments: newSegments,
+          pitchPoints: newPitchPoints,
+          rightHanded: newRightHanded,
+        ),
+        onHelixChanged: ({
+          required String axisPlane,
+          required double radius,
+          double? endRadius,
+          double? taperAngleDegrees,
+          required List<HelixSegmentValue> segments,
+          required List<HelixPitchPointValue> pitchPoints,
+          required bool rightHanded,
+        }) {
+          newRadius = radius;
+          newEndRadius = endRadius;
+          newTaperAngle = taperAngleDegrees;
+          newSegments = segments;
+          newPitchPoints = pitchPoints;
+          newRightHanded = rightHanded;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runGuarded(() async {
+      await _api.updateCurveFeature(
+        _focusPartId,
+        feature.id,
+        radius: newRadius,
+        endRadius: newEndRadius,
+        taperAngleDegrees: newTaperAngle,
+        clearEndRadius: newEndRadius == null && newTaperAngle == null,
+        // Both forms: the one in use and the other empty (the backend takes that as a switch).
+        segments: [for (final s in newSegments) (pitch: s.pitch, turns: s.turns)],
+        pitchPoints: [for (final p in newPitchPoints) (at: p.at, pitch: p.pitch)],
+        rightHanded: newRightHanded,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The "Add" FAB's Spring entry: [SpringPanel] in a sheet, the spring standing on an already
+  /// selected plane or face when there is exactly one (as [_startHelix]), else on the plane the
+  /// panel's dropdown names.
+  Future<void> _startSpring() async {
+    final planeLikes = _selectedEntities.where((e) => _helixAxisKinds.contains(e.kind)).toList();
+    final preSelectedPlaneRef =
+        planeLikes.length == 1 && _selectedEntities.length == 1 ? _planeRefDtoFor(planeLikes.single) : null;
+    var spring = const SpringDto(meanDiameter: 10, wireDiameter: 1, freeLength: 20, activeCoils: 5);
+    var axisPlane = 'XY';
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SpringPanel(
+        title: 'Create Spring',
+        preSelectedAxisLabel: preSelectedPlaneRef == null ? null : _describePlaneLikeEntity(planeLikes.single),
+        onChanged: (values, plane) {
+          spring = values;
+          axisPlane = plane;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runGuarded(() async {
+      await _api.createSpringFeature(
+        _focusPartId,
+        spring,
+        planeRef: preSelectedPlaneRef ?? PlaneRefDto(fixedPlane: axisPlane),
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// [_onFeatureTap]'s Spring branch: [SpringPanel] opened on [feature]'s numbers, PATCHed on
+  /// Confirm. Its plane stays as it is (shown read-only).
+  Future<void> _openSpringForEdit(FeatureDto feature) async {
+    final initial = feature.spring;
+    if (initial == null) return;
+    var spring = initial;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SpringPanel(
+        title: 'Edit Spring',
+        initial: initial,
+        preSelectedAxisLabel: _describeHelixAxis(initial.planeRef),
+        onChanged: (values, _) => spring = values,
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runGuarded(() async {
+      await _api.updateSpringFeature(_focusPartId, feature.id, spring);
       await _refreshFeatures();
       await _refreshMesh();
     });
@@ -14709,6 +14856,19 @@ class _PartScreenState extends State<PartScreen> {
       // _confirmSplit/_cancelSplit instead.
       final opened = _openSplitPanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'spring') {
+      // Owner's request (a Spring feature): reopens [SpringPanel] on its numbers, as the Helix
+      // branch below; rollback ends once the sheet closes.
+      await _openSpringForEdit(feature);
+      if (!mounted) return;
+      await _endRollback();
+    } else if (feature.type == 'curve' && feature.curveType == 'helix') {
+      // Bug report ("unable to edit helix definition"): reopens [CurvePanel] on the Helix's stored
+      // values. A modal sheet like the create flow, so (like the Sketch/gear branches) rollback ends
+      // once it closes; any Sweep using the Helix rebuilds against the new curve.
+      await _openHelixForEdit(feature);
+      if (!mounted) return;
+      await _endRollback();
     } else if (_gearFamilyFeatureTypes.contains(feature.type)) {
       // Gear-tree UX: GearFeature/RackFeature/BevelGearFeature/
       // BevelPairFeature/GearChainFeature/PlanetaryGearFeature are built
@@ -26093,7 +26253,7 @@ class _BuildingGeometryOverlay extends StatelessWidget {
           const SizedBox(width: 12),
           Flexible(
             child: Text(
-              'Building geometry - complex gears can take a while...',
+              'Building geometry - complex models can take a while...',
               style: theme.textTheme.bodyMedium,
             ),
           ),

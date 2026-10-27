@@ -18,6 +18,7 @@ from app.document.models import (
     PlaneType,
     Produces,
     RackType,
+    SpringEnd,
     RevolveMode,
     SpiralBevelHand,
     SubShapeType,
@@ -819,10 +820,19 @@ class HelixSegmentSchema(BaseModel):
     turns: float
 
 
+class HelixPitchPointSchema(BaseModel):
+    """A variable-pitch helix's `pitch` at axial distance `at` from its start (`HelixPitchPoint`)."""
+
+    at: float
+    pitch: float
+
+
 class CurveFeatureCreate(BaseModel):
     """Creates a `CurveFeature` - exactly one combination of fields should
     be supplied, matching `curve_type`:
-    - `HELIX`: `axis_ref`, `radius`, `segments` (at least one `{pitch, turns}`), `right_handed`,
+    - `HELIX`: `axis_ref`, `radius`, `right_handed`, the pitch as either `segments` (at least one
+      `{pitch, turns}`) or `pitch_points` (at least two `{at, pitch}`, `at` from 0 increasing - the
+      pitch varies smoothly between them; the helix is as tall as the last `at`),
       and optionally a taper: `end_radius` *or* `taper_angle_degrees` (not both; the angle is
       converted to `end_radius = radius + height * tan(angle)`, positive widening along the helix).
     - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`,
@@ -837,6 +847,7 @@ class CurveFeatureCreate(BaseModel):
     end_radius: float | None = None
     taper_angle_degrees: float | None = None
     segments: list[HelixSegmentSchema] = []
+    pitch_points: list[HelixPitchPointSchema] = []
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] = []
@@ -854,7 +865,9 @@ class CurveFeatureUpdate(BaseModel):
     # An explicit null clears the taper (constant radius); omitting keeps the current one.
     end_radius: float | None = None
     taper_angle_degrees: float | None = None
+    # Either pitch form replaces the other: sending one clears the other.
     segments: list[HelixSegmentSchema] | None = None
+    pitch_points: list[HelixPitchPointSchema] | None = None
     right_handed: bool | None = None
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] | None = None
@@ -872,8 +885,12 @@ class CurveFeatureResponse(FeatureResponseBase):
     end_radius: float | None = None
     taper_angle_degrees: float | None = None
     segments: list[HelixSegmentSchema] = []
-    # Sum of pitch x turns over the segments (signed like the pitch); null for an intersection curve.
+    pitch_points: list[HelixPitchPointSchema] = []
+    # The height along the axis (signed like the pitch): sum of pitch x turns over the segments, or
+    # the last pitch point's `at`; null for an intersection curve.
     total_height: float | None = None
+    # How many turns the helix makes (for pitch points, worked out from the pitch); null if not a helix.
+    total_turns: float | None = None
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRefSchema] = []
@@ -1913,6 +1930,55 @@ class GearFeatureResponse(FeatureResponseBase):
     warnings: list[str] = []
 
 
+class SpringFeatureCreate(BaseModel):
+    """Creates a `SpringFeature`: a helical compression spring as one solid Body. `plane_ref` as the
+    gears' (optional, the XY plane by default): its normal is the axis, its origin the base centre.
+    Lengths in mm; `mean_diameter` through the wire centre; `active_coils` excludes a closed end's
+    dead coil."""
+
+    plane_ref: PlaneRefSchema | None = None
+    mean_diameter: float
+    wire_diameter: float
+    free_length: float
+    active_coils: float
+    start_end: SpringEnd = SpringEnd.CLOSED_GROUND
+    finish_end: SpringEnd = SpringEnd.CLOSED_GROUND
+    right_handed: bool = True
+
+
+class SpringFeatureUpdate(BaseModel):
+    """Partial update, same omitted-vs-current-value convention as `RackFeatureUpdate`."""
+
+    plane_ref: PlaneRefSchema | None = None
+    mean_diameter: float | None = None
+    wire_diameter: float | None = None
+    free_length: float | None = None
+    active_coils: float | None = None
+    start_end: SpringEnd | None = None
+    finish_end: SpringEnd | None = None
+    right_handed: bool | None = None
+
+
+class SpringFeatureResponse(FeatureResponseBase):
+    type: Literal["spring"] = "spring"
+    id: str
+    plane_ref: PlaneRefSchema
+    mean_diameter: float
+    wire_diameter: float
+    free_length: float
+    active_coils: float
+    start_end: SpringEnd
+    finish_end: SpringEnd
+    right_handed: bool
+    # Worked out from the numbers (`app.document.spring.spring_layout`); null if they make no spring.
+    active_pitch: float | None = None
+    total_coils: float | None = None
+    # The shortest free length these coils allow (closed up solid).
+    solid_length: float | None = None
+    locked: bool
+    produces: Produces
+
+
 class RackFeatureCreate(BaseModel):
     """`docs/gear-design/03-rack.md`: creates a `RackFeature` - a standalone
     linear trapezoidal-tooth rack over `tooth_count` teeth, no backing
@@ -2947,6 +3013,7 @@ FeatureResponse = Union[
     ImportFeatureResponse,
     GearFeatureResponse,
     RackFeatureResponse,
+    SpringFeatureResponse,
     LoftFeatureResponse,
     BevelGearFeatureResponse,
     BevelPairFeatureResponse,

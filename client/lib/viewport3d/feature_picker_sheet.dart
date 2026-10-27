@@ -41,6 +41,9 @@ enum FeaturePickerAction {
   // in the same family, not with "Reference" (Plane) or "Surfacing".
   helix,
   intersectionCurve,
+  // A Spring (a compression spring as one Body, from its numbers) - next to Helix, its nearest
+  // relative; `part_screen.dart`'s `_startSpring` opens [SpringPanel].
+  spring,
   // A Fill Surface (grouped with "Surfacing" - it produces a Surface, same
   // as every other entry there) - opens [FillSurfacePanel] from whatever
   // 2-4 boundary-capable entities (Sketch lines/arcs/circles/ellipses/
@@ -167,6 +170,11 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
                                 icon: 'assets/icons/feature/feature_sweep.svg',
                                 label: 'Intersection Curve',
                                 action: FeaturePickerAction.intersectionCurve,
+                              ),
+                              _FeatureEntry(
+                                icon: 'assets/icons/feature/feature_spring.svg',
+                                label: 'Spring',
+                                action: FeaturePickerAction.spring,
                               ),
                             ],
                           ),

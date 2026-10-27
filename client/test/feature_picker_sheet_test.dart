@@ -73,6 +73,12 @@ void main() {
       expect(await pendingResult, FeaturePickerAction.revolve);
     });
 
+    testWidgets('Spring resolves FeaturePickerAction.spring', (tester) async {
+      await openSheet(tester);
+      await expandAndTap(tester, 'Sketch-based', 'Spring');
+      expect(await pendingResult, FeaturePickerAction.spring);
+    });
+
     testWidgets('Sweep resolves FeaturePickerAction.sweep', (tester) async {
       await openSheet(tester);
       await expandAndTap(tester, 'Sketch-based', 'Sweep');

@@ -82,6 +82,7 @@ from app.document.models import (
     RigidTransform,
     PlanetaryGearFeature,
     RackFeature,
+    SpringFeature,
     RackType,
     ResolvedPlane,
     RevolveFeature,
@@ -1794,6 +1795,12 @@ def resolve_feature_tool_shape(
         solid, _warnings = resolve_loft_from_bodies(feature, part, bodies, excluded_feature_ids)
         return solid, feature.target_body_ids, feature.mode == LoftMode.CUT
 
+    if isinstance(feature, SpringFeature):
+        # Always a new Body of its own (no Boss-into / Cut); raises a structured 422 on failure.
+        from app.document.spring import resolve_spring_from_bodies
+
+        return resolve_spring_from_bodies(feature, part, bodies, excluded_feature_ids), [], False
+
     return None
 
 
@@ -2720,6 +2727,25 @@ def _apply_feature_to_bodies_impl(
             ):
                 raise
             logger.warning("Skipping RackFeature %s: could not be resolved", feature.id)
+            return
+        if result is None:
+            return
+        solid, target_body_ids, is_cut = result
+        _apply_boss_or_cut(bodies, feature.id, feature_index, is_cut, target_body_ids, solid)
+        return
+
+    if isinstance(feature, SpringFeature):
+        # Mirrors the RackFeature branch just above: a spring whose numbers no longer make one (or
+        # whose sweep fails) is skipped, anything else (a missing plane) fails the request.
+        try:
+            result = resolve_feature_tool_shape(part, bodies, feature.id, excluded_feature_ids)
+        except HTTPException as exc:
+            if not isinstance(exc.detail, dict) or exc.detail.get("type") not in (
+                "invalid_spring_parameters",
+                "spring_failed",
+            ):
+                raise
+            logger.warning("Skipping SpringFeature %s: could not be resolved", feature.id)
             return
         if result is None:
             return
