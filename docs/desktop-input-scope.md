@@ -15,7 +15,7 @@ has the same gaps.
 |---|---|---|---|
 | D1 | Middle/right mouse drags navigate in every mode (SOLIDWORKS bindings), one cursor, scroll-scaled wheel zoom | Done (not merged; unit and widget tested, the 3D viewport test skips without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
 | D2 | Orbit about the geometry under the cursor, mouse box select on drag (window / crossing, Ctrl adds), middle double-click fit, SOLIDWORKS click selection for a mouse | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
-| D3-D7 | | Not started (D7 needs the owner's go-ahead) | |
+| D3-D7 | | Not started | |
 
 Update this table with every milestone.
 
@@ -278,7 +278,7 @@ Don't decide by platform (DeX reports Android). Decide by **window size** and **
 | D4 | R4: right-click popups via `showActionSheet(position:)` | small-medium | One helper, then each call site. |
 | D5 | R1d presets + settings, R6 polish | small | |
 | D6 | R5: `InputModality`, the full desktop layout ≥ 1000 dp | large | The owner wants "a full desktop CAD experience" from a docked phone. Scope it separately (it touches every screen). |
-| D7 | 3D box select of faces, edges, vertices, bodies and components (part and assembly), mouse and touch | medium | **A revisit of a feature the owner parked** - needs the owner's go-ahead. See below. |
+| D7 | 3D box select (part and assembly): visible geometry only, edges by default, mouse drag and touch tap-hold-drag | medium | A revisit of a feature the owner parked in June; questions answered 27 Oct (below). |
 
 ### D7: 3D box select (revisit)
 
@@ -295,10 +295,19 @@ checked on the device, with no toolchain to test it first. Two things are differ
   geometry (`sketch/marquee_selection.dart`) on projected polylines.
 
 Rough shape: project each candidate's vertices/edge polylines/face outlines with `worldToScreen`; a window box takes what is wholly
-inside, a crossing box what touches; respect the selection filter; Ctrl adds. Open questions for the owner before building:
-whether hidden (back or occluded) geometry is picked (SOLIDWORKS picks through by default for edges; an occlusion test is more work),
-what a box picks by default in a part (SOLIDWORKS: edges; faces are usually clicked), and whether touch gets it too (the double-tap
--then-drag of the old attempt, or the long-press the sketch uses). Kept out of D5 because it is a feature, not polish, and out of D6
+inside, a crossing box what touches; respect the selection filter; Ctrl adds.
+
+**Owner's answers (27 Oct 2026):**
+
+1. **Hidden geometry is not picked** - only what the camera can see. So each candidate needs a visibility test (for an edge, sample
+   points along it and ray-test them against the shaded faces, the same face-occlusion rule `hitTestBodies` already applies to
+   clicks via `facesOccludeOtherHits`; wireframe/hidden-bodies modes have nothing to occlude).
+2. **Default target: edges.** A box picks edges unless the selection filter says otherwise (faces, vertices, bodies, components
+   when those filters are on).
+3. **Touch: tap and hold, then drag**, as the sketcher does (the 500 ms long-press on empty space; the old attempt's
+   double-tap-then-drag is not brought back).
+
+Approved to build after D3 (the owner said "start D3" with these answers). Kept out of D5 because it is a feature, not polish, and out of D6
 because it doesn't depend on the layout.
 
 D1 to D3 make DeX feel like a desktop CAD tool without touching the layout; D6 is what makes it look like one.
@@ -341,4 +350,4 @@ From D2 (none of it run on a device; the 3D viewport tests skip without a GPU):
    toggling.
 4. **Layout: up to a full desktop-style experience** - dock a phone and get a full desktop CAD app (D6, scoped on its own).
 5. Order as section 4: D1 → D2 → D3 → D4 → D5, D6 scoped separately.
-6. **Open (27 Oct 2026):** whether to revisit 3D box select (D7) and, if so, the questions under D7 in section 4.
+6. **3D box select (D7), 27 Oct 2026:** revisit it after D3; visible geometry only, edges by default, touch is tap-hold-drag.
