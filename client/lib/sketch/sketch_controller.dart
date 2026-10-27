@@ -4706,6 +4706,25 @@ class SketchController extends ChangeNotifier {
     return _patternMirrorEntityAt(cursorX, cursorY, radius);
   }
 
+  /// Desktop input D4: a right click's selection rule (SOLIDWORKS) - the
+  /// entity under the cursor ([hoveredEntity]) is selected, replacing the
+  /// selection, unless it is already in it (then the selection stays, so a
+  /// menu for several selected entities acts on all of them). Returns the
+  /// entity, or null over empty canvas, in a draw tool, or on the origin
+  /// (which is never selectable).
+  SketchSelection? selectUnderCursorForContextMenu([double? pixelsPerUnit]) {
+    final hit = hoveredEntity(pixelsPerUnit);
+    if (hit == null) return null;
+    if (hit.kind == SelectionKind.point && hit.id == _originPointId) return null;
+    if (!_selectionSet.any((s) => s.sameAs(hit))) {
+      final saved = selectClick;
+      selectClick = SelectClick.replace;
+      selectEntity(hit);
+      selectClick = saved;
+    }
+    return hit;
+  }
+
   Timer? _centerRevealHideTimer;
   String? _revealedShapeCenterPointId;
 

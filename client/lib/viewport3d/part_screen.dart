@@ -63,6 +63,7 @@ import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
 import '../vr_pairing/headset_pairing_screen.dart';
+import 'action_sheet.dart';
 import 'add_button_menu.dart';
 import 'assembly_tree_panel.dart';
 import 'body_naming.dart';
@@ -139,6 +140,7 @@ import 'tree_multi_select_controller.dart';
 import 'sweep_panel.dart';
 import 'svg_icon.dart';
 import 'scene_preferences.dart';
+import 'viewport_context_menus.dart';
 import 'view_preferences.dart';
 
 /// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
@@ -5107,6 +5109,23 @@ class _PartScreenState extends State<PartScreen> {
         _componentPatternSaving = false;
         _componentPatternError = e.message;
       });
+    }
+  }
+
+  /// Desktop input D4: a right click on a Patterns-section row. Touch's
+  /// long-press goes straight to the delete confirmation; a mouse menu
+  /// offers Edit (a tap's action) and Delete (the long-press's) by name.
+  Future<void> _onPatternContextMenu(ComponentPatternDto pattern, Offset at) async {
+    final action = await showContextMenu<MateContextMenuAction>(context, at: at, const [
+      ActionSheetEntry(action: MateContextMenuAction.edit, label: 'Edit', icon: Icons.edit_outlined),
+      ActionSheetEntry(action: MateContextMenuAction.delete, label: 'Delete', icon: Icons.delete_outline),
+    ]);
+    if (!mounted || action == null) return;
+    switch (action) {
+      case MateContextMenuAction.edit:
+        _openComponentPatternForEdit(pattern);
+      case MateContextMenuAction.delete:
+        await _confirmDeleteComponentPattern(pattern);
     }
   }
 
@@ -13182,8 +13201,8 @@ class _PartScreenState extends State<PartScreen> {
   /// the plane highlight once it's dismissed either way (action taken or
   /// just swiped away) - the highlight is only meant to last while the sheet
   /// is open.
-  Future<void> _showPlaneContextSheet(ReferencePlaneKind plane) async {
-    final action = await showPlaneContextSheet(context, plane: plane);
+  Future<void> _showPlaneContextSheet(ReferencePlaneKind plane, {Offset? at}) async {
+    final action = await showPlaneContextSheet(context, plane: plane, at: at);
     if (!mounted) return;
     setState(() => _selectedPlane = null);
     if (action == PlaneContextSheetAction.newSketch) {
@@ -13213,8 +13232,8 @@ class _PartScreenState extends State<PartScreen> {
   /// long-press menu already offers, since a created Plane is just another
   /// Feature that may have Sketches (and their own downstream Extrudes)
   /// depending on it.
-  Future<void> _showCreatePlaneContextSheet(String featureId) async {
-    final action = await showCreatePlaneContextSheet(context, featureId: featureId);
+  Future<void> _showCreatePlaneContextSheet(String featureId, {Offset? at}) async {
+    final action = await showCreatePlaneContextSheet(context, featureId: featureId, at: at);
     if (!mounted) return;
     setState(() => _selectedCreatePlaneFeatureId = null);
     if (action == CreatePlaneContextSheetAction.newSketch) {
@@ -13222,6 +13241,119 @@ class _PartScreenState extends State<PartScreen> {
     } else if (action == CreatePlaneContextSheetAction.delete) {
       final feature = _featureById(featureId);
       if (feature != null) await _cascadeDeleteFeature(feature);
+    }
+  }
+
+  /// Desktop input D4 (`docs/desktop-input-scope.md` section 4):
+  /// [PartViewport.onContextMenuRequested] - a mouse right click without a
+  /// drag. Picks the menu from what is under it: a component gets the
+  /// component menu, a plane its sheet as a popup, a face / edge / vertex /
+  /// body the SOLIDWORKS-style geometry menu, empty space the view menu.
+  /// The click selects what it is on first unless that is already selected
+  /// ([_selectForContextMenu]).
+  Future<void> _onViewportContextMenu(HoverHit? hit, Offset at) async {
+    if (_busy || _planeSelectionMode || _confirmingSketchOrientation) return;
+    final entity = hit?.entity;
+    if (entity == null) return _showViewContextMenu(at);
+    switch (entity.kind) {
+      case SelectionEntityKind.component:
+        final index = _occurrences.indexWhere((o) => o.id == entity.occurrenceId);
+        if (index == -1) return _showViewContextMenu(at);
+        return _onOccurrenceLongPress(_occurrences[index], at: at);
+      case SelectionEntityKind.referencePlane:
+        final plane = entity.referencePlaneKind;
+        if (plane == null) return _showViewContextMenu(at);
+        setState(() {
+          _selectedPlane = plane;
+          _featureTreeVisible = false;
+        });
+        return _showPlaneContextSheet(plane, at: at);
+      case SelectionEntityKind.createPlane:
+        setState(() {
+          _selectedCreatePlaneFeatureId = entity.planeFeatureId;
+          _featureTreeVisible = false;
+        });
+        return _showCreatePlaneContextSheet(entity.planeFeatureId, at: at);
+      case SelectionEntityKind.face:
+      case SelectionEntityKind.edge:
+      case SelectionEntityKind.vertex:
+      case SelectionEntityKind.body:
+        return _showGeometryContextMenu(entity, at);
+      default:
+        return _showViewContextMenu(at);
+    }
+  }
+
+  Future<void> _showGeometryContextMenu(SelectionEntityRef entity, Offset at) async {
+    final viewport = _viewportKey.currentState;
+    if (viewport == null) return;
+    _selectForContextMenu(entity);
+    final toolOpen = _anyToolSessionActive;
+    final kind = entity.kind;
+    final feature = entity.occurrenceId.isEmpty && entity.bodyId.isNotEmpty ? _featureById(baseFeatureId(entity.bodyId)) : null;
+    final action = await showGeometryContextMenu(
+      context,
+      at: at,
+      canSelectOther: viewport.hasSelectOtherCandidatesAt(at),
+      canNormalTo: viewport.planarFaceNormal(entity) != null,
+      canMeasure: !toolOpen && kind != SelectionEntityKind.body,
+      measureDisabledReason: toolOpen ? 'Close the open tool first' : 'Pick a face, edge or vertex',
+      canAppearance: !toolOpen && (kind == SelectionEntityKind.face || kind == SelectionEntityKind.body),
+      bodyHidden: feature == null ? null : _hiddenFeatureIds.contains(feature.id),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case GeometryMenuAction.selectOther:
+        viewport.selectOtherAtGlobal(at);
+      case GeometryMenuAction.zoomToSelection:
+        viewport.zoomToEntities(_selectedEntities.contains(entity) ? _selectedEntities : {entity});
+      case GeometryMenuAction.normalTo:
+        unawaited(viewport.animateToFaceNormal(entity));
+      case GeometryMenuAction.measure:
+        _openMeasure();
+        setState(() => _selectedEntities = {entity});
+        _scheduleMeasureQuery();
+      case GeometryMenuAction.appearance:
+        final path = entity.occurrenceId.isEmpty
+            ? (_focusStack?.currentOccurrencePath ?? const <String>[])
+            : splitPath(entity.occurrenceId);
+        await _openAppearance(
+          pick: _PaintPick(
+            path: path,
+            bodyId: entity.bodyId.isEmpty ? null : entity.bodyId,
+            faceIndex: kind == SelectionEntityKind.face ? entity.id : null,
+            label: _paintPickLabel(path),
+          ),
+        );
+      case GeometryMenuAction.toggleBodyVisibility:
+        if (feature != null) await _toggleFeatureVisibility(feature);
+      case GeometryMenuAction.assignMaterial:
+        await _assignMaterialToBody(entity.bodyId);
+    }
+  }
+
+  Future<void> _showViewContextMenu(Offset at) async {
+    final viewport = _viewportKey.currentState;
+    if (viewport == null) return;
+    final action = await showViewContextMenu(
+      context,
+      at: at,
+      isPerspective: _isPerspective,
+      referencePlanesHidden: _referencePlanesHidden,
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case ViewMenuAction.zoomToFit:
+        viewport.zoomToFit();
+      case ViewMenuAction.standardViews:
+        final view = await showStandardViewsMenu(context, at: at);
+        if (mounted && view != null) unawaited(viewport.animateToStandardView(view));
+      case ViewMenuAction.togglePerspective:
+        await _onPerspectiveChanged(!_isPerspective);
+      case ViewMenuAction.toggleReferencePlanes:
+        _onToggleReferencePlanes();
+      case ViewMenuAction.resetView:
+        viewport.resetView();
     }
   }
 
@@ -14877,14 +15009,16 @@ class _PartScreenState extends State<PartScreen> {
   /// produced it via [baseFeatureId] (`body_naming.dart`) since Hide/Show is
   /// always Feature-scoped. Defensive no-op if that Feature can no longer be
   /// found (a stale [bodyId] from a mesh response that's since changed).
-  Future<void> _onBodyLongPress(String bodyId) async {
+  Future<void> _onBodyLongPress(String bodyId, {Offset? at}) async {
     if (_busy) return;
     final feature = _featureById(baseFeatureId(bodyId));
     if (feature == null) return;
+    if (at != null) _selectForContextMenu(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId));
 
     final action = await showBodyContextMenu(
       context,
       isHidden: _hiddenFeatureIds.contains(feature.id),
+      at: at,
     );
     if (!mounted || action == null) return;
 
@@ -14951,14 +15085,16 @@ class _PartScreenState extends State<PartScreen> {
   /// [_onBodyLongPress]'s Surfaces-section counterpart - same context-menu
   /// Hide/Show flow, resolved back to the owning `SurfaceFeature` via
   /// [baseFeatureId] exactly like a Body row does.
-  Future<void> _onSurfaceLongPress(String surfaceId) async {
+  Future<void> _onSurfaceLongPress(String surfaceId, {Offset? at}) async {
     if (_busy) return;
     final feature = _featureById(baseFeatureId(surfaceId));
     if (feature == null) return;
+    if (at != null) _selectForContextMenu(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: surfaceId));
 
     final action = await showBodyContextMenu(
       context,
       isHidden: _hiddenFeatureIds.contains(feature.id),
+      at: at,
     );
     if (!mounted || action == null) return;
 
@@ -14994,6 +15130,37 @@ class _PartScreenState extends State<PartScreen> {
     final feature = _featureById(baseFeatureId(curveId));
     if (feature == null) return;
     await _toggleFeatureVisibility(feature);
+  }
+
+  /// Desktop input D4: a right click on a Curves-section row. The touch
+  /// long-press toggles Hide/Show with no menu; a right click is expected
+  /// to open one, so it offers that one action.
+  Future<void> _onCurveContextMenu(String curveId, Offset at) async {
+    if (_busy) return;
+    final feature = _featureById(baseFeatureId(curveId));
+    if (feature == null) return;
+    _selectForContextMenu(SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: curveId));
+    final hidden = _hiddenFeatureIds.contains(feature.id);
+    final action = await showContextMenu<BodyContextMenuAction>(context, at: at, [
+      ActionSheetEntry(
+        action: BodyContextMenuAction.toggleVisibility,
+        label: hidden ? 'Show' : 'Hide',
+        icon: hidden ? Icons.visibility : Icons.visibility_off,
+      ),
+    ]);
+    if (!mounted || action == null) return;
+    await _toggleFeatureVisibility(feature);
+  }
+
+  /// Desktop input D4 (`docs/desktop-input-scope.md` section 4): the
+  /// SOLIDWORKS rule for a right click - on something that isn't selected,
+  /// it selects it first (as a plain click would); on something already in
+  /// the selection, the selection stays. While a tool is open and gathering
+  /// picks a right click must not add one, so it only opens the menu.
+  void _selectForContextMenu(SelectionEntityRef entity) {
+    if (_selectedEntities.contains(entity) || _anyToolSessionActive) return;
+    _selectClick = SelectClick.replace;
+    _toggleSelectedEntity(entity);
   }
 
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
@@ -15479,7 +15646,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Delete without reworking this entry point. Stage 9 adds Extrude,
   /// gated on a closed-profile check run once here (on menu open), not on
   /// every render - only a SketchFeature even offers the entry at all.
-  Future<void> _onFeatureLongPress(FeatureDto feature) async {
+  Future<void> _onFeatureLongPress(FeatureDto feature, {Offset? at}) async {
     if (_busy) return;
 
     final isSketchFeature = feature.type == 'sketch';
@@ -15540,6 +15707,7 @@ class _PartScreenState extends State<PartScreen> {
       // Boolean family, fourth/last entry: same gate as [showMerge]/
       // [showSubtract]/[showCommon] exactly.
       showSplit: _bodyProducingFeatureTypes.contains(feature.type),
+      at: at,
     );
     if (!mounted || action == null) return;
 
@@ -22659,7 +22827,7 @@ class _PartScreenState extends State<PartScreen> {
   /// opens [_openComponentPattern] - unlike Mate, this *does* use `occurrence`'s own
   /// pre-selection directly, since a ComponentPattern's source genuinely is
   /// "the whole component that was long-pressed."
-  Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence) async {
+  Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence, {Offset? at}) async {
     // Bug fix ("selecting a component doesn't highlight it in 3D"): same
     // `_selectedEntities` population as `_onOccurrenceTap`'s own identical
     // fix, so a long-press-selected component highlights too.
@@ -22687,7 +22855,7 @@ class _PartScreenState extends State<PartScreen> {
     // toolbar for the lifetime of this modal sheet so the two never render
     // (and so collide, e.g. in a `find.text('Fix')` widget test) at once.
     setState(() => _componentContextMenuOpen = true);
-    final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden, fixed: fixed);
+    final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden, fixed: fixed, at: at);
     if (mounted) setState(() => _componentContextMenuOpen = false);
     if (!mounted || action == null) return;
     switch (action) {
@@ -22792,9 +22960,9 @@ class _PartScreenState extends State<PartScreen> {
   /// row first (same "select, then offer more" precedence
   /// [_onOccurrenceLongPress]'s own doc comment already documents), then
   /// [showMateContextMenu]'s own two actions.
-  Future<void> _onMateLongPress(MateDto mate) async {
+  Future<void> _onMateLongPress(MateDto mate, {Offset? at}) async {
     _onMateTap(mate);
-    final action = await showMateContextMenu(context);
+    final action = await showMateContextMenu(context, at: at);
     if (!mounted || action == null) return;
     switch (action) {
       case MateContextMenuAction.edit:
@@ -23943,6 +24111,8 @@ class _PartScreenState extends State<PartScreen> {
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
                   onSelectClick: (click) => _selectClick = click,
+                  // Desktop input D4: a right click without a drag.
+                  onContextMenuRequested: (hit, at) => unawaited(_onViewportContextMenu(hit, at)),
                   onClearSelection: _clearSelectedEntities,
                   onSelectOtherRequested: _handleSelectOtherRequested,
                   highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,
@@ -24251,6 +24421,12 @@ class _PartScreenState extends State<PartScreen> {
                     // [_multiSelectMore]).
                     onFeatureLongPress: (feature) =>
                         _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.feature(feature.id)),
+                    // Desktop input D4: a right click opens the row's menu
+                    // directly at the cursor (touch reaches it via "More").
+                    onFeatureContextMenu: (feature, at) => unawaited(_onFeatureLongPress(feature, at: at)),
+                    onBodyContextMenu: (bodyId, at) => unawaited(_onBodyLongPress(bodyId, at: at)),
+                    onSurfaceContextMenu: (surfaceId, at) => unawaited(_onSurfaceLongPress(surfaceId, at: at)),
+                    onCurveContextMenu: (curveId, at) => unawaited(_onCurveContextMenu(curveId, at)),
                     isMultiSelectMode: _buildMultiSelect.active,
                     selectedMultiSelectIds: _buildMultiSelect.selectedIds,
                     onMultiSelectToggle: (key) => _toggleMultiSelectMember(_buildMultiSelect, key),
@@ -24496,6 +24672,11 @@ class _PartScreenState extends State<PartScreen> {
                     },
                     onMateTap: _onMateTap,
                     onMateLongPress: _onMateLongPress,
+                    // Desktop input D4: a right click opens the row's menu at
+                    // the cursor.
+                    onOccurrenceContextMenu: (occurrence, at) => unawaited(_onOccurrenceLongPress(occurrence, at: at)),
+                    onMateContextMenu: (mate, at) => unawaited(_onMateLongPress(mate, at: at)),
+                    onPatternContextMenu: (pattern, at) => unawaited(_onPatternContextMenu(pattern, at)),
                     selectedMateId: _selectedMateId,
                     onPatternTap: _openComponentPatternForEdit,
                     onPatternLongPress: _confirmDeleteComponentPattern,

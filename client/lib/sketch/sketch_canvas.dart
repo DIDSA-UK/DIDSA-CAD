@@ -71,6 +71,13 @@ class SketchCanvas extends StatefulWidget {
   /// current render size.
   final void Function(Offset panOffset, double zoom, Size canvasSize)? onViewportChanged;
 
+  /// Desktop input D4: fired when a mouse right click ends without a drag.
+  /// [hit] is the entity under it, already selected by the SOLIDWORKS rule
+  /// ([SketchController.selectUnderCursorForContextMenu]), or null over
+  /// empty canvas (or outside select mode); [globalPosition] is where the
+  /// menu goes. Never fired for a touch.
+  final void Function(SketchSelection? hit, Offset globalPosition)? onContextMenuRequested;
+
   static const Color defaultColor = Color(0xFFF2F2F2);
 
   const SketchCanvas({
@@ -84,6 +91,7 @@ class SketchCanvas extends StatefulWidget {
     this.canvasColor = defaultColor,
     this.canvasOpacity = 1.0,
     this.onViewportChanged,
+    this.onContextMenuRequested,
   });
 
   @override
@@ -109,6 +117,12 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
   /// middle button's orbit pans here.
   Offset? _mouseNavAnchor;
   MouseNavAction? _mouseNavAction;
+
+  /// Desktop input D4: whether the current middle/right press is the right
+  /// button alone, and how far it has travelled - a right release under the
+  /// tap slop is a click and asks for a context menu (a drag pans, D1).
+  bool _mouseNavIsSecondary = false;
+  double _mouseNavTravel = 0;
 
   /// Desktop input D2: a left mouse press on blank canvas in select mode,
   /// waiting to see whether it drags - past the tap threshold it becomes a
@@ -786,6 +800,8 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
         return;
       }
       _mouseNavAnchor = event.localPosition;
+      _mouseNavIsSecondary = event.buttons == kSecondaryMouseButton;
+      _mouseNavTravel = 0;
       return;
     }
     // Desktop input D2: how this press's select click applies (a mouse
@@ -863,6 +879,7 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
     if (event.kind == PointerDeviceKind.mouse) {
       final navAction = mouseNavActionForEvent(event);
       if (navAction != null) {
+        _mouseNavTravel += event.delta.distance;
         // Panning never itself touches the cursor's sketch-space position
         // (see SketchController's class doc comment) - it may simply drift
         // off-canvas as a result, which is fine: the crosshair just stops
@@ -920,6 +937,19 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
     _applyPinchPan(before, _activeTouches, size);
   }
 
+  /// Desktop input D4: a right click without a drag. The cursor goes where
+  /// the click was; in select mode an entity under it is selected (unless
+  /// already selected) and handed to [SketchCanvas.onContextMenuRequested],
+  /// else the hit is null and the screen shows the empty-canvas menu.
+  void _requestContextMenu(PointerEvent event, ViewTransform transform) {
+    final callback = widget.onContextMenuRequested;
+    if (callback == null) return;
+    final controller = widget.controller;
+    controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+    final hit = controller.mode == SketchMode.select ? controller.selectUnderCursorForContextMenu(transform.pixelsPerUnit) : null;
+    callback(hit, event.position);
+  }
+
   void _handlePointerEnd(PointerEvent event, ViewTransform transform) {
     if (_marqueeActive) {
       _activeTouches.remove(event.pointer);
@@ -933,7 +963,10 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
     if (event.kind == PointerDeviceKind.mouse) {
       _mouseMarqueeDownScreen = null;
       _mouseNavAnchor = null;
+      final isContextClick = event is PointerUpEvent && _mouseNavIsSecondary && _mouseNavTravel <= kTouchSlop;
+      _mouseNavIsSecondary = false;
       if (_mouseNavAction != null) setState(() => _mouseNavAction = null);
+      if (isContextClick) _requestContextMenu(event, transform);
       return;
     }
 

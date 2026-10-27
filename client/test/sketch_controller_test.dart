@@ -12990,6 +12990,59 @@ void main() {
     );
   });
 
+  group('desktop input D4: a right click selects what is under it unless it is already selected', () {
+    Future<(SketchLineView, SketchLineView)> placeTwoLines() async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(5, 5);
+      await controller.handleCanvasTap(15, 5);
+      controller.finishChain();
+      final first = controller.lines.values.first;
+      await controller.handleCanvasTap(50, 50);
+      await controller.handleCanvasTap(60, 50);
+      controller.finishChain();
+      final second = controller.lines.values.last;
+      controller.exitToSelectMode();
+      return (first, second);
+    }
+
+    Set<String> selectedLineIds() => {
+          for (final s in controller.selectionSet)
+            if (s.kind == SelectionKind.line) s.id,
+        };
+
+    test('an unselected entity replaces the selection and the click rule is left as it was', () async {
+      final (first, second) = await placeTwoLines();
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: second.id));
+      expect(selectedLineIds(), {second.id});
+
+      controller.selectClick = SelectClick.touch;
+      controller.moveCursorToSketchPoint(10, 5);
+      final hit = controller.selectUnderCursorForContextMenu();
+      expect(hit?.id, first.id);
+      expect(selectedLineIds(), {first.id}, reason: 'a right click on something unselected replaces the selection');
+      expect(controller.selectClick, SelectClick.touch);
+    });
+
+    test('an entity already in the selection keeps the whole selection', () async {
+      final (first, second) = await placeTwoLines();
+      controller.selectInRect(const Rect.fromLTRB(0, 0, 100, 100), crossing: true);
+
+      controller.moveCursorToSketchPoint(55, 50);
+      final hit = controller.selectUnderCursorForContextMenu();
+      expect(hit?.id, second.id);
+      expect(selectedLineIds(), {first.id, second.id});
+    });
+
+    test('empty canvas returns null and leaves the selection alone', () async {
+      final (first, _) = await placeTwoLines();
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: first.id));
+
+      controller.moveCursorToSketchPoint(200, 200);
+      expect(controller.selectUnderCursorForContextMenu(), isNull);
+      expect(selectedLineIds(), {first.id});
+    });
+  });
+
   group('desktop input D2: crossing / additive box select and mouse click rules', () {
     Future<(SketchLineView, SketchLineView)> placeTwoLines() async {
       controller.selectDrawTool(SketchTool.line);

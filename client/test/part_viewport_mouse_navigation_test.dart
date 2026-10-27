@@ -150,5 +150,134 @@ void main() {
     await tester.pump();
     expect(clicks.last, SelectClick.touch);
   });
+
+  testWidgets(
+    'desktop input D4: a right click without a drag asks for a context menu with what is under it; a drag, a middle click and a touch do not',
+    (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      final requests = <(HoverHit?, Offset)>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SizedBox(
+              width: 400,
+              height: 400,
+              child: PartViewport(
+                key: key,
+                bodies: [_triangle],
+                selectedPlane: null,
+                onPlaneTap: (_) {},
+                onBackgroundTap: () {},
+                onContextMenuRequested: (hit, at) => requests.add((hit, at)),
+              ),
+            ),
+          ),
+        ),
+      );
+      if (!await _pumpUntilGpuReady(tester)) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      await tester.pump();
+
+      Future<void> click(Offset at, {int buttons = kSecondaryMouseButton, Offset drag = Offset.zero}) async {
+        final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: buttons);
+        await gesture.down(at);
+        await tester.pump();
+        if (drag != Offset.zero) {
+          await gesture.moveBy(drag);
+          await tester.pump();
+        }
+        await gesture.up();
+        await tester.pump();
+      }
+
+      // Over the body: the hit names it; far from it: null.
+      final origin = tester.getTopLeft(find.byType(PartViewport));
+      await click(origin + const Offset(200, 200));
+      await click(origin + const Offset(5, 5));
+      expect(requests.length, 2);
+      expect(requests[0].$2, origin + const Offset(200, 200), reason: 'the position is global, where the menu goes');
+      expect(requests[1].$1, isNull, reason: 'empty space has no hit');
+
+      requests.clear();
+      await click(origin + const Offset(200, 200), drag: const Offset(40, 0));
+      await click(origin + const Offset(200, 200), buttons: kMiddleMouseButton);
+      await tester.longPressAt(origin + const Offset(200, 200));
+      await tester.pump();
+      expect(requests, isEmpty);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('desktop input D4: zoom to selection frames a face, and Normal To only works for a flat face', (tester) async {
+    final key = GlobalKey<PartViewportState>();
+    final flat = BodyMeshDto(
+      bodyId: 'body-1',
+      source: 'computed',
+      mesh: MeshDto(
+        vertices: [
+          [0, 0, 0],
+          [10, 0, 0],
+          [0, 10, 0],
+        ],
+        normals: [
+          [0, 0, 1],
+          [0, 0, 1],
+          [0, 0, 1],
+        ],
+        triangleIndices: [
+          [0, 1, 2],
+        ],
+        faceIds: [0],
+        faceIsPlanar: [true],
+      ),
+    );
+    final curved = BodyMeshDto(
+      bodyId: 'body-2',
+      source: 'computed',
+      mesh: MeshDto(
+        vertices: flat.mesh.vertices,
+        normals: flat.mesh.normals,
+        triangleIndices: flat.mesh.triangleIndices,
+        faceIds: [0],
+        faceIsPlanar: [false],
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 400,
+            height: 400,
+            child: PartViewport(
+              key: key,
+              bodies: [flat, curved],
+              selectedPlane: null,
+              onPlaneTap: (_) {},
+              onBackgroundTap: () {},
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!await _pumpUntilGpuReady(tester)) {
+      markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+      return;
+    }
+    await tester.pump();
+    final state = key.currentState!;
+    const flatFace = SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'body-1', id: 0);
+    const curvedFace = SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'body-2', id: 0);
+
+    expect(state.planarFaceNormal(flatFace)!.z.abs(), closeTo(1, 1e-6));
+    expect(state.planarFaceNormal(curvedFace), isNull);
+
+    expect(state.zoomToEntities({flatFace}), isTrue);
+    expect(state.debugCameraTarget.x, closeTo(5, 1e-6), reason: 'centred on the face');
+    expect(state.zoomToEntities({const SelectionEntityRef(kind: SelectionEntityKind.sketchPoint)}), isFalse);
+    expect(tester.takeException(), isNull);
+  });
 }
 

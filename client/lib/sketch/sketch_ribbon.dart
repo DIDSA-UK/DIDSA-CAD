@@ -289,40 +289,43 @@ class SketchRibbon extends StatelessWidget {
     );
   }
 
-  String _svgAssetFor(ConstraintOptionType type) {
-    return switch (type) {
-      ConstraintOptionType.vertical => 'assets/icons/ribbon/ribbon_vertical.svg',
-      ConstraintOptionType.horizontal => 'assets/icons/ribbon/ribbon_horizontal.svg',
-      ConstraintOptionType.parallel => 'assets/icons/ribbon/ribbon_parallel.svg',
-      ConstraintOptionType.perpendicular => 'assets/icons/ribbon/ribbon_perpendicular.svg',
-      ConstraintOptionType.equalLength => 'assets/icons/ribbon/ribbon_equal_length.svg',
-      ConstraintOptionType.coincident => 'assets/icons/ribbon/ribbon_coincident.svg',
-      ConstraintOptionType.collinear => 'assets/icons/ribbon/ribbon_collinear.svg',
-      ConstraintOptionType.concentric => 'assets/icons/ribbon/ribbon_concentric.svg',
-      ConstraintOptionType.equalRadius => 'assets/icons/ribbon/ribbon_equal_radius.svg',
-      ConstraintOptionType.tangent => 'assets/icons/ribbon/ribbon_tangent.svg',
-      // P35: no dedicated ribbon glyph exists yet - reuses the same
-      // dimension-tool icon `SketchDimensionBar`'s own FAB entry point
-      // uses, since this button is a fast path into that exact tool (see
-      // [SketchController.addRadiusDimensionFor]'s own doc comment).
-      ConstraintOptionType.radius => 'assets/icons/actions/action_dimensions.svg',
-      // P45: same fast-path-into-Dimension-mode rationale as radius above.
-      ConstraintOptionType.diameter => 'assets/icons/actions/action_dimensions.svg',
-      // Point coincident to line/curve - no dedicated glyph yet, reuses the
-      // same "Coinc." icon the point-to-point row above uses, since both
-      // render the same "Coinc." label and express the same underlying
-      // relationship (this Point sits exactly on that geometry).
-      ConstraintOptionType.pointOnLine => 'assets/icons/ribbon/ribbon_coincident.svg',
-      ConstraintOptionType.pointOnCircle => 'assets/icons/ribbon/ribbon_coincident.svg',
-      ConstraintOptionType.pointOnEllipse => 'assets/icons/ribbon/ribbon_coincident.svg',
-      // Reuses the same padlock pair the sketchbar's own whole-sketch
-      // fully-constrained indicator already uses (see sketch_screen.dart) -
-      // one consistent "this can't move" visual language across both the
-      // per-Point Fix action here and the whole-sketch status glyph there.
-      ConstraintOptionType.fix => 'assets/icons/sketchbar/sketchbar_lock_full.svg',
-      ConstraintOptionType.unfix => 'assets/icons/sketchbar/sketchbar_lock_partial.svg',
-    };
-  }
+  String _svgAssetFor(ConstraintOptionType type) => sketchConstraintSvgAsset(type);
+}
+
+/// The ribbon glyph for a constraint chip (desktop input D4: the right-click menu reuses it).
+String sketchConstraintSvgAsset(ConstraintOptionType type) {
+  return switch (type) {
+    ConstraintOptionType.vertical => 'assets/icons/ribbon/ribbon_vertical.svg',
+    ConstraintOptionType.horizontal => 'assets/icons/ribbon/ribbon_horizontal.svg',
+    ConstraintOptionType.parallel => 'assets/icons/ribbon/ribbon_parallel.svg',
+    ConstraintOptionType.perpendicular => 'assets/icons/ribbon/ribbon_perpendicular.svg',
+    ConstraintOptionType.equalLength => 'assets/icons/ribbon/ribbon_equal_length.svg',
+    ConstraintOptionType.coincident => 'assets/icons/ribbon/ribbon_coincident.svg',
+    ConstraintOptionType.collinear => 'assets/icons/ribbon/ribbon_collinear.svg',
+    ConstraintOptionType.concentric => 'assets/icons/ribbon/ribbon_concentric.svg',
+    ConstraintOptionType.equalRadius => 'assets/icons/ribbon/ribbon_equal_radius.svg',
+    ConstraintOptionType.tangent => 'assets/icons/ribbon/ribbon_tangent.svg',
+    // P35: no dedicated ribbon glyph exists yet - reuses the same
+    // dimension-tool icon `SketchDimensionBar`'s own FAB entry point
+    // uses, since this button is a fast path into that exact tool (see
+    // [SketchController.addRadiusDimensionFor]'s own doc comment).
+    ConstraintOptionType.radius => 'assets/icons/actions/action_dimensions.svg',
+    // P45: same fast-path-into-Dimension-mode rationale as radius above.
+    ConstraintOptionType.diameter => 'assets/icons/actions/action_dimensions.svg',
+    // Point coincident to line/curve - no dedicated glyph yet, reuses the
+    // same "Coinc." icon the point-to-point row above uses, since both
+    // render the same "Coinc." label and express the same underlying
+    // relationship (this Point sits exactly on that geometry).
+    ConstraintOptionType.pointOnLine => 'assets/icons/ribbon/ribbon_coincident.svg',
+    ConstraintOptionType.pointOnCircle => 'assets/icons/ribbon/ribbon_coincident.svg',
+    ConstraintOptionType.pointOnEllipse => 'assets/icons/ribbon/ribbon_coincident.svg',
+    // Reuses the same padlock pair the sketchbar's own whole-sketch
+    // fully-constrained indicator already uses (see sketch_screen.dart) -
+    // one consistent "this can't move" visual language across both the
+    // per-Point Fix action here and the whole-sketch status glyph there.
+    ConstraintOptionType.fix => 'assets/icons/sketchbar/sketchbar_lock_full.svg',
+    ConstraintOptionType.unfix => 'assets/icons/sketchbar/sketchbar_lock_partial.svg',
+  };
 }
 
 /// Wraps [SketchController.deleteSelected] with a confirmation step

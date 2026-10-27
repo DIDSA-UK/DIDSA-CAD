@@ -1,6 +1,6 @@
 # Mouse, keyboard and big-screen use — scope
 
-**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1, D2 and D3 built on branch
+**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 to D4 built on branch
 `claude/flutter-desktop-mode-ui-pxmq0q` (Progress below). Written 26 Oct 2026 from a read of `client/lib` on `main` and the owner's first test on a Samsung phone in DeX (external monitor, mouse, keyboard): "reasonable, but needs
 polish and alignment with desktop CAD controls. Middle click drag to orbit; mouse cursors are on top of each other."
 
@@ -16,7 +16,8 @@ has the same gaps.
 | D1 | Middle/right mouse drags navigate in every mode (SOLIDWORKS bindings), one cursor, scroll-scaled wheel zoom | Done (not merged; unit and widget tested, the 3D viewport test skips without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
 | D2 | Orbit about the geometry under the cursor, mouse box select on drag (window / crossing, Ctrl adds), middle double-click fit, SOLIDWORKS click selection for a mouse | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
 | D3 | Keyboard shortcuts (part screen, sketch screen, mesh viewer), Enter / Esc for every tool panel, shortcut sheet, tooltip hints; mesh viewer fit; the part screen click rule as a tested function | Done (not merged; unit and widget tested, including the part screen and sketch screen; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
-| D4-D7 | | Not started | |
+| D4 | Right-click menus: one helper (popup for a mouse, sheet for touch), every tree row, 3D geometry / plane / component / empty-space menus, sketch entity and canvas menus | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
+| D5-D7 | | Not started | |
 
 Update this table with every milestone.
 
@@ -114,6 +115,61 @@ Update this table with every milestone.
   - **Part tool keys (S, E, V ...)**: the part tools open through guided multi-step flows (pick a sketch, a profile ...), so a key
     needs a decision per tool on where it lands - moved to D6, with the desktop toolbar.
   - **Tab order** through panel fields: not checked - D5 polish.
+
+### D4 implementation notes
+
+- **The helper** (`viewport3d/action_sheet.dart`): `showContextMenu<T>(context, entries, {Offset? at})`. With `at` (a mouse
+  right click's global position) it shows a `showMenu` popup there - icon (or a `leading` widget), label, the key hint at the right
+  edge (`ActionSheetEntry.shortcut`), a divider above a row that sets `dividerBefore`, a disabled row's reason as its tooltip;
+  without `at` it is `showActionSheet`, the bottom sheet, unchanged. `ActionSheetEntry` gained `leading`, `iconColor`,
+  `labelColor`, `shortcut` and `dividerBefore` (the sheet ignores the last two) and `icon` is now optional when `leading` is given.
+  `MouseContextMenuRegion` wraps a row / canvas and reports a secondary tap by a **mouse** (position global); touch long-presses
+  never reach it. Tests: `test/context_menu_test.dart`.
+- **Every existing menu takes `at`:** `showComponentContextMenu`, `showMateContextMenu`, `showPlaneContextSheet`,
+  `showCreatePlaneContextSheet`, `showAddButtonMenu`, `showAssemblyAddMenu` (the two Add menus have no right-click caller - they
+  hang off buttons - but take it for the same reason). `showFeatureContextMenu` and `showBodyContextMenu` were moved onto the helper
+  (one entry list, two presentations); the touch sheets look the same (same `ListTile` rows; the disabled reason is still the
+  subtitle, the red Delete icon is `iconColor`). The two plane sheets keep their own touch layout (drag handle, title row) and
+  only add the popup branch.
+- **Rule (SOLIDWORKS):** a right click without a drag on something not selected selects it (a plain click) and opens its menu; on
+  something already in the selection, the selection stays. `PartScreen._selectForContextMenu` for part geometry and tree rows (it
+  does nothing while a tool is open and gathering picks - the menu still opens, so a right click never adds a pick);
+  `SketchController.selectUnderCursorForContextMenu` for the sketch.
+- **Tree rows:** `FeatureTreePanel` (`onFeatureContextMenu`, `onBodyContextMenu`, `onSurfaceContextMenu`, `onCurveContextMenu`) and
+  `AssemblyTreePanel` (`onOccurrenceContextMenu`, `onMateContextMenu`, `onPatternContextMenu`) wrap each row in a
+  `MouseContextMenuRegion`. The part screen answers with the row's menu directly (`_onFeatureLongPress(feature, at:)` etc.; on touch
+  those are reached through "More"). Not offered during a multi-select or a picker. Two rows had no menu to open: a **Curve**
+  row (touch toggles Hide / Show) gets a one-entry Hide / Show menu, and a **Pattern** row (touch goes straight to the delete
+  confirmation) gets Edit / Delete. Tests: `test/tree_context_menu_test.dart`, and `test/part_screen_test.dart` ("desktop input D4").
+- **3D view** (`PartViewport.onContextMenuRequested(HoverHit? hit, Offset globalPosition)`): fired from `_endMouseNavigation` when a
+  right press released within `kTouchSlop` of travel; the hit comes from `_hitAt`, which runs the hover hit-test (same candidates,
+  filter and priorities) at the click without disturbing the hover state. `PartScreen._onViewportContextMenu` picks the menu:
+  - a **component** - `showComponentContextMenu` as a popup (it selects the component first, as its long-press does);
+  - a **reference plane / created plane** - the plane sheets as popups (not during plane picking or the sketch orientation step);
+  - a **face, edge, vertex or body** - the new geometry menu (`viewport3d/viewport_context_menus.dart`): Select Other (enabled when
+    more than one candidate lies under the click), Zoom to Selection, Normal To (a flat face only), Measure (face / edge / vertex;
+    opens Measure with it picked), Appearance... (face / body; opens the Appearance panel for it), then the owning body's Hide / Show
+    Body and Assign Material (left out for a face on a placed component, which has no body of this part);
+  - **empty space** (and a sketch entity seen from the part) - the view menu: Zoom to Fit (F), Standard Views, Perspective /
+    Orthographic (P), Hide / Show Reference Planes, Reset View. A popup has no flyouts, so **Standard Views** opens a second popup
+    at the same place with the seven views and their Ctrl+number hints.
+  New viewport methods: `resetView`, `zoomToEntities` (frames the bounds of the entities' geometry about their centre, view
+  direction kept; a lone vertex frames a patch 2 % of the model), `planarFaceNormal` (uses the mesh's `faceIsPlanar` flag, else
+  the triangle normals; pointing to the camera's side), `animateToFaceNormal` (D5's Ctrl+8 can use these two), and
+  `selectOtherAtGlobal` / `hasSelectOtherCandidatesAt` (`_fireSelectOther`'s candidate list pulled out as
+  `_selectOtherCandidatesAt`). Test: `test/part_viewport_mouse_navigation_test.dart` (GPU-gated: skips here).
+- **Sketch** (`sketch/sketch_context_menu.dart`; each entry carries the callback it runs): `SketchCanvas.onContextMenuRequested(hit,
+  position)` fires on a right release under the tap slop; in select mode the entity under the cursor is selected by the rule above.
+  An entity gets the ribbon's main actions: Edit / Delete Pattern or Mirror, Make Construction / Make Solid (X), Fix / Unfix,
+  every constraint the ribbon offers for the selection (the not-yet-wired ones disabled), and Delete (with the point's blocked
+  reason). Empty canvas (and any non-select mode) gets Line, Circle, Arc, Rectangle, Dimension, Trim (with their keys), Select All
+  and Zoom to Fit. Orbit View (the 3D view inside the sketch screen) routes through `SketchScreen._onOrbitContextMenu` to the same
+  two menus. The ribbon's constraint icon switch is now the top-level `sketchConstraintSvgAsset`. Tests:
+  `test/sketch_context_menu_test.dart`, `test/sketch_controller_test.dart` ("desktop input D4").
+- **Left out / not matching the scope exactly:** a constraint *label* or dimension under the right click is not hit-tested (the
+  click falls through to the entity or canvas menu); Select Other from the menu opens the same sheet as the click-and-hold, with
+  no first click to undo; Normal To keeps no particular "up" beyond the camera's current one (D5's Ctrl+8 can refine it);
+  "Zoom to selection" for sketch entities in the 3D view frames nothing (they have no mesh) and returns without moving the camera.
 
 ## 1. What the app did before D1
 
@@ -321,7 +377,7 @@ Don't decide by platform (DeX reports Android). Decide by **window size** and **
 | D1 | R1a, R1c, R2: middle and right drag navigate in every mode; one cursor; scaled wheel zoom | small | Fixes both things from the first test. Widget-testable with `tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kMiddleMouseButton)`. |
 | D2 | R1b, plain-drag box select, MMB double-click fit, desktop click selection for a mouse (R6) | small-medium | Built (Progress above). |
 | D3 | R3: shortcut table, Esc/Enter/Delete/undo/save/views/fit, sketch tool keys, `?` sheet, tooltip hints. **Also from D2:** a fit action for the mesh viewer (F needs one), wired to its middle double-click too; the part screen's click rule moved into a pure, unit-tested function (Esc and Delete act on the same selection) | medium | Built (Progress above; what it left out is listed there). |
-| D4 | R4: right-click menus - the helper, every tree/viewport/sketch menu, new 3D geometry and view menus | medium | Scoped below. |
+| D4 | R4: right-click menus - the helper, every tree/viewport/sketch menu, new 3D geometry and view menus | medium | Built (Progress above; what it left out is listed there). |
 | D5 | R1d presets + Controls settings, R6 polish. **Also from D3:** Ctrl+8 normal to, the Space view cube, Tab order through panel fields | medium | Scoped below. |
 | D6 | R5: `InputModality`, the full desktop layout ≥ 1000 dp. **Also from D3:** keys for the part tools (S, E, V ...) with the desktop toolbar | large | Scoped in `docs/desktop-layout-scope.md`. |
 | D7 | 3D box select (part and assembly): visible geometry only, edges by default, mouse drag and touch tap-hold-drag | medium | A revisit of a feature the owner parked in June; questions answered 27 Oct (below). |
@@ -489,6 +545,21 @@ From D3:
 - Enter / Esc on a few tool panels (Extrude, Fillet, Mate, Measure) and the sketch's Pattern / Offset bars;
 - typing in a panel's number field: letters, Enter and Delete edit the field; Esc leaves it;
 - Ctrl+S / Ctrl+O / Ctrl+N against what the File menu does.
+
+From D4:
+
+- that a right click reaches the app as a secondary tap in DeX and does not also pan or turn into Back (a right *drag* still pans);
+- the popup's position and size on the real screen: it opens at the pointer, moves to fit near an edge, and a tall menu (the
+  Feature menu for a sketch has about a dozen rows) scrolls rather than clipping;
+- right click on a tree row in the Build Tree and Assembly Tree opens that row's menu, and does not start a multi-select;
+- right click on a face, an edge, a vertex, a body, a component, a plane and on empty space each give the menu in section 4's
+  table; the face is selected first, unless it was already part of the selection;
+- Zoom to Selection frames the selection; Normal To turns a flat face to face you (and is greyed out on a curved one); Measure and
+  Appearance... open their tools with the pick made; Select Other lists the candidates under the click;
+- Standard Views opens its second popup in the same place, and each view matches Ctrl+number;
+- in the 2D sketch, right click on a selected entity vs an unselected one (the selection should only change for the latter), on
+  empty canvas, and in Orbit View;
+- a touch long-press and a touch tap still open the bottom sheets exactly as before, including on a touch monitor.
 
 ## 7. Decisions (owner, 26 Oct 2026)
 

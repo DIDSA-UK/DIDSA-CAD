@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'action_sheet.dart';
 import 'reference_planes.dart';
 import 'svg_icon.dart';
 
@@ -17,7 +18,19 @@ enum PlaneContextSheetAction { newSketch }
 Future<PlaneContextSheetAction?> showPlaneContextSheet(
   BuildContext context, {
   required ReferencePlaneKind plane,
+  Offset? at,
 }) {
+  // Desktop input D4: a mouse right click shows the same actions as a popup
+  // at [at]; the bottom sheet below is the touch path, unchanged.
+  if (at != null) {
+    return showContextMenu<PlaneContextSheetAction>(context, at: at, [
+      ActionSheetEntry(
+        action: PlaneContextSheetAction.newSketch,
+        label: 'New Sketch on ${plane.apiValue}',
+        leading: const SvgIcon('assets/icons/feature/feature_new_sketch.svg'),
+      ),
+    ]);
+  }
   return showModalBottomSheet<PlaneContextSheetAction>(
     context: context,
     shape: const RoundedRectangleBorder(

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -24,6 +25,7 @@ import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
+import 'package:didsa_cad_client/viewport3d/feature_context_menu.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
@@ -1404,6 +1406,58 @@ void main() {
     expect(find.text('Sketch 3'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'desktop input D4: a mouse right click on a Build Tree row opens the row menu as a popup at the cursor, '
+    'without entering multi-select; a touch long-press still enters it',
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+          {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Feature tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final row = tester.getCenter(find.text('Sketch 1'));
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+      await mouse.down(row);
+      await mouse.up();
+      await _pumpUntil(tester, () => find.byType(PopupMenuItem<FeatureContextMenuAction>).evaluate().isNotEmpty);
+
+      expect(find.byType(BottomSheet), findsNothing, reason: 'a mouse gets the popup, not the touch sheet');
+      expect(find.widgetWithText(PopupMenuItem<FeatureContextMenuAction>, 'Delete'), findsOneWidget);
+      expect(find.byTooltip('More actions'), findsNothing, reason: 'a right click does not start multi-select');
+      await tester.pump(const Duration(milliseconds: 400)); // (the menu scales in)
+      final popup = tester.getTopLeft(find.byType(PopupMenuItem<FeatureContextMenuAction>).first);
+      // (A tall menu is moved up to fit the 600 px test screen, so only the x of the cursor is checked.)
+      expect((popup.dx - row.dx).abs(), lessThan(40), reason: 'the popup opens at the cursor');
+
+      // A click outside closes it, then a touch long-press behaves as before.
+      await tester.tapAt(const Offset(790, 590));
+      await _pumpUntil(tester, () => find.byType(PopupMenuItem<FeatureContextMenuAction>).evaluate().isEmpty);
+      expect(find.byType(PopupMenuItem<FeatureContextMenuAction>), findsNothing);
+      await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byTooltip('More actions'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
 
   testWidgets('confirming the cascade-delete dialog deletes the Feature and everything after it', (tester) async {
     final backend = _FakeDocumentBackend(

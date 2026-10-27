@@ -28,6 +28,9 @@ enum ComponentContextMenuAction {
   delete,
 }
 
+/// Desktop input D4: [at] (a mouse right click's global position) shows
+/// it as a popup there instead of the bottom sheet.
+///
 /// Shows the Component context menu for one Occurrence -
 /// `AssemblyTreePanel.onOccurrenceLongPress`'s eventual real action (Phase
 /// 4; today that callback only selects the row - see its own doc comment
@@ -62,8 +65,9 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
   required bool isFocused,
   required bool hidden,
   required bool fixed,
+  Offset? at,
 }) {
-  return showActionSheet<ComponentContextMenuAction>(context, [
+  return showContextMenu<ComponentContextMenuAction>(context, at: at, [
     ActionSheetEntry(
       action: isFocused ? ComponentContextMenuAction.exitFocus : ComponentContextMenuAction.makeFocus,
       label: isFocused ? 'Exit Focus' : 'Make Focus',

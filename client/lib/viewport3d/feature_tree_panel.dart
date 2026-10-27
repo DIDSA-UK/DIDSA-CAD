@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
+import 'action_sheet.dart';
 import 'svg_icon.dart';
 import 'tree_multi_select_controller.dart';
 
@@ -353,6 +354,14 @@ class FeatureTreePanel extends StatefulWidget {
   /// (see `PartScreen`'s own wiring). Mirrors [onSurfaceLongPress].
   final void Function(String curveId)? onCurveLongPress;
 
+  /// Desktop input D4: a mouse right click on a row opens that row's menu
+  /// at the click (`position` is global) - the same menu the touch "More"
+  /// button reaches. Not offered while a multi-select or a picker is open.
+  final void Function(FeatureDto feature, Offset position)? onFeatureContextMenu;
+  final void Function(String bodyId, Offset position)? onBodyContextMenu;
+  final void Function(String surfaceId, Offset position)? onSurfaceContextMenu;
+  final void Function(String curveId, Offset position)? onCurveContextMenu;
+
   /// Curve feature ids the backend tagged `hidden`. Mirrors [hiddenSurfaceIds].
   final Set<String> hiddenCurveIds;
 
@@ -490,6 +499,10 @@ class FeatureTreePanel extends StatefulWidget {
     this.curveNames = const {},
     this.onCurveTap,
     this.onCurveLongPress,
+    this.onFeatureContextMenu,
+    this.onBodyContextMenu,
+    this.onSurfaceContextMenu,
+    this.onCurveContextMenu,
     this.hiddenCurveIds = const {},
     this.isSketchPickerMode = false,
     this.pickableSketchIds = const {},
@@ -766,26 +779,29 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     final key = TreeMultiSelectKeys.body(bodyId);
     return Opacity(
       opacity: hidden ? 0.5 : 1.0,
-      child: ListTile(
-        dense: true,
-        visualDensity: VisualDensity.compact,
-        selected: _isMultiSelected(key),
-        leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 24),
-        title: Text(
-          widget.bodyNames[bodyId] ?? bodyId,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _rowTitleStyle,
-        ),
-        trailing: _simpleRowTrailing(hidden: hidden, key: key),
-        onTap: widget.isMultiSelectMode
-            ? () => widget.onMultiSelectToggle?.call(key)
-            : () => widget.onBodyTap(bodyId),
-        onLongPress: widget.isMultiSelectMode
-            ? () => widget.onMultiSelectToggle?.call(key)
-            : widget.onBodyLongPress == null
-                ? null
-                : () => widget.onBodyLongPress!(bodyId),
+      child: MouseContextMenuRegion(
+        onOpen: widget.isMultiSelectMode || widget.onBodyContextMenu == null ? null : (at) => widget.onBodyContextMenu!(bodyId, at),
+        child: ListTile(
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          selected: _isMultiSelected(key),
+          leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 24),
+          title: Text(
+            widget.bodyNames[bodyId] ?? bodyId,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _rowTitleStyle,
+          ),
+          trailing: _simpleRowTrailing(hidden: hidden, key: key),
+          onTap: widget.isMultiSelectMode
+              ? () => widget.onMultiSelectToggle?.call(key)
+              : () => widget.onBodyTap(bodyId),
+          onLongPress: widget.isMultiSelectMode
+              ? () => widget.onMultiSelectToggle?.call(key)
+              : widget.onBodyLongPress == null
+                  ? null
+                  : () => widget.onBodyLongPress!(bodyId),
+      ),
       ),
     );
   }
@@ -815,30 +831,33 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
             final key = TreeMultiSelectKeys.feature(feature.id);
             return Opacity(
               opacity: hidden ? 0.5 : 1.0,
-              child: ListTile(
-                dense: true,
-                visualDensity: VisualDensity.compact,
-                selected: _isMultiSelected(key),
-                leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 24),
-                title: Text(
-                  featureDisplayName(widget.features, widget.features.indexOf(feature)),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: _rowTitleStyle,
+              child: MouseContextMenuRegion(
+                onOpen: widget.isMultiSelectMode || widget.onFeatureContextMenu == null ? null : (at) => widget.onFeatureContextMenu!(feature, at),
+                child: ListTile(
+                  dense: true,
+                  visualDensity: VisualDensity.compact,
+                  selected: _isMultiSelected(key),
+                  leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 24),
+                  title: Text(
+                    featureDisplayName(widget.features, widget.features.indexOf(feature)),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: _rowTitleStyle,
+                  ),
+                  trailing: _simpleRowTrailing(hidden: hidden, key: key),
+                  onTap: widget.isMultiSelectMode
+                      ? () => widget.onMultiSelectToggle?.call(key)
+                      : () => widget.onFeatureTap(feature),
+                  // Bug fix: this row (a shortcut into the same Feature the
+                  // "Features" section below already lists) never wired
+                  // long-press at all - Hide/Show (and every other
+                  // FeatureContextMenuAction) was only reachable via that
+                  // other row, not from here, despite this looking like an
+                  // equally normal place to long-press for it.
+                  onLongPress: widget.isMultiSelectMode
+                      ? () => widget.onMultiSelectToggle?.call(key)
+                      : () => widget.onFeatureLongPress(feature),
                 ),
-                trailing: _simpleRowTrailing(hidden: hidden, key: key),
-                onTap: widget.isMultiSelectMode
-                    ? () => widget.onMultiSelectToggle?.call(key)
-                    : () => widget.onFeatureTap(feature),
-                // Bug fix: this row (a shortcut into the same Feature the
-                // "Features" section below already lists) never wired
-                // long-press at all - Hide/Show (and every other
-                // FeatureContextMenuAction) was only reachable via that
-                // other row, not from here, despite this looking like an
-                // equally normal place to long-press for it.
-                onLongPress: widget.isMultiSelectMode
-                    ? () => widget.onMultiSelectToggle?.call(key)
-                    : () => widget.onFeatureLongPress(feature),
               ),
             );
           }),
@@ -874,28 +893,31 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     final key = TreeMultiSelectKeys.surface(surfaceId);
     return Opacity(
       opacity: hidden ? 0.5 : 1.0,
-      child: ListTile(
-        dense: true,
-        visualDensity: VisualDensity.compact,
-        selected: _isMultiSelected(key),
-        leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 24),
-        title: Text(
-          widget.surfaceNames[surfaceId] ?? surfaceId,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _rowTitleStyle,
-        ),
-        trailing: _simpleRowTrailing(hidden: hidden, key: key),
-        onTap: widget.isMultiSelectMode
-            ? () => widget.onMultiSelectToggle?.call(key)
-            : widget.onSurfaceTap == null
-                ? null
-                : () => widget.onSurfaceTap!(surfaceId),
-        onLongPress: widget.isMultiSelectMode
-            ? () => widget.onMultiSelectToggle?.call(key)
-            : widget.onSurfaceLongPress == null
-                ? null
-                : () => widget.onSurfaceLongPress!(surfaceId),
+      child: MouseContextMenuRegion(
+        onOpen: widget.isMultiSelectMode || widget.onSurfaceContextMenu == null ? null : (at) => widget.onSurfaceContextMenu!(surfaceId, at),
+        child: ListTile(
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          selected: _isMultiSelected(key),
+          leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 24),
+          title: Text(
+            widget.surfaceNames[surfaceId] ?? surfaceId,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _rowTitleStyle,
+          ),
+          trailing: _simpleRowTrailing(hidden: hidden, key: key),
+          onTap: widget.isMultiSelectMode
+              ? () => widget.onMultiSelectToggle?.call(key)
+              : widget.onSurfaceTap == null
+                  ? null
+                  : () => widget.onSurfaceTap!(surfaceId),
+          onLongPress: widget.isMultiSelectMode
+              ? () => widget.onMultiSelectToggle?.call(key)
+              : widget.onSurfaceLongPress == null
+                  ? null
+                  : () => widget.onSurfaceLongPress!(surfaceId),
+      ),
       ),
     );
   }
@@ -926,28 +948,31 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     final key = TreeMultiSelectKeys.curve(curveId);
     return Opacity(
       opacity: hidden ? 0.5 : 1.0,
-      child: ListTile(
-        dense: true,
-        visualDensity: VisualDensity.compact,
-        selected: _isMultiSelected(key),
-        leading: const SvgIcon('assets/icons/viewport/selection_edge.svg', size: 24),
-        title: Text(
-          widget.curveNames[curveId] ?? curveId,
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _rowTitleStyle,
-        ),
-        trailing: _simpleRowTrailing(hidden: hidden, key: key),
-        onTap: widget.isMultiSelectMode
-            ? () => widget.onMultiSelectToggle?.call(key)
-            : widget.onCurveTap == null
-                ? null
-                : () => widget.onCurveTap!(curveId),
-        onLongPress: widget.isMultiSelectMode
-            ? () => widget.onMultiSelectToggle?.call(key)
-            : widget.onCurveLongPress == null
-                ? null
-                : () => widget.onCurveLongPress!(curveId),
+      child: MouseContextMenuRegion(
+        onOpen: widget.isMultiSelectMode || widget.onCurveContextMenu == null ? null : (at) => widget.onCurveContextMenu!(curveId, at),
+        child: ListTile(
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          selected: _isMultiSelected(key),
+          leading: const SvgIcon('assets/icons/viewport/selection_edge.svg', size: 24),
+          title: Text(
+            widget.curveNames[curveId] ?? curveId,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _rowTitleStyle,
+          ),
+          trailing: _simpleRowTrailing(hidden: hidden, key: key),
+          onTap: widget.isMultiSelectMode
+              ? () => widget.onMultiSelectToggle?.call(key)
+              : widget.onCurveTap == null
+                  ? null
+                  : () => widget.onCurveTap!(curveId),
+          onLongPress: widget.isMultiSelectMode
+              ? () => widget.onMultiSelectToggle?.call(key)
+              : widget.onCurveLongPress == null
+                  ? null
+                  : () => widget.onCurveLongPress!(curveId),
+      ),
       ),
     );
   }
@@ -1003,121 +1028,124 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     final multiSelected = _isMultiSelected(multiSelectKey);
     return Opacity(
       opacity: hidden || pickerDimmed || featurePickerDimmed ? 0.5 : 1.0,
-      child: ListTile(
-        dense: true,
-        visualDensity: VisualDensity.compact,
-        selected: widget.isMultiSelectMode ? multiSelected : selected || featurePickerSelected,
-        // Sketcher-roadmap Phase 4.3 v1: hasLostReference is its own,
-        // independent overlay badge - kept alongside (not instead of) the
-        // type glyph below.
-        leading: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            SvgIcon(
-              _featureTypeAsset(feature.type),
-              size: 26,
-              color: Theme.of(context).colorScheme.primary,
-            ),
-            if (feature.hasLostReference)
-              Positioned(
-                right: -2,
-                bottom: -2,
-                child: Icon(Icons.warning_rounded, size: 14, color: Colors.amber.shade800),
-              )
-            else if (feature.hasMovedReference)
-              // Reference-identity overhaul: bound, but on weaker evidence - milder than lost, so a different glyph and colour.
-              Positioned(
-                right: -2,
-                bottom: -2,
-                child: Icon(Icons.help_rounded, size: 14, color: Colors.deepOrange.shade400),
-              )
-            else if (hasPendingDetail)
-              Positioned(
-                right: -2,
-                bottom: -2,
-                child: Icon(Icons.hourglass_bottom, size: 14, color: Colors.blue.shade600),
+      child: MouseContextMenuRegion(
+        onOpen: widget.isSketchPickerMode || widget.isFeaturePickerMode || widget.isMultiSelectMode || widget.onFeatureContextMenu == null ? null : (at) => widget.onFeatureContextMenu!(feature, at),
+        child: ListTile(
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          selected: widget.isMultiSelectMode ? multiSelected : selected || featurePickerSelected,
+          // Sketcher-roadmap Phase 4.3 v1: hasLostReference is its own,
+          // independent overlay badge - kept alongside (not instead of) the
+          // type glyph below.
+          leading: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              SvgIcon(
+                _featureTypeAsset(feature.type),
+                size: 26,
+                color: Theme.of(context).colorScheme.primary,
               ),
-          ],
-        ),
-        title: Text(
-          featureDisplayName(widget.features, index),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _rowTitleStyle,
-        ),
-        subtitle: Text(
-          feature.hasLostReference
-              ? (!isSketch
-                  ? (feature.lostReferences.isEmpty
-                      ? 'Lost reference'
-                      : feature.lostReferences.length > 1
-                          ? '${feature.lostReferences.length} lost references - open to re-select'
-                          : 'Lost reference - open to re-select')
-                  : feature.lostReferencePointIds.length > 1
-                      ? '${feature.lostReferencePointIds.length} lost references - open to re-attach'
-                      : 'Lost reference - open to re-attach')
-              : feature.hasMovedReference
-                  ? 'Reference may have moved - open to check'
-              : hasPendingDetail
-                  ? 'Loading full detail…'
-                  : _hasEditPanel(feature.type)
-                      ? 'Editable'
-                      : 'Imported',
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: feature.hasLostReference
-              ? _rowSubtitleStyle.copyWith(color: Colors.amber.shade800, fontWeight: FontWeight.bold)
-              : feature.hasMovedReference
-                  ? _rowSubtitleStyle.copyWith(color: Colors.deepOrange.shade400, fontWeight: FontWeight.bold)
-              : hasPendingDetail
-                  ? _rowSubtitleStyle.copyWith(color: Colors.blue.shade600, fontWeight: FontWeight.bold)
-                  : _rowSubtitleStyle,
-        ),
-        trailing: () {
-          final pinIcon = widget.onToggleCoarsePin != null &&
-                  isCoarseEligible &&
-                  !widget.isFeaturePickerMode &&
-                  !widget.isMultiSelectMode
-              ? IconButton(
-                  icon: Icon(isPinnedCoarse ? Icons.blur_on : Icons.blur_off, size: 18),
-                  tooltip: isPinnedCoarse ? 'Always showing simplified geometry' : 'Always show simplified geometry',
-                  visualDensity: VisualDensity.compact,
-                  padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(),
-                  onPressed: () => widget.onToggleCoarsePin!(feature),
+              if (feature.hasLostReference)
+                Positioned(
+                  right: -2,
+                  bottom: -2,
+                  child: Icon(Icons.warning_rounded, size: 14, color: Colors.amber.shade800),
                 )
-              : null;
-          final stateIcon = widget.isFeaturePickerMode
-              ? (featurePickerSelected ? const Icon(Icons.check_circle, size: 18) : null)
-              : widget.isMultiSelectMode
-                  ? (multiSelected ? const Icon(Icons.check_circle, size: 18) : null)
-                  : (hidden ? const Icon(Icons.visibility_off, size: 18) : null);
-          final children = [if (pinIcon != null) pinIcon, if (stateIcon != null) stateIcon];
-          // Bug fix (assembly testing, `assembly_tree_panel.dart`'s sibling
-          // fix): scale down instead of overflowing on a narrow panel.
-          return children.isEmpty
+              else if (feature.hasMovedReference)
+                // Reference-identity overhaul: bound, but on weaker evidence - milder than lost, so a different glyph and colour.
+                Positioned(
+                  right: -2,
+                  bottom: -2,
+                  child: Icon(Icons.help_rounded, size: 14, color: Colors.deepOrange.shade400),
+                )
+              else if (hasPendingDetail)
+                Positioned(
+                  right: -2,
+                  bottom: -2,
+                  child: Icon(Icons.hourglass_bottom, size: 14, color: Colors.blue.shade600),
+                ),
+            ],
+          ),
+          title: Text(
+            featureDisplayName(widget.features, index),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _rowTitleStyle,
+          ),
+          subtitle: Text(
+            feature.hasLostReference
+                ? (!isSketch
+                    ? (feature.lostReferences.isEmpty
+                        ? 'Lost reference'
+                        : feature.lostReferences.length > 1
+                            ? '${feature.lostReferences.length} lost references - open to re-select'
+                            : 'Lost reference - open to re-select')
+                    : feature.lostReferencePointIds.length > 1
+                        ? '${feature.lostReferencePointIds.length} lost references - open to re-attach'
+                        : 'Lost reference - open to re-attach')
+                : feature.hasMovedReference
+                    ? 'Reference may have moved - open to check'
+                : hasPendingDetail
+                    ? 'Loading full detail…'
+                    : _hasEditPanel(feature.type)
+                        ? 'Editable'
+                        : 'Imported',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: feature.hasLostReference
+                ? _rowSubtitleStyle.copyWith(color: Colors.amber.shade800, fontWeight: FontWeight.bold)
+                : feature.hasMovedReference
+                    ? _rowSubtitleStyle.copyWith(color: Colors.deepOrange.shade400, fontWeight: FontWeight.bold)
+                : hasPendingDetail
+                    ? _rowSubtitleStyle.copyWith(color: Colors.blue.shade600, fontWeight: FontWeight.bold)
+                    : _rowSubtitleStyle,
+          ),
+          trailing: () {
+            final pinIcon = widget.onToggleCoarsePin != null &&
+                    isCoarseEligible &&
+                    !widget.isFeaturePickerMode &&
+                    !widget.isMultiSelectMode
+                ? IconButton(
+                    icon: Icon(isPinnedCoarse ? Icons.blur_on : Icons.blur_off, size: 18),
+                    tooltip: isPinnedCoarse ? 'Always showing simplified geometry' : 'Always show simplified geometry',
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () => widget.onToggleCoarsePin!(feature),
+                  )
+                : null;
+            final stateIcon = widget.isFeaturePickerMode
+                ? (featurePickerSelected ? const Icon(Icons.check_circle, size: 18) : null)
+                : widget.isMultiSelectMode
+                    ? (multiSelected ? const Icon(Icons.check_circle, size: 18) : null)
+                    : (hidden ? const Icon(Icons.visibility_off, size: 18) : null);
+            final children = [if (pinIcon != null) pinIcon, if (stateIcon != null) stateIcon];
+            // Bug fix (assembly testing, `assembly_tree_panel.dart`'s sibling
+            // fix): scale down instead of overflowing on a narrow panel.
+            return children.isEmpty
+                ? null
+                : FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Row(mainAxisSize: MainAxisSize.min, children: children),
+                  );
+          }(),
+          onTap: () {
+            if (widget.isSketchPickerMode) {
+              if (isSketch) widget.onSketchPicked?.call(feature);
+            } else if (widget.isFeaturePickerMode) {
+              if (!featurePickerDimmed) widget.onFeaturePickerToggle?.call(feature);
+            } else if (widget.isMultiSelectMode) {
+              widget.onMultiSelectToggle?.call(multiSelectKey);
+            } else {
+              widget.onFeatureTap(feature);
+            }
+          },
+          onLongPress: widget.isSketchPickerMode || widget.isFeaturePickerMode
               ? null
-              : FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Row(mainAxisSize: MainAxisSize.min, children: children),
-                );
-        }(),
-        onTap: () {
-          if (widget.isSketchPickerMode) {
-            if (isSketch) widget.onSketchPicked?.call(feature);
-          } else if (widget.isFeaturePickerMode) {
-            if (!featurePickerDimmed) widget.onFeaturePickerToggle?.call(feature);
-          } else if (widget.isMultiSelectMode) {
-            widget.onMultiSelectToggle?.call(multiSelectKey);
-          } else {
-            widget.onFeatureTap(feature);
-          }
-        },
-        onLongPress: widget.isSketchPickerMode || widget.isFeaturePickerMode
-            ? null
-            : widget.isMultiSelectMode
-                ? () => widget.onMultiSelectToggle?.call(multiSelectKey)
-                : () => widget.onFeatureLongPress(feature),
+              : widget.isMultiSelectMode
+                  ? () => widget.onMultiSelectToggle?.call(multiSelectKey)
+                  : () => widget.onFeatureLongPress(feature),
+      ),
       ),
     );
   }

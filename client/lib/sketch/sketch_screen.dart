@@ -26,10 +26,11 @@ import '../api/sketch_api_client.dart'
 import '../didsa_logo_button.dart';
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/keyboard_shortcuts.dart';
+import '../viewport3d/mouse_navigation.dart' show SelectClick;
 import '../viewport3d/reference_planes.dart';
 import '../viewport3d/render_mode.dart';
 import '../viewport3d/selection_filter.dart' show SelectionFilterState;
-import '../viewport3d/selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef, kSketchMidpointIdPrefix;
+import '../viewport3d/selection_hit_test.dart' show HoverHit, SelectionEntityKind, SelectionEntityRef, kSketchMidpointIdPrefix;
 import '../viewport3d/sketch_geometry_3d.dart';
 import '../viewport3d/svg_icon.dart';
 import '../viewport3d/view_prefs_sheets.dart';
@@ -41,6 +42,7 @@ import 'sketch_convert_bar.dart';
 import 'sketch_dimension_bar.dart';
 import 'sketch_offset_bar.dart';
 import 'sketch_pattern_bar.dart';
+import 'sketch_context_menu.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
 import 'sketch_text_bar.dart';
@@ -1497,6 +1499,8 @@ class _SketchScreenState extends State<SketchScreen> {
         // Desktop input D2: the click rule for the pick that follows (see
         // SketchController.selectClick).
         onSelectClick: (click) => _controller.selectClick = click,
+        // Desktop input D4: a right click without a drag.
+        onContextMenuRequested: (hit, at) => unawaited(_onOrbitContextMenu(hit, at)),
         onClearSelection: _controller.closeRibbon,
         // P25 (2D-sketcher feature parity): feeds straight into
         // SketchController.selectInRect - the exact same method
@@ -1514,8 +1518,55 @@ class _SketchScreenState extends State<SketchScreen> {
       referenceBodyHidden: _referenceBodyHidden,
       constraintLabelsVisible: _constraintLabelsVisible,
       canvasColor: _canvasColor,
+      // Desktop input D4: a right click opens the entity or canvas menu.
+      onContextMenuRequested: (hit, at) => unawaited(
+        hit == null
+            ? showSketchBackgroundContextMenu(context, _controller, at: at, onZoomToFit: _canvasKey.currentState?.zoomToFit)
+            : showSketchEntityContextMenu(context, _controller, at: at),
+      ),
     );
   }
+
+  /// Desktop input D4: a right click in Orbit View (the 3D view). A sketch
+  /// entity under it is selected by the same rule as in the 2D canvas (a
+  /// click replaces unless it is already selected) and gets the entity menu;
+  /// anything else gets the empty-canvas menu with the 3D view's own fit.
+  Future<void> _onOrbitContextMenu(HoverHit? hit, Offset at) async {
+    final entity = hit?.entity;
+    if (entity != null && _isSketchEntityKind(entity.kind)) {
+      if (!_embeddedSelectedEntities.contains(entity)) {
+        final savedClick = _controller.selectClick;
+        _controller.selectClick = SelectClick.replace;
+        _handleEmbeddedSelectionToggle(entity);
+        _controller.selectClick = savedClick;
+      }
+      if (_controller.selectionSet.isNotEmpty) {
+        await showSketchEntityContextMenu(context, _controller, at: at);
+        return;
+      }
+    }
+    if (!mounted) return;
+    await showSketchBackgroundContextMenu(
+      context,
+      _controller,
+      at: at,
+      onZoomToFit: _orbitViewportKey.currentState?.zoomToFit,
+    );
+  }
+
+  static bool _isSketchEntityKind(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.sketchPoint ||
+        SelectionEntityKind.sketchLine ||
+        SelectionEntityKind.sketchCircle ||
+        SelectionEntityKind.sketchArc ||
+        SelectionEntityKind.sketchEllipse ||
+        SelectionEntityKind.sketchEllipseArc ||
+        SelectionEntityKind.sketchSpline ||
+        SelectionEntityKind.sketchText ||
+        SelectionEntityKind.sketchPatternMirrorInstance =>
+          true,
+        _ => false,
+      };
 
   /// P10: whether a tap in the embedded 3D view should prefer picking a
   /// real Body vertex/edge over placing new geometry on the plane - starts

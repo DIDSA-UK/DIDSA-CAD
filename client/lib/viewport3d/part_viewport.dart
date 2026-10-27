@@ -911,6 +911,13 @@ class PartViewport extends StatefulWidget {
   /// caller keeps it for the callbacks that follow.
   final ValueChanged<SelectClick>? onSelectClick;
 
+  /// Desktop input D4: fired when a mouse right click ends without a drag
+  /// (the pointer travelled less than the tap slop - a drag pans, D1).
+  /// [hit] is what lies under the click (the same hit-test hover runs, at
+  /// the click's position), or null over empty space; [globalPosition] is
+  /// where the menu goes. Not fired for a middle click, or for a touch.
+  final void Function(HoverHit? hit, Offset globalPosition)? onContextMenuRequested;
+
   /// Fired when a tap (Fix 4) commits while the cursor is over empty space -
   /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
@@ -1159,6 +1166,7 @@ class PartViewport extends StatefulWidget {
     this.selectedEntities = const {},
     this.onSelectionToggle,
     this.onSelectClick,
+    this.onContextMenuRequested,
     this.onClearSelection,
     this.onMarqueeSelect,
     this.onSelectOtherRequested,
@@ -1582,6 +1590,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Where [_mouseNavPointer] was pressed - the point a Shift+middle drag
   /// zooms toward.
   Offset? _mouseNavAnchor;
+
+  /// Desktop input D4: whether [_mouseNavPointer] is a right-button press
+  /// (the only one that can end in a context menu), and how far it has
+  /// travelled - under the tap slop at release it is a click, not a pan.
+  bool _mouseNavIsSecondary = false;
+  double _mouseNavTravel = 0;
 
   /// What [_mouseNavPointer]'s drag last did, for [_viewportMouseCursor].
   MouseNavAction? _mouseNavAction;
@@ -4068,6 +4082,111 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// everything without turning the view.
   void zoomToFit() => setState(() => _doRecentre(keepOrientation: true));
 
+  /// Desktop input D4: the Reset view button's action (everything in frame,
+  /// turned back to isometric) for the viewport's right-click menu.
+  void resetView() => setState(_doRecentre);
+
+  /// Desktop input D4: world-space points on the geometry of [entities] -
+  /// face triangles, edge segments, vertices, a body's or component's whole
+  /// mesh. Sketch entities add nothing (they have no mesh to frame).
+  List<vm.Vector3> _worldPointsOf(Iterable<SelectionEntityRef> entities) {
+    final points = <vm.Vector3>[];
+    for (final entity in entities) {
+      if (entity.kind == SelectionEntityKind.component) {
+        for (final t in _worldTrianglesForOccurrence(entity.occurrenceId)) {
+          points..add(t.$1)..add(t.$2)..add(t.$3);
+        }
+        continue;
+      }
+      final resolved = _bodyAndTransformFor(entity);
+      if (resolved == null) continue;
+      final (body, transform) = resolved;
+      switch (entity.kind) {
+        case SelectionEntityKind.face:
+          for (final t in faceTrianglesForId(body.mesh, entity.id)) {
+            points..add(transform.transformed3(t.$1))..add(transform.transformed3(t.$2))..add(transform.transformed3(t.$3));
+          }
+        case SelectionEntityKind.edge:
+          for (final s in edgeSegmentsForId(body.mesh, entity.id)) {
+            points..add(transform.transformed3(s.$1))..add(transform.transformed3(s.$2));
+          }
+        case SelectionEntityKind.curveFeature:
+          for (final s in edgeSegmentsFromMesh(body.mesh)) {
+            points..add(transform.transformed3(s.$1))..add(transform.transformed3(s.$2));
+          }
+        case SelectionEntityKind.vertex:
+          final position = vertexPositionForId(body.mesh, entity.id);
+          if (position != null) points.add(transform.transformed3(position));
+        case SelectionEntityKind.body:
+          for (final t in trianglesFromMesh(body.mesh)) {
+            points..add(transform.transformed3(t.$1))..add(transform.transformed3(t.$2))..add(transform.transformed3(t.$3));
+          }
+        default:
+          break;
+      }
+    }
+    return points;
+  }
+
+  /// Desktop input D4: Zoom to selection - centres on [entities]' geometry
+  /// and frames it, the view direction kept (as [zoomToFit] keeps it).
+  /// Returns false when none of them has geometry to frame.
+  bool zoomToEntities(Iterable<SelectionEntityRef> entities) {
+    final bounds = boundsOfPoints(_worldPointsOf(entities));
+    if (bounds == null) return false;
+    // A lone vertex has no extent: frame a small patch of the model instead.
+    final model = _enclosingBounds(boundsOfBodies(widget.bodies), _assemblyInstanceBounds());
+    final radius = math.max(bounds.boundingSphereRadius, (model?.boundingSphereRadius ?? 100) * 0.02);
+    setState(() {
+      _camera.target = bounds.center;
+      _camera.frameRadius(radius, _viewportSize);
+      _resyncCameraDependentOverlays();
+    });
+    return true;
+  }
+
+  /// Desktop input D4: the unit normal of [face] in world space when it is
+  /// planar (every triangle's normal within about 1 degree of the first),
+  /// pointing towards the side the camera is on; null for a curved face or
+  /// one that cannot be resolved. Normal to (here and, in D5, Ctrl+8) turns
+  /// the view to look along the opposite of this.
+  vm.Vector3? planarFaceNormal(SelectionEntityRef face) {
+    if (face.kind != SelectionEntityKind.face) return null;
+    final resolved = _bodyAndTransformFor(face);
+    if (resolved == null) return null;
+    final (body, transform) = resolved;
+    // The backend says which faces are flat; without it (older data) the triangles decide.
+    final flags = body.mesh.faceIsPlanar;
+    final flaggedPlanar = face.id >= 0 && face.id < flags.length ? flags[face.id] : null;
+    if (flaggedPlanar == false) return null;
+    vm.Vector3? normal;
+    for (final t in faceTrianglesForId(body.mesh, face.id)) {
+      final a = transform.transformed3(t.$1);
+      final n = (transform.transformed3(t.$2) - a).cross(transform.transformed3(t.$3) - a);
+      if (n.length < 1e-12) continue;
+      n.normalize();
+      if (normal == null) {
+        normal = n;
+      } else if (flaggedPlanar != true && (normal.dot(n).abs() < 0.9998 || normal.dot(n) < 0)) {
+        return null;
+      }
+    }
+    if (normal == null) return null;
+    return normal.dot(_camera.position - _camera.target) < 0 ? -normal : normal;
+  }
+
+  /// Desktop input D4: turns the view to look straight at planar [face],
+  /// centred on it, keeping the camera's up as near to where it was as the
+  /// new direction allows. False for a curved face.
+  Future<bool> animateToFaceNormal(SelectionEntityRef face, {Duration duration = const Duration(milliseconds: 400)}) async {
+    final normal = planarFaceNormal(face);
+    final bounds = boundsOfPoints(_worldPointsOf([face]));
+    if (normal == null || bounds == null) return false;
+    final orientation = OrbitCamera.orientationLookingFrom(bounds.center + normal, bounds.center, _camera.up);
+    await _animateOrientationTo(orientation, toTarget: bounds.center, duration: duration);
+    return true;
+  }
+
   /// Desktop input D3: SOLIDWORKS' standard views (Ctrl+1 ... Ctrl+7). This
   /// app is Y-up with its isometric eye at (+1, +1, +1), as SOLIDWORKS is,
   /// so Front looks along -Z with Y up, Top down -Y with -Z up, and so on.
@@ -4665,6 +4784,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
       _mouseNavPointer = event.pointer;
       _mouseNavAnchor = event.localPosition;
+      _mouseNavIsSecondary = event.buttons == kSecondaryMouseButton;
+      _mouseNavTravel = 0;
       _orbitPivot = event.buttons & kMiddleMouseButton != 0 ? _orbitPivotAt(event.localPosition) : null;
       return;
     }
@@ -5012,6 +5133,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// `mouse_navigation.dart` for the bindings. The modifiers are read live,
   /// so pressing Ctrl or Shift mid-drag switches to pan or zoom.
   void _applyMouseNavigation(PointerMoveEvent event) {
+    _mouseNavTravel += event.delta.distance;
     final action = mouseNavActionForEvent(event);
     if (action == null) return;
     setState(() {
@@ -5032,19 +5154,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     });
   }
 
-  /// Ends a middle/right drag: no tap, no selection commit (a right click
-  /// does nothing until the context menus of D4). The camera moved, so the
-  /// camera-dependent overlays resync, and the hover under the cursor is
-  /// recomputed where it now is.
+  /// Ends a middle/right drag: no tap, no selection commit. The camera
+  /// moved, so the camera-dependent overlays resync, and the hover under
+  /// the cursor is recomputed where it now is. Desktop input D4: a right
+  /// click that did not drag asks for a context menu ([_hitAt] finds what
+  /// is under it).
   void _endMouseNavigation(PointerEvent event) {
+    final isClick = event is PointerUpEvent && _mouseNavIsSecondary && _mouseNavTravel <= kTouchSlop;
     _mouseNavPointer = null;
     _mouseNavAnchor = null;
     _orbitPivot = null;
+    _mouseNavIsSecondary = false;
     setState(() {
       _mouseNavAction = null;
       _resyncCameraDependentOverlays();
     });
     if (event is! PointerUpEvent) return;
+    if (isClick) widget.onContextMenuRequested?.call(_hitAt(event.localPosition), event.position);
     if (widget.selectionMode) {
       _handleSelectionPointerHover(event.localPosition);
     } else if (widget.drawCursorMode) {
@@ -5062,6 +5188,20 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (_sectionDragHandle != null || _componentGizmoDragHandle != null) return SystemMouseCursors.grabbing;
     if (widget.drawCursorMode && !widget.suppressDrawCursor) return SystemMouseCursors.precise;
     return SystemMouseCursors.basic;
+  }
+
+  /// Desktop input D4: what the selection hit-test finds under
+  /// [screenPosition] - the same candidates, filter and priorities hover
+  /// uses ([_recomputeHover]) - without disturbing the hover state.
+  HoverHit? _hitAt(Offset screenPosition) {
+    final savedCursor = _cursorPosition;
+    final savedHit = _hoverHit;
+    _cursorPosition = screenPosition;
+    _recomputeHover();
+    final hit = _hoverHit;
+    _cursorPosition = savedCursor;
+    _hoverHit = savedHit;
+    return hit;
   }
 
   /// Desktop input D2: the world point under [screenPosition] for a middle
@@ -5626,10 +5766,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _selectOtherFired = true;
     final cursor = _cursorPosition;
     if (cursor == null) return;
+    final candidates = _selectOtherCandidatesAt(cursor);
+    if (candidates.isEmpty) return;
+    final toUndo = _lastTapToggledEntity;
+    _lastTapToggledEntity = null;
+    if (toUndo != null) {
+      // Desktop input D2: undone as a toggle whatever the first click was.
+      widget.onSelectClick?.call(SelectClick.toggle);
+      widget.onSelectionToggle?.call(toUndo);
+    }
+    widget.onSelectOtherRequested?.call(candidates);
+  }
+
+  /// Every selectable candidate under [screenPosition], nearest first - the
+  /// list Select Other offers ([_fireSelectOther]).
+  List<HoverHit> _selectOtherCandidatesAt(Offset screenPosition) {
     final camera = _camera.cameraFor(_viewportSize);
-    final ray = camera.screenPointToRay(cursor, _viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
     final localRay = _toLocalRay(ray);
-    final candidates = <HoverHit>[
+        return <HoverHit>[
       if (widget.bodies.isNotEmpty || widget.sketchGeometries.isNotEmpty)
         ...hitTestAllCandidates(
           ray: localRay,
@@ -5667,15 +5822,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           includeBodyCandidateWithFaces: true,
         ),
     ]..sort((a, b) => a.rayT.compareTo(b.rayT));
-    if (candidates.isEmpty) return;
-    final toUndo = _lastTapToggledEntity;
-    _lastTapToggledEntity = null;
-    if (toUndo != null) {
-      // Desktop input D2: undone as a toggle whatever the first click was.
-      widget.onSelectClick?.call(SelectClick.toggle);
-      widget.onSelectionToggle?.call(toUndo);
-    }
+  }
+
+  /// Desktop input D4: the geometry right-click menu's Select Other - the
+  /// same candidate list and sheet as the click-then-hold gesture, for the
+  /// point at global position [global]. Returns whether anything was found.
+  bool selectOtherAtGlobal(Offset global) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || _viewportSize.isEmpty) return false;
+    final candidates = _selectOtherCandidatesAt(box.globalToLocal(global));
+    if (candidates.isEmpty) return false;
     widget.onSelectOtherRequested?.call(candidates);
+    return true;
+  }
+
+  /// Desktop input D4: whether Select Other would find more than one
+  /// candidate at global position [global] (the menu's entry is enabled
+  /// only then).
+  bool hasSelectOtherCandidatesAt(Offset global) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || _viewportSize.isEmpty) return false;
+    return _selectOtherCandidatesAt(box.globalToLocal(global)).length > 1;
   }
 
   // ---- P16: draw-cursor mode's own cursor/raycast/commit dispatch --------
