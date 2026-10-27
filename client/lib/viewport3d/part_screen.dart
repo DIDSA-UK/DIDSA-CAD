@@ -1194,6 +1194,14 @@ class _PartScreenState extends State<PartScreen> {
   /// in-memory only (no persistence across app restarts, per the brief).
   bool _referencePlanesHidden = false;
 
+  /// Planes are shown whatever [_referencePlanesHidden] says while a flow
+  /// needs one to be tapped: picking the plane for a New Sketch (and its
+  /// orientation step), and the Mirror flow's plane pick. They go back to
+  /// the user's own setting when the flow ends - nothing is stored, so there
+  /// is nothing to restore.
+  bool get _referencePlanesForcedVisible =>
+      _planeSelectionMode || _confirmingSketchOrientation || _mirrorStep == _MirrorStep.pickingPlane;
+
   /// Sectioning Tool: every live section plane - transient VIEW state, never
   /// a `Feature` (see `section_plane.dart`'s own doc comment for the full
   /// "why"). Persisted only as a client-only stash in the native save file
@@ -2391,6 +2399,18 @@ class _PartScreenState extends State<PartScreen> {
   /// the debounced live-preview re-solve while [_filletActive], same
   /// reasoning as the [_extrudeActive] case just above.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
+    // New Sketch's "tap a reference plane": in Selection mode a tap arrives
+    // here rather than at [_onPlaneTap], so it has to start the sketch from
+    // here too - it must not just select the plane.
+    if (_planeSelectionMode && entity.kind == SelectionEntityKind.referencePlane) {
+      final plane = entity.referencePlaneKind;
+      if (plane != null) _onPlaneTap(plane);
+      return;
+    }
+    if (_planeSelectionMode && entity.kind == SelectionEntityKind.createPlane) {
+      _onCreatePlaneFeatureTap(entity.planeFeatureId);
+      return;
+    }
     // Sectioning Tool bug fix (see [_tryHandleSectionPlacementToggle]'s own
     // doc comment for the full root cause): checked before every other
     // special-case below, same "this exclusive session owns every tap while
@@ -24142,8 +24162,7 @@ class _PartScreenState extends State<PartScreen> {
                   // own `referencePlanesHidden:` (below) is left alone so its
                   // toggle switch keeps reflecting the user's real
                   // underlying preference throughout.
-                  referencePlanesHidden:
-                      _mirrorStep == _MirrorStep.pickingPlane ? false : _referencePlanesHidden,
+                  referencePlanesHidden: _referencePlanesForcedVisible ? false : _referencePlanesHidden,
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,

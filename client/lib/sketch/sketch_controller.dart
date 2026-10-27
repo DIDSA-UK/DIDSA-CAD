@@ -2343,6 +2343,7 @@ class SketchController extends ChangeNotifier {
   }
 
   void _resetTransientDrawState() {
+    _discardOrphanTransientPoints();
     _chainStartPointId = null;
     _chainFirstPointId = null;
     _circleCenterPointId = null;
@@ -2936,6 +2937,9 @@ class SketchController extends ChangeNotifier {
     List<String> anchorPointIds = const [],
     Map<String, (double, double)> pointUpdates = const {},
   }) async {
+    // A Point an entity now uses is no longer a loose draw-tool Point to take
+    // back if the tool is cancelled (see [_transientPointUndo]).
+    _transientPointUndo.removeWhere((id, _) => !points.containsKey(id) || _pointOwnsEntities(id));
     final result =
         await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds, pointUpdates: pointUpdates);
     _dof = result.solve.dof;
@@ -16973,6 +16977,73 @@ class SketchController extends ChangeNotifier {
   /// segment direction yet to reason about) has no such competing
   /// mechanism, so it's deliberately left at this method's own default.
   Future<String> _pointIdAt(double x, double y, {String? excludeId, bool inferPointOnCurve = true}) async {
+    // Remembers the Point this tap made (if it made one rather than snapping
+    // onto an existing one) and the undo entries that creating it pushed, so
+    // [_discardOrphanTransientPoints] can take it back if the tool is
+    // cancelled before the Point becomes part of an entity.
+    final knownBefore = points.keys.toSet();
+    final undoBefore = _undoStack.toSet();
+    final id = await _pointIdAtUntracked(x, y, excludeId: excludeId, inferPointOnCurve: inferPointOnCurve);
+    if (!knownBefore.contains(id)) {
+      _transientPointUndo[id] = [
+        for (final entry in _undoStack)
+          if (!undoBefore.contains(entry)) entry,
+      ];
+    }
+    return id;
+  }
+
+  /// Points a draw tap created that no entity owns yet, each with the undo
+  /// entries its creation pushed - a Rectangle's first corner, a Circle's
+  /// centre, a Line chain's start. They are real Points on the backend from
+  /// the moment of the tap (the tools need them there), so a tool that is
+  /// cancelled part-way would otherwise leave them behind as loose Points.
+  final Map<String, List<Future<void> Function()>> _transientPointUndo = {};
+
+  /// Whether any entity (not a Constraint) is built on Point [id].
+  bool _pointOwnsEntities(String id) {
+    final cascade = computeDeleteCascade([SketchSelection(kind: SelectionKind.point, id: id)]);
+    return cascade.lines.isNotEmpty ||
+        cascade.circles.isNotEmpty ||
+        cascade.arcs.isNotEmpty ||
+        cascade.ellipses.isNotEmpty ||
+        cascade.ellipseArcs.isNotEmpty ||
+        cascade.polygons.isNotEmpty ||
+        cascade.slots.isNotEmpty ||
+        cascade.rectangles.isNotEmpty ||
+        cascade.collapsedPolygons.isNotEmpty ||
+        cascade.collapsedSlots.isNotEmpty ||
+        cascade.collapsedRectangles.isNotEmpty ||
+        cascade.splines.isNotEmpty ||
+        cascade.texts.isNotEmpty;
+  }
+
+  /// A draw tool was cancelled or switched away from (see
+  /// [_resetTransientDrawState]) or a chain was ended: takes back every
+  /// Point it created that never became part of an entity, by running the
+  /// undo entries its creation pushed (so the undo history stays correct
+  /// too). Points an entity already uses are left alone.
+  void _discardOrphanTransientPoints() {
+    if (_transientPointUndo.isEmpty) return;
+    final tracked = Map.of(_transientPointUndo);
+    _transientPointUndo.clear();
+    final orphans = [
+      for (final id in tracked.keys)
+        if (points.containsKey(id) && !_pointOwnsEntities(id)) id,
+    ];
+    if (orphans.isEmpty || _sketchId == null) return;
+    unawaited(_runGuarded(() async {
+      for (final id in orphans.reversed) {
+        for (final undo in tracked[id]!.reversed) {
+          _undoStack.remove(undo);
+          await undo();
+        }
+      }
+      await _solveAndTrackDof();
+    }));
+  }
+
+  Future<String> _pointIdAtUntracked(double x, double y, {String? excludeId, bool inferPointOnCurve = true}) async {
     final existing = _existingPointIdNear(x, y, excludeId: excludeId);
     if (existing != null) {
       // Bug fix (on-device feedback: "no entity should be able to use the
@@ -17325,6 +17396,7 @@ class SketchController extends ChangeNotifier {
   /// unrelated new chain. Stays in [SketchMode.draw] - only the chain ends,
   /// not the tool/mode.
   void finishChain() {
+    _discardOrphanTransientPoints();
     _chainStartPointId = null;
     _chainFirstPointId = null;
     notifyListeners();

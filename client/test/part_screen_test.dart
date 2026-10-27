@@ -1098,6 +1098,86 @@ void main() {
     },
   );
 
+  group('New Sketch plane picking', () {
+    Future<void> open(WidgetTester tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    Future<void> startNewSketch(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('New Sketch'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    bool planesHidden(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden;
+
+    testWidgets('hidden reference planes are shown while a plane is being picked, and hidden again after Cancel', (
+      tester,
+    ) async {
+      await open(tester);
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('View'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Hide Reference Planes'));
+      await tester.pump();
+      await tester.tap(find.text('Hide Reference Planes'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Close toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(planesHidden(tester), isTrue, reason: 'the user hid them');
+
+      await startNewSketch(tester);
+      expect(planesHidden(tester), isFalse, reason: 'there has to be a plane to tap');
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(planesHidden(tester), isTrue, reason: 'back to what the user chose');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('in Selection mode a plane tap starts the sketch instead of just selecting the plane', (tester) async {
+      await open(tester);
+      await tester.tap(find.byTooltip('Switch to selection mode'));
+      await tester.pump();
+      await startNewSketch(tester);
+
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+        const SelectionEntityRef(kind: SelectionEntityKind.referencePlane, referencePlaneKind: ReferencePlaneKind.xy),
+      );
+      await _pumpUntil(tester, () => find.text('Continue').evaluate().isNotEmpty);
+      expect(find.text('Continue'), findsOneWidget, reason: 'the sketch orientation step, as an Orbit mode tap gives');
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities,
+        isEmpty,
+        reason: 'the plane was not left selected',
+      );
+      await tester.tap(find.text('Continue'));
+      await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+      expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   testWidgets('the toolbar\'s Hide Reference Planes entry toggles its own label between Hide/Show', (
     tester,
   ) async {

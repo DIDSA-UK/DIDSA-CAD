@@ -2884,10 +2884,10 @@ void main() {
   });
 
   test('a rectangle corner snaps onto an existing nearby Point instead of duplicating it', () async {
-    // Place a real Point at (10, 2) via the line tool first.
-    controller.selectDrawTool(SketchTool.line);
+    // Place a real Point at (10, 2) via the point tool first.
+    controller.selectDrawTool(SketchTool.point);
     await controller.handleCanvasTap(10, 2);
-    final preplacedId = controller.chainFirstPointId;
+    final preplacedId = controller.points.keys.last;
     expect(controller.points.length, 2); // origin + this Point
 
     controller.selectDrawTool(SketchTool.rectangle);
@@ -8656,9 +8656,8 @@ void main() {
   });
 
   test('selectedPointDeleteBlockedReason is null for a genuinely unreferenced point', () async {
-    controller.selectDrawTool(SketchTool.line);
-    await controller.handleCanvasTap(20, 20); // chain start only - no Line created yet
-    controller.finishChain();
+    controller.selectDrawTool(SketchTool.point); // (an abandoned Line chain start is taken back now)
+    await controller.handleCanvasTap(20, 20);
     controller.exitToSelectMode();
 
     await controller.handleCanvasTap(20, 20);
@@ -8688,9 +8687,8 @@ void main() {
   });
 
   test('deleteSelected removes a genuinely unreferenced point and clears the selection', () async {
-    controller.selectDrawTool(SketchTool.line);
+    controller.selectDrawTool(SketchTool.point);
     await controller.handleCanvasTap(20, 20);
-    controller.finishChain();
     controller.exitToSelectMode();
     final pointId = controller.points.keys.last;
 
@@ -8705,9 +8703,8 @@ void main() {
   });
 
   test('deleteSelected surfaces a backend rejection reason and keeps the selection', () async {
-    controller.selectDrawTool(SketchTool.line);
+    controller.selectDrawTool(SketchTool.point);
     await controller.handleCanvasTap(20, 20);
-    controller.finishChain();
     controller.exitToSelectMode();
     final pointId = controller.points.keys.last;
     backend.blockedPointIds.add(pointId);
@@ -12988,6 +12985,108 @@ void main() {
       controller.selectionSet,
       contains(predicate<SketchSelection>((s) => s.kind == SelectionKind.circle && s.id == circle.id)),
     );
+  });
+
+  group('cancelling a draw tool takes back the Points it placed but no entity uses yet', () {
+    Future<void> settle() async {
+      for (var i = 0; i < 20; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+
+    // One tap places the first Point of each of these; the tool then waits for more.
+    final tools = <SketchTool, List<(double, double)>>{
+      SketchTool.line: [(5, 5)],
+      SketchTool.rectangle: [(5, 5)],
+      SketchTool.circle: [(5, 5)],
+      SketchTool.arc: [(5, 5), (15, 5)],
+      SketchTool.polygon: [(5, 5)],
+      SketchTool.slot: [(5, 5)],
+      SketchTool.ellipse: [(5, 5)],
+      SketchTool.ellipseArc: [(5, 5)],
+      SketchTool.spline: [(5, 5), (15, 15)],
+    };
+
+    for (final MapEntry(key: tool, value: taps) in tools.entries) {
+      test('${tool.name}: Esc (exit to select) leaves no loose Point and nothing to undo', () async {
+        final pointsBefore = controller.points.length;
+        controller.selectDrawTool(tool);
+        for (final (x, y) in taps) {
+          await controller.handleCanvasTap(x, y);
+        }
+        expect(controller.points.length, greaterThan(pointsBefore), reason: 'the tap placed a Point');
+        controller.exitToSelectMode();
+        await settle();
+        expect(controller.points.length, pointsBefore);
+        expect(controller.canUndo, isFalse);
+      });
+    }
+
+    test('switching to another tool takes them back too', () async {
+      final pointsBefore = controller.points.length;
+      controller.selectDrawTool(SketchTool.rectangle);
+      await controller.handleCanvasTap(5, 5);
+      controller.selectDrawTool(SketchTool.circle);
+      await settle();
+      expect(controller.points.length, pointsBefore);
+    });
+
+    test('ending a chain with no line drawn takes the start Point back; a drawn line keeps its Points', () async {
+      final pointsBefore = controller.points.length;
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(5, 5);
+      controller.finishChain();
+      await settle();
+      expect(controller.points.length, pointsBefore);
+
+      await controller.handleCanvasTap(5, 5);
+      await controller.handleCanvasTap(15, 5);
+      controller.finishChain();
+      controller.exitToSelectMode();
+      await settle();
+      expect(controller.lines.length, 1);
+      expect(controller.points.length, pointsBefore + 2);
+    });
+
+    test('a finished rectangle keeps its corners when the tool is left afterwards', () async {
+      controller.selectDrawTool(SketchTool.rectangle);
+      await controller.handleCanvasTap(5, 5);
+      await controller.handleCanvasTap(25, 15);
+      final pointsAfter = controller.points.length;
+      final linesAfter = controller.lines.length;
+      expect(linesAfter, greaterThanOrEqualTo(4));
+      controller.exitToSelectMode();
+      await settle();
+      expect(controller.points.length, pointsAfter);
+      expect(controller.lines.length, linesAfter);
+    });
+
+    test('a Point the user placed earlier is not taken back when a tool starts on it and is cancelled', () async {
+      controller.selectDrawTool(SketchTool.point);
+      await controller.handleCanvasTap(5, 5);
+      final pointsWithOne = controller.points.length;
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(5, 5); // snaps onto the existing Point
+      controller.exitToSelectMode();
+      await settle();
+      expect(controller.points.length, pointsWithOne);
+    });
+
+    test('points left over from a deleted entity are not mistaken for a cancelled tool\'s', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(5, 5);
+      await controller.handleCanvasTap(15, 5);
+      controller.finishChain();
+      controller.exitToSelectMode();
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: controller.lines.keys.single));
+      await controller.deleteSelected();
+      final loose = controller.points.length;
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(50, 50);
+      controller.exitToSelectMode();
+      await settle();
+      expect(controller.points.length, loose, reason: 'only the circle\'s own centre goes');
+    });
   });
 
   group('desktop input D4: a right click selects what is under it unless it is already selected', () {
