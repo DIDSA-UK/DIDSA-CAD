@@ -27,6 +27,7 @@ List<vm.Vector3> _allTargets() => [
 Offset _centre(List<Offset> quad) => quad.reduce((a, b) => a + b) / quad.length.toDouble();
 
 void main() {
+  normalToTests();
   group('viewCubeEyeAndUp', () {
     test('a face looks from its own side with Y up; Top and Bottom keep SOLIDWORKS ups', () {
       final (frontEye, frontUp) = viewCubeEyeAndUp(vm.Vector3(0, 0, 1));
@@ -164,6 +165,31 @@ void main() {
       expect(rect.right, lessThanOrEqualTo(320));
       expect(rect.bottom, lessThanOrEqualTo(480));
       expect(tester.takeException(), isNull);
+    });
+  });
+}
+
+void normalToTests() {
+  group('Normal To up vector', () {
+    test('from an isometric view, a +X face gets world +Y up', () {
+      final isoUp = vm.Vector3(-1, 2, -1)..normalize();
+      expect(normalToUp(vm.Vector3(1, 0, 0), isoUp), vm.Vector3(0, 1, 0));
+    });
+
+    test('a top face (+Y) gets the world axis nearest the current up instead', () {
+      final up = vm.Vector3(-0.4, 0.8, -0.4)..normalize();
+      final result = normalToUp(vm.Vector3(0, 1, 0), up);
+      expect(result.dot(vm.Vector3(0, 1, 0)).abs(), lessThan(0.01));
+    });
+
+    test('a tilted face never gets an up along its normal', () {
+      final normal = vm.Vector3(0, 1, 0.1)..normalize();
+      final result = normalToUp(normal, vm.Vector3(0, 1, 0));
+      expect(result.dot(normal).abs(), lessThan(0.95));
+    });
+
+    test('a -Z face with the camera upside down keeps -Y up', () {
+      expect(normalToUp(vm.Vector3(0, 0, -1), vm.Vector3(0, -1, 0.1)..normalize()), vm.Vector3(0, -1, 0));
     });
   });
 }

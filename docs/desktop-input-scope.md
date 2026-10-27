@@ -219,6 +219,24 @@ Update this table with every milestone.
   (middle click), `test/part_screen_test.dart` ("desktop input D5": Space, Ctrl+8, double-click) and, GPU-gated,
   `test/part_viewport_mouse_navigation_test.dart` (Onshape right-drag orbit, view cube pick).
 
+### Follow-up fixes from the Linux build test (27 Oct 2026)
+
+Found by driving a Linux debug build with simulated mouse and keyboard input.
+
+- **Reference planes while picking a sketch plane:** shown for the pick, then the earlier visibility is restored; tapping a plane picks it.
+- **Draw tools:** cancelling a tool (Esc, tool switch, finishing a chain) takes back points the tool placed that nothing uses, for every multi-point tool.
+- **Assembly Save:** each Part is tracked as changed or never written. Plain Save writes the focused Part plus every Part that is
+  changed, never written, newly pathed or missing on disk, and reports `Saved N files`. A failure names each file and the reason, keeps
+  those Parts marked, and offers Close, Choose another folder, or Try again. The Assembly tree shows a filled dot (changes) or hollow
+  dot (not saved yet) on Part rows and the header row. The exit prompt lists the unsaved Parts. Create Component asks for the project
+  folder first (cancel creates nothing); a folder picker that cannot open (no zenity or kdialog on Linux) now shows its message.
+- **Component sketches:** the sketch screen is given the focused Part's id, not the root's, so the external-references calls are no longer rejected.
+- **Normal To (Ctrl+8):** up snaps to the nearest world axis square to the face, so the face is no longer rolled on screen.
+- Tests: `test/part_screen_test.dart` ("assembly-aware Save", "New Sketch plane picking"), `test/sketch_controller_test.dart`, `test/view_cube_test.dart`.
+- **Not verified:** none of this was re-run in the Linux build after the fixes; the 3D viewport paths are GPU-gated in tests. The Open and
+  Save As file dialogs elsewhere in `part_screen.dart` still throw a bare error without zenity. The Add Mate panel overflow, small menu
+  panel, panels covering the viewport and the red dimension result are known and not fixed.
+
 ## 1. What the app did before D1
 
 ### 3D viewport (`viewport3d/part_viewport.dart`)

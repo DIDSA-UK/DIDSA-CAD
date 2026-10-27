@@ -26,7 +26,16 @@ class DesktopStorageService implements StorageService {
 
   @override
   Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async {
-    final picked = await FilePicker.platform.getDirectoryPath(dialogTitle: 'Choose or create a DIDSA project folder');
+    final String? picked;
+    try {
+      picked = await FilePicker.platform.getDirectoryPath(dialogTitle: 'Choose or create a DIDSA project folder');
+    } on StorageException {
+      rethrow;
+    } catch (e) {
+      // On Linux the picker shells out to zenity / kdialog; without one it throws a bare Exception that
+      // nothing above knows how to show the user.
+      throw StorageException("Couldn't open the folder picker ($e). On Linux it needs zenity or kdialog installed.");
+    }
     if (picked == null) {
       throw StorageException('No folder was selected');
     }

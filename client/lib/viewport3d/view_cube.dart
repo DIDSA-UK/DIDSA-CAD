@@ -321,3 +321,31 @@ class _ViewCubePainter extends CustomPainter {
   bool shouldRepaint(_ViewCubePainter old) =>
       old.projection.basis != projection.basis || old.hovered != hovered || old.faceColour != faceColour;
 }
+
+/// Normal To: the up vector to look at a face with. The camera's current up
+/// is rarely square to the world (an isometric view is tilted), and keeping
+/// it would turn the face a few degrees on screen. This snaps to the world
+/// axis nearest the current up that is not (nearly) along [normal], so the
+/// face lands square to the screen.
+vm.Vector3 normalToUp(vm.Vector3 normal, vm.Vector3 currentUp) {
+  final n = normal.normalized();
+  final axes = [
+    vm.Vector3(1, 0, 0),
+    vm.Vector3(-1, 0, 0),
+    vm.Vector3(0, 1, 0),
+    vm.Vector3(0, -1, 0),
+    vm.Vector3(0, 0, 1),
+    vm.Vector3(0, 0, -1),
+  ];
+  vm.Vector3? best;
+  var bestDot = -2.0;
+  for (final axis in axes) {
+    if (axis.dot(n).abs() > 0.95) continue;
+    final d = axis.dot(currentUp);
+    if (d > bestDot) {
+      bestDot = d;
+      best = axis;
+    }
+  }
+  return best ?? currentUp;
+}

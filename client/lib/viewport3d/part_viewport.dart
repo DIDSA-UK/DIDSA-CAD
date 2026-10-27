@@ -21,7 +21,7 @@ import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'controls_preferences.dart';
-import 'view_cube.dart' show ViewCubeBasis, viewCubeEyeAndUp;
+import 'view_cube.dart' show ViewCubeBasis, normalToUp, viewCubeEyeAndUp;
 import 'mouse_navigation.dart';
 import '../sketch/marquee_selection.dart' show kCrossingBoxColor;
 import 'orbit_camera.dart';
@@ -4220,7 +4220,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final normal = planarFaceNormal(face);
     final bounds = boundsOfPoints(_worldPointsOf([face]));
     if (normal == null || bounds == null) return false;
-    final orientation = OrbitCamera.orientationLookingFrom(bounds.center + normal, bounds.center, _camera.up);
+    final orientation = OrbitCamera.orientationLookingFrom(bounds.center + normal, bounds.center, normalToUp(normal, _camera.up));
     await _animateOrientationTo(orientation, toTarget: bounds.center, duration: duration);
     return true;
   }

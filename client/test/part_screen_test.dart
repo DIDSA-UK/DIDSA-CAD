@@ -6856,6 +6856,106 @@ void main() {
     });
   });
 
+  // Follow-up to the Linux build test report: Save writes every Part that
+  // needs it, the tree marks them, and a failure says which file and why.
+  group('assembly-aware Save', () {
+    Future<PartToolbar Function()> pumpWithComponent(WidgetTester tester, _FakeStorageService storage) async {
+      final backend = _FakeDocumentBackend();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Create Component…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      return () => tester.widget<PartToolbar>(find.byType(PartToolbar));
+    }
+
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    testWidgets('Create Component asks for the folder first: cancelling creates nothing', (tester) async {
+      final storage = _FakeStorageService()..pickerCancels = true;
+      await pumpWithComponent(tester, storage);
+
+      expect(find.byType(AssemblyTreePanel), findsOneWidget);
+      expect(tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel)).occurrences, isEmpty);
+    });
+
+    testWidgets('plain Save writes the new component and its parent, and the tree marks both until then', (
+      tester,
+    ) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpWithComponent(tester, storage);
+
+      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.neverSavedPartIds, hasLength(1));
+      expect(panel.parentUnsaved, isTrue);
+      expect(find.byKey(const Key('unsaved-dot-new')), findsOneWidget);
+      expect(storage.files, isEmpty);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+
+      expect(storage.files.keys, containsAll(['Part 1.didsa', 'Component 1.didsa']));
+      expect(find.text('Saved 2 files'), findsOneWidget);
+      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.neverSavedPartIds, isEmpty);
+      expect(panel.unsavedPartIds, isEmpty);
+      expect(panel.parentUnsaved, isFalse);
+      expect(find.byKey(const Key('unsaved-dot-new')), findsNothing);
+      expect(toolbar().hasUnsavedChanges, isFalse);
+    });
+
+    testWidgets('a file that will not write is named, and stays marked unsaved', (tester) async {
+      final storage = _FakeStorageService()..failOnWrite.add('Component 1.didsa');
+      final toolbar = await pumpWithComponent(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+
+      expect(find.text("Couldn't save 1 file"), findsOneWidget);
+      expect(find.textContaining('Component 1.didsa'), findsWidgets);
+      expect(find.textContaining('Permission denied'), findsOneWidget);
+      expect(storage.files.keys, contains('Part 1.didsa'));
+      await tester.tap(find.text('Close'));
+      await settle(tester);
+      expect(toolbar().hasUnsavedChanges, isTrue);
+      expect(tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel)).neverSavedPartIds, hasLength(1));
+    });
+
+    testWidgets('leaving with unsaved parts names them', (tester) async {
+      final storage = _FakeStorageService();
+      await pumpWithComponent(tester, storage);
+
+      final context = tester.element(find.byType(PartScreen));
+      final popped = Navigator.of(context).maybePop();
+      await settle(tester);
+
+      expect(find.textContaining('Unsaved: '), findsOneWidget);
+      expect(find.textContaining('Component 1'), findsWidgets);
+      await tester.tap(find.text('Cancel'));
+      await settle(tester);
+      expect(await popped, isTrue);
+    });
+  });
+
   // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
   // §3.4): the toolbar's own small "unsaved changes" indicator next to
   // Save - `PartToolbar.hasUnsavedChanges`, mirroring `PartScreen._isDirty`.

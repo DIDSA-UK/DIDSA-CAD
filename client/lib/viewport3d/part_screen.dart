@@ -3160,7 +3160,64 @@ class _PartScreenState extends State<PartScreen> {
   /// [_confirmExitPart]'s guard. Cleared at the end of each successful save
   /// path ([_saveNativeFile]/[_saveFocusedPart]/[_saveAsNativeFile]/
   /// [_saveFocusedPartAs]/[_onSaveAllPressed]).
-  bool _isDirty = false;
+  ///
+  /// Per-part since desktop input follow-up (assembly Save): [_dirtyPartIds]
+  /// are the Parts changed since they were last written (the Part that was
+  /// focused when a guarded action ran), [_neverWrittenPartIds] are
+  /// components given a path (Create Component) that has no file behind it
+  /// yet. Both are shown as a dot in the Assembly Tree and both are written
+  /// by Save. [_isDirty] is true while either is non-empty; setting it to
+  /// `true` marks the focused Part, to `false` clears everything (a save of
+  /// the whole session).
+  final Set<String> _dirtyPartIds = {};
+  final Set<String> _neverWrittenPartIds = {};
+
+  bool get _isDirty => _dirtyPartIds.isNotEmpty || _neverWrittenPartIds.isNotEmpty;
+
+  set _isDirty(bool value) {
+    if (value) {
+      _markPartDirty();
+    } else {
+      _dirtyPartIds.clear();
+      _neverWrittenPartIds.clear();
+    }
+  }
+
+  /// The Part whose content the screen is showing and editing: the focused
+  /// component, else the root Part.
+  String? get _focusedPartId => _focusStack?.current ?? _part?.id;
+
+  void _markPartDirty([String? partId]) {
+    final id = partId ?? _focusedPartId;
+    if (id != null) _dirtyPartIds.add(id);
+  }
+
+  void _markPartWritten(String partId) {
+    _dirtyPartIds.remove(partId);
+    _neverWrittenPartIds.remove(partId);
+  }
+
+  /// Every Part with changes or no file yet - what Save writes, and what the
+  /// Assembly Tree marks.
+  Set<String> get _unsavedPartIds => {..._dirtyPartIds, ..._neverWrittenPartIds};
+
+  /// Display names for [_unsavedPartIds] where this screen knows them (the
+  /// current Part, and the Occurrences of the Part in focus).
+  List<String> _unsavedPartNames() {
+    final unsaved = _unsavedPartIds;
+    final names = <String>[];
+    final root = _part;
+    if (root != null && unsaved.contains(root.id)) names.add(root.name);
+    for (var i = 0; i < _occurrences.length; i++) {
+      final partId = _occurrences[i].resolvedPartId;
+      if (partId != null && partId != root?.id && unsaved.contains(partId)) {
+        names.add(occurrenceDisplayName(_occurrences, i));
+      }
+    }
+    final unnamed = unsaved.length - names.length;
+    if (unnamed > 0) names.add(unnamed == 1 ? '1 other part' : '$unnamed other parts');
+    return names;
+  }
 
   /// Finding moved files: the references still to review (see [PartScreen.initialReferenceReports]); the Review sheet listens
   /// to it, and an entry goes when it is used, located or left missing.
@@ -10397,8 +10454,6 @@ class _PartScreenState extends State<PartScreen> {
     _projectRoot = widget.initialProjectRoot;
     _relativePathByPartId = Map.of(widget.initialRelativePathByPartId);
     _referenceReports.value = widget.initialReferenceReports;
-    // A reference found by id already holds its corrected path in the session; it reaches disk with the next Save.
-    if (widget.initialReferenceReports.any((report) => !report.needsYou)) _isDirty = true;
     if (widget.initialReferenceReports.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _showReferencesBanner());
     }
@@ -10556,13 +10611,17 @@ class _PartScreenState extends State<PartScreen> {
   /// since the last save.
   Future<bool> _confirmExitPart() async {
     if (!_isDirty) return true;
+    final unsavedNames = _unsavedPartNames();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Exit this project?'),
-        content: const Text(
-          'Any changes since your last Save will be lost. This does not delete the current '
-          'project - it will still be there if you open it again.',
+        content: Text(
+          [
+            if (unsavedNames.isNotEmpty) 'Unsaved: ${unsavedNames.join(', ')}.',
+            'Any changes since your last Save will be lost. This does not delete the current '
+                'project - it will still be there if you open it again.',
+          ].join('\n\n'),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
@@ -10769,6 +10828,11 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
     await _firstSaveIntoProject(isSaveAs: false);
+    // The first save writes the root only; components made before it are
+    // written by the same Save.
+    if (mounted && _projectRoot != null && _unsavedPartIds.isNotEmpty) {
+      await _saveFocusedPart(includeFocused: false);
+    }
   }
 
   /// Native Save As: always prompts, and on success the open document
@@ -10861,7 +10925,7 @@ class _PartScreenState extends State<PartScreen> {
       setState(() {
         _projectRoot = root;
         _relativePathByPartId = {..._relativePathByPartId, part.id: path};
-        _isDirty = false;
+        _markPartWritten(part.id);
       });
     });
     if (!written && !hadRoot && mounted) setState(() => _projectRoot = null);
@@ -11024,66 +11088,134 @@ class _PartScreenState extends State<PartScreen> {
   /// the Part's own name via [_autoAssignPath], same auto-derive-first
   /// philosophy as component creation - never a blocking dialog for a plain
   /// Save.
-  Future<void> _saveFocusedPart() async {
-    final focusPartId = _focusStack?.current ?? _part?.id;
+  Future<void> _saveFocusedPart({bool includeFocused = true}) async {
+    final focusPartId = _focusedPartId;
     final root = _projectRoot;
     if (focusPartId == null || root == null) return;
 
-    String? failedPath;
-    String? failureReason;
+    // Taken before the guarded action below marks the focused Part dirty
+    // itself: what was really changed or never written.
+    final unsavedBefore = _unsavedPartIds;
+    final written = <String>[];
+    final failures = <_SaveFailure>[];
     await _runGuarded(() async {
       final fullSessionExport = await _api.exportNative();
-      final stamped = stampExternalRefs(
-        documentPayload: fullSessionExport,
-        relativePathByPartId: _relativePathByPartId,
-      );
+      final parts = ((fullSessionExport['document'] as Map?)?['parts'] as List?) ?? const [];
+      final names = <String, String>{
+        for (final raw in parts)
+          if (raw is Map && raw['id'] is String) raw['id'] as String: (raw['name'] as String?) ?? 'Part',
+      };
+
+      // A Part with no file yet gets one now, named like Create Component names them, so the file that is
+      // saved never points at a component file that was not written.
+      var paths = Map.of(_relativePathByPartId);
+      final newlyPathed = <String>{};
+      for (final entry in names.entries) {
+        if (paths.containsKey(entry.key)) continue;
+        paths = {...paths, entry.key: await _autoAssignPath(root, entry.value, paths)};
+        newlyPathed.add(entry.key);
+      }
+
+      // The focused Part always, plus every other Part with unsaved changes, no file yet, or whose file has gone
+      // missing from the folder. The root's own file records its components' paths, so it goes too when one
+      // was just given a path.
+      final targets = <String>{if (includeFocused) focusPartId};
+      for (final id in names.keys) {
+        if (unsavedBefore.contains(id) || newlyPathed.contains(id) || await _storageService.resolve(root, paths[id]!) == null) {
+          targets.add(id);
+        }
+      }
+      final rootId = _part?.id;
+      if (newlyPathed.isNotEmpty && rootId != null && names.containsKey(rootId)) targets.add(rootId);
+      targets.removeWhere((id) => !names.containsKey(id));
+
+      final stamped = stampExternalRefs(documentPayload: fullSessionExport, relativePathByPartId: paths);
       await _api.importNative(stamped);
+      setState(() => _relativePathByPartId = paths);
 
-      var relativePath = _relativePathByPartId[focusPartId];
-      if (relativePath == null) {
-        final part = await _api.getPart(focusPartId);
-        relativePath = await _autoAssignPath(root, part.name, _relativePathByPartId);
-        setState(() => _relativePathByPartId = {..._relativePathByPartId, focusPartId: relativePath!});
-      }
-
-      try {
-        await _assemblyDocumentClient.savePart(root, focusPartId, relativePath, extras: _extrasFor(focusPartId));
-      } on StorageException catch (e) {
-        // [_isDirty] stays true (set by [_runGuarded]) until a write really
-        // succeeds; [_recoverFromFailedSave] explains and offers Save As.
-        failedPath = relativePath;
-        failureReason = e.message;
-        return;
-      }
-      setState(() => _isDirty = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
+      for (final id in targets) {
+        try {
+          await _assemblyDocumentClient.savePart(root, id, paths[id]!, extras: _extrasFor(id));
+          written.add(id);
+          setState(() => _markPartWritten(id));
+        } on StorageException catch (e) {
+          failures.add(_SaveFailure(partId: id, name: names[id]!, relativePath: paths[id]!, reason: e.message));
+        }
       }
     });
-    final failed = failedPath;
-    if (failed != null) await _recoverFromFailedSave(failed, failureReason ?? 'unknown error');
+    if (!mounted) return;
+
+    if (failures.isEmpty) {
+      if (written.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(written.length == 1 ? 'Saved' : 'Saved ${written.length} files')),
+        );
+      }
+      return;
+    }
+    // One file that would not write and nothing else wrong: the original explain-and-Save-As flow.
+    if (failures.length == 1 && failures.single.partId == focusPartId && written.isEmpty) {
+      await _recoverFromFailedSave(failures.single.relativePath, failures.single.reason);
+      return;
+    }
+    await _showSaveFailures(failures, written.length);
   }
 
-  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
-  /// §3.3): Save As's real behavior once a Project exists - saves the
-  /// *currently focused* Part's current content under a newly-chosen
-  /// project-relative path (reusing [showRelativePathPromptDialog], the
-  /// same "pick a path within this root" prompt Save All's own per-Part
-  /// loop already uses) with a freshly re-minted identity (see the comment
-  /// in the body: item 3 of `docs/bug-report-2026-10-14-plan.md`). For the
-  /// root Part the session then *becomes* the new file (it is reopened, so a
-  /// later plain Save targets it) - standard "Save As" semantics; for a
-  /// sub-component it is a "Save a copy" and the assembly is left alone.
-  ///
-  /// Deliberately always writes a *fresh* export to the new path rather
-  /// than physically moving the old file
-  /// ([StorageService.renameFile]/§3.2's own tool for that) - Save As saves
-  /// the Part's current in-session state, which could differ from
-  /// whatever was last written to its old file. If the old path differs
-  /// from the new one, the old file is simply left in place rather than
-  /// deleted - `StorageService` has no delete primitive (a real, deliberate
-  /// scope limit, not an oversight), so an orphaned stale file is the
-  /// honest, safe outcome here, never a silent data loss.
+  /// Save wrote some files and not others: says which and why, keeps the
+  /// failed Parts marked unsaved, and offers another go or another folder.
+  Future<void> _showSaveFailures(List<_SaveFailure> failures, int writtenCount) async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text("Couldn't save ${failures.length} ${failures.length == 1 ? 'file' : 'files'}"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (writtenCount > 0) Text('$writtenCount saved.'),
+            if (writtenCount > 0) const SizedBox(height: 8),
+            for (final failure in failures)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('${failure.name} (${failure.relativePath}): ${failure.reason}'),
+              ),
+            const SizedBox(height: 8),
+            const Text('They stay marked as unsaved.'),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop('close'), child: const Text('Close')),
+          TextButton(onPressed: () => Navigator.of(context).pop('folder'), child: const Text('Choose another folder')),
+          FilledButton(onPressed: () => Navigator.of(context).pop('retry'), child: const Text('Try again')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'retry') {
+      await _saveFocusedPart();
+    } else if (choice == 'folder') {
+      final newRoot = await _pickAnotherProjectRoot();
+      if (newRoot == null || !mounted) return;
+      // A new folder holds none of the files: every Part in the session has to be written there.
+      setState(() {
+        _projectRoot = newRoot;
+        _dirtyPartIds.addAll(_relativePathByPartId.keys);
+        final rootPartId = _part?.id;
+        if (rootPartId != null) _dirtyPartIds.add(rootPartId);
+      });
+      await _saveFocusedPart();
+    }
+  }
+
+  Future<ProjectRoot?> _pickAnotherProjectRoot() async {
+    try {
+      return await _storageService.pickOrCreateProjectRoot();
+    } on StorageException catch (e) {
+      if (mounted && !e.message.contains('No folder was selected')) setState(() => _errorMessage = e.message);
+      return null;
+    }
+  }
+
   Future<void> _saveFocusedPartAs() async {
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
@@ -11148,7 +11280,8 @@ class _PartScreenState extends State<PartScreen> {
       await _saveNeverSavedComponentAs(root, focusPartId, partName, currentPath, newPath);
       return;
     }
-    final wasDirty = _isDirty;
+    final dirtyBefore = Set.of(_dirtyPartIds);
+    final neverWrittenBefore = Set.of(_neverWrittenPartIds);
     var saved = false;
     await _runGuarded(() async {
       try {
@@ -11185,7 +11318,14 @@ class _PartScreenState extends State<PartScreen> {
     }
     // A copy leaves the session itself exactly as unsaved as it was ([_runGuarded]
     // marks every guarded action dirty).
-    setState(() => _isDirty = wasDirty);
+    setState(() {
+      _dirtyPartIds
+        ..clear()
+        ..addAll(dirtyBefore);
+      _neverWrittenPartIds
+        ..clear()
+        ..addAll(neverWrittenBefore);
+    });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved a copy as $newPath')));
   }
 
@@ -11230,7 +11370,10 @@ class _PartScreenState extends State<PartScreen> {
         setState(() => _errorMessage = 'Failed to save: ${e.message}');
         return;
       }
-      setState(() => _relativePathByPartId = {..._relativePathByPartId, partId: newPath});
+      setState(() {
+        _relativePathByPartId = {..._relativePathByPartId, partId: newPath};
+        _markPartWritten(partId);
+      });
       saved = true;
     });
     if (!saved || !mounted) return;
@@ -11715,7 +11858,11 @@ class _PartScreenState extends State<PartScreen> {
       // own coarse default would mark every session dirty from the first
       // frame, defeating [_confirmExitPart]'s whole point for the common
       // "opened it, didn't touch anything, exited" case.
-      setState(() => _isDirty = false);
+      setState(() {
+        _isDirty = false;
+        // A reference found by id already holds its corrected path in the session; it reaches disk with the next Save.
+        if (widget.initialReferenceReports.any((report) => !report.needsYou)) _markPartDirty(part.id);
+      });
     });
   }
 
@@ -13749,7 +13896,10 @@ class _PartScreenState extends State<PartScreen> {
       if (!mounted) return null;
       setState(() => _projectRoot = root);
       return root;
-    } on StorageException {
+    } on StorageException catch (e) {
+      // Cancelling the picker is silent; anything else (no folder dialog
+      // available, a lost grant) is told to the user.
+      if (mounted && !e.message.contains('No folder was selected')) setState(() => _errorMessage = e.message);
       return null;
     }
   }
@@ -13777,6 +13927,18 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onCreateNewComponentPressed() async {
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
+
+    // The folder comes first: a component is auto-pathed inside it, and
+    // cancelling here must not leave a half-made component behind.
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) {
+      if (mounted && _errorMessage == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Choose a project folder to create a component in.')),
+        );
+      }
+      return;
+    }
 
     final name = _nextComponentName();
 
@@ -13813,9 +13975,6 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (newPartId == null || !mounted) return;
 
-    final root = await _ensureProjectRoot();
-    if (root == null || !mounted) return;
-
     var relativePathByPartId = _relativePathByPartId;
     if (!relativePathByPartId.containsKey(newPartId)) {
       final childPath = await _autoAssignPath(root, name, relativePathByPartId);
@@ -13826,7 +13985,12 @@ class _PartScreenState extends State<PartScreen> {
       relativePathByPartId = {...relativePathByPartId, rootPartId: parentPath};
     }
     if (!mounted) return;
-    setState(() => _relativePathByPartId = relativePathByPartId);
+    // No file yet: the next Save writes it (and the parent that now refers to it).
+    setState(() {
+      _relativePathByPartId = relativePathByPartId;
+      _neverWrittenPartIds.add(newPartId!);
+      _markPartDirty(rootPartId);
+    });
   }
 
   /// The auto-generated default name for a newly created component -
@@ -23661,7 +23825,7 @@ class _PartScreenState extends State<PartScreen> {
           referenceGhostVertices: ghostVertices,
           referenceGhostEdges: ghostEdges,
           bodies: _visibleBodies,
-          documentPartId: _part?.id,
+          documentPartId: _focusStack?.current ?? _part?.id,
           sketchFeatureId: feature.id,
           planeBasis: basis,
           // On-device feedback: other sketches should stay visible while
@@ -23690,7 +23854,7 @@ class _PartScreenState extends State<PartScreen> {
       // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
       // §3.4): coarse dirty-flag set - see [_isDirty]'s own doc comment for
       // why "every guarded action" is the right granularity here.
-      _isDirty = true;
+      _markPartDirty();
     });
     _busyOverlayTimer?.cancel();
     _busyOverlayTimer = Timer(_busyOverlayDelay, () {
@@ -24710,6 +24874,10 @@ class _PartScreenState extends State<PartScreen> {
                 Positioned.fill(
                   child: AssemblyTreePanel(
                     motionSummary: _motionStatusText,
+                    unsavedPartIds: _dirtyPartIds,
+                    neverSavedPartIds: _neverWrittenPartIds,
+                    parentUnsaved: _focusedPartId != null && _dirtyPartIds.contains(_focusedPartId),
+                    parentNeverSaved: _focusedPartId != null && _neverWrittenPartIds.contains(_focusedPartId),
                     multiSelectHeader: _activeMultiSelect == null
                         ? null
                         : MultiSelectActionBar(
@@ -26512,4 +26680,15 @@ class _PaintPick {
   final String label;
 
   const _PaintPick({required this.path, this.bodyId, this.faceIndex, required this.label});
+}
+
+
+/// One Part that Save could not write: shown by [_PartScreenState._showSaveFailures].
+class _SaveFailure {
+  const _SaveFailure({required this.partId, required this.name, required this.relativePath, required this.reason});
+
+  final String partId;
+  final String name;
+  final String relativePath;
+  final String reason;
 }

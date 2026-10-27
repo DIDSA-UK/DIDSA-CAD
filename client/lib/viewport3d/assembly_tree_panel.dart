@@ -260,6 +260,14 @@ class AssemblyTreePanel extends StatefulWidget {
   /// move) - shown under the parent row while the Move/Rotate gizmo is on a mated component. `null` = nothing to show.
   final String? motionSummary;
 
+  /// Parts with changes not yet written to their file, and Parts with no file
+  /// yet. An Occurrence row of such a Part, and the header row when
+  /// [parentUnsaved] / [parentNeverSaved] say so, shows a small dot.
+  final Set<String> unsavedPartIds;
+  final Set<String> neverSavedPartIds;
+  final bool parentUnsaved;
+  final bool parentNeverSaved;
+
   const AssemblyTreePanel({
     super.key,
     required this.visible,
@@ -290,6 +298,10 @@ class AssemblyTreePanel extends StatefulWidget {
     this.constraintStatusByOccurrenceId = const {},
     this.multiSelectHeader,
     this.motionSummary,
+    this.unsavedPartIds = const {},
+    this.neverSavedPartIds = const {},
+    this.parentUnsaved = false,
+    this.parentNeverSaved = false,
   });
 
   @override
@@ -507,6 +519,8 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                   style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                 ),
               ),
+              if (widget.parentUnsaved || widget.parentNeverSaved)
+                _buildUnsavedDot(context, neverSaved: widget.parentNeverSaved),
             ],
           ),
         ),
@@ -630,6 +644,28 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     );
   }
 
+  /// The "needs saving" marker: a filled dot for changes since the last
+  /// Save, a hollow one for a Part that has no file yet.
+  Widget _buildUnsavedDot(BuildContext context, {required bool neverSaved}) {
+    final colour = Theme.of(context).colorScheme.tertiary;
+    return Tooltip(
+      message: neverSaved ? 'Not saved yet' : 'Unsaved changes',
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        child: Container(
+          key: Key(neverSaved ? 'unsaved-dot-new' : 'unsaved-dot'),
+          width: 9,
+          height: 9,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: neverSaved ? null : colour,
+            border: Border.all(color: colour, width: 1.5),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildOccurrenceTile(BuildContext context, int index) {
     final occurrence = widget.occurrences[index];
     final selected = occurrence.id == widget.selectedOccurrenceId;
@@ -726,6 +762,10 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                       ? null
                       : () => widget.onOccurrenceVisibilityToggle!(occurrence),
                 ),
+                if (occurrence.resolvedPartId != null &&
+                    (widget.unsavedPartIds.contains(occurrence.resolvedPartId) ||
+                        widget.neverSavedPartIds.contains(occurrence.resolvedPartId)))
+                  _buildUnsavedDot(context, neverSaved: widget.neverSavedPartIds.contains(occurrence.resolvedPartId)),
                 if (multiSelectMode)
                   Padding(
                     padding: const EdgeInsets.only(left: 4),
