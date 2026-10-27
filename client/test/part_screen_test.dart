@@ -7056,7 +7056,7 @@ void main() {
       bigWindow(tester);
       await pumpScreen(tester, layout: desktop());
       expect(find.byKey(const ValueKey('menu-view')), findsNothing);
-      expect(find.text('View'), findsOneWidget);
+      expect(find.byKey(const ValueKey('ribbon-tab-view')), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('menu-options')));
       await tester.pump();
       for (final label in ['Select edges', 'Tree pane', 'Controls…', 'Keyboard shortcuts']) {
