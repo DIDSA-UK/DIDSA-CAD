@@ -73,3 +73,55 @@ MouseCursor mouseNavCursor(MouseNavAction action) => switch (action) {
       MouseNavAction.pan => SystemMouseCursors.grabbing,
       MouseNavAction.zoom => SystemMouseCursors.zoomIn,
     };
+
+/// Desktop input D2: how a select click applies to the selection.
+enum SelectClick {
+  /// Touch (and stylus): each canvas's own touch rule, unchanged - see the
+  /// callers ([SketchController.selectEntity], `PartScreen`'s toggle).
+  touch,
+
+  /// A plain mouse click: the clicked entity replaces the selection
+  /// (SOLIDWORKS); a click on empty space clears it.
+  replace,
+
+  /// A Ctrl+click: adds the entity, or removes it if already selected; a
+  /// Ctrl+click on empty space leaves the selection alone.
+  toggle,
+}
+
+/// The [SelectClick] for a click by a pointer of [kind], reading Ctrl off
+/// the live keyboard state.
+SelectClick selectClickFor(PointerDeviceKind? kind) {
+  if (kind != PointerDeviceKind.mouse) return SelectClick.touch;
+  return HardwareKeyboard.instance.isControlPressed ? SelectClick.toggle : SelectClick.replace;
+}
+
+/// Whether a mouse box select should add to the selection (Ctrl held) - see
+/// [SelectClick.toggle].
+bool mouseBoxSelectIsAdditive() => HardwareKeyboard.instance.isControlPressed;
+
+/// Desktop input D2: spots a middle-button double-click (SOLIDWORKS: fit the
+/// view) - two middle presses within the platform double-tap time and
+/// distance. Feed it every pointer-down; a press that completes a double
+/// click returns true and starts no view drag.
+class MiddleDoubleClickDetector {
+  Duration? _lastPressTime;
+  Offset? _lastPressPosition;
+
+  bool registerPress(PointerDownEvent event) {
+    if (event.kind != PointerDeviceKind.mouse || event.buttons & kMiddleMouseButton == 0) {
+      _lastPressTime = null;
+      _lastPressPosition = null;
+      return false;
+    }
+    final lastTime = _lastPressTime;
+    final lastPosition = _lastPressPosition;
+    final isDouble = lastTime != null &&
+        lastPosition != null &&
+        event.timeStamp - lastTime <= kDoubleTapTimeout &&
+        (event.position - lastPosition).distance <= kDoubleTapSlop;
+    _lastPressTime = isDouble ? null : event.timeStamp;
+    _lastPressPosition = isDouble ? null : event.position;
+    return isDouble;
+  }
+}

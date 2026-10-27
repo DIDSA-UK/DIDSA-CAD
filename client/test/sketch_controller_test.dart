@@ -15,6 +15,7 @@ import 'support/slvs_reference/solvespace_clamp.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/view_transform.dart';
+import 'package:didsa_cad_client/viewport3d/mouse_navigation.dart' show SelectClick;
 
 /// Milestone B/E's host-built didsa_slvs_ffi library, if it's been built
 /// (see tools/solvespace-reference/CMakeLists.txt's own header comment for the
@@ -12987,6 +12988,114 @@ void main() {
       controller.selectionSet,
       contains(predicate<SketchSelection>((s) => s.kind == SelectionKind.circle && s.id == circle.id)),
     );
+  });
+
+  group('desktop input D2: crossing / additive box select and mouse click rules', () {
+    Future<(SketchLineView, SketchLineView)> placeTwoLines() async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(5, 5);
+      await controller.handleCanvasTap(15, 5);
+      controller.finishChain();
+      final first = controller.lines.values.first;
+      await controller.handleCanvasTap(50, 50);
+      await controller.handleCanvasTap(60, 50);
+      controller.finishChain();
+      final second = controller.lines.values.last;
+      controller.exitToSelectMode();
+      return (first, second);
+    }
+
+    bool selected(SelectionKind kind, String id) => controller.selectionSet.any((s) => s.kind == kind && s.id == id);
+
+    test('a crossing box picks a Line it only partly covers; a window box does not', () async {
+      final (line, _) = await placeTwoLines();
+      const box = Rect.fromLTRB(8, 0, 12, 10); // the middle of the first Line only
+
+      controller.selectInRect(box);
+      expect(selected(SelectionKind.line, line.id), isFalse);
+
+      controller.selectInRect(box, crossing: true);
+      expect(selected(SelectionKind.line, line.id), isTrue);
+      expect(controller.ribbonVisible, isTrue);
+    });
+
+    test('a crossing box picks a Circle whose rim it touches, not one it misses', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(30, 30);
+      await controller.handleCanvasTap(35, 30); // radius 5
+      final circle = controller.circles.values.single;
+      controller.exitToSelectMode();
+
+      controller.selectInRect(const Rect.fromLTRB(34, 28, 40, 32), crossing: true); // over the rim at (35, 30)
+      expect(selected(SelectionKind.circle, circle.id), isTrue);
+
+      controller.selectInRect(const Rect.fromLTRB(29, 29, 31, 31), crossing: true); // inside, off the rim
+      expect(selected(SelectionKind.circle, circle.id), isFalse);
+    });
+
+    test("a crossing box follows an Arc's counter-clockwise sweep", () async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0); // centre
+      await controller.handleCanvasTap(10, 0); // start
+      await controller.handleCanvasTap(0, 10); // end - a quarter arc through (7.07, 7.07)
+      final arc = controller.arcs.values.single;
+      controller.exitToSelectMode();
+
+      controller.selectInRect(const Rect.fromLTRB(6, 6, 8, 8), crossing: true);
+      expect(selected(SelectionKind.arc, arc.id), isTrue);
+
+      // The same spot in the opposite quadrant is on the full circle but not the arc.
+      controller.selectInRect(const Rect.fromLTRB(-8, -8, -6, -6), crossing: true);
+      expect(selected(SelectionKind.arc, arc.id), isFalse);
+    });
+
+    test('an additive box keeps what was already selected', () async {
+      final (first, second) = await placeTwoLines();
+      controller.selectInRect(const Rect.fromLTRB(4, 4, 16, 6));
+      expect(selected(SelectionKind.line, first.id), isTrue);
+
+      controller.selectInRect(const Rect.fromLTRB(49, 49, 61, 51), additive: true);
+      expect(selected(SelectionKind.line, first.id), isTrue);
+      expect(selected(SelectionKind.line, second.id), isTrue);
+
+      controller.selectInRect(const Rect.fromLTRB(49, 49, 61, 51));
+      expect(selected(SelectionKind.line, first.id), isFalse, reason: 'a plain box replaces');
+    });
+
+    test('a plain mouse click replaces; Ctrl+click toggles; Ctrl+click on blank keeps', () async {
+      final (first, second) = await placeTwoLines();
+
+      controller.selectClick = SelectClick.replace;
+      await controller.handleCanvasTap(8, 5);
+      expect(selected(SelectionKind.line, first.id), isTrue);
+      await controller.handleCanvasTap(53, 50);
+      expect(selected(SelectionKind.line, second.id), isTrue);
+      expect(selected(SelectionKind.line, first.id), isFalse, reason: 'a plain click replaces');
+
+      controller.selectClick = SelectClick.toggle;
+      await controller.handleCanvasTap(8, 5);
+      expect(selected(SelectionKind.line, first.id), isTrue);
+      expect(selected(SelectionKind.line, second.id), isTrue, reason: 'Ctrl+click adds');
+      await controller.handleCanvasTap(53, 50);
+      expect(selected(SelectionKind.line, second.id), isFalse, reason: 'Ctrl+click removes');
+      await controller.handleCanvasTap(30, 30); // blank
+      expect(selected(SelectionKind.line, first.id), isTrue, reason: 'Ctrl+click on blank keeps');
+
+      controller.selectClick = SelectClick.replace;
+      await controller.handleCanvasTap(30, 30); // blank
+      expect(controller.selectionSet, isEmpty, reason: 'a plain click on blank clears');
+      expect(controller.ribbonVisible, isFalse);
+    });
+
+    test('the touch rule is unchanged: each tap adds while the flyout is open', () async {
+      final (first, second) = await placeTwoLines();
+      expect(controller.selectClick, SelectClick.touch);
+      await controller.handleCanvasTap(8, 5);
+      await controller.handleCanvasTap(53, 50);
+      await controller.handleCanvasTap(8, 5); // again - stays selected
+      expect(selected(SelectionKind.line, first.id), isTrue);
+      expect(selected(SelectionKind.line, second.id), isTrue);
+    });
   });
 
   test('deselect removes one entity from a multi-selection and closes the ribbon once the last '

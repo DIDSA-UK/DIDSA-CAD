@@ -6,7 +6,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 
 import '../api/sketch_api_client.dart';
+import '../viewport3d/mouse_navigation.dart' show SelectClick;
 import 'dof_analysis.dart';
+import 'marquee_selection.dart';
 import 'projector/sketch_drag_stats.dart';
 import 'projector/sketch_projector.dart';
 import 'pattern_mirror_expansion.dart';
@@ -9579,6 +9581,9 @@ class SketchController extends ChangeNotifier {
   /// closed is now a no-op - it used to open the flyout showing only an
   /// "Exit Sketch" action, which has moved to the hamburger menu and is no
   /// longer reachable via the canvas at all.
+  ///
+  /// Desktop input D2: a mouse click follows [selectClick] instead - see
+  /// [selectEntity]; a Ctrl+click on blank space keeps the selection.
   Future<void> _handleSelectTap(double hitRadius) async {
     if (_busy) return;
     SketchSelection? hit;
@@ -9587,6 +9592,7 @@ class SketchController extends ChangeNotifier {
     });
 
     if (hit == null) {
+      if (selectClick == SelectClick.toggle) return;
       if (_ribbonVisible) {
         _selectionSet.clear();
         _ribbonVisible = false;
@@ -9595,18 +9601,16 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
-    if (_ribbonVisible && _selectionSet.isNotEmpty) {
-      if (!_selectionSet.any((s) => s.sameAs(hit!))) {
-        _selectionSet.add(hit!);
-      }
-    } else {
-      _selectionSet
-        ..clear()
-        ..add(hit!);
-    }
-    _ribbonVisible = true;
-    notifyListeners();
+    selectEntity(hit!);
   }
+
+  /// Desktop input D2: how the next select click (a canvas tap, a
+  /// constraint label, the embedded 3D view's pick) applies - set by
+  /// whichever canvas saw the pointer press ([SketchCanvas], or
+  /// `SketchScreen` for the embedded 3D view), from the pointer kind and
+  /// Ctrl. [SelectClick.touch] (the default) is the touch rule
+  /// [selectEntity] has always had.
+  SelectClick selectClick = SelectClick.touch;
 
   /// Selects a Constraint directly by id - the entry point for tapping a
   /// dimension/constraint label on the canvas (Stage 13's hit-testing for
@@ -9625,17 +9629,32 @@ class SketchController extends ChangeNotifier {
   /// [SketchSelection] by the caller) needs the exact same rule with no
   /// hit-testing of its own to do, the same way [selectConstraint] never
   /// re-hit-tests either.
+  ///
+  /// Desktop input D2: for a mouse ([selectClick]) a plain click replaces
+  /// the selection and a Ctrl+click adds or removes [hit] (SOLIDWORKS); the
+  /// touch rule above (each tap adds while the flyout is open) is unchanged.
   void selectEntity(SketchSelection hit) {
-    if (_ribbonVisible && _selectionSet.isNotEmpty) {
-      if (!_selectionSet.any((s) => s.sameAs(hit))) {
-        _selectionSet.add(hit);
-      }
-    } else {
-      _selectionSet
-        ..clear()
-        ..add(hit);
+    switch (selectClick) {
+      case SelectClick.touch:
+        if (_ribbonVisible && _selectionSet.isNotEmpty) {
+          if (!_selectionSet.any((s) => s.sameAs(hit))) {
+            _selectionSet.add(hit);
+          }
+        } else {
+          _selectionSet
+            ..clear()
+            ..add(hit);
+        }
+      case SelectClick.replace:
+        _selectionSet
+          ..clear()
+          ..add(hit);
+      case SelectClick.toggle:
+        final before = _selectionSet.length;
+        _selectionSet.removeWhere((s) => s.sameAs(hit));
+        if (_selectionSet.length == before) _selectionSet.add(hit);
     }
-    _ribbonVisible = true;
+    _ribbonVisible = _selectionSet.isNotEmpty;
     notifyListeners();
   }
 
@@ -9750,13 +9769,25 @@ class SketchController extends ChangeNotifier {
   /// constraints-not-auto-included limitation today, so this stays
   /// consistent with existing behavior rather than introducing new
   /// special-casing.
-  void selectInRect(Rect sketchRect) {
+  ///
+  /// Desktop input D2 (`docs/desktop-input-scope.md`): [crossing] (a mouse
+  /// box dragged right to left) also picks every entity any part of which
+  /// touches the box - see `marquee_selection.dart`; [additive] (Ctrl held)
+  /// adds to [selectionSet] instead of replacing it. Both default off, which
+  /// is the touch marquee's behaviour unchanged.
+  void selectInRect(Rect sketchRect, {bool crossing = false, bool additive = false}) {
     bool insideRect(double x, double y) {
       return x >= sketchRect.left &&
           x <= sketchRect.right &&
           y >= sketchRect.top &&
           y <= sketchRect.bottom;
     }
+
+    // Crossing box only: whether [polyline] (sketch coordinates) touches
+    // the box anywhere. A window box never asks.
+    bool touches(List<Offset> polyline, {bool closed = false}) =>
+        crossing && polylineTouchesRect(polyline, sketchRect, closed: closed);
+    Offset at(SketchPointView p) => Offset(p.x, p.y);
 
     final selected = <SketchSelection>[];
     for (final point in points.values) {
@@ -9769,7 +9800,7 @@ class SketchController extends ChangeNotifier {
       final start = points[line.startPointId];
       final end = points[line.endPointId];
       if (start == null || end == null) continue;
-      if (insideRect(start.x, start.y) && insideRect(end.x, end.y)) {
+      if ((insideRect(start.x, start.y) && insideRect(end.x, end.y)) || touches([at(start), at(end)])) {
         selected.add(SketchSelection(kind: SelectionKind.line, id: line.id));
       }
     }
@@ -9780,8 +9811,8 @@ class SketchController extends ChangeNotifier {
       final radius = math.sqrt(
         math.pow(edge.x - center.x, 2) + math.pow(edge.y - center.y, 2),
       );
-      if (insideRect(center.x - radius, center.y - radius) &&
-          insideRect(center.x + radius, center.y + radius)) {
+      if ((insideRect(center.x - radius, center.y - radius) && insideRect(center.x + radius, center.y + radius)) ||
+          touches(ellipsePolyline(at(center), radius, radius, 0, 0, 2 * math.pi), closed: true)) {
         selected.add(SketchSelection(kind: SelectionKind.circle, id: circle.id));
       }
     }
@@ -9795,8 +9826,10 @@ class SketchController extends ChangeNotifier {
       // own check - a superset of the arc's actual (smaller) extent, so
       // this only ever under-selects a marquee-enclosed Arc, never
       // wrongly includes one that isn't fully inside.
-      if (insideRect(center.x - radius, center.y - radius) &&
-          insideRect(center.x + radius, center.y + radius)) {
+      final arcStart = math.atan2(start.y - center.y, start.x - center.x);
+      final arcSweep = normalizeSketchAngle(math.atan2(end.y - center.y, end.x - center.x) - arcStart);
+      if ((insideRect(center.x - radius, center.y - radius) && insideRect(center.x + radius, center.y + radius)) ||
+          touches(ellipsePolyline(at(center), radius, radius, 0, arcStart, arcSweep))) {
         selected.add(SketchSelection(kind: SelectionKind.arc, id: arc.id));
       }
     }
@@ -9811,8 +9844,12 @@ class SketchController extends ChangeNotifier {
       final majorRadius = math.sqrt(
         math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2),
       );
-      if (insideRect(center.x - majorRadius, center.y - majorRadius) &&
-          insideRect(center.x + majorRadius, center.y + majorRadius)) {
+      final ellipseMinor = points[ellipse.minorPointId];
+      final ellipseMinorRadius = ellipseMinor == null ? ellipse.minorRadius : _distanceXY((center.x, center.y), (ellipseMinor.x, ellipseMinor.y));
+      final ellipseRotation = math.atan2(major.y - center.y, major.x - center.x);
+      if ((insideRect(center.x - majorRadius, center.y - majorRadius) &&
+              insideRect(center.x + majorRadius, center.y + majorRadius)) ||
+          touches(ellipsePolyline(at(center), majorRadius, ellipseMinorRadius, ellipseRotation, 0, 2 * math.pi), closed: true)) {
         selected.add(SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id));
       }
     }
@@ -9824,8 +9861,9 @@ class SketchController extends ChangeNotifier {
       final majorRadius = math.sqrt(
         math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2),
       );
-      if (insideRect(center.x - majorRadius, center.y - majorRadius) &&
-          insideRect(center.x + majorRadius, center.y + majorRadius)) {
+      if ((insideRect(center.x - majorRadius, center.y - majorRadius) &&
+              insideRect(center.x + majorRadius, center.y + majorRadius)) ||
+          (crossing && _ellipseArcTouchesRect(ellipseArc, sketchRect))) {
         selected.add(SketchSelection(kind: SelectionKind.ellipseArc, id: ellipseArc.id));
       }
     }
@@ -9837,7 +9875,14 @@ class SketchController extends ChangeNotifier {
         for (final id in [...spline.throughPointIds, ...spline.controlPointIds]) points[id],
       ];
       if (definingPoints.any((p) => p == null)) continue;
-      if (definingPoints.every((p) => insideRect(p!.x, p.y))) {
+      if (definingPoints.every((p) => insideRect(p!.x, p.y)) ||
+          (crossing &&
+              spline.segments().any((segment) {
+                final (p0, c1, c2, p3) = segment;
+                final ends = [points[p0], points[c1], points[c2], points[p3]];
+                if (ends.any((p) => p == null)) return false;
+                return touches(cubicPolyline(at(ends[0]!), at(ends[1]!), at(ends[2]!), at(ends[3]!)));
+              }))) {
         selected.add(SketchSelection(kind: SelectionKind.spline, id: spline.id));
       }
     }
@@ -9847,15 +9892,43 @@ class SketchController extends ChangeNotifier {
       // their own outer boundary, so they need no separate check).
       final contours = textAbsoluteContours(text);
       if (contours == null) continue;
-      if (contours.every((c) => c.outer.every((p) => insideRect(p.$1, p.$2)))) {
+      List<Offset> loop(List<(double, double)> contour) => [for (final p in contour) Offset(p.$1, p.$2)];
+      if (contours.every((c) => c.outer.every((p) => insideRect(p.$1, p.$2))) ||
+          contours.any((c) => touches(loop(c.outer), closed: true) || c.holes.any((h) => touches(loop(h), closed: true)))) {
         selected.add(SketchSelection(kind: SelectionKind.text, id: text.id));
       }
     }
-    _selectionSet
-      ..clear()
-      ..addAll(selected);
+    if (!additive) _selectionSet.clear();
+    for (final selection in selected) {
+      if (!_selectionSet.any((s) => s.sameAs(selection))) _selectionSet.add(selection);
+    }
     _ribbonVisible = _selectionSet.isNotEmpty;
     notifyListeners();
+  }
+
+  /// [selectInRect]'s crossing test for an Ellipse Arc: the same parametric
+  /// angles and counter-clockwise sweep the canvas draws it with
+  /// (`_ellipseArcScreenAngles`, `sketch_canvas.dart`).
+  bool _ellipseArcTouchesRect(SketchEllipseArcView ellipseArc, Rect rect) {
+    final center = points[ellipseArc.centerPointId];
+    final major = points[ellipseArc.majorPointId];
+    final minor = points[ellipseArc.minorPointId];
+    final start = points[ellipseArc.startPointId];
+    final end = points[ellipseArc.endPointId];
+    if (center == null || major == null || minor == null || start == null || end == null) return false;
+    final a = _distanceXY((center.x, center.y), (major.x, major.y));
+    final b = _distanceXY((center.x, center.y), (minor.x, minor.y));
+    if (a < 1e-9 || b < 1e-9) return false;
+    final rotation = math.atan2(major.y - center.y, major.x - center.x);
+    double localAngle(SketchPointView p) {
+      final dx = p.x - center.x, dy = p.y - center.y;
+      final cosR = math.cos(-rotation), sinR = math.sin(-rotation);
+      return math.atan2((dx * sinR + dy * cosR) / b, (dx * cosR - dy * sinR) / a);
+    }
+
+    final startAngle = localAngle(start);
+    final sweep = normalizeSketchAngle(localAngle(end) - startAngle);
+    return polylineTouchesRect(ellipsePolyline(Offset(center.x, center.y), a, b, rotation, startAngle, sweep), rect);
   }
 
   /// Deletes every entity in [selectionSet], cascaded via

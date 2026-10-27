@@ -1,8 +1,10 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/mouse_navigation.dart' show SelectClick;
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 
@@ -102,4 +104,51 @@ void main() {
     expect(toggled, isEmpty, reason: 'no middle or right drag or click may commit a selection');
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('desktop input D2: each click reports its rule; Ctrl+click on empty space keeps the selection', (tester) async {
+    final clicks = <SelectClick>[];
+    var clears = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 400,
+            height: 400,
+            child: PartViewport(
+              bodies: [_triangle],
+              selectedPlane: null,
+              onPlaneTap: (_) {},
+              onBackgroundTap: () {},
+              selectionMode: true,
+              onSelectClick: clicks.add,
+              onClearSelection: () => clears++,
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!await _pumpUntilGpuReady(tester)) {
+      markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+      return;
+    }
+    await tester.pump();
+
+    // Far corner: empty space.
+    await tester.tapAt(const Offset(390, 10), kind: PointerDeviceKind.mouse);
+    await tester.pump();
+    expect(clicks.last, SelectClick.replace);
+    expect(clears, 1, reason: 'a plain click on empty space clears');
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.tapAt(const Offset(390, 10), kind: PointerDeviceKind.mouse);
+    await tester.pump();
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    expect(clicks.last, SelectClick.toggle);
+    expect(clears, 1, reason: 'a Ctrl+click on empty space keeps the selection');
+
+    await tester.tapAt(const Offset(390, 10));
+    await tester.pump();
+    expect(clicks.last, SelectClick.touch);
+  });
 }
+

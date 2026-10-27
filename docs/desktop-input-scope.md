@@ -1,7 +1,7 @@
 # Mouse, keyboard and big-screen use — scope
 
-**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 built on branch `claude/flutter-desktop-mode-ui-pxmq0q`
-(Progress below). Written 26 Oct 2026 from a read of `client/lib` on `main` and the owner's first test on a Samsung phone in DeX (external monitor, mouse, keyboard): "reasonable, but needs
+**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 and D2 built on branch
+`claude/flutter-desktop-mode-ui-pxmq0q` (Progress below). Written 26 Oct 2026 from a read of `client/lib` on `main` and the owner's first test on a Samsung phone in DeX (external monitor, mouse, keyboard): "reasonable, but needs
 polish and alignment with desktop CAD controls. Middle click drag to orbit; mouse cursors are on top of each other."
 
 **Target:** an Android device driving an external monitor with a mouse and keyboard: Samsung DeX, and the same thing on non-Samsung
@@ -14,7 +14,8 @@ has the same gaps.
 | Phase | Summary | Status | Where |
 |---|---|---|---|
 | D1 | Middle/right mouse drags navigate in every mode (SOLIDWORKS bindings), one cursor, scroll-scaled wheel zoom | Done (not merged; unit and widget tested, the 3D viewport test skips without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
-| D2-D6 | | Not started | |
+| D2 | Orbit about the geometry under the cursor, mouse box select on drag (window / crossing, Ctrl adds), middle double-click fit, SOLIDWORKS click selection for a mouse | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
+| D3-D6 | | Not started | |
 
 Update this table with every milestone.
 
@@ -40,6 +41,32 @@ Update this table with every milestone.
   pre-highlight still shows what's under the cursor in select; the draw case has only the cursor shape. Worth judging on the device.
 - Not checked: the wheel notch size DeX reports (if under 50 px, each notch zooms a little less than before), and the Shift+middle
   zoom direction against SOLIDWORKS' (chosen as drag up = zoom in).
+
+### D2 implementation notes
+
+- **Orbit about the cursor** (`OrbitCamera.orbitAboutPointByScreenDelta`): a middle press hit-tests under the cursor
+  (`PartViewportState._orbitPivotAt`: bodies, components and component edges/vertices, whatever the selection filter, reference
+  planes skipped) and the drag orbits about that point - the target's offset from it is carried round in the camera's frame, so the
+  point stays put on screen. Over empty space it orbits about the camera target as before. The target moves with it (as a pan
+  does); Reset view recentres. Test: `test/orbit_camera_test.dart`.
+- **Middle double-click** (`MiddleDoubleClickDetector`, platform double-tap time and slop): Reset view in the 3D viewport, Zoom to
+  fit in the 2D sketch canvas. Not added to the mesh viewer (it has no fit action of its own yet).
+- **Mouse box select** (2D canvas and the 3D-embedded sketch): a left press on blank canvas in select mode becomes a box as soon as
+  it drags past the tap threshold - no 500 ms hold and no pop circle (both stay for touch). Dragged left to right it's a window
+  (blue, entirely inside, as before); right to left it's a crossing (green, anything touching); Ctrl adds to the selection.
+  `SketchController.selectInRect(rect, crossing:, additive:)`; the crossing geometry is in `sketch/marquee_selection.dart`
+  (curves tested as fine polylines - circles/arcs/ellipses 96 samples a turn, splines 24 per span; arcs and ellipse arcs follow their
+  counter-clockwise sweep). In the 3D view a mouse box only starts inside a sketch: **box select of bodies, faces and components is
+  not built** (it never was, for touch either) - a candidate for D5 or a phase of its own.
+- **Click rule** (`SelectClick` in `mouse_navigation.dart`): a plain mouse click replaces the selection, Ctrl+click adds or removes,
+  a click on empty space clears, Ctrl+click on empty space keeps it. Touch is unchanged (sketch: each tap adds while the flyout is
+  open; part: each tap toggles). `PartViewport.onSelectClick` reports the rule just before it commits a click; the 2D canvas sets
+  `SketchController.selectClick` on every press. In the part screen a plain click only replaces **when no tool is open**
+  (`_anyToolSessionActive`, the list that already hid the corner buttons): inside a tool every click keeps collecting picks as before,
+  which is also how a SOLIDWORKS feature's selection box behaves. Tests: `test/sketch_controller_test.dart` ("desktop input D2"),
+  `test/marquee_selection_test.dart`, `test/sketch_canvas_mouse_navigation_test.dart`, `test/part_viewport_mouse_navigation_test.dart`
+  (skips without a GPU). The part screen's replace branch has no headless test (it needs the real viewport).
+- Select Other's click-then-hold still works with a mouse: its "undo the first click" is now always a toggle.
 
 ## 1. What the app did before D1
 
@@ -245,7 +272,7 @@ Don't decide by platform (DeX reports Android). Decide by **window size** and **
 | Phase | Covers | Size | Notes |
 |---|---|---|---|
 | D1 | R1a, R1c, R2: middle and right drag navigate in every mode; one cursor; scaled wheel zoom | small | Fixes both things from the first test. Widget-testable with `tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kMiddleMouseButton)`. |
-| D2 | R1b, plain-drag box select, MMB double-click fit, desktop click selection for a mouse (R6) | small-medium | Orbit about the cursor needs a hit-test on press; there's no extra round trip to the backend. |
+| D2 | R1b, plain-drag box select, MMB double-click fit, desktop click selection for a mouse (R6) | small-medium | Built (Progress above). |
 | D3 | R3: shortcut table, Esc/Enter/Delete/undo/save/views/fit, sketch tool keys, `?` sheet, tooltip hints | medium | Esc must never fall through to Android Back. |
 | D4 | R4: right-click popups via `showActionSheet(position:)` | small-medium | One helper, then each call site. |
 | D5 | R1d presets + settings, R6 polish | small | |

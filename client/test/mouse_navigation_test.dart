@@ -90,4 +90,40 @@ void main() {
     expect(mouseNavCursor(MouseNavAction.pan), SystemMouseCursors.grabbing);
     expect(mouseNavCursor(MouseNavAction.zoom), SystemMouseCursors.zoomIn);
   });
+
+  group('MiddleDoubleClickDetector (desktop input D2)', () {
+    PointerDownEvent press(int ms, {Offset at = const Offset(10, 10), int buttons = kMiddleMouseButton}) =>
+        PointerDownEvent(kind: PointerDeviceKind.mouse, buttons: buttons, position: at, timeStamp: Duration(milliseconds: ms));
+
+    test('two quick middle presses in the same spot are a double-click', () {
+      final detector = MiddleDoubleClickDetector();
+      expect(detector.registerPress(press(0)), isFalse);
+      expect(detector.registerPress(press(150)), isTrue);
+      expect(detector.registerPress(press(200)), isFalse, reason: 'a third press starts again');
+    });
+
+    test('too slow, too far apart, or another button in between is not', () {
+      final detector = MiddleDoubleClickDetector();
+      detector.registerPress(press(0));
+      expect(detector.registerPress(press(1000)), isFalse);
+      expect(detector.registerPress(press(1100, at: const Offset(400, 400))), isFalse);
+      detector.registerPress(press(2000));
+      detector.registerPress(press(2050, buttons: kPrimaryMouseButton));
+      expect(detector.registerPress(press(2100)), isFalse);
+    });
+  });
+
+  test('selectClickFor: mouse replaces, Ctrl+mouse toggles, anything else is touch', () {
+    expect(selectClickFor(PointerDeviceKind.touch), SelectClick.touch);
+    expect(selectClickFor(PointerDeviceKind.stylus), SelectClick.touch);
+    expect(selectClickFor(null), SelectClick.touch);
+  });
+
+  testWidgets('selectClickFor reads Ctrl live', (tester) async {
+    expect(selectClickFor(PointerDeviceKind.mouse), SelectClick.replace);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    expect(selectClickFor(PointerDeviceKind.mouse), SelectClick.toggle);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+  });
 }
+

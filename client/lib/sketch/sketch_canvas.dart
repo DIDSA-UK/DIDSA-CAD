@@ -8,6 +8,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/sketch_api_client.dart';
 import '../viewport3d/mouse_navigation.dart';
+import 'marquee_selection.dart';
 import 'pattern_mirror_expansion.dart';
 import 'plane_indicator.dart';
 import 'sketch_controller.dart';
@@ -107,6 +108,27 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// middle button's orbit pans here.
   Offset? _mouseNavAnchor;
   MouseNavAction? _mouseNavAction;
+
+  /// Desktop input D2: a left mouse press on blank canvas in select mode,
+  /// waiting to see whether it drags - past the tap threshold it becomes a
+  /// box select straight away, with no long-press hold (that's for touch).
+  Offset? _mouseMarqueeDownScreen;
+
+  /// Desktop input D2: a middle double-click zooms to fit (the Zoom to fit
+  /// button).
+  final MiddleDoubleClickDetector _middleDoubleClick = MiddleDoubleClickDetector();
+
+  /// Whether the active marquee was started by a mouse: only then does its
+  /// direction pick window or crossing, and Ctrl add to the selection.
+  bool _marqueeByMouse = false;
+
+  /// A mouse box dragged right to left is a crossing select (SOLIDWORKS /
+  /// AutoCAD), drawn green; left to right is a window select, drawn blue.
+  bool get _marqueeCrossing {
+    final anchor = _longPressDownScreen;
+    final current = _marqueeCurrentScreen;
+    return _marqueeByMouse && anchor != null && current != null && current.dx < anchor.dx;
+  }
 
   void _noteDeviceKind(PointerDeviceKind kind) {
     if (_lastPointerKind == kind) return;
@@ -332,34 +354,44 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// No-op otherwise, so e.g. a long-press on an existing Point still just
   /// behaves like an ordinary press-and-hold (no special gesture fires).
   void _maybeStartLongPress(Offset downScreen, ViewTransform transform) {
-    final controller = widget.controller;
-    if (controller.mode != SketchMode.select) return;
-    // A marquee-select starting while something's grabbed via drag mode
-    // would be a confusing second gesture layered on top of the first - a
-    // stationary press elsewhere on the canvas while repositioning a
-    // grabbed Point/Line should just be part of that swipe, not grow into
-    // a marquee.
-    if (controller.isEntityGrabbed) return;
-    final coord = transform.screenToSketch(downScreen.dx, downScreen.dy);
-    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
-    if (controller.hasEntityNear(coord.x, coord.y, hitRadius)) return;
+    if (!_marqueeMayStartAt(downScreen, transform)) return;
     _longPressDownScreen = downScreen;
     _longPressTimer?.cancel();
     _longPressTimer = Timer(_longPressDuration, () => _startMarquee(downScreen));
   }
 
+  /// Whether a press at [downScreen] may grow into a marquee: select mode,
+  /// nothing grabbed, and blank canvas under the press.
+  bool _marqueeMayStartAt(Offset downScreen, ViewTransform transform) {
+    final controller = widget.controller;
+    if (controller.mode != SketchMode.select) return false;
+    // A marquee-select starting while something's grabbed via drag mode
+    // would be a confusing second gesture layered on top of the first - a
+    // stationary press elsewhere on the canvas while repositioning a
+    // grabbed Point/Line should just be part of that swipe, not grow into
+    // a marquee.
+    if (controller.isEntityGrabbed) return false;
+    final coord = transform.screenToSketch(downScreen.dx, downScreen.dy);
+    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+    return !controller.hasEntityNear(coord.x, coord.y, hitRadius);
+  }
+
   /// Fires once [_longPressDuration] elapses without the pointer traveling
   /// far enough to cancel - shows the swell-and-pop circle and switches the
   /// gesture state machine over to marquee-drag mode.
-  void _startMarquee(Offset downScreen) {
+  ///
+  /// Desktop input D2: a mouse drag ([byMouse]) starts one straight away and
+  /// skips the pop - there was no hold to announce.
+  void _startMarquee(Offset downScreen, {bool byMouse = false}) {
     _longPressTimer = null;
     setState(() {
       _marqueeActive = true;
+      _marqueeByMouse = byMouse;
       _longPressDownScreen = downScreen;
       _marqueeCurrentScreen = downScreen;
-      _longPressPopCenter = downScreen;
+      if (!byMouse) _longPressPopCenter = downScreen;
     });
-    _longPressPopController.forward(from: 0);
+    if (!byMouse) _longPressPopController.forward(from: 0);
   }
 
   /// Cancels a pending (not yet fired) long-press timer - does not affect
@@ -390,7 +422,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       Offset(anchorSketch.x, anchorSketch.y),
       Offset(currentSketch.x, currentSketch.y),
     );
-    widget.controller.selectInRect(rect);
+    // Desktop input D2: a mouse box's direction picks window or crossing,
+    // and Ctrl adds; a touch marquee is a replacing window select as before.
+    final byMouse = _marqueeByMouse;
+    _marqueeByMouse = false;
+    widget.controller.selectInRect(
+      rect,
+      crossing: byMouse && current.dx < anchor.dx,
+      additive: byMouse && mouseBoxSelectIsAdditive(),
+    );
   }
 
   /// Runs every frame regardless of pointer activity: if the cursor's
@@ -730,10 +770,19 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // fight the marquee over what the gesture even means.
     if (_marqueeActive) return;
     _noteDeviceKind(event.kind);
+    final middleDoubleClick = _middleDoubleClick.registerPress(event);
     if (isMouseNavPress(event)) {
+      final size = _lastSize;
+      if (middleDoubleClick && size != null) {
+        setState(() => _viewport.zoomToFit(widget.controller.geometryBoundingBox, size));
+        return;
+      }
       _mouseNavAnchor = event.localPosition;
       return;
     }
+    // Desktop input D2: how this press's select click applies (a mouse
+    // click replaces, Ctrl+click toggles; touch keeps its own rule).
+    widget.controller.selectClick = selectClickFor(event.kind);
     if (event.kind == PointerDeviceKind.mouse) {
       // Only the primary (left) button counts as a bare tap, same as a
       // touch tap - a right-click starts a pan drag instead (see
@@ -744,7 +793,10 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // hover event.
       if (event.buttons & kPrimaryMouseButton != 0) {
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
-        _maybeStartLongPress(event.localPosition, transform);
+        // Desktop input D2: a mouse box select starts on drag, not after a
+        // hold - see [_mouseMarqueeDownScreen]. Checked before the tap,
+        // which may change what's under the press.
+        _mouseMarqueeDownScreen = _marqueeMayStartAt(event.localPosition, transform) ? event.localPosition : null;
         _dispatchTap(transform);
       }
       return;
@@ -775,6 +827,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
 
   void _handlePointerMove(PointerMoveEvent event, ViewTransform transform, Size size) {
     if (_marqueeActive) {
+      setState(() => _marqueeCurrentScreen = event.localPosition);
+      return;
+    }
+    final mouseMarqueeDown = _mouseMarqueeDownScreen;
+    if (mouseMarqueeDown != null &&
+        event.kind == PointerDeviceKind.mouse &&
+        (event.localPosition - mouseMarqueeDown).distance > _tapTravelThreshold) {
+      _mouseMarqueeDownScreen = null;
+      _startMarquee(mouseMarqueeDown, byMouse: true);
       setState(() => _marqueeCurrentScreen = event.localPosition);
       return;
     }
@@ -862,6 +923,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // still ambiguous when the pointer ends.
     _cancelLongPress();
     if (event.kind == PointerDeviceKind.mouse) {
+      _mouseMarqueeDownScreen = null;
       _mouseNavAnchor = null;
       if (_mouseNavAction != null) setState(() => _mouseNavAction = null);
       return;
@@ -1015,6 +1077,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                 child: CustomPaint(
                   size: size,
                   painter: _MarqueePainter(
+                    crossing: _marqueeCrossing,
                     rect: Rect.fromPoints(
                       _longPressDownScreen ?? Offset.zero,
                       _marqueeCurrentScreen ?? _longPressDownScreen ?? Offset.zero,
@@ -1095,22 +1158,27 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
 class _MarqueePainter extends CustomPainter {
   final Rect rect;
 
-  const _MarqueePainter({required this.rect});
+  /// Desktop input D2: a crossing box (mouse, right to left) is green.
+  final bool crossing;
+
+  const _MarqueePainter({required this.rect, this.crossing = false});
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(rect, Paint()..color = Colors.blue.withValues(alpha: 0.12));
+    final colour = crossing ? kCrossingBoxColor : Colors.blue;
+    canvas.drawRect(rect, Paint()..color = colour.withValues(alpha: 0.12));
     canvas.drawRect(
       rect,
       Paint()
-        ..color = Colors.blue.withValues(alpha: 0.8)
+        ..color = colour.withValues(alpha: 0.8)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
   }
 
   @override
-  bool shouldRepaint(covariant _MarqueePainter oldDelegate) => oldDelegate.rect != rect;
+  bool shouldRepaint(covariant _MarqueePainter oldDelegate) =>
+      oldDelegate.rect != rect || oldDelegate.crossing != crossing;
 }
 
 /// Stage 23g: the swell-and-pop circle shown at the instant a long-press

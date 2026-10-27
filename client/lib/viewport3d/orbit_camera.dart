@@ -505,6 +505,20 @@ class OrbitCamera {
     orientation = (orientation * pitch * yaw).normalized();
   }
 
+  /// Desktop input D2: [orbitByScreenDelta], but pivoting on [pivot] (the
+  /// geometry under the cursor when a middle drag began - SOLIDWORKS'
+  /// rotate-about-entity) instead of [target]: [target]'s offset from
+  /// [pivot] is carried round in the camera's own frame, so [pivot] stays
+  /// where it is on screen while the view turns about it.
+  void orbitAboutPointByScreenDelta(double dxPixels, double dyPixels, vm.Vector3 pivot) {
+    final offset = target - pivot;
+    final alongRight = offset.dot(_right);
+    final alongUp = offset.dot(_up);
+    final alongBack = offset.dot(_direction);
+    orbitByScreenDelta(dxPixels, dyPixels);
+    target = pivot + _right * alongRight + _up * alongUp + _direction * alongBack;
+  }
+
   /// Drag-to-pan: moves [target] (and so the whole view) in the camera's own
   /// screen-relative right/up plane, so the point under the cursor at drag
   /// start tracks the cursor - the same "grab and drag the scene" feel as

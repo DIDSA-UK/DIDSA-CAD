@@ -113,6 +113,7 @@ import 'relative_path_dialog.dart';
 import 'render_mode.dart';
 import 'revolve_panel.dart';
 import 'revolve_surface_panel.dart';
+import 'mouse_navigation.dart' show SelectClick;
 import 'move_body_panel.dart';
 import 'move_face_panel.dart';
 import 'move_rotate_component_panel.dart';
@@ -2036,40 +2037,52 @@ class _PartScreenState extends State<PartScreen> {
   /// deliberately less restrictive [_selectionModeFabVisible] instead - the
   /// two corners can genuinely disagree now, so this is no longer a
   /// "shared by both" condition, just the left column's own.
-  bool get _viewportFabColumnsVisible =>
-      !_featureTreeVisible &&
-      !_planeSelectionMode &&
-      !_confirmingSketchOrientation &&
-      !_extrudeActive &&
-      !_surfaceActive &&
-      !_createPlaneActive &&
-      !_filletActive &&
-      !_chamferActive &&
-      !_revolveActive &&
-      !_sweepActive &&
-      !_loftActive &&
-      !_planarSurfaceActive &&
-      !_revolveSurfaceActive &&
-      !_sweptSurfaceActive &&
-      !_loftSurfaceActive &&
-      !_ruledSurfaceActive &&
-      !_thickenActive &&
-      !_knitSurfaceActive &&
-      !_solidFromSurfacesActive &&
-      !_offsetSurfaceActive &&
-      !_mirrorActive &&
-      !_patternActive &&
-      !_mergeActive &&
-      !_booleanActive &&
-      !_deleteBodyActive &&
-      !_scaleBodyActive &&
-      !_moveBodyActive &&
-      !_deleteFaceActive &&
-      !_moveFaceActive &&
-      !_shellActive &&
-      !_profilePickerActive &&
-      !_pathPickerActive &&
-      !_measureActive;
+  bool get _viewportFabColumnsVisible => !_featureTreeVisible && !_anyToolSessionActive;
+
+  /// Whether a tool session (or plane picking / sketch orientation) owns the
+  /// viewport - [_viewportFabColumnsVisible]'s list, and the sessions in
+  /// which a click keeps collecting picks rather than replacing the
+  /// selection (desktop input D2, see [_selectClick]).
+  bool get _anyToolSessionActive =>
+      _planeSelectionMode ||
+      _confirmingSketchOrientation ||
+      _extrudeActive ||
+      _surfaceActive ||
+      _createPlaneActive ||
+      _filletActive ||
+      _chamferActive ||
+      _revolveActive ||
+      _sweepActive ||
+      _loftActive ||
+      _planarSurfaceActive ||
+      _revolveSurfaceActive ||
+      _sweptSurfaceActive ||
+      _loftSurfaceActive ||
+      _ruledSurfaceActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive ||
+      _mirrorActive ||
+      _patternActive ||
+      _mergeActive ||
+      _booleanActive ||
+      _deleteBodyActive ||
+      _scaleBodyActive ||
+      _moveBodyActive ||
+      _deleteFaceActive ||
+      _moveFaceActive ||
+      _shellActive ||
+      _profilePickerActive ||
+      _pathPickerActive ||
+      _measureActive;
+
+  /// Desktop input D2: how the viewport's current select click applies (set
+  /// by [PartViewport.onSelectClick] just before the pick arrives). With no
+  /// tool open, a plain mouse click ([SelectClick.replace]) replaces the
+  /// selection, SOLIDWORKS-style; inside a tool, and for Ctrl+click and
+  /// touch, a click toggles as it always has (a tool collects its picks).
+  SelectClick _selectClick = SelectClick.touch;
 
   /// Whether [FeatureTreePanel] is actually on screen right now - true
   /// [_featureTreeVisible] alone is not enough, since that flag stays
@@ -2816,6 +2829,16 @@ class _PartScreenState extends State<PartScreen> {
       final shellBodyId = _currentShellBodyId();
       if (shellBodyId != null && entity.bodyId != shellBodyId) return;
       _shellBodyId ??= entity.bodyId;
+    }
+    if (_selectClick == SelectClick.replace && !_anyToolSessionActive) {
+      // Desktop input D2: a plain mouse click with no tool open replaces the
+      // selection - as an empty-space click then this click would (see
+      // [_clearSelectedEntities]), so a component's drawer closes too.
+      setState(() {
+        _selectedEntities = {entity};
+        if (_lens == AssemblyLens.assembly && !_moveRotateComponentActive) _selectedOccurrenceId = null;
+      });
+      return;
     }
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
@@ -23817,6 +23840,7 @@ class _PartScreenState extends State<PartScreen> {
                   selectionMode: _selectionMode,
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
+                  onSelectClick: (click) => _selectClick = click,
                   onClearSelection: _clearSelectedEntities,
                   onSelectOtherRequested: _handleSelectOtherRequested,
                   highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,

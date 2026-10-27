@@ -1410,6 +1410,9 @@ class _SketchScreenState extends State<SketchScreen> {
         selectionFilter: _embeddedCursorModeFilter,
         selectedEntities: _embeddedSelectedEntities,
         onSelectionToggle: _handleEmbeddedSelectionToggle,
+        // Desktop input D2: the click rule for the pick that follows (see
+        // SketchController.selectClick).
+        onSelectClick: (click) => _controller.selectClick = click,
         onClearSelection: _controller.closeRibbon,
         // P25 (2D-sketcher feature parity): feeds straight into
         // SketchController.selectInRect - the exact same method

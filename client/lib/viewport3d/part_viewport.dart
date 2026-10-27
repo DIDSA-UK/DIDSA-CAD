@@ -21,6 +21,7 @@ import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'mouse_navigation.dart';
+import '../sketch/marquee_selection.dart' show kCrossingBoxColor;
 import 'orbit_camera.dart';
 import 'orthographic_camera.dart';
 import 'reference_planes.dart';
@@ -902,6 +903,14 @@ class PartViewport extends StatefulWidget {
   /// from [selectedEntities] (Item 4's toggle rule).
   final void Function(SelectionEntityRef entity)? onSelectionToggle;
 
+  /// Desktop input D2: fired at the start of every committed select click,
+  /// ahead of [onConstraintOverlayItemTap] / [onSelectionToggle] /
+  /// [onClearSelection], with how that click applies: [SelectClick.replace]
+  /// for a plain mouse click, [SelectClick.toggle] for Ctrl+click,
+  /// [SelectClick.touch] for a touch tap (the caller's own rule). The
+  /// caller keeps it for the callbacks that follow.
+  final ValueChanged<SelectClick>? onSelectClick;
+
   /// Fired when a tap (Fix 4) commits while the cursor is over empty space -
   /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
@@ -920,7 +929,10 @@ class PartViewport extends StatefulWidget {
   /// [sketchPlaneBasis] to resolve to anything (a marquee whose corners
   /// both miss the plane fires nothing). Only engages while [selectionMode]
   /// is true.
-  final void Function(Rect sketchRect)? onMarqueeSelect;
+  ///
+  /// Desktop input D2: a mouse box sets [crossing] when dragged right to
+  /// left and [additive] when Ctrl is held; a touch marquee sets neither.
+  final void Function(Rect sketchRect, {bool crossing, bool additive})? onMarqueeSelect;
 
   /// Bug report ("if one body is entirely inside another body, it cannot be
   /// selected" - user-requested SOLIDWORKS-style "Select Other"): fired once
@@ -1146,6 +1158,7 @@ class PartViewport extends StatefulWidget {
     this.selectionMode = false,
     this.selectedEntities = const {},
     this.onSelectionToggle,
+    this.onSelectClick,
     this.onClearSelection,
     this.onMarqueeSelect,
     this.onSelectOtherRequested,
@@ -1572,6 +1585,29 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   /// What [_mouseNavPointer]'s drag last did, for [_viewportMouseCursor].
   MouseNavAction? _mouseNavAction;
+
+  /// Desktop input D2: the world point a middle drag orbits about - the
+  /// geometry under the press (SOLIDWORKS' rotate-about-entity), or null
+  /// over empty space, which orbits about the camera target as before.
+  vm.Vector3? _orbitPivot;
+
+  /// Desktop input D2: a middle double-click fits the view.
+  final MiddleDoubleClickDetector _middleDoubleClick = MiddleDoubleClickDetector();
+
+  /// Desktop input D2: a left mouse press on empty space in selection mode,
+  /// waiting to see whether it drags - past the tap threshold it becomes a
+  /// box select straight away (no long-press hold; that's for touch).
+  Offset? _mouseMarqueeDownScreen;
+
+  /// Whether the active marquee was started by a mouse - only then does its
+  /// direction pick window or crossing, and Ctrl add.
+  bool _marqueeByMouse = false;
+
+  bool get _marqueeCrossing {
+    final anchor = _marqueeDownScreen;
+    final current = _marqueeCurrentScreen;
+    return _marqueeByMouse && anchor != null && current != null && current.dx < anchor.dx;
+  }
 
   bool get _mouseDriven => _lastPointerKind == PointerDeviceKind.mouse;
 
@@ -4580,9 +4616,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _noteDeviceKind(event.kind);
     // Desktop input D1: a middle or right press drags the view in every
     // mode, ahead of gizmos, marquee and select - see [_mouseNavPointer].
+    final middleDoubleClick = _middleDoubleClick.registerPress(event);
     if (isMouseNavPress(event)) {
+      // Desktop input D2: a middle double-click fits the view (the Reset
+      // view button) and starts no drag.
+      if (middleDoubleClick) {
+        setState(_doRecentre);
+        return;
+      }
       _mouseNavPointer = event.pointer;
       _mouseNavAnchor = event.localPosition;
+      _orbitPivot = event.buttons & kMiddleMouseButton != 0 ? _orbitPivotAt(event.localPosition) : null;
       return;
     }
     // Sectioning Tool: a gizmo-handle grab takes top priority over every
@@ -4654,6 +4698,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // (which only ever arms over empty space, so the two can never
         // both fire for the same gesture).
         _maybeStartSelectOtherHold(event.localPosition);
+      } else if (event.kind == PointerDeviceKind.mouse) {
+        // Desktop input D2: a mouse box select starts on drag, not after a
+        // hold - see [_mouseMarqueeDownScreen].
+        // Only where a box selects anything: the embedded sketch (part
+        // and assembly box select is not built yet).
+        final boxSelects = widget.onMarqueeSelect != null && widget.sketchPlaneBasis != null;
+        _mouseMarqueeDownScreen =
+            boxSelects && !_hasEntityNearScreenPoint(event.localPosition) ? event.localPosition : null;
       } else {
         _maybeStartMarqueeLongPress(event.localPosition);
       }
@@ -4703,6 +4755,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     if (widget.selectionMode) {
       if (_marqueeActive) {
+        setState(() => _marqueeCurrentScreen = event.localPosition);
+        return;
+      }
+      final mouseMarqueeDown = _mouseMarqueeDownScreen;
+      if (mouseMarqueeDown != null &&
+          event.kind == PointerDeviceKind.mouse &&
+          (event.localPosition - mouseMarqueeDown).distance > _tapTravelThreshold) {
+        _mouseMarqueeDownScreen = null;
+        _cancelSelectOtherHold();
+        _startMarquee(mouseMarqueeDown, byMouse: true);
         setState(() => _marqueeCurrentScreen = event.localPosition);
         return;
       }
@@ -4820,6 +4882,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // fire if its pointer lifts first - mirrors sketch_canvas.dart's own
       // _cancelLongPress call at the same point.
       _cancelMarqueeLongPress();
+      _mouseMarqueeDownScreen = null;
       // Bug report ("Select Other"): same "lifting first cancels the
       // pending hold" rule as the marquee's own long-press just above.
       _cancelSelectOtherHold();
@@ -4916,7 +4979,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _mouseNavAction = action;
       switch (action) {
         case MouseNavAction.orbit:
-          _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy);
+          final pivot = _orbitPivot;
+          if (pivot != null) {
+            _camera.orbitAboutPointByScreenDelta(event.delta.dx, event.delta.dy, pivot);
+          } else {
+            _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy);
+          }
         case MouseNavAction.pan:
           _camera.panByScreenDelta(event.delta.dx, event.delta.dy);
         case MouseNavAction.zoom:
@@ -4932,6 +5000,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _endMouseNavigation(PointerEvent event) {
     _mouseNavPointer = null;
     _mouseNavAnchor = null;
+    _orbitPivot = null;
     setState(() {
       _mouseNavAction = null;
       _resyncCameraDependentOverlays();
@@ -4954,6 +5023,32 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (_sectionDragHandle != null || _componentGizmoDragHandle != null) return SystemMouseCursors.grabbing;
     if (widget.drawCursorMode && !widget.suppressDrawCursor) return SystemMouseCursors.precise;
     return SystemMouseCursors.basic;
+  }
+
+  /// Desktop input D2: the world point under [screenPosition] for a middle
+  /// drag to orbit about - the nearest body, component or component
+  /// edge/vertex hit, whatever the selection filter (navigation isn't
+  /// selection), or null over empty space. Reference planes are skipped:
+  /// they're large and mostly empty, so pivoting on one would feel random.
+  vm.Vector3? _orbitPivotAt(Offset screenPosition) {
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
+    final meshHit = widget.bodies.isEmpty || widget.bodiesHidden
+        ? null
+        : hitTestBodies(
+            ray: _toLocalRay(ray),
+            viewportSize: _viewportSize,
+            bodies: widget.bodies,
+            facesOccludeOtherHits: widget.renderMode.showsFilledFaces,
+            orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+            fovRadiansY: _perspectiveFovOf(camera),
+          );
+    final hits = [meshHit, _hoverHitTestComponents(ray), _hoverHitTestComponentEntities(ray, camera)].whereType<HoverHit>();
+    if (hits.isEmpty) return null;
+    // `ray.at(t)` and `_toLocalRay(ray).at(t)` name the same point (see
+    // [_toLocalRay]), so every hit's rayT is read along the world ray.
+    final nearest = hits.reduce((a, b) => a.rayT <= b.rayT ? a : b);
+    return ray.at(nearest.rayT);
   }
 
   /// Item 2: "Drag moves cursor relatively (sensitivity-scaled, not 1:1);
@@ -5280,6 +5375,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// click-then-hold Select Other gesture that grows out of that same tap
   /// can undo it.
   SelectionEntityRef? _commitSelection() {
+    // Desktop input D2: a mouse click replaces (Ctrl+click toggles) - see
+    // [PartViewport.onSelectClick].
+    final click = selectClickFor(_lastPointerKind);
+    widget.onSelectClick?.call(click);
     if (widget.onConstraintOverlayItemTap != null) {
       final basis = widget.sketchPlaneBasis;
       final cursor = _cursorPosition;
@@ -5297,7 +5396,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     final hit = _hoverHit;
     if (hit == null) {
-      widget.onClearSelection?.call();
+      // Desktop input D2: a Ctrl+click on empty space keeps the selection.
+      if (click != SelectClick.toggle) widget.onClearSelection?.call();
       return null;
     }
     widget.onSelectionToggle?.call(hit.entity);
@@ -5351,10 +5451,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// travelling far enough to cancel (see [_onPointerMove]'s own
   /// selectionMode branch) - switches the gesture state machine over to
   /// marquee-drag mode.
-  void _startMarquee(Offset downScreen) {
+  void _startMarquee(Offset downScreen, {bool byMouse = false}) {
     _marqueeLongPressTimer = null;
     setState(() {
       _marqueeActive = true;
+      _marqueeByMouse = byMouse;
       _marqueeDownScreen = downScreen;
       _marqueeCurrentScreen = downScreen;
     });
@@ -5385,6 +5486,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _endMarquee() {
     final anchor = _marqueeDownScreen;
     final current = _marqueeCurrentScreen;
+    final byMouse = _marqueeByMouse;
+    _marqueeByMouse = false;
     _marqueeActive = false;
     _marqueeDownScreen = null;
     _marqueeCurrentScreen = null;
@@ -5396,7 +5499,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (anchorHit == null || currentHit == null) return;
     final (anchorX, anchorY) = worldPointToSketch(basis, anchorHit.$1);
     final (currentX, currentY) = worldPointToSketch(basis, currentHit.$1);
-    widget.onMarqueeSelect?.call(Rect.fromPoints(Offset(anchorX, anchorY), Offset(currentX, currentY)));
+    // Desktop input D2: a mouse box's screen direction picks window or
+    // crossing, and Ctrl adds.
+    widget.onMarqueeSelect?.call(
+      Rect.fromPoints(Offset(anchorX, anchorY), Offset(currentX, currentY)),
+      crossing: byMouse && current.dx < anchor.dx,
+      additive: byMouse && mouseBoxSelectIsAdditive(),
+    );
   }
 
   // ---- Bug report: "Select Other" (click, then click-and-hold) -----------
@@ -5523,6 +5632,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final toUndo = _lastTapToggledEntity;
     _lastTapToggledEntity = null;
     if (toUndo != null) {
+      // Desktop input D2: undone as a toggle whatever the first click was.
+      widget.onSelectClick?.call(SelectClick.toggle);
       widget.onSelectionToggle?.call(toUndo);
     }
     widget.onSelectOtherRequested?.call(candidates);
@@ -5911,6 +6022,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [_onPointerEnd]), commits the current [_drawCursorWorldHit] if the
   /// cursor is actually resolving to a point on the plane.
   void _commitDrawCursor() {
+    widget.onSelectClick?.call(selectClickFor(_lastPointerKind));
     if (widget.preferConstraintOverlayHitOnCommit && widget.onConstraintOverlayItemTap != null) {
       final basis = widget.sketchPlaneBasis;
       final cursor = _cursorPosition;
@@ -7089,6 +7201,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 child: CustomPaint(
                   size: size,
                   painter: _MarqueeRectPainter(
+                    crossing: _marqueeCrossing,
                     corner1: _marqueeDownScreen!,
                     corner2: _marqueeCurrentScreen!,
                   ),
@@ -7272,16 +7385,20 @@ class _MarqueeRectPainter extends CustomPainter {
   final Offset corner1;
   final Offset corner2;
 
-  const _MarqueeRectPainter({required this.corner1, required this.corner2});
+  /// Desktop input D2: a crossing box (mouse, right to left) is green.
+  final bool crossing;
+
+  const _MarqueeRectPainter({required this.corner1, required this.corner2, this.crossing = false});
 
   @override
   void paint(Canvas canvas, Size size) {
     final rect = Rect.fromPoints(corner1, corner2);
-    canvas.drawRect(rect, Paint()..color = const Color(0x332196F3));
+    final colour = crossing ? kCrossingBoxColor : const Color(0xFF2196F3);
+    canvas.drawRect(rect, Paint()..color = colour.withValues(alpha: 0.2));
     canvas.drawRect(
       rect,
       Paint()
-        ..color = const Color(0xFF2196F3)
+        ..color = colour
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
@@ -7289,7 +7406,7 @@ class _MarqueeRectPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _MarqueeRectPainter oldDelegate) =>
-      oldDelegate.corner1 != corner1 || oldDelegate.corner2 != corner2;
+      oldDelegate.corner1 != corner1 || oldDelegate.corner2 != corner2 || oldDelegate.crossing != crossing;
 }
 
 /// On-device feedback ("put [the origin marker] behind the cursor, dynamic

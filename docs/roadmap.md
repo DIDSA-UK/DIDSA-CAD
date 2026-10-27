@@ -632,7 +632,8 @@ Anything promoted out of this list should get its own scoping doc before it is b
 
 - **Mouse, keyboard and big-screen use (Samsung DeX, Android desktop mode, Windows):** SOLIDWORKS-style mouse navigation in every
   mode, keyboard shortcuts, right-click menus, navigation presets, and up to a full desktop layout for a docked phone. **Scoped in
-  `docs/desktop-input-scope.md` (decisions 26 Oct 2026); D1 (middle/right drag navigation, one cursor, scaled wheel zoom) built on
+  `docs/desktop-input-scope.md` (decisions 26 Oct 2026); D1 (middle/right drag navigation, one cursor, scaled wheel zoom) and D2 (orbit about the
+  cursor, mouse box select with window/crossing, middle double-click fit, SOLIDWORKS click selection) built on
   `claude/flutter-desktop-mode-ui-pxmq0q`, not merged.**
 - **Shared network storage + server-side assembly composition for a
   non-Flutter VR/XR (Quest) client - not scoped, placeholder only.**

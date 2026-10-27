@@ -8,6 +8,7 @@ import 'package:http/testing.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
+import 'package:didsa_cad_client/viewport3d/mouse_navigation.dart' show SelectClick;
 
 /// Desktop input D1 (`docs/desktop-input-scope.md`): the 2D sketch canvas's
 /// mouse bindings - middle drag (and Ctrl+middle, and right drag) pans,
@@ -20,10 +21,22 @@ class _Viewport {
   double zoom = 1;
 }
 
-Future<(SketchController, _Viewport)> _pumpCanvas(WidgetTester tester) async {
-  final controller = SketchController(
-    api: SketchApiClient(httpClient: MockClient((request) async => http.Response('not found', 404))),
-  );
+/// Records [selectInRect]'s arguments (desktop input D2: the canvas picks
+/// window / crossing from the drag direction and additive from Ctrl).
+class _RecordingController extends SketchController {
+  _RecordingController() : super(api: SketchApiClient(httpClient: MockClient((request) async => http.Response('not found', 404))));
+
+  final boxes = <(Rect, bool, bool)>[];
+
+  @override
+  void selectInRect(Rect sketchRect, {bool crossing = false, bool additive = false}) {
+    boxes.add((sketchRect, crossing, additive));
+    super.selectInRect(sketchRect, crossing: crossing, additive: additive);
+  }
+}
+
+Future<(_RecordingController, _Viewport)> _pumpCanvas(WidgetTester tester) async {
+  final controller = _RecordingController();
   final viewport = _Viewport();
   await tester.pumpWidget(
     MaterialApp(
@@ -145,5 +158,75 @@ void main() {
     await tester.pump();
     expect(controller.mode, SketchMode.draw);
     expect(_canvasCursor(tester), SystemMouseCursors.precise);
+  });
+
+  group('desktop input D2', () {
+    Future<void> leftDrag(WidgetTester tester, Offset from, Offset by) async {
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kPrimaryMouseButton);
+      await gesture.down(from);
+      await tester.pump();
+      await gesture.moveBy(by);
+      await tester.pump();
+      await gesture.up();
+      await tester.pump();
+    }
+
+    testWidgets('a left mouse drag on blank canvas box-selects at once: left to right is a window', (tester) async {
+      final (controller, _) = await _pumpCanvas(tester);
+      await leftDrag(tester, const Offset(100, 100), const Offset(120, 80));
+      expect(controller.boxes, hasLength(1));
+      expect(controller.boxes.single.$2, isFalse, reason: 'left to right is a window select');
+      expect(controller.boxes.single.$3, isFalse);
+    });
+
+    testWidgets('right to left is a crossing select; Ctrl adds', (tester) async {
+      final (controller, _) = await _pumpCanvas(tester);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await leftDrag(tester, const Offset(300, 100), const Offset(-120, 80));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      expect(controller.boxes, hasLength(1));
+      expect(controller.boxes.single.$2, isTrue, reason: 'right to left is a crossing select');
+      expect(controller.boxes.single.$3, isTrue, reason: 'Ctrl adds');
+    });
+
+    testWidgets('a left click that does not drag is no box', (tester) async {
+      final (controller, _) = await _pumpCanvas(tester);
+      await leftDrag(tester, const Offset(100, 100), const Offset(2, 1));
+      expect(controller.boxes, isEmpty);
+    });
+
+    testWidgets('each press sets the click rule: mouse replaces, Ctrl+mouse toggles, touch keeps its own', (tester) async {
+      final (controller, _) = await _pumpCanvas(tester);
+      await tester.tapAt(const Offset(100, 100), kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      expect(controller.selectClick, SelectClick.replace);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.tapAt(const Offset(100, 100), kind: PointerDeviceKind.mouse);
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      expect(controller.selectClick, SelectClick.toggle);
+
+      await tester.tapAt(const Offset(100, 100));
+      await tester.pump();
+      expect(controller.selectClick, SelectClick.touch);
+    });
+
+    testWidgets('a middle double-click zooms to fit (empty sketch: back to the default view)', (tester) async {
+      final (_, viewport) = await _pumpCanvas(tester);
+      final defaultPan = viewport.pan;
+      await _mouseDrag(tester, kMiddleMouseButton, const Offset(60, 40));
+      expect(viewport.pan, isNot(defaultPan));
+
+      for (var i = 0; i < 2; i++) {
+        final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kMiddleMouseButton);
+        await gesture.down(const Offset(200, 200));
+        await tester.pump(const Duration(milliseconds: 50));
+        await gesture.up();
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      await tester.pump();
+      expect(viewport.pan, defaultPan);
+    });
   });
 }
