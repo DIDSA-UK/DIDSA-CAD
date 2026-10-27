@@ -592,12 +592,26 @@ class HelixSegment:
 
 
 @dataclass
+class HelixPitchPoint:
+    """A variable-pitch helix's pitch `pitch` at axial distance `at` from its start (bug report:
+    "state pitch at different lengths and pitch varies smoothly between values"). A helix lists
+    them from `at = 0` up to its height (the last `at`); between them the pitch changes smoothly
+    (`app.document.helix_profile.pchip`), never beyond the values given. Every pitch has the same
+    sign: its sign is the direction along the axis, as for `HelixSegment`."""
+
+    at: float
+    pitch: float
+
+
+@dataclass
 class CurveFeature(Feature):
     """A 3D curve, fully determined by one of two construction methods,
     never more than one at once - mirrors `CreatePlaneFeature`'s "one
     dataclass, `router`-validated field combination per type" convention
     rather than splitting into `HelixFeature`/`IntersectionCurveFeature`:
-    - `HELIX`: `axis_ref`/`radius`/`segments`/`right_handed` set, `end_radius` optionally.
+    - `HELIX`: `axis_ref`/`radius`/`right_handed` set, `end_radius` optionally, and the pitch as
+      exactly one of `segments` (constant-pitch stretches) or `pitch_points` (a pitch that varies
+      smoothly with the distance along the axis).
     - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`/
       `sketch_feature_id_b`/`profile_refs_b` set - `profile_refs_a`/`_b`
       pick which entities of each Sketch form the profile to extrude and
@@ -628,6 +642,7 @@ class CurveFeature(Feature):
     radius: float | None = None
     end_radius: float | None = None
     segments: list["HelixSegment"] = field(default_factory=list)
+    pitch_points: list[HelixPitchPoint] = field(default_factory=list)
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRef] = field(default_factory=list)

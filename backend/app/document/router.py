@@ -122,6 +122,7 @@ from app.document.models import (
     ComponentPatternType,
     CreatePlaneFeature,
     CurveFeature,
+    HelixPitchPoint,
     HelixSegment,
     CurveType,
     DeleteBodyFeature,
@@ -193,7 +194,7 @@ from app.document.models import (
     ThickenFeature,
 )
 from app.document.revolve import resolve_revolve
-from app.document.curve import resolve_curve
+from app.document.curve import helix_turns, resolve_curve
 from app.document.delete_face import resolve_delete_face
 from app.document.fill_surface import resolve_fill_surface
 from app.document.knit_surface import resolve_knit_surface
@@ -264,6 +265,7 @@ from app.document.schemas import (
     CurveFeatureCreate,
     CurveFeatureResponse,
     CurveFeatureUpdate,
+    HelixPitchPointSchema,
     HelixSegmentSchema,
     DeleteBodyFeatureCreate,
     DeleteBodyFeatureResponse,
@@ -879,9 +881,17 @@ def _curve_feature_response(part: Part, feature: CurveFeature) -> CurveFeatureRe
         axis_ref=_plane_ref_to_schema(feature.axis_ref) if feature.axis_ref else None,
         radius=feature.radius,
         end_radius=feature.end_radius,
-        taper_angle_degrees=_helix_taper_angle_degrees(feature.radius, feature.end_radius, feature.segments),
+        taper_angle_degrees=_helix_taper_angle_degrees(
+            feature.radius, feature.end_radius, feature.segments, feature.pitch_points
+        ),
         segments=[HelixSegmentSchema(pitch=seg.pitch, turns=seg.turns) for seg in feature.segments],
-        total_height=_helix_total_height(feature.segments) if feature.segments else None,
+        pitch_points=[HelixPitchPointSchema(at=point.at, pitch=point.pitch) for point in feature.pitch_points],
+        total_height=(
+            _helix_total_height(feature.segments, feature.pitch_points)
+            if feature.segments or feature.pitch_points
+            else None
+        ),
+        total_turns=_helix_turns_or_none(feature),
         right_handed=feature.right_handed,
         sketch_feature_id_a=feature.sketch_feature_id_a,
         profile_refs_a=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs_a],
@@ -892,6 +902,16 @@ def _curve_feature_response(part: Part, feature: CurveFeature) -> CurveFeatureRe
         locked=part.is_locked(feature.id),
         produces=feature.produces,
     )
+
+
+def _helix_turns_or_none(feature: CurveFeature) -> float | None:
+    """How many turns a helix makes, for its response; null for an intersection curve."""
+    if feature.curve_type != CurveType.HELIX or not (feature.segments or feature.pitch_points):
+        return None
+    try:
+        return helix_turns(feature)
+    except HTTPException:
+        return None
 
 
 def _fill_surface_feature_response(part: Part, feature: FillSurfaceFeature) -> FillSurfaceFeatureResponse:
@@ -3235,17 +3255,24 @@ def _validate_create_plane_payload(
                 )
 
 
-def _helix_total_height(segments: list[HelixSegment]) -> float:
-    """Sum of pitch x turns (signed like the pitch)."""
+def _helix_total_height(segments: list[HelixSegment], pitch_points: list[HelixPitchPoint] = ()) -> float:
+    """Sum of pitch x turns, or the last pitch point's distance (signed like the pitch)."""
+    if pitch_points:
+        return math.copysign(pitch_points[-1].at, pitch_points[0].pitch)
     return sum(seg.pitch * seg.turns for seg in segments)
 
 
-def _helix_taper_angle_degrees(radius: float | None, end_radius: float | None, segments: list[HelixSegment]) -> float | None:
+def _helix_taper_angle_degrees(
+    radius: float | None,
+    end_radius: float | None,
+    segments: list[HelixSegment],
+    pitch_points: list[HelixPitchPoint] = (),
+) -> float | None:
     """The taper as an angle: `atan((end_radius - radius) / height)`, positive when the helix widens
     along its way. `None` for a constant-radius helix (and for anything that is not a helix)."""
-    if radius is None or end_radius is None or not segments:
+    if radius is None or end_radius is None or not (segments or pitch_points):
         return None
-    height = abs(_helix_total_height(segments))
+    height = abs(_helix_total_height(segments, pitch_points))
     if height == 0.0:
         return None
     return math.degrees(math.atan((end_radius - radius) / height))
@@ -3256,6 +3283,7 @@ def _resolve_helix_end_radius(
     end_radius: float | None,
     taper_angle_degrees: float | None,
     segments: list[HelixSegment],
+    pitch_points: list[HelixPitchPoint] = (),
 ) -> float | None:
     """The `end_radius` to store: as given, or computed from `taper_angle_degrees` (the two cannot
     be combined). 422 if both are given or the angle is not a usable taper."""
@@ -3265,9 +3293,9 @@ def _resolve_helix_end_radius(
         return end_radius
     if not -90.0 < taper_angle_degrees < 90.0:
         raise HTTPException(status_code=422, detail="taper_angle_degrees must be between -90 and 90")
-    if radius is None or not segments:
-        raise HTTPException(status_code=422, detail="taper_angle_degrees needs radius and segments")
-    return radius + abs(_helix_total_height(segments)) * math.tan(math.radians(taper_angle_degrees))
+    if radius is None or not (segments or pitch_points):
+        raise HTTPException(status_code=422, detail="taper_angle_degrees needs radius and segments or pitch_points")
+    return radius + abs(_helix_total_height(segments, pitch_points)) * math.tan(math.radians(taper_angle_degrees))
 
 
 def _validate_curve_payload(
@@ -3279,6 +3307,7 @@ def _validate_curve_payload(
     segments: list[HelixSegment],
     sketch_feature_id_a: str | None,
     sketch_feature_id_b: str | None,
+    pitch_points: list[HelixPitchPoint] = (),
 ) -> None:
     """Enforces exactly one combination of fields is supplied, matching
     `curve_type` - same plain-string-422, "malformed combination of
@@ -3286,11 +3315,13 @@ def _validate_curve_payload(
     refs_a`/`_b`/`right_handed` need no such check (they're either always
     optional or always have a valid default), so they aren't passed here."""
     if curve_type == CurveType.HELIX:
-        if axis_ref is None or radius is None or not segments:
+        if axis_ref is None or radius is None or (not segments and not pitch_points):
             raise HTTPException(
                 status_code=422,
-                detail="HELIX requires axis_ref, radius and at least one segment (pitch, turns)",
+                detail="HELIX requires axis_ref, radius and at least one segment (pitch, turns) or pitch points",
             )
+        if segments and pitch_points:
+            raise HTTPException(status_code=422, detail="HELIX takes segments or pitch_points, not both")
         if sketch_feature_id_a is not None or sketch_feature_id_b is not None:
             raise HTTPException(
                 status_code=422,
@@ -3306,8 +3337,25 @@ def _validate_curve_payload(
                 raise HTTPException(status_code=422, detail=f"segment {index + 1}: pitch must be non-zero")
             if seg.turns <= 0.0:
                 raise HTTPException(status_code=422, detail=f"segment {index + 1}: turns must be positive")
-        if len({seg.pitch > 0.0 for seg in segments}) != 1:
+        if segments and len({seg.pitch > 0.0 for seg in segments}) != 1:
             raise HTTPException(status_code=422, detail="every segment must advance the same way along the axis (pitch signs differ)")
+        if pitch_points:
+            if len(pitch_points) < 2:
+                raise HTTPException(status_code=422, detail="pitch_points needs at least two points (the start and the end)")
+            if pitch_points[0].at != 0.0:
+                raise HTTPException(status_code=422, detail="the first pitch point must be at 0 (the start)")
+            for index, (a, b) in enumerate(zip(pitch_points, pitch_points[1:]), start=2):
+                if b.at <= a.at:
+                    raise HTTPException(
+                        status_code=422, detail=f"pitch point {index}: each distance must be further along than the last"
+                    )
+            for index, point in enumerate(pitch_points, start=1):
+                if point.pitch == 0.0:
+                    raise HTTPException(status_code=422, detail=f"pitch point {index}: pitch must be non-zero")
+            if len({point.pitch > 0.0 for point in pitch_points}) != 1:
+                raise HTTPException(
+                    status_code=422, detail="every pitch must advance the same way along the axis (pitch signs differ)"
+                )
         return
     assert curve_type == CurveType.INTERSECTION
     if sketch_feature_id_a is None or sketch_feature_id_b is None:
@@ -3315,10 +3363,10 @@ def _validate_curve_payload(
             status_code=422,
             detail="INTERSECTION requires sketch_feature_id_a and sketch_feature_id_b",
         )
-    if axis_ref is not None or radius is not None or end_radius is not None or segments:
+    if axis_ref is not None or radius is not None or end_radius is not None or segments or pitch_points:
         raise HTTPException(
             status_code=422,
-            detail="INTERSECTION must not set axis_ref/radius/end_radius/segments",
+            detail="INTERSECTION must not set axis_ref/radius/end_radius/segments/pitch_points",
         )
     if not isinstance(part.get_feature(sketch_feature_id_a), SketchFeature):
         raise HTTPException(status_code=422, detail="sketch_feature_id_a must name an existing Sketch feature")
@@ -6579,7 +6627,10 @@ def create_curve_feature(part_id: str, payload: CurveFeatureCreate) -> CurveFeat
     profile_refs_a = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs_a]
     profile_refs_b = [_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs_b]
     segments = [HelixSegment(pitch=seg.pitch, turns=seg.turns) for seg in payload.segments]
-    end_radius = _resolve_helix_end_radius(payload.radius, payload.end_radius, payload.taper_angle_degrees, segments)
+    pitch_points = [HelixPitchPoint(at=point.at, pitch=point.pitch) for point in payload.pitch_points]
+    end_radius = _resolve_helix_end_radius(
+        payload.radius, payload.end_radius, payload.taper_angle_degrees, segments, pitch_points
+    )
     _validate_curve_payload(
         part,
         payload.curve_type,
@@ -6589,6 +6640,7 @@ def create_curve_feature(part_id: str, payload: CurveFeatureCreate) -> CurveFeat
         segments,
         payload.sketch_feature_id_a,
         payload.sketch_feature_id_b,
+        pitch_points,
     )
     feature = CurveFeature(
         id=str(uuid.uuid4()),
@@ -6597,6 +6649,7 @@ def create_curve_feature(part_id: str, payload: CurveFeatureCreate) -> CurveFeat
         radius=payload.radius,
         end_radius=end_radius,
         segments=segments,
+        pitch_points=pitch_points,
         right_handed=payload.right_handed,
         sketch_feature_id_a=payload.sketch_feature_id_a,
         profile_refs_a=profile_refs_a,
@@ -6626,14 +6679,15 @@ def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpd
 
     new_axis_ref = _plane_ref_to_domain(payload.axis_ref) if payload.axis_ref is not None else feature.axis_ref
     new_radius = payload.radius if payload.radius is not None else feature.radius
-    new_segments = (
-        [HelixSegment(pitch=seg.pitch, turns=seg.turns) for seg in payload.segments]
-        if payload.segments is not None
-        else feature.segments
-    )
+    # Either pitch form replaces the other: sending segments clears pitch points and the reverse.
+    if payload.segments is None and payload.pitch_points is None:
+        new_segments, new_pitch_points = feature.segments, feature.pitch_points
+    else:
+        new_segments = [HelixSegment(pitch=seg.pitch, turns=seg.turns) for seg in payload.segments or []]
+        new_pitch_points = [HelixPitchPoint(at=point.at, pitch=point.pitch) for point in payload.pitch_points or []]
     if payload.taper_angle_degrees is not None:
         new_end_radius = _resolve_helix_end_radius(
-            new_radius, payload.end_radius, payload.taper_angle_degrees, new_segments
+            new_radius, payload.end_radius, payload.taper_angle_degrees, new_segments, new_pitch_points
         )
     elif "end_radius" in payload.model_fields_set:
         new_end_radius = payload.end_radius  # an explicit null clears the taper
@@ -6666,6 +6720,7 @@ def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpd
         new_segments,
         new_sketch_feature_id_a,
         new_sketch_feature_id_b,
+        new_pitch_points,
     )
     candidate = CurveFeature(
         id=feature.id,
@@ -6674,6 +6729,7 @@ def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpd
         radius=new_radius,
         end_radius=new_end_radius,
         segments=new_segments,
+        pitch_points=new_pitch_points,
         right_handed=new_right_handed,
         sketch_feature_id_a=new_sketch_feature_id_a,
         profile_refs_a=new_profile_refs_a,
@@ -6686,6 +6742,7 @@ def update_curve_feature(part_id: str, feature_id: str, payload: CurveFeatureUpd
     feature.radius = candidate.radius
     feature.end_radius = candidate.end_radius
     feature.segments = candidate.segments
+    feature.pitch_points = candidate.pitch_points
     feature.right_handed = candidate.right_handed
     feature.sketch_feature_id_a = candidate.sketch_feature_id_a
     feature.profile_refs_a = candidate.profile_refs_a

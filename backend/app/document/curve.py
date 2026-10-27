@@ -13,6 +13,8 @@ resolution) resolves it fresh on demand, exactly the way `CreatePlaneFeature`
 (`Produces.PLANE`) already is.
 """
 
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from fastapi import HTTPException
@@ -20,14 +22,17 @@ from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_CompCurve
 from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Section
 from OCC.Core.BRepBuilderAPI import (
+    BRepBuilderAPI_MakeEdge,
     BRepBuilderAPI_MakeWire,
     BRepBuilderAPI_Transform,
 )
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
 from OCC.Core.gp import gp_Ax2, gp_Ax3, gp_Dir, gp_Pnt, gp_Trsf, gp_Vec
+from OCC.Core.GeomAPI import GeomAPI_Interpolate
 from OCC.Core.HelixBRep import HelixBRep_BuilderHelix
-from OCC.Core.TColStd import TColStd_Array1OfReal
+from OCC.Core.TColgp import TColgp_HArray1OfPnt
+from OCC.Core.TColStd import TColStd_Array1OfReal, TColStd_HArray1OfReal
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_VERTEX
 from OCC.Core.TopExp import TopExp_Explorer
@@ -41,6 +46,7 @@ from app.document.extrude import (
     select_profiles,
     wire_for_profile,
 )
+from app.document.helix_profile import HelixSample, pitch_at_height, samples_to_height
 from app.document.loft import wire_for_open_chain
 from app.document.models import CurveFeature, CurveType, Part, ResolvedPlane, SketchFeature
 from app.sketch.profile import OpenChainStatus, ProfileStatus, detect_open_chain, detect_profile
@@ -148,6 +154,61 @@ def _mirrored(wire: TopoDS_Wire, origin: gp_Pnt, plane_normal: gp_Dir) -> TopoDS
     return topods.Wire(BRepBuilderAPI_Transform(wire, transform, True).Shape())
 
 
+def sampled_helix_wire(
+    frame: gp_Ax3, samples: list[HelixSample], radius_at_height: Callable[[float], float]
+) -> TopoDS_Wire:
+    """A counterclockwise (viewed down `frame`'s axis) helix through `samples` (see
+    `app.document.helix_profile`), its radius `radius_at_height(z)`, starting on `frame`'s x axis:
+    one C2 cubic BSpline edge interpolated through the points at their turn counts. Used where the
+    pitch varies smoothly, which `HelixBRep_BuilderHelix` (constant-pitch segments only) cannot make:
+    a variable-pitch Helix and a Spring's centreline (`app.document.spring`)."""
+    origin = frame.Location()
+    axis = gp_Vec(frame.Direction())
+    x_dir = gp_Vec(frame.XDirection())
+    y_dir = axis.Crossed(x_dir)
+    points = TColgp_HArray1OfPnt(1, len(samples))
+    params = TColStd_HArray1OfReal(1, len(samples))
+    for index, sample in enumerate(samples, start=1):
+        angle = 2.0 * math.pi * sample.t
+        radius = radius_at_height(sample.z)
+        offset = (
+            x_dir.Multiplied(radius * math.cos(angle))
+            + y_dir.Multiplied(radius * math.sin(angle))
+            + axis.Multiplied(sample.z)
+        )
+        points.SetValue(index, origin.Translated(offset))
+        params.SetValue(index, sample.t)
+    interpolate = GeomAPI_Interpolate(points, params, False, 1e-9)
+    interpolate.Perform()
+    if not interpolate.IsDone():
+        raise _curve_construction_failed("", "could not interpolate the helix")
+    edge = BRepBuilderAPI_MakeEdge(interpolate.Curve()).Edge()
+    return BRepBuilderAPI_MakeWire(edge).Wire()
+
+
+def helix_height(feature: CurveFeature) -> float:
+    """A helix's height along its axis, signed like its pitch: pitch x turns summed over its segments,
+    or its last pitch point's distance."""
+    if feature.pitch_points:
+        return math.copysign(feature.pitch_points[-1].at, feature.pitch_points[0].pitch)
+    return sum(seg.pitch * seg.turns for seg in feature.segments)
+
+
+def _variable_pitch_samples(feature: CurveFeature) -> list[HelixSample]:
+    """The centreline samples of a pitch-points helix (pitches made positive: the direction is
+    applied afterwards, like a negative segment pitch)."""
+    at = [point.at for point in feature.pitch_points]
+    pitches = [abs(point.pitch) for point in feature.pitch_points]
+    return samples_to_height(pitch_at_height(at, pitches), at[-1])
+
+
+def helix_turns(feature: CurveFeature) -> float:
+    """How many turns a helix makes: its segments' turns, or worked out from its pitch points."""
+    if feature.pitch_points:
+        return _variable_pitch_samples(feature)[-1].t
+    return sum(seg.turns for seg in feature.segments)
+
+
 def _resolve_helix_from_bodies(
     part: Part,
     feature: CurveFeature,
@@ -167,9 +228,12 @@ def _resolve_helix_from_bodies(
     origin (it advances the other way, the winding stays). `right_handed` is therefore the winding
     direction and the pitch's sign the axis direction, as in the 7.9 construction this replaced
     (a 2D line on a cylinder, approximated into 3D)."""
-    assert feature.axis_ref is not None and feature.radius is not None and feature.segments
+    assert feature.axis_ref is not None and feature.radius is not None
+    assert feature.segments or feature.pitch_points
     if feature.radius <= 0.0 or (feature.end_radius is not None and feature.end_radius <= 0.0):
         raise _curve_construction_failed(feature.id, "helix radii must be positive")
+    if feature.pitch_points:
+        return _resolve_variable_pitch_helix(part, feature, bodies_so_far, excluded_feature_ids)
     if any(seg.pitch == 0.0 or seg.turns <= 0.0 for seg in feature.segments):
         raise _curve_construction_failed(feature.id, "helix pitch must be non-zero and turns positive")
     advances_up = feature.segments[0].pitch > 0.0
@@ -203,6 +267,38 @@ def _resolve_helix_from_bodies(
     if not feature.right_handed:
         wire = _mirrored(wire, origin, gp_Dir(axis_dir.Crossed(x_dir)))
     if not advances_up:
+        wire = _mirrored(wire, origin, axis_dir)
+    return ResolvedCurve(wire=wire, length=_wire_length(wire), closed=False)
+
+
+def _resolve_variable_pitch_helix(
+    part: Part,
+    feature: CurveFeature,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> ResolvedCurve:
+    """A helix whose pitch varies smoothly with height (`feature.pitch_points`), sampled
+    (`app.document.helix_profile`) and interpolated (`sampled_helix_wire`); radius, taper, hand and
+    direction as `_resolve_helix_from_bodies`."""
+    points = feature.pitch_points
+    if len(points) < 2 or points[0].at != 0.0 or any(b.at <= a.at for a, b in zip(points, points[1:])):
+        raise _curve_construction_failed(feature.id, "pitch points must start at 0 and increase along the axis")
+    if any(point.pitch == 0.0 for point in points) or len({point.pitch > 0.0 for point in points}) != 1:
+        raise _curve_construction_failed(feature.id, "pitches must be non-zero and all advance the same way")
+    axis_plane = resolve_plane_ref(part, bodies_so_far, feature.axis_ref, excluded_feature_ids)
+    origin = gp_Pnt(*axis_plane.origin)
+    axis_dir = gp_Dir(*axis_plane.normal)
+    x_dir = gp_Dir(*axis_plane.x_axis)
+    height = points[-1].at
+    start, end = feature.radius, feature.radius if feature.end_radius is None else feature.end_radius
+    wire = sampled_helix_wire(
+        gp_Ax3(origin, axis_dir, x_dir),
+        _variable_pitch_samples(feature),
+        lambda z: start + (end - start) * z / height,
+    )
+    if not feature.right_handed:
+        wire = _mirrored(wire, origin, gp_Dir(axis_dir.Crossed(x_dir)))
+    if points[0].pitch < 0.0:
         wire = _mirrored(wire, origin, axis_dir)
     return ResolvedCurve(wire=wire, length=_wire_length(wire), closed=False)
 
