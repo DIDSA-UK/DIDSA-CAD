@@ -63,6 +63,7 @@ class DesktopRibbon extends StatelessWidget {
     required this.selectedId,
     required this.onSelect,
     this.trailing,
+    this.showTabStrip = true,
   });
 
   final List<RibbonTabData> tabs;
@@ -72,8 +73,12 @@ class DesktopRibbon extends StatelessWidget {
   /// Right-aligned on the tab row (the Part / Assembly switch).
   final Widget? trailing;
 
+  /// False when the tabs are shown elsewhere (the part screen puts them in the app bar, beside File and View,
+  /// to save a row) - only the active tab's buttons are drawn.
+  final bool showTabStrip;
+
   static const double commandWidth = 68;
-  static const double bodyHeight = 78;
+  static const double bodyHeight = 70;
 
   @override
   Widget build(BuildContext context) {
@@ -85,24 +90,18 @@ class DesktopRibbon extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SizedBox(
-            height: 32,
-            child: Row(
-              children: [
-                const SizedBox(width: 8),
-                for (final tab in tabs)
-                  _RibbonTabButton(
-                    key: ValueKey('ribbon-tab-${tab.id}'),
-                    label: tab.label,
-                    selected: tab.id == selected.id,
-                    onTap: () => onSelect(tab.id),
-                  ),
-                const Spacer(),
-                if (trailing != null) trailing!,
-                const SizedBox(width: 8),
-              ],
+          if (showTabStrip)
+            SizedBox(
+              height: 32,
+              child: Row(
+                children: [
+                  const SizedBox(width: 8),
+                  Expanded(child: RibbonTabStrip(tabs: tabs, selectedId: selectedId, onSelect: onSelect)),
+                  if (trailing != null) trailing!,
+                  const SizedBox(width: 8),
+                ],
+              ),
             ),
-          ),
           Container(
             height: bodyHeight,
             width: double.infinity,
@@ -126,6 +125,37 @@ class DesktopRibbon extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// The ribbon's tab buttons in a row, scrollable when the window is narrow.
+class RibbonTabStrip extends StatelessWidget {
+  const RibbonTabStrip({super.key, required this.tabs, required this.selectedId, required this.onSelect});
+
+  final List<RibbonTabData> tabs;
+  final String selectedId;
+  final ValueChanged<String> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final selected = tabs.firstWhere((t) => t.id == selectedId, orElse: () => tabs.first);
+    return SizedBox(
+      height: kToolbarHeight,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final tab in tabs)
+              _RibbonTabButton(
+                key: ValueKey('ribbon-tab-${tab.id}'),
+                label: tab.label,
+                selected: tab.id == selected.id,
+                onTap: () => onSelect(tab.id),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -194,18 +224,18 @@ class _RibbonButton extends StatelessWidget {
                     borderRadius: BorderRadius.circular(6),
                   )
                 : null,
-            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 SizedBox(
-                  height: 28,
-                  width: 28,
+                  height: 26,
+                  width: 26,
                   child: command.svg != null
-                      ? SvgIcon(command.svg!, size: 26, color: colour)
-                      : Icon(command.icon ?? Icons.crop_square, size: 26, color: colour),
+                      ? SvgIcon(command.svg!, size: 24, color: colour)
+                      : Icon(command.icon ?? Icons.crop_square, size: 24, color: colour),
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 2),
                 Text(
                   command.label,
                   maxLines: 2,

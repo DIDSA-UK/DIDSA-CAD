@@ -7014,6 +7014,7 @@ void main() {
       expect(find.byKey(const ValueKey('ribbon-Extrude')), findsOneWidget);
       expect(find.byKey(const ValueKey('ribbon-Add Component')), findsNothing);
 
+      await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-evaluate')));
       await tester.tap(find.byKey(const ValueKey('ribbon-tab-evaluate')));
       await tester.pump();
       expect(find.byKey(const ValueKey('ribbon-Measure')), findsOneWidget);

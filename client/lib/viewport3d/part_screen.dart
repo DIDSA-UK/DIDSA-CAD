@@ -24209,14 +24209,24 @@ class _PartScreenState extends State<PartScreen> {
               child: Icon(Icons.circle, size: 9, color: theme.colorScheme.tertiary),
             ),
           ),
-        const SizedBox(width: 16),
-        Flexible(flex: 3, child: _buildDesktopMenuBar(context)),
+        const SizedBox(width: 12),
+        Flexible(child: _buildDesktopMenuBar(context)),
+        const SizedBox(width: 8),
+        Expanded(
+          flex: 2,
+          child: RibbonTabStrip(
+            tabs: _ribbonTabs(),
+            selectedId: _ribbonTabId,
+            onSelect: (id) => setState(() => _ribbonTabChoice = id),
+          ),
+        ),
       ],
     );
   }
 
   List<Widget> _desktopAppBarActions() {
     return [
+      _buildDesktopLensSwitch(context),
       IconButton(
         tooltip: _isDirty ? 'Save (Ctrl+S) - unsaved changes' : 'Save (Ctrl+S)',
         icon: const Icon(Icons.save_outlined),
@@ -24310,8 +24320,8 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
-  /// The ribbon: one tab per kind of work, each button the action the phone layout reaches by FAB or sheet.
-  Widget _buildDesktopRibbon(BuildContext context) {
+  /// The ribbon's tabs: one per kind of work, each button the action the phone layout reaches by FAB or sheet.
+  List<RibbonTabData> _ribbonTabs() {
     final part = _lens == AssemblyLens.part;
     final assembly = _lens == AssemblyLens.assembly;
     final busy = _busy;
@@ -24329,7 +24339,7 @@ class _PartScreenState extends State<PartScreen> {
           onPressed: viewport == null ? null : () => unawaited(viewport.animateToStandardView(view)),
         );
 
-    final tabs = [
+    return [
       RibbonTabData(
         id: 'features',
         label: 'Features',
@@ -24525,42 +24535,51 @@ class _PartScreenState extends State<PartScreen> {
         ],
       ),
     ];
+  }
 
-    final theme = Theme.of(context);
+  /// The ribbon's body: the active tab's buttons. The tabs themselves sit in the app bar ([_buildDesktopAppBarTitle]).
+  Widget _buildDesktopRibbon(BuildContext context) {
     return DesktopRibbon(
-      tabs: tabs,
+      tabs: _ribbonTabs(),
       selectedId: _ribbonTabId,
       onSelect: (id) => setState(() => _ribbonTabChoice = id),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            tooltip: _desktopPaneVisible ? 'Hide the tree' : 'Show the tree',
+      showTabStrip: false,
+    );
+  }
+
+  /// The Part / Assembly switch and the tree-pane toggle, at the right of the app bar.
+  Widget _buildDesktopLensSwitch(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: _desktopPaneVisible ? 'Hide the tree' : 'Show the tree',
+          visualDensity: VisualDensity.compact,
+          icon: Icon(_desktopPaneVisible ? Icons.view_sidebar : Icons.view_sidebar_outlined, size: 20),
+          onPressed: () => setState(() => _desktopPaneVisible = !_desktopPaneVisible),
+        ),
+        SegmentedButton<AssemblyLens>(
+          key: const ValueKey('ribbon-lens'),
+          showSelectedIcon: false,
+          style: SegmentedButton.styleFrom(
             visualDensity: VisualDensity.compact,
-            icon: Icon(_desktopPaneVisible ? Icons.view_sidebar : Icons.view_sidebar_outlined, size: 20),
-            onPressed: () => setState(() => _desktopPaneVisible = !_desktopPaneVisible),
+            textStyle: theme.textTheme.labelMedium,
           ),
-          SegmentedButton<AssemblyLens>(
-            key: const ValueKey('ribbon-lens'),
-            showSelectedIcon: false,
-            style: SegmentedButton.styleFrom(
-              visualDensity: VisualDensity.compact,
-              textStyle: theme.textTheme.labelMedium,
-            ),
-            segments: const [
-              ButtonSegment(value: AssemblyLens.part, label: Text('Part')),
-              ButtonSegment(value: AssemblyLens.assembly, label: Text('Assembly')),
-            ],
-            selected: {_lens},
-            onSelectionChanged: busy
-                ? null
-                : (selection) {
-                    if (selection.single != _lens) _toggleAssemblyLens();
-                    setState(() => _ribbonTabChoice = null);
-                  },
-          ),
-        ],
-      ),
+          segments: const [
+            ButtonSegment(value: AssemblyLens.part, label: Text('Part')),
+            ButtonSegment(value: AssemblyLens.assembly, label: Text('Assembly')),
+          ],
+          selected: {_lens},
+          onSelectionChanged: _busy
+              ? null
+              : (selection) {
+                  if (selection.single != _lens) _toggleAssemblyLens();
+                  setState(() => _ribbonTabChoice = null);
+                },
+        ),
+        const SizedBox(width: 4),
+      ],
     );
   }
 
