@@ -1,6 +1,6 @@
 # Mouse, keyboard and big-screen use — scope
 
-**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 to D4 built on branch
+**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 to D5 built on branch
 `claude/flutter-desktop-mode-ui-pxmq0q` (Progress below). Written 26 Oct 2026 from a read of `client/lib` on `main` and the owner's first test on a Samsung phone in DeX (external monitor, mouse, keyboard): "reasonable, but needs
 polish and alignment with desktop CAD controls. Middle click drag to orbit; mouse cursors are on top of each other."
 
@@ -17,7 +17,8 @@ has the same gaps.
 | D2 | Orbit about the geometry under the cursor, mouse box select on drag (window / crossing, Ctrl adds), middle double-click fit, SOLIDWORKS click selection for a mouse | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
 | D3 | Keyboard shortcuts (part screen, sketch screen, mesh viewer), Enter / Esc for every tool panel, shortcut sheet, tooltip hints; mesh viewer fit; the part screen click rule as a tested function | Done (not merged; unit and widget tested, including the part screen and sketch screen; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
 | D4 | Right-click menus: one helper (popup for a mouse, sheet for touch), every tree row, 3D geometry / plane / component / empty-space menus, sketch entity and canvas menus | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
-| D5-D7 | | Not started | |
+| D5 | Navigation presets (SOLIDWORKS / Fusion 360 / Onshape), Controls settings screen, invert wheel, orbit speed, view cube on Space, Ctrl+8 normal to, number-field nudging, Tab order, middle click ends a chain | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
+| D6-D7 | | Not started | |
 
 Update this table with every milestone.
 
@@ -155,7 +156,7 @@ Update this table with every milestone.
     at the same place with the seven views and their Ctrl+number hints.
   New viewport methods: `resetView`, `zoomToEntities` (frames the bounds of the entities' geometry about their centre, view
   direction kept; a lone vertex frames a patch 2 % of the model), `planarFaceNormal` (uses the mesh's `faceIsPlanar` flag, else
-  the triangle normals; pointing to the camera's side), `animateToFaceNormal` (D5's Ctrl+8 can use these two), and
+  the triangle normals; pointing to the camera's side), `animateToFaceNormal` (D5's Ctrl+8 uses these two), and
   `selectOtherAtGlobal` / `hasSelectOtherCandidatesAt` (`_fireSelectOther`'s candidate list pulled out as
   `_selectOtherCandidatesAt`). Test: `test/part_viewport_mouse_navigation_test.dart` (GPU-gated: skips here).
 - **Sketch** (`sketch/sketch_context_menu.dart`; each entry carries the callback it runs): `SketchCanvas.onContextMenuRequested(hit,
@@ -168,8 +169,55 @@ Update this table with every milestone.
   `test/sketch_context_menu_test.dart`, `test/sketch_controller_test.dart` ("desktop input D4").
 - **Left out / not matching the scope exactly:** a constraint *label* or dimension under the right click is not hit-tested (the
   click falls through to the entity or canvas menu); Select Other from the menu opens the same sheet as the click-and-hold, with
-  no first click to undo; Normal To keeps no particular "up" beyond the camera's current one (D5's Ctrl+8 can refine it);
+  no first click to undo; Normal To keeps the camera's up as near as it can (D5's Ctrl+8 shares it);
   "Zoom to selection" for sketch entities in the 3D view frames nothing (they have no mesh) and returns without moving the camera.
+
+### D5 implementation notes
+
+- **Presets** (`viewport3d/controls_preferences.dart`, `mouse_navigation.dart`): `NavigationPreset` (`solidworks`, `fusion360`,
+  `onshape`) and `mouseNavActionFor(..., preset:)` hold the three tables of section 4 (SOLIDWORKS is the default argument, so
+  nothing that did not pass one changed). `mouseNavActionForEvent` reads the stored preset, so the 3D viewport, the 2D sketch canvas
+  (where orbit pans) and the mesh viewer all follow it. A right click without a drag opens the D4 menu in every preset - Onshape
+  needed no change there because a click is told from a drag by travel. Fusion 360 and Onshape have no zoom drag.
+- **Controls settings** (`ControlsPreferences`, `shared_preferences` like `ScenePreferences`; `ControlsSettingsScreen`): the preset
+  (radio list with each preset's bindings), "Invert wheel zoom" (`wheelZoomFactor(..., invert:)` at the three wheel call sites), and
+  "Orbit speed" 0.25x to 3x (11 steps; a mouse orbit's delta is scaled in the 3D viewport's middle / right drag and the mesh
+  viewer's mouse orbit), the shortcut list, and Reset to defaults. Every change saves at once. Opened from the part screen's View
+  menu ("Controls"), the sketch screen's menu and an icon on the tool chooser's app bar; each screen loads the stored values when
+  it opens. **Differs from the scope:** the orbit speed does *not* scale the keyboard arrows - they turn by fixed degrees (15, and
+  Shift 90), and scaling would break the 90 degree snap; touch orbit is also untouched.
+- **View cube** (`viewport3d/view_cube.dart`, Space in the part screen and in the sketch's Orbit View): a popup at the last place
+  the pointer was over the viewport (else its middle), kept on screen. The cube is drawn orthographically with the camera's axes
+  (`ViewCubeProjection`: pure, unit tested); each visible face is a 3 x 3 grid - the middle cell is the face, an edge cell the
+  edge, a corner cell the corner - so the 26 targets are all reachable and the hovered cell is highlighted with its name
+  (Front, Top Right, Front Top Right ...). A click turns the view with `animateToViewCubeTarget` (the up vector is world Y; Top and
+  Bottom keep SOLIDWORKS' ups, as `StandardView` does). Esc or a click outside closes it. The corner-of-the-viewport cube the scope
+  mentions for D6 can reuse the same painter.
+- **Normal To / Ctrl+8:** `PartScreen._normalToAction` for exactly one selected reference plane (`animateToBasis`), created plane
+  (its basis) or flat face (`animateToFaceNormal`, from D4: planar by the mesh's `faceIsPlanar`, the view turned to look at it with
+  the up kept as near to the current one as the new direction allows). Anything else leaves the key alone. The same action is the
+  view cube's Normal To button, enabled under the same rule.
+- **Number-field nudging** (`viewport3d/number_field_nudge.dart`, installed by `CadShortcutScope`): while a single-line text field
+  holding a number has focus, Up / Down step it by 1 (Shift 10, Ctrl 0.1) and so does the wheel while the pointer is over it (one
+  step per 50 px of scroll). It goes through the field's `userUpdateTextEditingValue`, so each panel's `onChanged` hears it as typing
+  and no panel was touched. Up / Down are taken by a `FocusManager` early key handler: a `HardwareKeyboard` handler cannot stop the
+  field's own Up / Down, which moved the caret and undid the step (found by the test). Min / max limits are the panels' own
+  validation, as for typing. Not a number (or a multi-line field): left to the field.
+- **Tab order:** `ResizableToolPanel` (every `ResizableToolPanel` tool) is now a `FocusTraversalGroup`, so Tab / Shift+Tab walk its
+  fields and buttons in reading order inside the panel instead of wandering out to the viewport's buttons; the test fails without it.
+  **Not done:** the hand-built bars (the sketch's offset / pattern / text bars, the picker ribbons, create plane and the like) were
+  not audited and are not wrapped; only the `ResizableToolPanel` family is.
+- **Middle click ends a chain:** a middle click that does not drag, in a draw tool, calls `finishChain` (what Enter does) - in the 2D
+  canvas and in Orbit View (`PartViewport.onMouseMiddleClick`). A middle double-click still fits.
+- **Double-click on a Feature row:** a click already opens the Feature for editing, so a double-click is just two clicks - and the
+  second used to re-enter `_onFeatureTap` while the first was still opening the Feature. `_onFeatureTap` now ignores a click while
+  one is opening it (tested: it fails without the guard).
+- **Checked, no change:** tree rows are `ListTile`s with an `onTap`, which already give a hover highlight.
+- **Not done:** the DeX window-resize check is a device check (below); the new screen and popup are tested at 320 x 480.
+- Tests: `test/mouse_navigation_test.dart` (presets, invert), `test/controls_settings_test.dart`, `test/view_cube_test.dart`,
+  `test/number_field_nudge_test.dart`, `test/tool_panel_tab_order_test.dart`, `test/sketch_canvas_mouse_navigation_test.dart`
+  (middle click), `test/part_screen_test.dart` ("desktop input D5": Space, Ctrl+8, double-click) and, GPU-gated,
+  `test/part_viewport_mouse_navigation_test.dart` (Onshape right-drag orbit, view cube pick).
 
 ## 1. What the app did before D1
 
@@ -378,7 +426,7 @@ Don't decide by platform (DeX reports Android). Decide by **window size** and **
 | D2 | R1b, plain-drag box select, MMB double-click fit, desktop click selection for a mouse (R6) | small-medium | Built (Progress above). |
 | D3 | R3: shortcut table, Esc/Enter/Delete/undo/save/views/fit, sketch tool keys, `?` sheet, tooltip hints. **Also from D2:** a fit action for the mesh viewer (F needs one), wired to its middle double-click too; the part screen's click rule moved into a pure, unit-tested function (Esc and Delete act on the same selection) | medium | Built (Progress above; what it left out is listed there). |
 | D4 | R4: right-click menus - the helper, every tree/viewport/sketch menu, new 3D geometry and view menus | medium | Built (Progress above; what it left out is listed there). |
-| D5 | R1d presets + Controls settings, R6 polish. **Also from D3:** Ctrl+8 normal to, the Space view cube, Tab order through panel fields | medium | Scoped below. |
+| D5 | R1d presets + Controls settings, R6 polish. **Also from D3:** Ctrl+8 normal to, the Space view cube, Tab order through panel fields | medium | Built (Progress above; what it left out is listed there). |
 | D6 | R5: `InputModality`, the full desktop layout ≥ 1000 dp. **Also from D3:** keys for the part tools (S, E, V ...) with the desktop toolbar | large | Scoped in `docs/desktop-layout-scope.md`. |
 | D7 | 3D box select (part and assembly): visible geometry only, edges by default, mouse drag and touch tap-hold-drag | medium | A revisit of a feature the owner parked in June; questions answered 27 Oct (below). |
 
@@ -560,6 +608,23 @@ From D4:
 - in the 2D sketch, right click on a selected entity vs an unselected one (the selection should only change for the latter), on
   empty canvas, and in Orbit View;
 - a touch long-press and a touch tap still open the bottom sheets exactly as before, including on a touch monitor.
+
+From D5:
+
+- each preset's bindings in DeX (middle / right / Ctrl / Shift drags, and a right click still opens a menu); changing the preset
+  takes effect at once in the 3D view, the 2D sketch and the mesh viewer, and survives restarting the app;
+- invert wheel zoom, and the orbit speed slider (does 1x feel like before, and 3x / 0.25x usable?);
+- Space opens the cube under the pointer; clicking a face, an edge and a corner gives the view you expect (Front looks along -Z
+  with Y up, Top looks down); hover names the cell; Esc or a click outside closes it; Normal To is greyed unless a flat face or
+  plane is selected; the same from the sketch's Orbit View;
+- Ctrl+8 on a flat face, a reference plane and a created plane; on a curved face it does nothing;
+- Up / Down and the wheel on a focused number field in a few panels (Extrude depth, Fillet radius, Mate value, a sketch
+  dimension): the value and the live preview follow; Shift and Ctrl change the step. Does Android treat Up / Down in a text
+  field differently from the Flutter test (it may also move the caret)?
+- Tab / Shift+Tab inside Extrude, Fillet and Mate: the order matches the screen and does not leave the panel;
+- a middle click ends a line chain in the 2D sketch and in Orbit View;
+- double-clicking a Feature row opens its panel or sketch once;
+- the Controls screen, the view cube and the context menus at a narrow DeX window width and a short one.
 
 ## 7. Decisions (owner, 26 Oct 2026)
 

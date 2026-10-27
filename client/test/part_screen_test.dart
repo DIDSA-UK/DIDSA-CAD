@@ -19,6 +19,7 @@ import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
 import 'package:didsa_cad_client/assembly/reference_report.dart';
 import 'package:didsa_cad_client/assembly/relative_path.dart';
+import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 import 'package:didsa_cad_client/storage/file_cache.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
@@ -1458,6 +1459,82 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  testWidgets(
+    'desktop input D5: Space opens the view cube, a click on it closes it; Ctrl+8 with nothing selected does nothing',
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.digit8);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(find.byKey(const Key('view-cube')), findsNothing);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await _pumpUntil(tester, () => find.byKey(const Key('view-cube')).evaluate().isNotEmpty);
+      expect(find.byKey(const Key('view-cube')), findsOneWidget);
+      expect(tester.widget<TextButton>(find.widgetWithText(TextButton, 'Normal To')).onPressed, isNull);
+
+      await tester.tap(find.byKey(const Key('view-cube')));
+      await _pumpUntil(tester, () => find.byKey(const Key('view-cube')).evaluate().isEmpty);
+      expect(find.byKey(const Key('view-cube')), findsNothing);
+      // The pick turns the view over 400 ms: let it finish before the test ends.
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('desktop input D5: a double-click on a Feature row opens it once, not twice', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Two clicks on the row before anything has had time to open.
+    final row = tester.getCenter(find.text('Sketch 1'));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    for (var i = 0; i < 2; i++) {
+      await mouse.down(row);
+      await mouse.up();
+    }
+    await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+    expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
+    expect(find.byType(SketchScreen), findsOneWidget, reason: 'one Sketch screen on the stack, not two');
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('confirming the cascade-delete dialog deletes the Feature and everything after it', (tester) async {
     final backend = _FakeDocumentBackend(

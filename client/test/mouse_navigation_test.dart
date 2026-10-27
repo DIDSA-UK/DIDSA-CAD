@@ -1,7 +1,9 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:didsa_cad_client/viewport3d/controls_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/mouse_navigation.dart';
 
 /// Desktop input D1 (`docs/desktop-input-scope.md`): the SOLIDWORKS-style
@@ -53,6 +55,58 @@ void main() {
     );
     expect(isMouseNavPress(const PointerDownEvent(kind: PointerDeviceKind.mouse, buttons: kPrimaryMouseButton)), isFalse);
     expect(isMouseNavPress(const PointerDownEvent(kind: PointerDeviceKind.touch, buttons: kPrimaryButton)), isFalse);
+  });
+
+  group('desktop input D5: navigation presets', () {
+    MouseNavAction? action(NavigationPreset preset, int buttons, {bool control = false, bool shift = false}) =>
+        mouseNavActionFor(buttons, control: control, shift: shift, preset: preset);
+
+    test('SOLIDWORKS is the default and is unchanged', () {
+      expect(mouseNavActionFor(kMiddleMouseButton, control: false, shift: false), MouseNavAction.orbit);
+      expect(action(NavigationPreset.solidworks, kMiddleMouseButton), MouseNavAction.orbit);
+      expect(action(NavigationPreset.solidworks, kMiddleMouseButton, control: true), MouseNavAction.pan);
+      expect(action(NavigationPreset.solidworks, kMiddleMouseButton, shift: true), MouseNavAction.zoom);
+      expect(action(NavigationPreset.solidworks, kSecondaryMouseButton), MouseNavAction.pan);
+    });
+
+    test('Fusion 360: Shift+middle orbits, middle and right pan, nothing zooms', () {
+      expect(action(NavigationPreset.fusion360, kMiddleMouseButton, shift: true), MouseNavAction.orbit);
+      expect(action(NavigationPreset.fusion360, kMiddleMouseButton), MouseNavAction.pan);
+      expect(action(NavigationPreset.fusion360, kMiddleMouseButton, control: true), MouseNavAction.pan);
+      expect(action(NavigationPreset.fusion360, kSecondaryMouseButton), MouseNavAction.pan);
+      expect(action(NavigationPreset.fusion360, kSecondaryMouseButton, shift: true), MouseNavAction.pan);
+    });
+
+    test('Onshape: right orbits, Ctrl+right and middle pan, nothing zooms', () {
+      expect(action(NavigationPreset.onshape, kSecondaryMouseButton), MouseNavAction.orbit);
+      expect(action(NavigationPreset.onshape, kSecondaryMouseButton, control: true), MouseNavAction.pan);
+      expect(action(NavigationPreset.onshape, kMiddleMouseButton), MouseNavAction.pan);
+      expect(action(NavigationPreset.onshape, kMiddleMouseButton, shift: true), MouseNavAction.pan);
+    });
+
+    test('the left button and no button stay with the canvas in every preset', () {
+      for (final preset in NavigationPreset.values) {
+        expect(action(preset, kPrimaryMouseButton), isNull, reason: preset.label);
+        expect(action(preset, 0, control: true, shift: true), isNull, reason: preset.label);
+      }
+    });
+
+    testWidgets('mouseNavActionForEvent follows the stored preset', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      const right = PointerMoveEvent(kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+      addTearDown(() => ControlsPreferences.setPreset(NavigationPreset.solidworks));
+      await ControlsPreferences.setPreset(NavigationPreset.onshape);
+      expect(mouseNavActionForEvent(right), MouseNavAction.orbit);
+      await ControlsPreferences.setPreset(NavigationPreset.solidworks);
+      expect(mouseNavActionForEvent(right), MouseNavAction.pan);
+    });
+
+    test('invert flips the wheel direction and nothing else', () {
+      expect(wheelZoomFactor(kWheelNotchPixels, invert: true), closeTo(1 / 1.1, 1e-9));
+      expect(wheelZoomFactor(-kWheelNotchPixels, invert: true), closeTo(1.1, 1e-9));
+      expect(wheelZoomFactor(0, invert: true), 1);
+      expect(wheelZoomFactor(kWheelNotchPixels), closeTo(1.1, 1e-9));
+    });
   });
 
   group('wheelZoomFactor', () {

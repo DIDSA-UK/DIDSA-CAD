@@ -7,6 +7,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/sketch_api_client.dart';
+import '../viewport3d/controls_preferences.dart';
 import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/keyboard_shortcuts.dart' show CadShortcut, withShortcut;
 import 'marquee_selection.dart';
@@ -122,6 +123,9 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
   /// button alone, and how far it has travelled - a right release under the
   /// tap slop is a click and asks for a context menu (a drag pans, D1).
   bool _mouseNavIsSecondary = false;
+
+  /// Desktop input D5: whether the current press is the middle button alone - a click without a drag ends the chain being drawn, as Enter does.
+  bool _mouseNavIsMiddle = false;
   double _mouseNavTravel = 0;
 
   /// Desktop input D2: a left mouse press on blank canvas in select mode,
@@ -801,6 +805,7 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
       }
       _mouseNavAnchor = event.localPosition;
       _mouseNavIsSecondary = event.buttons == kSecondaryMouseButton;
+      _mouseNavIsMiddle = event.buttons == kMiddleMouseButton;
       _mouseNavTravel = 0;
       return;
     }
@@ -965,6 +970,9 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
       _mouseNavAnchor = null;
       final isContextClick = event is PointerUpEvent && _mouseNavIsSecondary && _mouseNavTravel <= kTouchSlop;
       _mouseNavIsSecondary = false;
+      final isMiddleClick = event is PointerUpEvent && _mouseNavIsMiddle && _mouseNavTravel <= kTouchSlop;
+      _mouseNavIsMiddle = false;
+      if (isMiddleClick && widget.controller.mode == SketchMode.draw) widget.controller.finishChain();
       if (_mouseNavAction != null) setState(() => _mouseNavAction = null);
       if (isContextClick) _requestContextMenu(event, transform);
       return;
@@ -995,7 +1003,7 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
       // Desktop input D1: scaled by the scroll distance (one notch keeps the
       // old 10 %) - see [wheelZoomFactor]; inverted, since a bigger zoom
       // here means zoomed in.
-      final scaleFactor = 1 / wheelZoomFactor(event.scrollDelta.dy, perNotch: 1 / 0.9);
+      final scaleFactor = 1 / wheelZoomFactor(event.scrollDelta.dy, perNotch: 1 / 0.9, invert: ControlsPreferences.invertWheel);
       setState(() => _viewport.zoomAtScreenPoint(
             event.localPosition,
             scaleFactor,

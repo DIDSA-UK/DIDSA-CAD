@@ -2,9 +2,14 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'package:didsa_cad_client/viewport3d/controls_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/mouse_navigation.dart' show SelectClick;
+import 'package:didsa_cad_client/viewport3d/orbit_camera.dart';
+import 'package:didsa_cad_client/viewport3d/view_cube.dart' show viewCubeEyeAndUp;
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 
@@ -277,6 +282,68 @@ void main() {
     expect(state.zoomToEntities({flatFace}), isTrue);
     expect(state.debugCameraTarget.x, closeTo(5, 1e-6), reason: 'centred on the face');
     expect(state.zoomToEntities({const SelectionEntityRef(kind: SelectionEntityKind.sketchPoint)}), isFalse);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop input D5: the Onshape preset orbits with a right drag, and a view cube pick turns the view', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final key = GlobalKey<PartViewportState>();
+    final requests = <Offset>[];
+    await tester.runAsync(() => ControlsPreferences.setPreset(NavigationPreset.onshape));
+    addTearDown(() => ControlsPreferences.setPreset(NavigationPreset.solidworks));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            width: 400,
+            height: 400,
+            child: PartViewport(
+              key: key,
+              bodies: [_triangle],
+              selectedPlane: null,
+              onPlaneTap: (_) {},
+              onBackgroundTap: () {},
+              selectionMode: true,
+              onContextMenuRequested: (hit, at) => requests.add(at),
+            ),
+          ),
+        ),
+      ),
+    );
+    if (!await _pumpUntilGpuReady(tester)) {
+      markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+      return;
+    }
+    await tester.pump();
+    final state = key.currentState!;
+
+    final orientationBefore = state.debugCameraOrientation.clone();
+    final targetBefore = state.debugCameraTarget.clone();
+    final right = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+    await right.down(const Offset(200, 200));
+    await tester.pump();
+    await right.moveBy(const Offset(40, 0));
+    await tester.pump();
+    await right.up();
+    await tester.pump();
+    expect(state.debugCameraOrientation != orientationBefore, isTrue, reason: 'Onshape: a right drag orbits');
+    expect(state.debugCameraTarget, targetBefore, reason: 'and does not pan');
+    expect(requests, isEmpty, reason: 'a drag is not a click');
+
+    final click = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+    await click.down(const Offset(120, 220));
+    await click.up();
+    await tester.pump();
+    expect(requests.length, 1, reason: 'a right click still asks for the menu');
+
+    await state.animateToViewCubeTarget(vm.Vector3(0, 1, 0));
+    await tester.pump(const Duration(seconds: 1));
+    final (eye, up) = viewCubeEyeAndUp(vm.Vector3(0, 1, 0));
+    final expected = OrbitCamera.orientationLookingFrom(eye, vm.Vector3.zero(), up);
+    final actual = state.debugCameraOrientation;
+    final dot = (expected.x * actual.x + expected.y * actual.y + expected.z * actual.z + expected.w * actual.w).abs();
+    expect(dot, closeTo(1, 1e-4), reason: 'the view now looks down from above (Top)');
     expect(tester.takeException(), isNull);
   });
 }

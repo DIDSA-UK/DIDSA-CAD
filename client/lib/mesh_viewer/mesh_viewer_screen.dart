@@ -25,6 +25,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../viewport3d/keyboard_shortcuts.dart';
+import '../viewport3d/controls_preferences.dart';
 import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/orbit_camera.dart';
 import '../viewport3d/scene_controls_panel.dart';
@@ -205,6 +206,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   Future<void> _loadScenePrefs() async {
     await ViewPreferences.load();
     await ScenePreferences.load();
+    await ControlsPreferences.load();
     await MeshViewerPreferences.load();
     if (!mounted) return;
     setState(() {
@@ -940,7 +942,10 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
           (event.buttons & kPrimaryMouseButton != 0 ? MouseNavAction.orbit : null);
       switch (navAction) {
         case MouseNavAction.orbit:
-          setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
+          setState(() {
+            final delta = event.delta * ControlsPreferences.orbitSpeed; // (desktop input D5)
+            _camera.orbitByScreenDelta(delta.dx, delta.dy);
+          });
         case MouseNavAction.pan:
           setState(() => _camera.panByScreenDelta(event.delta.dx, event.delta.dy));
         case MouseNavAction.zoom:
@@ -965,7 +970,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
 
   void _handlePointerSignal(PointerSignalEvent event) {
     if (event is PointerScrollEvent) {
-      setState(() => _camera.zoomByFactor(wheelZoomFactor(event.scrollDelta.dy)));
+      setState(() => _camera.zoomByFactor(wheelZoomFactor(event.scrollDelta.dy, invert: ControlsPreferences.invertWheel)));
     }
   }
 

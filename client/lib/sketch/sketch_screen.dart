@@ -26,7 +26,10 @@ import '../api/sketch_api_client.dart'
 import '../didsa_logo_button.dart';
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/keyboard_shortcuts.dart';
+import '../viewport3d/controls_preferences.dart';
+import '../viewport3d/controls_settings_screen.dart';
 import '../viewport3d/mouse_navigation.dart' show SelectClick;
+import '../viewport3d/view_cube.dart' show showViewCube;
 import '../viewport3d/reference_planes.dart';
 import '../viewport3d/render_mode.dart';
 import '../viewport3d/selection_filter.dart' show SelectionFilterState;
@@ -526,6 +529,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// time [_buildBaseLayer] first reads it.
   Future<void> _loadInitialOrbitViewPreference() async {
     await ViewPreferences.load();
+    await ControlsPreferences.load();
     if (!mounted || _orbitViewActive || widget.standalone) return;
     if (_effectiveOrbitBasis != null) {
       _enterOrbitView();
@@ -597,6 +601,7 @@ class _SketchScreenState extends State<SketchScreen> {
       CadShortcut.viewTop: view(StandardView.top),
       CadShortcut.viewBottom: view(StandardView.bottom),
       CadShortcut.viewIsometric: view(StandardView.isometric),
+      CadShortcut.viewCube: orbit == null ? null : () => unawaited(_showViewCube(orbit)),
       CadShortcut.zoomIn: onOrbit((viewport) => viewport.zoomByStep(1 / kKeyboardZoomStep)),
       CadShortcut.zoomOut: onOrbit((viewport) => viewport.zoomByStep(kKeyboardZoomStep)),
       CadShortcut.rotateLeft: onOrbit((viewport) => viewport.orbitByDegrees(-kKeyboardOrbitDegrees, 0)),
@@ -618,6 +623,14 @@ class _SketchScreenState extends State<SketchScreen> {
       CadShortcut.help: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
     };
   }
+
+  /// Desktop input D5 (Space): the view cube over Orbit View, opened under the cursor.
+  Future<void> _showViewCube(PartViewportState viewport) => showViewCube(
+        context,
+        anchor: viewport.viewCubeAnchor(),
+        basis: viewport.viewCubeBasis(),
+        onPick: (target) => unawaited(viewport.animateToViewCubeTarget(target)),
+      );
 
   /// Esc: the open sketch bar's Cancel; else the dimension value being
   /// typed; else back to Select from any tool; else clear the selection.
@@ -1501,6 +1514,10 @@ class _SketchScreenState extends State<SketchScreen> {
         onSelectClick: (click) => _controller.selectClick = click,
         // Desktop input D4: a right click without a drag.
         onContextMenuRequested: (hit, at) => unawaited(_onOrbitContextMenu(hit, at)),
+        // Desktop input D5: a middle click ends the chain being drawn, as Enter does.
+        onMouseMiddleClick: () {
+          if (_controller.mode == SketchMode.draw) _controller.finishChain();
+        },
         onClearSelection: _controller.closeRibbon,
         // P25 (2D-sketcher feature parity): feeds straight into
         // SketchController.selectInRect - the exact same method
@@ -2927,6 +2944,16 @@ class _SketchScreenState extends State<SketchScreen> {
           _build3DViewMenu(context, density, titleStyle, showBodyTransparency: true)
         else
           _build2DViewMenu(context, density, titleStyle),
+        // Desktop input D5: the Controls settings (mouse bindings, wheel, orbit speed, shortcut list).
+        ListTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.mouse_outlined, size: 20),
+          title: Text('Controls', style: titleStyle),
+          onTap: () => unawaited(Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+          )),
+        ),
       ],
     );
   }

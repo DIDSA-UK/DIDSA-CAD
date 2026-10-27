@@ -115,6 +115,8 @@ import 'render_mode.dart';
 import 'revolve_panel.dart';
 import 'revolve_surface_panel.dart';
 import 'keyboard_shortcuts.dart';
+import 'controls_preferences.dart';
+import 'controls_settings_screen.dart';
 import 'mouse_navigation.dart' show SelectClick, selectionAfterClick;
 import 'move_body_panel.dart';
 import 'move_face_panel.dart';
@@ -140,6 +142,7 @@ import 'tree_multi_select_controller.dart';
 import 'sweep_panel.dart';
 import 'svg_icon.dart';
 import 'scene_preferences.dart';
+import 'view_cube.dart' show showViewCube;
 import 'viewport_context_menus.dart';
 import 'view_preferences.dart';
 
@@ -10428,6 +10431,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _loadViewPreferences() async {
     await ViewPreferences.load();
     await ScenePreferences.load();
+    await ControlsPreferences.load();
     if (!mounted) return;
     // Bug fix: this async load races [_loadPart] (both fired, unawaited,
     // from initState) - on a slow/first launch, [_refreshMesh] can already
@@ -14706,6 +14710,20 @@ class _PartScreenState extends State<PartScreen> {
   /// (see [_openExtrudePanelForEdit]) rather than doing nothing, which is
   /// what an Extrude-Feature tap did pre-B4.
   Future<void> _onFeatureTap(FeatureDto feature) async {
+    // Desktop input D5: the second click of a double-click lands while the
+    // first is still opening the Feature - it must not open it again.
+    if (_featureTapOpening) return;
+    _featureTapOpening = true;
+    try {
+      await _openFeatureForEdit(feature);
+    } finally {
+      _featureTapOpening = false;
+    }
+  }
+
+  bool _featureTapOpening = false;
+
+  Future<void> _openFeatureForEdit(FeatureDto feature) async {
     setState(() => _selectedFeatureId = feature.id);
     final rollbackIds = featureIdsAfter(_features, feature.id);
     if (rollbackIds.isNotEmpty) await _beginRollback(rollbackIds);
@@ -23782,6 +23800,8 @@ class _PartScreenState extends State<PartScreen> {
       CadShortcut.viewTop: view(StandardView.top),
       CadShortcut.viewBottom: view(StandardView.bottom),
       CadShortcut.viewIsometric: view(StandardView.isometric),
+      CadShortcut.viewNormalTo: _normalToAction,
+      CadShortcut.viewCube: viewport == null ? null : () => unawaited(_showViewCube()),
       CadShortcut.zoomIn: viewport == null ? null : () => viewport.zoomByStep(1 / kKeyboardZoomStep),
       CadShortcut.zoomOut: viewport == null ? null : () => viewport.zoomByStep(kKeyboardZoomStep),
       CadShortcut.rotateLeft: viewport == null ? null : () => viewport.orbitByDegrees(-kKeyboardOrbitDegrees, 0),
@@ -23799,6 +23819,40 @@ class _PartScreenState extends State<PartScreen> {
       CadShortcut.togglePerspective: () => unawaited(_onPerspectiveChanged(!_isPerspective)),
       CadShortcut.help: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
     };
+  }
+
+  /// Desktop input D5 (Ctrl+8, and the view cube's Normal To button): turns
+  /// the view to look straight at the one selected plane or flat face. Null
+  /// when the selection is anything else (the key is then left alone).
+  VoidCallback? get _normalToAction {
+    final viewport = _viewportKey.currentState;
+    if (viewport == null || _selectedEntities.length != 1) return null;
+    final entity = _selectedEntities.single;
+    switch (entity.kind) {
+      case SelectionEntityKind.referencePlane:
+        final plane = entity.referencePlaneKind;
+        return plane == null ? null : () => unawaited(viewport.animateToBasis(SketchPlaneBasis.oriented(plane, flip: false, rotationQuarterTurns: 0)));
+      case SelectionEntityKind.createPlane:
+        final basis = _customPlaneBasis(entity.planeFeatureId);
+        return basis == null ? null : () => unawaited(viewport.animateToBasis(basis));
+      case SelectionEntityKind.face:
+        return viewport.planarFaceNormal(entity) == null ? null : () => unawaited(viewport.animateToFaceNormal(entity));
+      default:
+        return null;
+    }
+  }
+
+  /// Desktop input D5 (Space): the view cube, opened under the cursor.
+  Future<void> _showViewCube() async {
+    final viewport = _viewportKey.currentState;
+    if (viewport == null) return;
+    await showViewCube(
+      context,
+      anchor: viewport.viewCubeAnchor(),
+      basis: viewport.viewCubeBasis(),
+      onPick: (target) => unawaited(viewport.animateToViewCubeTarget(target)),
+      onNormalTo: _normalToAction,
+    );
   }
 
   /// Esc: the open tool panel's Cancel; else whatever Back would cancel
@@ -24735,6 +24789,10 @@ class _PartScreenState extends State<PartScreen> {
                     onSceneRoughnessChanged: _onSceneRoughnessChanged,
                     onSceneLightIntensityChanged: _onSceneLightIntensityChanged,
                     onSceneEmissiveIntensityChanged: _onSceneEmissiveIntensityChanged,
+                    // Desktop input D5: the Controls settings.
+                    onOpenControls: () => unawaited(Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+                    )),
                     isPerspective: _isPerspective,
                     onPerspectiveChanged: _onPerspectiveChanged,
                     farClip: _farClip,

@@ -20,6 +20,8 @@ import '../sketch/sketch_controller.dart'
 import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
+import 'controls_preferences.dart';
+import 'view_cube.dart' show ViewCubeBasis, viewCubeEyeAndUp;
 import 'mouse_navigation.dart';
 import '../sketch/marquee_selection.dart' show kCrossingBoxColor;
 import 'orbit_camera.dart';
@@ -918,6 +920,9 @@ class PartViewport extends StatefulWidget {
   /// where the menu goes. Not fired for a middle click, or for a touch.
   final void Function(HoverHit? hit, Offset globalPosition)? onContextMenuRequested;
 
+  /// Desktop input D5: fired when a mouse middle click ends without a drag - in a sketch tool it ends the chain being drawn, as Enter does.
+  final VoidCallback? onMouseMiddleClick;
+
   /// Fired when a tap (Fix 4) commits while the cursor is over empty space -
   /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
@@ -1167,6 +1172,7 @@ class PartViewport extends StatefulWidget {
     this.onSelectionToggle,
     this.onSelectClick,
     this.onContextMenuRequested,
+    this.onMouseMiddleClick,
     this.onClearSelection,
     this.onMarqueeSelect,
     this.onSelectOtherRequested,
@@ -1595,6 +1601,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// (the only one that can end in a context menu), and how far it has
   /// travelled - under the tap slop at release it is a click, not a pan.
   bool _mouseNavIsSecondary = false;
+  bool _mouseNavIsMiddle = false;
   double _mouseNavTravel = 0;
 
   /// What [_mouseNavPointer]'s drag last did, for [_viewportMouseCursor].
@@ -4082,6 +4089,37 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// everything without turning the view.
   void zoomToFit() => setState(() => _doRecentre(keepOrientation: true));
 
+  /// Desktop input D5: the last place a pointer was over this viewport
+  /// (local), so the view cube can open under the cursor. Null until one
+  /// has been seen.
+  Offset? _lastPointerLocal;
+
+  /// Desktop input D5: where the view cube opens - the last pointer position
+  /// (global), else the middle of the viewport.
+  Offset viewCubeAnchor() {
+    final box = context.findRenderObject();
+    if (box is! RenderBox) return Offset.zero;
+    return box.localToGlobal(_lastPointerLocal ?? Offset(box.size.width / 2, box.size.height / 2));
+  }
+
+  /// Desktop input D5: the camera's axes for drawing the view cube.
+  ViewCubeBasis viewCubeBasis() => ViewCubeBasis(
+        right: _camera.right.clone(),
+        up: _camera.up.clone(),
+        back: (_camera.position - _camera.target).normalized(),
+      );
+
+  /// Desktop input D5: turns the view to look from [direction] (a view
+  /// cube target - see [viewCubeEyeAndUp]) at the origin, as the standard
+  /// views do.
+  Future<void> animateToViewCubeTarget(vm.Vector3 direction, {Duration duration = const Duration(milliseconds: 400)}) {
+    final (eye, up) = viewCubeEyeAndUp(direction);
+    return _animateOrientationTo(OrbitCamera.orientationLookingFrom(eye, vm.Vector3.zero(), up), duration: duration)
+        .then((_) {
+      if (mounted) setState(_resyncCameraDependentOverlays);
+    });
+  }
+
   /// Desktop input D4: the Reset view button's action (everything in frame,
   /// turned back to isometric) for the viewport's right-click menu.
   void resetView() => setState(_doRecentre);
@@ -4675,7 +4713,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // Desktop input D1: scaled by the scroll distance (one notch keeps the
       // old 10 %) so a trackpad's stream of small deltas doesn't zoom a full
       // notch per event - see [wheelZoomFactor].
-      final scaleFactor = wheelZoomFactor(event.scrollDelta.dy);
+      final scaleFactor = wheelZoomFactor(event.scrollDelta.dy, invert: ControlsPreferences.invertWheel);
       // Item 6 (on-device feedback, repeated across several rounds:
       // zooming in on a Body's corner lost it from view far too soon): a
       // prior fix (zoomTowardScreenPoint) only anchored *which* point a
@@ -4771,6 +4809,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Offset _viewportCenter() => Offset(_viewportSize.width / 2, _viewportSize.height / 2);
 
   void _onPointerDown(PointerDownEvent event) {
+    _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
     // Desktop input D1: a middle or right press drags the view in every
     // mode, ahead of gizmos, marquee and select - see [_mouseNavPointer].
@@ -4785,6 +4824,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _mouseNavPointer = event.pointer;
       _mouseNavAnchor = event.localPosition;
       _mouseNavIsSecondary = event.buttons == kSecondaryMouseButton;
+      _mouseNavIsMiddle = event.buttons == kMiddleMouseButton;
       _mouseNavTravel = 0;
       _orbitPivot = event.buttons & kMiddleMouseButton != 0 ? _orbitPivotAt(event.localPosition) : null;
       return;
@@ -5112,6 +5152,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerHover(PointerHoverEvent event) {
+    _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
     if (widget.selectionMode) {
       _handleSelectionPointerHover(event.localPosition);
@@ -5140,11 +5181,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _mouseNavAction = action;
       switch (action) {
         case MouseNavAction.orbit:
+          // Desktop input D5: the Controls setting scales a mouse orbit's speed.
+          final delta = event.delta * ControlsPreferences.orbitSpeed;
           final pivot = _orbitPivot;
           if (pivot != null) {
-            _camera.orbitAboutPointByScreenDelta(event.delta.dx, event.delta.dy, pivot);
+            _camera.orbitAboutPointByScreenDelta(delta.dx, delta.dy, pivot);
           } else {
-            _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy);
+            _camera.orbitByScreenDelta(delta.dx, delta.dy);
           }
         case MouseNavAction.pan:
           _camera.panByScreenDelta(event.delta.dx, event.delta.dy);
@@ -5161,6 +5204,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// is under it).
   void _endMouseNavigation(PointerEvent event) {
     final isClick = event is PointerUpEvent && _mouseNavIsSecondary && _mouseNavTravel <= kTouchSlop;
+    final isMiddleClick = event is PointerUpEvent && _mouseNavIsMiddle && _mouseNavTravel <= kTouchSlop;
+    _mouseNavIsMiddle = false;
     _mouseNavPointer = null;
     _mouseNavAnchor = null;
     _orbitPivot = null;
@@ -5171,6 +5216,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     });
     if (event is! PointerUpEvent) return;
     if (isClick) widget.onContextMenuRequested?.call(_hitAt(event.localPosition), event.position);
+    if (isMiddleClick) widget.onMouseMiddleClick?.call();
     if (widget.selectionMode) {
       _handleSelectionPointerHover(event.localPosition);
     } else if (widget.drawCursorMode) {

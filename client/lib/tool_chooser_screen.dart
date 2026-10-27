@@ -6,6 +6,7 @@ import 'sketch/sketch_screen.dart';
 import 'storage/ensure_project_root.dart';
 import 'storage/storage_service.dart';
 import 'storage/storage_service_factory.dart';
+import 'viewport3d/controls_settings_screen.dart';
 import 'viewport3d/part_screen.dart';
 import 'viewport3d/svg_icon.dart';
 
@@ -48,7 +49,21 @@ class ToolChooserScreen extends StatelessWidget {
       // affordance to `ConnectionScreen`/settings, and means the automatic
       // back arrow on whichever tool screen a tile leads to actually lands
       // back here instead of skipping past this screen entirely.
-      appBar: AppBar(backgroundColor: backgroundColor, elevation: 0, foregroundColor: Colors.white70),
+      appBar: AppBar(
+        backgroundColor: backgroundColor,
+        elevation: 0,
+        foregroundColor: Colors.white70,
+        actions: [
+          // Desktop input D5: mouse and keyboard settings, before any tool is open.
+          IconButton(
+            tooltip: 'Controls',
+            icon: const Icon(Icons.mouse_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+            ),
+          ),
+        ],
+      ),
       // Scrollable rather than a bare Center: a fourth tile (AI Modelling)
       // pushed this past a fixed-height overflow on shorter viewports -
       // docs/ai-modelling/02-scoping-conversation.md's own doc-fix note.

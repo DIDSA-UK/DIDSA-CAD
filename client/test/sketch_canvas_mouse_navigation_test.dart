@@ -27,6 +27,13 @@ class _RecordingController extends SketchController {
   _RecordingController() : super(api: SketchApiClient(httpClient: MockClient((request) async => http.Response('not found', 404))));
 
   final boxes = <(Rect, bool, bool)>[];
+  int finishChainCalls = 0;
+
+  @override
+  void finishChain() {
+    finishChainCalls++;
+    super.finishChain();
+  }
 
   @override
   void selectInRect(Rect sketchRect, {bool crossing = false, bool additive = false}) {
@@ -228,5 +235,34 @@ void main() {
       await tester.pump();
       expect(viewport.pan, defaultPan);
     });
+  });
+
+  testWidgets('desktop input D5: a middle click without a drag ends the chain being drawn; a drag or a select-mode click does not', (
+    tester,
+  ) async {
+    final (controller, _) = await _pumpCanvas(tester);
+    Future<void> middleClick({Offset drag = Offset.zero}) async {
+      final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kMiddleMouseButton);
+      await gesture.down(const Offset(200, 200));
+      await tester.pump();
+      if (drag != Offset.zero) {
+        await gesture.moveBy(drag);
+        await tester.pump();
+      }
+      await gesture.up();
+      await tester.pump();
+      // Clear the double-click memory so each press stands alone.
+      await tester.pump(const Duration(seconds: 1));
+    }
+
+    await middleClick();
+    expect(controller.finishChainCalls, 0, reason: 'select mode: nothing to finish');
+
+    controller.selectDrawTool(SketchTool.line);
+    await middleClick(drag: const Offset(40, 0));
+    expect(controller.finishChainCalls, 0, reason: 'a drag pans');
+
+    await middleClick();
+    expect(controller.finishChainCalls, 1);
   });
 }

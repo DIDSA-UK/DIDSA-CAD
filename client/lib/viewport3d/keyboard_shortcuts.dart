@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'number_field_nudge.dart';
+
 /// Desktop input D3 (`docs/desktop-input-scope.md` R3): the app's keyboard
 /// shortcuts - one table ([kCadShortcuts]) that the screens bind
 /// ([CadShortcutScope]), the shortcut sheet lists ([showCadShortcutSheet])
@@ -27,6 +29,8 @@ enum CadShortcut {
   viewTop,
   viewBottom,
   viewIsometric,
+  viewNormalTo,
+  viewCube,
   zoomIn,
   zoomOut,
   rotateLeft,
@@ -207,6 +211,19 @@ final Map<CadShortcut, CadShortcutInfo> kCadShortcuts = {
     group: _view,
     activators: [_key(LogicalKeyboardKey.digit6, control: true), _key(LogicalKeyboardKey.numpad6, control: true)],
     yieldsToText: false,
+  ),
+  CadShortcut.viewNormalTo: CadShortcutInfo(
+    label: 'Normal to the selected face or plane',
+    keys: 'Ctrl+8',
+    group: _view,
+    activators: [_key(LogicalKeyboardKey.digit8, control: true), _key(LogicalKeyboardKey.numpad8, control: true)],
+    yieldsToText: false,
+  ),
+  CadShortcut.viewCube: CadShortcutInfo(
+    label: 'View cube (pick a view)',
+    keys: 'Space',
+    group: _view,
+    activators: [_key(LogicalKeyboardKey.space)],
   ),
   CadShortcut.viewIsometric: CadShortcutInfo(
     label: 'Isometric',
@@ -402,12 +419,31 @@ class _CadShortcutScopeState extends State<CadShortcutScope> {
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_onKeyEvent);
+    FocusManager.instance.addEarlyKeyEventHandler(_onEarlyKeyEvent);
+    NumberFieldNudge.install();
   }
 
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_onKeyEvent);
+    FocusManager.instance.removeEarlyKeyEventHandler(_onEarlyKeyEvent);
+    NumberFieldNudge.uninstall();
     super.dispose();
+  }
+
+  /// Desktop input D5: Up / Down nudge a focused number field. This has to
+  /// run ahead of the focus tree (a hardware-keyboard handler cannot stop
+  /// the field's own Up / Down, which would move the caret and undo the
+  /// step), so it is an early key handler.
+  KeyEventResult _onEarlyKeyEvent(KeyEvent event) {
+    if (event is KeyUpEvent || !mounted) return KeyEventResult.ignored;
+    final route = ModalRoute.of(context);
+    if (route != null && !route.isCurrent) return KeyEventResult.ignored;
+    if (HardwareKeyboard.instance.isAltPressed || !textInputHasFocus()) return KeyEventResult.ignored;
+    final up = event.logicalKey == LogicalKeyboardKey.arrowUp;
+    final down = event.logicalKey == LogicalKeyboardKey.arrowDown;
+    if (!up && !down) return KeyEventResult.ignored;
+    return NumberFieldNudge.nudge(up ? 1 : -1) ? KeyEventResult.handled : KeyEventResult.ignored;
   }
 
   bool _onKeyEvent(KeyEvent event) {
