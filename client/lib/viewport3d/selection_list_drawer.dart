@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../layout/layout_mode.dart';
+
 import 'selection_hit_test.dart';
 import 'svg_icon.dart';
 
@@ -80,6 +82,7 @@ class SelectionListDrawer extends StatelessWidget {
         return bodyOrder != 0 ? bodyOrder : a.id.compareTo(b.id);
       });
     return _buildSheet(
+      context,
       itemCount: entries.length,
       itemBuilder: (context, index) {
         final entity = entries[index];
@@ -98,7 +101,10 @@ class SelectionListDrawer extends StatelessWidget {
   }
 
   /// The shared sheet shell (drag handle + [header] + a list of rows).
-  Widget _buildSheet({required int itemCount, required NullableIndexedWidgetBuilder itemBuilder}) {
+  Widget _buildSheet(BuildContext context, {required int itemCount, required NullableIndexedWidgetBuilder itemBuilder}) {
+    if (LayoutModeScope.isDesktop(context)) {
+      return _buildDocked(context, itemCount: itemCount, itemBuilder: itemBuilder);
+    }
     return DraggableScrollableSheet(
       initialChildSize: 0.18,
       minChildSize: 0.12,
@@ -151,6 +157,46 @@ class SelectionListDrawer extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  /// Desktop layout (D6): the same header, actions and list as a block docked under the tree in the left pane, rather
+  /// than a draggable sheet over the viewport.
+  Widget _buildDocked(BuildContext context, {required int itemCount, required NullableIndexedWidgetBuilder itemBuilder}) {
+    final theme = Theme.of(context);
+    return Material(
+      key: const ValueKey('docked-selection'),
+      elevation: 0,
+      color: theme.colorScheme.surfaceContainerLow,
+      child: Container(
+        decoration: BoxDecoration(border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant))),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 4, 0),
+              child: Row(
+                children: [
+                  Expanded(child: Text('Selection ($itemCount)', style: theme.textTheme.titleSmall)),
+                  if (onClearAll != null)
+                    IconButton(
+                      tooltip: 'Clear selection',
+                      icon: const Icon(Icons.close, size: 18),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onClearAll,
+                    ),
+                ],
+              ),
+            ),
+            if (header != null) header!,
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 180),
+              child: ListView.builder(shrinkWrap: true, itemCount: itemCount, itemBuilder: itemBuilder),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

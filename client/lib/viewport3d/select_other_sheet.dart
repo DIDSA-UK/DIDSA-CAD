@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'selection_hit_test.dart';
 import 'svg_icon.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Bug report ("if one body is entirely inside another body, it cannot be
 /// selected" - user-requested SOLIDWORKS-style "Select Other"): shown when
@@ -25,7 +26,7 @@ Future<void> showSelectOtherSheet(
   required void Function(SelectionEntityRef entity) onSelect,
   required void Function(SelectionEntityRef? entity) onHighlight,
 }) async {
-  await showModalBottomSheet<void>(
+  await showAdaptiveSheet<void>(
     context: context,
     // Bug fix (assembly testing): `isScrollControlled: true` lets the sheet
     // be sized by its own `DraggableScrollableSheet` below instead of

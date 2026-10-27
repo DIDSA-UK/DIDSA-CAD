@@ -24,6 +24,9 @@ import '../api/sketch_api_client.dart'
         TextContourDto,
         TextDto;
 import '../didsa_logo_button.dart';
+import '../layout/adaptive_sheet.dart';
+import '../layout/layout_mode.dart';
+import '../viewport3d/desktop_chrome.dart';
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/keyboard_shortcuts.dart';
 import '../viewport3d/controls_preferences.dart';
@@ -651,6 +654,117 @@ class _SketchScreenState extends State<SketchScreen> {
     }
   }
 
+  bool get _desktopLayout => LayoutModeScope.isDesktop(context);
+
+  /// Desktop layout (D6): the draw and edit tools as a ribbon under the app bar, in place of the speed dial. Each
+  /// button calls what the speed dial's entry calls.
+  Widget _buildDesktopSketchRibbon(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final controller = _controller;
+        final idle = !controller.busy;
+        RibbonCommand draw(String label, SketchTool tool, String svg) => RibbonCommand(
+              label: label,
+              svg: 'assets/icons/sketch_tools/$svg.svg',
+              selected: controller.mode == SketchMode.draw && controller.activeTool == tool,
+              onPressed: idle ? () => controller.selectDrawTool(tool) : null,
+            );
+        RibbonCommand mode(String label, String svg, SketchMode sketchMode, VoidCallback enter) => RibbonCommand(
+              label: label,
+              svg: svg,
+              selected: controller.mode == sketchMode,
+              onPressed: idle ? enter : null,
+            );
+        final tabs = [
+          RibbonTabData(
+            id: 'sketch',
+            label: 'Sketch',
+            groups: [
+              RibbonGroup([
+                draw('Line', SketchTool.line, 'sketch_tool_line'),
+                draw('Circle', SketchTool.circle, 'sketch_tool_circle'),
+                draw('Arc', SketchTool.arc, 'sketch_tool_arc'),
+                draw('Rectangle', SketchTool.rectangle, 'sketch_tool_rectangle'),
+                draw('Polygon', SketchTool.polygon, 'sketch_tool_polygon'),
+                draw('Slot', SketchTool.slot, 'sketch_tool_slot'),
+                draw('Ellipse', SketchTool.ellipse, 'sketch_tool_ellipse'),
+                draw('Ellipse Arc', SketchTool.ellipseArc, 'sketch_tool_ellipse_arc'),
+                draw('Spline', SketchTool.spline, 'sketch_tool_spline'),
+                draw('Point', SketchTool.point, 'sketch_tool_point'),
+                draw('Text', SketchTool.text, 'sketch_tool_text'),
+              ]),
+              RibbonGroup([
+                mode('Dimension', 'assets/icons/actions/action_dimensions.svg', SketchMode.dimension, controller.enterDimensionMode),
+                mode('Trim', 'assets/icons/actions/action_trim.svg', SketchMode.trim, controller.enterTrimMode),
+                mode('Convert', 'assets/icons/actions/action_convert_entities.svg', SketchMode.convert, controller.enterConvertEntitiesMode),
+                mode('Offset', 'assets/icons/ribbon/ribbon_offset.svg', SketchMode.offset, controller.enterOffsetMode),
+                mode('Pattern', 'assets/icons/feature/feature_pattern.svg', SketchMode.pattern, controller.enterPatternMode),
+              ]),
+              RibbonGroup([
+                RibbonCommand(
+                  label: 'Construction',
+                  icon: Icons.format_line_spacing,
+                  tooltip: 'Make the selection construction geometry (or back)',
+                  onPressed: idle && controller.selectionSet.isNotEmpty
+                      ? () => unawaited(controller.toggleSelectedConstruction())
+                      : null,
+                ),
+                RibbonCommand(
+                  label: 'Drag',
+                  svg: 'assets/icons/sketchbar/sketchbar_drag_mode.svg',
+                  tooltip: 'Drag mode: move entities by dragging them',
+                  selected: controller.dragModeEnabled,
+                  onPressed: controller.mode == SketchMode.select ? controller.toggleDragMode : null,
+                ),
+                RibbonCommand(
+                  label: 'Inference',
+                  icon: controller.inferenceSuppressed ? Icons.link_off : Icons.link,
+                  tooltip: controller.inferenceSuppressed
+                      ? 'Auto-inference off - click to re-enable'
+                      : 'Auto-inference on - click to suppress for this tool',
+                  selected: !controller.inferenceSuppressed,
+                  onPressed: controller.mode == SketchMode.draw ? controller.toggleInferenceSuppressed : null,
+                ),
+              ]),
+            ],
+          ),
+        ];
+        return DesktopRibbon(tabs: tabs, selectedId: 'sketch', onSelect: (_) {}, showTabStrip: false);
+      },
+    );
+  }
+
+  /// The status bar: the tool in use and whether the sketch is fully constrained.
+  Widget _buildDesktopSketchStatusBar() {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final controller = _controller;
+        final tool = switch (controller.mode) {
+          SketchMode.select => 'Select',
+          SketchMode.draw => 'Draw: ${controller.activeTool.name}',
+          SketchMode.dimension => 'Dimension',
+          SketchMode.trim => 'Trim / Extend',
+          SketchMode.convert => 'Convert entities',
+          SketchMode.offset => 'Offset',
+          SketchMode.pattern => 'Pattern / Mirror',
+        };
+        final selected = controller.selectionSet.length;
+        return DesktopStatusBar(
+          left: [
+            selected == 0 ? tool : '$tool   |   $selected selected',
+            if (controller.busy) 'Working…',
+          ],
+          right: [
+            if (controller.hasGeometry) (controller.isUnderConstrained ? 'Under-constrained' : 'Fully constrained'),
+            _orbitViewActive ? '3D view' : '2D view',
+          ],
+        );
+      },
+    );
+  }
+
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
@@ -707,6 +821,13 @@ class _SketchScreenState extends State<SketchScreen> {
           ],
         ),
         actions: [
+          if (_desktopLayout && !widget.standalone)
+            TextButton.icon(
+              key: const ValueKey('desktop-exit-sketch'),
+              onPressed: () => Navigator.of(context).pop(),
+              icon: const Icon(Icons.logout, size: 18),
+              label: const Text('Exit Sketch'),
+            ),
           // On-device feedback ("there are occasions when the sketch is
           // wrong and the next draw causes it to solve correctly... add a
           // Re-solve button"): placed left of Undo per that same feedback.
@@ -792,6 +913,7 @@ class _SketchScreenState extends State<SketchScreen> {
               },
             ),
             _ReferenceHealthBanner(controller: _controller),
+            if (_desktopLayout) _buildDesktopSketchRibbon(context),
             Expanded(
               child: Stack(
                 children: [
@@ -832,7 +954,7 @@ class _SketchScreenState extends State<SketchScreen> {
                           // (`_buildStandaloneFileMenu`) is the only exit
                           // path there, since a bare `.pop()` here would have
                           // nothing left on the stack to return to.
-                          if (!widget.standalone)
+                          if (!widget.standalone && !_desktopLayout)
                             FloatingActionButton.small(
                               heroTag: 'exit-sketch-fab',
                               tooltip: 'Exit Sketch',
@@ -1030,7 +1152,7 @@ class _SketchScreenState extends State<SketchScreen> {
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        if (_controller.textBarTextId != null) return const SizedBox.shrink();
+                        if (_controller.textBarTextId != null || _desktopLayout) return const SizedBox.shrink();
                         return SketchSpeedDial(controller: _controller, restrictToEmbeddedTools: _orbitViewActive);
                       },
                     ),
@@ -1077,7 +1199,8 @@ class _SketchScreenState extends State<SketchScreen> {
                         // already-on drag mode from before opening the
                         // bar is unaffected; toggling it on fresh
                         // requires closing the bar first.
-                        if (_controller.mode != SketchMode.select ||
+                        if (_desktopLayout ||
+                            _controller.mode != SketchMode.select ||
                             (_orbitViewActive && !_orbitCursorActive) ||
                             _controller.textBarTextId != null) {
                           return const SizedBox.shrink();
@@ -1131,7 +1254,7 @@ class _SketchScreenState extends State<SketchScreen> {
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        if (_controller.mode != SketchMode.draw) {
+                        if (_desktopLayout || _controller.mode != SketchMode.draw) {
                           return const SizedBox.shrink();
                         }
                         final suppressed = _controller.inferenceSuppressed;
@@ -1294,6 +1417,7 @@ class _SketchScreenState extends State<SketchScreen> {
                 ],
               ),
             ),
+            if (_desktopLayout) _buildDesktopSketchStatusBar(),
           ],
         ),
       ),
@@ -3158,7 +3282,7 @@ class _SketchScreenState extends State<SketchScreen> {
   ];
 
   Future<void> _pickCanvasColor(BuildContext context) async {
-    final chosen = await showModalBottomSheet<Color>(
+    final chosen = await showAdaptiveSheet<Color>(
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Padding(

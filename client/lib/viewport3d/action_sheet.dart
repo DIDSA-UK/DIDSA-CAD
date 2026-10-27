@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the one
 /// bottom-sheet-action-list shell shared by the Assembly-lens "Add" FAB
@@ -67,7 +68,7 @@ class ActionSheetEntry<T> {
 /// with [ActionSheetEntry.disabledReason] as its subtitle, and never pops
 /// anything when tapped.
 Future<T?> showActionSheet<T>(BuildContext context, List<ActionSheetEntry<T>> entries) {
-  return showModalBottomSheet<T>(
+  return showAdaptiveSheet<T>(
     context: context,
     // `isScrollControlled` + a `SingleChildScrollView` (rather than the
     // fixed-height, non-scrolling `Column` this started with): a real

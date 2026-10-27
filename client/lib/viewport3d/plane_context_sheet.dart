@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'action_sheet.dart';
 import 'reference_planes.dart';
 import 'svg_icon.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Actions available from a tap-selected reference plane's fly-up bottom
 /// sheet. Stage 19b Item 2 moved this out of the hamburger drawer (where it
@@ -31,7 +32,7 @@ Future<PlaneContextSheetAction?> showPlaneContextSheet(
       ),
     ]);
   }
-  return showModalBottomSheet<PlaneContextSheetAction>(
+  return showAdaptiveSheet<PlaneContextSheetAction>(
     context: context,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),

@@ -1,6 +1,8 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+
+import 'resizable_tool_panel.dart' show BottomToolPanelFrame;
 import 'keyboard_shortcuts.dart';
 
 /// Which of the two `CurveFeature` construction methods [CurvePanel] shows -
@@ -234,14 +236,8 @@ class _CurvePanelState extends State<CurvePanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: Padding(
+    return BottomToolPanelFrame(
+      child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -274,10 +270,7 @@ class _CurvePanelState extends State<CurvePanel> {
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
+          ));
   }
 
   List<Widget> _buildHelixFields() => [

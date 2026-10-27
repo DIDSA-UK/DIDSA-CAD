@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import 'resizable_tool_panel.dart' show BottomToolPanelFrame;
 import 'keyboard_shortcuts.dart';
 
 /// A single curve pickable as one of [FillSurfacePanel]'s boundaries - a
@@ -39,14 +41,8 @@ class FillSurfacePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: Padding(
+    return BottomToolPanelFrame(
+      child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -97,9 +93,6 @@ class FillSurfacePanel extends StatelessWidget {
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
+          ));
   }
 }

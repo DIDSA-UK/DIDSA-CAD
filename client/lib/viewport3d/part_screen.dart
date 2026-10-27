@@ -147,6 +147,7 @@ import 'scene_preferences.dart';
 import 'view_cube.dart' show showViewCube;
 import 'viewport_context_menus.dart';
 import 'view_preferences.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
 /// own "Prompt G: profile picking" state section) is gathering picks for -
@@ -13872,7 +13873,7 @@ class _PartScreenState extends State<PartScreen> {
   void _openReferencesSheet() {
     if (!mounted) return;
     if (_referencesSheetContext != null) return; // already open
-    showModalBottomSheet<void>(
+    showAdaptiveSheet<void>(
       context: context,
       isScrollControlled: true,
       builder: (sheetContext) {
@@ -14300,7 +14301,7 @@ class _PartScreenState extends State<PartScreen> {
     double? helixTaperAngle;
     var helixSegments = const [HelixSegmentValue(pitch: 2, turns: 3)];
     var helixRightHanded = true;
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -14362,7 +14363,7 @@ class _PartScreenState extends State<PartScreen> {
     }
     String? pickedSketchFeatureIdA;
     String? pickedSketchFeatureIdB;
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -14442,7 +14443,7 @@ class _PartScreenState extends State<PartScreen> {
       ...curveFeatureBoundaryIds
           .map((id) => FillSurfaceBoundaryChoice(label: _curveNames[id] ?? 'Curve feature ($id)', isCurveFeature: true)),
     ];
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -24173,16 +24174,37 @@ class _PartScreenState extends State<PartScreen> {
 
   String get _ribbonTabId => _ribbonTabChoice ?? (_lens == AssemblyLens.assembly ? 'assembly' : 'features');
 
+  double _desktopPaneWidth = DesktopLeftPane.defaultWidth;
+
+  /// A tool with its own panel is open: the panel docks at the left in place of the tree (the pickers do not -
+  /// they pick from the tree, so it stays).
+  bool get _desktopToolPanelOpen =>
+      (_anyToolPanelOpen && !_planeSelectionMode && !_profilePickerActive && !_pathPickerActive) ||
+      _mateActive ||
+      _componentPatternPanelActive;
+
   /// Wraps the viewport stack: on the desktop layout the tree is docked to its left.
   Widget _desktopFrame(Widget viewportStack) {
     if (!_desktopLayout) return viewportStack;
     return Row(
       children: [
-        if (_desktopPaneVisible)
+        if (_desktopPaneVisible && !_desktopToolPanelOpen)
           DesktopLeftPane(
-            child: _lens == AssemblyLens.assembly
-                ? _buildAssemblyTreePanel(docked: true)
-                : _buildFeatureTreePanel(docked: true),
+            width: _desktopPaneWidth,
+            onResize: (delta) => setState(
+              () => _desktopPaneWidth = (_desktopPaneWidth + delta).clamp(DesktopLeftPane.minWidth, DesktopLeftPane.maxWidth),
+            ),
+            child: Column(
+              children: [
+                Expanded(
+                  child: _lens == AssemblyLens.assembly
+                      ? _buildAssemblyTreePanel(docked: true)
+                      : _buildFeatureTreePanel(docked: true),
+                ),
+                if (_selectionDrawerShown) _buildSelectionDrawer(),
+                if (_componentDrawerShown) _buildComponentDrawer(),
+              ],
+            ),
           ),
         Expanded(child: viewportStack),
       ],
@@ -24604,6 +24626,104 @@ class _PartScreenState extends State<PartScreen> {
         _renderMode.label,
       ],
     );
+  }
+
+  /// True while the Part lens's selection drawer (the selected entities and what can be done with them) shows.
+  bool get _selectionDrawerShown =>
+      _lens == AssemblyLens.part &&
+                    !_extrudeActive &&
+                    !_surfaceActive &&
+                    !_createPlaneActive &&
+                    !_filletActive &&
+                    !_chamferActive &&
+                    !_revolveActive &&
+                    !_sweepActive &&
+                    !_loftActive &&
+                    !_mirrorActive &&
+                    !_patternActive &&
+                    !_mergeActive &&
+                    !_booleanActive &&
+                    !_splitActive &&
+                    !_deleteBodyActive &&
+                    !_scaleBodyActive &&
+                    !_moveBodyActive &&
+                    !_deleteFaceActive &&
+                    !_moveFaceActive &&
+                    !_shellActive &&
+                    !_profilePickerActive &&
+                    !_pathPickerActive &&
+                    _activeMultiSelect == null;
+
+  Widget _buildSelectionDrawer() {
+    return SelectionListDrawer(
+                      selectedEntities: _selectedEntities,
+                      onRemove: _toggleSelectedEntity,
+                      onClearAll: _clearSelectionFromDrawer,
+                      header: SelectionContextPanel(
+                        selectedEntities: _selectedEntities,
+                        isPointOnLine: _isPointOnLine,
+                        isPointOnArc: _isPointOnArc,
+                        isFacePlanar: _isFacePlanar,
+                        isSolidBody: (bodyId) => !_bodyIsSurface(bodyId),
+                        onCreatePlane: _onCreatePlaneTapped,
+                        onFillet: _onFilletTapped,
+                        onChamfer: _onChamferTapped,
+                        onNewSketchOnFace: _onNewSketchOnFaceTapped,
+                        onNewSketch: _onNewSketchTapped,
+                        onMirror: _onMirrorTapped,
+                        onPattern: _onPatternTapped,
+                        onDeleteBody: _onDeleteBodyTapped,
+                        onScaleBody: _onScaleBodyTapped,
+                        onMoveBody: _onMoveBodyTapped,
+                        onDeleteFace: _onDeleteFaceTapped,
+                        onMoveFace: _onMoveFaceTapped,
+                        onShell: _onShellTapped,
+                        // Bug fix (on-device feedback: the breadcrumb bar
+                        // used to float over the viewport as its own
+                        // overlay, obscuring part of this same drawer no
+                        // matter where it sat) - now rendered as this
+                        // panel's own leading row instead, sharing its
+                        // Material/padding rather than a separate overlay.
+                        breadcrumbEntity: _breadcrumbEntity,
+                        onBreadcrumbSelect: _onBreadcrumbSelect,
+                        onBreadcrumbPreview: _onBreadcrumbPreview,
+                      ),
+                      bodyNames: _selectionBodyNames,
+                    );
+  }
+
+  /// True while the Assembly lens's component drawer (Move / Fix / Delete for the selected component) shows.
+  bool get _componentDrawerShown =>
+      _lens == AssemblyLens.assembly &&
+                    _selectedOccurrenceId != null &&
+                    !_assemblyMultiSelect.active &&
+                    !_anyToolPanelOpen &&
+                    !_anyFeatureOrSourcePickerSessionActive &&
+                    !_mateActive &&
+                    !_componentPatternPickingSources &&
+                    !_selectOtherSheetOpen &&
+                    !_componentContextMenuOpen;
+
+  Widget _buildComponentDrawer() {
+    return Builder(
+                    builder: (context) {
+                      final index = _occurrences.indexWhere((o) => o.id == _selectedOccurrenceId);
+                      if (index == -1) return const SizedBox.shrink();
+                      final occurrence = _occurrences[index];
+                      return AssemblyComponentSelectionDrawer(
+                        selectedComponent: occurrence,
+                        displayName: occurrenceDisplayName(_occurrences, index),
+                        onMove: () => setState(() {
+                          _selectionMode = false;
+                          _moveRotateComponentActive = true;
+                          _moveRotateComponentMode = MoveRotateComponentMode.move;
+                        }),
+                        onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
+                        onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
+                        onClose: _clearSelectionFromDrawer,
+                      );
+                    },
+                  );
   }
 
   /// The Feature tree. [docked] puts it in the desktop layout's left pane; otherwise it slides over the viewport.
@@ -25330,65 +25450,9 @@ class _PartScreenState extends State<PartScreen> {
                 // still float on top of those flows too, offering the same
                 // irrelevant Part tools while picking Mate/Pattern
                 // references.
-                if (_lens == AssemblyLens.part &&
-                    !_extrudeActive &&
-                    !_surfaceActive &&
-                    !_createPlaneActive &&
-                    !_filletActive &&
-                    !_chamferActive &&
-                    !_revolveActive &&
-                    !_sweepActive &&
-                    !_loftActive &&
-                    !_mirrorActive &&
-                    !_patternActive &&
-                    !_mergeActive &&
-                    !_booleanActive &&
-                    !_splitActive &&
-                    !_deleteBodyActive &&
-                    !_scaleBodyActive &&
-                    !_moveBodyActive &&
-                    !_deleteFaceActive &&
-                    !_moveFaceActive &&
-                    !_shellActive &&
-                    !_profilePickerActive &&
-                    !_pathPickerActive &&
-                    _activeMultiSelect == null)
+                if (_selectionDrawerShown && !_desktopLayout)
                   Positioned.fill(
-                    child: SelectionListDrawer(
-                      selectedEntities: _selectedEntities,
-                      onRemove: _toggleSelectedEntity,
-                      onClearAll: _clearSelectionFromDrawer,
-                      header: SelectionContextPanel(
-                        selectedEntities: _selectedEntities,
-                        isPointOnLine: _isPointOnLine,
-                        isPointOnArc: _isPointOnArc,
-                        isFacePlanar: _isFacePlanar,
-                        isSolidBody: (bodyId) => !_bodyIsSurface(bodyId),
-                        onCreatePlane: _onCreatePlaneTapped,
-                        onFillet: _onFilletTapped,
-                        onChamfer: _onChamferTapped,
-                        onNewSketchOnFace: _onNewSketchOnFaceTapped,
-                        onNewSketch: _onNewSketchTapped,
-                        onMirror: _onMirrorTapped,
-                        onPattern: _onPatternTapped,
-                        onDeleteBody: _onDeleteBodyTapped,
-                        onScaleBody: _onScaleBodyTapped,
-                        onMoveBody: _onMoveBodyTapped,
-                        onDeleteFace: _onDeleteFaceTapped,
-                        onMoveFace: _onMoveFaceTapped,
-                        onShell: _onShellTapped,
-                        // Bug fix (on-device feedback: the breadcrumb bar
-                        // used to float over the viewport as its own
-                        // overlay, obscuring part of this same drawer no
-                        // matter where it sat) - now rendered as this
-                        // panel's own leading row instead, sharing its
-                        // Material/padding rather than a separate overlay.
-                        breadcrumbEntity: _breadcrumbEntity,
-                        onBreadcrumbSelect: _onBreadcrumbSelect,
-                        onBreadcrumbPreview: _onBreadcrumbPreview,
-                      ),
-                      bodyNames: _selectionBodyNames,
-                    ),
+                    child: _buildSelectionDrawer(),
                   ),
                 // Bug fix ("selecting a component shows no contextual
                 // toolbar"): the Assembly-lens equivalent of the
@@ -25401,34 +25465,8 @@ class _PartScreenState extends State<PartScreen> {
                 // of SelectionListDrawer for Part lens. Shows selected component
                 // details and action buttons in a draggable sheet. Auto-hides
                 // when other tool panels open or component is deselected.
-                if (_lens == AssemblyLens.assembly &&
-                    _selectedOccurrenceId != null &&
-                    !_assemblyMultiSelect.active &&
-                    !_anyToolPanelOpen &&
-                    !_anyFeatureOrSourcePickerSessionActive &&
-                    !_mateActive &&
-                    !_componentPatternPickingSources &&
-                    !_selectOtherSheetOpen &&
-                    !_componentContextMenuOpen)
-                  Builder(
-                    builder: (context) {
-                      final index = _occurrences.indexWhere((o) => o.id == _selectedOccurrenceId);
-                      if (index == -1) return const SizedBox.shrink();
-                      final occurrence = _occurrences[index];
-                      return AssemblyComponentSelectionDrawer(
-                        selectedComponent: occurrence,
-                        displayName: occurrenceDisplayName(_occurrences, index),
-                        onMove: () => setState(() {
-                          _selectionMode = false;
-                          _moveRotateComponentActive = true;
-                          _moveRotateComponentMode = MoveRotateComponentMode.move;
-                        }),
-                        onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
-                        onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
-                        onClose: _clearSelectionFromDrawer,
-                      );
-                    },
-                  ),
+                if (_componentDrawerShown && !_desktopLayout)
+                  _buildComponentDrawer(),
                 // Assembly support Phase 3: only one of FeatureTreePanel/
                 // AssemblyTreePanel is ever built at a time, gated on
                 // [_lens] - both carry their own "Close" `IconButton`, and

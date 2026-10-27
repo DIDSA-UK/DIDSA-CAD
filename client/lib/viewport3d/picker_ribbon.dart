@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+
+import '../layout/layout_mode.dart';
 import 'keyboard_shortcuts.dart';
 
 /// [ResizableToolPanel]'s sibling for a pure viewport-picking mode that has
@@ -68,20 +70,39 @@ class PickerRibbon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Desktop layout (D6): a prompt card at the top left of the viewport, beside the docked tree (a picker often
+    // picks from the tree), instead of a ribbon across the bottom.
+    final desktop = LayoutModeScope.isDesktop(context);
     return Align(
-      alignment: Alignment.bottomCenter,
+      alignment: desktop ? Alignment.topLeft : Alignment.bottomCenter,
       child: SafeArea(
         top: false,
-        child: Material(
+        child: Padding(
+          padding: desktop ? const EdgeInsets.all(12) : EdgeInsets.zero,
+          child: SizedBox(
+          width: desktop ? 360 : null,
+          child: Material(
           elevation: 4,
-          borderRadius: const BorderRadius.only(
-              topLeft: Radius.circular(12), topRight: Radius.circular(12)),
+          borderRadius: desktop
+              ? BorderRadius.circular(12)
+              : const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                if (desktop)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                      const SizedBox(height: 4),
+                      Text(tooltip,
+                          style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                    ],
+                  )
+                else
                 Row(
                   children: [
                     Text(title,
@@ -132,6 +153,8 @@ class PickerRibbon extends StatelessWidget {
               ],
             ),
           ),
+        ),
+        ),
         ),
       ),
     );

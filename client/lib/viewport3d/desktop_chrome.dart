@@ -283,37 +283,34 @@ class DesktopStatusBar extends StatelessWidget {
 }
 
 /// The left pane: [child] (the feature or assembly tree) at a width the user
-/// can drag, with a thin divider that doubles as the drag handle.
-class DesktopLeftPane extends StatefulWidget {
-  const DesktopLeftPane({super.key, required this.child, this.initialWidth = 300});
+/// can drag, with a thin divider that doubles as the drag handle. The width
+/// lives with the owner so it survives the pane being swapped out for a
+/// tool's panel and back.
+class DesktopLeftPane extends StatelessWidget {
+  const DesktopLeftPane({super.key, required this.child, required this.width, required this.onResize});
 
   final Widget child;
-  final double initialWidth;
+  final double width;
+  
+  /// Called with how far the divider moved; the owner adds it to its width (several moves can arrive between frames).
+  final ValueChanged<double> onResize;
 
+  static const double defaultWidth = 300;
   static const double minWidth = 200;
   static const double maxWidth = 520;
-
-  @override
-  State<DesktopLeftPane> createState() => _DesktopLeftPaneState();
-}
-
-class _DesktopLeftPaneState extends State<DesktopLeftPane> {
-  late double _width = widget.initialWidth;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Row(
       children: [
-        SizedBox(key: const ValueKey('desktop-left-pane'), width: _width, child: widget.child),
+        SizedBox(key: const ValueKey('desktop-left-pane'), width: width, child: child),
         MouseRegion(
           cursor: SystemMouseCursors.resizeLeftRight,
           child: GestureDetector(
             key: const ValueKey('desktop-pane-divider'),
             behavior: HitTestBehavior.opaque,
-            onHorizontalDragUpdate: (details) => setState(
-              () => _width = (_width + details.delta.dx).clamp(DesktopLeftPane.minWidth, DesktopLeftPane.maxWidth),
-            ),
+            onHorizontalDragUpdate: (details) => onResize(details.delta.dx),
             child: Container(width: 6, color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5)),
           ),
         ),

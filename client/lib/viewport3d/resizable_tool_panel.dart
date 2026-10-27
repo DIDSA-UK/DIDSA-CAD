@@ -1,5 +1,53 @@
 import 'package:flutter/material.dart';
 
+import '../layout/adaptive_sheet.dart';
+import '../layout/layout_mode.dart';
+
+/// Width of a tool's panel on the desktop layout, where it docks at the left of the viewport in place of the tree
+/// (SOLIDWORKS' PropertyManager).
+const double kDesktopToolPanelWidth = 340;
+
+/// The frame of a tool panel that is not a [ResizableToolPanel] (Create Plane, Curve, Fill Surface): on the phone a
+/// sheet across the bottom; on the desktop layout the same docked column at the left.
+class BottomToolPanelFrame extends StatelessWidget {
+  const BottomToolPanelFrame({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    // Inside the desktop layout's dialog (a Helix, say) the panel is just the dialog's content.
+    if (AdaptiveSheetScope.isInside(context)) {
+      return Material(child: SingleChildScrollView(child: child));
+    }
+    if (LayoutModeScope.isDesktop(context)) {
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: SizedBox(
+          width: kDesktopToolPanelWidth,
+          height: double.infinity,
+          child: Material(
+            key: const ValueKey('docked-tool-panel'),
+            elevation: 2,
+            child: FocusTraversalGroup(child: SingleChildScrollView(child: child)),
+          ),
+        ),
+      );
+    }
+    return Align(
+      alignment: Alignment.bottomCenter,
+      child: SafeArea(
+        top: false,
+        child: Material(
+          elevation: 4,
+          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 /// On-device feedback ("the tooltip at the top of the screen blocks the
 /// FABs to recentre and to switch between select/orbit"): every tool's
 /// bottom-sheet-style panel (Extrude, Revolve, Sweep, Fillet, Chamfer,
@@ -67,6 +115,7 @@ class _ResizableToolPanelState extends State<ResizableToolPanel> {
 
   @override
   Widget build(BuildContext context) {
+    if (LayoutModeScope.isDesktop(context)) return _buildDocked(context);
     return LayoutBuilder(
       builder: (context, constraints) {
         final totalHeight = constraints.maxHeight;
@@ -121,12 +170,55 @@ class _ResizableToolPanelState extends State<ResizableToolPanel> {
     );
   }
 
-  Widget _buildTitleRow(BuildContext context) {
+  /// Desktop layout (D6): the panel fills a column at the left, as tall as the viewport, in place of the tree. Same
+  /// title row and body; no pull-to-resize grip (the width is fixed, the body scrolls).
+  Widget _buildDocked(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SizedBox(
+        key: widget.resizableAreaKey,
+        width: kDesktopToolPanelWidth,
+        height: double.infinity,
+        child: Material(
+          key: const ValueKey('docked-tool-panel'),
+          elevation: 2,
+          child: FocusTraversalGroup(
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _buildTitleRow(context, stacked: true),
+                    const SizedBox(height: 12),
+                    widget.child,
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTitleRow(BuildContext context, {bool stacked = false}) {
     final titleText = Text(widget.title,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16));
     final tooltip = widget.tooltip;
     if (tooltip == null) return titleText;
+    if (stacked) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          titleText,
+          const SizedBox(height: 4),
+          Text(tooltip, style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        ],
+      );
+    }
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: [

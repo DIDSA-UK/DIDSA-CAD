@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'action_sheet.dart';
 import 'svg_icon.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// C3: actions available from a tap-selected created Plane's fly-up bottom
 /// sheet - mirrors `plane_context_sheet.dart`'s [PlaneContextSheetAction]
@@ -38,7 +39,7 @@ Future<CreatePlaneContextSheetAction?> showCreatePlaneContextSheet(
       ),
     ]);
   }
-  return showModalBottomSheet<CreatePlaneContextSheetAction>(
+  return showAdaptiveSheet<CreatePlaneContextSheetAction>(
     context: context,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),

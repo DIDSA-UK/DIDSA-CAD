@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'view_prefs_sheets.dart' show ColourSwatch, bodyColourSwatches;
 import 'view_preferences.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Bug report (assembly testing): "a colour disc that when tapped allows
 /// user to select the colour of that part" - the Assembly tree's own
@@ -23,7 +24,7 @@ import 'view_preferences.dart';
 /// field's own doc comment: `null` omitted/unchanged, `''` clears, anything
 /// else stored verbatim) - or `null` if dismissed without a choice at all.
 Future<String?> showOccurrenceColourSheet(BuildContext context, {required String? selectedHex}) {
-  return showModalBottomSheet<String>(
+  return showAdaptiveSheet<String>(
     context: context,
     builder: (sheetContext) => SafeArea(
       child: Padding(

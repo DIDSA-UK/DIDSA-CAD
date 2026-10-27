@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:didsa_cad_client/layout/adaptive_sheet.dart';
 import 'package:didsa_cad_client/layout/layout_mode.dart';
 import 'package:didsa_cad_client/viewport3d/controls_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/controls_settings_screen.dart';
@@ -136,6 +137,45 @@ void main() {
         ),
       );
       expect(seen, LayoutMode.phone);
+    });
+  });
+
+  group('showAdaptiveSheet', () {
+    Future<void> pumpOpener(WidgetTester tester, LayoutModeController? controller) async {
+      tester.view.physicalSize = wide;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      Widget home = Builder(
+        builder: (context) => Scaffold(
+          body: TextButton(
+            onPressed: () => showAdaptiveSheet<void>(context: context, builder: (_) => const Text('sheet content')),
+            child: const Text('open'),
+          ),
+        ),
+      );
+      if (controller != null) home = LayoutModeScope(controller: controller, child: home);
+      await tester.pumpWidget(MaterialApp(home: home));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('a bottom sheet on the phone layout', (tester) async {
+      await pumpOpener(tester, null);
+      expect(find.text('sheet content'), findsOneWidget);
+      expect(find.byType(BottomSheet), findsOneWidget);
+      expect(find.byKey(const ValueKey('adaptive-sheet-dialog')), findsNothing);
+    });
+
+    testWidgets('a centred dialog on the desktop layout', (tester) async {
+      await pumpOpener(
+        tester,
+        LayoutModeController(preference: LayoutPreference.desktop, windowSize: wide, mouseActive: true),
+      );
+      expect(find.text('sheet content'), findsOneWidget);
+      expect(find.byType(BottomSheet), findsNothing);
+      final dialog = tester.getRect(find.byKey(const ValueKey('adaptive-sheet-dialog')));
+      expect(dialog.width, lessThanOrEqualTo(560));
+      expect(dialog.center.dx, closeTo(640, 1));
     });
   });
 

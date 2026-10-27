@@ -7052,6 +7052,28 @@ void main() {
       expect(pane, findsOneWidget);
     });
 
+    testWidgets('a tool panel docks at the left in place of the tree, and the tree comes back on Cancel', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('docked-tool-panel')), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-left-pane')), findsNothing);
+      final panel = tester.getRect(find.byKey(const ValueKey('docked-tool-panel')));
+      expect(panel.left, 0);
+      expect(panel.width, 340);
+
+      await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('docked-tool-panel')), findsNothing);
+      expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+    });
+
     testWidgets('the Options menu holds the settings, and View is only the ribbon tab', (tester) async {
       bigWindow(tester);
       await pumpScreen(tester, layout: desktop());
