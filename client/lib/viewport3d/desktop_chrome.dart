@@ -7,6 +7,10 @@ import 'svg_icon.dart';
 /// resizable left pane. They hold no tool logic: each ribbon button just
 /// calls the action the phone layout's FAB or sheet already calls.
 
+/// Height of the desktop layout's app bar (and so of its tab strip): enough padding above and below the text without
+/// spending a phone-sized 56 dp on it.
+const double kDesktopBarHeight = 40;
+
 /// One button on the ribbon.
 class RibbonCommand {
   const RibbonCommand({
@@ -142,7 +146,7 @@ class RibbonTabStrip extends StatelessWidget {
   Widget build(BuildContext context) {
     final selected = tabs.firstWhere((t) => t.id == selectedId, orElse: () => tabs.first);
     return SizedBox(
-      height: kToolbarHeight,
+      height: kDesktopBarHeight,
       child: SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         child: Row(

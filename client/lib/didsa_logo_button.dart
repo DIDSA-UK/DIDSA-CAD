@@ -7,7 +7,10 @@ import 'package:url_launcher/url_launcher.dart';
 /// background, which keeps using the light logo and is untouched by this
 /// widget), tappable through to the DIDSA website.
 class DidsaLogoButton extends StatelessWidget {
-  const DidsaLogoButton({super.key});
+  const DidsaLogoButton({super.key, this.height = 32});
+
+  /// Smaller on the desktop layout's slimmer app bar.
+  final double height;
 
   @override
   Widget build(BuildContext context) {
@@ -15,7 +18,7 @@ class DidsaLogoButton extends StatelessWidget {
       onTap: () => launchUrl(Uri.parse('https://didsa.uk/didsa-design-tools/'), mode: LaunchMode.externalApplication),
       child: Image.asset(
         'assets/images/didsa_logo_dark.png',
-        height: 32,
+        height: height,
         fit: BoxFit.contain,
         errorBuilder: (context, error, stackTrace) =>
             const Text('DIDSA', style: TextStyle(fontWeight: FontWeight.bold)),

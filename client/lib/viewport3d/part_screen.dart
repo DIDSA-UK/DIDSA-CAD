@@ -24234,6 +24234,13 @@ class _PartScreenState extends State<PartScreen> {
         const SizedBox(width: 12),
         Flexible(child: _buildDesktopMenuBar(context)),
         const SizedBox(width: 8),
+        // A thin divider between the menus (File, Options) and the ribbon tabs.
+        SizedBox(
+          key: const ValueKey('menu-tab-divider'),
+          height: 22,
+          child: VerticalDivider(width: 1, thickness: 1, color: Theme.of(context).colorScheme.outlineVariant),
+        ),
+        const SizedBox(width: 4),
         Expanded(
           flex: 2,
           child: RibbonTabStrip(
@@ -25025,8 +25032,9 @@ class _PartScreenState extends State<PartScreen> {
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: const DidsaLogoButton(),
-        leadingWidth: 100,
+        toolbarHeight: _desktopLayout ? kDesktopBarHeight : null,
+        leading: DidsaLogoButton(height: _desktopLayout ? 24 : 32),
+        leadingWidth: _desktopLayout ? 84 : 100,
         centerTitle: false,
         title: _desktopLayout
             ? _buildDesktopAppBarTitle(context)

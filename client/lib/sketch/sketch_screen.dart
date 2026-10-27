@@ -768,8 +768,9 @@ class _SketchScreenState extends State<SketchScreen> {
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: const DidsaLogoButton(),
-        leadingWidth: 100,
+        toolbarHeight: _desktopLayout ? kDesktopBarHeight : null,
+        leading: DidsaLogoButton(height: _desktopLayout ? 24 : 32),
+        leadingWidth: _desktopLayout ? 84 : 100,
         centerTitle: false,
         title: Row(
           mainAxisSize: MainAxisSize.min,
