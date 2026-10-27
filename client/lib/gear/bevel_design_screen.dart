@@ -12,6 +12,7 @@ import 'gear_preset_controls.dart';
 import 'gear_preset_store.dart';
 import 'gear_validation_banner.dart';
 import 'standard_value_field.dart';
+import '../layout/layout_mode.dart';
 
 /// `docs/gear-design/08-entry-screen-and-preview.md`'s "Chain/planetary/
 /// bevel-pair preview" extension, the bevel half - a third dedicated
@@ -640,6 +641,16 @@ class _BevelDesignScreenState extends State<BevelDesignScreen> {
               children: [
                 SizedBox(height: constraints.maxHeight * 0.4, child: canvas),
                 Expanded(child: form),
+              ],
+            );
+          }
+          // Desktop layout (D6): the form on the left like a property panel, the preview taking the rest.
+          if (LayoutModeScope.isDesktop(context)) {
+            return Row(
+              children: [
+                SizedBox(width: 380, child: form),
+                const VerticalDivider(width: 1),
+                Expanded(child: canvas),
               ],
             );
           }

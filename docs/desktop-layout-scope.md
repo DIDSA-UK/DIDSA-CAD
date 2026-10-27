@@ -1,6 +1,6 @@
 # Desktop layout (D6) - scope
 
-**Status:** scoped 27 Oct 2026. L1 and the first part of L2 (the part screen frame) are built and awaiting the owner's confirmation before L2's remainder and L3-L6 (see section 8). Phase D6 of `docs/desktop-input-scope.md`, which covers mouse and keyboard input
+**Status:** scoped 27 Oct 2026. L1-L6 are built (section 8); what each leaves out is listed there. Nothing has been run on a device. Phase D6 of `docs/desktop-input-scope.md`, which covers mouse and keyboard input
 (D1-D5, D7); this covers what the app looks like on a big window. Owner's goal: *"dock a phone and have a full desktop CAD
 experience"* (DeX, Android desktop mode, an external monitor; Windows benefits too).
 
@@ -135,3 +135,30 @@ L1 first; L2-L5 in order; L6 can run beside L3-L5.
   and Material icons. The Sketch tab holds only New Sketch, Sketch on face and Plane (the in-sketch tools belong to L5).
 - **Not verified:** run once in a Linux debug build at 1280 x 720 (a part with two bodies, selecting a body, the View and Assembly tabs,
   the File menu, a ribbon New Sketch); not run on a device, on DeX, or with a touch screen swapping modes.
+
+## 9. The rest of the layouts (built after the owner confirmed the part screen frame)
+
+- **L3, panels and drawers on the part screen:** every tool panel (`ResizableToolPanel`, plus Create Plane, Curve and Fill Surface
+  through `BottomToolPanelFrame`) docks at the left, 340 dp wide and as tall as the viewport, in place of the tree while the tool
+  is open; the tree comes back when it closes. The pickers (`PickerRibbon`) are a prompt card at the top left of the viewport and
+  leave the tree in place, because they pick from it. The selection drawer and the component drawer dock under the tree in the left
+  pane (`_buildSelectionDrawer`, `_buildComponentDrawer`; the phone layout still gets the draggable sheets). The pane's width
+  survives a tool opening and closing.
+- **L4, sheets:** `showAdaptiveSheet` (`layout/adaptive_sheet.dart`) is `showModalBottomSheet` on the phone layout and a centred dialog
+  (at most 560 x 85% of the window) on the desktop layout. The feature picker, select other, material picker, colour, opacity,
+  polygon resolution, scene controls, plane sheets, references sheet and the Helix / Intersection / Fill Surface panels use it.
+  Context menus were already popups (D4).
+- **L5, sketch screen:** a tool ribbon under the app bar (the draw tools, Dimension, Trim, Convert, Offset, Pattern, Construct,
+  Drag, Inference) replaces the speed dial and the drag / inference / exit FABs; Exit Sketch is in the app bar; a status bar shows
+  the tool, the selection count, and the constraint state. The sketch bars are `ResizableToolPanel`s, so they dock at the left too.
+  The contextual selection ribbon (`SketchRibbon`) was already a left panel and is unchanged.
+- **L6, other screens:** the tool chooser is a 2 x 2 grid; the settings, form and management screens (AI system prompt, AI
+  provider, sketcher, mesh viewer settings, material form, part properties, materials manager, headset pairing, server
+  management, first install) and the AI modelling screen are centred columns (560-900 dp); the gear, bevel and gear-chain screens
+  put the form on the left and the preview on the right.
+- **Not done:** the mesh viewer keeps its own controls (no app-bar menu or side pane yet); the materials manager is a centred list,
+  not master-detail; the AI screen has no side-by-side chat and plan (its steps are separate screens); the connection screen was
+  already a narrow centred form and is unchanged; the sketch screen has no tabs or left pane beyond the docked bars; the part
+  screen's status bar still has no units or cursor coordinates. Not run on a device or with a touch screen swapping modes.
+- Tests: `test/layout_mode_test.dart` (rules, host, setting, `showAdaptiveSheet`), `test/part_screen_test.dart` ("desktop layout
+  (D6)": frame, ribbon, pane, docked tool panel, menus), `test/sketch_screen_desktop_test.dart`. The full suite passed.

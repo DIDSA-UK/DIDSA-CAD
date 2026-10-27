@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'ai/ai_modelling_screen.dart';
+import 'layout/layout_mode.dart';
 import 'gear/gear_design_screen.dart';
 import 'sketch/sketch_screen.dart';
 import 'storage/ensure_project_root.dart';
@@ -42,48 +43,9 @@ class ToolChooserScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const backgroundColor = Color(0xFF1E1E2E);
-    return Scaffold(
-      backgroundColor: backgroundColor,
-      // A real (non-replacement) AppBar, now that the tiles below `push`
-      // rather than `pushReplacement` - gives this screen its own back
-      // affordance to `ConnectionScreen`/settings, and means the automatic
-      // back arrow on whichever tool screen a tile leads to actually lands
-      // back here instead of skipping past this screen entirely.
-      appBar: AppBar(
-        backgroundColor: backgroundColor,
-        elevation: 0,
-        foregroundColor: Colors.white70,
-        actions: [
-          // Desktop input D5: mouse and keyboard settings, before any tool is open.
-          IconButton(
-            tooltip: 'Controls',
-            icon: const Icon(Icons.mouse_outlined),
-            onPressed: () => Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
-            ),
-          ),
-        ],
-      ),
-      // Scrollable rather than a bare Center: a fourth tile (AI Modelling)
-      // pushed this past a fixed-height overflow on shorter viewports -
-      // docs/ai-modelling/02-scoping-conversation.md's own doc-fix note.
-      body: SafeArea(
-        child: SingleChildScrollView(
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 360),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text(
-                      'What would you like to open?',
-                      style: TextStyle(color: Colors.white70, fontSize: 16),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 32),
-                    _ToolTile(
+    final desktop = LayoutModeScope.isDesktop(context);
+    final tiles = <Widget>[
+      _ToolTile(
                       icon: 'assets/icons/feature/feature_extrude.svg',
                       label: '3D Part Design',
                       subtitle: 'Sketch, extrude, and build a solid model',
@@ -91,8 +53,7 @@ class ToolChooserScreen extends StatelessWidget {
                         MaterialPageRoute(builder: (_) => const PartScreen()),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    _ToolTile(
+      _ToolTile(
                       icon: 'assets/icons/feature/feature_new_sketch.svg',
                       label: '2D Drawing',
                       subtitle: 'Floor plans and other flat drawings',
@@ -100,8 +61,7 @@ class ToolChooserScreen extends StatelessWidget {
                         MaterialPageRoute(builder: (_) => const SketchScreen(standalone: true)),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    _ToolTile(
+      _ToolTile(
                       icon: 'assets/icons/feature/feature_revolve.svg',
                       label: 'Gear Design',
                       subtitle: 'External/internal gears and racks',
@@ -109,8 +69,7 @@ class ToolChooserScreen extends StatelessWidget {
                         MaterialPageRoute(builder: (_) => const GearDesignScreen()),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    _ToolTile(
+      _ToolTile(
                       materialIcon: Icons.auto_awesome,
                       label: 'AI Modelling',
                       // `docs/ai-modelling/00-conventions.md`'s own explicit
@@ -142,6 +101,60 @@ class ToolChooserScreen extends StatelessWidget {
                         );
                       },
                     ),
+    ];
+    return Scaffold(
+      backgroundColor: backgroundColor,
+      // A real (non-replacement) AppBar, now that the tiles below `push`
+      // rather than `pushReplacement` - gives this screen its own back
+      // affordance to `ConnectionScreen`/settings, and means the automatic
+      // back arrow on whichever tool screen a tile leads to actually lands
+      // back here instead of skipping past this screen entirely.
+      appBar: AppBar(
+        backgroundColor: backgroundColor,
+        elevation: 0,
+        foregroundColor: Colors.white70,
+        actions: [
+          // Desktop input D5: mouse and keyboard settings, before any tool is open.
+          IconButton(
+            tooltip: 'Controls',
+            icon: const Icon(Icons.mouse_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+            ),
+          ),
+        ],
+      ),
+      // Scrollable rather than a bare Center: a fourth tile (AI Modelling)
+      // pushed this past a fixed-height overflow on shorter viewports -
+      // docs/ai-modelling/02-scoping-conversation.md's own doc-fix note.
+      body: SafeArea(
+        child: SingleChildScrollView(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: desktop ? 760 : 360),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'What would you like to open?',
+                      style: TextStyle(color: Colors.white70, fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 32),
+                    if (desktop)
+                      Wrap(
+                        spacing: 16,
+                        runSpacing: 16,
+                        alignment: WrapAlignment.center,
+                        children: [for (final tile in tiles) SizedBox(width: 340, child: tile)],
+                      )
+                    else
+                      for (var i = 0; i < tiles.length; i++) ...[
+                        if (i > 0) const SizedBox(height: 16),
+                        tiles[i],
+                      ],
                   ],
                 ),
               ),

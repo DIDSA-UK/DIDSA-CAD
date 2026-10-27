@@ -37,6 +37,7 @@ import 'ai_provider_preferences.dart';
 import 'ai_provider_settings_screen.dart';
 import 'ai_scoping_prompt.dart';
 import 'ai_system_prompt_preferences.dart';
+import '../layout/desktop_width.dart';
 
 /// `GearPresetStore`'s discriminator for a saved AI Modelling plan -
 /// `02-scoping-conversation.md`'s "Bolt-on: save plan as preset" section.
@@ -2074,13 +2075,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         ],
       ),
       body: SafeArea(
-        child: _proposedPlan != null
-            ? _buildReviewAndGenerate(context, _proposedPlan!)
-            : _orchestrating
-                ? _buildOrchestrationProgress(context)
-                : _partManifest != null
-                    ? _buildManifestConfirm(context)
-                    : _buildChat(context),
+        // Desktop layout (D6): a readable column in a big window, whichever step is showing.
+        child: DesktopMaxWidth(
+          maxWidth: 900,
+          child: _proposedPlan != null
+              ? _buildReviewAndGenerate(context, _proposedPlan!)
+              : _orchestrating
+                  ? _buildOrchestrationProgress(context)
+                  : _partManifest != null
+                      ? _buildManifestConfirm(context)
+                      : _buildChat(context),
+        ),
       ),
     );
   }

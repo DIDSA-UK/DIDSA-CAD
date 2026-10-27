@@ -703,7 +703,7 @@ class _SketchScreenState extends State<SketchScreen> {
               ]),
               RibbonGroup([
                 RibbonCommand(
-                  label: 'Construction',
+                  label: 'Construct',
                   icon: Icons.format_line_spacing,
                   tooltip: 'Make the selection construction geometry (or back)',
                   onPressed: idle && controller.selectionSet.isNotEmpty

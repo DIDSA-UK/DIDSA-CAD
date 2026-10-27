@@ -4,6 +4,7 @@ import 'ai_prompt_addons.dart';
 import 'ai_scoping_prompt.dart';
 import 'ai_system_prompt_preferences.dart';
 import 'ai_tool_groups.dart';
+import '../layout/desktop_width.dart';
 
 /// AI Modelling: lets the user see and edit the scoping conversation's
 /// system prompt, and toggle manufacturing-process add-on blocks - reached
@@ -108,7 +109,7 @@ class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScr
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('AI System Prompt')),
-      body: !_loaded
+      body: DesktopMaxWidth(maxWidth: 720, child: !_loaded
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
@@ -204,7 +205,7 @@ class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScr
                   ],
                 ),
               ],
-            ),
+            )),
     );
   }
 }

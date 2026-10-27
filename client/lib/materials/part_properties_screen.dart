@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException;
 import 'material_picker_sheet.dart';
+import '../layout/desktop_width.dart';
 
 /// The app's MBD (Model-Based Definition) metadata surface for the current
 /// Part: Part Number/Name/Description/Revision (STEP-portable - see
@@ -140,7 +141,7 @@ class _PartPropertiesScreenState extends State<PartPropertiesScreen> {
           ),
         ],
       ),
-      body: ListView(
+      body: DesktopMaxWidth(maxWidth: 720, child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           if (_error != null)
@@ -206,7 +207,7 @@ class _PartPropertiesScreenState extends State<PartPropertiesScreen> {
             decoration: const InputDecoration(labelText: 'Supplier Part Number', border: OutlineInputBorder()),
           ),
         ],
-      ),
+      )),
     );
   }
 }

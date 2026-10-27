@@ -13,6 +13,7 @@ import 'gear_preset_store.dart';
 import 'gear_preview_canvas.dart';
 import 'gear_validation_banner.dart';
 import 'standard_value_field.dart';
+import '../layout/layout_mode.dart';
 
 /// `docs/gear-design/08-entry-screen-and-preview.md`'s gear-type selector -
 /// covers the two Feature types `GearFeature` (external/internal spur
@@ -561,6 +562,16 @@ class _GearDesignScreenState extends State<GearDesignScreen> {
               children: [
                 SizedBox(height: constraints.maxHeight * 0.4, child: canvas),
                 Expanded(child: form),
+              ],
+            );
+          }
+          // Desktop layout (D6): the form on the left like a property panel, the preview taking the rest.
+          if (LayoutModeScope.isDesktop(context)) {
+            return Row(
+              children: [
+                SizedBox(width: 360, child: form),
+                const VerticalDivider(width: 1),
+                Expanded(child: canvas),
               ],
             );
           }

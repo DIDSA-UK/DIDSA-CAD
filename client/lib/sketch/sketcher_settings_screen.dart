@@ -6,6 +6,7 @@ import '../storage/recent_project_store.dart';
 import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
 import '../viewport3d/view_preferences.dart';
+import '../layout/desktop_width.dart';
 
 /// Reachable from the connection screen's own settings entry, attached to
 /// the Connect button (see `connection_screen.dart`) - device-wide defaults
@@ -75,7 +76,7 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('CAD Settings')),
-      body: !_loaded
+      body: DesktopMaxWidth(maxWidth: 720, child: !_loaded
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
@@ -149,7 +150,7 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
                   ),
                 ),
               ],
-            ),
+            )),
     );
   }
 }

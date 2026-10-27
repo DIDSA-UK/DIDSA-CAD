@@ -77,7 +77,7 @@ class DesktopRibbon extends StatelessWidget {
   /// to save a row) - only the active tab's buttons are drawn.
   final bool showTabStrip;
 
-  static const double commandWidth = 68;
+  static const double commandWidth = 62;
   static const double bodyHeight = 70;
 
   @override

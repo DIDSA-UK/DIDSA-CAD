@@ -9,6 +9,7 @@ import 'ai_provider_preferences.dart';
 import 'ai_system_prompt_settings_screen.dart';
 import 'anthropic_provider.dart';
 import 'openai_compatible_provider.dart';
+import '../layout/desktop_width.dart';
 
 /// AI Modelling workstream 1: reachable from `SketcherSettingsScreen` ("CAD
 /// Settings") per `docs/ai-modelling/00-conventions.md`'s placement
@@ -261,7 +262,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('AI Provider Settings')),
-      body: !_loaded
+      body: DesktopMaxWidth(maxWidth: 720, child: !_loaded
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
@@ -316,7 +317,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
                       : const Text('Test Connection & Save'),
                 ),
               ],
-            ),
+            )),
     );
   }
 
