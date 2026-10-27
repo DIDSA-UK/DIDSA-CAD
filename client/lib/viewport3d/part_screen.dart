@@ -80,6 +80,8 @@ import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import '../materials/material_picker_sheet.dart';
 import '../materials/part_properties_screen.dart';
+import '../layout/layout_mode.dart';
+import 'desktop_chrome.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
@@ -13605,15 +13607,20 @@ class _PartScreenState extends State<PartScreen> {
     if (!mounted || action == null) return;
     switch (action) {
       case AddButtonMenuAction.newSketch:
-        setState(() {
-          _planeSelectionModeStack.push(true);
-          _selectedPlane = null;
-          _toolbarOpen = false;
-          _featureTreeVisible = false;
-        });
+        _startNewSketchPicker();
       case AddButtonMenuAction.feature:
         await _onFeaturePressed();
     }
+  }
+
+  /// "New Sketch": pick the plane or face to sketch on.
+  void _startNewSketchPicker() {
+    setState(() {
+      _planeSelectionModeStack.push(true);
+      _selectedPlane = null;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+    });
   }
 
   /// Assembly support Phase 3b/15 (`docs/assembly-scope.md` §3/§6): the
@@ -14170,6 +14177,12 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onFeaturePressed() async {
     final action = await showFeaturePickerSheet(context);
     if (!mounted || action == null) return;
+    await _runFeatureAction(action);
+  }
+
+  /// Starts the feature [action] - from the Feature picker sheet, or from a ribbon button on the desktop layout.
+  Future<void> _runFeatureAction(FeaturePickerAction action) async {
+    if (_busy) return;
     switch (action) {
       case FeaturePickerAction.extrude:
         await _extrudeSelectedFeature();
@@ -24144,14 +24157,757 @@ class _PartScreenState extends State<PartScreen> {
     return stripNativeExtension(savedName);
   }
 
+  // ---- Desktop layout (D6, `docs/desktop-layout-scope.md` section 2) --------------------------------------------
+  //
+  // The ribbon, menus, left pane and status bar below only place and call what the phone layout already has: each
+  // button runs the same action as its FAB or sheet entry, and the trees are the same widgets, docked.
+
+  /// True while the app is in the desktop layout (a large window used with a mouse, or forced in Controls).
+  bool get _desktopLayout => LayoutModeScope.isDesktop(context);
+
+  /// The ribbon tab the user picked; null follows the lens (Features in Part, Assembly in Assembly).
+  String? _ribbonTabChoice;
+
+  /// The left pane (the tree) can be folded away to give the viewport the room.
+  bool _desktopPaneVisible = true;
+
+  String get _ribbonTabId => _ribbonTabChoice ?? (_lens == AssemblyLens.assembly ? 'assembly' : 'features');
+
+  /// Wraps the viewport stack: on the desktop layout the tree is docked to its left.
+  Widget _desktopFrame(Widget viewportStack) {
+    if (!_desktopLayout) return viewportStack;
+    return Row(
+      children: [
+        if (_desktopPaneVisible)
+          DesktopLeftPane(
+            child: _lens == AssemblyLens.assembly
+                ? _buildAssemblyTreePanel(docked: true)
+                : _buildFeatureTreePanel(docked: true),
+          ),
+        Expanded(child: viewportStack),
+      ],
+    );
+  }
+
+  Widget _buildDesktopAppBarTitle(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            _displayPartName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.titleMedium,
+          ),
+        ),
+        if (_isDirty)
+          Tooltip(
+            message: 'Unsaved changes',
+            child: Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Icon(Icons.circle, size: 9, color: theme.colorScheme.tertiary),
+            ),
+          ),
+        const SizedBox(width: 16),
+        Flexible(flex: 3, child: _buildDesktopMenuBar(context)),
+      ],
+    );
+  }
+
+  List<Widget> _desktopAppBarActions() {
+    return [
+      IconButton(
+        tooltip: _isDirty ? 'Save (Ctrl+S) - unsaved changes' : 'Save (Ctrl+S)',
+        icon: const Icon(Icons.save_outlined),
+        onPressed: _busy ? null : () => unawaited(_saveNativeFile()),
+      ),
+      IconButton(
+        tooltip: 'Keyboard shortcuts (?)',
+        icon: const Icon(Icons.keyboard_outlined),
+        onPressed: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+      ),
+    ];
+  }
+
+  /// File and View menus, as a menu bar. The shortcut text is a label only: the keys themselves are handled by
+  /// [CadShortcutScope], so none is registered here a second time.
+  Widget _buildDesktopMenuBar(BuildContext context) {
+    final viewport = _viewportKey.currentState;
+    Widget item(String label, VoidCallback? onPressed, {String? keys, bool? checked}) => MenuItemButton(
+          onPressed: onPressed,
+          leadingIcon: checked == null ? null : Icon(checked ? Icons.check_box_outlined : Icons.check_box_outline_blank, size: 18),
+          trailingIcon: keys == null ? null : Text(keys, style: Theme.of(context).textTheme.labelSmall),
+          child: Text(label),
+        );
+    VoidCallback? idle(Future<void> Function() action) => _busy ? null : () => unawaited(action());
+    VoidCallback? view(StandardView standardView) =>
+        viewport == null ? null : () => unawaited(viewport.animateToStandardView(standardView));
+    final filter = _selectionFilter;
+    return MenuBar(
+      style: const MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(Colors.transparent),
+        elevation: WidgetStatePropertyAll(0),
+        padding: WidgetStatePropertyAll(EdgeInsets.zero),
+      ),
+      children: [
+        SubmenuButton(
+          key: const ValueKey('menu-file'),
+          menuChildren: [
+            item('New', idle(_startNewPart), keys: 'Ctrl+N'),
+            item('Open…', idle(_onOpenPressed), keys: 'Ctrl+O'),
+            const Divider(height: 1),
+            item('Save', idle(_saveNativeFile), keys: 'Ctrl+S'),
+            item('Save As…', idle(_saveAsNativeFile), keys: 'Ctrl+Shift+S'),
+            item('Save All', idle(_onSaveAllPressed)),
+            const Divider(height: 1),
+            item('Export…', idle(_exportPart)),
+            item('Import geometry…', idle(_importGeometry)),
+            const Divider(height: 1),
+            item('Part properties…', idle(_openPartProperties)),
+            item('Connect a headset…', idle(_openHeadsetPairing)),
+            const Divider(height: 1),
+            item('Exit', idle(_exitToConnectionScreen)),
+          ],
+          child: const Text('File'),
+        ),
+        SubmenuButton(
+          key: const ValueKey('menu-view'),
+          menuChildren: [
+            item('Fit to window', viewport?.zoomToFit, keys: 'F'),
+            item('Front', view(StandardView.front), keys: 'Ctrl+1'),
+            item('Back', view(StandardView.back), keys: 'Ctrl+2'),
+            item('Left', view(StandardView.left), keys: 'Ctrl+3'),
+            item('Right', view(StandardView.right), keys: 'Ctrl+4'),
+            item('Top', view(StandardView.top), keys: 'Ctrl+5'),
+            item('Bottom', view(StandardView.bottom), keys: 'Ctrl+6'),
+            item('Isometric', view(StandardView.isometric), keys: 'Ctrl+7'),
+            item('Normal to', _normalToAction, keys: 'Ctrl+8'),
+            item('View cube', viewport == null ? null : () => unawaited(_showViewCube()), keys: 'Space'),
+            const Divider(height: 1),
+            item('Perspective', () => unawaited(_onPerspectiveChanged(!_isPerspective)), checked: _isPerspective),
+            item('Reference planes', _onToggleReferencePlanes, checked: !_referencePlanesHidden),
+            for (final mode in ViewportRenderMode.values)
+              item(mode.label, () => unawaited(_onRenderModeChanged(mode)), checked: _renderMode == mode),
+            const Divider(height: 1),
+            item('Select vertices', () => _setVertexFilter(!filter.vertex), checked: filter.vertex),
+            item('Select edges', () => _setEdgeFilter(!filter.edge), checked: filter.edge),
+            item('Select faces', () => _setFaceFilter(!filter.face), checked: filter.face),
+            item('Select bodies', () => _setBodyFilter(!filter.body), checked: filter.body),
+            const Divider(height: 1),
+            item('Tree pane', () => setState(() => _desktopPaneVisible = !_desktopPaneVisible), checked: _desktopPaneVisible),
+            item('Background, colour and scene…', () => setState(() => _toolbarOpen = true)),
+            item(
+              'Controls…',
+              () => unawaited(Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+              )),
+            ),
+          ],
+          child: const Text('View'),
+        ),
+      ],
+    );
+  }
+
+  /// The ribbon: one tab per kind of work, each button the action the phone layout reaches by FAB or sheet.
+  Widget _buildDesktopRibbon(BuildContext context) {
+    final part = _lens == AssemblyLens.part;
+    final assembly = _lens == AssemblyLens.assembly;
+    final busy = _busy;
+    final viewport = _viewportKey.currentState;
+    VoidCallback? when(bool enabled, VoidCallback action) => enabled && !busy ? action : null;
+    RibbonCommand feature(String label, String svg, FeaturePickerAction action) => RibbonCommand(
+          label: label,
+          svg: 'assets/icons/feature/$svg.svg',
+          onPressed: when(part, () => unawaited(_runFeatureAction(action))),
+        );
+    RibbonCommand standardView(String label, StandardView view, String keys) => RibbonCommand(
+          label: label,
+          icon: Icons.view_in_ar_outlined,
+          shortcut: keys,
+          onPressed: viewport == null ? null : () => unawaited(viewport.animateToStandardView(view)),
+        );
+
+    final tabs = [
+      RibbonTabData(
+        id: 'features',
+        label: 'Features',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'New Sketch',
+              svg: 'assets/icons/feature/feature_new_sketch.svg',
+              onPressed: when(part, _startNewSketchPicker),
+            ),
+          ]),
+          RibbonGroup([
+            feature('Extrude', 'feature_extrude', FeaturePickerAction.extrude),
+            feature('Revolve', 'feature_revolve', FeaturePickerAction.revolve),
+            feature('Sweep', 'feature_sweep', FeaturePickerAction.sweep),
+            feature('Loft', 'feature_loft', FeaturePickerAction.loft),
+          ]),
+          RibbonGroup([
+            feature('Fillet', 'feature_fillet', FeaturePickerAction.fillet),
+            feature('Chamfer', 'feature_chamfer', FeaturePickerAction.chamfer),
+            feature('Shell', 'feature_shell', FeaturePickerAction.shell),
+          ]),
+          RibbonGroup([
+            feature('Mirror', 'feature_mirror', FeaturePickerAction.mirror),
+            feature('Pattern', 'feature_pattern', FeaturePickerAction.pattern),
+          ]),
+          RibbonGroup([
+            feature('Merge', 'feature_merge', FeaturePickerAction.merge),
+            feature('Subtract', 'feature_merge', FeaturePickerAction.subtract),
+            feature('Common', 'feature_merge', FeaturePickerAction.common),
+            feature('Split', 'feature_split', FeaturePickerAction.split),
+          ]),
+          RibbonGroup([
+            feature('Plane', 'feature_plane', FeaturePickerAction.plane),
+            feature('Move Face', 'feature_move_face', FeaturePickerAction.moveFace),
+            feature('Move Body', 'feature_move_body', FeaturePickerAction.moveBody),
+            RibbonCommand(
+              label: 'All features',
+              icon: Icons.more_horiz,
+              tooltip: 'Every feature, including surfaces and curves',
+              onPressed: when(part, () => unawaited(_onFeaturePressed())),
+            ),
+          ]),
+        ],
+      ),
+      RibbonTabData(
+        id: 'sketch',
+        label: 'Sketch',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'New Sketch',
+              svg: 'assets/icons/feature/feature_new_sketch.svg',
+              onPressed: when(part, _startNewSketchPicker),
+            ),
+            RibbonCommand(
+              label: 'Sketch on face',
+              svg: 'assets/icons/feature/feature_new_sketch.svg',
+              tooltip: 'New sketch on the selected flat face',
+              onPressed: when(
+                part && _selectedEntities.length == 1 && _selectedEntities.single.kind == SelectionEntityKind.face,
+                () => unawaited(_onNewSketchOnFaceTapped()),
+              ),
+            ),
+            feature('Plane', 'feature_plane', FeaturePickerAction.plane),
+          ]),
+        ],
+      ),
+      RibbonTabData(
+        id: 'assembly',
+        label: 'Assembly',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Add Component',
+              icon: Icons.view_in_ar_outlined,
+              onPressed: when(assembly, () => unawaited(_onInsertComponentPressed())),
+            ),
+            RibbonCommand(
+              label: 'Create Component',
+              icon: Icons.note_add_outlined,
+              onPressed: when(assembly, () => unawaited(_onCreateNewComponentPressed())),
+            ),
+          ]),
+          RibbonGroup([
+            RibbonCommand(label: 'Mate', icon: Icons.link, onPressed: when(assembly, _openMate)),
+            RibbonCommand(
+              label: 'Pattern',
+              icon: Icons.grid_view_outlined,
+              tooltip: 'Pattern component',
+              onPressed: when(assembly, _openComponentPattern),
+            ),
+          ]),
+        ],
+      ),
+      RibbonTabData(
+        id: 'evaluate',
+        label: 'Evaluate',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Measure',
+              svg: 'assets/icons/viewport/viewport_measure.svg',
+              selected: _measureActive,
+              onPressed: busy ? null : _toggleMeasure,
+            ),
+            RibbonCommand(
+              label: 'Section',
+              icon: Icons.content_cut,
+              selected: _sectionPanelOpen,
+              onPressed: busy ? null : _toggleSectionPanel,
+            ),
+          ]),
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Appearance',
+              icon: Icons.palette_outlined,
+              onPressed: busy ? null : () => unawaited(_openAppearance()),
+            ),
+            RibbonCommand(
+              label: 'Scenes',
+              icon: Icons.photo_camera_back_outlined,
+              onPressed: busy ? null : () => unawaited(_openScenes()),
+            ),
+            RibbonCommand(
+              label: 'Properties',
+              icon: Icons.info_outline,
+              tooltip: 'Part properties',
+              onPressed: busy ? null : () => unawaited(_openPartProperties()),
+            ),
+          ]),
+        ],
+      ),
+      RibbonTabData(
+        id: 'view',
+        label: 'View',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Fit',
+              svg: 'assets/icons/viewport/viewport_reset_view.svg',
+              tooltip: 'Fit to window',
+              shortcut: 'F',
+              onPressed: viewport?.zoomToFit,
+            ),
+            RibbonCommand(
+              label: 'View cube',
+              icon: Icons.view_in_ar,
+              shortcut: 'Space',
+              onPressed: viewport == null ? null : () => unawaited(_showViewCube()),
+            ),
+            RibbonCommand(label: 'Normal to', icon: Icons.crop_free, shortcut: 'Ctrl+8', onPressed: _normalToAction),
+          ]),
+          RibbonGroup([
+            standardView('Front', StandardView.front, 'Ctrl+1'),
+            standardView('Back', StandardView.back, 'Ctrl+2'),
+            standardView('Left', StandardView.left, 'Ctrl+3'),
+            standardView('Right', StandardView.right, 'Ctrl+4'),
+            standardView('Top', StandardView.top, 'Ctrl+5'),
+            standardView('Bottom', StandardView.bottom, 'Ctrl+6'),
+            standardView('Isometric', StandardView.isometric, 'Ctrl+7'),
+          ]),
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Perspective',
+              icon: Icons.panorama_horizontal_outlined,
+              selected: _isPerspective,
+              onPressed: () => unawaited(_onPerspectiveChanged(!_isPerspective)),
+            ),
+            RibbonCommand(
+              label: 'Planes',
+              svg: _referencePlanesHidden
+                  ? 'assets/icons/feature/parttoolbar_show_reference_planes.svg'
+                  : 'assets/icons/feature/parttoolbar_hide_reference_planes.svg',
+              tooltip: _referencePlanesHidden ? 'Show reference planes' : 'Hide reference planes',
+              onPressed: _onToggleReferencePlanes,
+            ),
+          ]),
+          RibbonGroup([
+            for (final mode in ViewportRenderMode.values)
+              RibbonCommand(
+                label: switch (mode) {
+                  ViewportRenderMode.shaded => 'Shaded',
+                  ViewportRenderMode.shadedWithEdges => 'Edges',
+                  ViewportRenderMode.wireframe => 'Wireframe',
+                },
+                tooltip: mode.label,
+                svg: mode.svgAsset,
+                selected: _renderMode == mode,
+                onPressed: () => unawaited(_onRenderModeChanged(mode)),
+              ),
+          ]),
+        ],
+      ),
+    ];
+
+    final theme = Theme.of(context);
+    return DesktopRibbon(
+      tabs: tabs,
+      selectedId: _ribbonTabId,
+      onSelect: (id) => setState(() => _ribbonTabChoice = id),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            tooltip: _desktopPaneVisible ? 'Hide the tree' : 'Show the tree',
+            visualDensity: VisualDensity.compact,
+            icon: Icon(_desktopPaneVisible ? Icons.view_sidebar : Icons.view_sidebar_outlined, size: 20),
+            onPressed: () => setState(() => _desktopPaneVisible = !_desktopPaneVisible),
+          ),
+          SegmentedButton<AssemblyLens>(
+            key: const ValueKey('ribbon-lens'),
+            showSelectedIcon: false,
+            style: SegmentedButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              textStyle: theme.textTheme.labelMedium,
+            ),
+            segments: const [
+              ButtonSegment(value: AssemblyLens.part, label: Text('Part')),
+              ButtonSegment(value: AssemblyLens.assembly, label: Text('Assembly')),
+            ],
+            selected: {_lens},
+            onSelectionChanged: busy
+                ? null
+                : (selection) {
+                    if (selection.single != _lens) _toggleAssemblyLens();
+                    setState(() => _ribbonTabChoice = null);
+                  },
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// "2 edges, 1 face selected" - the selection by kind.
+  String _selectionSummary() {
+    if (_selectedEntities.isEmpty) return 'Nothing selected';
+    final counts = <String, int>{};
+    for (final entity in _selectedEntities) {
+      final name = switch (entity.kind) {
+        SelectionEntityKind.vertex => 'vertex',
+        SelectionEntityKind.edge => 'edge',
+        SelectionEntityKind.face => 'face',
+        SelectionEntityKind.body => 'body',
+        SelectionEntityKind.component => 'component',
+        SelectionEntityKind.referencePlane || SelectionEntityKind.createPlane => 'plane',
+        _ => 'sketch item',
+      };
+      counts[name] = (counts[name] ?? 0) + 1;
+    }
+    final parts = [
+      for (final entry in counts.entries)
+        '${entry.value} ${entry.key == 'vertex' && entry.value != 1 ? 'vertices' : entry.value == 1 ? entry.key : '${entry.key}s'}',
+    ];
+    return '${parts.join(', ')} selected';
+  }
+
+  Widget _buildDesktopStatusBar() {
+    return DesktopStatusBar(
+      left: [
+        _busy ? 'Working…' : _selectionSummary(),
+        if (_isDirty) 'Unsaved: ${_unsavedPartNames().join(', ')}',
+      ],
+      right: [
+        _lens == AssemblyLens.assembly ? 'Assembly' : 'Part',
+        _isPerspective ? 'Perspective' : 'Orthographic',
+        _renderMode.label,
+      ],
+    );
+  }
+
+  /// The Feature tree. [docked] puts it in the desktop layout's left pane; otherwise it slides over the viewport.
+  Widget _buildFeatureTreePanel({required bool docked}) {
+    return FeatureTreePanel(
+      docked: docked,
+                    visible: _featureTreePanelVisible,
+                    multiSelectHeader: _activeMultiSelect == null
+                        ? null
+                        : MultiSelectActionBar(
+                            count: _activeMultiSelect!.count,
+                            allHidden: _multiSelectAllHidden,
+                            busy: _busy || _multiSelectBusy,
+                            onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
+                            onDelete: () => unawaited(_multiSelectDelete()),
+                            onCancel: _exitMultiSelect,
+                            onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
+                          ),
+                    features: _features,
+                    selectedFeatureId: _selectedFeatureId,
+                    hiddenFeatureIds: _viewportHiddenFeatureIds,
+                    onFeatureTap: _onFeatureTap,
+                    // Feature 1 (tree multi-select): long-press enters bulk
+                    // multi-select; the old per-row context menu is reached
+                    // via the action bar's "More" button instead (see
+                    // [_multiSelectMore]).
+                    onFeatureLongPress: (feature) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.feature(feature.id)),
+                    // Desktop input D4: a right click opens the row's menu
+                    // directly at the cursor (touch reaches it via "More").
+                    onFeatureContextMenu: (feature, at) => unawaited(_onFeatureLongPress(feature, at: at)),
+                    onBodyContextMenu: (bodyId, at) => unawaited(_onBodyLongPress(bodyId, at: at)),
+                    onSurfaceContextMenu: (surfaceId, at) => unawaited(_onSurfaceLongPress(surfaceId, at: at)),
+                    onCurveContextMenu: (curveId, at) => unawaited(_onCurveContextMenu(curveId, at)),
+                    isMultiSelectMode: _buildMultiSelect.active,
+                    selectedMultiSelectIds: _buildMultiSelect.selectedIds,
+                    onMultiSelectToggle: (key) => _toggleMultiSelectMember(_buildMultiSelect, key),
+                    pendingDetailFeatureIds: _pendingDetailFeatureIds,
+                    pinnedCoarseFeatureIds: _pinnedCoarseFeatureIds,
+                    onToggleCoarsePin: _toggleCoarsePin,
+                    onClose: () {
+                      if (_buildMultiSelect.active) {
+                        _exitMultiSelect();
+                        setState(() => _featureTreeVisible = false);
+                      } else if (_sketchPickerActive) {
+                        _cancelSketchPicker();
+                      } else if (_surfaceSketchPickerActive) {
+                        _cancelSurfaceSketchPicker();
+                      } else if (_revolveSketchPickerActive) {
+                        _cancelRevolveSketchPicker();
+                      } else if (_sweepSketchPickerActive) {
+                        _cancelSweepSketchPicker();
+                      } else if (_loftSketchPickerActive) {
+                        _cancelLoftSketchPicker();
+                      } else if (_planarSurfaceSketchPickerActive) {
+                        _cancelPlanarSurfaceSketchPicker();
+                      } else if (_revolveSurfaceSketchPickerActive) {
+                        _cancelRevolveSurfaceSketchPicker();
+                      } else if (_sweptSurfaceSketchPickerActive) {
+                        _cancelSweptSurfaceSketchPicker();
+                      } else if (_loftSurfaceSketchPickerActive) {
+                        _cancelLoftSurfaceSketchPicker();
+                      } else if (_ruledSurfaceSketchPickerActive) {
+                        _cancelRuledSurfaceSketchPicker();
+                      } else if (_thickenSourcePickerActive) {
+                        _cancelThickenSourcePicker();
+                      } else if (_knitSurfacePickerActive) {
+                        _cancelKnitSurfacePicker();
+                      } else if (_solidFromSurfacesPickerActive) {
+                        _cancelSolidFromSurfacesPicker();
+                      } else if (_offsetSurfaceSourcePickerActive) {
+                        _cancelOffsetSurfaceSourcePicker();
+                      } else if (_sourceFeaturePickerTarget != null) {
+                        _cancelSourceFeaturePicker();
+                      } else {
+                        setState(() => _featureTreeVisible = false);
+                      }
+                    },
+                    // Prompt F: only one of _sketchPickerActive/
+                    // _surfaceSketchPickerActive/_revolveSketchPickerActive/
+                    // _sweepSketchPickerActive/_planarSurfaceSketchPickerActive/
+                    // _revolveSurfaceSketchPickerActive/
+                    // _sweptSurfaceSketchPickerActive is ever true at a time
+                    // (same "one panel/picker active" invariant every other
+                    // flow in this file relies on), so a chain of ternaries
+                    // picks whichever is live - mirrors the
+                    // previewOverlayBodyId/previewOverlayMesh ternary above.
+                    // Loft/Loft Surface/Ruled Surface's own pickers use
+                    // isFeaturePickerMode instead (see that block's own top
+                    // comment for why), not this one.
+                    isSketchPickerMode: _sketchPickerActive ||
+                        _surfaceSketchPickerActive ||
+                        _revolveSketchPickerActive ||
+                        _sweepSketchPickerActive ||
+                        _planarSurfaceSketchPickerActive ||
+                        _revolveSurfaceSketchPickerActive ||
+                        _sweptSurfaceSketchPickerActive,
+                    pickableSketchIds: _sketchPickerActive
+                        ? _pickableSketchIds
+                        : _surfaceSketchPickerActive
+                            ? _pickableSurfaceSketchIds
+                            : _revolveSketchPickerActive
+                                ? _pickableRevolveSketchIds
+                                : _sweepSketchPickerActive
+                                    ? _pickableSweepSketchIds
+                                    : _planarSurfaceSketchPickerActive
+                                        ? _pickablePlanarSurfaceSketchIds
+                                        : _revolveSurfaceSketchPickerActive
+                                            ? _pickableRevolveSurfaceSketchIds
+                                            : _pickableSweptSurfaceSketchIds,
+                    onSketchPicked: _sketchPickerActive
+                        ? _onSketchPicked
+                        : _surfaceSketchPickerActive
+                            ? _onSurfaceSketchPicked
+                            : _revolveSketchPickerActive
+                                ? _onRevolveSketchPicked
+                                : _sweepSketchPickerActive
+                                    ? _onSweepSketchPicked
+                                    : _planarSurfaceSketchPickerActive
+                                        ? _onPlanarSurfaceSketchPicked
+                                        : _revolveSurfaceSketchPickerActive
+                                            ? _onRevolveSurfaceSketchPicked
+                                            : _onSweptSurfaceSketchPicked,
+                    // Loft's own multi-select section picker shares this
+                    // exact mode with the Pattern/Mirror source-feature
+                    // picker (only one of the two is ever active at a time,
+                    // same invariant as the sketch-picker chain above) -
+                    // see the Loft state block's own top comment for why a
+                    // 2+ ordered pick needs this mode instead of
+                    // isSketchPickerMode's single-tap-finalizes shape. Loft
+                    // Surface/Ruled Surface join this same mode, mirroring
+                    // Loft's own choice exactly.
+                    isFeaturePickerMode: _sourceFeaturePickerTarget != null ||
+                        _loftSketchPickerActive ||
+                        _loftSurfaceSketchPickerActive ||
+                        _ruledSurfaceSketchPickerActive ||
+                        // Phase 2 surfacing package: Thicken/Offset Surface
+                        // use this same mode as a single-pick-commits-
+                        // immediately picker (their own onFeaturePickerToggle
+                        // below never accumulates - it acts the instant a
+                        // row is tapped, mirroring isSketchPickerMode's own
+                        // single-tap-finalizes shape, just over any
+                        // `produces == 'surface'` Feature rather than only
+                        // Sketches); Knit/Solid from Surfaces use it as a
+                        // genuine multi-pick-then-confirm picker, same shape
+                        // as Loft's own section picker.
+                        _thickenSourcePickerActive ||
+                        _knitSurfacePickerActive ||
+                        _solidFromSurfacesPickerActive ||
+                        _offsetSurfaceSourcePickerActive,
+                    pickableFeaturePickerIds: _thickenSourcePickerActive ||
+                            _knitSurfacePickerActive ||
+                            _solidFromSurfacesPickerActive ||
+                            _offsetSurfaceSourcePickerActive
+                        ? _pickableSurfaceFeatureIds
+                        : _loftSketchPickerActive
+                            ? _pickableLoftSketchIds
+                            : _loftSurfaceSketchPickerActive
+                                ? _pickableLoftSurfaceSketchIds
+                                : _ruledSurfaceSketchPickerActive
+                                    ? _pickableRuledSurfaceSketchIds
+                                    : _sourceFeaturePickerPickableIds,
+                    selectedFeaturePickerIds: _thickenSourcePickerActive || _offsetSurfaceSourcePickerActive
+                        ? const <String>{}
+                        : _knitSurfacePickerActive
+                            ? {for (final f in _knitSurfacePendingSurfaces) f.id}
+                            : _solidFromSurfacesPickerActive
+                                ? {for (final f in _solidFromSurfacesPendingSurfaces) f.id}
+                                : _loftSketchPickerActive
+                                    ? {for (final f in _loftPendingSections) f.id}
+                                    : _loftSurfaceSketchPickerActive
+                                        ? {for (final f in _loftSurfacePendingSections) f.id}
+                                        : _ruledSurfaceSketchPickerActive
+                                            ? {for (final f in _ruledSurfacePendingSections) f.id}
+                                            : _selectedSourceFeatureIds,
+                    onFeaturePickerToggle: _thickenSourcePickerActive
+                        ? _onThickenSourcePicked
+                        : _offsetSurfaceSourcePickerActive
+                            ? _onOffsetSurfaceSourcePicked
+                            : _knitSurfacePickerActive
+                                ? _toggleKnitSurfacePick
+                                : _solidFromSurfacesPickerActive
+                                    ? _toggleSolidFromSurfacesPick
+                                    : _loftSketchPickerActive
+                                        ? _toggleLoftSectionPick
+                                        : _loftSurfaceSketchPickerActive
+                                            ? _toggleLoftSurfaceSectionPick
+                                            : _ruledSurfaceSketchPickerActive
+                                                ? _toggleRuledSurfaceSectionPick
+                                                : _toggleSourceFeaturePick,
+                    featurePickerLabel: _thickenSourcePickerActive
+                        ? 'Select a surface to thicken'
+                        : _offsetSurfaceSourcePickerActive
+                            ? 'Select a surface to offset'
+                            : _knitSurfacePickerActive
+                                ? 'Select surfaces to knit'
+                                : _solidFromSurfacesPickerActive
+                                    ? 'Select surfaces to combine into a solid'
+                                    : _loftSketchPickerActive
+                                        ? 'Select sketches to loft'
+                                        : _loftSurfaceSketchPickerActive
+                                            ? 'Select sketches to loft'
+                                            : _ruledSurfaceSketchPickerActive
+                                    ? 'Select 2 sketches'
+                                    : 'Select source Features',
+                    bodyIds: _computedBodyIds,
+                    bodyNames: _bodyNames,
+                    onBodyTap: _onBodyTap,
+                    onBodyLongPress: (bodyId) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.body(bodyId)),
+                    hiddenBodyIds: {
+                      for (final body in _bodies)
+                        if (body.hidden && !body.isSurface && !body.isCurve) body.bodyId,
+                    },
+                    surfaceIds: _computedSurfaceIds,
+                    surfaceNames: _surfaceNames,
+                    onSurfaceTap: _onSurfaceTap,
+                    onSurfaceLongPress: (surfaceId) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.surface(surfaceId)),
+                    hiddenSurfaceIds: {
+                      for (final body in _bodies)
+                        if (body.hidden && body.isSurface) body.bodyId,
+                    },
+                    curveIds: _computedCurveIds,
+                    curveNames: _curveNames,
+                    onCurveTap: _onCurveTap,
+                    onCurveLongPress: (curveId) =>
+                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.curve(curveId)),
+                    hiddenCurveIds: {
+                      for (final body in _bodies)
+                        if (body.hidden && body.isCurve) body.bodyId,
+                    },
+                  );
+  }
+
+  /// The Assembly tree, as [_buildFeatureTreePanel].
+  Widget _buildAssemblyTreePanel({required bool docked}) {
+    return AssemblyTreePanel(
+      docked: docked,
+                    motionSummary: _motionStatusText,
+                    unsavedPartIds: _dirtyPartIds,
+                    neverSavedPartIds: _neverWrittenPartIds,
+                    parentUnsaved: _focusedPartId != null && _dirtyPartIds.contains(_focusedPartId),
+                    parentNeverSaved: _focusedPartId != null && _neverWrittenPartIds.contains(_focusedPartId),
+                    multiSelectHeader: _activeMultiSelect == null
+                        ? null
+                        : MultiSelectActionBar(
+                            count: _activeMultiSelect!.count,
+                            allHidden: _multiSelectAllHidden,
+                            busy: _busy || _multiSelectBusy,
+                            onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
+                            onDelete: () => unawaited(_multiSelectDelete()),
+                            onCancel: _exitMultiSelect,
+                            onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
+                          ),
+                    visible: _featureTreePanelVisible,
+                    occurrences: _displayOccurrences,
+                    mates: _mates,
+                    patterns: _componentPatterns,
+                    selectedOccurrenceId: _selectedOccurrenceId,
+                    onOccurrenceTap: _onOccurrenceTap,
+                    onOccurrenceLongPress: (occurrence) {
+                      _assemblyMultiSelectAnchor = occurrence;
+                      _enterMultiSelect(_assemblyMultiSelect, occurrence.id);
+                    },
+                    constraintStatusByOccurrenceId: _constraintStatusByOccurrenceId,
+                    isMultiSelectMode: _assemblyMultiSelect.active,
+                    selectedMultiSelectIds: _assemblyMultiSelect.selectedIds,
+                    onMultiSelectToggle: (id) => _toggleMultiSelectMember(_assemblyMultiSelect, id),
+                    onOccurrenceVisibilityToggle: (occurrence) =>
+                        unawaited(_setOccurrenceHidden(occurrence, !occurrence.hidden)),
+                    onOccurrenceColorTap: (occurrence) => unawaited(_onOccurrenceColorTap(occurrence)),
+                    onLocateMissingFile: (occurrence) => unawaited(_onLocateMissingFilePressed(occurrence)),
+                    onClose: () {
+                      _exitMultiSelect();
+                      setState(() => _featureTreeVisible = false);
+                    },
+                    onMateTap: _onMateTap,
+                    onMateLongPress: _onMateLongPress,
+                    // Desktop input D4: a right click opens the row's menu at
+                    // the cursor.
+                    onOccurrenceContextMenu: (occurrence, at) => unawaited(_onOccurrenceLongPress(occurrence, at: at)),
+                    onMateContextMenu: (mate, at) => unawaited(_onMateLongPress(mate, at: at)),
+                    onPatternContextMenu: (pattern, at) => unawaited(_onPatternContextMenu(pattern, at)),
+                    selectedMateId: _selectedMateId,
+                    onPatternTap: _openComponentPatternForEdit,
+                    onPatternLongPress: _confirmDeleteComponentPattern,
+                    focusedLabel: _focusStack?.currentLabel,
+                    onExitFocus: () => unawaited(_exitAssemblyFocus()),
+                    // Test report item 1: the tree's own root row - whichever
+                    // Part these Components/Mates/Patterns sections actually
+                    // belong to, exactly mirroring `_refreshAssemblyTree`'s
+                    // own "`_focusStack.current`, defaulting to the root
+                    // Part" precedent for *which* Part's data to show.
+                    rootLabel: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
+                  );
+  }
+
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         leading: const DidsaLogoButton(),
         leadingWidth: 100,
         centerTitle: false,
-        title: Text(_displayPartName, textAlign: TextAlign.right),
+        title: _desktopLayout
+            ? _buildDesktopAppBarTitle(context)
+            : Text(_displayPartName, textAlign: TextAlign.right),
         actions: [
+          if (_desktopLayout) ..._desktopAppBarActions(),
           // AI Modelling existing-Part editing (docs/ai-modelling/09-
           // existing-part-editing.md): the "Continue with AI" entry point -
           // distinct from `ToolChooserScreen`'s "AI Modelling" tile, which
@@ -24197,8 +24953,10 @@ class _PartScreenState extends State<PartScreen> {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade900)),
             ),
+          if (_desktopLayout) _buildDesktopRibbon(context),
           Expanded(
-            child: Stack(
+            child: _desktopFrame(
+                Stack(
               children: [
                 // Full-space by default - the tree/toolbar below are
                 // overlays, not siblings in a Row, so the viewport never
@@ -24433,7 +25191,7 @@ class _PartScreenState extends State<PartScreen> {
                 // [_viewportFabColumnsVisible] with the top-left hamburger/
                 // feature-tree column - see that getter's own doc comment
                 // for why the two corners now genuinely differ.
-                if (_selectionModeFabVisible)
+                if (_selectionModeFabVisible && !_desktopLayout)
                   Positioned(
                     top: 56,
                     right: 8,
@@ -24461,7 +25219,7 @@ class _PartScreenState extends State<PartScreen> {
                 // `top: 104` is that FAB's own `top: 56` plus its 40px
                 // `FloatingActionButton.small` height plus the 8px gap this
                 // Column's other FABs already use.
-                if (_measureFabVisible)
+                if (_measureFabVisible && !_desktopLayout)
                   Positioned(
                     top: 104,
                     right: 8,
@@ -24485,7 +25243,7 @@ class _PartScreenState extends State<PartScreen> {
                 // rather than a new [SvgIcon] asset - no dedicated section-
                 // tool icon exists in this app's `assets/icons/viewport/`
                 // set yet, and adding one is outside this pass's scope.
-                if (_sectionFabVisible)
+                if (_sectionFabVisible && !_desktopLayout)
                   Positioned(
                     top: 152,
                     right: 8,
@@ -24677,236 +25435,9 @@ class _PartScreenState extends State<PartScreen> {
                 // the slide-in animation for that one transition (the panel
                 // simply swaps), an accepted v1 cost of avoiding the
                 // ambiguity.
-                if (_lens == AssemblyLens.part)
+                if (_lens == AssemblyLens.part && !_desktopLayout)
                 Positioned.fill(
-                  child: FeatureTreePanel(
-                    visible: _featureTreePanelVisible,
-                    multiSelectHeader: _activeMultiSelect == null
-                        ? null
-                        : MultiSelectActionBar(
-                            count: _activeMultiSelect!.count,
-                            allHidden: _multiSelectAllHidden,
-                            busy: _busy || _multiSelectBusy,
-                            onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
-                            onDelete: () => unawaited(_multiSelectDelete()),
-                            onCancel: _exitMultiSelect,
-                            onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
-                          ),
-                    features: _features,
-                    selectedFeatureId: _selectedFeatureId,
-                    hiddenFeatureIds: _viewportHiddenFeatureIds,
-                    onFeatureTap: _onFeatureTap,
-                    // Feature 1 (tree multi-select): long-press enters bulk
-                    // multi-select; the old per-row context menu is reached
-                    // via the action bar's "More" button instead (see
-                    // [_multiSelectMore]).
-                    onFeatureLongPress: (feature) =>
-                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.feature(feature.id)),
-                    // Desktop input D4: a right click opens the row's menu
-                    // directly at the cursor (touch reaches it via "More").
-                    onFeatureContextMenu: (feature, at) => unawaited(_onFeatureLongPress(feature, at: at)),
-                    onBodyContextMenu: (bodyId, at) => unawaited(_onBodyLongPress(bodyId, at: at)),
-                    onSurfaceContextMenu: (surfaceId, at) => unawaited(_onSurfaceLongPress(surfaceId, at: at)),
-                    onCurveContextMenu: (curveId, at) => unawaited(_onCurveContextMenu(curveId, at)),
-                    isMultiSelectMode: _buildMultiSelect.active,
-                    selectedMultiSelectIds: _buildMultiSelect.selectedIds,
-                    onMultiSelectToggle: (key) => _toggleMultiSelectMember(_buildMultiSelect, key),
-                    pendingDetailFeatureIds: _pendingDetailFeatureIds,
-                    pinnedCoarseFeatureIds: _pinnedCoarseFeatureIds,
-                    onToggleCoarsePin: _toggleCoarsePin,
-                    onClose: () {
-                      if (_buildMultiSelect.active) {
-                        _exitMultiSelect();
-                        setState(() => _featureTreeVisible = false);
-                      } else if (_sketchPickerActive) {
-                        _cancelSketchPicker();
-                      } else if (_surfaceSketchPickerActive) {
-                        _cancelSurfaceSketchPicker();
-                      } else if (_revolveSketchPickerActive) {
-                        _cancelRevolveSketchPicker();
-                      } else if (_sweepSketchPickerActive) {
-                        _cancelSweepSketchPicker();
-                      } else if (_loftSketchPickerActive) {
-                        _cancelLoftSketchPicker();
-                      } else if (_planarSurfaceSketchPickerActive) {
-                        _cancelPlanarSurfaceSketchPicker();
-                      } else if (_revolveSurfaceSketchPickerActive) {
-                        _cancelRevolveSurfaceSketchPicker();
-                      } else if (_sweptSurfaceSketchPickerActive) {
-                        _cancelSweptSurfaceSketchPicker();
-                      } else if (_loftSurfaceSketchPickerActive) {
-                        _cancelLoftSurfaceSketchPicker();
-                      } else if (_ruledSurfaceSketchPickerActive) {
-                        _cancelRuledSurfaceSketchPicker();
-                      } else if (_thickenSourcePickerActive) {
-                        _cancelThickenSourcePicker();
-                      } else if (_knitSurfacePickerActive) {
-                        _cancelKnitSurfacePicker();
-                      } else if (_solidFromSurfacesPickerActive) {
-                        _cancelSolidFromSurfacesPicker();
-                      } else if (_offsetSurfaceSourcePickerActive) {
-                        _cancelOffsetSurfaceSourcePicker();
-                      } else if (_sourceFeaturePickerTarget != null) {
-                        _cancelSourceFeaturePicker();
-                      } else {
-                        setState(() => _featureTreeVisible = false);
-                      }
-                    },
-                    // Prompt F: only one of _sketchPickerActive/
-                    // _surfaceSketchPickerActive/_revolveSketchPickerActive/
-                    // _sweepSketchPickerActive/_planarSurfaceSketchPickerActive/
-                    // _revolveSurfaceSketchPickerActive/
-                    // _sweptSurfaceSketchPickerActive is ever true at a time
-                    // (same "one panel/picker active" invariant every other
-                    // flow in this file relies on), so a chain of ternaries
-                    // picks whichever is live - mirrors the
-                    // previewOverlayBodyId/previewOverlayMesh ternary above.
-                    // Loft/Loft Surface/Ruled Surface's own pickers use
-                    // isFeaturePickerMode instead (see that block's own top
-                    // comment for why), not this one.
-                    isSketchPickerMode: _sketchPickerActive ||
-                        _surfaceSketchPickerActive ||
-                        _revolveSketchPickerActive ||
-                        _sweepSketchPickerActive ||
-                        _planarSurfaceSketchPickerActive ||
-                        _revolveSurfaceSketchPickerActive ||
-                        _sweptSurfaceSketchPickerActive,
-                    pickableSketchIds: _sketchPickerActive
-                        ? _pickableSketchIds
-                        : _surfaceSketchPickerActive
-                            ? _pickableSurfaceSketchIds
-                            : _revolveSketchPickerActive
-                                ? _pickableRevolveSketchIds
-                                : _sweepSketchPickerActive
-                                    ? _pickableSweepSketchIds
-                                    : _planarSurfaceSketchPickerActive
-                                        ? _pickablePlanarSurfaceSketchIds
-                                        : _revolveSurfaceSketchPickerActive
-                                            ? _pickableRevolveSurfaceSketchIds
-                                            : _pickableSweptSurfaceSketchIds,
-                    onSketchPicked: _sketchPickerActive
-                        ? _onSketchPicked
-                        : _surfaceSketchPickerActive
-                            ? _onSurfaceSketchPicked
-                            : _revolveSketchPickerActive
-                                ? _onRevolveSketchPicked
-                                : _sweepSketchPickerActive
-                                    ? _onSweepSketchPicked
-                                    : _planarSurfaceSketchPickerActive
-                                        ? _onPlanarSurfaceSketchPicked
-                                        : _revolveSurfaceSketchPickerActive
-                                            ? _onRevolveSurfaceSketchPicked
-                                            : _onSweptSurfaceSketchPicked,
-                    // Loft's own multi-select section picker shares this
-                    // exact mode with the Pattern/Mirror source-feature
-                    // picker (only one of the two is ever active at a time,
-                    // same invariant as the sketch-picker chain above) -
-                    // see the Loft state block's own top comment for why a
-                    // 2+ ordered pick needs this mode instead of
-                    // isSketchPickerMode's single-tap-finalizes shape. Loft
-                    // Surface/Ruled Surface join this same mode, mirroring
-                    // Loft's own choice exactly.
-                    isFeaturePickerMode: _sourceFeaturePickerTarget != null ||
-                        _loftSketchPickerActive ||
-                        _loftSurfaceSketchPickerActive ||
-                        _ruledSurfaceSketchPickerActive ||
-                        // Phase 2 surfacing package: Thicken/Offset Surface
-                        // use this same mode as a single-pick-commits-
-                        // immediately picker (their own onFeaturePickerToggle
-                        // below never accumulates - it acts the instant a
-                        // row is tapped, mirroring isSketchPickerMode's own
-                        // single-tap-finalizes shape, just over any
-                        // `produces == 'surface'` Feature rather than only
-                        // Sketches); Knit/Solid from Surfaces use it as a
-                        // genuine multi-pick-then-confirm picker, same shape
-                        // as Loft's own section picker.
-                        _thickenSourcePickerActive ||
-                        _knitSurfacePickerActive ||
-                        _solidFromSurfacesPickerActive ||
-                        _offsetSurfaceSourcePickerActive,
-                    pickableFeaturePickerIds: _thickenSourcePickerActive ||
-                            _knitSurfacePickerActive ||
-                            _solidFromSurfacesPickerActive ||
-                            _offsetSurfaceSourcePickerActive
-                        ? _pickableSurfaceFeatureIds
-                        : _loftSketchPickerActive
-                            ? _pickableLoftSketchIds
-                            : _loftSurfaceSketchPickerActive
-                                ? _pickableLoftSurfaceSketchIds
-                                : _ruledSurfaceSketchPickerActive
-                                    ? _pickableRuledSurfaceSketchIds
-                                    : _sourceFeaturePickerPickableIds,
-                    selectedFeaturePickerIds: _thickenSourcePickerActive || _offsetSurfaceSourcePickerActive
-                        ? const <String>{}
-                        : _knitSurfacePickerActive
-                            ? {for (final f in _knitSurfacePendingSurfaces) f.id}
-                            : _solidFromSurfacesPickerActive
-                                ? {for (final f in _solidFromSurfacesPendingSurfaces) f.id}
-                                : _loftSketchPickerActive
-                                    ? {for (final f in _loftPendingSections) f.id}
-                                    : _loftSurfaceSketchPickerActive
-                                        ? {for (final f in _loftSurfacePendingSections) f.id}
-                                        : _ruledSurfaceSketchPickerActive
-                                            ? {for (final f in _ruledSurfacePendingSections) f.id}
-                                            : _selectedSourceFeatureIds,
-                    onFeaturePickerToggle: _thickenSourcePickerActive
-                        ? _onThickenSourcePicked
-                        : _offsetSurfaceSourcePickerActive
-                            ? _onOffsetSurfaceSourcePicked
-                            : _knitSurfacePickerActive
-                                ? _toggleKnitSurfacePick
-                                : _solidFromSurfacesPickerActive
-                                    ? _toggleSolidFromSurfacesPick
-                                    : _loftSketchPickerActive
-                                        ? _toggleLoftSectionPick
-                                        : _loftSurfaceSketchPickerActive
-                                            ? _toggleLoftSurfaceSectionPick
-                                            : _ruledSurfaceSketchPickerActive
-                                                ? _toggleRuledSurfaceSectionPick
-                                                : _toggleSourceFeaturePick,
-                    featurePickerLabel: _thickenSourcePickerActive
-                        ? 'Select a surface to thicken'
-                        : _offsetSurfaceSourcePickerActive
-                            ? 'Select a surface to offset'
-                            : _knitSurfacePickerActive
-                                ? 'Select surfaces to knit'
-                                : _solidFromSurfacesPickerActive
-                                    ? 'Select surfaces to combine into a solid'
-                                    : _loftSketchPickerActive
-                                        ? 'Select sketches to loft'
-                                        : _loftSurfaceSketchPickerActive
-                                            ? 'Select sketches to loft'
-                                            : _ruledSurfaceSketchPickerActive
-                                    ? 'Select 2 sketches'
-                                    : 'Select source Features',
-                    bodyIds: _computedBodyIds,
-                    bodyNames: _bodyNames,
-                    onBodyTap: _onBodyTap,
-                    onBodyLongPress: (bodyId) =>
-                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.body(bodyId)),
-                    hiddenBodyIds: {
-                      for (final body in _bodies)
-                        if (body.hidden && !body.isSurface && !body.isCurve) body.bodyId,
-                    },
-                    surfaceIds: _computedSurfaceIds,
-                    surfaceNames: _surfaceNames,
-                    onSurfaceTap: _onSurfaceTap,
-                    onSurfaceLongPress: (surfaceId) =>
-                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.surface(surfaceId)),
-                    hiddenSurfaceIds: {
-                      for (final body in _bodies)
-                        if (body.hidden && body.isSurface) body.bodyId,
-                    },
-                    curveIds: _computedCurveIds,
-                    curveNames: _curveNames,
-                    onCurveTap: _onCurveTap,
-                    onCurveLongPress: (curveId) =>
-                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.curve(curveId)),
-                    hiddenCurveIds: {
-                      for (final body in _bodies)
-                        if (body.hidden && body.isCurve) body.bodyId,
-                    },
-                  ),
+                  child: _buildFeatureTreePanel(docked: false),
                 ),
                 // Assembly support Phase 3: [_lens]'s Assembly-mode
                 // counterpart to [FeatureTreePanel] just above - see that
@@ -24914,66 +25445,9 @@ class _PartScreenState extends State<PartScreen> {
                 // built at a time. Same `onClose` fallback (no picker modes
                 // of its own yet to cancel first, unlike Feature tree's
                 // long `onClose` chain above).
-                if (_lens == AssemblyLens.assembly)
+                if (_lens == AssemblyLens.assembly && !_desktopLayout)
                 Positioned.fill(
-                  child: AssemblyTreePanel(
-                    motionSummary: _motionStatusText,
-                    unsavedPartIds: _dirtyPartIds,
-                    neverSavedPartIds: _neverWrittenPartIds,
-                    parentUnsaved: _focusedPartId != null && _dirtyPartIds.contains(_focusedPartId),
-                    parentNeverSaved: _focusedPartId != null && _neverWrittenPartIds.contains(_focusedPartId),
-                    multiSelectHeader: _activeMultiSelect == null
-                        ? null
-                        : MultiSelectActionBar(
-                            count: _activeMultiSelect!.count,
-                            allHidden: _multiSelectAllHidden,
-                            busy: _busy || _multiSelectBusy,
-                            onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
-                            onDelete: () => unawaited(_multiSelectDelete()),
-                            onCancel: _exitMultiSelect,
-                            onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
-                          ),
-                    visible: _featureTreePanelVisible,
-                    occurrences: _displayOccurrences,
-                    mates: _mates,
-                    patterns: _componentPatterns,
-                    selectedOccurrenceId: _selectedOccurrenceId,
-                    onOccurrenceTap: _onOccurrenceTap,
-                    onOccurrenceLongPress: (occurrence) {
-                      _assemblyMultiSelectAnchor = occurrence;
-                      _enterMultiSelect(_assemblyMultiSelect, occurrence.id);
-                    },
-                    constraintStatusByOccurrenceId: _constraintStatusByOccurrenceId,
-                    isMultiSelectMode: _assemblyMultiSelect.active,
-                    selectedMultiSelectIds: _assemblyMultiSelect.selectedIds,
-                    onMultiSelectToggle: (id) => _toggleMultiSelectMember(_assemblyMultiSelect, id),
-                    onOccurrenceVisibilityToggle: (occurrence) =>
-                        unawaited(_setOccurrenceHidden(occurrence, !occurrence.hidden)),
-                    onOccurrenceColorTap: (occurrence) => unawaited(_onOccurrenceColorTap(occurrence)),
-                    onLocateMissingFile: (occurrence) => unawaited(_onLocateMissingFilePressed(occurrence)),
-                    onClose: () {
-                      _exitMultiSelect();
-                      setState(() => _featureTreeVisible = false);
-                    },
-                    onMateTap: _onMateTap,
-                    onMateLongPress: _onMateLongPress,
-                    // Desktop input D4: a right click opens the row's menu at
-                    // the cursor.
-                    onOccurrenceContextMenu: (occurrence, at) => unawaited(_onOccurrenceLongPress(occurrence, at: at)),
-                    onMateContextMenu: (mate, at) => unawaited(_onMateLongPress(mate, at: at)),
-                    onPatternContextMenu: (pattern, at) => unawaited(_onPatternContextMenu(pattern, at)),
-                    selectedMateId: _selectedMateId,
-                    onPatternTap: _openComponentPatternForEdit,
-                    onPatternLongPress: _confirmDeleteComponentPattern,
-                    focusedLabel: _focusStack?.currentLabel,
-                    onExitFocus: () => unawaited(_exitAssemblyFocus()),
-                    // Test report item 1: the tree's own root row - whichever
-                    // Part these Components/Mates/Patterns sections actually
-                    // belong to, exactly mirroring `_refreshAssemblyTree`'s
-                    // own "`_focusStack.current`, defaulting to the root
-                    // Part" precedent for *which* Part's data to show.
-                    rootLabel: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
-                  ),
+                  child: _buildAssemblyTreePanel(docked: false),
                 ),
                 // Feature 1 (tree multi-select): replaces the Part-lens
                 // SelectionListDrawer (and, in Assembly lens,
@@ -25932,7 +26406,7 @@ class _PartScreenState extends State<PartScreen> {
                 // feature-tree FAB specifically (unlike the hamburger just
                 // below, which already has its own extrude-aware check) sat
                 // underneath/overlapping A4's banner.
-                if (_viewportFabColumnsVisible)
+                if (_viewportFabColumnsVisible && !_desktopLayout)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -26381,8 +26855,9 @@ class _PartScreenState extends State<PartScreen> {
                 // row via its `tooltip` param instead (null once Direction 1/
                 // the axis is picked).
               ],
-            ),
+            )),
           ),
+          if (_desktopLayout) _buildDesktopStatusBar(),
         ],
       ),
       // Stage 22 item 3: hidden while the toolbar is open - Scaffold always
@@ -26464,7 +26939,8 @@ class _PartScreenState extends State<PartScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (!_extrudeActive &&
+                  if (!_desktopLayout &&
+                      !_extrudeActive &&
                       !_surfaceActive &&
                       !_createPlaneActive &&
                       !_filletActive &&

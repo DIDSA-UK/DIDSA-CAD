@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../layout/layout_mode.dart';
 import 'controls_preferences.dart';
 import 'keyboard_shortcuts.dart';
 
@@ -20,6 +21,7 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
   NavigationPreset _preset = ControlsPreferences.preset;
   bool _invertWheel = ControlsPreferences.invertWheel;
   double _orbitSpeed = ControlsPreferences.orbitSpeed;
+  LayoutPreference _layout = ControlsPreferences.layoutPreference;
 
   @override
   void initState() {
@@ -34,6 +36,7 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
       _preset = ControlsPreferences.preset;
       _invertWheel = ControlsPreferences.invertWheel;
       _orbitSpeed = ControlsPreferences.orbitSpeed;
+      _layout = ControlsPreferences.layoutPreference;
     });
   }
 
@@ -44,6 +47,7 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
       _preset = ControlsPreferences.preset;
       _invertWheel = ControlsPreferences.invertWheel;
       _orbitSpeed = ControlsPreferences.orbitSpeed;
+      _layout = ControlsPreferences.layoutPreference;
     });
   }
 
@@ -110,6 +114,30 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
                     setState(() => _orbitSpeed = value);
                     ControlsPreferences.setOrbitSpeed(value);
                   },
+                ),
+              ),
+              const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                child: Text('Layout', style: theme.textTheme.titleMedium),
+              ),
+              RadioGroup<LayoutPreference>(
+                groupValue: _layout,
+                onChanged: (value) {
+                  if (value == null) return;
+                  setState(() => _layout = value);
+                  ControlsPreferences.setLayoutPreference(value);
+                  LayoutModeScope.controllerOf(context)?.preference = value;
+                },
+                child: Column(
+                  children: [
+                    for (final preference in LayoutPreference.values)
+                      RadioListTile<LayoutPreference>(
+                        value: preference,
+                        title: Text(preference.label),
+                        subtitle: Text(preference.description),
+                      ),
+                  ],
                 ),
               ),
               const Divider(),

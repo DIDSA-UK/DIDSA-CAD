@@ -1,6 +1,6 @@
 # Desktop layout (D6) - scope
 
-**Status:** scoped 27 Oct 2026, not started. Phase D6 of `docs/desktop-input-scope.md`, which covers mouse and keyboard input
+**Status:** scoped 27 Oct 2026. L1 and the first part of L2 (the part screen frame) are built and awaiting the owner's confirmation before L2's remainder and L3-L6 (see section 8). Phase D6 of `docs/desktop-input-scope.md`, which covers mouse and keyboard input
 (D1-D5, D7); this covers what the app looks like on a big window. Owner's goal: *"dock a phone and have a full desktop CAD
 experience"* (DeX, Android desktop mode, an external monitor; Windows benefits too).
 
@@ -112,3 +112,26 @@ L1 first; L2-L5 in order; L6 can run beside L3-L5.
 
 - Ribbon icons: reuse the FAB / speed-dial SVGs (`assets/icons/`) with labels, or new larger icons.
 - Whether the status bar shows units and a coordinate readout (needs a cursor-to-model point, which the 3D hover already has).
+
+## 8. What is built (first layout: the part screen frame, L1 + most of L2)
+
+- **L1:** `lib/layout/layout_mode.dart` - `LayoutMode`, `LayoutPreference` (Automatic / Always desktop / Always phone, saved in
+  `ControlsPreferences`, chosen in the Controls screen), `resolveLayoutMode` (1000 x 600 to enter, stays desktop down to 900 x 520,
+  a touch or pen drops back to phone, a mouse or trackpad brings it back), `LayoutModeController`, `LayoutModeScope` and
+  `LayoutModeHost` (in `MaterialApp.builder`: watches the window and the pointers, makes controls compact). With no host (a widget test
+  that pumps a screen alone) every screen is the phone layout, so the existing suite is unchanged.
+- **Part screen, desktop layout** (`PartScreen._buildDesktopRibbon` and friends, `viewport3d/desktop_chrome.dart`):
+  an app bar with File and View menus (the same actions as the toolbar overlay, plus the selection filters, render modes and the
+  Controls screen), a Save button and the shortcut list; a ribbon with Features, Sketch, Assembly, Evaluate and View tabs whose buttons
+  call the same actions as the FABs and sheets (`_runFeatureAction` is the Feature picker's own switch, now shared); a Part / Assembly
+  switch on the ribbon that follows the lens; the tree docked in a resizable, foldable left pane (the same `FeatureTreePanel` /
+  `AssemblyTreePanel` widgets with a `docked` flag - no slide, no handle, no Close button); a status bar (selection by kind, unsaved
+  Parts, lens, projection, render mode). The corner FABs (menu, tree, lens, Add, select / orbit, Measure, Section) are not built on
+  this layout; the picker Confirm FABs stay.
+- Tests: `test/layout_mode_test.dart`, `test/part_screen_test.dart` ("desktop layout (D6)"), `test/controls_settings_test.dart`.
+- **Not yet done on the part screen (rest of L2, L3, L4):** tool panels still rise from the bottom over the viewport rather than
+  docking in the left pane; the selection drawer and component drawer are still bottom sheets; the bottom sheets (feature picker,
+  colour, scenes, select other) are still sheets; the status bar has no units or cursor coordinates; ribbon icons reuse the FAB icons
+  and Material icons. The Sketch tab holds only New Sketch, Sketch on face and Plane (the in-sketch tools belong to L5).
+- **Not verified:** run once in a Linux debug build at 1280 x 720 (a part with two bodies, selecting a body, the View and Assembly tabs,
+  the File menu, a ribbon New Sketch); not run on a device, on DeX, or with a touch screen swapping modes.

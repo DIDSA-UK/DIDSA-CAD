@@ -131,6 +131,10 @@ String mateDisplayName(List<MateDto> mates, int index) {
 /// Phase 3 planning.
 class AssemblyTreePanel extends StatefulWidget {
   final bool visible;
+
+  /// Desktop layout (D6): the panel fills its parent (the left pane) instead of sliding over the viewport as an
+  /// overlay - no slide, no drag handle, no rounded edge. The pane owns the width.
+  final bool docked;
   final List<OccurrenceDto> occurrences;
   final List<MateDto> mates;
 
@@ -271,6 +275,7 @@ class AssemblyTreePanel extends StatefulWidget {
   const AssemblyTreePanel({
     super.key,
     required this.visible,
+    this.docked = false,
     required this.occurrences,
     required this.mates,
     this.patterns = const [],
@@ -344,7 +349,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final totalWidth = constraints.maxWidth;
-        final panelWidth = (_effectiveWidthFraction(context) * totalWidth).clamp(
+        final panelWidth = widget.docked ? totalWidth : (_effectiveWidthFraction(context) * totalWidth).clamp(
           _minWidthFraction * totalWidth,
           _maxWidthFraction * totalWidth,
         );
@@ -352,24 +357,30 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           alignment: Alignment.topLeft,
           child: ClipRect(
             child: AnimatedSlide(
-              offset: widget.visible ? Offset.zero : const Offset(-1.05, 0),
+              offset: widget.visible || widget.docked ? Offset.zero : const Offset(-1.05, 0),
               duration: const Duration(milliseconds: 200),
               curve: Curves.easeOut,
               child: SafeArea(
+                top: !widget.docked,
+                bottom: !widget.docked,
+                left: !widget.docked,
+                right: !widget.docked,
                 child: SizedBox(
-                  width: panelWidth + _handleOverhang,
+                  width: panelWidth + (widget.docked ? 0 : _handleOverhang),
                   height: double.infinity,
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
                       Padding(
-                        padding: const EdgeInsets.only(right: _handleOverhang),
+                        padding: EdgeInsets.only(right: widget.docked ? 0 : _handleOverhang),
                         child: Material(
-                        elevation: 2,
-                        borderRadius: const BorderRadius.only(
-                          topRight: Radius.circular(12),
-                          bottomRight: Radius.circular(12),
-                        ),
+                        elevation: widget.docked ? 0 : 2,
+                        borderRadius: widget.docked
+                            ? null
+                            : const BorderRadius.only(
+                                topRight: Radius.circular(12),
+                                bottomRight: Radius.circular(12),
+                              ),
                         child: Builder(
                           builder: (context) {
                             // Phase 3b lens theming (`docs/assembly-
@@ -420,11 +431,12 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                                           ),
                                         ),
                                       ),
-                                      IconButton(
-                                        tooltip: 'Close',
-                                        icon: Icon(Icons.close, size: 20, color: onHeaderColor),
-                                        onPressed: widget.onClose,
-                                      ),
+                                      if (!widget.docked)
+                                        IconButton(
+                                          tooltip: 'Close',
+                                          icon: Icon(Icons.close, size: 20, color: onHeaderColor),
+                                          onPressed: widget.onClose,
+                                        ),
                                     ],
                                   ),
                                 ),
@@ -466,7 +478,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                         ),
                       ),
                       ),
-                      Positioned(top: 0, bottom: 0, right: 0, child: _buildDragHandle(totalWidth)),
+                      if (!widget.docked) Positioned(top: 0, bottom: 0, right: 0, child: _buildDragHandle(totalWidth)),
                     ],
                   ),
                 ),

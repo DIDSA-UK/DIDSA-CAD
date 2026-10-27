@@ -260,6 +260,10 @@ String _featureTypeAsset(String type) => switch (type) {
 /// targets.
 class FeatureTreePanel extends StatefulWidget {
   final bool visible;
+
+  /// Desktop layout (D6): the panel fills its parent (the left pane) instead of sliding over the viewport as an
+  /// overlay - no slide, no drag handle, no rounded edge. The pane owns the width.
+  final bool docked;
   final List<FeatureDto> features;
   final String? selectedFeatureId;
   final void Function(FeatureDto feature) onFeatureTap;
@@ -479,6 +483,7 @@ class FeatureTreePanel extends StatefulWidget {
   const FeatureTreePanel({
     super.key,
     required this.visible,
+    this.docked = false,
     required this.features,
     required this.selectedFeatureId,
     required this.onFeatureTap,
@@ -549,7 +554,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final totalWidth = constraints.maxWidth;
-        final panelWidth = (_widthFraction * totalWidth).clamp(
+        final panelWidth = widget.docked ? totalWidth : (_widthFraction * totalWidth).clamp(
           _minWidthFraction * totalWidth,
           _maxWidthFraction * totalWidth,
         );
@@ -557,24 +562,30 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
           alignment: Alignment.topLeft,
           child: ClipRect(
             child: AnimatedSlide(
-              offset: widget.visible ? Offset.zero : const Offset(-1.05, 0),
+              offset: widget.visible || widget.docked ? Offset.zero : const Offset(-1.05, 0),
               duration: const Duration(milliseconds: 200),
               curve: Curves.easeOut,
               child: SafeArea(
+                top: !widget.docked,
+                bottom: !widget.docked,
+                left: !widget.docked,
+                right: !widget.docked,
                 child: SizedBox(
-                  width: panelWidth + _handleOverhang,
+                  width: panelWidth + (widget.docked ? 0 : _handleOverhang),
                   height: double.infinity,
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
                       Padding(
-                        padding: const EdgeInsets.only(right: _handleOverhang),
+                        padding: EdgeInsets.only(right: widget.docked ? 0 : _handleOverhang),
                         child: Material(
-                        elevation: 2,
-                        borderRadius: const BorderRadius.only(
-                          topRight: Radius.circular(12),
-                          bottomRight: Radius.circular(12),
-                        ),
+                        elevation: widget.docked ? 0 : 2,
+                        borderRadius: widget.docked
+                            ? null
+                            : const BorderRadius.only(
+                                topRight: Radius.circular(12),
+                                bottomRight: Radius.circular(12),
+                              ),
                         child: Column(
                           children: [
                             if (widget.multiSelectHeader != null)
@@ -592,11 +603,12 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                                       style: TextStyle(fontWeight: FontWeight.bold),
                                     ),
                                   ),
-                                  IconButton(
-                                    tooltip: 'Close',
-                                    icon: const Icon(Icons.close, size: 20),
-                                    onPressed: widget.onClose,
-                                  ),
+                                  if (!widget.docked)
+                                    IconButton(
+                                      tooltip: 'Close',
+                                      icon: const Icon(Icons.close, size: 20),
+                                      onPressed: widget.onClose,
+                                    ),
                                 ],
                               ),
                             ),
@@ -660,7 +672,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                         ),
                       ),
                       ),
-                      Positioned(top: 0, bottom: 0, right: 0, child: _buildDragHandle(totalWidth)),
+                      if (!widget.docked) Positioned(top: 0, bottom: 0, right: 0, child: _buildDragHandle(totalWidth)),
                     ],
                   ),
                 ),

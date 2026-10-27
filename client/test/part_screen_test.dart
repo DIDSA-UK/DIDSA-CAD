@@ -31,6 +31,7 @@ import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
+import 'package:didsa_cad_client/layout/layout_mode.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
@@ -6953,6 +6954,111 @@ void main() {
       await tester.tap(find.text('Cancel'));
       await settle(tester);
       expect(await popped, isTrue);
+    });
+  });
+
+  // Desktop layout D6 (`docs/desktop-layout-scope.md`): the part screen's ribbon, docked tree and status bar, and that
+  // the phone layout is untouched without them.
+  group('desktop layout (D6)', () {
+    Future<void> pumpScreen(WidgetTester tester, {LayoutModeController? layout}) async {
+      final backend = _FakeDocumentBackend();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      Widget screen = PartScreen(
+        documentApi: documentApi,
+        sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        storageService: _FakeStorageService(),
+      );
+      if (layout != null) screen = LayoutModeScope(controller: layout, child: screen);
+      await tester.pumpWidget(MaterialApp(home: screen));
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    LayoutModeController desktop() =>
+        LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+
+    void bigWindow(WidgetTester tester) {
+      tester.view.physicalSize = const Size(1280, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+    }
+
+    testWidgets('the phone layout has none of the desktop chrome', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester);
+      expect(find.byKey(const ValueKey('desktop-ribbon')), findsNothing);
+      expect(find.byKey(const ValueKey('desktop-status-bar')), findsNothing);
+      expect(find.byKey(const ValueKey('desktop-left-pane')), findsNothing);
+      expect(find.byTooltip('Add'), findsOneWidget);
+    });
+
+    testWidgets('the desktop layout shows the ribbon, the docked tree and the status bar, and drops the FABs', (
+      tester,
+    ) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byKey(const ValueKey('desktop-ribbon')), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-status-bar')), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+      expect(find.text('Build Tree'), findsOneWidget);
+      expect(find.byTooltip('Add'), findsNothing);
+      expect(find.byTooltip('Open toolbar'), findsNothing);
+      expect(find.text('Nothing selected'), findsOneWidget);
+      // The tree is docked, so it carries no Close button.
+      expect(find.byTooltip('Close'), findsNothing);
+    });
+
+    testWidgets('ribbon tabs switch the buttons, and the lens switch follows into the Assembly tab', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byKey(const ValueKey('ribbon-Extrude')), findsOneWidget);
+      expect(find.byKey(const ValueKey('ribbon-Add Component')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('ribbon-Measure')), findsOneWidget);
+      expect(find.byKey(const ValueKey('ribbon-Extrude')), findsNothing);
+
+      await tester.tap(find.descendant(of: find.byKey(const ValueKey('ribbon-lens')), matching: find.text('Assembly')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('ribbon-Add Component')), findsOneWidget);
+      expect(find.text('Assembly Tree'), findsOneWidget);
+    });
+
+    testWidgets('the New Sketch button starts the plane picker, as the Add menu does', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      await tester.tap(find.byKey(const ValueKey('ribbon-New Sketch')));
+      await tester.pump();
+      expect(find.text('Tap a reference plane for the new sketch'), findsOneWidget);
+    });
+
+    testWidgets('the tree pane can be folded away and brought back, and dragged wider', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      final pane = find.byKey(const ValueKey('desktop-left-pane'));
+      final before = tester.getSize(pane).width;
+      await tester.drag(find.byKey(const ValueKey('desktop-pane-divider')), const Offset(80, 0));
+      await tester.pump();
+      expect(tester.getSize(pane).width, closeTo(before + 80, 1));
+
+      await tester.tap(find.byTooltip('Hide the tree'));
+      await tester.pump();
+      expect(pane, findsNothing);
+      await tester.tap(find.byTooltip('Show the tree'));
+      await tester.pump();
+      expect(pane, findsOneWidget);
+    });
+
+    testWidgets('the File menu lists the file actions', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      await tester.tap(find.byKey(const ValueKey('menu-file')));
+      await tester.pump();
+      for (final label in ['New', 'Open…', 'Save', 'Save As…', 'Save All', 'Export…', 'Exit']) {
+        expect(find.text(label), findsWidgets, reason: label);
+      }
     });
   });
 

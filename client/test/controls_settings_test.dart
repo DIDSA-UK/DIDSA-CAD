@@ -91,6 +91,7 @@ void main() {
       await ControlsPreferences.setPreset(NavigationPreset.fusion360);
       await ControlsPreferences.setInvertWheel(true);
       await pump(tester);
+      await tester.scrollUntilVisible(find.text('Reset to defaults'), 200);
       await tester.tap(find.text('Reset to defaults'));
       await tester.pumpAndSettle();
       expect(ControlsPreferences.preset, NavigationPreset.solidworks);
@@ -100,6 +101,7 @@ void main() {
 
     testWidgets('the shortcut list opens from here', (tester) async {
       await pump(tester);
+      await tester.scrollUntilVisible(find.text('Keyboard shortcuts'), 200);
       await tester.tap(find.text('Keyboard shortcuts'));
       await tester.pumpAndSettle();
       expect(find.byType(AlertDialog), findsOneWidget);
