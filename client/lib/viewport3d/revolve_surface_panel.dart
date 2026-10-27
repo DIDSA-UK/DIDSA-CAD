@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The bottom-sheet-style panel [PartScreen] opens for a Revolve Surface -
 /// mirrors [RevolvePanel] exactly, minus the Boss/Cut segmented control and
@@ -125,6 +126,7 @@ class _RevolveSurfacePanelState extends State<RevolveSurfacePanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

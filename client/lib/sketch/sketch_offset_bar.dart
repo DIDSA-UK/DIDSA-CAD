@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../viewport3d/resizable_tool_panel.dart';
 import 'sketch_controller.dart';
+import '../viewport3d/keyboard_shortcuts.dart';
 
 /// Offset's own picking-phase bar (on-device feedback: "the tick/FAB
 /// confirm button should live in the flyup ribbon instead of a FAB, for
@@ -187,6 +188,7 @@ class _OffsetValueBarContentState extends State<_OffsetValueBarContent> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: canConfirm ? _confirm : null, onCancel: _cancel),
               TextButton(onPressed: _cancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(onPressed: canConfirm ? _confirm : null, child: const Text('Offset')),

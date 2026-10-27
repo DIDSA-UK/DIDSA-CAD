@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'curve_panel.dart' show SketchFeatureChoice;
+import 'keyboard_shortcuts.dart';
 
 /// Which of the three v1 plane-construction flows [CreatePlanePanel] is
 /// currently showing - decided by [PartScreen] from the selection that
@@ -252,6 +253,7 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
+                    ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
                     TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
                     const SizedBox(width: 8),
                     FilledButton(

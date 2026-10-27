@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'keyboard_shortcuts.dart';
 
 /// [ResizableToolPanel]'s sibling for a pure viewport-picking mode that has
 /// no fields/form of its own yet (picking a Sweep path, a Profile, a plane
@@ -118,6 +119,7 @@ class PickerRibbon extends StatelessWidget {
                         icon: const Icon(Icons.account_tree_outlined, size: 16),
                         label: Text(extraActionLabel!),
                       ),
+                    ToolPanelKeys(onConfirm: onConfirm, onCancel: onCancel),
                     TextButton(onPressed: onCancel, child: const Text('Cancel')),
                     if (showConfirm)
                       IconButton.filled(

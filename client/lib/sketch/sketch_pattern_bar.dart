@@ -5,6 +5,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../viewport3d/resizable_tool_panel.dart';
 import 'sketch_controller.dart';
+import '../viewport3d/keyboard_shortcuts.dart';
 
 /// Sketcher-roadmap Phase 7 (2D Pattern/Mirror): Pattern/Mirror's own
 /// picking-phase bar, cloned from `sketch_offset_bar.dart`'s [OffsetPickBar]
@@ -192,6 +193,7 @@ class _PatternValueBarContentState extends State<_PatternValueBarContent> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: controller.canConfirmPatternMirror ? _confirm : null, onCancel: _cancel),
               TextButton(onPressed: _cancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

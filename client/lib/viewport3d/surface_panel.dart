@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The bottom-sheet-style panel [PartScreen] opens for the guided "Add >
 /// Feature > Reference > Surface" flow - "Extrude but a shell instead of a
@@ -203,6 +204,7 @@ class _SurfacePanelState extends State<SurfacePanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(
                   onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),

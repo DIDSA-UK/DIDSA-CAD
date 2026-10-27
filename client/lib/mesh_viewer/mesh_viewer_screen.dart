@@ -10,6 +10,7 @@
 /// 15s timeout) in the first place.
 library;
 
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -23,6 +24,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../viewport3d/keyboard_shortcuts.dart';
 import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/orbit_camera.dart';
 import '../viewport3d/scene_controls_panel.dart';
@@ -473,6 +475,19 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Desktop input D3: F zooms to fit; ? lists the shortcuts.
+    return CadShortcutScope(bindings: () => _shortcutBindings, child: _buildScaffold(context));
+  }
+
+  /// Desktop input D3: lets F reach the viewport's zoom to fit.
+  final GlobalKey<_MeshViewerViewportState> _viewportKey = GlobalKey<_MeshViewerViewportState>();
+
+  Map<CadShortcut, VoidCallback?> get _shortcutBindings => {
+        CadShortcut.zoomToFit: _viewportKey.currentState?.zoomToFit,
+        CadShortcut.help: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+      };
+
+  Widget _buildScaffold(BuildContext context) {
     final busy = _stage == _LoadStage.decoding || _stage == _LoadStage.buildingMaterial || _exporting;
     return Scaffold(
       appBar: AppBar(
@@ -683,6 +698,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
           children: [
             Positioned.fill(
               child: _MeshViewerViewport(
+                key: _viewportKey,
                 mesh: mesh,
                 materials: materials,
                 lightIntensity: _lightIntensity,
@@ -752,6 +768,7 @@ class _MeshViewerViewport extends StatefulWidget {
   final bool showWireframe;
 
   const _MeshViewerViewport({
+    super.key,
     required this.mesh,
     required this.materials,
     required this.lightIntensity,
@@ -889,7 +906,27 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     return (center: (min + max) * 0.5, radius: (max - min).length * 0.5);
   }
 
+  /// Desktop input D3: a middle double-click zooms to fit, as F does.
+  final MiddleDoubleClickDetector _middleDoubleClick = MiddleDoubleClickDetector();
+
+  /// The viewport's size at the last build, for [zoomToFit].
+  Size _lastSize = Size.zero;
+
+  /// Desktop input D3: frames the whole mesh without turning the view.
+  void zoomToFit() {
+    final bounds = _boundsOf(widget.mesh);
+    if (bounds.radius <= 0) return;
+    setState(() {
+      _camera.setTarget(bounds.center);
+      _camera.frameRadius(bounds.radius, _lastSize);
+    });
+  }
+
   void _handlePointerDown(PointerDownEvent event) {
+    if (_middleDoubleClick.registerPress(event)) {
+      zoomToFit();
+      return;
+    }
     if (event.kind == PointerDeviceKind.mouse) return;
     _activeTouches[event.pointer] = event.localPosition;
   }
@@ -960,6 +997,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
+        _lastSize = size;
         return Stack(
           children: [
             Listener(

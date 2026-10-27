@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Direct Editing family, third entry ("Move/Copy Body" - SolidWorks/
 /// Fusion 360's own naming, see `docs/direct-editing-scope.md`): the
@@ -258,6 +259,7 @@ class _MoveBodyPanelState extends State<MoveBodyPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

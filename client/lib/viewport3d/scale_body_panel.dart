@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Direct Editing family, second entry: the bottom-sheet-style panel
 /// [PartScreen] opens once a single Body is selected and "Scale" is chosen
@@ -112,6 +113,7 @@ class _ScaleBodyPanelState extends State<ScaleBodyPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

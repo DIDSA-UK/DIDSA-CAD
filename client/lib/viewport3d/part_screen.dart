@@ -113,7 +113,8 @@ import 'relative_path_dialog.dart';
 import 'render_mode.dart';
 import 'revolve_panel.dart';
 import 'revolve_surface_panel.dart';
-import 'mouse_navigation.dart' show SelectClick;
+import 'keyboard_shortcuts.dart';
+import 'mouse_navigation.dart' show SelectClick, selectionAfterClick;
 import 'move_body_panel.dart';
 import 'move_face_panel.dart';
 import 'move_rotate_component_panel.dart';
@@ -2830,20 +2831,19 @@ class _PartScreenState extends State<PartScreen> {
       if (shellBodyId != null && entity.bodyId != shellBodyId) return;
       _shellBodyId ??= entity.bodyId;
     }
-    if (_selectClick == SelectClick.replace && !_anyToolSessionActive) {
+    final collecting = _anyToolSessionActive;
+    if (_selectClick == SelectClick.replace && !collecting) {
       // Desktop input D2: a plain mouse click with no tool open replaces the
       // selection - as an empty-space click then this click would (see
       // [_clearSelectedEntities]), so a component's drawer closes too.
       setState(() {
-        _selectedEntities = {entity};
+        _selectedEntities = selectionAfterClick(_selectedEntities, entity, _selectClick, collecting: false);
         if (_lens == AssemblyLens.assembly && !_moveRotateComponentActive) _selectedOccurrenceId = null;
       });
       return;
     }
     setState(() {
-      final next = Set<SelectionEntityRef>.of(_selectedEntities);
-      if (!next.remove(entity)) next.add(entity);
-      _selectedEntities = next;
+      _selectedEntities = selectionAfterClick(_selectedEntities, entity, _selectClick, collecting: collecting);
     });
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
@@ -23523,48 +23523,150 @@ class _PartScreenState extends State<PartScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_activeMultiSelect != null) {
-          // Feature 1 (tree multi-select): back cancels the session, same
-          // as the action bar's own Cancel.
-          _exitMultiSelect();
-        } else if (_confirmingSketchOrientation) {
-          _cancelPendingOrientation();
-        } else if (_sketchPickerActive) {
-          _cancelSketchPicker();
-        } else if (_revolveSketchPickerActive) {
-          _cancelRevolveSketchPicker();
-        } else if (_sweepSketchPickerActive) {
-          _cancelSweepSketchPicker();
-        } else if (_loftSketchPickerActive) {
-          _cancelLoftSketchPicker();
-        } else if (_planarSurfaceSketchPickerActive) {
-          _cancelPlanarSurfaceSketchPicker();
-        } else if (_revolveSurfaceSketchPickerActive) {
-          _cancelRevolveSurfaceSketchPicker();
-        } else if (_sweptSurfaceSketchPickerActive) {
-          _cancelSweptSurfaceSketchPicker();
-        } else if (_loftSurfaceSketchPickerActive) {
-          _cancelLoftSurfaceSketchPicker();
-        } else if (_ruledSurfaceSketchPickerActive) {
-          _cancelRuledSurfaceSketchPicker();
-        } else if (_profilePickerActive) {
-          _cancelProfilePicker();
-        } else if (_pathPickerActive) {
-          _cancelPathPicker();
-        } else if (_planeSelectionMode) {
-          _cancelPlaneSelectionMode();
-        } else {
-          _confirmAndPopPart();
-        }
+        if (!_cancelActiveMode()) _confirmAndPopPart();
       },
-      child: Stack(
-        children: [
-          _buildScaffold(context),
-          if (_showBusyOverlay || _activeJob != null)
-            _BuildingGeometryOverlay(onCancel: _activeJob != null ? _cancelActiveJob : null),
-        ],
+      // Desktop input D3: the keyboard shortcuts, and the open tool panel's
+      // Enter / Esc (see [ToolPanelKeys]).
+      child: CadShortcutScope(
+        bindings: () => _shortcutBindings,
+        child: ToolPanelKeyScope(
+          registry: _toolPanelKeys,
+          child: Stack(
+            children: [
+              _buildScaffold(context),
+              if (_showBusyOverlay || _activeJob != null)
+                _BuildingGeometryOverlay(onCancel: _activeJob != null ? _cancelActiveJob : null),
+            ],
+          ),
+        ),
       ),
     );
+  }
+
+  /// Cancels whichever picker or mode the device back gesture (and Esc)
+  /// backs out of - tree multi-select, the sketch orientation step, the
+  /// sketch / profile / path pickers, plane picking. False when none is
+  /// active (then Back asks to exit the Part, and Esc clears the selection).
+  bool _cancelActiveMode() {
+    if (_activeMultiSelect != null) {
+      // Feature 1 (tree multi-select): back cancels the session, same
+      // as the action bar's own Cancel.
+      _exitMultiSelect();
+    } else if (_confirmingSketchOrientation) {
+      _cancelPendingOrientation();
+    } else if (_sketchPickerActive) {
+      _cancelSketchPicker();
+    } else if (_revolveSketchPickerActive) {
+      _cancelRevolveSketchPicker();
+    } else if (_sweepSketchPickerActive) {
+      _cancelSweepSketchPicker();
+    } else if (_loftSketchPickerActive) {
+      _cancelLoftSketchPicker();
+    } else if (_planarSurfaceSketchPickerActive) {
+      _cancelPlanarSurfaceSketchPicker();
+    } else if (_revolveSurfaceSketchPickerActive) {
+      _cancelRevolveSurfaceSketchPicker();
+    } else if (_sweptSurfaceSketchPickerActive) {
+      _cancelSweptSurfaceSketchPicker();
+    } else if (_loftSurfaceSketchPickerActive) {
+      _cancelLoftSurfaceSketchPicker();
+    } else if (_ruledSurfaceSketchPickerActive) {
+      _cancelRuledSurfaceSketchPicker();
+    } else if (_profilePickerActive) {
+      _cancelProfilePicker();
+    } else if (_pathPickerActive) {
+      _cancelPathPicker();
+    } else if (_planeSelectionMode) {
+      _cancelPlaneSelectionMode();
+    } else {
+      return false;
+    }
+    return true;
+  }
+
+  /// Desktop input D3: the open tool panels' Enter / Esc targets.
+  final ToolPanelKeyRegistry _toolPanelKeys = ToolPanelKeyRegistry();
+
+  /// Desktop input D3 (`docs/desktop-input-scope.md` R3): this screen's
+  /// shortcuts. A null entry is a shortcut that does nothing right now (the
+  /// key is left alone).
+  Map<CadShortcut, VoidCallback?> get _shortcutBindings {
+    final viewport = _viewportKey.currentState;
+    VoidCallback? view(StandardView standardView) =>
+        viewport == null ? null : () => unawaited(viewport.animateToStandardView(standardView));
+    VoidCallback? idle(VoidCallback action) => _busy ? null : action;
+    return {
+      CadShortcut.cancel: _onEscapeKey,
+      CadShortcut.confirm: _toolPanelKeys.confirm,
+      CadShortcut.delete: _deleteKeyAction,
+      CadShortcut.undo: _lens == AssemblyLens.assembly && _componentTransformUndoStack.isNotEmpty && !_busy
+          ? () => unawaited(_undoLastAssemblyAction())
+          : null,
+      CadShortcut.save: idle(() => unawaited(_saveNativeFile())),
+      CadShortcut.saveAs: idle(() => unawaited(_saveAsNativeFile())),
+      CadShortcut.open: idle(() => unawaited(_onOpenPressed())),
+      CadShortcut.newDocument: idle(() => unawaited(_startNewPart())),
+      CadShortcut.zoomToFit: viewport?.zoomToFit,
+      CadShortcut.viewFront: view(StandardView.front),
+      CadShortcut.viewBack: view(StandardView.back),
+      CadShortcut.viewLeft: view(StandardView.left),
+      CadShortcut.viewRight: view(StandardView.right),
+      CadShortcut.viewTop: view(StandardView.top),
+      CadShortcut.viewBottom: view(StandardView.bottom),
+      CadShortcut.viewIsometric: view(StandardView.isometric),
+      CadShortcut.zoomIn: viewport == null ? null : () => viewport.zoomByStep(1 / kKeyboardZoomStep),
+      CadShortcut.zoomOut: viewport == null ? null : () => viewport.zoomByStep(kKeyboardZoomStep),
+      CadShortcut.rotateLeft: viewport == null ? null : () => viewport.orbitByDegrees(-kKeyboardOrbitDegrees, 0),
+      CadShortcut.rotateRight: viewport == null ? null : () => viewport.orbitByDegrees(kKeyboardOrbitDegrees, 0),
+      CadShortcut.rotateUp: viewport == null ? null : () => viewport.orbitByDegrees(0, -kKeyboardOrbitDegrees),
+      CadShortcut.rotateDown: viewport == null ? null : () => viewport.orbitByDegrees(0, kKeyboardOrbitDegrees),
+      CadShortcut.rotate90Left: viewport == null ? null : () => viewport.orbitByDegrees(-90, 0),
+      CadShortcut.rotate90Right: viewport == null ? null : () => viewport.orbitByDegrees(90, 0),
+      CadShortcut.rotate90Up: viewport == null ? null : () => viewport.orbitByDegrees(0, -90),
+      CadShortcut.rotate90Down: viewport == null ? null : () => viewport.orbitByDegrees(0, 90),
+      CadShortcut.panLeft: viewport == null ? null : () => viewport.panByPixels(-kKeyboardPanPixels, 0),
+      CadShortcut.panRight: viewport == null ? null : () => viewport.panByPixels(kKeyboardPanPixels, 0),
+      CadShortcut.panUp: viewport == null ? null : () => viewport.panByPixels(0, -kKeyboardPanPixels),
+      CadShortcut.panDown: viewport == null ? null : () => viewport.panByPixels(0, kKeyboardPanPixels),
+      CadShortcut.togglePerspective: () => unawaited(_onPerspectiveChanged(!_isPerspective)),
+      CadShortcut.help: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+    };
+  }
+
+  /// Esc: the open tool panel's Cancel; else whatever Back would cancel
+  /// ([_cancelActiveMode]); else the File/View toolbar; else the selection.
+  /// Never leaves the Part (Back still asks to).
+  void _onEscapeKey() {
+    final cancelPanel = _toolPanelKeys.cancel;
+    if (cancelPanel != null) {
+      cancelPanel();
+      return;
+    }
+    if (_cancelActiveMode()) return;
+    if (_toolbarOpen) {
+      setState(() => _toolbarOpen = false);
+      return;
+    }
+    _clearSelectedEntities();
+    setState(() {
+      _selectedMateId = null;
+      if (_lens == AssemblyLens.assembly) _selectedOccurrenceId = null;
+    });
+  }
+
+  /// Delete: the tree multi-select's Delete, else (assembly) the selected
+  /// mate, else the selected component - each with its existing confirm.
+  /// Nothing while a tool panel is open or the app is busy (faces and edges
+  /// are deleted through Delete Face, not here).
+  VoidCallback? get _deleteKeyAction {
+    if (_busy || _toolPanelKeys.hasPanel) return null;
+    if (_activeMultiSelect != null) return () => unawaited(_multiSelectDelete());
+    if (_lens != AssemblyLens.assembly) return null;
+    final mate = _mates.where((m) => m.id == _selectedMateId).firstOrNull;
+    if (mate != null) return () => unawaited(_confirmDeleteMate(mate));
+    final occurrence = _occurrences.where((o) => o.id == _selectedOccurrenceId).firstOrNull;
+    if (occurrence != null) return () => unawaited(_confirmDeleteOccurrence(occurrence));
+    return null;
   }
 
   /// The banner should reflect the file the user actually saved to/opened,

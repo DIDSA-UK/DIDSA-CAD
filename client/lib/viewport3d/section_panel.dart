@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'reference_planes.dart' show ReferencePlaneKind, ReferencePlaneKindX;
 import 'resizable_tool_panel.dart';
 import 'section_plane.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Sectioning Tool's own tool panel - opened from [PartToolbar]'s "Section"
 /// entry (not selection-gated, like Create Plane - see `part_toolbar.dart`).
@@ -236,6 +237,7 @@ class _SectionPanelState extends State<SectionPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: widget.onClose, onCancel: widget.onClose),
               FilledButton(onPressed: widget.onClose, child: const Text('Done')),
             ],
           ),

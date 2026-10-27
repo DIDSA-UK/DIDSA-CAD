@@ -1,6 +1,6 @@
 # Mouse, keyboard and big-screen use — scope
 
-**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 and D2 built on branch
+**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1, D2 and D3 built on branch
 `claude/flutter-desktop-mode-ui-pxmq0q` (Progress below). Written 26 Oct 2026 from a read of `client/lib` on `main` and the owner's first test on a Samsung phone in DeX (external monitor, mouse, keyboard): "reasonable, but needs
 polish and alignment with desktop CAD controls. Middle click drag to orbit; mouse cursors are on top of each other."
 
@@ -15,7 +15,8 @@ has the same gaps.
 |---|---|---|---|
 | D1 | Middle/right mouse drags navigate in every mode (SOLIDWORKS bindings), one cursor, scroll-scaled wheel zoom | Done (not merged; unit and widget tested, the 3D viewport test skips without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
 | D2 | Orbit about the geometry under the cursor, mouse box select on drag (window / crossing, Ctrl adds), middle double-click fit, SOLIDWORKS click selection for a mouse | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
-| D3-D7 | | Not started | |
+| D3 | Keyboard shortcuts (part screen, sketch screen, mesh viewer), Enter / Esc for every tool panel, shortcut sheet, tooltip hints; mesh viewer fit; the part screen click rule as a tested function | Done (not merged; unit and widget tested, including the part screen and sketch screen; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
+| D4-D7 | | Not started | |
 
 Update this table with every milestone.
 
@@ -68,6 +69,51 @@ Update this table with every milestone.
   (skips without a GPU). The part screen's replace branch has no headless test (it needs the real viewport); D3 extracts it into a
   pure function and tests it (section 4), and it's on the device checklist (section 6).
 - Select Other's click-then-hold still works with a mouse: its "undo the first click" is now always a toggle.
+
+### D3 implementation notes
+
+- **One table:** `client/lib/viewport3d/keyboard_shortcuts.dart` - `CadShortcut` / `kCadShortcuts` (keys, label, group), the
+  `CadShortcutScope` each screen wraps itself in, `showCadShortcutSheet` (`?` or F1, lists what the screen binds) and
+  `withShortcut` for tooltips ("Undo (Ctrl+Z)", "Select all (Ctrl+A)", "Zoom to fit (F)").
+- **How keys arrive:** `CadShortcutScope` listens on `HardwareKeyboard` and acts only while its screen's route is on top (not under
+  a dialog, sheet or menu); it takes no focus. A first version used an autofocused `Focus`, which would have stopped every
+  `autofocus: true` text field from getting focus (Flutter only autofocuses when nothing has focus) - the test that caught it stays.
+  The bindings are built on every key press, so they read current state. A key it handles is reported handled, so Android doesn't
+  act on it too; Esc is always taken.
+- **Text fields:** while one has focus, letters, Enter, Delete/Backspace, arrows, F, Z, Ctrl+A/Z/Y go to the field; Ctrl+S/O/N and
+  Ctrl+1-7 still work; Esc leaves the field (a second Esc then acts).
+- **Tool panels' Enter / Esc:** a zero-size `ToolPanelKeys(onConfirm:, onCancel:)` sits beside each panel's Cancel button with the
+  same callbacks the buttons use - 42 panels and bars (every `ResizableToolPanel` tool, create plane, curve, fill surface, the
+  profile/path picker ribbons, measure, section, appearance, scenes, move/rotate component, and the sketch's offset, pattern,
+  text and convert bars). Enter does what clicking Confirm does and nothing while Confirm is greyed out; Esc does what Cancel /
+  Close / Done does. The most recently opened panel wins.
+- **Part screen:** Esc = the open panel's Cancel, else whatever Back cancels (now `_cancelActiveMode`, shared with the `PopScope`),
+  else close the File/View toolbar, else clear the selection - it never leaves the Part (Back still asks to). Enter = the panel's
+  Confirm. Delete = the tree multi-select's Delete, else (assembly) the selected mate, else the selected component, each with its
+  existing confirm. Ctrl+Z = undo the last assembly move/delete (the only undo the part screen has). Ctrl+S / Ctrl+Shift+S /
+  Ctrl+O / Ctrl+N = save, save as, open, new. F = zoom to fit; Ctrl+1-7 = front, back, left, right, top, bottom, isometric
+  (`PartViewportState.animateToStandardView` - the app is Y-up with its isometric eye at (+1, +1, +1), as SOLIDWORKS is); Z /
+  Shift+Z zoom; arrows rotate 15°, Shift+arrows 90°, Ctrl+arrows pan; P perspective/orthographic.
+- **Zoom to fit keeps the view direction** (F, and the middle double-click from D2 - which used Reset view and so also turned the
+  view back to isometric): `_doRecentre(keepOrientation: true)`. The Reset view button still resets everything.
+- **Sketch screen:** L, C, A, R = line, circle, arc, rectangle; D = dimension; T = trim; X = construction on/off for the selection;
+  Esc = the open bar's Cancel, else the dimension being typed, else back to Select, else clear the selection (never exits the
+  sketch); Enter = the bar's confirm, else finish the line chain; Delete = the ribbon's Delete (same rules: pattern/mirror
+  instances delete themselves, a pinned point can't); Ctrl+Z, Ctrl+A; F = fit (the 2D canvas, or Orbit View's 3D view, where the
+  view keys work too).
+- **Mesh viewer:** F and a middle double-click zoom to fit (new: it had no fit action).
+- **Part screen click rule:** `selectionAfterClick` in `mouse_navigation.dart`, used by `_toggleSelectedEntity` and unit-tested.
+- Tests: `test/keyboard_shortcuts_test.dart`, `test/sketch_screen_keyboard_test.dart`, `test/part_screen_test.dart` ("desktop
+  input D3": Ctrl+Z undoes a component move, Esc deselects), `test/mouse_navigation_test.dart` (`selectionAfterClick`).
+- **Left out of D3, and where they go:**
+  - **Redo** (Ctrl+Y is in the table but bound nowhere): no screen has a redo stack (the sketch's is a `TODO`). Building one is
+    undo/redo work, not input work - a roadmap item of its own.
+  - **Feature undo** in the part screen (Ctrl+Z only undoes assembly moves and deletes): same - there is no feature undo to bind.
+  - **Ctrl+8 normal to** and the **Space view picker**: need a face-normal lookup and a picker UI - moved to D5.
+  - **Ctrl+B rebuild**: the backend recomputes on every change; there is no manual rebuild to bind. Dropped unless one appears.
+  - **Part tool keys (S, E, V ...)**: the part tools open through guided multi-step flows (pick a sketch, a profile ...), so a key
+    needs a decision per tool on where it lands - moved to D6, with the desktop toolbar.
+  - **Tab order** through panel fields: not checked - D5 polish.
 
 ## 1. What the app did before D1
 
@@ -274,10 +320,10 @@ Don't decide by platform (DeX reports Android). Decide by **window size** and **
 |---|---|---|---|
 | D1 | R1a, R1c, R2: middle and right drag navigate in every mode; one cursor; scaled wheel zoom | small | Fixes both things from the first test. Widget-testable with `tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kMiddleMouseButton)`. |
 | D2 | R1b, plain-drag box select, MMB double-click fit, desktop click selection for a mouse (R6) | small-medium | Built (Progress above). |
-| D3 | R3: shortcut table, Esc/Enter/Delete/undo/save/views/fit, sketch tool keys, `?` sheet, tooltip hints. **Also from D2:** a fit action for the mesh viewer (F needs one), wired to its middle double-click too; the part screen's click rule moved into a pure, unit-tested function (Esc and Delete act on the same selection) | medium | Esc must never fall through to Android Back. |
+| D3 | R3: shortcut table, Esc/Enter/Delete/undo/save/views/fit, sketch tool keys, `?` sheet, tooltip hints. **Also from D2:** a fit action for the mesh viewer (F needs one), wired to its middle double-click too; the part screen's click rule moved into a pure, unit-tested function (Esc and Delete act on the same selection) | medium | Built (Progress above; what it left out is listed there). |
 | D4 | R4: right-click popups via `showActionSheet(position:)` | small-medium | One helper, then each call site. |
-| D5 | R1d presets + settings, R6 polish | small | |
-| D6 | R5: `InputModality`, the full desktop layout ≥ 1000 dp | large | The owner wants "a full desktop CAD experience" from a docked phone. Scope it separately (it touches every screen). |
+| D5 | R1d presets + settings, R6 polish. **Also from D3:** Ctrl+8 normal to, the Space view picker, Tab order through panel fields | small-medium | |
+| D6 | R5: `InputModality`, the full desktop layout ≥ 1000 dp. **Also from D3:** keys for the part tools (S, E, V ...) with the desktop toolbar | large | The owner wants "a full desktop CAD experience" from a docked phone. Scope it separately (it touches every screen). |
 | D7 | 3D box select (part and assembly): visible geometry only, edges by default, mouse drag and touch tap-hold-drag | medium | A revisit of a feature the owner parked in June; questions answered 27 Oct (below). |
 
 ### D7: 3D box select (revisit)
@@ -341,6 +387,16 @@ From D2 (none of it run on a device; the 3D viewport tests skip without a GPU):
   sub-assembly (the pivot goes through the focus transform);
 - the mouse box in the 2D canvas and in the 3D-embedded sketch: starts on the first small drag, green right to left, Ctrl adds;
 - middle double-click fit in the 3D view and the 2D canvas.
+
+From D3:
+
+- **what Esc does in DeX**: whether it reaches the app as Esc at all, or DeX turns it into Back first (then the part screen's Back
+  handler runs: it cancels a picker, or asks to exit the Part). The app handles Esc itself; it can't stop a system-level remap;
+- that Ctrl+1-7 show the views SOLIDWORKS users expect (Front looking along -Z with Y up, Top looking down with -Z up), and that
+  F frames without turning;
+- Enter / Esc on a few tool panels (Extrude, Fillet, Mate, Measure) and the sketch's Pattern / Offset bars;
+- typing in a panel's number field: letters, Enter and Delete edit the field; Esc leaves it;
+- Ctrl+S / Ctrl+O / Ctrl+N against what the File menu does.
 
 ## 7. Decisions (owner, 26 Oct 2026)
 

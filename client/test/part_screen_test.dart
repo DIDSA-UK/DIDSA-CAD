@@ -1,8 +1,8 @@
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -4848,6 +4848,42 @@ void main() {
       expect((backend.occurrences[1]['transform'] as Map)['translation'], [30.0, 0.0, 0.0]);
       expect(backend.transformPatchCount, 2);
       expect(find.byTooltip('Undo move'), findsNothing, reason: 'exactly one entry was pushed');
+    });
+
+    testWidgets('desktop input D3: Ctrl+Z undoes the move as the Undo button does; Esc deselects the component', (
+      tester,
+    ) async {
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+      );
+      backend.mateMotionHandler = flatGroup(backend);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragStart!();
+      await settle(tester);
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragUpdate!(wish(4, 6, 0));
+      await tester.pump();
+      viewport.onComponentGizmoDragEnd!();
+      await settle(tester);
+      expect((backend.occurrences[0]['transform'] as Map)['translation'], [4.0, 6.0, 0.0]);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await settle(tester);
+      expect((backend.occurrences[0]['transform'] as Map)['translation'], [0.0, 0.0, 0.0]);
+      expect(find.byTooltip('Undo move'), findsNothing);
+
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.selectedOccurrenceTransform, isNotNull, reason: 'occ-1 is still selected');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(tester);
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.selectedOccurrenceTransform, isNull, reason: 'Esc clears the selection');
+      expect(tester.takeException(), isNull);
     });
 
     testWidgets('a commit that does not converge stores nothing, restores every member and pushes no undo entry', (

@@ -4,6 +4,7 @@ import '../api/document_api_client.dart';
 import 'resizable_tool_panel.dart';
 import 'selection_hit_test.dart';
 import 'svg_icon.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Measure tool: the bottom-sheet-style panel [PartScreen] opens while
 /// [PartScreen._measureActive] - structural clone of [FilletPanel] built on
@@ -73,7 +74,7 @@ class MeasurementPanel extends StatelessWidget {
           const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
-            children: [FilledButton(onPressed: onDone, child: const Text('Done'))],
+            children: [ToolPanelKeys(onConfirm: onDone, onCancel: onDone), FilledButton(onPressed: onDone, child: const Text('Done'))],
           ),
         ],
       ),

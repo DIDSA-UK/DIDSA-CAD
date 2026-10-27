@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Phase 7 (`docs/assembly-scope.md` §3 item 7 / §2j): Linear or Circular -
 /// mirrors `PatternMode`'s own `apiValue`/`fromApiValue` str-enum
@@ -260,6 +261,7 @@ class ComponentPatternPanel extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: saving ? null : onConfirm, onCancel: saving ? null : onCancel),
               TextButton(onPressed: saving ? null : onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'keyboard_shortcuts.dart';
 
 /// A single curve pickable as one of [FillSurfacePanel]'s boundaries - a
 /// checklist entry, not a live 3D-viewport pick: v1 client scope offers
@@ -85,6 +86,7 @@ class FillSurfacePanel extends StatelessWidget {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
+                    ToolPanelKeys(onConfirm: _canConfirm ? onConfirm : null, onCancel: onCancel),
                     TextButton(onPressed: onCancel, child: const Text('Cancel')),
                     const SizedBox(width: 8),
                     FilledButton(

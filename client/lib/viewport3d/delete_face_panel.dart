@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Direct Editing family, fourth entry: the bottom-sheet-style panel
 /// [PartScreen] opens once one or more faces of the same solid Body are
@@ -60,6 +61,7 @@ class DeleteFacePanel extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: faceCount > 0 ? onConfirm : null, onCancel: onCancel),
               TextButton(onPressed: onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

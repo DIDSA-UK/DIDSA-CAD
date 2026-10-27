@@ -125,5 +125,32 @@ void main() {
     expect(selectClickFor(PointerDeviceKind.mouse), SelectClick.toggle);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
   });
+
+  group('selectionAfterClick (desktop input D2/D3: the part screen click rule)', () {
+    test('a plain mouse click with no tool open replaces', () {
+      expect(selectionAfterClick({'a', 'b'}, 'c', SelectClick.replace, collecting: false), {'c'});
+      expect(selectionAfterClick({'a', 'b'}, 'a', SelectClick.replace, collecting: false), {'a'});
+    });
+
+    test('inside a tool a plain mouse click keeps collecting (toggles)', () {
+      expect(selectionAfterClick({'a'}, 'b', SelectClick.replace, collecting: true), {'a', 'b'});
+      expect(selectionAfterClick({'a', 'b'}, 'b', SelectClick.replace, collecting: true), {'a'});
+    });
+
+    test('Ctrl+click and touch toggle, tool or not', () {
+      for (final click in [SelectClick.toggle, SelectClick.touch]) {
+        for (final collecting in [false, true]) {
+          expect(selectionAfterClick({'a'}, 'b', click, collecting: collecting), {'a', 'b'});
+          expect(selectionAfterClick({'a', 'b'}, 'a', click, collecting: collecting), {'b'});
+        }
+      }
+    });
+
+    test('never changes the set it was given', () {
+      final current = {'a'};
+      selectionAfterClick(current, 'b', SelectClick.toggle, collecting: false);
+      expect(current, {'a'});
+    });
+  });
 }
 

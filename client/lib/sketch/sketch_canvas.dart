@@ -8,6 +8,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/sketch_api_client.dart';
 import '../viewport3d/mouse_navigation.dart';
+import '../viewport3d/keyboard_shortcuts.dart' show CadShortcut, withShortcut;
 import 'marquee_selection.dart';
 import 'pattern_mirror_expansion.dart';
 import 'plane_indicator.dart';
@@ -86,10 +87,10 @@ class SketchCanvas extends StatefulWidget {
   });
 
   @override
-  State<SketchCanvas> createState() => _SketchCanvasState();
+  State<SketchCanvas> createState() => SketchCanvasState();
 }
 
-class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixin {
+class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixin {
   final SketchViewport _viewport = SketchViewport();
 
   /// Live touch pointers by id, for pinch-zoom/two-finger-pan - tracked
@@ -128,6 +129,14 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     final anchor = _longPressDownScreen;
     final current = _marqueeCurrentScreen;
     return _marqueeByMouse && anchor != null && current != null && current.dx < anchor.dx;
+  }
+
+  /// Desktop input D3: zoom to fit (F, a middle double-click) - what the
+  /// Zoom to fit button does.
+  void zoomToFit() {
+    final size = _lastSize;
+    if (size == null) return;
+    setState(() => _viewport.zoomToFit(widget.controller.geometryBoundingBox, size));
   }
 
   void _noteDeviceKind(PointerDeviceKind kind) {
@@ -772,9 +781,8 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     _noteDeviceKind(event.kind);
     final middleDoubleClick = _middleDoubleClick.registerPress(event);
     if (isMouseNavPress(event)) {
-      final size = _lastSize;
-      if (middleDoubleClick && size != null) {
-        setState(() => _viewport.zoomToFit(widget.controller.geometryBoundingBox, size));
+      if (middleDoubleClick) {
+        zoomToFit();
         return;
       }
       _mouseNavAnchor = event.localPosition;
@@ -1118,7 +1126,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
               top: 72,
               left: 8,
               child: IconButton.filled(
-                tooltip: 'Zoom to fit',
+                tooltip: withShortcut('Zoom to fit', CadShortcut.zoomToFit),
                 icon: SvgPicture.asset(
                   'assets/icons/dimbar/dimbar_zoom_to_fit.svg',
                   width: 30,
@@ -1153,7 +1161,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
 }
 
 /// Stage 23g: the live marquee rectangle drawn while
-/// [_SketchCanvasState._marqueeActive] - a light fill plus a solid border,
+/// [SketchCanvasState._marqueeActive] - a light fill plus a solid border,
 /// matching the conventional "rubber-band select" look.
 class _MarqueePainter extends CustomPainter {
   final Rect rect;
@@ -1183,7 +1191,7 @@ class _MarqueePainter extends CustomPainter {
 
 /// Stage 23g: the swell-and-pop circle shown at the instant a long-press
 /// fires - [radius] grows and [opacity] fades as
-/// [_SketchCanvasState._longPressPopController] runs.
+/// [SketchCanvasState._longPressPopController] runs.
 class _LongPressPopPainter extends CustomPainter {
   final Offset center;
   final double radius;
@@ -1603,7 +1611,7 @@ _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform,
 const double _ghostHitRadiusPixels = 20.0;
 
 /// Screen-space point-to-segment distance - shared by
-/// [_SketchCanvasState._referenceGhostEdgeAt] (the only caller that needs
+/// [SketchCanvasState._referenceGhostEdgeAt] (the only caller that needs
 /// segment, rather than point, hit-testing against ghost data). Clamped to
 /// the segment's own extent (not the infinite line through it), same
 /// convention as [SketchController]'s own sketch-space `_distanceToSegment`
@@ -1622,7 +1630,7 @@ double _distanceToSegmentScreen(Offset point, Offset start, Offset end) {
 
 /// The key of whichever currently-rendered ghost's label [screenPosition]
 /// landed on, or null if it missed all of them - see
-/// [_SketchCanvasState._dispatchTap].
+/// [SketchCanvasState._dispatchTap].
 String? _ghostKeyAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
   for (final ghost in controller.ghosts) {
     final layout = _layoutGhost(controller, transform, ghost);
@@ -2152,7 +2160,7 @@ Offset? _constraintLabelCenter(
 /// with where [_SketchPainter] actually draws it after a drag. Public
 /// (unlike its sibling hit-testers in this file) so it's directly
 /// unit-testable without pumping a real widget tree - see
-/// [_SketchCanvasState._handleDragModeTap], which checks this first,
+/// [SketchCanvasState._handleDragModeTap], which checks this first,
 /// ahead of a Point/Line grab.
 String? dimensionLabelAt(
   SketchController controller,
@@ -2173,7 +2181,7 @@ String? dimensionLabelAt(
 
 /// The id of whichever currently-rendered Constraint's label
 /// [screenPosition] landed on, or null if it missed all of them - see
-/// [_SketchCanvasState._dispatchTap]. Reuses [_ghostHitRadiusPixels]'s
+/// [SketchCanvasState._dispatchTap]. Reuses [_ghostHitRadiusPixels]'s
 /// touch target, same generous tolerance as ghost-label hit-testing.
 String? _constraintIdAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
   return dimensionLabelAt(controller, transform, screenPosition, _ghostHitRadiusPixels);

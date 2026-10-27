@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'extrude_panel.dart' show ThicknessDirection;
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The bottom-sheet-style panel [PartScreen] opens once Shell is chosen
 /// (a single solid Body selected - see `selection_actions.dart`'s
@@ -151,6 +152,7 @@ class _ShellPanelState extends State<ShellPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

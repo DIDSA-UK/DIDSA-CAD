@@ -248,7 +248,7 @@ class SketchRibbon extends StatelessWidget {
           label: 'Delete',
           tooltip: blockedReason,
           onTap: blockedReason == null && !controller.busy
-              ? () => _confirmAndDelete(context, controller)
+              ? () => confirmAndDeleteSketchSelection(context, controller)
               : null,
         ),
     ];
@@ -334,7 +334,10 @@ class SketchRibbon extends StatelessWidget {
 /// ([SketchController.suppressDeleteCascadeWarning]). A no-op dialog (skips
 /// straight to deleting) whenever nothing extra would be removed, or the
 /// user already opted out this session.
-Future<void> _confirmAndDelete(BuildContext context, SketchController controller) async {
+///
+/// Deletes the sketch selection after the cascade confirm - the ribbon's
+/// Delete button, and (desktop input D3) the Delete key.
+Future<void> confirmAndDeleteSketchSelection(BuildContext context, SketchController controller) async {
   final selection = controller.selectionSet;
   final cascade = controller.computeDeleteCascade(selection);
   final selectedLineIds =
@@ -946,4 +949,19 @@ class _RadiusDiameterToggle extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Desktop input D3: what the Delete key does to the sketch selection - the
+/// same as the ribbon's Delete chip (a pattern / mirror instance deletes
+/// itself, everything else goes through [confirmAndDeleteSketchSelection]),
+/// or null when the ribbon's chip would be disabled (nothing selected, busy,
+/// or a lone Point that can't be deleted).
+VoidCallback? sketchDeleteAction(BuildContext context, SketchController controller) {
+  final selectionSet = controller.selectionSet;
+  if (selectionSet.isEmpty || controller.busy) return null;
+  final single = selectionSet.length == 1 ? selectionSet.first : null;
+  if (single?.kind == SelectionKind.mirrorInstance) return () => controller.deleteMirrorInstanceById(single!.id);
+  if (single?.kind == SelectionKind.patternInstance) return () => controller.deletePatternInstanceById(single!.id);
+  if (single?.kind == SelectionKind.point && controller.selectedPointDeleteBlockedReason != null) return null;
+  return () => confirmAndDeleteSketchSelection(context, controller);
 }

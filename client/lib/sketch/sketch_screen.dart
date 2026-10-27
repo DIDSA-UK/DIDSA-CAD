@@ -25,6 +25,7 @@ import '../api/sketch_api_client.dart'
         TextDto;
 import '../didsa_logo_button.dart';
 import '../viewport3d/part_viewport.dart';
+import '../viewport3d/keyboard_shortcuts.dart';
 import '../viewport3d/reference_planes.dart';
 import '../viewport3d/render_mode.dart';
 import '../viewport3d/selection_filter.dart' show SelectionFilterState;
@@ -553,6 +554,89 @@ class _SketchScreenState extends State<SketchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Desktop input D3: the keyboard shortcuts, and the open sketch bar's
+    // Enter / Esc (see [ToolPanelKeys]).
+    return CadShortcutScope(
+      bindings: () => _shortcutBindings,
+      child: ToolPanelKeyScope(registry: _toolPanelKeys, child: _buildScaffold(context)),
+    );
+  }
+
+  /// Desktop input D3: the open sketch bars' Enter / Esc targets.
+  final ToolPanelKeyRegistry _toolPanelKeys = ToolPanelKeyRegistry();
+
+  /// Desktop input D3: lets F zoom the flat 2D canvas to fit.
+  final GlobalKey<SketchCanvasState> _canvasKey = GlobalKey<SketchCanvasState>();
+
+  /// Desktop input D3 (`docs/desktop-input-scope.md` R3): this screen's
+  /// shortcuts - the sketch tools, Esc / Enter / Delete / Ctrl+Z / Ctrl+A,
+  /// F, and (in Orbit View, the 3D view) the view keys. A null entry is a
+  /// shortcut that does nothing right now (the key is left alone).
+  Map<CadShortcut, VoidCallback?> get _shortcutBindings {
+    final controller = _controller;
+    final orbit = _orbitViewActive ? _orbitViewportKey.currentState : null;
+    final idle = !controller.busy;
+    VoidCallback? view(StandardView standardView) =>
+        orbit == null ? null : () => unawaited(orbit.animateToStandardView(standardView));
+    VoidCallback? onOrbit(void Function(PartViewportState viewport) action) =>
+        orbit == null ? null : () => action(orbit);
+    VoidCallback? tool(SketchTool sketchTool) => idle ? () => controller.selectDrawTool(sketchTool) : null;
+    return {
+      CadShortcut.cancel: _onEscapeKey,
+      CadShortcut.confirm: _toolPanelKeys.confirm ?? (controller.mode == SketchMode.draw ? controller.finishChain : null),
+      CadShortcut.delete: controller.mode == SketchMode.select ? sketchDeleteAction(context, controller) : null,
+      CadShortcut.undo: idle && controller.canUndo ? () => unawaited(controller.undo()) : null,
+      CadShortcut.selectAll: idle ? controller.selectAll : null,
+      CadShortcut.zoomToFit: orbit?.zoomToFit ?? _canvasKey.currentState?.zoomToFit,
+      CadShortcut.viewFront: view(StandardView.front),
+      CadShortcut.viewBack: view(StandardView.back),
+      CadShortcut.viewLeft: view(StandardView.left),
+      CadShortcut.viewRight: view(StandardView.right),
+      CadShortcut.viewTop: view(StandardView.top),
+      CadShortcut.viewBottom: view(StandardView.bottom),
+      CadShortcut.viewIsometric: view(StandardView.isometric),
+      CadShortcut.zoomIn: onOrbit((viewport) => viewport.zoomByStep(1 / kKeyboardZoomStep)),
+      CadShortcut.zoomOut: onOrbit((viewport) => viewport.zoomByStep(kKeyboardZoomStep)),
+      CadShortcut.rotateLeft: onOrbit((viewport) => viewport.orbitByDegrees(-kKeyboardOrbitDegrees, 0)),
+      CadShortcut.rotateRight: onOrbit((viewport) => viewport.orbitByDegrees(kKeyboardOrbitDegrees, 0)),
+      CadShortcut.rotateUp: onOrbit((viewport) => viewport.orbitByDegrees(0, -kKeyboardOrbitDegrees)),
+      CadShortcut.rotateDown: onOrbit((viewport) => viewport.orbitByDegrees(0, kKeyboardOrbitDegrees)),
+      CadShortcut.panLeft: onOrbit((viewport) => viewport.panByPixels(-kKeyboardPanPixels, 0)),
+      CadShortcut.panRight: onOrbit((viewport) => viewport.panByPixels(kKeyboardPanPixels, 0)),
+      CadShortcut.panUp: onOrbit((viewport) => viewport.panByPixels(0, -kKeyboardPanPixels)),
+      CadShortcut.panDown: onOrbit((viewport) => viewport.panByPixels(0, kKeyboardPanPixels)),
+      CadShortcut.sketchLine: tool(SketchTool.line),
+      CadShortcut.sketchCircle: tool(SketchTool.circle),
+      CadShortcut.sketchArc: tool(SketchTool.arc),
+      CadShortcut.sketchRectangle: tool(SketchTool.rectangle),
+      CadShortcut.sketchDimension: idle ? controller.enterDimensionMode : null,
+      CadShortcut.sketchTrim: idle ? controller.enterTrimMode : null,
+      CadShortcut.sketchConstruction:
+          idle && controller.selectionSet.isNotEmpty ? () => unawaited(controller.toggleSelectedConstruction()) : null,
+      CadShortcut.help: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+    };
+  }
+
+  /// Esc: the open sketch bar's Cancel; else the dimension value being
+  /// typed; else back to Select from any tool; else clear the selection.
+  /// Never leaves the sketch (the Exit Sketch button does that).
+  void _onEscapeKey() {
+    final cancelPanel = _toolPanelKeys.cancel;
+    if (cancelPanel != null) {
+      cancelPanel();
+      return;
+    }
+    final controller = _controller;
+    if (controller.activeGhostKey != null) {
+      controller.cancelGhostEdit();
+    } else if (controller.mode != SketchMode.select) {
+      controller.exitToSelectMode();
+    } else if (controller.selectionSet.isNotEmpty) {
+      controller.closeRibbon();
+    }
+  }
+
+  Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         leading: const DidsaLogoButton(),
@@ -646,7 +730,7 @@ class _SketchScreenState extends State<SketchScreen> {
                   BlendMode.srcIn,
                 ),
               ),
-              tooltip: 'Undo',
+              tooltip: withShortcut('Undo', CadShortcut.undo),
               onPressed: _controller.canUndo ? _controller.undo : null,
             ),
           ),
@@ -667,7 +751,7 @@ class _SketchScreenState extends State<SketchScreen> {
                     BlendMode.srcIn,
                   ),
                 ),
-                tooltip: 'Select all',
+                tooltip: withShortcut('Select all', CadShortcut.selectAll),
                 onPressed: _controller.selectAll,
               );
             },
@@ -1422,6 +1506,7 @@ class _SketchScreenState extends State<SketchScreen> {
       );
     }
     return SketchCanvas(
+      key: _canvasKey,
       controller: _controller,
       referenceGhostSegments: widget.referenceGhostSegments,
       referenceGhostVertices: widget.referenceGhostVertices,

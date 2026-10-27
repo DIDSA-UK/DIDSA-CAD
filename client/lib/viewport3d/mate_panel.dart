@@ -6,6 +6,7 @@ import 'resizable_tool_panel.dart';
 import 'selection_hit_test.dart';
 import 'svg_icon.dart';
 import 'width_pick.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Phase 6 (`docs/assembly-scope.md` §3): the five Mate types this app's
 /// backend supports (`app.document.models.MateType`) - kept as a plain
@@ -563,6 +564,7 @@ class MatePanel extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: saving ? null : onConfirm, onCancel: saving ? null : onCancel),
               TextButton(onPressed: saving ? null : onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(onPressed: saving ? null : onConfirm, child: const Text('Confirm')),

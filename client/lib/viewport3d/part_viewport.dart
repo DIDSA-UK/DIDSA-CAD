@@ -4064,6 +4064,45 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (mounted) setState(() => _camera.distance = (eye - target).length);
   }
 
+  /// Desktop input D3: zoom to fit (F, a middle double-click) - frames
+  /// everything without turning the view.
+  void zoomToFit() => setState(() => _doRecentre(keepOrientation: true));
+
+  /// Desktop input D3: SOLIDWORKS' standard views (Ctrl+1 ... Ctrl+7). This
+  /// app is Y-up with its isometric eye at (+1, +1, +1), as SOLIDWORKS is,
+  /// so Front looks along -Z with Y up, Top down -Y with -Z up, and so on.
+  Future<void> animateToStandardView(StandardView view, {Duration duration = const Duration(milliseconds: 400)}) {
+    final orientation = switch (view) {
+      StandardView.isometric => OrbitCamera.isometricOrientation(),
+      _ => OrbitCamera.orientationLookingFrom(view.eye, vm.Vector3.zero(), view.up),
+    };
+    return _animateOrientationTo(orientation, duration: duration).then((_) {
+      if (mounted) setState(_resyncCameraDependentOverlays);
+    });
+  }
+
+  /// Desktop input D3: the keyboard's view nudges - arrows orbit by
+  /// [yawDegrees]/[pitchDegrees] (as a drag would, about the target),
+  /// Ctrl+arrows pan by screen pixels, Z / Shift+Z zoom about the centre.
+  void orbitByDegrees(double yawDegrees, double pitchDegrees) {
+    const perPixel = OrbitCamera.orbitSensitivity;
+    setState(() {
+      _camera.orbitByScreenDelta(yawDegrees * math.pi / 180 / perPixel, pitchDegrees * math.pi / 180 / perPixel);
+      _resyncCameraDependentOverlays();
+    });
+  }
+
+  void panByPixels(double dx, double dy) => setState(() {
+        _camera.panByScreenDelta(dx, dy);
+        _resyncCameraDependentOverlays();
+      });
+
+  /// [scaleFactor] above 1 zooms out, as the wheel's does.
+  void zoomByStep(double scaleFactor) => setState(() {
+        _zoomCameraToward(scaleFactor, _viewportCenter());
+        _resyncCameraDependentOverlays();
+      });
+
   Future<void> animateToIsometric({Duration duration = const Duration(milliseconds: 400)}) {
     return _animateOrientationTo(OrbitCamera.isometricOrientation(), duration: duration);
   }
@@ -4621,7 +4660,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // Desktop input D2: a middle double-click fits the view (the Reset
       // view button) and starts no drag.
       if (middleDoubleClick) {
-        setState(_doRecentre);
+        zoomToFit();
         return;
       }
       _mouseNavPointer = event.pointer;
@@ -6129,11 +6168,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// assembly-instance geometry - see this method's own "wrong size" bug
   /// fix below), re-centers on it and auto-fits the far clip to
   /// `max(kDefaultFarClip, 4 * radius)`.
-  void _doRecentre() {
+  ///
+  /// Desktop input D3: [keepOrientation] is zoom to fit (F, a middle
+  /// double-click): the same framing, looking the way the view already
+  /// looks, as SOLIDWORKS does - only Reset view turns back to isometric.
+  void _doRecentre({bool keepOrientation = false}) {
     // Never lower a far clip that is already in force (the View-menu override, or an earlier auto-fit): Reset view
     // may only raise it when the framed geometry needs more.
     final previousFarClip = widget.farClip ?? _camera.farClip;
+    final orientation = _camera.orientation.clone();
     _camera.reset();
+    if (keepOrientation) _camera.orientation = orientation;
     // C3: "Reset view" moves the camera - resync the edge overlay's
     // towards-camera bias (see [_syncEdgesNode]) for the new position, and
     // the section triad/plane-quad's own constant-on-screen-size scaling
@@ -7494,4 +7539,34 @@ class _ScenePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ScenePainter oldDelegate) => true;
+}
+
+/// Desktop input D3: SOLIDWORKS' standard views - see
+/// [PartViewportState.animateToStandardView].
+enum StandardView {
+  front,
+  back,
+  left,
+  right,
+  top,
+  bottom,
+  isometric;
+
+  /// Where the eye is, looking at the origin (unused for [isometric]).
+  vm.Vector3 get eye => switch (this) {
+        StandardView.front => vm.Vector3(0, 0, 1),
+        StandardView.back => vm.Vector3(0, 0, -1),
+        StandardView.left => vm.Vector3(-1, 0, 0),
+        StandardView.right => vm.Vector3(1, 0, 0),
+        StandardView.top => vm.Vector3(0, 1, 0),
+        StandardView.bottom => vm.Vector3(0, -1, 0),
+        StandardView.isometric => vm.Vector3(1, 1, 1),
+      };
+
+  /// Which way is up on screen.
+  vm.Vector3 get up => switch (this) {
+        StandardView.top => vm.Vector3(0, 0, -1),
+        StandardView.bottom => vm.Vector3(0, 0, 1),
+        _ => vm.Vector3(0, 1, 0),
+      };
 }

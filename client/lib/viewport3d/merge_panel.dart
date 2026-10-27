@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Boolean family, first entry: the bottom-sheet-style panel [PartScreen]
 /// opens once the `pickingBodies` step of the guided Merge flow is confirmed
@@ -56,6 +57,7 @@ class MergePanel extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: onConfirm, onCancel: onCancel),
               TextButton(onPressed: onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(onPressed: onConfirm, child: const Text('Confirm')),

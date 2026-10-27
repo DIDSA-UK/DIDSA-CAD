@@ -4,6 +4,7 @@ import 'loft_guides.dart';
 
 import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The "boss" or "cut" choice for a Loft - Boss/Cut parity with
 /// Extrude/Revolve/Sweep (this feature's own resolved decision) - mirrors
@@ -528,6 +529,7 @@ class _LoftPanelState extends State<LoftPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(
                   onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),

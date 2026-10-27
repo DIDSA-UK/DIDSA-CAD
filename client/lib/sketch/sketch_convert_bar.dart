@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../viewport3d/resizable_tool_panel.dart';
 import 'sketch_controller.dart';
+import '../viewport3d/keyboard_shortcuts.dart';
 
 /// Convert Entities' bottom fly-up bar (on-device feedback: "the tick/FAB
 /// confirm button should live in the flyup ribbon instead of a FAB, for
@@ -43,6 +44,13 @@ class SketchConvertBar extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(
+                onConfirm: total > 0 ? () => unawaited(controller.confirmConvertSelection()) : null,
+                onCancel: () {
+                  controller.discardPendingConvertSelection();
+                  controller.exitToSelectMode();
+                },
+              ),
               TextButton(
                 onPressed: () {
                   controller.discardPendingConvertSelection();

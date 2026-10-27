@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../viewport3d/resizable_tool_panel.dart';
 import 'sketch_controller.dart';
+import '../viewport3d/keyboard_shortcuts.dart';
 
 /// 3D-viewport Text tool round (`docs/text-tool-3d-viewport-scope.md`
 /// §2.3): the Text tool's own configuring bar, replacing the old "Edit
@@ -184,6 +185,7 @@ class _TextValueBarContentState extends State<_TextValueBarContent> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _close, onCancel: _close),
               FilledButton(onPressed: _close, child: const Text('Done')),
             ],
           ),

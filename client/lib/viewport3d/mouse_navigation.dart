@@ -125,3 +125,14 @@ class MiddleDoubleClickDetector {
     return isDouble;
   }
 }
+
+/// Desktop input D2/D3: the part screen's click rule as a pure function. A
+/// plain mouse click ([SelectClick.replace]) replaces [current] with
+/// [entity] - unless [collecting] (a tool is open and gathering its picks),
+/// when it toggles like every other click; Ctrl+click and touch toggle.
+Set<T> selectionAfterClick<T>(Set<T> current, T entity, SelectClick click, {required bool collecting}) {
+  if (click == SelectClick.replace && !collecting) return {entity};
+  final next = Set<T>.of(current);
+  if (!next.remove(entity)) next.add(entity);
+  return next;
+}

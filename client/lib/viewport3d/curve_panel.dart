@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Which of the two `CurveFeature` construction methods [CurvePanel] shows -
 /// mirrors [CreatePlaneMode]'s own "picked by PartScreen before the panel
@@ -262,6 +263,7 @@ class _CurvePanelState extends State<CurvePanel> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
+                    ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
                     TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
                     const SizedBox(width: 8),
                     FilledButton(
