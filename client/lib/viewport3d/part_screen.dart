@@ -26093,7 +26093,7 @@ class _BuildingGeometryOverlay extends StatelessWidget {
           const SizedBox(width: 12),
           Flexible(
             child: Text(
-              'Building geometry - complex gears can take a while...',
+              'Building geometry - complex models can take a while...',
               style: theme.textTheme.bodyMedium,
             ),
           ),

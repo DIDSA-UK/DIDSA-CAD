@@ -3031,8 +3031,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
           if (!isRenderableAssemblyBody(body)) continue;
-          for (final vertex in body.mesh.vertices) {
-            final world = transform.transformed3(vm.Vector3(vertex[0], vertex[1], vertex[2]));
+          for (final point in meshExtentPoints(body.mesh)) {
+            final world = transform.transformed3(point);
             min = min == null
                 ? world
                 : vm.Vector3(math.min(min.x, world.x), math.min(min.y, world.y), math.min(min.z, world.z));

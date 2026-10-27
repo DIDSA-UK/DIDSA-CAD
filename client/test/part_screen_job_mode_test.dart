@@ -123,7 +123,7 @@ void main() {
 
     expect(jobStatusCalls, greaterThanOrEqualTo(1));
     expect(find.text('Cancel'), findsOneWidget);
-    expect(find.text('Building geometry - complex gears can take a while...'), findsOneWidget);
+    expect(find.text('Building geometry - complex models can take a while...'), findsOneWidget);
     final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
     expect(viewport.transientCoarsePreviewBodies.map((b) => b.bodyId).toList(),
         ['coarse-member-1', 'coarse-member-2']);
@@ -188,7 +188,7 @@ void main() {
 
     expect(jobStatusCalls, greaterThanOrEqualTo(2));
     expect(find.text('Cancel'), findsNothing);
-    expect(find.text('Building geometry - complex gears can take a while...'), findsNothing);
+    expect(find.text('Building geometry - complex models can take a while...'), findsNothing);
     expect(featuresCalls, greaterThanOrEqualTo(2), reason: 'the real result must be fetched via a plain refresh');
     expect(await PendingJobStore.load(), isNull);
     final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
