@@ -13944,6 +13944,75 @@ class _PartScreenState extends State<PartScreen> {
     });
   }
 
+  /// The read-only axis row for an existing Helix: its fixed plane, Plane feature or face.
+  String _describeHelixAxis(PlaneRefDto? axis) {
+    if (axis == null) return 'Unchanged';
+    if (axis.fixedPlane != null) return '${axis.fixedPlane} plane';
+    final planeFeatureId = axis.planeFeatureId;
+    if (planeFeatureId != null) {
+      final index = _features.indexWhere((f) => f.id == planeFeatureId);
+      return index == -1 ? 'Plane' : featureDisplayName(_features, index);
+    }
+    return 'Selected face';
+  }
+
+  /// [_onFeatureTap]'s Helix branch: [CurvePanel] opened on [feature]'s stored values, PATCHed on
+  /// Confirm. The axis stays as it is (shown read-only).
+  Future<void> _openHelixForEdit(FeatureDto feature) async {
+    var newRadius = feature.radius ?? 5.0;
+    var newEndRadius = feature.helixEndRadius;
+    double? newTaperAngle;
+    var newSegments = [for (final s in feature.helixSegments) HelixSegmentValue(pitch: s.pitch, turns: s.turns)];
+    if (newSegments.isEmpty) newSegments = const [HelixSegmentValue(pitch: 2, turns: 3)];
+    var newRightHanded = feature.helixRightHanded;
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CurvePanel(
+        title: 'Edit Helix',
+        preSelectedAxisLabel: _describeHelixAxis(feature.helixAxisRef),
+        initialHelix: HelixInitialValues(
+          radius: newRadius,
+          endRadius: newEndRadius,
+          segments: newSegments,
+          rightHanded: newRightHanded,
+        ),
+        onHelixChanged: ({
+          required String axisPlane,
+          required double radius,
+          double? endRadius,
+          double? taperAngleDegrees,
+          required List<HelixSegmentValue> segments,
+          required bool rightHanded,
+        }) {
+          newRadius = radius;
+          newEndRadius = endRadius;
+          newTaperAngle = taperAngleDegrees;
+          newSegments = segments;
+          newRightHanded = rightHanded;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _runGuarded(() async {
+      await _api.updateCurveFeature(
+        _focusPartId,
+        feature.id,
+        radius: newRadius,
+        endRadius: newEndRadius,
+        taperAngleDegrees: newTaperAngle,
+        clearEndRadius: newEndRadius == null && newTaperAngle == null,
+        segments: [for (final s in newSegments) (pitch: s.pitch, turns: s.turns)],
+        rightHanded: newRightHanded,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
   /// The "Add" FAB's Intersection Curve entry - mirrors [_startHelix]'s own
   /// "no ambient selection, [CurvePanel] collects everything" shape; its two
   /// Sketch pickers are dropdowns over every existing `"sketch"` Feature in
@@ -14709,6 +14778,13 @@ class _PartScreenState extends State<PartScreen> {
       // _confirmSplit/_cancelSplit instead.
       final opened = _openSplitPanelForEdit(feature);
       if (!opened) await _endRollback();
+    } else if (feature.type == 'curve' && feature.curveType == 'helix') {
+      // Bug report ("unable to edit helix definition"): reopens [CurvePanel] on the Helix's stored
+      // values. A modal sheet like the create flow, so (like the Sketch/gear branches) rollback ends
+      // once it closes; any Sweep using the Helix rebuilds against the new curve.
+      await _openHelixForEdit(feature);
+      if (!mounted) return;
+      await _endRollback();
     } else if (_gearFamilyFeatureTypes.contains(feature.type)) {
       // Gear-tree UX: GearFeature/RackFeature/BevelGearFeature/
       // BevelPairFeature/GearChainFeature/PlanetaryGearFeature are built

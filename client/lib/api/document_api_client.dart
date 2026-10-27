@@ -1056,6 +1056,14 @@ class FeatureDto {
   /// don't both show up as an undifferentiated "Curve".
   final String? curveType;
 
+  /// Helix only (a `"curve"` Feature with [curveType] `"helix"`; [radius] holds its start radius): the
+  /// end radius when tapered (null: constant), its `{pitch, turns}` segments and its hand - what the
+  /// Helix edit panel opens with.
+  final double? helixEndRadius;
+  final List<({double pitch, double turns})> helixSegments;
+  final bool helixRightHanded;
+  final PlaneRefDto? helixAxisRef;
+
   /// Boolean family, Subtract/Common - only present on a `"boolean"`
   /// Feature: which Bodies (1+ ids, the backend's `BooleanFeature.tool_
   /// body_ids`) are folded into/against [targetBodyIds] (also 1+ entries
@@ -1270,6 +1278,10 @@ class FeatureDto {
     this.bodyIds = const [],
     this.operation,
     this.curveType,
+    this.helixEndRadius,
+    this.helixSegments = const [],
+    this.helixRightHanded = true,
+    this.helixAxisRef,
     this.toolBodyIds = const [],
     this.consumeToolBodies = true,
     this.targetBodyId,
@@ -1414,6 +1426,17 @@ class FeatureDto {
         bodyIds: (json['body_ids'] as List?)?.cast<String>() ?? const [],
         operation: json['operation'] as String?,
         curveType: json['curve_type'] as String?,
+        helixEndRadius: json['curve_type'] == 'helix' ? (json['end_radius'] as num?)?.toDouble() : null,
+        helixSegments: json['curve_type'] == 'helix'
+            ? [
+                for (final s in (json['segments'] as List? ?? const []).cast<Map<String, dynamic>>())
+                  (pitch: (s['pitch'] as num).toDouble(), turns: (s['turns'] as num).toDouble()),
+              ]
+            : const [],
+        helixRightHanded: json['right_handed'] as bool? ?? true,
+        helixAxisRef: json['curve_type'] == 'helix' && json['axis_ref'] is Map<String, dynamic>
+            ? PlaneRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>)
+            : null,
         toolBodyIds: (json['tool_body_ids'] as List?)?.cast<String>() ?? const [],
         consumeToolBodies: json['consume_tool_bodies'] as bool? ?? true,
         targetBodyId: json['target_body_id'] as String?,
@@ -5110,7 +5133,8 @@ class DocumentApiClient {
       );
 
   /// Partial update for an existing CurveFeature - `curve_type` itself is
-  /// never sent (see the backend's `CurveFeatureUpdate`).
+  /// never sent (see the backend's `CurveFeatureUpdate`). [clearEndRadius] sends an explicit null
+  /// `end_radius` (back to a constant radius); omitting it keeps the stored taper.
   Future<FeatureDto> updateCurveFeature(
     String partId,
     String featureId, {
@@ -5120,6 +5144,7 @@ class DocumentApiClient {
     double? taperAngleDegrees,
     List<({double pitch, double turns})>? segments,
     bool? rightHanded,
+    bool clearEndRadius = false,
     String? sketchFeatureIdA,
     String? sketchFeatureIdB,
   }) =>
@@ -5130,7 +5155,7 @@ class DocumentApiClient {
               body: jsonEncode({
                 if (axisRef != null) 'axis_ref': axisRef.toJson(),
                 if (radius != null) 'radius': radius,
-                if (endRadius != null) 'end_radius': endRadius,
+                if (endRadius != null || clearEndRadius) 'end_radius': endRadius,
                 if (taperAngleDegrees != null) 'taper_angle_degrees': taperAngleDegrees,
                 if (segments != null)
                   'segments': [

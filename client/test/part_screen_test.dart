@@ -73,6 +73,9 @@ class _FakeDocumentBackend {
   /// `_features` happens to already contain what the test expects.
   int featuresGetCount = 0;
 
+  /// Every Curve feature PATCH body, in order (the Helix edit test).
+  final List<Map<String, dynamic>> curvePatchBodies = [];
+
   /// LOD Phase 1 chunks 3/4/5 follow-up fix: every `GET .../mesh` request's
   /// query parameters, in call order - lets tests assert exactly when (and
   /// with what filters) a `tier=coarse` request fires alongside the
@@ -571,6 +574,18 @@ class _FakeDocumentBackend {
         if (body.containsKey(key)) feature[key] = body[key];
       }
       lastPatternPatchBody = body;
+      return _json(feature, 200);
+    }
+
+    final curvePatchMatch = RegExp(r'^/document/parts/part-1/curve-features/([^/]+)$').firstMatch(path);
+    if (curvePatchMatch != null && method == 'PATCH') {
+      final featureId = curvePatchMatch.group(1);
+      final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
+      if (feature.isEmpty) return http.Response('not found: feature', 404);
+      curvePatchBodies.add(Map<String, dynamic>.from(body));
+      for (final key in ['radius', 'end_radius', 'segments', 'right_handed']) {
+        if (body.containsKey(key)) feature[key] = body[key];
+      }
       return _json(feature, 200);
     }
 
@@ -1980,6 +1995,63 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Pattern 1'), findsOneWidget);
+  });
+
+  testWidgets('bug report: a Helix opens for editing from the Build Tree, in diameters, and PATCHes radii',
+      (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {
+          'type': 'curve',
+          'id': 'feature-1',
+          'curve_type': 'helix',
+          'axis_ref': {'fixed_plane': 'XY'},
+          'radius': 5.0,
+          'end_radius': null,
+          'segments': [
+            {'pitch': 2.0, 'turns': 10.0},
+          ],
+          'right_handed': true,
+          'locked': false,
+        },
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Imported'), findsNothing); // shown as editable
+    await tester.tap(find.text('Helix 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Edit Helix'), findsOneWidget);
+    expect(find.text('Axis: XY plane'), findsOneWidget);
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('helix-diameter-field'))).controller!.text, '10');
+
+    await tester.enterText(find.byKey(const ValueKey('helix-diameter-field')), '12');
+    await tester.pump();
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.curvePatchBodies.isNotEmpty);
+
+    final patch = backend.curvePatchBodies.single;
+    expect(patch['radius'], 6.0);
+    expect(patch.containsKey('end_radius'), isTrue); // explicit null: still constant
+    expect(patch['end_radius'], isNull);
+    expect(patch['segments'], [
+      {'pitch': 2.0, 'turns': 10.0},
+    ]);
   });
 
   testWidgets(

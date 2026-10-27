@@ -114,10 +114,15 @@ String featureDisplayName(List<FeatureDto> features, int index) {
 /// for any Feature since B4 - not just the last one) - this stays a plain
 /// negative check rather than an allow-list so it doesn't need updating for
 /// every future Feature type that keeps following that same pattern.
-// Curve/Fill Surface features: no edit panel yet (v1 client scope is
-// create-only - see `part_screen.dart`'s own Curve/Fill Surface starters),
-// same "not every Feature type has one" treatment `'import'` already gets.
-bool _hasEditPanel(String type) => type != 'import' && type != 'curve' && type != 'fill_surface';
+// Fill Surface and Intersection curve features: no edit panel yet (v1 client
+// scope is create-only - see `part_screen.dart`'s own Curve/Fill Surface
+// starters), same "not every Feature type has one" treatment `'import'`
+// already gets. A Helix has one (bug report: "unable to edit helix").
+bool _hasEditPanel(FeatureDto feature) => switch (feature.type) {
+      'import' || 'fill_surface' => false,
+      'curve' => feature.curveType == 'helix',
+      _ => true,
+    };
 
 /// Maps a Feature's `type` string to its tree-row glyph. `'sketch'` and
 /// `'create_plane'` reuse the same asset their own dedicated section already
@@ -1060,7 +1065,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                   ? 'Reference may have moved - open to check'
               : hasPendingDetail
                   ? 'Loading full detail…'
-                  : _hasEditPanel(feature.type)
+                  : _hasEditPanel(feature)
                       ? 'Editable'
                       : 'Imported',
           maxLines: 1,
