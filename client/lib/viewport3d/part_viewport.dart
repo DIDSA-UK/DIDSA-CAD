@@ -21,6 +21,7 @@ import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
 import 'controls_preferences.dart';
+import 'box_select.dart';
 import 'view_cube.dart' show ViewCubeBasis, normalToUp, viewCubeEyeAndUp;
 import 'mouse_navigation.dart';
 import '../sketch/marquee_selection.dart' show kCrossingBoxColor;
@@ -946,6 +947,14 @@ class PartViewport extends StatefulWidget {
   /// left and [additive] when Ctrl is held; a touch marquee sets neither.
   final void Function(Rect sketchRect, {bool crossing, bool additive})? onMarqueeSelect;
 
+  /// Desktop input D7: a box dragged on empty space outside a sketch picks
+  /// what the camera can see inside it (a mouse drag, or a touch tap-hold
+  /// then drag). Fired once, on release, with the picked entities: whole
+  /// components when placed instances are selectable, otherwise edges (or
+  /// faces, vertices or bodies when the selection filter has no edges).
+  /// [crossing] is a right-to-left mouse box, [additive] a Ctrl-held one.
+  final void Function(List<SelectionEntityRef> entities, {bool crossing, bool additive})? onBoxSelect;
+
   /// Bug report ("if one body is entirely inside another body, it cannot be
   /// selected" - user-requested SOLIDWORKS-style "Select Other"): fired once
   /// a click-then-click-and-hold gesture (see [PartViewportState]'s own
@@ -1175,6 +1184,7 @@ class PartViewport extends StatefulWidget {
     this.onMouseMiddleClick,
     this.onClearSelection,
     this.onMarqueeSelect,
+    this.onBoxSelect,
     this.onSelectOtherRequested,
     this.highlightOverride,
     this.suppressHoverFallback = false,
@@ -4903,7 +4913,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // hold - see [_mouseMarqueeDownScreen].
         // Only where a box selects anything: the embedded sketch (part
         // and assembly box select is not built yet).
-        final boxSelects = widget.onMarqueeSelect != null && widget.sketchPlaneBasis != null;
+        final boxSelects = widget.sketchPlaneBasis != null ? widget.onMarqueeSelect != null : widget.onBoxSelect != null;
         _mouseMarqueeDownScreen =
             boxSelects && !_hasEntityNearScreenPoint(event.localPosition) ? event.localPosition : null;
       } else {
@@ -5717,6 +5727,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _marqueeDownScreen = null;
     _marqueeCurrentScreen = null;
     final basis = widget.sketchPlaneBasis;
+    if (anchor != null && current != null && basis == null) {
+      _finishBoxSelect(Rect.fromPoints(anchor, current), crossing: byMouse && current.dx < anchor.dx, additive: byMouse && mouseBoxSelectIsAdditive());
+      return;
+    }
     if (anchor == null || current == null || basis == null) return;
     final camera = _camera.cameraFor(_viewportSize);
     final anchorHit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(anchor, _viewportSize)), basis);
@@ -5731,6 +5745,80 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       crossing: byMouse && current.dx < anchor.dx,
       additive: byMouse && mouseBoxSelectIsAdditive(),
     );
+  }
+
+  /// Desktop input D7: works out what [rect] picks and hands it to
+  /// [PartViewport.onBoxSelect]. A touch box has no direction, so it is a
+  /// window.
+  void _finishBoxSelect(Rect rect, {required bool crossing, required bool additive}) {
+    final callback = widget.onBoxSelect;
+    if (callback == null || rect.width < 2 || rect.height < 2) return;
+    final entities = boxSelectEntities(rect, crossing: crossing);
+    callback(entities, crossing: crossing, additive: additive);
+  }
+
+  /// The entities a box over [rect] picks right now - public for tests.
+  @visibleForTesting
+  List<SelectionEntityRef> boxSelectEntities(Rect rect, {required bool crossing}) {
+    final filter = widget.selectionFilter;
+    final focusTransform = widget.focusWorldTransformMatrix;
+    final shapes = <BoxSelectShape>[];
+    if (!widget.bodiesHidden) {
+      for (final body in widget.bodies) {
+        if (body.hidden || body.isCurve) continue;
+        shapes.add(BoxSelectShape(bodyId: body.bodyId, mesh: body.mesh, transform: focusTransform));
+      }
+    }
+    final selectablePaths = _selectableOccurrencePaths();
+    final pickComponents = filter.component && selectablePaths.isNotEmpty;
+    final geometryByPart = {for (final g in widget.assemblyGeometry) g.partId: g};
+    if (!widget.bodiesHidden) {
+      for (final instance in widget.assemblyInstances) {
+        if (instance.hidden || instance.occurrencePath.isEmpty) continue;
+        final key = instance.occurrencePath.join('/');
+        final transform = matrix4FromRigidTransform(instance.worldTransform);
+        for (final body in geometryByPart[instance.partId]?.bodies ?? const <BodyMeshDto>[]) {
+          if (body.hidden || body.isCurve) continue;
+          shapes.add(
+            BoxSelectShape(
+              bodyId: body.bodyId,
+              occurrenceId: key,
+              mesh: body.mesh,
+              transform: transform,
+              pickable: pickComponents && selectablePaths.contains(key) && !key.contains('#pattern:'),
+            ),
+          );
+        }
+      }
+    }
+    // Whole components when placed instances can be picked; otherwise the
+    // finest kind the filter allows, edges first.
+    final BoxSelectTarget target;
+    if (pickComponents) {
+      target = BoxSelectTarget.components;
+    } else if (filter.edge) {
+      target = BoxSelectTarget.edges;
+    } else if (filter.face) {
+      target = BoxSelectTarget.faces;
+    } else if (filter.vertex) {
+      target = BoxSelectTarget.vertices;
+    } else if (filter.body) {
+      target = BoxSelectTarget.bodies;
+    } else {
+      return const [];
+    }
+    final picked = boxSelect(
+      camera: _camera.cameraFor(_viewportSize),
+      viewportSize: _viewportSize,
+      shapes: shapes,
+      rect: rect,
+      crossing: crossing,
+      target: target,
+      occlude: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+    );
+    // The Part's own Bodies are not pickable as components while the
+    // components are what is being picked.
+    return pickComponents ? picked : [for (final e in picked) if (e.occurrenceId.isEmpty) e];
   }
 
   // ---- Bug report: "Select Other" (click, then click-and-hold) -----------

@@ -2975,6 +2975,49 @@ class _PartScreenState extends State<PartScreen> {
     if (_revolveSurfaceActive) _scheduleRevolveSurfacePreview();
   }
 
+  /// Desktop input D7: a box dragged on empty space picked [entities] (what the camera can see inside it).
+  /// A plain box replaces the selection, Ctrl adds, and a box over nothing clears it (as an empty click does).
+  /// Inside a tool each entity goes through the normal pick so the tool's own rules and previews apply.
+  void _onBoxSelect(List<SelectionEntityRef> entities, {bool crossing = false, bool additive = false}) {
+    if (_anyToolSessionActive) {
+      for (final entity in entities) {
+        if (!_selectedEntities.contains(entity)) _toggleSelectedEntity(entity);
+      }
+      return;
+    }
+    if (entities.isEmpty) {
+      if (!additive) _clearSelectedEntities();
+      return;
+    }
+    final components = [
+      for (final e in entities)
+        if (e.kind == SelectionEntityKind.component && !e.occurrenceId.contains('/') && !e.occurrenceId.contains('#pattern:')) e.occurrenceId,
+    ];
+    if (entities.first.kind == SelectionEntityKind.component) {
+      if (components.isEmpty) return;
+      if (components.length == 1 && !_assemblyMultiSelect.active) {
+        _toggleSelectedEntity(entities.firstWhere((e) => e.occurrenceId == components.single));
+        return;
+      }
+      if (_assemblyMultiSelect.active && additive) {
+        for (final id in components) {
+          if (!_assemblyMultiSelect.selectedIds.contains(id)) _toggleMultiSelectMember(_assemblyMultiSelect, id);
+        }
+        return;
+      }
+      if (_assemblyMultiSelect.active) _exitMultiSelect();
+      _enterMultiSelect(_assemblyMultiSelect, components.first);
+      for (final id in components.skip(1)) {
+        _toggleMultiSelectMember(_assemblyMultiSelect, id);
+      }
+      return;
+    }
+    setState(() {
+      _selectedEntities = additive ? {..._selectedEntities, ...entities} : entities.toSet();
+      if (_lens == AssemblyLens.assembly && !_moveRotateComponentActive) _selectedOccurrenceId = null;
+    });
+  }
+
   /// Item 4: "Empty space tap -> clears entire selection set" - passed to
   /// [PartViewport.onClearSelection], fired by a tap (Fix 4) when the
   /// cursor's hover hit is null. See [_toggleSelectedEntity]'s doc comment
@@ -24351,6 +24394,7 @@ class _PartScreenState extends State<PartScreen> {
                   // Desktop input D4: a right click without a drag.
                   onContextMenuRequested: (hit, at) => unawaited(_onViewportContextMenu(hit, at)),
                   onClearSelection: _clearSelectedEntities,
+                  onBoxSelect: _onBoxSelect,
                   onSelectOtherRequested: _handleSelectOtherRequested,
                   highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,
                   suppressHoverFallback: _selectOtherSheetOpen,

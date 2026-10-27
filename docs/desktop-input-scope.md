@@ -1,6 +1,6 @@
 # Mouse, keyboard and big-screen use — scope
 
-**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 to D5 built on branch
+**Status:** decisions taken by the owner on 26 Oct 2026 (section 7); D1 to D5 and D7 built on branch
 `claude/flutter-desktop-mode-ui-pxmq0q` (Progress below). Written 26 Oct 2026 from a read of `client/lib` on `main` and the owner's first test on a Samsung phone in DeX (external monitor, mouse, keyboard): "reasonable, but needs
 polish and alignment with desktop CAD controls. Middle click drag to orbit; mouse cursors are on top of each other."
 
@@ -18,7 +18,8 @@ has the same gaps.
 | D3 | Keyboard shortcuts (part screen, sketch screen, mesh viewer), Enter / Esc for every tool panel, shortcut sheet, tooltip hints; mesh viewer fit; the part screen click rule as a tested function | Done (not merged; unit and widget tested, including the part screen and sketch screen; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
 | D4 | Right-click menus: one helper (popup for a mouse, sheet for touch), every tree row, 3D geometry / plane / component / empty-space menus, sketch entity and canvas menus | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
 | D5 | Navigation presets (SOLIDWORKS / Fusion 360 / Onshape), Controls settings screen, invert wheel, orbit speed, view cube on Space, Ctrl+8 normal to, number-field nudging, Tab order, middle click ends a chain | Done (not merged; unit and widget tested, the 3D viewport tests skip without a GPU; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
-| D6-D7 | | Not started | |
+| D7 | 3D box select: mouse drag and touch tap-hold-drag on empty space, window and crossing, visible geometry only, edges in a part, whole components in an assembly | Done (not merged; unit tested headless, run once in a Linux debug build; not run on a device) | CAD `claude/flutter-desktop-mode-ui-pxmq0q` (`client/`) |
+| D6 | | Not started | |
 
 Update this table with every milestone.
 
@@ -218,6 +219,30 @@ Update this table with every milestone.
   `test/number_field_nudge_test.dart`, `test/tool_panel_tab_order_test.dart`, `test/sketch_canvas_mouse_navigation_test.dart`
   (middle click), `test/part_screen_test.dart` ("desktop input D5": Space, Ctrl+8, double-click) and, GPU-gated,
   `test/part_viewport_mouse_navigation_test.dart` (Onshape right-drag orbit, view cube pick).
+
+### D7 implementation notes
+
+- `viewport3d/box_select.dart` is a pure function (`boxSelect`): it projects each Body's mesh with the camera, rasterises the nearest
+  triangle per cell of a coarse depth grid over the box (cells at most 256 across), and tests samples against it - so "visible" is
+  decided by depth, not by ray casts per sample. An edge's depth is compared with the nearest triangle's own plane at the sample
+  (not the cell centre's depth), so a face seen at a grazing angle does not hide its own edges.
+- **Window** (left to right): an edge is picked when every segment is inside the box and some sample of it is visible; a face when
+  all its triangle corners are inside and it is the nearest surface in some cell; a Body or component when all its vertices are
+  inside and it is visible somewhere. **Crossing** (right to left): any visible sample, cell or edge inside the box. Ctrl adds.
+- **What a box picks:** whole top-level components when placed instances are selectable, otherwise edges, or faces / vertices / bodies
+  when the selection filter has no edges. Placed instances outside the focus hide things behind them but are not picked.
+  Wireframe mode and hidden bodies have nothing to occlude. Patterns' derived instances are never picked as components.
+- **Gestures:** a mouse press that starts on empty space (no entity under it) and drags past the tap threshold; touch is the existing
+  500 ms hold on empty space, then drag (a window - touch has no direction). `PartViewport.onBoxSelect` hands the result to
+  `PartScreen._onBoxSelect`: a plain box replaces the selection, Ctrl adds, a box over nothing clears. Inside a tool each entity goes
+  through the normal pick, so the tool's own rules apply. Several components enter the Assembly tree's multi-select.
+- **Known limits:** triangles with a corner behind the camera are skipped; a sub-6 px box can miss an edge between samples;
+  samples per edge segment are capped at 32. Sketch entities are not picked by a 3D box (the sketch's own box select is unchanged).
+- Tests: `test/box_select_test.dart` (perspective and orthographic cameras, window vs crossing, a hidden back edge, a body behind
+  another, a transform, components). Checked once by hand in a Linux debug build: a window picked the visible edges of one box and
+  none of its hidden ones, a crossing box picked the edges it touched, a box over nothing cleared the selection.
+- **Not verified:** the GPU-gated viewport tests skip here; nothing was run on a device (touch hold-and-drag, DeX); assemblies and
+  focused components were not driven in the Linux build; cost on a large assembly is not measured.
 
 ### Follow-up fixes from the Linux build test (27 Oct 2026)
 
