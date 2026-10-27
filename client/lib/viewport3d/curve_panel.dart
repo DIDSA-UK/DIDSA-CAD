@@ -28,17 +28,34 @@ class HelixSegmentValue {
   const HelixSegmentValue({required this.pitch, required this.turns});
 }
 
-/// An existing Helix's stored values, to open [CurvePanel] for editing it. Radii, as stored.
+/// How a Helix's pitch is given: constant-pitch [segments], or pitches at distances along the axis
+/// that it varies smoothly between ([variable]: owner's request, "state pitch at different lengths
+/// and pitch varies smoothly between values"; the backend's `pitch_points`).
+enum HelixPitchMode { segments, variable }
+
+/// A variable-pitch Helix's [pitch] at axial distance [at] from its start (the backend's
+/// `pitch_points` entry). The first is at 0; the last one's distance is the helix's height.
+class HelixPitchPointValue {
+  final double at;
+  final double pitch;
+
+  const HelixPitchPointValue({required this.at, required this.pitch});
+}
+
+/// An existing Helix's stored values, to open [CurvePanel] for editing it. Radii, as stored. A
+/// non-empty [pitchPoints] opens it in [HelixPitchMode.variable].
 class HelixInitialValues {
   final double radius;
   final double? endRadius;
   final List<HelixSegmentValue> segments;
+  final List<HelixPitchPointValue> pitchPoints;
   final bool rightHanded;
 
   const HelixInitialValues({
     required this.radius,
     this.endRadius,
     required this.segments,
+    this.pitchPoints = const [],
     this.rightHanded = true,
   });
 }
@@ -68,15 +85,17 @@ class CurvePanel extends StatefulWidget {
   final List<SketchFeatureChoice> sketchFeatureChoices;
 
   /// Fired on every valid Helix parameter edit: only once the diameter, the taper value (if any) and
-  /// every segment's pitch and turns parse. [radius] / [endRadius] are half the typed diameters (what
-  /// the backend takes). At most one of [endRadius] / [taperAngleDegrees] is set (neither for a
-  /// constant diameter); the backend converts an angle to an end radius.
+  /// every segment's (or pitch point's) numbers parse. [radius] / [endRadius] are half the typed
+  /// diameters (what the backend takes). At most one of [endRadius] / [taperAngleDegrees] is set
+  /// (neither for a constant diameter); the backend converts an angle to an end radius. Exactly one
+  /// of [segments] / [pitchPoints] is non-empty, per the pitch mode.
   final void Function({
     required String axisPlane,
     required double radius,
     double? endRadius,
     double? taperAngleDegrees,
     required List<HelixSegmentValue> segments,
+    required List<HelixPitchPointValue> pitchPoints,
     required bool rightHanded,
   })? onHelixChanged;
 
@@ -118,6 +137,21 @@ class CurvePanel extends StatefulWidget {
   State<CurvePanel> createState() => _CurvePanelState();
 }
 
+/// The text fields behind one row of the pitch-points list.
+class _PointRow {
+  final TextEditingController at;
+  final TextEditingController pitch;
+
+  _PointRow({required String at, required String pitch})
+      : at = TextEditingController(text: at),
+        pitch = TextEditingController(text: pitch);
+
+  void dispose() {
+    at.dispose();
+    pitch.dispose();
+  }
+}
+
 /// The text fields behind one row of the segments list.
 class _SegmentRow {
   final TextEditingController pitch;
@@ -142,9 +176,12 @@ class _CurvePanelState extends State<CurvePanel> {
   late final TextEditingController _diameterController;
   late final TextEditingController _taperController;
   final List<_SegmentRow> _segmentRows = [];
+  final List<_PointRow> _pointRows = [];
+  HelixPitchMode _pitchMode = HelixPitchMode.segments;
   double? _diameter;
   double? _taperValue;
   List<HelixSegmentValue>? _segments;
+  List<HelixPitchPointValue>? _pitchPoints;
 
   String? _sketchFeatureIdA;
   String? _sketchFeatureIdB;
@@ -163,6 +200,12 @@ class _CurvePanelState extends State<CurvePanel> {
     _segmentRows
         .addAll([for (final seg in segments) _SegmentRow(pitch: _format(seg.pitch), turns: _format(seg.turns))]);
     _segments = segments;
+    final points = initial?.pitchPoints ?? const [];
+    if (points.isNotEmpty) {
+      _pitchMode = HelixPitchMode.variable;
+      _pointRows.addAll([for (final p in points) _PointRow(at: _format(p.at), pitch: _format(p.pitch))]);
+      _pitchPoints = points;
+    }
     _rightHanded = initial?.rightHanded ?? true;
   }
 
@@ -179,15 +222,22 @@ class _CurvePanelState extends State<CurvePanel> {
     for (final row in _segmentRows) {
       row.dispose();
     }
+    for (final row in _pointRows) {
+      row.dispose();
+    }
     super.dispose();
   }
 
-  /// Sum of |pitch| x turns over the segments, or null while any of them does not parse.
+  /// Sum of |pitch| x turns over the segments, or the last pitch point's distance; null while
+  /// they do not parse.
   double? get _totalHeight {
+    if (_pitchMode == HelixPitchMode.variable) return _pitchPoints?.last.at;
     final segments = _segments;
     if (segments == null) return null;
     return segments.fold<double>(0, (sum, s) => sum + s.pitch.abs() * s.turns);
   }
+
+  bool get _pitchValid => _pitchMode == HelixPitchMode.segments ? _segments != null : _pitchPoints != null;
 
   /// The taper shown read-only next to the field being typed: the angle for an end diameter, the end
   /// diameter for an angle. Null when it can't be worked out yet.
@@ -213,7 +263,7 @@ class _CurvePanelState extends State<CurvePanel> {
         HelixTaper.angle => _taperValue != null && _taperValue! > -90 && _taperValue! < 90,
       };
 
-  bool get _helixValid => _diameter != null && _diameter! > 0 && _segments != null && _taperValid;
+  bool get _helixValid => _diameter != null && _diameter! > 0 && _pitchValid && _taperValid;
 
   bool get _canConfirm => switch (_mode) {
         CurveMode.helix => _helixValid,
@@ -239,17 +289,67 @@ class _CurvePanelState extends State<CurvePanel> {
       // Every segment advances the same way along the axis.
       if (ok && parsed.any((s) => (s.pitch > 0) != (parsed.first.pitch > 0))) ok = false;
       _segments = ok ? parsed : null;
+      _pitchPoints = _parsePitchPoints();
     });
-    final diameter = _diameter, segments = _segments, taperValue = _taperValue;
-    if (diameter == null || segments == null || !_helixValid) return;
+    final diameter = _diameter, taperValue = _taperValue;
+    if (diameter == null || !_helixValid) return;
+    final variable = _pitchMode == HelixPitchMode.variable;
     widget.onHelixChanged?.call(
       axisPlane: _axisPlane,
       radius: diameter / 2,
       endRadius: _taper == HelixTaper.endDiameter && taperValue != null ? taperValue / 2 : null,
       taperAngleDegrees: _taper == HelixTaper.angle ? _taperValue : null,
-      segments: segments,
+      segments: variable ? const [] : _segments!,
+      pitchPoints: variable ? _pitchPoints! : const [],
       rightHanded: _rightHanded,
     );
+  }
+
+  /// The pitch points, or null unless there are at least two, the first at 0, the distances
+  /// increasing, and the pitches non-zero and all advancing the same way (the backend's own checks).
+  List<HelixPitchPointValue>? _parsePitchPoints() {
+    final points = <HelixPitchPointValue>[];
+    for (final row in _pointRows) {
+      final at = double.tryParse(row.at.text);
+      final pitch = double.tryParse(row.pitch.text);
+      if (at == null || pitch == null || pitch == 0) return null;
+      if (points.isNotEmpty && at <= points.last.at) return null;
+      points.add(HelixPitchPointValue(at: at, pitch: pitch));
+    }
+    if (points.length < 2 || points.first.at != 0) return null;
+    if (points.any((p) => (p.pitch > 0) != (points.first.pitch > 0))) return null;
+    return points;
+  }
+
+  /// Switching to pitch points starts from the segments' own pitches: the first at the start, the
+  /// last at the top (the same height).
+  void _setPitchMode(HelixPitchMode mode) {
+    setState(() {
+      _pitchMode = mode;
+      if (mode == HelixPitchMode.variable && _pointRows.isEmpty) {
+        final segments = _segments ?? const [HelixSegmentValue(pitch: 2, turns: 3)];
+        final height = segments.fold<double>(0, (sum, s) => sum + s.pitch.abs() * s.turns);
+        _pointRows.addAll([
+          _PointRow(at: '0', pitch: _format(segments.first.pitch)),
+          _PointRow(at: _format(height), pitch: _format(segments.last.pitch)),
+        ]);
+      }
+    });
+    _emitHelixChange();
+  }
+
+  void _addPitchPoint() {
+    final last = _pointRows.last;
+    final lastAt = double.tryParse(last.at.text) ?? 0;
+    final lastPitch = double.tryParse(last.pitch.text) ?? 2;
+    setState(() => _pointRows.add(_PointRow(at: _format(lastAt + 2 * lastPitch.abs()), pitch: last.pitch.text)));
+    _emitHelixChange();
+  }
+
+  void _removePitchPoint(int index) {
+    if (_pointRows.length < 3 || index == 0) return;
+    setState(() => _pointRows.removeAt(index).dispose());
+    _emitHelixChange();
   }
 
   void _addSegment() {
@@ -374,13 +474,51 @@ class _CurvePanelState extends State<CurvePanel> {
           ),
         ],
         const SizedBox(height: 8),
+        SegmentedButton<HelixPitchMode>(
+          key: const ValueKey('helix-pitch-mode'),
+          segments: const [
+            ButtonSegment(value: HelixPitchMode.segments, label: Text('Segments')),
+            ButtonSegment(value: HelixPitchMode.variable, label: Text('Varies along length')),
+          ],
+          selected: {_pitchMode},
+          onSelectionChanged: (selection) => _setPitchMode(selection.first),
+        ),
+        const SizedBox(height: 8),
         Row(
           children: [
-            const Expanded(child: Text('Segments', style: TextStyle(fontWeight: FontWeight.w600))),
+            Expanded(
+              child: Text(
+                _pitchMode == HelixPitchMode.segments ? 'Segments' : 'Pitch at distances from the start',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
             if (_totalHeight != null)
               Text('Height ${_totalHeight!.toStringAsFixed(2)}', style: const TextStyle(fontSize: 12)),
           ],
         ),
+        if (_pitchMode == HelixPitchMode.variable) ..._buildPitchPointRows() else ..._buildSegmentRows(),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Right-handed'),
+          value: _rightHanded,
+          onChanged: (value) {
+            setState(() => _rightHanded = value);
+            _emitHelixChange();
+          },
+        ),
+        if (!_helixValid)
+          Text(
+            !_pitchValid
+                ? (_pitchMode == HelixPitchMode.segments
+                    ? 'Each segment needs a non-zero pitch and positive turns, all advancing the same way'
+                    : 'Pitch points need distances that start at 0 and increase, and non-zero pitches '
+                        'all advancing the same way')
+                : (!_taperValid ? 'The taper value is not valid' : 'The diameter must be a positive number'),
+            style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
+          ),
+      ];
+
+  List<Widget> _buildSegmentRows() => [
         for (var i = 0; i < _segmentRows.length; i++)
           Row(
             key: ValueKey('helix-segment-$i'),
@@ -421,22 +559,54 @@ class _CurvePanelState extends State<CurvePanel> {
             label: const Text('Add segment'),
           ),
         ),
-        SwitchListTile(
-          contentPadding: EdgeInsets.zero,
-          title: const Text('Right-handed'),
-          value: _rightHanded,
-          onChanged: (value) {
-            setState(() => _rightHanded = value);
-            _emitHelixChange();
-          },
-        ),
-        if (!_helixValid)
-          Text(
-            _segments == null
-                ? 'Each segment needs a non-zero pitch and positive turns, all advancing the same way'
-                : (!_taperValid ? 'The taper value is not valid' : 'The diameter must be a positive number'),
-            style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 12),
+      ];
+
+  List<Widget> _buildPitchPointRows() => [
+        for (var i = 0; i < _pointRows.length; i++)
+          Row(
+            key: ValueKey('helix-point-$i'),
+            children: [
+              Expanded(
+                child: TextField(
+                  key: ValueKey('helix-point-$i-at'),
+                  controller: _pointRows[i].at,
+                  enabled: i > 0, // the first is the start
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(labelText: i == 0 ? 'At the start' : 'Distance from start'),
+                  onChanged: (_) => _emitHelixChange(),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: TextField(
+                  key: ValueKey('helix-point-$i-pitch'),
+                  controller: _pointRows[i].pitch,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                  decoration: const InputDecoration(labelText: 'Pitch (height per turn)'),
+                  onChanged: (_) => _emitHelixChange(),
+                ),
+              ),
+              IconButton(
+                key: ValueKey('helix-point-$i-remove'),
+                tooltip: 'Remove point ${i + 1}',
+                icon: const Icon(Icons.close, size: 18),
+                onPressed: i > 0 && _pointRows.length > 2 ? () => _removePitchPoint(i) : null,
+              ),
+            ],
           ),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            key: const ValueKey('helix-add-point'),
+            onPressed: _addPitchPoint,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Add point'),
+          ),
+        ),
+        Text(
+          'The pitch changes smoothly between the points; the last distance is the height.',
+          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+        ),
       ];
 
   List<Widget> _buildIntersectionFields() => [

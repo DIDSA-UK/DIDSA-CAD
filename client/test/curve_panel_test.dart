@@ -32,9 +32,11 @@ void main() {
                 double? endRadius,
                 double? taperAngleDegrees,
                 required List<HelixSegmentValue> segments,
+                required List<HelixPitchPointValue> pitchPoints,
                 required bool rightHanded,
               }) =>
                   emitted.add({
+                'points': [for (final p in pitchPoints) (p.at, p.pitch)],
                 'radius': radius,
                 'endRadius': endRadius,
                 'angle': taperAngleDegrees,
@@ -178,5 +180,58 @@ void main() {
     final panelBottom = tester.getBottomLeft(find.byType(Material).last).dy;
     expect(panelBottom, lessThanOrEqualTo(2000 - 900 + 0.5));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('pitch varying along the length: starts from the segments, sends pitch points only', (tester) async {
+    await pumpHelix(tester);
+    await tester.tap(find.text('Varies along length'));
+    await tester.pump();
+    // One segment of pitch 2 x 3 turns: points at 0 and at the height 6, both pitch 2.
+    expect(emitted.last['segments'], isEmpty);
+    expect(emitted.last['points'], [(0.0, 2.0), (6.0, 2.0)]);
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('helix-point-0-at'))).enabled, isFalse);
+    await tester.enterText(find.byKey(const ValueKey('helix-point-1-pitch')), '4');
+    await tester.tap(find.byKey(const ValueKey('helix-add-point')));
+    await tester.pump();
+    await tester.enterText(find.byKey(const ValueKey('helix-point-2-at')), '20');
+    await tester.pump();
+    expect(emitted.last['points'], [(0.0, 2.0), (6.0, 4.0), (20.0, 4.0)]);
+    expect(find.text('Height 20.00'), findsOneWidget);
+    // Back to segments sends segments again.
+    await tester.tap(find.text('Segments').first);
+    await tester.pump();
+    expect(emitted.last['points'], isEmpty);
+    expect(emitted.last['segments'], [(2.0, 3.0)]);
+  });
+
+  testWidgets('pitch points must increase from the start and advance one way', (tester) async {
+    await pumpHelix(tester);
+    await tester.tap(find.text('Varies along length'));
+    await tester.pump();
+    final before = emitted.length;
+    await tester.enterText(find.byKey(const ValueKey('helix-point-1-at')), '0');
+    await tester.pump();
+    expect(emitted.length, before);
+    expect(find.textContaining('start at 0 and increase'), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull);
+    await tester.enterText(find.byKey(const ValueKey('helix-point-1-at')), '5');
+    await tester.enterText(find.byKey(const ValueKey('helix-point-1-pitch')), '-2');
+    await tester.pump();
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull);
+  });
+
+  testWidgets('editing a variable-pitch helix opens on its points', (tester) async {
+    await pumpHelix(
+      tester,
+      initial: const HelixInitialValues(
+        radius: 5,
+        segments: [],
+        pitchPoints: [HelixPitchPointValue(at: 0, pitch: 1), HelixPitchPointValue(at: 10, pitch: 3)],
+      ),
+    );
+    expect(tester.widget<TextField>(find.byKey(const ValueKey('helix-point-1-at'))).controller!.text, '10');
+    expect(find.text('Height 10.00'), findsOneWidget);
+    await tester.tap(find.text('Confirm'));
+    expect(confirmed, 1);
   });
 }

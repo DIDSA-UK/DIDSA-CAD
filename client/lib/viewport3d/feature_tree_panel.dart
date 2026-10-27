@@ -98,6 +98,7 @@ String featureDisplayName(List<FeatureDto> features, int index) {
     // display label - same "shared type, per-value label" convention
     // `'boolean'` above already uses for Subtract/Common.
     'curve' => feature.curveType == 'intersection' ? 'Intersection Curve' : 'Helix',
+    'spring' => 'Spring',
     'fill_surface' => 'Fill Surface',
     _ => 'Sketch',
   };
@@ -208,6 +209,7 @@ String _featureTypeAsset(String type) => switch (type) {
       // shared/borrowed glyph until a dedicated one exists" precedent
       // Revolve/Swept/Loft Surface already establish above.
       'curve' => 'assets/icons/feature/feature_sweep.svg',
+      'spring' => 'assets/icons/feature/feature_spring.svg',
       // Fill Surface: reuses the generic Surface glyph (`'surface'`'s own
       // asset) - a filling surface has no more specific existing silhouette
       // to borrow, and it genuinely is a Surface-producing tool.

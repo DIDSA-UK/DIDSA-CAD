@@ -76,6 +76,9 @@ class _FakeDocumentBackend {
   /// Every Curve feature PATCH body, in order (the Helix edit test).
   final List<Map<String, dynamic>> curvePatchBodies = [];
 
+  /// Every Spring feature POST / PATCH body, in order (the Spring tests).
+  final List<Map<String, dynamic>> springBodies = [];
+
   /// LOD Phase 1 chunks 3/4/5 follow-up fix: every `GET .../mesh` request's
   /// query parameters, in call order - lets tests assert exactly when (and
   /// with what filters) a `tier=coarse` request fires alongside the
@@ -574,6 +577,30 @@ class _FakeDocumentBackend {
         if (body.containsKey(key)) feature[key] = body[key];
       }
       lastPatternPatchBody = body;
+      return _json(feature, 200);
+    }
+
+    if (path == '/document/parts/part-1/spring-features' && method == 'POST') {
+      springBodies.add(Map<String, dynamic>.from(body));
+      final feature = {
+        'type': 'spring',
+        'id': 'spring-${springBodies.length}',
+        ...body,
+        'plane_ref': body['plane_ref'] ?? {'fixed_plane': 'XY'},
+        'active_pitch': 4.0,
+        'total_coils': 7.0,
+        'solid_length': 6.5,
+        'locked': false,
+      };
+      features.add(feature);
+      return _json(feature, 201);
+    }
+    final springPatchMatch = RegExp(r'^/document/parts/part-1/spring-features/([^/]+)$').firstMatch(path);
+    if (springPatchMatch != null && method == 'PATCH') {
+      final feature = features.firstWhere((f) => f['id'] == springPatchMatch.group(1), orElse: () => {});
+      if (feature.isEmpty) return http.Response('not found: feature', 404);
+      springBodies.add(Map<String, dynamic>.from(body));
+      feature.addAll(body);
       return _json(feature, 200);
     }
 
@@ -1995,6 +2022,64 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Pattern 1'), findsOneWidget);
+  });
+
+  testWidgets('a Spring is created from the Add picker and edited from the Build Tree', (tester) async {
+    final backend = _FakeDocumentBackend(seedFeatures: []);
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byTooltip('Add'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Feature'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.ensureVisible(find.text('Sketch-based'));
+    await tester.tap(find.text('Sketch-based'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.ensureVisible(find.text('Spring'));
+    await tester.tap(find.text('Spring'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Create Spring'), findsOneWidget);
+    await tester.enterText(find.byKey(const ValueKey('spring-wire')), '0.3');
+    await tester.pump();
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.springBodies.isNotEmpty);
+    final created = backend.springBodies.single;
+    expect(created['wire_diameter'], 0.3);
+    expect(created['mean_diameter'], 10.0);
+    expect(created['start_end'], 'closed_ground');
+    expect(created['plane_ref'], {'fixed_plane': 'XY'});
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Spring 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Edit Spring'), findsOneWidget);
+    expect(find.byKey(const ValueKey('spring-readout')), findsOneWidget);
+    await tester.enterText(find.byKey(const ValueKey('spring-length')), '25');
+    await tester.pump();
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.springBodies.length == 2);
+    expect(backend.springBodies.last['free_length'], 25.0);
+    expect(backend.springBodies.last['wire_diameter'], 0.3);
   });
 
   testWidgets('bug report: a Helix opens for editing from the Build Tree, in diameters, and PATCHes radii',
