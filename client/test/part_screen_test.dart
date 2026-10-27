@@ -7052,6 +7052,19 @@ void main() {
       expect(pane, findsOneWidget);
     });
 
+    testWidgets('the Options menu holds the settings, and View is only the ribbon tab', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byKey(const ValueKey('menu-view')), findsNothing);
+      expect(find.text('View'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('menu-options')));
+      await tester.pump();
+      for (final label in ['Select edges', 'Tree pane', 'Controls…', 'Keyboard shortcuts']) {
+        expect(find.text(label), findsOneWidget, reason: label);
+      }
+      expect(find.text('Isometric'), findsNothing);
+    });
+
     testWidgets('the File menu lists the file actions', (tester) async {
       bigWindow(tester);
       await pumpScreen(tester, layout: desktop());

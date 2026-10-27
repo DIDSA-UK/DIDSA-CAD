@@ -24243,7 +24243,6 @@ class _PartScreenState extends State<PartScreen> {
   /// File and View menus, as a menu bar. The shortcut text is a label only: the keys themselves are handled by
   /// [CadShortcutScope], so none is registered here a second time.
   Widget _buildDesktopMenuBar(BuildContext context) {
-    final viewport = _viewportKey.currentState;
     Widget item(String label, VoidCallback? onPressed, {String? keys, bool? checked}) => MenuItemButton(
           onPressed: onPressed,
           leadingIcon: checked == null ? null : Icon(checked ? Icons.check_box_outlined : Icons.check_box_outline_blank, size: 18),
@@ -24251,8 +24250,6 @@ class _PartScreenState extends State<PartScreen> {
           child: Text(label),
         );
     VoidCallback? idle(Future<void> Function() action) => _busy ? null : () => unawaited(action());
-    VoidCallback? view(StandardView standardView) =>
-        viewport == null ? null : () => unawaited(viewport.animateToStandardView(standardView));
     final filter = _selectionFilter;
     return MenuBar(
       style: const MenuStyle(
@@ -24282,24 +24279,8 @@ class _PartScreenState extends State<PartScreen> {
           child: const Text('File'),
         ),
         SubmenuButton(
-          key: const ValueKey('menu-view'),
+          key: const ValueKey('menu-options'),
           menuChildren: [
-            item('Fit to window', viewport?.zoomToFit, keys: 'F'),
-            item('Front', view(StandardView.front), keys: 'Ctrl+1'),
-            item('Back', view(StandardView.back), keys: 'Ctrl+2'),
-            item('Left', view(StandardView.left), keys: 'Ctrl+3'),
-            item('Right', view(StandardView.right), keys: 'Ctrl+4'),
-            item('Top', view(StandardView.top), keys: 'Ctrl+5'),
-            item('Bottom', view(StandardView.bottom), keys: 'Ctrl+6'),
-            item('Isometric', view(StandardView.isometric), keys: 'Ctrl+7'),
-            item('Normal to', _normalToAction, keys: 'Ctrl+8'),
-            item('View cube', viewport == null ? null : () => unawaited(_showViewCube()), keys: 'Space'),
-            const Divider(height: 1),
-            item('Perspective', () => unawaited(_onPerspectiveChanged(!_isPerspective)), checked: _isPerspective),
-            item('Reference planes', _onToggleReferencePlanes, checked: !_referencePlanesHidden),
-            for (final mode in ViewportRenderMode.values)
-              item(mode.label, () => unawaited(_onRenderModeChanged(mode)), checked: _renderMode == mode),
-            const Divider(height: 1),
             item('Select vertices', () => _setVertexFilter(!filter.vertex), checked: filter.vertex),
             item('Select edges', () => _setEdgeFilter(!filter.edge), checked: filter.edge),
             item('Select faces', () => _setFaceFilter(!filter.face), checked: filter.face),
@@ -24313,8 +24294,13 @@ class _PartScreenState extends State<PartScreen> {
                 MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
               )),
             ),
+            item(
+              'Keyboard shortcuts',
+              () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+              keys: '?',
+            ),
           ],
-          child: const Text('View'),
+          child: const Text('Options'),
         ),
       ],
     );

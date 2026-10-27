@@ -121,8 +121,8 @@ L1 first; L2-L5 in order; L6 can run beside L3-L5.
   `LayoutModeHost` (in `MaterialApp.builder`: watches the window and the pointers, makes controls compact). With no host (a widget test
   that pumps a screen alone) every screen is the phone layout, so the existing suite is unchanged.
 - **Part screen, desktop layout** (`PartScreen._buildDesktopRibbon` and friends, `viewport3d/desktop_chrome.dart`):
-  an app bar with File and View menus (the same actions as the toolbar overlay, plus the selection filters, render modes and the
-  Controls screen), a Save button and the shortcut list; the ribbon tabs (Features, Sketch, Assembly, Evaluate, View) share the app bar row with File and View (the ribbon itself is 70 dp of buttons, 10% shorter than first built), whose buttons
+  an app bar with File and Options menus (File: the toolbar overlay's file actions; Options: the selection filters, tree pane,
+  background / colour / scene, Controls and the shortcut list - every view command is on the ribbon's View tab only), a Save button and the shortcut list; the ribbon tabs (Features, Sketch, Assembly, Evaluate, View) share the app bar row with File and View (the ribbon itself is 70 dp of buttons, 10% shorter than first built), whose buttons
   call the same actions as the FABs and sheets (`_runFeatureAction` is the Feature picker's own switch, now shared); a Part / Assembly
   switch on the ribbon that follows the lens; the tree docked in a resizable, foldable left pane (the same `FeatureTreePanel` /
   `AssemblyTreePanel` widgets with a `docked` flag - no slide, no handle, no Close button); a status bar (selection by kind, unsaved
