@@ -138,3 +138,19 @@ on P3.
   the client treats as "no placement saved" (and its PUT fails quietly with a message, so positions simply don't persist there).
 - A stronger model is not needed to plan this; the decisions that matter (save on the backend, sign rule, no undo) are already
   made. Reviewing P2's file-format change and P4's maths by someone who knows the solver is the useful second pair of eyes.
+
+## 6. The VR client (`DIDSA-UK/DIDSA-VR`, read 28 Oct 2026; not run)
+
+- **Backend changes are safe for VR and not needed by it.** The VR design table reads constraints as plain dictionaries
+  (`scripts/design_table/sketch_session.gd`: `constraints[str(c["id"])] = c`, then `c.get(...)`), so an extra optional `label` on a
+  constraint is ignored. `scripts/native_compose.gd` keeps each sketch dictionary as it is and re-posts it, so a saved
+  `label_placements` key passes through VR's import / compose path intact. VR never calls the new endpoint. No schema bump.
+- **Placement and dragging stay out of scope for VR.** It lays dimensions out itself (`scripts/design_table/dimension_layout.gd`,
+  a fixed `DIM_OFFSET`) and has no per-dimension placement and no dragging. After P2-P4 VR keeps its default layout. Reading a saved
+  placement in VR, and dragging labels in VR, would each be separate work in that repo.
+- **The sign bug reaches VR.** `SketchSession.dimension_text` prints `format_value(float(c["distance"]))` with no absolute value for
+  `line_distance` and `point_line_distance` dimensions. The ghost (candidate) dimensions already use `absf`, so only an existing
+  signed dimension shows a minus. The fix is one `absf` in `dimension_text` (and a headless test in `tests/sketch_methods.gd`
+  or `tests/sketch_session.gd`), in the VR repo, as its own commit. It needs no backend change.
+- VR rules to follow there (its `CLAUDE.md`): read `docs/status.md` and `tests/README.md` first, add any new test file to
+  `tests/run_all.sh` and the `tests/README.md` table, and say what was not verified (headless tests cannot judge the headset).
