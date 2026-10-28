@@ -219,6 +219,23 @@ void main() {
     expect(boundsOfMesh(mesh), isNull);
   });
 
+  test('boundsOfBodies counts edge-only bodies (a helix Curve feature)', () {
+    // Bug report ("zoom locked"): a helix has edges and no triangles; it must still size the
+    // zoom bounds, not leave them to a tiny sketch circle.
+    final helix = BodyMeshDto(
+      bodyId: 'helix',
+      source: 'computed',
+      isCurve: true,
+      mesh: MeshDto(vertices: [], normals: [], triangleIndices: [], edges: [5, 0, 0, -5, 0, 6]),
+    );
+    final bounds = boundsOfBodies([helix])!;
+
+    expect(bounds.center.x, closeTo(0, 1e-9));
+    expect(bounds.center.z, closeTo(3, 1e-9));
+    expect(bounds.boundingSphereRadius, closeTo(vm.Vector3(10, 0, 6).length / 2, 1e-9));
+    expect(boundsOfMesh(helix.mesh)!.boundingSphereRadius, closeTo(bounds.boundingSphereRadius, 1e-9));
+  });
+
   test('edgeSegmentsFromMesh groups the flat edges array into 6-float segment pairs', () {
     final mesh = MeshDto(
       vertices: [],

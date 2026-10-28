@@ -592,12 +592,26 @@ class HelixSegment:
 
 
 @dataclass
+class HelixPitchPoint:
+    """A variable-pitch helix's pitch `pitch` at axial distance `at` from its start (bug report:
+    "state pitch at different lengths and pitch varies smoothly between values"). A helix lists
+    them from `at = 0` up to its height (the last `at`); between them the pitch changes smoothly
+    (`app.document.helix_profile.pchip`), never beyond the values given. Every pitch has the same
+    sign: its sign is the direction along the axis, as for `HelixSegment`."""
+
+    at: float
+    pitch: float
+
+
+@dataclass
 class CurveFeature(Feature):
     """A 3D curve, fully determined by one of two construction methods,
     never more than one at once - mirrors `CreatePlaneFeature`'s "one
     dataclass, `router`-validated field combination per type" convention
     rather than splitting into `HelixFeature`/`IntersectionCurveFeature`:
-    - `HELIX`: `axis_ref`/`radius`/`segments`/`right_handed` set, `end_radius` optionally.
+    - `HELIX`: `axis_ref`/`radius`/`right_handed` set, `end_radius` optionally, and the pitch as
+      exactly one of `segments` (constant-pitch stretches) or `pitch_points` (a pitch that varies
+      smoothly with the distance along the axis).
     - `INTERSECTION`: `sketch_feature_id_a`/`profile_refs_a`/
       `sketch_feature_id_b`/`profile_refs_b` set - `profile_refs_a`/`_b`
       pick which entities of each Sketch form the profile to extrude and
@@ -628,6 +642,7 @@ class CurveFeature(Feature):
     radius: float | None = None
     end_radius: float | None = None
     segments: list["HelixSegment"] = field(default_factory=list)
+    pitch_points: list[HelixPitchPoint] = field(default_factory=list)
     right_handed: bool = True
     sketch_feature_id_a: str | None = None
     profile_refs_a: list[SketchEntityRef] = field(default_factory=list)
@@ -641,6 +656,53 @@ class CurveFeature(Feature):
     @property
     def produces(self) -> Produces:
         return Produces.CURVE
+
+
+class SpringEnd(str, Enum):
+    """How one end of a `SpringFeature` is finished (owner's feature request: "flat ends for springs
+    ... ground flat"): `OPEN` - the coils run at the working pitch right to the end; `CLOSED` - the
+    last coil is closed down onto its neighbour (a dead coil at the wire's own pitch) and the pitch
+    then rises smoothly to the working pitch; `CLOSED_GROUND` - closed, then ground flat square to
+    the axis so the spring stands on it."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+    CLOSED_GROUND = "closed_ground"
+
+
+@dataclass
+class SpringFeature(Feature):
+    """A helical compression spring, made from its numbers as one solid Body (owner's request: a
+    dedicated Spring feature rather than a helix and a sweep). It stands on `plane_ref`: the plane's
+    normal is the spring's axis, its origin the centre of the spring's base (the spring rises from
+    the plane by `free_length`), its x axis the direction the wire starts at.
+
+    `mean_diameter` is through the wire centre (outside diameter = mean + wire); `active_coils`
+    counts the coils that work, the dead end coils of a closed end are extra. Each end is a
+    `SpringEnd`; `right_handed` is the winding (counterclockwise viewed down the axis as it rises).
+    The geometry (`app.document.spring`) works out the working pitch that gives `free_length`."""
+
+    id: str
+    plane_ref: PlaneRef
+    mean_diameter: float
+    wire_diameter: float
+    free_length: float
+    active_coils: float
+    start_end: SpringEnd = SpringEnd.CLOSED_GROUND
+    finish_end: SpringEnd = SpringEnd.CLOSED_GROUND
+    right_handed: bool = True
+
+    @property
+    def type(self) -> str:
+        return "spring"
+
+    @property
+    def produces_solid_geometry(self) -> bool:
+        return True
+
+    @property
+    def produces(self) -> Produces:
+        return Produces.BODY
 
 
 @dataclass

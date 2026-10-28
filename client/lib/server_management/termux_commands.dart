@@ -17,6 +17,21 @@ class TermuxCommands {
   static const String condaEnv = 'didsa';
   static const String logFile = '~/didsa-backend.log';
 
+  /// What the `didsa` env must be able to import for the backend to start: `uvicorn`, and
+  /// `GeomFill_Gordon`, which exists only in pythonocc-core 8 (OCCT 8) - `app.document.loft_gordon`
+  /// imports it, so an env still on the older 7.9.x pin (built before `backend/environment.yml`
+  /// moved to 8.0.1.2) fails `import app.main` at start-up. Checking for the import, not just
+  /// `uvicorn`, is what lets a stale env be told apart from a usable one; bump this if the
+  /// backend starts needing something newer than that.
+  static const String envImportCheck = 'import uvicorn; from OCC.Core.GeomFill import GeomFill_Gordon';
+
+  /// Brings the `didsa` env in line with `backend/environment.yml` when it fails [envImportCheck]
+  /// (a no-op, and fast, when it already passes) - a git pull alone never touches conda packages.
+  /// Chains with `&&`: succeeds when nothing needed doing or the install succeeded.
+  static const String _envSyncScript =
+      '{ if ! micromamba run -n $condaEnv python -c "$envImportCheck" >/dev/null 2>&1; then '
+      'micromamba install -n $condaEnv -y -f $backendDir/environment.yml; fi; }';
+
   /// Anchored ("^..."), deliberately not a bare substring - pkill -f
   /// matches a process's *entire* command line, and proot has no real
   /// PID-namespace isolation (it's ptrace-based emulation, not namespaces),
@@ -106,7 +121,10 @@ class TermuxCommands {
         '&& git checkout $quotedBranch '
         // FETCH_HEAD (not "origin/$branch" interpolated again) - avoids a
         // third, unquoted embedding of the branch name in this script.
-        '&& git reset --hard FETCH_HEAD';
+        '&& git reset --hard FETCH_HEAD '
+        // A pull can bring code that needs newer conda packages than the env was built with
+        // (the OCCT 7 -> 8 move did); see [_envSyncScript].
+        '&& $_envSyncScript';
   }
 
   /// The address uvicorn listens on: inside the phone only, or every interface (see [startServer]'s `onWifi`).

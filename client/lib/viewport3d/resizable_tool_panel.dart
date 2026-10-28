@@ -115,6 +115,8 @@ class _ResizableToolPanelState extends State<ResizableToolPanel> {
 
   @override
   Widget build(BuildContext context) {
+    // Inside the desktop layout's dialog (a Helix, say) the panel is just the dialog's content.
+    if (AdaptiveSheetScope.isInside(context)) return _buildInDialog(context);
     if (LayoutModeScope.isDesktop(context)) return _buildDocked(context);
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -167,6 +169,27 @@ class _ResizableToolPanelState extends State<ResizableToolPanel> {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildInDialog(BuildContext context) {
+    return Material(
+      child: FocusTraversalGroup(
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _buildTitleRow(context, stacked: true),
+                const SizedBox(height: 12),
+                widget.child,
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 

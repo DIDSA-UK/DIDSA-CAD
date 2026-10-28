@@ -321,49 +321,33 @@ class MeshBounds {
   const MeshBounds({required this.center, required this.boundingSphereRadius});
 }
 
-/// Returns `null` for an empty mesh (no vertices) - callers fall back to the
-/// origin/fixed zoom bounds in that case, per [OrbitCamera].
-MeshBounds? boundsOfMesh(MeshDto mesh) {
-  if (mesh.vertices.isEmpty) return null;
-  final first = mesh.vertices.first;
-  var min = vm.Vector3(first[0], first[1], first[2]);
-  var max = min.clone();
+/// Every point that gives [mesh] its extent: its triangle vertices plus its
+/// edge polyline points. Bug fix (bug report: "zoom locked" after sketching a
+/// small circle on a plane at a helix's start): a Curve feature's Body (a
+/// helix, an intersection curve) is edges only, no triangles, so counting
+/// [MeshDto.vertices] alone made it zero-sized - the camera's zoom-out limit
+/// then came from the tiny sketch circle alone.
+Iterable<vm.Vector3> meshExtentPoints(MeshDto mesh) sync* {
   for (final vertex in mesh.vertices) {
-    final p = vm.Vector3(vertex[0], vertex[1], vertex[2]);
-    min = vm.Vector3(math.min(min.x, p.x), math.min(min.y, p.y), math.min(min.z, p.z));
-    max = vm.Vector3(math.max(max.x, p.x), math.max(max.y, p.y), math.max(max.z, p.z));
+    yield vm.Vector3(vertex[0], vertex[1], vertex[2]);
   }
-  return MeshBounds(
-    center: (min + max) * 0.5,
-    boundingSphereRadius: (max - min).length * 0.5,
-  );
+  final edges = mesh.edges;
+  for (var i = 0; i + 2 < edges.length; i += 3) {
+    yield vm.Vector3(edges[i], edges[i + 1], edges[i + 2]);
+  }
 }
 
+/// Returns `null` for an empty mesh (no vertices or edges) - callers fall
+/// back to the origin/fixed zoom bounds in that case, per [OrbitCamera].
+MeshBounds? boundsOfMesh(MeshDto mesh) => boundsOfPoints(meshExtentPoints(mesh));
+
 /// Prompt A3: [boundsOfMesh] extended across every Body (Prompt A1's
-/// `/mesh` array) - the true AABB of every Body's vertices combined, not an
+/// `/mesh` array) - the true AABB of every Body's points combined, not an
 /// approximation from unioning each Body's own bounding sphere. Returns
 /// `null` only when every Body is empty (or [bodies] itself is), same
 /// null-when-empty contract as [boundsOfMesh].
-MeshBounds? boundsOfBodies(List<BodyMeshDto> bodies) {
-  vm.Vector3? min;
-  vm.Vector3? max;
-  for (final body in bodies) {
-    for (final vertex in body.mesh.vertices) {
-      final p = vm.Vector3(vertex[0], vertex[1], vertex[2]);
-      min = min == null
-          ? p
-          : vm.Vector3(math.min(min.x, p.x), math.min(min.y, p.y), math.min(min.z, p.z));
-      max = max == null
-          ? p
-          : vm.Vector3(math.max(max.x, p.x), math.max(max.y, p.y), math.max(max.z, p.z));
-    }
-  }
-  if (min == null || max == null) return null;
-  return MeshBounds(
-    center: (min + max) * 0.5,
-    boundingSphereRadius: (max - min).length * 0.5,
-  );
-}
+MeshBounds? boundsOfBodies(List<BodyMeshDto> bodies) =>
+    boundsOfPoints(bodies.expand((body) => meshExtentPoints(body.mesh)));
 
 /// On-device feedback ("zoom level is clamped in the 3d sketcher... user
 /// cannot see a sketch above a certain size"): the same AABB-based
