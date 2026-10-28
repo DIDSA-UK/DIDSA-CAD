@@ -897,6 +897,11 @@ class PartViewport extends StatefulWidget {
   /// flutter_scene limitation note.
   final bool isPerspective;
 
+  /// Whether the top-right Reset view button is shown. The sketch screen
+  /// turns it off: it has its own Return to Default View in the same corner
+  /// (desktop sketcher feedback 2026-10-28, item 1).
+  final bool showResetViewButton;
+
   /// A3: far clip override from the View menu slider or the recentre auto-fit
   /// result - null means "let the camera's own setZoomBoundsForRadius manage
   /// it" (i.e. on cold start, before the user opens the slider or recentres).
@@ -1085,6 +1090,7 @@ class PartViewport extends StatefulWidget {
     this.suppressHoverFallback = false,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
+    this.showResetViewButton = true,
     this.farClip,
     this.onFarClipChanged,
     this.sketchLineLoopGroup,
@@ -2077,15 +2083,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.selectedEntities != oldWidget.selectedEntities) {
       setState(_syncCreatePlaneNodes);
     }
-    if (widget.sketchPlaneBasis != oldWidget.sketchPlaneBasis ||
+    final sketchPlaneChanged = !sameSketchPlaneBasis(widget.sketchPlaneBasis, oldWidget.sketchPlaneBasis);
+    if (sketchPlaneChanged ||
         widget.sketchPlaneSurfaceColourHex != oldWidget.sketchPlaneSurfaceColourHex ||
         widget.sketchPlaneSurfaceOpacity != oldWidget.sketchPlaneSurfaceOpacity) {
       setState(_syncSketchPlaneSurfaceNode);
     }
-    if (widget.sketchPlaneBasis != oldWidget.sketchPlaneBasis ||
+    if (sketchPlaneChanged ||
         widget.sketchPlaneGridVisible != oldWidget.sketchPlaneGridVisible) {
       setState(_syncSketchPlaneGridNode);
     }
+    // The grid square is part of the scene bounds (see [_sketchGridCorners]).
+    if (sketchPlaneChanged) _syncZoomBounds(boundsOfBodies(widget.bodies));
     if (widget.drawGhostPolylines != oldWidget.drawGhostPolylines ||
         widget.drawGhostColor != oldWidget.drawGhostColor) {
       setState(_syncDrawGhostNode);
@@ -2963,7 +2972,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Sketch-bounds case above already relies on, never moving the camera's
   /// own current position on its own.
   void _syncZoomBounds(MeshBounds? bodyBounds) {
-    final sketchPoints = widget.sketchGeometries.values.expand((geometry) => geometry.points);
+    // The sketch grid's corners count as sketch content: the camera's depth
+    // range is fitted to these bounds, and the grid must not be clipped.
+    final sketchPoints = [
+      ...widget.sketchGeometries.values.expand((geometry) => geometry.points),
+      ..._sketchGridCorners(),
+    ];
     final sketchBounds = boundsOfPoints(sketchPoints);
     final assemblyBounds = _assemblyInstanceBounds();
     final bodyRadius = bodyBounds?.boundingSphereRadius ?? 0;
@@ -3740,33 +3754,78 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _sketchPlaneSurfaceNode = null;
       return;
     }
-    // While the grid is shown the fill follows it (same centre and extent), so the grid never
-    // outgrows its own backing surface.
-    var gridSurface = widget.sketchPlaneGridVisible ? _sketchGridSurface : null;
-    if (gridSurface != null) {
-      // Ignore a grid left over from a different plane (the basis just changed).
-      final g = gridSurface.$1;
-      final samePlane = (g.origin - basis.origin).dot(basis.normal).abs() < 1e-6 &&
-          g.normal.dot(basis.normal) > 0.9999 &&
-          g.xAxis.dot(basis.xAxis) > 0.9999;
-      if (!samePlane) gridSurface = null;
-    }
     final node = buildSketchPlaneSurfaceNode(
-      gridSurface?.$1 ?? basis,
+      basis,
       color: vector4FromHex(widget.sketchPlaneSurfaceColourHex, opacity: widget.sketchPlaneSurfaceOpacity),
-      halfExtent: gridSurface?.$2 ?? sketchPlaneSurfaceSize / 2,
+      // The fill is the same fixed square as the grid, shown or not.
+      halfExtent: _sketchSurfaceHalfExtent = _sketchGridHalfExtent(),
       cameraSide: sketchPlaneCameraSide(basis, _camera.position),
     );
     _sketchPlaneSurfaceNode = node;
     scene.add(node);
   }
 
-  /// The centred basis and half extent the current grid was built with, which the plane surface
-  /// reuses (see [_syncSketchPlaneSurfaceNode]); null before the first grid build.
-  (SketchPlaneBasis, double)? _sketchGridSurface;
+  /// The half-width the current plane fill was built with.
+  double? _sketchSurfaceHalfExtent;
+
+  /// The sketch grid's half-width (see [sketchGridHalfExtentFor]): 50 mm,
+  /// grown in 50 mm steps to cover the active sketch. Cached against the
+  /// inputs, since [_syncZoomBounds] and both plane nodes all ask for it.
+  double _sketchGridHalfExtent() {
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) return sketchGridBaseHalfExtent;
+    final cache = _sketchGridHalfExtentCache;
+    if (cache != null &&
+        identical(cache.geometries, widget.sketchGeometries) &&
+        cache.sketchId == widget.activeSketchFeatureId &&
+        sameSketchPlaneBasis(cache.basis, basis)) {
+      return cache.halfExtent;
+    }
+    final geometry = widget.sketchGeometries[widget.activeSketchFeatureId];
+    final halfExtent = sketchGridHalfExtentFor(
+      basis,
+      geometry == null ? const <vm.Vector3>[] : sketchGeometryExtentPoints(geometry),
+    );
+    _sketchGridHalfExtentCache = (
+      geometries: widget.sketchGeometries,
+      sketchId: widget.activeSketchFeatureId,
+      basis: basis,
+      halfExtent: halfExtent,
+    );
+    return halfExtent;
+  }
+
+  ({Map<String, SketchGeometry3D> geometries, String sketchId, SketchPlaneBasis basis, double halfExtent})?
+      _sketchGridHalfExtentCache;
+
+  /// The corners of the sketch grid's square, in the same frame as the
+  /// bodies and sketch geometry, for [_syncZoomBounds]: the camera's depth
+  /// range must span the grid or orbiting clips it (desktop sketcher
+  /// feedback 2026-10-28, item 4). Empty while not sketching.
+  List<vm.Vector3> _sketchGridCorners() {
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) return const [];
+    final h = _sketchGridHalfExtent();
+    return [
+      for (final (x, y) in [(-h, -h), (h, -h), (h, h), (-h, h)]) sketchPointToWorld(basis, x, y),
+    ];
+  }
+
+  /// mm per screen pixel on the sketch plane at the view centre, for
+  /// [sketchGridShowsMinorLines]; NaN when the plane isn't under the centre
+  /// in perspective.
+  double _sketchGridUnitsPerPixel(SketchPlaneBasis basis) {
+    if (!_camera.isPerspective) return 2 * _camera.halfHeight / _viewportSize.height;
+    final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(_viewportCenter(), _viewportSize));
+    // Normalised, so the hit's t is a distance - see [pointAtRayDistance].
+    final hit = hitTestSketchPlane(vm.Ray.originDirection(ray.origin, ray.direction.normalized()), basis);
+    return hit == null ? double.nan : 2 * hit.$2 * math.tan(_camera.fovRadiansY / 2) / _viewportSize.height;
+  }
 
   /// P9: mirrors [_syncSketchPlaneSurfaceNode] for the grid - additionally
-  /// gated on [PartViewport.sketchPlaneGridVisible].
+  /// gated on [PartViewport.sketchPlaneGridVisible]. The grid is fixed to
+  /// the sketch plane (see [buildSketchGridNode]); only its minor lines and
+  /// its size depend on anything else.
   void _syncSketchPlaneGridNode() {
     final scene = _scene;
     if (scene == null) return;
@@ -3774,81 +3833,46 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (oldNode != null) scene.remove(oldNode);
     final basis = widget.sketchPlaneBasis;
     if (basis == null || !widget.sketchPlaneGridVisible) {
-      final hadSurface = _sketchGridSurface != null;
       _sketchPlaneGridNode = null;
       _sketchGridKey = null;
-      _sketchGridSurface = null;
-      if (hadSurface) _syncSketchPlaneSurfaceNode();
       return;
     }
-    // The grid follows the zoom level and view centre: cell size comes from
-    // the 1-2-5 ladder for the current mm-per-pixel, and the grid is centred
-    // on where the view centre meets the plane, snapped to the cell size.
-    var spacing = 2.5;
-    var centreX = 0.0;
-    var centreY = 0.0;
-    if (!_viewportSize.isEmpty) {
-      final camera = _camera.cameraFor(_viewportSize);
-      final centreRay = _toLocalRay(camera.screenPointToRay(_viewportCenter(), _viewportSize));
-      final hit = hitTestSketchPlane(centreRay, basis);
-      final unitsPerPixel = _camera.isPerspective
-          ? (hit == null ? double.nan : 2 * hit.$2 * math.tan(_camera.fovRadiansY / 2) / _viewportSize.height)
-          : 2 * _camera.halfHeight / _viewportSize.height;
-      spacing = sketchGridSpacingFor(unitsPerPixel);
-      if (hit != null) {
-        final (hitX, hitY) = worldPointToSketch(basis, hit.$1);
-        centreX = snapToGridSpacing(hitX, spacing);
-        centreY = snapToGridSpacing(hitY, spacing);
-      }
-    }
-    _sketchGridKey = (spacing, centreX, centreY);
-    final centredBasis = SketchPlaneBasis(
-      origin: basis.origin + basis.xAxis * centreX + basis.yAxis * centreY,
-      xAxis: basis.xAxis,
-      yAxis: basis.yAxis,
-      normal: basis.normal,
-    );
+    final halfExtent = _sketchGridHalfExtent();
+    final showMinorLines =
+        !_viewportSize.isEmpty && sketchGridShowsMinorLines(_sketchGridUnitsPerPixel(basis), halfExtent);
+    _sketchGridKey = (halfExtent, showMinorLines);
     final node = buildSketchGridNode(
-      centredBasis,
-      spacing: spacing,
-      extent: spacing * sketchGridHalfCells,
+      basis,
+      halfExtent: halfExtent,
+      showMinorLines: showMinorLines,
       cameraSide: sketchPlaneCameraSide(basis, _camera.position),
     );
     _sketchPlaneGridNode = node;
     scene.add(node);
-    _sketchGridSurface = (centredBasis, spacing * sketchGridHalfCells);
-    _syncSketchPlaneSurfaceNode();
   }
 
-  /// `(spacing, centreX, centreY)` the current grid node was built for -
+  /// `(halfExtent, showMinorLines)` the current grid node was built for -
   /// [_refreshSketchGridForCamera] rebuilds it only when this changes.
-  (double, double, double)? _sketchGridKey;
+  (double, bool)? _sketchGridKey;
 
-  /// Rebuilds the sketch grid when a camera move changed its cell size or
-  /// snapped centre. Called every build, so it must stay cheap when nothing
-  /// changed: one ray/plane hit and a record comparison.
+  /// Rebuilds the sketch grid when a zoom crossed the minor lines' threshold
+  /// or the sketch outgrew the grid, and the plane fill with it when its size
+  /// changed. Called every build, so it must stay cheap when nothing changed.
   void _refreshSketchGridForCamera() {
-    if (_scene == null || _sketchPlaneGridNode == null || _viewportSize.isEmpty) return;
+    if (_scene == null || _viewportSize.isEmpty) return;
     final basis = widget.sketchPlaneBasis;
     if (basis == null) return;
-    final camera = _camera.cameraFor(_viewportSize);
-    final hit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(_viewportCenter(), _viewportSize)), basis);
-    final unitsPerPixel = _camera.isPerspective
-        ? (hit == null ? double.nan : 2 * hit.$2 * math.tan(_camera.fovRadiansY / 2) / _viewportSize.height)
-        : 2 * _camera.halfHeight / _viewportSize.height;
-    final spacing = sketchGridSpacingFor(unitsPerPixel);
-    var centreX = 0.0;
-    var centreY = 0.0;
-    if (hit != null) {
-      final (hitX, hitY) = worldPointToSketch(basis, hit.$1);
-      centreX = snapToGridSpacing(hitX, spacing);
-      centreY = snapToGridSpacing(hitY, spacing);
+    final halfExtent = _sketchGridHalfExtent();
+    if (_sketchPlaneSurfaceNode != null && _sketchSurfaceHalfExtent != halfExtent) _syncSketchPlaneSurfaceNode();
+    if (_sketchPlaneGridNode != null) {
+      final key = (halfExtent, sketchGridShowsMinorLines(_sketchGridUnitsPerPixel(basis), halfExtent));
+      if (_sketchGridKey != key) _syncSketchPlaneGridNode();
     }
-    if (_sketchGridKey != (spacing, centreX, centreY)) _syncSketchPlaneGridNode();
     // The camera crossed the sketch plane (Orbit View): the layers must follow it to the other side or they would
     // end up behind the plane, hidden by whatever lies there.
     final side = _currentSketchPlaneSide();
     if (side != null && _sketchLiftSide != null && side != _sketchLiftSide) {
+      _syncSketchPlaneSurfaceNode();
       _syncSketchPlaneGridNode();
       _syncSketchNodes();
     }
@@ -4537,14 +4561,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // focused Part's own *local* mesh data - a direction, not a
           // point, so it needs the focus transform's rotation component
           // only ([vm.Matrix4.rotated3]) to become a real world-space
-          // normal consistent with `ray.at(faceHit.rayT)` (already
+          // normal consistent with the hit point (already
           // world-space, per [_toLocalRay]'s own rayT-invariance doc
           // comment) - passing the raw local normal alongside a world
           // point would otherwise anchor a new section plane facing the
           // wrong way the instant the focused Part is actually rotated.
           final worldNormal =
               (widget.focusWorldTransformMatrix ?? vm.Matrix4.identity()).rotated3(normal).normalized();
-          widget.onSectionPlacementTap!(ray.at(faceHit.rayT), worldNormal);
+          widget.onSectionPlacementTap!(pointAtRayDistance(ray, faceHit.rayT), worldNormal);
           return;
         }
       }
@@ -5192,6 +5216,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// edge/vertex hit, whatever the selection filter (navigation isn't
   /// selection), or null over empty space. Reference planes are skipped:
   /// they're large and mostly empty, so pivoting on one would feel random.
+  /// While sketching ([PartViewport.sketchPlaneBasis] set), the sketch plane
+  /// under the cursor is the pivot when nothing else is hit, so a middle
+  /// drag over the sketch turns about the point under the mouse too.
   vm.Vector3? _orbitPivotAt(Offset screenPosition) {
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(screenPosition, _viewportSize);
@@ -5206,11 +5233,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             fovRadiansY: _perspectiveFovOf(camera),
           );
     final hits = [meshHit, _hoverHitTestComponents(ray), _hoverHitTestComponentEntities(ray, camera)].whereType<HoverHit>();
-    if (hits.isEmpty) return null;
-    // `ray.at(t)` and `_toLocalRay(ray).at(t)` name the same point (see
-    // [_toLocalRay]), so every hit's rayT is read along the world ray.
+    if (hits.isEmpty) {
+      final basis = widget.sketchPlaneBasis;
+      if (basis == null) return null;
+      final localRay = _toLocalRay(ray);
+      final planeHit = hitTestSketchPlane(vm.Ray.originDirection(localRay.origin, localRay.direction.normalized()), basis);
+      return planeHit == null ? null : pointAtRayDistance(ray, planeHit.$2);
+    }
+    // The local and world rays trace the same line at the same speed (see
+    // [_toLocalRay]), so every hit's rayT is read along the world ray. rayT
+    // is a distance, so not `ray.at` - see [pointAtRayDistance].
     final nearest = hits.reduce((a, b) => a.rayT <= b.rayT ? a : b);
-    return ray.at(nearest.rayT);
+    return pointAtRayDistance(ray, nearest.rayT);
   }
 
   /// Item 2: "Drag moves cursor relatively (sensitivity-scaled, not 1:1);
@@ -7159,16 +7193,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // top-right, not top-left, so it doesn't collide with
             // PartScreen's feature-tree toolbar toggle button which lives
             // in that corner.
-            Positioned(
-              top: 8,
-              right: 8,
-              child: IconButton.filled(
-                tooltip: 'Reset view',
-                icon: const SvgIcon('assets/icons/viewport/viewport_reset_view.svg'),
-                // A3: also auto-fits farClip to the current mesh's AABB.
-                onPressed: () => setState(_doRecentre),
+            if (widget.showResetViewButton)
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton.filled(
+                  tooltip: 'Reset view',
+                  icon: const SvgIcon('assets/icons/viewport/viewport_reset_view.svg'),
+                  // A3: also auto-fits farClip to the current mesh's AABB.
+                  onPressed: () => setState(_doRecentre),
+                ),
               ),
-            ),
             // P41 (on-device feedback: "the cursor goes behind dimensions
             // and constraint glyphs and I can't grab them or pick a ghost
             // dimension"): moved ahead of both cursor crosshairs below (was

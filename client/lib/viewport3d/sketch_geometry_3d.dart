@@ -1500,32 +1500,103 @@ List<(vm.Vector3, vm.Vector3)> sketchGridLinesFrom(
   return segments;
 }
 
-/// Half-width of the adaptive sketch grid, in cells either side of its centre
-/// - the grid always spans `2 * sketchGridHalfCells` cells whatever the zoom,
-/// so its primitive count stays constant.
-const int sketchGridHalfCells = 20;
-
-/// Smallest on-screen cell size, in pixels, the adaptive grid will choose.
-const double sketchGridMinCellPixels = 24;
-
-/// The adaptive grid's cell size for a view where one screen pixel spans
-/// [unitsPerPixel] world units (mm): the smallest 1-2-5 x 10^n value whose
-/// cell is at least [minCellPixels] wide on screen. Falls back to 2.5 for a
-/// degenerate (zero, negative, NaN or infinite) scale.
-double sketchGridSpacingFor(double unitsPerPixel, {double minCellPixels = sketchGridMinCellPixels}) {
-  final target = unitsPerPixel * minCellPixels;
-  if (!target.isFinite || target <= 0) return 2.5;
-  final decade = math.pow(10, (math.log(target) / math.ln10).floor()).toDouble();
-  for (final step in const [1.0, 2.0, 5.0]) {
-    if (step * decade >= target) return step * decade;
-  }
-  return 10 * decade;
+/// Whether [a] and [b] describe the same plane and axes. [SketchPlaneBasis]
+/// has no value equality, and callers rebuild it on every build (the sketch
+/// screen's `SketchPlaneBasis.oriented`), so `!=` alone would always differ.
+bool sameSketchPlaneBasis(SketchPlaneBasis? a, SketchPlaneBasis? b) {
+  if (identical(a, b)) return true;
+  if (a == null || b == null) return false;
+  return a.origin == b.origin && a.xAxis == b.xAxis && a.yAxis == b.yAxis && a.normal == b.normal;
 }
 
-/// Snaps [value] to the nearest multiple of [spacing], so a grid recentred
-/// on the view keeps its lines on multiples of the spacing from the sketch
-/// origin and does not appear to slide while panning.
-double snapToGridSpacing(double value, double spacing) => (value / spacing).roundToDouble() * spacing;
+/// The sketch grid is a fixed square on the sketch plane, centred on the
+/// sketch origin (desktop sketcher feedback 2026-10-28, items 3 and 4). It
+/// used to follow the zoom and recentre on the view in cell-sized jumps,
+/// which made it stutter while panning; now nothing but a zoom across
+/// [sketchGridMinorMinPixels] or the sketch growing past it rebuilds it.
+///
+/// Lines every [sketchGridMajorSpacing] mm, always drawn.
+const double sketchGridMajorSpacing = 10;
+
+/// Fainter lines every [sketchGridMinorSpacing] mm, drawn only when zoomed
+/// in far enough to read them - see [sketchGridShowsMinorLines].
+const double sketchGridMinorSpacing = 1;
+
+/// The grid's smallest half-width: a 100 x 100 mm square. It grows in steps
+/// of this to cover the sketch - see [sketchGridHalfExtentFor].
+const double sketchGridBaseHalfExtent = 50;
+
+/// Minor lines appear once they are at least this many pixels apart.
+const double sketchGridMinorMinPixels = 8;
+
+/// Minor lines are left out of a grid wider than this (half-width, mm), to
+/// keep the line count bounded: at most 501 a side.
+const double sketchGridMinorMaxHalfExtent = 250;
+
+/// The grid's half-width for a sketch whose geometry includes [points]
+/// (world space, on [basis]): the furthest coordinate along either sketch
+/// axis, rounded up to a multiple of [sketchGridBaseHalfExtent], and never
+/// less than that. Geometry at x = 130 mm gives 150 (a 300 mm square).
+double sketchGridHalfExtentFor(SketchPlaneBasis basis, Iterable<vm.Vector3> points) {
+  var furthest = 0.0;
+  for (final point in points) {
+    final (x, y) = worldPointToSketch(basis, point);
+    furthest = math.max(furthest, math.max(x.abs(), y.abs()));
+  }
+  // The small allowance keeps geometry sitting exactly on a step (50 mm)
+  // from tipping into the next one through rounding.
+  final steps = (furthest / sketchGridBaseHalfExtent - 1e-6).ceil();
+  return sketchGridBaseHalfExtent * math.max(1, steps);
+}
+
+/// Every drawn vertex of [geometry] (points, line ends, and every curve's
+/// tessellation), for sizing the grid around it - see
+/// [sketchGridHalfExtentFor].
+Iterable<vm.Vector3> sketchGeometryExtentPoints(SketchGeometry3D geometry) sync* {
+  yield* geometry.points;
+  for (final (start, end) in geometry.lineSegments) {
+    yield start;
+    yield end;
+  }
+  for (final polylines in [
+    geometry.circlePolygons,
+    geometry.arcPolylines,
+    geometry.ellipsePolygons,
+    geometry.ellipseArcPolylines,
+    geometry.splinePolylines,
+    geometry.textPolygons,
+  ]) {
+    for (final polyline in polylines) {
+      yield* polyline;
+    }
+  }
+}
+
+/// Whether the minor lines show at a scale of [unitsPerPixel] mm per screen
+/// pixel, on a grid of [halfExtent] - see [sketchGridMinorMinPixels] and
+/// [sketchGridMinorMaxHalfExtent].
+bool sketchGridShowsMinorLines(double unitsPerPixel, double halfExtent) =>
+    unitsPerPixel.isFinite &&
+    unitsPerPixel > 0 &&
+    sketchGridMinorSpacing / unitsPerPixel >= sketchGridMinorMinPixels &&
+    halfExtent <= sketchGridMinorMaxHalfExtent;
+
+/// The offsets from the centre, in `[-extent, extent]`, of every grid line
+/// [spacing] apart, leaving out the multiples of [skipMultiplesOf] (the
+/// minor lines skip where a major line already is).
+List<double> sketchGridLineOffsets(double spacing, double extent, {double? skipMultiplesOf}) {
+  final steps = (extent / spacing + 1e-9).floor();
+  final offsets = <double>[];
+  for (var i = -steps; i <= steps; i++) {
+    final offset = i * spacing;
+    if (skipMultiplesOf != null) {
+      final ratio = offset / skipMultiplesOf;
+      if ((ratio - ratio.roundToDouble()).abs() < 1e-9) continue;
+    }
+    offsets.add(offset);
+  }
+  return offsets;
+}
 
 /// P9: neutral, subdued grid-line colour and width - deliberately distinct
 /// from [sketchLineColor]/[sketchLineWidth] so grid lines read as backdrop
@@ -1534,25 +1605,71 @@ double snapToGridSpacing(double value, double spacing) => (value / spacing).roun
 final vm.Vector4 sketchGridLineColor = vm.Vector4(0.6, 0.6, 0.6, 0.5);
 const double sketchGridLineWidth = 1.0;
 
-/// P9: how many pieces [buildSketchGridNode] splits each full grid line
-/// into, purely so each piece can carry its own fade alpha (a single
-/// [PolylineGeometry] segment has one constant-alpha material, no per-vertex
-/// gradient) - see [buildSketchGridNode]'s own doc comment.
-const int _sketchGridFadeSteps = 6;
+/// The minor lines' centre alpha, a fraction of [sketchGridLineColor]'s.
+const double sketchGridMinorAlphaFactor = 0.4;
 
-/// P9: [sketchGridLinesFrom]'s GPU-facing counterpart - on-device feedback:
-/// the grid (like P8's surface) should stay solid through the interior and
-/// only fade in the outer ~20% (see [_edgeFadeAlpha]). Splits each full line
-/// (from [sketchGridLinesFrom], called against a *local* - zero-origin -
-/// copy of [basis] so its segments come back relative to the origin, per
-/// [_sketchPlaneNodeTransform]'s own doc comment) into [_sketchGridFadeSteps]
-/// short pieces, each given its own alpha from [sketchGridLineColor]'s own
-/// alpha, tapered by that piece's own distance from the centre relative to
-/// [extent].
+/// Every grid line at [offsets] across a square of half-width [extent] on
+/// [basis], batched into one polyline: each line is its own run of points,
+/// joined to the next by a zero-width connector (the same trick
+/// `flutter_scene`'s own dashed polylines use), so the whole set is one draw
+/// call instead of one per line. Each point carries the edge-fade alpha
+/// ([_edgeFadeAlpha], by Chebyshev distance from the centre, so the whole
+/// square's edge fades evenly) times [alpha]; the fade is piecewise linear
+/// along a line, with its corners at the points emitted, so the per-vertex
+/// colour reproduces it exactly. Lines that would be invisible (the outer
+/// edge, fully faded) are left out. Null when nothing is left.
+({List<vm.Vector3> points, List<double> widths, List<vm.Vector4> colors})? sketchGridPolyline(
+  SketchPlaneBasis basis,
+  List<double> offsets, {
+  required double extent,
+  required double alpha,
+  double width = sketchGridLineWidth,
+}) {
+  final points = <vm.Vector3>[];
+  final widths = <double>[];
+  final colors = <vm.Vector4>[];
+  void emit(vm.Vector3 point, double pointWidth, double pointAlpha) {
+    points.add(point);
+    widths.add(pointWidth);
+    colors.add(vm.Vector4(1, 1, 1, pointAlpha));
+  }
+
+  double fadeAt(double along, double across) => _edgeFadeAlpha(math.max(along.abs(), across.abs()) / extent) * alpha;
+
+  for (final offset in offsets) {
+    // Where the fade along this line has a corner: the square's edge, the
+    // start of the faded band, and where this line's own offset takes over.
+    final stops = <double>{-extent, extent, -0.8 * extent, 0.8 * extent, -offset.abs(), offset.abs()}
+        .where((s) => s >= -extent && s <= extent)
+        .toList()
+      ..sort();
+    if (stops.every((s) => fadeAt(s, offset) < 0.01)) continue;
+    for (final horizontal in const [true, false]) {
+      vm.Vector3 at(double s) =>
+          horizontal ? sketchPointToWorld(basis, s, offset) : sketchPointToWorld(basis, offset, s);
+      final first = at(stops.first);
+      final last = at(stops.last);
+      emit(first, 0, 0);
+      for (final s in stops) {
+        emit(at(s), width, fadeAt(s, offset));
+      }
+      emit(last, 0, 0);
+    }
+  }
+  if (points.length < 2) return null;
+  return (points: points, widths: widths, colors: colors);
+}
+
+/// P9: the sketch grid's GPU-facing node - the major lines and, when
+/// [showMinorLines], the minor ones, each batched into one polyline by
+/// [sketchGridPolyline] (against a zero-origin copy of [basis], so the
+/// points come back relative to the origin, per
+/// [_sketchPlaneNodeTransform]'s own doc comment). The grid stays solid
+/// through the interior and fades over its outer 20 %, like P8's surface.
 Node buildSketchGridNode(
   SketchPlaneBasis basis, {
-  double spacing = 2.5,
-  double extent = _sketchPlaneSurfaceHalfSize,
+  double halfExtent = sketchGridBaseHalfExtent,
+  bool showMinorLines = false,
   double cameraSide = 1.0,
 }) {
   final localBasis = SketchPlaneBasis(
@@ -1561,34 +1678,33 @@ Node buildSketchGridNode(
     yAxis: basis.yAxis,
     normal: basis.normal,
   );
-  final segments = sketchGridLinesFrom(localBasis, spacing: spacing, extent: extent);
   final primitives = <MeshPrimitive>[];
-  for (final segment in segments) {
-    final delta = segment.$2 - segment.$1;
-    for (var i = 0; i < _sketchGridFadeSteps; i++) {
-      final t0 = i / _sketchGridFadeSteps;
-      final t1 = (i + 1) / _sketchGridFadeSteps;
-      final p1 = segment.$1 + delta * t0;
-      final p2 = segment.$1 + delta * t1;
-      final mid = segment.$1 + delta * ((t0 + t1) / 2);
-      // On-device feedback: fading by Euclidean distance from the centre
-      // faded the corners too early (they're `extent * sqrt(2)` from
-      // centre) while the edge midpoints (only `extent` away) stayed
-      // solid - a mismatch with the square's own actual boundary. Chebyshev
-      // distance (the larger of the two local-axis coordinates) reaches
-      // `extent` everywhere exactly on the boundary, fading the whole
-      // square edge - corners included - uniformly instead.
-      final localX = mid.dot(basis.xAxis);
-      final localY = mid.dot(basis.yAxis);
-      final normalizedDist = math.max(localX.abs(), localY.abs()) / extent;
-      final alpha = _edgeFadeAlpha(normalizedDist) * sketchGridLineColor.w;
-      if (alpha < 0.01) continue;
-      final material = NormalDepthUnlitMaterial()
-        ..alphaMode = AlphaMode.blend
-        ..baseColorFactor = vm.Vector4(sketchGridLineColor.x, sketchGridLineColor.y, sketchGridLineColor.z, alpha);
-      primitives.add(MeshPrimitive(PolylineGeometry([p1, p2], width: sketchGridLineWidth), material));
-    }
+  void addLayer(List<double> offsets, double alpha) {
+    final polyline = sketchGridPolyline(localBasis, offsets, extent: halfExtent, alpha: alpha);
+    if (polyline == null) return;
+    // The colour and alpha come from the vertices; the material only
+    // supplies the grey.
+    final material = NormalDepthUnlitMaterial()
+      ..alphaMode = AlphaMode.blend
+      ..baseColorFactor = vm.Vector4(sketchGridLineColor.x, sketchGridLineColor.y, sketchGridLineColor.z, 1);
+    primitives.add(MeshPrimitive(
+      PolylineGeometry(
+        polyline.points,
+        width: sketchGridLineWidth,
+        perVertexWidth: polyline.widths,
+        perVertexColor: polyline.colors,
+      ),
+      material,
+    ));
   }
+
+  if (showMinorLines) {
+    addLayer(
+      sketchGridLineOffsets(sketchGridMinorSpacing, halfExtent, skipMultiplesOf: sketchGridMajorSpacing),
+      sketchGridLineColor.w * sketchGridMinorAlphaFactor,
+    );
+  }
+  addLayer(sketchGridLineOffsets(sketchGridMajorSpacing, halfExtent), sketchGridLineColor.w);
   return Node(
     name: 'sketch-plane-grid',
     localTransform: _sketchPlaneNodeTransform(basis, _sketchPlaneGridRenderEpsilon, cameraSide),

@@ -269,6 +269,13 @@ class HoverHit {
   const HoverHit({required this.entity, required this.rayT, this.pixelDistance});
 }
 
+/// The point [distance] along [ray], measured in world units. Every hit test
+/// here normalises the ray before it measures, so [HoverHit.rayT] is a
+/// distance; `Camera.screenPointToRay`'s direction is the whole near-to-far
+/// span, not a unit vector, so `ray.at(hit.rayT)` lands far beyond the hit
+/// (desktop sketcher feedback 2026-10-28, item 2). Use this instead.
+vm.Vector3 pointAtRayDistance(vm.Ray ray, double distance) => ray.origin + ray.direction.normalized() * distance;
+
 /// World-space size of one screen pixel at [depth] (distance along the
 /// camera's forward ray) - lets a 3D world-space distance be compared
 /// against a screen-space pixel radius without needing the full

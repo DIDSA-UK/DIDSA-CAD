@@ -16,6 +16,17 @@ Line numbers drift, so search for the named symbol if a line is off.
 
 Suggested order: **2 → 1 → 3 + 4** (3 and 4 are one change).
 
+## Progress
+
+All four items are implemented on branch `ccr-69508b56-sckw27` with the recommended answers to the open questions
+below. None has been looked at on a device.
+
+| Item | What landed | Tests |
+|---|---|---|
+| 1 | `PartViewport.showResetViewButton` (the sketch screen passes `false`); no leading gap in the sketch FAB column when Exit Sketch is hidden | None: the button only builds once the GPU scene exists, which tests here do not have |
+| 2 | `pointAtRayDistance` (`selection_hit_test.dart`) for the orbit pivot and the section placement tap; the sketch plane is the pivot when nothing else is hit | `test/orbit_pivot_ray_test.dart` (orthographic and perspective) |
+| 3, 4 | Fixed grid at the sketch origin: 10 mm lines, 1 mm lines when 1 mm is at least 8 px (grids up to ±250 mm), grows in 50 mm half-width steps to cover the sketch; the plane fill is the same square; each line set is one batched polyline; the grid's corners are in `_syncZoomBounds` | `test/sketch_grid_test.dart` |
+
 ---
 
 ## 1. The Reset view FAB is partly covered
