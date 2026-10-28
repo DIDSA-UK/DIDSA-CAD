@@ -7,6 +7,7 @@ import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 
 import '../api/sketch_api_client.dart';
 import '../viewport3d/mouse_navigation.dart' show SelectClick;
+import 'dimension_text.dart';
 import 'dof_analysis.dart';
 import 'marquee_selection.dart';
 import 'projector/sketch_drag_stats.dart';
@@ -10960,6 +10961,9 @@ class SketchController extends ChangeNotifier {
     if (current.kind != SelectionKind.constraint) return;
 
     final oldValue = selectedConstraintValue;
+    // The label shows the magnitude only, so the typed number is a magnitude
+    // too: it keeps the current side, a leading minus flips it.
+    if (oldValue != null) value = resolveDimensionSign(value, oldValue);
     // See [autoFitRequestToken]'s own doc comment - only a DistanceConstraint
     // triggers the backend's whole-sketch scale (LineDistance/PointLine
     // Distance/Angle never do, regardless of [_isFirstDimension]), and must
@@ -14768,7 +14772,7 @@ class SketchController extends ChangeNotifier {
         final existing = _findAngleConstraint(target.lineAId!, target.lineBId!);
         if (existing != null) {
           final oldValue = existing.angleDegrees;
-          await _api.updateConstraintValue(_sketchId!, existing.id, value);
+          await _api.updateConstraintValue(_sketchId!, existing.id, resolveDimensionSign(value, oldValue));
           _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
         } else {
           final constraint =
@@ -14793,7 +14797,7 @@ class SketchController extends ChangeNotifier {
         final existing = _findLineDistanceConstraint(target.lineAId!, target.lineBId!);
         if (existing != null) {
           final oldValue = existing.distance;
-          await _api.updateConstraintValue(_sketchId!, existing.id, value);
+          await _api.updateConstraintValue(_sketchId!, existing.id, resolveDimensionSign(value, oldValue));
           _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
         } else {
           final constraint = await _api.createLineDistanceConstraint(
@@ -17744,7 +17748,7 @@ class SketchController extends ChangeNotifier {
               rim: (rim.x, rim.y),
               radius: c.distance,
               isDiameter: showsDiameter,
-              text: showsDiameter ? '⌀${(c.distance * 2).toStringAsFixed(2)}' : 'R${c.distance.toStringAsFixed(2)}',
+              text: showsDiameter ? '⌀${dimensionValueText(c.distance * 2)}' : 'R${dimensionValueText(c.distance)}',
               // P44f bug fix ("the arrow should remain at the same angular
               // position when orbiting" - reported against a dragged
               // dimension): the leader's own angle now comes from
@@ -17780,7 +17784,7 @@ class SketchController extends ChangeNotifier {
             pointA: (a.x, a.y),
             pointB: (b.x, b.y),
             orientation: c.orientation,
-            text: displayValue.toStringAsFixed(2),
+            text: dimensionValueText(displayValue),
             labelOffset: labelOffset,
             sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
             sketchLocalAlongOffset: linearAlongOffsetFor(entry.key),
@@ -17810,7 +17814,7 @@ class SketchController extends ChangeNotifier {
             line1End: (angleLine1End.x, angleLine1End.y),
             line2Start: (angleLine2Start.x, angleLine2Start.y),
             line2End: (angleLine2End.x, angleLine2End.y),
-            text: '${c.angleDegrees.toStringAsFixed(1)}°',
+            text: '${dimensionValueText(c.angleDegrees, decimals: 1)}°',
             labelOffset: labelOffset,
             sketchLocalArcRadius: angleArcRadiusFor(entry.key),
             sketchLocalAlongOffset: angleAlongOffsetFor(entry.key),
@@ -17831,7 +17835,7 @@ class SketchController extends ChangeNotifier {
             line1End: (line1End.x, line1End.y),
             line2Start: (line2Start.x, line2Start.y),
             line2End: (line2End.x, line2End.y),
-            text: c.distance.toStringAsFixed(2),
+            text: dimensionValueText(c.distance),
             labelOffset: labelOffset,
             sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
             sketchLocalAlongOffset: lineDistanceAlongOffsetFor(entry.key),
@@ -17920,7 +17924,7 @@ class SketchController extends ChangeNotifier {
             pointA: (point.x, point.y),
             pointB: foot,
             orientation: null,
-            text: c.distance.toStringAsFixed(2),
+            text: dimensionValueText(c.distance),
             labelOffset: labelOffset,
             sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
             sketchLocalAlongOffset: linearAlongOffsetFor(entry.key),

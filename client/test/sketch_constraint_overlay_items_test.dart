@@ -113,6 +113,23 @@ void main() {
     expect(item.line2End, (5.0, 3.0));
   });
 
+  test('a negative (other side) LineDistance, PointLineDistance or Angle dimension is labelled with its magnitude', () {
+    controller.points['p2'] = const SketchPointView(id: 'p2', x: 0, y: 3);
+    controller.points['p3'] = const SketchPointView(id: 'p3', x: 5, y: 3);
+    controller.points['pt'] = const SketchPointView(id: 'pt', x: 2, y: 3);
+    controller.lines['l1'] = const SketchLineView(id: 'l1', startPointId: 'p2', endPointId: 'p3');
+    controller.constraints['c0'] =
+        const LineDistanceConstraintDto(id: 'c0', line1Id: 'l0', line2Id: 'l1', distance: -3.0);
+    controller.constraints['c1'] =
+        const PointLineDistanceConstraintDto(id: 'c1', pointId: 'pt', lineId: 'l0', distance: -3.0);
+    controller.constraints['c2'] =
+        const AngleConstraintDto(id: 'c2', line1Id: 'l0', line2Id: 'l1', angleDegrees: -30.0);
+
+    final texts = {for (final item in controller.constraintOverlayItems()) item.constraintId: _text(item)};
+
+    expect(texts, {'c0': '3.00', 'c1': '3.00', 'c2': '30.0°'});
+  });
+
   test(
       'an Angle constraint becomes a ConstraintAngleDimensionItem carrying both Lines\' own '
       'endpoints (bug fix: this used to be a plain floating "N.N°" chip with no leader/extension '
@@ -188,3 +205,10 @@ void main() {
     expect(controller.constraintOverlayItems(), isEmpty);
   });
 }
+
+String? _text(ConstraintOverlayItem item) => switch (item) {
+      ConstraintLinearDimensionItem i => i.text,
+      ConstraintLineDistanceDimensionItem i => i.text,
+      ConstraintAngleDimensionItem i => i.text,
+      _ => null,
+    };

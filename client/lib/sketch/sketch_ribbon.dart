@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import 'dimension_text.dart';
 import 'sketch_controller.dart';
 
 /// The contextual action panel for whatever is currently selected (one or
@@ -855,7 +856,7 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
 
   String _formatValue(double? value) {
     if (value == null) return '';
-    return value.toStringAsFixed(2);
+    return dimensionValueText(value);
   }
 
   void _submit() {

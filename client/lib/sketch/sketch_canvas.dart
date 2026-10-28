@@ -10,6 +10,7 @@ import '../api/sketch_api_client.dart';
 import '../viewport3d/controls_preferences.dart';
 import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/keyboard_shortcuts.dart' show CadShortcut, withShortcut;
+import 'dimension_text.dart';
 import 'marquee_selection.dart';
 import 'pattern_mirror_expansion.dart';
 import 'plane_indicator.dart';
@@ -2299,7 +2300,7 @@ class _GhostValueEditorState extends State<GhostValueEditor> {
   void initState() {
     super.initState();
     final current = widget.controller.currentGhostValue(widget.ghost);
-    final text = current == null ? '' : current.toStringAsFixed(2);
+    final text = current == null ? '' : dimensionValueText(current);
     // On-device feedback ("the current dimension should be highlighted so
     // the user can immediately type over it"): pre-selecting the whole
     // value (not just prefilling it with the cursor at the end, as before)
@@ -3031,7 +3032,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, displayValue.toStringAsFixed(2), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(displayValue), color, plainBlackText: true);
   }
 
   /// Radial (radius/diameter) dimension for a Circle or Arc's
@@ -3075,7 +3076,7 @@ class _SketchPainter extends CustomPainter {
       _drawDimensionLabel(
         canvas,
         geometry.labelCenter,
-        '⌀${(c.distance * 2).toStringAsFixed(2)}',
+        '⌀${dimensionValueText(c.distance * 2)}',
         color,
         plainBlackText: true,
       );
@@ -3091,7 +3092,7 @@ class _SketchPainter extends CustomPainter {
       _drawDimensionLabel(
         canvas,
         geometry.labelCenter,
-        'R${c.distance.toStringAsFixed(2)}',
+        'R${dimensionValueText(c.distance)}',
         color,
         plainBlackText: true,
       );
@@ -3270,7 +3271,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(c.distance), color, plainBlackText: true);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
@@ -3315,7 +3316,7 @@ class _SketchPainter extends CustomPainter {
   /// for the same degenerate/near-parallel/implausibly-far-vertex cases
   /// [_layoutGhost]'s own angle preview already guards against.
   void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color, Offset labelOffset) {
-    final text = '${c.angleDegrees.toStringAsFixed(1)}°';
+    final text = '${dimensionValueText(c.angleDegrees, decimals: 1)}°';
     final midA = _lineMidpointScreen(c.line1Id);
     final midB = _lineMidpointScreen(c.line2Id);
     if (midA == null || midB == null) return;
@@ -3458,7 +3459,7 @@ class _SketchPainter extends CustomPainter {
 
     final delta = footScreen - pointScreen;
     if (delta.distance < 1e-6) {
-      _drawDimensionLabel(canvas, pointScreen + labelOffset, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+      _drawDimensionLabel(canvas, pointScreen + labelOffset, dimensionValueText(c.distance), color, plainBlackText: true);
       return;
     }
     final normal = _canonicalPerpendicular(delta);
@@ -3475,7 +3476,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(c.distance), color, plainBlackText: true);
   }
 
   Offset? _lineMidpointScreen(String lineId) {
