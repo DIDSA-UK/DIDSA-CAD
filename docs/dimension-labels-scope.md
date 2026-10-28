@@ -1,6 +1,6 @@
 # Dimension labels: saved placement, one drag routine, no minus signs - scope
 
-**Status:** planned 28 Oct 2026, not started. Follows the mouse sketch-entity drag (`docs/desktop-input-scope.md`,
+**Status:** built 28 Oct 2026 on `claude/flutter-desktop-mode-ui-pxmq0q` (P1 to P5; see "As built" at the end for what differs from this plan and what was not verified). Follows the mouse sketch-entity drag (`docs/desktop-input-scope.md`,
 "Mouse drag of sketch entities"), which left dimension labels out in the 3D sketch view.
 
 **Owner's decisions (28 Oct 2026):**
@@ -154,3 +154,75 @@ on P3.
   or `tests/sketch_session.gd`), in the VR repo, as its own commit. It needs no backend change.
 - VR rules to follow there (its `CLAUDE.md`): read `docs/status.md` and `tests/README.md` first, add any new test file to
   `tests/run_all.sh` and the `tests/README.md` table, and say what was not verified (headless tests cannot judge the headset).
+
+## 7. As built (28 Oct 2026)
+
+Commits on `claude/flutter-desktop-mode-ui-pxmq0q`, in order: P1 (sign), P2 (backend), P3 + P4 (client placement and drag), P5 (docs). The VR sign fix is
+on `claude/dimension-sign-fix` in `DIDSA-UK/DIDSA-VR`. Where the plan was silent or turned out wrong, the smallest sensible choice was made and is recorded here.
+
+**Sign (P1)**
+
+- `dimensionValueText` and `resolveDimensionSign` are in `client/lib/sketch/dimension_text.dart`. The label painters (2D and 3D overlay items), the edit-field pre-fill
+  and the ribbon's Edit Dimension field all use it. Reference dimensions (`(12.5)`) were left alone: they are measured, never signed.
+- **The "leading minus flips the side" rule has no effect on the backend today.** `PATCH .../constraints/{id}` for a line-distance or point-line dimension takes the
+  side from the geometry's current side and stores `-abs(value)` or `abs(value)` (`update_constraint_value` in `backend/app/sketch/router.py`), whatever sign was sent. The
+  client sends the resolved signed value as specified, so the rule is in place for when the server honours it, but a typed `-5` currently keeps the current side. Making
+  the flip real is a backend change to that route (and a decision on whether flipping a side should move the geometry); it was not made here.
+- Angles show their magnitude (plan 2.5, "to confirm"): done on the stated assumption. Nothing reads an angle as reflex.
+- The AI plan summary, tooltips and status text were checked for printed constraint values: none print a signed dimension.
+
+**Backend (P2)**
+
+- `Sketch.label_placements` plus `live_label_placements()`. A placement is **not removed at each of the many places a constraint is deleted** (cascades, shape
+  deletes, undo of creation all pop from `constraints` directly). Instead the placement of a constraint that no longer exists is ignored everywhere it is read: not
+  written to the native format, not loaded, not returned in a response; the explicit `DELETE .../constraints/{id}` also drops it. Same outcome, one rule.
+- Nothing in the backend copies a sketch's constraints (no duplicate-sketch route), so there was no copy handling to add; sketch export / import and the document
+  native export go through `sketch_to_dict` / `sketch_from_dict`, which carry the key. A sketch import keeps the constraint ids, so its placements survive.
+- `PUT .../constraints/{id}/label` returns 204 and accepts the known keys `offset`, `along`, `angle`, `leg`, `radius` (unknown keys 422, empty body 422). It does not
+  check that a key suits the dimension's kind. A NaN or infinity cannot be refused over the wire with a clean 422 (FastAPI fails to encode its own error body for any float
+  field in this app); the model refuses them (tested there) and the app's clients cannot send one.
+
+**Client (P3, P4)**
+
+- Placement semantics (all sketch units): see `LabelDragResolver`'s doc comment. They are the 3D view's existing sketch-local fields, with two changes. The general
+  linear dimension's offset is along the left-hand normal of A to B **in sketch space** (it used to be along a screen-canonical normal whose sign could flip as the camera
+  orbited), and horizontal / vertical `along` is the distance in the axis's positive direction (the painters apply the A/B order themselves).
+- **Angle placement is exact, unlike the old drag.** `radius` and `along` are the two coordinates of the label's position in the frame (middle of the rays, chord), so the label
+  lands under the pointer. The old drag took the radius from the distance to the vertex and the along from a projection, which put the label slightly off the pointer.
+- **Pixel offsets stay for the relationship glyphs only** (V, H, parallel, perpendicular, equal, collinear, coincident, fixed, point-on-...). They are not dimensions,
+  have no placement, are not saved, and are moved by the existing `updateLabelDrag` pixel path. `labelUsesPlacement(id)` says which is which. The plan said the
+  pixel maps and the zoom reference go; for dimensions they have, for glyphs they remain.
+- **The flat canvas keeps its pixel layouts and converts.** Rather than lay every kind out a second time, `dimensionLabelPixelOffset` (`sketch_canvas.dart`) turns a placement into the
+  pixel offset each painter and `_constraintLabelCenter` already take. An unplaced dimension gets zero offset, so the defaults are exactly as before. One consequence: the
+  painters' 6 px floor on a dimension line's distance from the geometry still applies, so a placement within 6 px of the geometry is drawn at 6 px.
+- **The 3D painters lay a placed dimension out in sketch space and project it** (general linear, line-to-line, radius / diameter, angle), so the label lands exactly where it was
+  dropped from any camera. An unplaced dimension keeps the old pixel defaults in both views, so the two views' *defaults* still differ from each other; they agree once a
+  label has been moved or a file with saved placements is opened.
+- A placed label of an angle whose lines are parallel (or, in the flat canvas, meet implausibly far away) cannot be moved: there is no arc to place, and the plain-chip
+  fallback keeps its old (unsaved) pixel offset behaviour only if that was already set. A radius / diameter label dragged exactly onto the circle's centre is ignored for that move.
+- Writes: one `PUT` when the drag is released (`endLabelDrag`), serialised per label (a second release while the first write is out is written after it). A failed write (for example an
+  older server without the route) leaves the placement in the session and sets `errorMessage`. A refresh never overwrites a placement being dragged or written.
+- Ghost (not yet confirmed) dimensions are not draggable and take no placement, as before.
+- **Mouse in the flat canvas:** a press on a label with no entity nearby used to start a box select (the marquee check ran first). It now starts the label drag
+  (`_marqueeMayStartAt(byMouse: true)`). Touch is unchanged there.
+- **Mouse in the 3D view:** `PartViewport.onSketchLabelGrabStart` (new) is tried before the point / line grab on a press that passes the tap threshold; the moves and the
+  release use the existing `onSketchGrabUpdate` / `onSketchGrabEnd`. `onConstraintOverlayItemTap` now also passes the plane point under the label, which touch drag mode uses.
+- **Touch:** drag mode still taps to grab and taps to drop. A dimension label now follows the on-canvas cursor (scaled by the touch sensitivity, like a point) instead of
+  the raw finger delta. Glyph labels keep the raw finger delta.
+- Removed: the six sketch-unit maps and their setters, the 3D view's `onRadial/Linear/LineDistance/AngleLabel…Dragged` callbacks and `draggingConstraintLabelId`,
+  `radialDimensionAngleDegrees` and `projectRadialDimensionBasis` (and their tests). `canonicalPerpendicular` is still the default for an unplaced general linear dimension.
+
+**Tests added:** `test/dimension_text_test.dart`, `test/label_drag_resolver_test.dart`, `test/dimension_label_placement_canvas_test.dart` (every kind, three zooms),
+`test/dimension_label_placement_3d_test.dart` (every kind, three cameras, a simulated mouse press-drag, orbit independence), `test/sketch_canvas_label_drag_test.dart`
+(real mouse and touch gestures on the flat canvas), the label group in `test/sketch_controller_test.dart` (live drag, grab offset, no undo, release writes once, reload from the
+constraint list, older server, delete), and `backend/tests/test_dimension_label_placements.py`.
+
+**Not verified:**
+
+- No device, no headset, no Linux-build run of every dimension kind in both views (P5's hand check) and no save / reopen round trip through a running app. The backend round trip is
+  covered by tests; the client side of it by the fake-backend test above.
+- The 3D viewport's own pointer path (`PartViewport._beginMouseGrab`, `_overlayItemPlanePoint`) cannot mount without a GPU here, so it has no widget test. Its maths is covered by
+  `dimension_label_placement_3d_test.dart` (the same projection, hit-test and plane steps in a simulated press-drag with an orthographic camera); a perspective camera and the
+  real event wiring were not driven. The embedded sketch screen's handlers (`_handleEmbeddedLabelGrabStart`, drag-mode tap) likewise.
+- Touch drag mode in the 3D view was not exercised on a screen; the flat canvas's touch path has a widget test.
+- Backend: the suite was run without the `bevel_pair` modules (the slowest, untouched by this change).

@@ -638,6 +638,12 @@ Anything promoted out of this list should get its own scoping doc before it is b
   (SOLIDWORKS / Fusion 360 / Onshape presets and a Controls screen, view cube on Space, Ctrl+8 normal to, number-field nudging)
   built on `claude/flutter-desktop-mode-ui-pxmq0q`, not merged. D7 (3D box select) scoped there; D6 (the desktop layout) in
   `docs/desktop-layout-scope.md`.**
+- **Dimension labels: saved placement, one drag routine, no minus signs.** Built on `claude/flutter-desktop-mode-ui-pxmq0q`, not merged
+  (`docs/dimension-labels-scope.md`, "As built"): a label's place is saved on the backend with the sketch and is the same in the flat
+  canvas and the 3D sketch view, a mouse can drag a label in both, labels show the magnitude only, and the VR design table's sign fix
+  is on `claude/dimension-sign-fix` in `DIDSA-VR`. **Open:** nothing run on a device or in a Linux build by hand; the typed-minus "flip side" rule
+  has no effect until the backend's value PATCH honours the sign; relationship glyphs (V, H, parallel...) still use session-only pixel
+  offsets; the two views' default (unplaced) layouts still differ; VR does not read or drag saved placements.
 - **Redo, and undo for Part features:** the flat app has no redo anywhere (the sketch's is a `TODO`) and the part screen can only
   undo assembly moves/deletes. Found while binding Ctrl+Z / Ctrl+Y (`docs/desktop-input-scope.md` D3); not scoped.
 - **Shared network storage + server-side assembly composition for a

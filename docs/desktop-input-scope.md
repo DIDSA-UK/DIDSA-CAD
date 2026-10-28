@@ -227,9 +227,11 @@ past the tap threshold picks it up; the pointer then moves it, and releasing the
 ordinary select click. There is no Drag toggle and no click-move-click for a mouse: the 2D canvas ignores drag mode when the last
 pointer was a mouse, the Orbit View ignores it while `LayoutModeScope.mouseActiveOf` is true, and the desktop ribbon only offers the
 Drag button when the last pointer was not a mouse. Touch keeps the toggle and tap-to-grab / tap-to-drop. In the 3D (Orbit) view the
-press is resolved on the sketch plane (`PartViewport.onSketchGrabStart` / `Update` / `End`); dimension labels are not draggable by
-a mouse there yet. Dragging a Point that a Circle, Ellipse or Arc is built on moves that curve; the curves themselves (grabbing the
-circumference) are not draggable. Tests: `test/sketch_canvas_mouse_drag_test.dart`; checked once by hand in the Linux build in both
+press is resolved on the sketch plane (`PartViewport.onSketchGrabStart` / `Update` / `End`). A dimension label under the press is
+picked up first (`PartViewport.onSketchLabelGrabStart`) in the 3D view, and in the 2D canvas a press on a label no longer starts a box
+select; the label then follows the pointer through the one drag routine (`LabelDragResolver`, `docs/dimension-labels-scope.md`), its
+place is saved with the sketch on release and it is not undoable. Dragging a Point that a Circle, Ellipse or Arc is built on moves that curve; the curves themselves (grabbing the
+circumference) are not draggable. Tests: `test/sketch_canvas_mouse_drag_test.dart`, `test/sketch_canvas_label_drag_test.dart` (labels, 2D); checked once by hand in the Linux build in both
 the 2D canvas and the Orbit View (a line's end point pressed, dragged and released). Not run with a device mouse or DeX.
 
 ### D7 implementation notes
