@@ -1,6 +1,6 @@
 from typing import Literal, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.sketch.models import Plane
 from app.sketch.profile import ProfileStatus
@@ -1096,7 +1096,33 @@ ConstraintCreate = Union[
 ]
 
 
-class DistanceConstraintResponse(BaseModel):
+class _ConstraintResponseBase(BaseModel):
+    """What every constraint response carries beyond its own fields: the saved dimension-label placement, if the user moved the label
+    (see `Sketch.label_placements`). Null for a constraint with no saved placement, which a client draws in its default place."""
+
+    label: dict[str, float] | None = None
+
+
+class LabelPlacementUpdate(BaseModel):
+    """`PUT .../constraints/{id}/label`: where a dimension's label sits, in sketch units (camera-independent). Known keys only, finite numbers;
+    which keys apply depends on the dimension (offset/along for the linear kinds, angle/leg for radius and diameter, radius/along for an angle)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    offset: float | None = Field(default=None, allow_inf_nan=False)
+    along: float | None = Field(default=None, allow_inf_nan=False)
+    angle: float | None = Field(default=None, allow_inf_nan=False)
+    leg: float | None = Field(default=None, allow_inf_nan=False)
+    radius: float | None = Field(default=None, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def check_not_empty(self) -> "LabelPlacementUpdate":
+        if not self.model_dump(exclude_none=True):
+            raise ValueError("Provide at least one of 'offset', 'along', 'angle', 'leg', 'radius'")
+        return self
+
+
+class DistanceConstraintResponse(_ConstraintResponseBase):
     type: Literal["distance"] = "distance"
     id: str
     point_a_id: str
@@ -1106,7 +1132,7 @@ class DistanceConstraintResponse(BaseModel):
     provisional: bool = False
 
 
-class VerticalConstraintResponse(BaseModel):
+class VerticalConstraintResponse(_ConstraintResponseBase):
     type: Literal["vertical"] = "vertical"
     id: str
     line_id: str
@@ -1114,7 +1140,7 @@ class VerticalConstraintResponse(BaseModel):
     point_b_id: str
 
 
-class HorizontalConstraintResponse(BaseModel):
+class HorizontalConstraintResponse(_ConstraintResponseBase):
     type: Literal["horizontal"] = "horizontal"
     id: str
     line_id: str
@@ -1122,7 +1148,7 @@ class HorizontalConstraintResponse(BaseModel):
     point_b_id: str
 
 
-class AngleConstraintResponse(BaseModel):
+class AngleConstraintResponse(_ConstraintResponseBase):
     type: Literal["angle"] = "angle"
     id: str
     line1_id: str
@@ -1130,42 +1156,42 @@ class AngleConstraintResponse(BaseModel):
     angle_degrees: float
 
 
-class CoincidentConstraintResponse(BaseModel):
+class CoincidentConstraintResponse(_ConstraintResponseBase):
     type: Literal["coincident"] = "coincident"
     id: str
     point_a_id: str
     point_b_id: str
 
 
-class ParallelConstraintResponse(BaseModel):
+class ParallelConstraintResponse(_ConstraintResponseBase):
     type: Literal["parallel"] = "parallel"
     id: str
     line1_id: str
     line2_id: str
 
 
-class PerpendicularConstraintResponse(BaseModel):
+class PerpendicularConstraintResponse(_ConstraintResponseBase):
     type: Literal["perpendicular"] = "perpendicular"
     id: str
     line1_id: str
     line2_id: str
 
 
-class EqualLengthConstraintResponse(BaseModel):
+class EqualLengthConstraintResponse(_ConstraintResponseBase):
     type: Literal["equal_length"] = "equal_length"
     id: str
     line1_id: str
     line2_id: str
 
 
-class CollinearConstraintResponse(BaseModel):
+class CollinearConstraintResponse(_ConstraintResponseBase):
     type: Literal["collinear"] = "collinear"
     id: str
     line1_id: str
     line2_id: str
 
 
-class LineDistanceConstraintResponse(BaseModel):
+class LineDistanceConstraintResponse(_ConstraintResponseBase):
     type: Literal["line_distance"] = "line_distance"
     id: str
     line1_id: str
@@ -1173,7 +1199,7 @@ class LineDistanceConstraintResponse(BaseModel):
     distance: float
 
 
-class PointLineDistanceConstraintResponse(BaseModel):
+class PointLineDistanceConstraintResponse(_ConstraintResponseBase):
     type: Literal["point_line_distance"] = "point_line_distance"
     id: str
     point_id: str
@@ -1181,14 +1207,14 @@ class PointLineDistanceConstraintResponse(BaseModel):
     distance: float
 
 
-class AtMidpointConstraintResponse(BaseModel):
+class AtMidpointConstraintResponse(_ConstraintResponseBase):
     type: Literal["at_midpoint"] = "at_midpoint"
     id: str
     point_id: str
     line_id: str
 
 
-class SplineTangentConstraintResponse(BaseModel):
+class SplineTangentConstraintResponse(_ConstraintResponseBase):
     type: Literal["spline_tangent"] = "spline_tangent"
     id: str
     spline_id: str
@@ -1202,7 +1228,7 @@ class SplineTangentConstraintResponse(BaseModel):
     segment_b_p3: str
 
 
-class TangentConstraintResponse(BaseModel):
+class TangentConstraintResponse(_ConstraintResponseBase):
     type: Literal["tangent"] = "tangent"
     id: str
     center_point_id: str
@@ -1210,7 +1236,7 @@ class TangentConstraintResponse(BaseModel):
     line_id: str
 
 
-class ConcentricConstraintResponse(BaseModel):
+class ConcentricConstraintResponse(_ConstraintResponseBase):
     type: Literal["concentric"] = "concentric"
     id: str
     entity1_id: str
@@ -1219,7 +1245,7 @@ class ConcentricConstraintResponse(BaseModel):
     center2_point_id: str
 
 
-class CurveTangentConstraintResponse(BaseModel):
+class CurveTangentConstraintResponse(_ConstraintResponseBase):
     type: Literal["curve_tangent"] = "curve_tangent"
     id: str
     entity1_id: str
@@ -1229,7 +1255,7 @@ class CurveTangentConstraintResponse(BaseModel):
     shared_point_id: str
 
 
-class EqualRadiusConstraintResponse(BaseModel):
+class EqualRadiusConstraintResponse(_ConstraintResponseBase):
     type: Literal["equal_radius"] = "equal_radius"
     id: str
     center1_point_id: str
@@ -1238,14 +1264,14 @@ class EqualRadiusConstraintResponse(BaseModel):
     radius2_point_id: str
 
 
-class PointOnLineConstraintResponse(BaseModel):
+class PointOnLineConstraintResponse(_ConstraintResponseBase):
     type: Literal["point_on_line"] = "point_on_line"
     id: str
     point_id: str
     line_id: str
 
 
-class PointOnCircleConstraintResponse(BaseModel):
+class PointOnCircleConstraintResponse(_ConstraintResponseBase):
     type: Literal["point_on_circle"] = "point_on_circle"
     id: str
     point_id: str
@@ -1258,7 +1284,7 @@ class PointOnCircleConstraintResponse(BaseModel):
     radius_point_id: str
 
 
-class PointOnEllipseConstraintResponse(BaseModel):
+class PointOnEllipseConstraintResponse(_ConstraintResponseBase):
     type: Literal["point_on_ellipse"] = "point_on_ellipse"
     id: str
     point_id: str
@@ -1273,7 +1299,7 @@ class PointOnEllipseConstraintResponse(BaseModel):
     minor_point_id: str
 
 
-class FixedConstraintResponse(BaseModel):
+class FixedConstraintResponse(_ConstraintResponseBase):
     type: Literal["fixed"] = "fixed"
     id: str
     # Every Point this Fix actually covers - not the single `entity_id` the

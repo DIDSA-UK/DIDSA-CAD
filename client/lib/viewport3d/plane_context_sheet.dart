@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'action_sheet.dart';
 import 'reference_planes.dart';
 import 'svg_icon.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Actions available from a tap-selected reference plane's fly-up bottom
 /// sheet. Stage 19b Item 2 moved this out of the hamburger drawer (where it
@@ -17,8 +19,20 @@ enum PlaneContextSheetAction { newSketch }
 Future<PlaneContextSheetAction?> showPlaneContextSheet(
   BuildContext context, {
   required ReferencePlaneKind plane,
+  Offset? at,
 }) {
-  return showModalBottomSheet<PlaneContextSheetAction>(
+  // Desktop input D4: a mouse right click shows the same actions as a popup
+  // at [at]; the bottom sheet below is the touch path, unchanged.
+  if (at != null) {
+    return showContextMenu<PlaneContextSheetAction>(context, at: at, [
+      ActionSheetEntry(
+        action: PlaneContextSheetAction.newSketch,
+        label: 'New Sketch on ${plane.apiValue}',
+        leading: const SvgIcon('assets/icons/feature/feature_new_sketch.svg'),
+      ),
+    ]);
+  }
+  return showAdaptiveSheet<PlaneContextSheetAction>(
     context: context,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),

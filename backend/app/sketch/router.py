@@ -77,6 +77,7 @@ from app.sketch.schemas import (
     ConstraintCreate,
     ConstraintResponse,
     ConstraintValueUpdate,
+    LabelPlacementUpdate,
     CurveTangentConstraintCreate,
     CurveTangentConstraintResponse,
     DeleteEntityResponse,
@@ -469,6 +470,14 @@ def _profile_response(profile: Profile) -> ProfileResponse:
         inner_loops=[_profile_response(inner) for inner in profile.inner_loops],
         text_vertices=profile.text_vertices,
     )
+
+
+def _constraint_response_with_label(sketch: Sketch, constraint: Constraint) -> ConstraintResponse:
+    """`_constraint_response`, plus the label placement the user saved for it (null when none)."""
+    response = _constraint_response(constraint)
+    placement = sketch.label_placements.get(constraint.id)
+    response.label = dict(placement) if placement else None
+    return response
 
 
 def _constraint_response(constraint: Constraint) -> ConstraintResponse:
@@ -1641,13 +1650,13 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
         raise HTTPException(status_code=404, detail=f"Referenced id not found: {exc}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _constraint_response(constraint)
+    return _constraint_response_with_label(sketch, constraint)
 
 
 @router.get("/sketches/{sketch_id}/constraints", response_model=list[ConstraintResponse])
 def list_constraints(sketch_id: str) -> list[ConstraintResponse]:
     sketch = _get_sketch_or_404(sketch_id)
-    return [_constraint_response(constraint) for constraint in sketch.constraints.values()]
+    return [_constraint_response_with_label(sketch, constraint) for constraint in sketch.constraints.values()]
 
 
 @router.delete("/sketches/{sketch_id}/constraints/{constraint_id}", status_code=204, dependencies=[Depends(_prune_reference_helpers_after)])
@@ -1655,9 +1664,26 @@ def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     sketch = _get_sketch_or_404(sketch_id)
     _get_constraint_or_404(sketch, constraint_id)
     del sketch.constraints[constraint_id]
+    sketch.label_placements.pop(constraint_id, None)
     # Phase 2.3: the last dimension / constraint on a reference helper (a pinned corner, edge or hole made only to point the sketch at the part) takes the
     # helper with it, so nothing orphaned is left behind. A sketch with no helpers is untouched.
     sketch.prune_unused_reference_helpers()
+
+
+@router.put("/sketches/{sketch_id}/constraints/{constraint_id}/label", status_code=204)
+def put_constraint_label(sketch_id: str, constraint_id: str, payload: LabelPlacementUpdate) -> None:
+    """Saves where the user put a dimension's label. Never re-solves: the solver does not see it."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_constraint_or_404(sketch, constraint_id)
+    sketch.label_placements[constraint_id] = payload.model_dump(exclude_none=True)
+
+
+@router.delete("/sketches/{sketch_id}/constraints/{constraint_id}/label", status_code=204)
+def delete_constraint_label(sketch_id: str, constraint_id: str) -> None:
+    """Puts a dimension's label back in its default place."""
+    sketch = _get_sketch_or_404(sketch_id)
+    _get_constraint_or_404(sketch, constraint_id)
+    sketch.label_placements.pop(constraint_id, None)
 
 
 def _is_length_dimension(constraint: Constraint) -> bool:
@@ -1950,7 +1976,7 @@ def solve_and_refresh(sketch_id: str, payload: SolveRequest | None = None) -> Sk
     return SketchStateResponse(
         solve=_solve_result_response(result),
         points=[_point_response(sketch, point) for point in sketch.points.values()],
-        constraints=[_constraint_response(constraint) for constraint in sketch.constraints.values()],
+        constraints=[_constraint_response_with_label(sketch, constraint) for constraint in sketch.constraints.values()],
         profile=_profile_detection_response(sketch),
         reference_dimensions=_reference_dimension_responses(sketch),
     )

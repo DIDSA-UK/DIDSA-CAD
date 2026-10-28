@@ -10,16 +10,15 @@ import 'package:vector_math/vector_math.dart' as vm;
 import '../api/document_api_client.dart';
 import '../appearance/appearance_look.dart';
 import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus, pathEquals;
-import '../sketch/sketch_controller.dart'
-    show
-        ConstraintOverlayItem,
-        ConstraintAngleDimensionItem,
-        ConstraintLineDistanceDimensionItem,
-        ConstraintLinearDimensionItem,
-        ConstraintRadialDimensionItem;
+import '../sketch/sketch_controller.dart' show ConstraintOverlayItem;
 import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
+import 'controls_preferences.dart';
+import 'box_select.dart';
+import 'view_cube.dart' show ViewCubeBasis, normalToUp, viewCubeEyeAndUp;
+import 'mouse_navigation.dart';
+import '../sketch/marquee_selection.dart' show kCrossingBoxColor;
 import 'orbit_camera.dart';
 import 'orthographic_camera.dart';
 import 'reference_planes.dart';
@@ -497,124 +496,21 @@ class PartViewport extends StatefulWidget {
   /// cancel the edit, still don't fall through to placing geometry"
   /// behaviour) - false (including when this callback is itself null) lets
   /// [onDrawCursorCommit] fire normally.
-  final bool Function(String? hitConstraintId)? onConstraintOverlayItemTap;
+  final bool Function(String? hitConstraintId, vm.Vector3? labelPoint)? onConstraintOverlayItemTap;
 
-  /// P41: while true, [_handleDrawCursorMove] feeds its own raw screen
-  /// delta to [onConstraintLabelDragDelta] instead of resolving/reporting a
-  /// world-plane hit - mirrors `sketch_canvas.dart`'s own
-  /// `_feedMouseSwipeToGrabbedEntity`'s "a grabbed label's offset lives in
-  /// screen space, not an absolute cursor position" branch exactly (see
-  /// [SketchController.updateLabelDrag]'s own doc comment for why). The
-  /// caller computes this from [SketchController.draggingLabelId] - dropping
-  /// the grabbed label again is already handled entirely by the existing
-  /// [onDrawCursorCommit]/drag-mode-commit path via
-  /// [SketchController.dropGrabbedEntity] (already routes to
-  /// [SketchController.endLabelDrag] on its own), so no separate "stop
-  /// dragging a label" plumbing was needed here.
+  /// While true, [_handleDrawCursorMove] feeds its own raw screen delta to [onConstraintLabelDragDelta] instead of resolving/reporting
+  /// a world-plane hit. Only for a relationship glyph (V, H, parallel...), whose offset is session-only screen pixels; a dimension
+  /// label is dragged through the plane point under the cursor (see [onSketchLabelGrabStart] and [SketchController.dragLabelToPointer]).
   final bool isDraggingConstraintLabel;
 
-  /// P41: fired with this State's own already-sensitivity-scaled screen
-  /// delta while [isDraggingConstraintLabel] is true, in place of
-  /// [onDrawCursorMoved].
+  /// The glyph's screen delta (already scaled by the cursor sensitivity) while [isDraggingConstraintLabel] is true.
   final void Function(Offset delta)? onConstraintLabelDragDelta;
 
-  /// P44f bug fix (on-device feedback: "the arrow should remain at the
-  /// same angular position when orbiting" - a radial dimension's leader
-  /// visibly drifted to a different point on the circle purely from
-  /// orbiting the camera, without ever dragging again): [constraintOverlayItems]'
-  /// own `constraintId` of whichever label is currently being dragged (the
-  /// caller's own [SketchController.draggingLabelId]) - only needed so
-  /// [_handleDrawCursorMove] can look the item back up (to check whether
-  /// it's a radial dimension, which needs angle-based rather than
-  /// pixel-delta-based drag handling - see [onRadialLabelAngleDragged]'s
-  /// own doc comment for why). Null whenever [isDraggingConstraintLabel]
-  /// is false.
-  final String? draggingConstraintLabelId;
-
-  /// P44f: fired in place of [onConstraintLabelDragDelta] whenever the
-  /// entry [draggingConstraintLabelId] resolves to (in [constraintOverlayItems])
-  /// is a [ConstraintRadialDimensionItem] - a screen-pixel delta
-  /// ([onConstraintLabelDragDelta]'s own convention) is camera-frame
-  /// dependent, so persisting *that* for a radial dimension's leader angle
-  /// means the very next orbit re-interprets the same stored pixels
-  /// through a different camera orientation and resolves to a different
-  /// point on the circle (see [SketchController.setRadialAngleOffset]'s
-  /// own doc comment). This fires with the resolved absolute angle
-  /// instead (via [radialDimensionAngleDegrees], using this State's own
-  /// live camera/projection - the one piece of context only [PartViewport]
-  /// itself has), for the caller to persist directly, camera-independent.
-  final void Function(double angleDegrees)? onRadialLabelAngleDragged;
-
-  /// Bug fix (on-device feedback: "radius and diameter dimensions are
-  /// locked a set distance from the arc or circle - I should be able to
-  /// move them anywhere"): [onRadialLabelAngleDragged]'s own sibling for a
-  /// radial dimension's *distance* from the circle - fires alongside it
-  /// whenever [draggingConstraintLabelId] resolves to a
-  /// [ConstraintRadialDimensionItem], with the resolved sketch-unit
-  /// distance beyond the circle's rim, for the caller to persist via
-  /// [SketchController.setRadialLegLength].
-  final void Function(double legLength)? onRadialLabelDistanceDragged;
-
-  /// P52 bug fix (on-device feedback: "when orbiting, linear dimensions
-  /// slide along the line. they should stay in the same place on the
-  /// line"), [onRadialLabelAngleDragged]'s exact sibling for a
-  /// [ConstraintLinearDimensionItem]: fired in place of
-  /// [onConstraintLabelDragDelta] whenever [draggingConstraintLabelId]
-  /// resolves to one. Unlike radial's angle (which needs a screen-space
-  /// resolve, see that field's own doc comment), a linear dimension's
-  /// perpendicular offset is directly computable in sketch-local space with
-  /// no camera-frame math at all - this State raycasts the live cursor
-  /// onto [sketchPlaneBasis] (the same plane every other cursor-mode pick
-  /// already uses) and reports the resulting sketch-unit perpendicular
-  /// distance from the dimensioned line, for the caller to persist via
-  /// [SketchController.setLinearOffsetDistance].
-  final void Function(double distance)? onLinearLabelOffsetDragged;
-
-  /// Bug fix (on-device feedback: "the linear dimension only moves
-  /// left/right" - it should also slide along its own line, matching the
-  /// 2D flat canvas): [onLinearLabelOffsetDragged]'s own sibling for the
-  /// label's position *along the dimension line itself* (the axis
-  /// [onLinearLabelOffsetDragged] doesn't cover) - fires alongside it
-  /// whenever [draggingConstraintLabelId] resolves to a
-  /// [ConstraintLinearDimensionItem], for the caller to persist via
-  /// [SketchController.setLinearAlongOffset]. Mirrors
-  /// [onLineDistanceLabelAlongDragged]'s exact contract.
-  final void Function(double along)? onLinearLabelAlongDragged;
-
-  /// [onLinearLabelOffsetDragged]'s exact sibling for a
-  /// [ConstraintLineDistanceDimensionItem] (a Line-to-Line perpendicular
-  /// distance) - previously missing entirely, so this dimension kind fell
-  /// through to the raw-pixel [onConstraintLabelDragDelta] path and visibly
-  /// drifted on camera orbit despite already carrying a camera-independent
-  /// `sketchLocalOffsetDistance` field with nothing to feed it.
-  final void Function(double distance)? onLineDistanceLabelOffsetDragged;
-
-  /// Bug fix (on-device feedback: "the dimension...is restricted in
-  /// movement. it moves left right. it can't be moved up down"):
-  /// [onLineDistanceLabelOffsetDragged]'s own sibling for the label's
-  /// position *along the dimension line itself* (the axis
-  /// [onLineDistanceLabelOffsetDragged] doesn't cover) - fires alongside it
-  /// whenever [draggingConstraintLabelId] resolves to a
-  /// [ConstraintLineDistanceDimensionItem], for the caller to persist via
-  /// [SketchController.setLineDistanceAlongOffset].
-  final void Function(double along)? onLineDistanceLabelAlongDragged;
-
-  /// Bug fix (on-device feedback: "dimensions should match technical
-  /// drawing conventions" - an angle dimension used to be a plain floating
-  /// text chip with no way to place it): fires in place of
-  /// [onConstraintLabelDragDelta] whenever [draggingConstraintLabelId]
-  /// resolves to a [ConstraintAngleDimensionItem], with the resolved
-  /// sketch-unit arc radius (distance from the implied vertex), for the
-  /// caller to persist via [SketchController.setAngleArcRadius].
-  final void Function(double radius)? onAngleLabelRadiusDragged;
-
-  /// [onAngleLabelRadiusDragged]'s own sibling for the label's position
-  /// *along the arc's chord* (the axis [onAngleLabelRadiusDragged] doesn't
-  /// cover) - fires alongside it whenever [draggingConstraintLabelId]
-  /// resolves to a [ConstraintAngleDimensionItem], for the caller to
-  /// persist via [SketchController.setAngleAlongOffset]. Same bug class as
-  /// [onLinearLabelAlongDragged].
-  final void Function(double along)? onAngleLabelAlongDragged;
+  /// A mouse press on a dimension label that drags past the tap threshold (Desktop input, like [onSketchGrabStart] for points and
+  /// lines): called with the label's constraint id, the plane point under the press and the plane point under the label's centre
+  /// (null if that is off the plane). True means the label was picked up; its moves then arrive through [onSketchGrabUpdate] and the
+  /// release through [onSketchGrabEnd], exactly as for a point.
+  final bool Function(String constraintId, vm.Vector3 pressPoint, vm.Vector3? labelPoint)? onSketchLabelGrabStart;
 
   /// P44b bug fix (on-device feedback: "when I click a ghost dimension to
   /// set its value, nothing happens"): the [constraintOverlayItems] entry
@@ -901,6 +797,24 @@ class PartViewport extends StatefulWidget {
   /// from [selectedEntities] (Item 4's toggle rule).
   final void Function(SelectionEntityRef entity)? onSelectionToggle;
 
+  /// Desktop input D2: fired at the start of every committed select click,
+  /// ahead of [onConstraintOverlayItemTap] / [onSelectionToggle] /
+  /// [onClearSelection], with how that click applies: [SelectClick.replace]
+  /// for a plain mouse click, [SelectClick.toggle] for Ctrl+click,
+  /// [SelectClick.touch] for a touch tap (the caller's own rule). The
+  /// caller keeps it for the callbacks that follow.
+  final ValueChanged<SelectClick>? onSelectClick;
+
+  /// Desktop input D4: fired when a mouse right click ends without a drag
+  /// (the pointer travelled less than the tap slop - a drag pans, D1).
+  /// [hit] is what lies under the click (the same hit-test hover runs, at
+  /// the click's position), or null over empty space; [globalPosition] is
+  /// where the menu goes. Not fired for a middle click, or for a touch.
+  final void Function(HoverHit? hit, Offset globalPosition)? onContextMenuRequested;
+
+  /// Desktop input D5: fired when a mouse middle click ends without a drag - in a sketch tool it ends the chain being drawn, as Enter does.
+  final VoidCallback? onMouseMiddleClick;
+
   /// Fired when a tap (Fix 4) commits while the cursor is over empty space -
   /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
@@ -919,7 +833,27 @@ class PartViewport extends StatefulWidget {
   /// [sketchPlaneBasis] to resolve to anything (a marquee whose corners
   /// both miss the plane fires nothing). Only engages while [selectionMode]
   /// is true.
-  final void Function(Rect sketchRect)? onMarqueeSelect;
+  ///
+  /// Desktop input D2: a mouse box sets [crossing] when dragged right to
+  /// left and [additive] when Ctrl is held; a touch marquee sets neither.
+  final void Function(Rect sketchRect, {bool crossing, bool additive})? onMarqueeSelect;
+
+  /// Desktop input (mouse drag of a sketch entity): in selection mode over a sketch plane, a left mouse press that
+  /// drags past the tap threshold calls [onSketchGrabStart] with the plane point where the press began. A true
+  /// answer means an entity was picked up: the pointer's moves then call [onSketchGrabUpdate] with the plane point
+  /// under it, and releasing calls [onSketchGrabEnd]. A false answer leaves the press to the box select. A touch
+  /// never starts one (it uses drag mode's tap-to-grab).
+  final bool Function(vm.Vector3 worldPoint, double? localPixelsPerUnit)? onSketchGrabStart;
+  final void Function(vm.Vector3 worldPoint)? onSketchGrabUpdate;
+  final VoidCallback? onSketchGrabEnd;
+
+  /// Desktop input D7: a box dragged on empty space outside a sketch picks
+  /// what the camera can see inside it (a mouse drag, or a touch tap-hold
+  /// then drag). Fired once, on release, with the picked entities: whole
+  /// components when placed instances are selectable, otherwise edges (or
+  /// faces, vertices or bodies when the selection filter has no edges).
+  /// [crossing] is a right-to-left mouse box, [additive] a Ctrl-held one.
+  final void Function(List<SelectionEntityRef> entities, {bool crossing, bool additive})? onBoxSelect;
 
   /// Bug report ("if one body is entirely inside another body, it cannot be
   /// selected" - user-requested SOLIDWORKS-style "Select Other"): fired once
@@ -1097,15 +1031,7 @@ class PartViewport extends StatefulWidget {
     this.onConstraintOverlayItemTap,
     this.isDraggingConstraintLabel = false,
     this.onConstraintLabelDragDelta,
-    this.draggingConstraintLabelId,
-    this.onRadialLabelAngleDragged,
-    this.onRadialLabelDistanceDragged,
-    this.onLinearLabelOffsetDragged,
-    this.onLinearLabelAlongDragged,
-    this.onLineDistanceLabelOffsetDragged,
-    this.onLineDistanceLabelAlongDragged,
-    this.onAngleLabelRadiusDragged,
-    this.onAngleLabelAlongDragged,
+    this.onSketchLabelGrabStart,
     this.activeConstraintOverlayItemId,
     this.activeConstraintOverlayItemBuilder,
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
@@ -1145,8 +1071,15 @@ class PartViewport extends StatefulWidget {
     this.selectionMode = false,
     this.selectedEntities = const {},
     this.onSelectionToggle,
+    this.onSelectClick,
+    this.onContextMenuRequested,
+    this.onMouseMiddleClick,
     this.onClearSelection,
     this.onMarqueeSelect,
+    this.onSketchGrabStart,
+    this.onSketchGrabUpdate,
+    this.onSketchGrabEnd,
+    this.onBoxSelect,
     this.onSelectOtherRequested,
     this.highlightOverride,
     this.suppressHoverFallback = false,
@@ -1551,6 +1484,66 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Live touch pointers by id, for pinch-zoom/two-finger-pan - same
   /// approach as [SketchCanvas]'s `_activeTouches`.
   final Map<int, Offset> _activeTouches = {};
+
+  /// The kind of the last pointer seen (down, move or hover). While it's a
+  /// mouse the painted crosshairs are skipped and the system cursor shows
+  /// instead (see [_viewportMouseCursor]) - otherwise the two sit on top of
+  /// each other. A touch brings the painted crosshair back.
+  PointerDeviceKind? _lastPointerKind;
+
+  /// The mouse pointer currently dragging the view with the middle or
+  /// right button ([isMouseNavPress]), whatever mode the viewport is in -
+  /// see `mouse_navigation.dart`. Its press, moves and release never reach
+  /// the select/draw/orbit handlers, so a right click never commits a
+  /// selection and a middle drag orbits even in selection mode.
+  int? _mouseNavPointer;
+
+  /// Where [_mouseNavPointer] was pressed - the point a Shift+middle drag
+  /// zooms toward.
+  Offset? _mouseNavAnchor;
+
+  /// Desktop input D4: whether [_mouseNavPointer] is a right-button press
+  /// (the only one that can end in a context menu), and how far it has
+  /// travelled - under the tap slop at release it is a click, not a pan.
+  bool _mouseNavIsSecondary = false;
+  bool _mouseNavIsMiddle = false;
+  double _mouseNavTravel = 0;
+
+  /// What [_mouseNavPointer]'s drag last did, for [_viewportMouseCursor].
+  MouseNavAction? _mouseNavAction;
+
+  /// Desktop input D2: the world point a middle drag orbits about - the
+  /// geometry under the press (SOLIDWORKS' rotate-about-entity), or null
+  /// over empty space, which orbits about the camera target as before.
+  vm.Vector3? _orbitPivot;
+
+  /// Desktop input D2: a middle double-click fits the view.
+  final MiddleDoubleClickDetector _middleDoubleClick = MiddleDoubleClickDetector();
+
+  /// Desktop input D2: a left mouse press on empty space in selection mode,
+  /// waiting to see whether it drags - past the tap threshold it becomes a
+  /// box select straight away (no long-press hold; that's for touch).
+  Offset? _mouseMarqueeDownScreen;
+
+  /// A left mouse press in selection mode over a sketch plane, waiting to see whether it drags an entity (see
+  /// [PartViewport.onSketchGrabStart]); [_mouseGrabActive] once one is picked up.
+  Offset? _mouseGrabDownScreen;
+  bool _mouseGrabActive = false;
+
+  /// Whether the active marquee was started by a mouse - only then does its
+  /// direction pick window or crossing, and Ctrl add.
+  bool _marqueeByMouse = false;
+
+  bool get _marqueeCrossing {
+    final anchor = _marqueeDownScreen;
+    final current = _marqueeCurrentScreen;
+    return _marqueeByMouse && anchor != null && current != null && current.dx < anchor.dx;
+  }
+
+  bool get _mouseDriven => _lastPointerKind == PointerDeviceKind.mouse;
+
+  @visibleForTesting
+  bool get debugMouseDriven => _mouseDriven;
 
   /// The viewport's current size, refreshed every build - needed by
   /// [_handleTap] to build a [PerspectiveCamera.screenPointToRay] ray, which
@@ -4002,6 +3995,181 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (mounted) setState(() => _camera.distance = (eye - target).length);
   }
 
+  /// Desktop input D3: zoom to fit (F, a middle double-click) - frames
+  /// everything without turning the view.
+  void zoomToFit() => setState(() => _doRecentre(keepOrientation: true));
+
+  /// Desktop input D5: the last place a pointer was over this viewport
+  /// (local), so the view cube can open under the cursor. Null until one
+  /// has been seen.
+  Offset? _lastPointerLocal;
+
+  /// Desktop input D5: where the view cube opens - the last pointer position
+  /// (global), else the middle of the viewport.
+  Offset viewCubeAnchor() {
+    final box = context.findRenderObject();
+    if (box is! RenderBox) return Offset.zero;
+    return box.localToGlobal(_lastPointerLocal ?? Offset(box.size.width / 2, box.size.height / 2));
+  }
+
+  /// Desktop input D5: the camera's axes for drawing the view cube.
+  ViewCubeBasis viewCubeBasis() => ViewCubeBasis(
+        right: _camera.right.clone(),
+        up: _camera.up.clone(),
+        back: (_camera.position - _camera.target).normalized(),
+      );
+
+  /// Desktop input D5: turns the view to look from [direction] (a view
+  /// cube target - see [viewCubeEyeAndUp]) at the origin, as the standard
+  /// views do.
+  Future<void> animateToViewCubeTarget(vm.Vector3 direction, {Duration duration = const Duration(milliseconds: 400)}) {
+    final (eye, up) = viewCubeEyeAndUp(direction);
+    return _animateOrientationTo(OrbitCamera.orientationLookingFrom(eye, vm.Vector3.zero(), up), duration: duration)
+        .then((_) {
+      if (mounted) setState(_resyncCameraDependentOverlays);
+    });
+  }
+
+  /// Desktop input D4: the Reset view button's action (everything in frame,
+  /// turned back to isometric) for the viewport's right-click menu.
+  void resetView() => setState(_doRecentre);
+
+  /// Desktop input D4: world-space points on the geometry of [entities] -
+  /// face triangles, edge segments, vertices, a body's or component's whole
+  /// mesh. Sketch entities add nothing (they have no mesh to frame).
+  List<vm.Vector3> _worldPointsOf(Iterable<SelectionEntityRef> entities) {
+    final points = <vm.Vector3>[];
+    for (final entity in entities) {
+      if (entity.kind == SelectionEntityKind.component) {
+        for (final t in _worldTrianglesForOccurrence(entity.occurrenceId)) {
+          points..add(t.$1)..add(t.$2)..add(t.$3);
+        }
+        continue;
+      }
+      final resolved = _bodyAndTransformFor(entity);
+      if (resolved == null) continue;
+      final (body, transform) = resolved;
+      switch (entity.kind) {
+        case SelectionEntityKind.face:
+          for (final t in faceTrianglesForId(body.mesh, entity.id)) {
+            points..add(transform.transformed3(t.$1))..add(transform.transformed3(t.$2))..add(transform.transformed3(t.$3));
+          }
+        case SelectionEntityKind.edge:
+          for (final s in edgeSegmentsForId(body.mesh, entity.id)) {
+            points..add(transform.transformed3(s.$1))..add(transform.transformed3(s.$2));
+          }
+        case SelectionEntityKind.curveFeature:
+          for (final s in edgeSegmentsFromMesh(body.mesh)) {
+            points..add(transform.transformed3(s.$1))..add(transform.transformed3(s.$2));
+          }
+        case SelectionEntityKind.vertex:
+          final position = vertexPositionForId(body.mesh, entity.id);
+          if (position != null) points.add(transform.transformed3(position));
+        case SelectionEntityKind.body:
+          for (final t in trianglesFromMesh(body.mesh)) {
+            points..add(transform.transformed3(t.$1))..add(transform.transformed3(t.$2))..add(transform.transformed3(t.$3));
+          }
+        default:
+          break;
+      }
+    }
+    return points;
+  }
+
+  /// Desktop input D4: Zoom to selection - centres on [entities]' geometry
+  /// and frames it, the view direction kept (as [zoomToFit] keeps it).
+  /// Returns false when none of them has geometry to frame.
+  bool zoomToEntities(Iterable<SelectionEntityRef> entities) {
+    final bounds = boundsOfPoints(_worldPointsOf(entities));
+    if (bounds == null) return false;
+    // A lone vertex has no extent: frame a small patch of the model instead.
+    final model = _enclosingBounds(boundsOfBodies(widget.bodies), _assemblyInstanceBounds());
+    final radius = math.max(bounds.boundingSphereRadius, (model?.boundingSphereRadius ?? 100) * 0.02);
+    setState(() {
+      _camera.target = bounds.center;
+      _camera.frameRadius(radius, _viewportSize);
+      _resyncCameraDependentOverlays();
+    });
+    return true;
+  }
+
+  /// Desktop input D4: the unit normal of [face] in world space when it is
+  /// planar (every triangle's normal within about 1 degree of the first),
+  /// pointing towards the side the camera is on; null for a curved face or
+  /// one that cannot be resolved. Normal to (here and, in D5, Ctrl+8) turns
+  /// the view to look along the opposite of this.
+  vm.Vector3? planarFaceNormal(SelectionEntityRef face) {
+    if (face.kind != SelectionEntityKind.face) return null;
+    final resolved = _bodyAndTransformFor(face);
+    if (resolved == null) return null;
+    final (body, transform) = resolved;
+    // The backend says which faces are flat; without it (older data) the triangles decide.
+    final flags = body.mesh.faceIsPlanar;
+    final flaggedPlanar = face.id >= 0 && face.id < flags.length ? flags[face.id] : null;
+    if (flaggedPlanar == false) return null;
+    vm.Vector3? normal;
+    for (final t in faceTrianglesForId(body.mesh, face.id)) {
+      final a = transform.transformed3(t.$1);
+      final n = (transform.transformed3(t.$2) - a).cross(transform.transformed3(t.$3) - a);
+      if (n.length < 1e-12) continue;
+      n.normalize();
+      if (normal == null) {
+        normal = n;
+      } else if (flaggedPlanar != true && (normal.dot(n).abs() < 0.9998 || normal.dot(n) < 0)) {
+        return null;
+      }
+    }
+    if (normal == null) return null;
+    return normal.dot(_camera.position - _camera.target) < 0 ? -normal : normal;
+  }
+
+  /// Desktop input D4: turns the view to look straight at planar [face],
+  /// centred on it, keeping the camera's up as near to where it was as the
+  /// new direction allows. False for a curved face.
+  Future<bool> animateToFaceNormal(SelectionEntityRef face, {Duration duration = const Duration(milliseconds: 400)}) async {
+    final normal = planarFaceNormal(face);
+    final bounds = boundsOfPoints(_worldPointsOf([face]));
+    if (normal == null || bounds == null) return false;
+    final orientation = OrbitCamera.orientationLookingFrom(bounds.center + normal, bounds.center, normalToUp(normal, _camera.up));
+    await _animateOrientationTo(orientation, toTarget: bounds.center, duration: duration);
+    return true;
+  }
+
+  /// Desktop input D3: SOLIDWORKS' standard views (Ctrl+1 ... Ctrl+7). This
+  /// app is Y-up with its isometric eye at (+1, +1, +1), as SOLIDWORKS is,
+  /// so Front looks along -Z with Y up, Top down -Y with -Z up, and so on.
+  Future<void> animateToStandardView(StandardView view, {Duration duration = const Duration(milliseconds: 400)}) {
+    final orientation = switch (view) {
+      StandardView.isometric => OrbitCamera.isometricOrientation(),
+      _ => OrbitCamera.orientationLookingFrom(view.eye, vm.Vector3.zero(), view.up),
+    };
+    return _animateOrientationTo(orientation, duration: duration).then((_) {
+      if (mounted) setState(_resyncCameraDependentOverlays);
+    });
+  }
+
+  /// Desktop input D3: the keyboard's view nudges - arrows orbit by
+  /// [yawDegrees]/[pitchDegrees] (as a drag would, about the target),
+  /// Ctrl+arrows pan by screen pixels, Z / Shift+Z zoom about the centre.
+  void orbitByDegrees(double yawDegrees, double pitchDegrees) {
+    const perPixel = OrbitCamera.orbitSensitivity;
+    setState(() {
+      _camera.orbitByScreenDelta(yawDegrees * math.pi / 180 / perPixel, pitchDegrees * math.pi / 180 / perPixel);
+      _resyncCameraDependentOverlays();
+    });
+  }
+
+  void panByPixels(double dx, double dy) => setState(() {
+        _camera.panByScreenDelta(dx, dy);
+        _resyncCameraDependentOverlays();
+      });
+
+  /// [scaleFactor] above 1 zooms out, as the wheel's does.
+  void zoomByStep(double scaleFactor) => setState(() {
+        _zoomCameraToward(scaleFactor, _viewportCenter());
+        _resyncCameraDependentOverlays();
+      });
+
   Future<void> animateToIsometric({Duration duration = const Duration(milliseconds: 400)}) {
     return _animateOrientationTo(OrbitCamera.isometricOrientation(), duration: duration);
   }
@@ -4187,10 +4355,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _handlePointerMove(PointerMoveEvent event) {
     _gestureTravel += event.delta.distance;
     if (event.kind == PointerDeviceKind.mouse) {
+      // Right and middle drags never get here - see [_mouseNavPointer].
       if (event.buttons & kPrimaryMouseButton != 0) {
         setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
-      } else if (event.buttons & kSecondaryMouseButton != 0) {
-        setState(() => _camera.panByScreenDelta(event.delta.dx, event.delta.dy));
       }
       return;
     }
@@ -4453,7 +4620,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // zoom a bigger `fovRadiansY`/`halfHeight` means the same thing (a
       // wider-angle lens sees more of the scene, reading as "further away"),
       // so the same [scaleFactor] convention carries over unchanged.
-      final scaleFactor = event.scrollDelta.dy > 0 ? 1.1 : 1 / 1.1;
+      // Desktop input D1: scaled by the scroll distance (one notch keeps the
+      // old 10 %) so a trackpad's stream of small deltas doesn't zoom a full
+      // notch per event - see [wheelZoomFactor].
+      final scaleFactor = wheelZoomFactor(event.scrollDelta.dy, invert: ControlsPreferences.invertWheel);
       // Item 6 (on-device feedback, repeated across several rounds:
       // zooming in on a Body's corner lost it from view far too soon): a
       // prior fix (zoomTowardScreenPoint) only anchored *which* point a
@@ -4464,13 +4634,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // own doc comment - branching on [OrbitCamera.isPerspective] since
       // the two projections track independent live zoom state
       // ([OrbitCamera.fovRadiansY] vs. [OrbitCamera.halfHeight]).
-      setState(() {
-        if (_camera.isPerspective) {
-          _camera.zoomFovTowardScreenPoint(scaleFactor, event.localPosition, _viewportSize);
-        } else {
-          _camera.zoomHalfHeightTowardScreenPoint(scaleFactor, event.localPosition, _viewportSize);
-        }
-      });
+      setState(() => _zoomCameraToward(scaleFactor, event.localPosition));
+    }
+  }
+
+  /// The lens zoom shared by the wheel and a Shift+middle drag: a
+  /// [scaleFactor] above 1 zooms out, anchored on [screenPoint].
+  void _zoomCameraToward(double scaleFactor, Offset screenPoint) {
+    if (_camera.isPerspective) {
+      _camera.zoomFovTowardScreenPoint(scaleFactor, screenPoint, _viewportSize);
+    } else {
+      _camera.zoomHalfHeightTowardScreenPoint(scaleFactor, screenPoint, _viewportSize);
     }
   }
 
@@ -4545,6 +4719,26 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Offset _viewportCenter() => Offset(_viewportSize.width / 2, _viewportSize.height / 2);
 
   void _onPointerDown(PointerDownEvent event) {
+    _lastPointerLocal = event.localPosition;
+    _noteDeviceKind(event.kind);
+    // Desktop input D1: a middle or right press drags the view in every
+    // mode, ahead of gizmos, marquee and select - see [_mouseNavPointer].
+    final middleDoubleClick = _middleDoubleClick.registerPress(event);
+    if (isMouseNavPress(event)) {
+      // Desktop input D2: a middle double-click fits the view (the Reset
+      // view button) and starts no drag.
+      if (middleDoubleClick) {
+        zoomToFit();
+        return;
+      }
+      _mouseNavPointer = event.pointer;
+      _mouseNavAnchor = event.localPosition;
+      _mouseNavIsSecondary = event.buttons == kSecondaryMouseButton;
+      _mouseNavIsMiddle = event.buttons == kMiddleMouseButton;
+      _mouseNavTravel = 0;
+      _orbitPivot = event.buttons & kMiddleMouseButton != 0 ? _orbitPivotAt(event.localPosition) : null;
+      return;
+    }
     // Sectioning Tool: a gizmo-handle grab takes top priority over every
     // other pointer behavior (orbit, marquee-select, draw-cursor) - the
     // same "checked first, ahead of everything else" precedence
@@ -4614,6 +4808,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // (which only ever arms over empty space, so the two can never
         // both fire for the same gesture).
         _maybeStartSelectOtherHold(event.localPosition);
+      } else if (event.kind == PointerDeviceKind.mouse) {
+        // Desktop input D2: a mouse box select starts on drag, not after a
+        // hold - see [_mouseMarqueeDownScreen].
+        // Only where a box selects anything: the embedded sketch (part
+        // and assembly box select is not built yet).
+        _mouseGrabDownScreen =
+            widget.sketchPlaneBasis != null && widget.onSketchGrabStart != null ? event.localPosition : null;
+        final boxSelects = widget.sketchPlaneBasis != null ? widget.onMarqueeSelect != null : widget.onBoxSelect != null;
+        _mouseMarqueeDownScreen =
+            boxSelects && !_hasEntityNearScreenPoint(event.localPosition) ? event.localPosition : null;
       } else {
         _maybeStartMarqueeLongPress(event.localPosition);
       }
@@ -4630,6 +4834,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    if (event.pointer == _mouseNavPointer) {
+      _applyMouseNavigation(event);
+      return;
+    }
+    _noteDeviceKind(event.kind);
     // Bug fix: only the pointer that started this drag continues it - see
     // [_sectionDragPointerId]'s own doc comment. Any other pointer's move
     // falls through to the normal handling below, which keeps
@@ -4658,6 +4867,33 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     if (widget.selectionMode) {
       if (_marqueeActive) {
+        setState(() => _marqueeCurrentScreen = event.localPosition);
+        return;
+      }
+      if (_mouseGrabActive) {
+        _updateMouseGrab(event.localPosition);
+        return;
+      }
+      final mouseGrabDown = _mouseGrabDownScreen;
+      if (mouseGrabDown != null &&
+          event.kind == PointerDeviceKind.mouse &&
+          (event.localPosition - mouseGrabDown).distance > _tapTravelThreshold) {
+        _mouseGrabDownScreen = null;
+        if (_beginMouseGrab(mouseGrabDown)) {
+          _mouseMarqueeDownScreen = null;
+          _cancelSelectOtherHold();
+          _mouseGrabActive = true;
+          _updateMouseGrab(event.localPosition);
+          return;
+        }
+      }
+      final mouseMarqueeDown = _mouseMarqueeDownScreen;
+      if (mouseMarqueeDown != null &&
+          event.kind == PointerDeviceKind.mouse &&
+          (event.localPosition - mouseMarqueeDown).distance > _tapTravelThreshold) {
+        _mouseMarqueeDownScreen = null;
+        _cancelSelectOtherHold();
+        _startMarquee(mouseMarqueeDown, byMouse: true);
         setState(() => _marqueeCurrentScreen = event.localPosition);
         return;
       }
@@ -4714,6 +4950,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerEnd(PointerEvent event) {
+    if (event.pointer == _mouseNavPointer) {
+      _endMouseNavigation(event);
+      return;
+    }
     // Bug fix: only the pointer that started this drag can end it - see
     // [_sectionDragPointerId]'s own doc comment. Any other pointer's
     // up/cancel event falls through to the normal handling below, which
@@ -4767,10 +5007,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         });
         return;
       }
+      // A mouse drag that picked up a sketch entity ends with the button: it drops, and the release is not a tap.
+      if (_mouseGrabActive) {
+        _mouseGrabActive = false;
+        _mouseGrabDownScreen = null;
+        widget.onSketchGrabEnd?.call();
+        return;
+      }
+      _mouseGrabDownScreen = null;
       // A pending (not yet fired) long-press timer never gets the chance to
       // fire if its pointer lifts first - mirrors sketch_canvas.dart's own
       // _cancelLongPress call at the same point.
       _cancelMarqueeLongPress();
+      _mouseMarqueeDownScreen = null;
       // Bug report ("Select Other"): same "lifting first cancels the
       // pending hold" rule as the marquee's own long-press just above.
       _cancelSelectOtherHold();
@@ -4840,6 +5089,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerHover(PointerHoverEvent event) {
+    _lastPointerLocal = event.localPosition;
+    _noteDeviceKind(event.kind);
     if (widget.selectionMode) {
       _handleSelectionPointerHover(event.localPosition);
       return;
@@ -4849,6 +5100,117 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       return;
     }
     // No orbit-mode hover handling exists.
+  }
+
+  void _noteDeviceKind(PointerDeviceKind kind) {
+    if (_lastPointerKind == kind) return;
+    setState(() => _lastPointerKind = kind);
+  }
+
+  /// Desktop input D1: one move of a middle/right drag - see
+  /// `mouse_navigation.dart` for the bindings. The modifiers are read live,
+  /// so pressing Ctrl or Shift mid-drag switches to pan or zoom.
+  void _applyMouseNavigation(PointerMoveEvent event) {
+    _mouseNavTravel += event.delta.distance;
+    final action = mouseNavActionForEvent(event);
+    if (action == null) return;
+    setState(() {
+      _mouseNavAction = action;
+      switch (action) {
+        case MouseNavAction.orbit:
+          // Desktop input D5: the Controls setting scales a mouse orbit's speed.
+          final delta = event.delta * ControlsPreferences.orbitSpeed;
+          final pivot = _orbitPivot;
+          if (pivot != null) {
+            _camera.orbitAboutPointByScreenDelta(delta.dx, delta.dy, pivot);
+          } else {
+            _camera.orbitByScreenDelta(delta.dx, delta.dy);
+          }
+        case MouseNavAction.pan:
+          _camera.panByScreenDelta(event.delta.dx, event.delta.dy);
+        case MouseNavAction.zoom:
+          _zoomCameraToward(dragZoomFactor(event.delta.dy), _mouseNavAnchor ?? event.localPosition);
+      }
+    });
+  }
+
+  /// Ends a middle/right drag: no tap, no selection commit. The camera
+  /// moved, so the camera-dependent overlays resync, and the hover under
+  /// the cursor is recomputed where it now is. Desktop input D4: a right
+  /// click that did not drag asks for a context menu ([_hitAt] finds what
+  /// is under it).
+  void _endMouseNavigation(PointerEvent event) {
+    final isClick = event is PointerUpEvent && _mouseNavIsSecondary && _mouseNavTravel <= kTouchSlop;
+    final isMiddleClick = event is PointerUpEvent && _mouseNavIsMiddle && _mouseNavTravel <= kTouchSlop;
+    _mouseNavIsMiddle = false;
+    _mouseNavPointer = null;
+    _mouseNavAnchor = null;
+    _orbitPivot = null;
+    _mouseNavIsSecondary = false;
+    setState(() {
+      _mouseNavAction = null;
+      _resyncCameraDependentOverlays();
+    });
+    if (event is! PointerUpEvent) return;
+    if (isClick) widget.onContextMenuRequested?.call(_hitAt(event.localPosition), event.position);
+    if (isMiddleClick) widget.onMouseMiddleClick?.call();
+    if (widget.selectionMode) {
+      _handleSelectionPointerHover(event.localPosition);
+    } else if (widget.drawCursorMode) {
+      _handleDrawCursorHover(event.localPosition);
+    }
+  }
+
+  /// The system cursor over the viewport: what a view drag is doing, a hand
+  /// while a gizmo handle is held, a crosshair for the draw cursor (which
+  /// is no longer painted for a mouse - see [_lastPointerKind]), else the
+  /// arrow.
+  MouseCursor get _viewportMouseCursor {
+    final navAction = _mouseNavAction;
+    if (navAction != null) return mouseNavCursor(navAction);
+    if (_sectionDragHandle != null || _componentGizmoDragHandle != null) return SystemMouseCursors.grabbing;
+    if (widget.drawCursorMode && !widget.suppressDrawCursor) return SystemMouseCursors.precise;
+    return SystemMouseCursors.basic;
+  }
+
+  /// Desktop input D4: what the selection hit-test finds under
+  /// [screenPosition] - the same candidates, filter and priorities hover
+  /// uses ([_recomputeHover]) - without disturbing the hover state.
+  HoverHit? _hitAt(Offset screenPosition) {
+    final savedCursor = _cursorPosition;
+    final savedHit = _hoverHit;
+    _cursorPosition = screenPosition;
+    _recomputeHover();
+    final hit = _hoverHit;
+    _cursorPosition = savedCursor;
+    _hoverHit = savedHit;
+    return hit;
+  }
+
+  /// Desktop input D2: the world point under [screenPosition] for a middle
+  /// drag to orbit about - the nearest body, component or component
+  /// edge/vertex hit, whatever the selection filter (navigation isn't
+  /// selection), or null over empty space. Reference planes are skipped:
+  /// they're large and mostly empty, so pivoting on one would feel random.
+  vm.Vector3? _orbitPivotAt(Offset screenPosition) {
+    final camera = _camera.cameraFor(_viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
+    final meshHit = widget.bodies.isEmpty || widget.bodiesHidden
+        ? null
+        : hitTestBodies(
+            ray: _toLocalRay(ray),
+            viewportSize: _viewportSize,
+            bodies: widget.bodies,
+            facesOccludeOtherHits: widget.renderMode.showsFilledFaces,
+            orthographicHalfHeight: _orthographicHalfHeightOf(camera),
+            fovRadiansY: _perspectiveFovOf(camera),
+          );
+    final hits = [meshHit, _hoverHitTestComponents(ray), _hoverHitTestComponentEntities(ray, camera)].whereType<HoverHit>();
+    if (hits.isEmpty) return null;
+    // `ray.at(t)` and `_toLocalRay(ray).at(t)` name the same point (see
+    // [_toLocalRay]), so every hit's rayT is read along the world ray.
+    final nearest = hits.reduce((a, b) => a.rayT <= b.rayT ? a : b);
+    return ray.at(nearest.rayT);
   }
 
   /// Item 2: "Drag moves cursor relatively (sensitivity-scaled, not 1:1);
@@ -5175,6 +5537,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// click-then-hold Select Other gesture that grows out of that same tap
   /// can undo it.
   SelectionEntityRef? _commitSelection() {
+    // Desktop input D2: a mouse click replaces (Ctrl+click toggles) - see
+    // [PartViewport.onSelectClick].
+    final click = selectClickFor(_lastPointerKind);
+    widget.onSelectClick?.call(click);
     if (widget.onConstraintOverlayItemTap != null) {
       final basis = widget.sketchPlaneBasis;
       final cursor = _cursorPosition;
@@ -5188,11 +5554,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               focusTransform: widget.focusWorldTransformMatrix,
             )
           : null;
-      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId)) return null;
+      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId, _overlayItemPlanePoint(hitId))) return null;
     }
     final hit = _hoverHit;
     if (hit == null) {
-      widget.onClearSelection?.call();
+      // Desktop input D2: a Ctrl+click on empty space keeps the selection.
+      if (click != SelectClick.toggle) widget.onClearSelection?.call();
       return null;
     }
     widget.onSelectionToggle?.call(hit.entity);
@@ -5246,10 +5613,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// travelling far enough to cancel (see [_onPointerMove]'s own
   /// selectionMode branch) - switches the gesture state machine over to
   /// marquee-drag mode.
-  void _startMarquee(Offset downScreen) {
+  void _startMarquee(Offset downScreen, {bool byMouse = false}) {
     _marqueeLongPressTimer = null;
     setState(() {
       _marqueeActive = true;
+      _marqueeByMouse = byMouse;
       _marqueeDownScreen = downScreen;
       _marqueeCurrentScreen = downScreen;
     });
@@ -5280,10 +5648,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   void _endMarquee() {
     final anchor = _marqueeDownScreen;
     final current = _marqueeCurrentScreen;
+    final byMouse = _marqueeByMouse;
+    _marqueeByMouse = false;
     _marqueeActive = false;
     _marqueeDownScreen = null;
     _marqueeCurrentScreen = null;
     final basis = widget.sketchPlaneBasis;
+    if (anchor != null && current != null && basis == null) {
+      _finishBoxSelect(Rect.fromPoints(anchor, current), crossing: byMouse && current.dx < anchor.dx, additive: byMouse && mouseBoxSelectIsAdditive());
+      return;
+    }
     if (anchor == null || current == null || basis == null) return;
     final camera = _camera.cameraFor(_viewportSize);
     final anchorHit = hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(anchor, _viewportSize)), basis);
@@ -5291,7 +5665,149 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (anchorHit == null || currentHit == null) return;
     final (anchorX, anchorY) = worldPointToSketch(basis, anchorHit.$1);
     final (currentX, currentY) = worldPointToSketch(basis, currentHit.$1);
-    widget.onMarqueeSelect?.call(Rect.fromPoints(Offset(anchorX, anchorY), Offset(currentX, currentY)));
+    // Desktop input D2: a mouse box's screen direction picks window or
+    // crossing, and Ctrl adds.
+    widget.onMarqueeSelect?.call(
+      Rect.fromPoints(Offset(anchorX, anchorY), Offset(currentX, currentY)),
+      crossing: byMouse && current.dx < anchor.dx,
+      additive: byMouse && mouseBoxSelectIsAdditive(),
+    );
+  }
+
+  /// The plane point under [screen] on the sketch plane, or null off it.
+  vm.Vector3? _sketchPlanePointAt(Offset screen) {
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) return null;
+    final camera = _camera.cameraFor(_viewportSize);
+    return hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(screen, _viewportSize)), basis)?.$1;
+  }
+
+  /// The sketch-plane point under the drawn label of overlay item [constraintId], or null when it is not drawn or is off the plane. A
+  /// grab uses it to keep the label under the pointer.
+  vm.Vector3? _overlayItemPlanePoint(String constraintId) {
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) return null;
+    final item = widget.constraintOverlayItems.where((it) => it.constraintId == constraintId).lastOrNull;
+    if (item == null) return null;
+    final screen = constraintOverlayItemLabelCenter(
+      _camera.cameraFor(_viewportSize),
+      _viewportSize,
+      basis,
+      item,
+      focusTransform: widget.focusWorldTransformMatrix,
+    );
+    return screen == null ? null : _sketchPlanePointAt(screen);
+  }
+
+  bool _beginMouseGrab(Offset down) {
+    final basis = widget.sketchPlaneBasis;
+    final point = _sketchPlanePointAt(down);
+    if (basis == null || point == null) return false;
+    // A dimension label under the press is picked up before any point or line behind it.
+    final labelGrab = widget.onSketchLabelGrabStart;
+    if (labelGrab != null) {
+      final camera = _camera.cameraFor(_viewportSize);
+      final labelId = constraintOverlayItemAt(
+        camera,
+        _viewportSize,
+        basis,
+        widget.constraintOverlayItems,
+        down,
+        focusTransform: widget.focusWorldTransformMatrix,
+      );
+      if (labelId != null) {
+        final item = widget.constraintOverlayItems.lastWhere((it) => it.constraintId == labelId);
+        final labelScreen = constraintOverlayItemLabelCenter(
+          camera,
+          _viewportSize,
+          basis,
+          item,
+          focusTransform: widget.focusWorldTransformMatrix,
+        );
+        final labelPoint = labelScreen == null ? null : _sketchPlanePointAt(labelScreen);
+        if (labelGrab(labelId, point, labelPoint)) return true;
+      }
+    }
+    return widget.onSketchGrabStart?.call(point, _localPixelsPerSketchUnit(point, basis)) ?? false;
+  }
+
+  void _updateMouseGrab(Offset screen) {
+    final point = _sketchPlanePointAt(screen);
+    if (point != null) widget.onSketchGrabUpdate?.call(point);
+  }
+
+  /// Desktop input D7: works out what [rect] picks and hands it to
+  /// [PartViewport.onBoxSelect]. A touch box has no direction, so it is a
+  /// window.
+  void _finishBoxSelect(Rect rect, {required bool crossing, required bool additive}) {
+    final callback = widget.onBoxSelect;
+    if (callback == null || rect.width < 2 || rect.height < 2) return;
+    final entities = boxSelectEntities(rect, crossing: crossing);
+    callback(entities, crossing: crossing, additive: additive);
+  }
+
+  /// The entities a box over [rect] picks right now - public for tests.
+  @visibleForTesting
+  List<SelectionEntityRef> boxSelectEntities(Rect rect, {required bool crossing}) {
+    final filter = widget.selectionFilter;
+    final focusTransform = widget.focusWorldTransformMatrix;
+    final shapes = <BoxSelectShape>[];
+    if (!widget.bodiesHidden) {
+      for (final body in widget.bodies) {
+        if (body.hidden || body.isCurve) continue;
+        shapes.add(BoxSelectShape(bodyId: body.bodyId, mesh: body.mesh, transform: focusTransform));
+      }
+    }
+    final selectablePaths = _selectableOccurrencePaths();
+    final pickComponents = filter.component && selectablePaths.isNotEmpty;
+    final geometryByPart = {for (final g in widget.assemblyGeometry) g.partId: g};
+    if (!widget.bodiesHidden) {
+      for (final instance in widget.assemblyInstances) {
+        if (instance.hidden || instance.occurrencePath.isEmpty) continue;
+        final key = instance.occurrencePath.join('/');
+        final transform = matrix4FromRigidTransform(instance.worldTransform);
+        for (final body in geometryByPart[instance.partId]?.bodies ?? const <BodyMeshDto>[]) {
+          if (body.hidden || body.isCurve) continue;
+          shapes.add(
+            BoxSelectShape(
+              bodyId: body.bodyId,
+              occurrenceId: key,
+              mesh: body.mesh,
+              transform: transform,
+              pickable: pickComponents && selectablePaths.contains(key) && !key.contains('#pattern:'),
+            ),
+          );
+        }
+      }
+    }
+    // Whole components when placed instances can be picked; otherwise the
+    // finest kind the filter allows, edges first.
+    final BoxSelectTarget target;
+    if (pickComponents) {
+      target = BoxSelectTarget.components;
+    } else if (filter.edge) {
+      target = BoxSelectTarget.edges;
+    } else if (filter.face) {
+      target = BoxSelectTarget.faces;
+    } else if (filter.vertex) {
+      target = BoxSelectTarget.vertices;
+    } else if (filter.body) {
+      target = BoxSelectTarget.bodies;
+    } else {
+      return const [];
+    }
+    final picked = boxSelect(
+      camera: _camera.cameraFor(_viewportSize),
+      viewportSize: _viewportSize,
+      shapes: shapes,
+      rect: rect,
+      crossing: crossing,
+      target: target,
+      occlude: widget.renderMode.showsFilledFaces && !widget.bodiesHidden,
+    );
+    // The Part's own Bodies are not pickable as components while the
+    // components are what is being picked.
+    return pickComponents ? picked : [for (final e in picked) if (e.occurrenceId.isEmpty) e];
   }
 
   // ---- Bug report: "Select Other" (click, then click-and-hold) -----------
@@ -5373,10 +5889,25 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _selectOtherFired = true;
     final cursor = _cursorPosition;
     if (cursor == null) return;
+    final candidates = _selectOtherCandidatesAt(cursor);
+    if (candidates.isEmpty) return;
+    final toUndo = _lastTapToggledEntity;
+    _lastTapToggledEntity = null;
+    if (toUndo != null) {
+      // Desktop input D2: undone as a toggle whatever the first click was.
+      widget.onSelectClick?.call(SelectClick.toggle);
+      widget.onSelectionToggle?.call(toUndo);
+    }
+    widget.onSelectOtherRequested?.call(candidates);
+  }
+
+  /// Every selectable candidate under [screenPosition], nearest first - the
+  /// list Select Other offers ([_fireSelectOther]).
+  List<HoverHit> _selectOtherCandidatesAt(Offset screenPosition) {
     final camera = _camera.cameraFor(_viewportSize);
-    final ray = camera.screenPointToRay(cursor, _viewportSize);
+    final ray = camera.screenPointToRay(screenPosition, _viewportSize);
     final localRay = _toLocalRay(ray);
-    final candidates = <HoverHit>[
+        return <HoverHit>[
       if (widget.bodies.isNotEmpty || widget.sketchGeometries.isNotEmpty)
         ...hitTestAllCandidates(
           ray: localRay,
@@ -5414,13 +5945,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           includeBodyCandidateWithFaces: true,
         ),
     ]..sort((a, b) => a.rayT.compareTo(b.rayT));
-    if (candidates.isEmpty) return;
-    final toUndo = _lastTapToggledEntity;
-    _lastTapToggledEntity = null;
-    if (toUndo != null) {
-      widget.onSelectionToggle?.call(toUndo);
-    }
+  }
+
+  /// Desktop input D4: the geometry right-click menu's Select Other - the
+  /// same candidate list and sheet as the click-then-hold gesture, for the
+  /// point at global position [global]. Returns whether anything was found.
+  bool selectOtherAtGlobal(Offset global) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || _viewportSize.isEmpty) return false;
+    final candidates = _selectOtherCandidatesAt(box.globalToLocal(global));
+    if (candidates.isEmpty) return false;
     widget.onSelectOtherRequested?.call(candidates);
+    return true;
+  }
+
+  /// Desktop input D4: whether Select Other would find more than one
+  /// candidate at global position [global] (the menu's entry is enabled
+  /// only then).
+  bool hasSelectOtherCandidatesAt(Offset global) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox || _viewportSize.isEmpty) return false;
+    return _selectOtherCandidatesAt(box.globalToLocal(global)).length > 1;
   }
 
   // ---- P16: draw-cursor mode's own cursor/raycast/commit dispatch --------
@@ -5453,305 +5998,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _recomputeHover();
       _syncHoverNode();
     });
-    // P41: a grabbed constraint label's own offset lives in screen space,
-    // not an absolute world/sketch position - see
-    // [PartViewport.isDraggingConstraintLabel]'s own doc comment.
+    // A relationship glyph (V, H, parallel...) keeps a session-only pixel offset, so it is fed the raw screen delta. A dimension label
+    // does not come here: it follows the cursor's plane point like a point or line does, and the controller turns that into its
+    // placement ([SketchController.updateGrabbedPosition]) - the same routine for a mouse drag and a touch grab.
     if (widget.isDraggingConstraintLabel) {
-      // P44f bug fix (on-device feedback: "the arrow should remain at the
-      // same angular position when orbiting"): a radial dimension's own
-      // leader angle can't safely be persisted as a screen-pixel delta
-      // (see [PartViewport.onRadialLabelAngleDragged]'s own doc comment) -
-      // resolved here instead, since this State alone has the live camera
-      // needed to convert the cursor's current screen position into a
-      // camera-independent sketch-local angle.
-      ConstraintRadialDimensionItem? radialItem;
-      for (final candidate in widget.constraintOverlayItems) {
-        if (candidate.constraintId == widget.draggingConstraintLabelId &&
-            candidate is ConstraintRadialDimensionItem) {
-          radialItem = candidate;
-          break;
-        }
-      }
-      final basis = widget.sketchPlaneBasis;
-      final cursor = _cursorPosition;
-      if (radialItem != null && basis != null && cursor != null) {
-        final projected = projectRadialDimensionBasis(
-          _camera.cameraFor(_viewportSize),
-          _viewportSize,
-          basis,
-          radialItem,
-          focusTransform: widget.focusWorldTransformMatrix,
-        );
-        if (projected != null) {
-          final (centerScreen, rimScreen, perpScreen) = projected;
-          final desiredDelta = cursor - centerScreen;
-          if (desiredDelta.distance > 1e-6) {
-            final angle = radialDimensionAngleDegrees(
-              centerScreen: centerScreen,
-              rimScreen: rimScreen,
-              perpScreen: perpScreen,
-              desiredDirection: desiredDelta / desiredDelta.distance,
-            );
-            if (angle != null) {
-              widget.onRadialLabelAngleDragged?.call(angle);
-              // Bug fix (on-device feedback: "radius and diameter
-              // dimensions are locked a set distance from the arc or
-              // circle"): [onRadialLabelDistanceDragged]'s own doc comment
-              // covers why - resolved here since [radiusPixels]/
-              // [pixelsPerUnit] need the same live camera/projection the
-              // angle resolve above already has.
-              final rimSketchDx = radialItem.rim.$1 - radialItem.center.$1;
-              final rimSketchDy = radialItem.rim.$2 - radialItem.center.$2;
-              final rimSketchDistance = math.sqrt(rimSketchDx * rimSketchDx + rimSketchDy * rimSketchDy);
-              if (rimSketchDistance > 1e-9) {
-                final pixelsPerUnit = (rimScreen - centerScreen).distance / rimSketchDistance;
-                final radiusPixels = radialItem.radius * pixelsPerUnit;
-                final legPixels = desiredDelta.distance - radiusPixels;
-                widget.onRadialLabelDistanceDragged?.call(legPixels / pixelsPerUnit);
-              }
-              return;
-            }
-          }
-        }
-      }
-      // P52 bug fix (on-device feedback: "when orbiting, linear dimensions
-      // slide along the line") - [onLinearLabelOffsetDragged]'s own doc
-      // comment covers why.
-      ConstraintLinearDimensionItem? linearItem;
-      for (final candidate in widget.constraintOverlayItems) {
-        if (candidate.constraintId == widget.draggingConstraintLabelId &&
-            candidate is ConstraintLinearDimensionItem) {
-          linearItem = candidate;
-          break;
-        }
-      }
-      if (linearItem != null && basis != null && cursor != null) {
-        // Bug fix (on-device feedback: "vertical dimension can't be dragged
-        // left/right, up/down is inverted"): an axis-locked orientation is
-        // handled entirely in sketch-local coordinates, matching
-        // [_axisLockedDimensionEndpoints]'s own reconstruction exactly (see
-        // that function's own doc comment) - no normal/dot-product needed,
-        // just the sketch-local cursor hit's own coordinate along the
-        // locked axis.
-        if (linearItem.orientation == 'vertical' || linearItem.orientation == 'horizontal') {
-          final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
-          final hit = hitTestSketchPlane(ray, basis);
-          if (hit != null) {
-            final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
-            final vertical = linearItem.orientation == 'vertical';
-            final cursorAxis = vertical ? cursorX : cursorY;
-            final reference = vertical
-                ? math.max(linearItem.pointA.$1, linearItem.pointB.$1)
-                : math.max(linearItem.pointA.$2, linearItem.pointB.$2);
-            widget.onLinearLabelOffsetDragged?.call(cursorAxis - reference);
-            // Bug fix (on-device feedback: "the linear dimension only moves
-            // left/right" on a vertical dimension): the along-axis is the
-            // locked orientation's own opposite axis (vertical's own line
-            // runs in Y, so "along" is Y; horizontal's runs in X, so
-            // "along" is X) - fires alongside the offset above every frame,
-            // same "both resolved from one cursor position" pattern
-            // [onLineDistanceLabelOffsetDragged]/[onLineDistanceLabelAlongDragged]
-            // already established.
-            final alongAxis = vertical ? cursorY : cursorX;
-            final alongReference = vertical
-                ? (linearItem.pointA.$2 + linearItem.pointB.$2) / 2
-                : (linearItem.pointA.$1 + linearItem.pointB.$1) / 2;
-            // Bug fix (on-device feedback: "dragging left moves the
-            // dimension left, dragging right moves the dimension left" /
-            // up-down likewise inverted): see [canonicalAlongSign]'s own doc
-            // comment - the raw coordinate difference above is positive
-            // whenever the cursor is on the numerically-larger side of
-            // pointA/pointB's midpoint, regardless of which point is
-            // actually A vs B, but the paint side's tangent direction does
-            // depend on that order.
-            final alongSign = canonicalAlongSign(linearItem.pointA, linearItem.pointB, vertical);
-            widget.onLinearLabelAlongDragged?.call((alongAxis - alongReference) * alongSign);
-            return;
-          }
-        } else {
-          // Bug fix (on-device feedback: same bug class as
-          // [canonicalPerpendicular]'s own doc comment, just never applied
-          // to this drag-side computation): mirrors
-          // [_ConstraintOverlayPainter._paintLinearDimension]'s `default:`
-          // branch exactly - the same screen-projected points, the same
-          // [canonicalPerpendicular] sign canonicalization - so drag-write
-          // and paint-read can never disagree on sign regardless of which
-          // constrained Point the backend happened to store as A vs B.
-          final camera = _camera.cameraFor(_viewportSize);
-          final aScreen = worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, linearItem.pointA.$1, linearItem.pointA.$2));
-          final bScreen = worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, linearItem.pointB.$1, linearItem.pointB.$2));
-          if (aScreen != null && bScreen != null) {
-            final screenDelta = bScreen - aScreen;
-            final screenLength = screenDelta.distance;
-            if (screenLength > 1e-6) {
-              final normal = canonicalPerpendicular(screenDelta);
-              final dx = linearItem.pointB.$1 - linearItem.pointA.$1;
-              final dy = linearItem.pointB.$2 - linearItem.pointA.$2;
-              final sketchLength = math.sqrt(dx * dx + dy * dy);
-              final ratio = sketchLength > 1e-9 ? sketchLength / screenLength : 1.0;
-              final cursorDelta = cursor - aScreen;
-              final screenMagnitude = cursorDelta.dx * normal.dx + cursorDelta.dy * normal.dy;
-              widget.onLinearLabelOffsetDragged?.call(screenMagnitude * ratio);
-              // Bug fix (same class as the axis-locked branch above): the
-              // along-direction is the line's own tangent (perpendicular to
-              // [normal]), projected from the dimension line's own midpoint
-              // anchor - the midpoint of aScreen/bScreen, since [normal]'s
-              // own offset is purely perpendicular and doesn't shift it
-              // along the tangent.
-              final tangent = screenDelta / screenLength;
-              final anchorScreen = (aScreen + bScreen) / 2;
-              final anchorDelta = cursor - anchorScreen;
-              final alongScreenMagnitude = anchorDelta.dx * tangent.dx + anchorDelta.dy * tangent.dy;
-              widget.onLinearLabelAlongDragged?.call(alongScreenMagnitude * ratio);
-              return;
-            }
-          }
-        }
-      }
-      // Bug fix (on-device feedback: same "locked/drifts on orbit" bug
-      // class as the radial/linear fixes above, just for a Line-to-Line
-      // distance dimension - this drag branch never existed at all, so the
-      // dimension fell through to the raw-pixel [onConstraintLabelDragDelta]
-      // path below despite [ConstraintLineDistanceDimensionItem] already
-      // carrying a working, camera-independent `sketchLocalOffsetDistance`
-      // field with nothing to feed it) - mirrors
-      // [_ConstraintOverlayPainter._paintLineDistanceDimension]'s own
-      // `alongA` direction exactly, entirely in sketch-local space.
-      ConstraintLineDistanceDimensionItem? lineDistanceItem;
-      for (final candidate in widget.constraintOverlayItems) {
-        if (candidate.constraintId == widget.draggingConstraintLabelId &&
-            candidate is ConstraintLineDistanceDimensionItem) {
-          lineDistanceItem = candidate;
-          break;
-        }
-      }
-      if (lineDistanceItem != null && basis != null && cursor != null) {
-        // Bug fix (on-device feedback: "dragging the dimension up and down
-        // is still inverted"): the previous version of this branch computed
-        // its perpendicular direction (`perpX`/`perpY`) by rotating
-        // `line1Start -> line1End` *in sketch-local space*, then dotted the
-        // raw sketch-local cursor position against it. But the paint side
-        // this has to match, [_ConstraintOverlayPainter._paintLineDistanceDimension]
-        // (`sketch_constraint_overlay.dart`), projects `line1Start`/
-        // `line1End` to screen *first* and only rotates the *projected*
-        // delta to get its own `perpToA`. A 90-degree rotation doesn't
-        // commute with a camera projection unless the sketch plane's local
-        // basis happens to already be screen-aligned, so "rotate-then-
-        // project" and "project-then-rotate" only agree by coincidence -
-        // this shows up as a consistent inversion for whatever the current
-        // camera orbit happens to be, not merely half the time. Mirrors the
-        // "unlocked"/diagonal [ConstraintLinearDimensionItem] branch just
-        // above (already correct, for exactly this reason): project first,
-        // then do every dot product in screen space, so it can never
-        // disagree with the paint side regardless of camera orbit.
-        final camera = _camera.cameraFor(_viewportSize);
-        Offset? project((double, double) sketchXY) =>
-            worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
-        final line1StartScreen = project(lineDistanceItem.line1Start);
-        final line1EndScreen = project(lineDistanceItem.line1End);
-        final line2StartScreen = project(lineDistanceItem.line2Start);
-        if (line1StartScreen != null && line1EndScreen != null && line2StartScreen != null) {
-          final dirAScreen = line1EndScreen - line1StartScreen;
-          final screenLengthA = dirAScreen.distance;
-          if (screenLengthA > 1e-6) {
-            final alongScreen = dirAScreen / screenLengthA;
-            final perpScreen = Offset(-alongScreen.dy, alongScreen.dx);
-            final midAScreen = (line1StartScreen + line1EndScreen) / 2;
-            final toLineBScreen = line2StartScreen - midAScreen;
-            final t = toLineBScreen.dx * perpScreen.dx + toLineBScreen.dy * perpScreen.dy;
-            final midBScreen = midAScreen + perpScreen * t;
-
-            final dx = lineDistanceItem.line1End.$1 - lineDistanceItem.line1Start.$1;
-            final dy = lineDistanceItem.line1End.$2 - lineDistanceItem.line1Start.$2;
-            final sketchLengthA = math.sqrt(dx * dx + dy * dy);
-            final ratio = sketchLengthA > 1e-9 ? sketchLengthA / screenLengthA : 1.0;
-
-            final offsetDelta = cursor - midAScreen;
-            final offsetScreenMagnitude = offsetDelta.dx * alongScreen.dx + offsetDelta.dy * alongScreen.dy;
-            widget.onLineDistanceLabelOffsetDragged?.call(offsetScreenMagnitude * ratio);
-
-            // Bug fix (on-device feedback, round 2: "the up/down movement is
-            // still reversed"): the paint side's actual along-direction
-            // isn't [perpScreen] itself - [_paintLineDistanceDimension]
-            // derives its `tangent` from `p2 - p1`, which is `midB - midA`
-            // (offset cancels in the subtraction), i.e. `perpToA * t.sign`,
-            // not `perpToA` unflipped. `t`'s sign depends on which side of
-            // line1 line2 sits on relative to [perpScreen]'s own (arbitrary,
-            // line1Start-to-line1End-derived) direction - the first attempt
-            // at this branch dotted straight against [perpScreen], which
-            // only agreed with the paint side when [t] happened to be
-            // positive. Deriving the tangent directly from
-            // `midBScreen - midAScreen`, exactly like the paint side derives
-            // it from `p2 - p1`, makes the two impossible to disagree on
-            // regardless of which side line2 falls on.
-            final midDeltaScreen = midBScreen - midAScreen;
-            final midDeltaLength = midDeltaScreen.distance;
-            if (midDeltaLength > 1e-6) {
-              final tangentScreen = midDeltaScreen / midDeltaLength;
-              final dimAnchorScreen = (midAScreen + midBScreen) / 2;
-              final alongDelta = cursor - dimAnchorScreen;
-              final alongScreenMagnitude = alongDelta.dx * tangentScreen.dx + alongDelta.dy * tangentScreen.dy;
-              widget.onLineDistanceLabelAlongDragged?.call(alongScreenMagnitude * ratio);
-            }
-            return;
-          }
-        }
-      }
-      // Bug fix (on-device feedback: "dimensions should match technical
-      // drawing conventions" - an angle dimension used to be a plain
-      // floating chip with no way to place it): what the user actually
-      // drags for an angle dimension is the arc's own distance from the
-      // implied vertex (see [angleDimensionVertexAndRays]'s own doc
-      // comment), a plain sketch-unit distance - no screen-space normal
-      // needed, mirroring [onLinearLabelOffsetDragged]'s axis-locked branch
-      // above.
-      ConstraintAngleDimensionItem? angleItem;
-      for (final candidate in widget.constraintOverlayItems) {
-        if (candidate.constraintId == widget.draggingConstraintLabelId &&
-            candidate is ConstraintAngleDimensionItem) {
-          angleItem = candidate;
-          break;
-        }
-      }
-      if (angleItem != null && basis != null && cursor != null) {
-        final vertexAndRays = angleDimensionVertexAndRays(angleItem);
-        if (vertexAndRays != null) {
-          final (vertex, ray1, ray2) = vertexAndRays;
-          final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
-          final hit = hitTestSketchPlane(ray, basis);
-          if (hit != null) {
-            final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
-            final dx = cursorX - vertex.$1;
-            final dy = cursorY - vertex.$2;
-            final radius = math.sqrt(dx * dx + dy * dy);
-            if (radius > 1e-6) {
-              widget.onAngleLabelRadiusDragged?.call(radius);
-              // Bug fix (same class as the linear-dimension along fix
-              // above): the along-the-chord direction, entirely in
-              // sketch-local space, is the two rays' own difference (both
-              // unit vectors from [vertex] - the sketch-space arc endpoints
-              // are `vertex + radius*ray1`/`vertex + radius*ray2`, so their
-              // chord direction is exactly `ray2 - ray1` regardless of
-              // radius) - fires alongside the radius callback above every
-              // frame, from this same resolved cursor position, same
-              // "both resolved together" pattern as the linear/line-
-              // distance branches.
-              final alongDx = ray2.$1 - ray1.$1;
-              final alongDy = ray2.$2 - ray1.$2;
-              final alongLen = math.sqrt(alongDx * alongDx + alongDy * alongDy);
-              if (alongLen > 1e-9) {
-                final ux = alongDx / alongLen;
-                final uy = alongDy / alongLen;
-                final chordMidX = vertex.$1 + radius * (ray1.$1 + ray2.$1) / 2;
-                final chordMidY = vertex.$2 + radius * (ray1.$2 + ray2.$2) / 2;
-                final along = (cursorX - chordMidX) * ux + (cursorY - chordMidY) * uy;
-                widget.onAngleLabelAlongDragged?.call(along);
-              }
-              return;
-            }
-          }
-        }
-      }
       widget.onConstraintLabelDragDelta?.call(scaledDelta);
       return;
     }
@@ -5806,6 +6056,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [_onPointerEnd]), commits the current [_drawCursorWorldHit] if the
   /// cursor is actually resolving to a point on the plane.
   void _commitDrawCursor() {
+    widget.onSelectClick?.call(selectClickFor(_lastPointerKind));
     if (widget.preferConstraintOverlayHitOnCommit && widget.onConstraintOverlayItemTap != null) {
       final basis = widget.sketchPlaneBasis;
       final cursor = _cursorPosition;
@@ -5819,7 +6070,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               focusTransform: widget.focusWorldTransformMatrix,
             )
           : null;
-      final consumed = widget.onConstraintOverlayItemTap!(hitId);
+      final consumed = widget.onConstraintOverlayItemTap!(hitId, hitId == null ? null : _overlayItemPlanePoint(hitId));
       if (consumed) return;
     }
     final hit = _drawCursorWorldHit;
@@ -5912,11 +6163,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// assembly-instance geometry - see this method's own "wrong size" bug
   /// fix below), re-centers on it and auto-fits the far clip to
   /// `max(kDefaultFarClip, 4 * radius)`.
-  void _doRecentre() {
+  ///
+  /// Desktop input D3: [keepOrientation] is zoom to fit (F, a middle
+  /// double-click): the same framing, looking the way the view already
+  /// looks, as SOLIDWORKS does - only Reset view turns back to isometric.
+  void _doRecentre({bool keepOrientation = false}) {
     // Never lower a far clip that is already in force (the View-menu override, or an earlier auto-fit): Reset view
     // may only raise it when the framed geometry needs more.
     final previousFarClip = widget.farClip ?? _camera.farClip;
+    final orientation = _camera.orientation.clone();
     _camera.reset();
+    if (keepOrientation) _camera.orientation = orientation;
     // C3: "Reset view" moves the camera - resync the edge overlay's
     // towards-camera bias (see [_syncEdgesNode]) for the new position, and
     // the section triad/plane-quad's own constant-on-screen-size scaling
@@ -6840,59 +7097,62 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   painter: _OriginMarkerPainter(position: originMarkerScreen),
                 ),
               ),
-            Listener(
-              onPointerDown: _onPointerDown,
-              onPointerMove: _onPointerMove,
-              onPointerUp: _onPointerEnd,
-              onPointerCancel: _onPointerEnd,
-              onPointerHover: _onPointerHover,
-              onPointerSignal: _onPointerSignal,
-              child: CustomPaint(
-                size: size,
-                painter: _ScenePainter(
-                  scene: scene,
-                  camera: _camera,
+            MouseRegion(
+              cursor: _viewportMouseCursor,
+              child: Listener(
+                onPointerDown: _onPointerDown,
+                onPointerMove: _onPointerMove,
+                onPointerUp: _onPointerEnd,
+                onPointerCancel: _onPointerEnd,
+                onPointerHover: _onPointerHover,
+                onPointerSignal: _onPointerSignal,
+                child: CustomPaint(
                   size: size,
-                  polylineCarryingNodes: [
-                    ..._planeNodes.values,
-                    // Bug report ("the triad for moving and rotating the
-                    // section plane is not visible at all"): the section
-                    // gizmo/quad are built from `PolylineGeometry` too (see
-                    // `buildSectionGizmoNode`/`buildSectionPlaneQuadNode`,
-                    // `section_gizmo.dart`) and need the same per-frame
-                    // `updateForCamera` call every other polyline node here
-                    // gets (see `_ScenePainter.paint`'s own loop over this
-                    // list) - without it their camera-facing strip geometry
-                    // never gets built, so they render as degenerate/
-                    // invisible despite being added to the Scene.
-                    ..._sectionQuadNodes.values,
-                    if (_sectionGizmoNode != null) _sectionGizmoNode!,
-                    // Bug fix ("the Move/Rotate gizmo does not render in
-                    // Assembly mode"): same root cause the section-gizmo
-                    // comment right above already documents - built from
-                    // `PolylineGeometry` (see `buildComponentGizmoNode`) but
-                    // never added to this list, so its camera-facing strip
-                    // geometry never got built and it rendered as
-                    // degenerate/invisible despite being added to the Scene.
-                    if (_componentGizmoNode != null) _componentGizmoNode!,
-                    if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
-                    if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
-                    if (_drawGhostGuideNode != null) _drawGhostGuideNode!,
-                    if (_drawGhostNode != null) _drawGhostNode!,
-                    if (_drawIndicatorsNode != null) _drawIndicatorsNode!,
-                    if (_profileFillNode != null) _profileFillNode!,
-                    if (_profileBranchMarkersNode != null) _profileBranchMarkersNode!,
-                    ..._sketchNodes.values,
-                    ..._createPlaneNodes.values,
-                    ..._edgesNodes.values,
-                    ..._assemblyInstanceEdgesNodes.values,
-                    if (_hoverNode != null) _hoverNode!,
-                    if (_selectedEdgesNode != null) _selectedEdgesNode!,
-                    if (_selectedVerticesNode != null) _selectedVerticesNode!,
-                    if (_selectedActiveSketchEdgesNode != null) _selectedActiveSketchEdgesNode!,
-                    if (_selectedActiveSketchVerticesNode != null) _selectedActiveSketchVerticesNode!,
-                  ],
-                  anchorTriadAtOrigin: widget.anchorTriadAtOrigin,
+                  painter: _ScenePainter(
+                    scene: scene,
+                    camera: _camera,
+                    size: size,
+                    polylineCarryingNodes: [
+                      ..._planeNodes.values,
+                      // Bug report ("the triad for moving and rotating the
+                      // section plane is not visible at all"): the section
+                      // gizmo/quad are built from `PolylineGeometry` too (see
+                      // `buildSectionGizmoNode`/`buildSectionPlaneQuadNode`,
+                      // `section_gizmo.dart`) and need the same per-frame
+                      // `updateForCamera` call every other polyline node here
+                      // gets (see `_ScenePainter.paint`'s own loop over this
+                      // list) - without it their camera-facing strip geometry
+                      // never gets built, so they render as degenerate/
+                      // invisible despite being added to the Scene.
+                      ..._sectionQuadNodes.values,
+                      if (_sectionGizmoNode != null) _sectionGizmoNode!,
+                      // Bug fix ("the Move/Rotate gizmo does not render in
+                      // Assembly mode"): same root cause the section-gizmo
+                      // comment right above already documents - built from
+                      // `PolylineGeometry` (see `buildComponentGizmoNode`) but
+                      // never added to this list, so its camera-facing strip
+                      // geometry never got built and it rendered as
+                      // degenerate/invisible despite being added to the Scene.
+                      if (_componentGizmoNode != null) _componentGizmoNode!,
+                      if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
+                      if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
+                      if (_drawGhostGuideNode != null) _drawGhostGuideNode!,
+                      if (_drawGhostNode != null) _drawGhostNode!,
+                      if (_drawIndicatorsNode != null) _drawIndicatorsNode!,
+                      if (_profileFillNode != null) _profileFillNode!,
+                      if (_profileBranchMarkersNode != null) _profileBranchMarkersNode!,
+                      ..._sketchNodes.values,
+                      ..._createPlaneNodes.values,
+                      ..._edgesNodes.values,
+                      ..._assemblyInstanceEdgesNodes.values,
+                      if (_hoverNode != null) _hoverNode!,
+                      if (_selectedEdgesNode != null) _selectedEdgesNode!,
+                      if (_selectedVerticesNode != null) _selectedVerticesNode!,
+                      if (_selectedActiveSketchEdgesNode != null) _selectedActiveSketchEdgesNode!,
+                      if (_selectedActiveSketchVerticesNode != null) _selectedActiveSketchVerticesNode!,
+                    ],
+                    anchorTriadAtOrigin: widget.anchorTriadAtOrigin,
+                  ),
                 ),
               ),
             ),
@@ -6962,7 +7222,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 if (anchor == null) return const SizedBox.shrink();
                 return widget.activeConstraintOverlayItemBuilder!(anchor);
               }),
-            if (widget.selectionMode && _displayCursorPosition != null)
+            // Desktop input D1: not for a mouse - the system cursor is
+            // already there, and the hover pre-highlight shows what's under
+            // it (see [_lastPointerKind]).
+            if (widget.selectionMode && _displayCursorPosition != null && !_mouseDriven)
               IgnorePointer(
                 child: CustomPaint(
                   size: size,
@@ -6978,6 +7241,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 child: CustomPaint(
                   size: size,
                   painter: _MarqueeRectPainter(
+                    crossing: _marqueeCrossing,
                     corner1: _marqueeDownScreen!,
                     corner2: _marqueeCurrentScreen!,
                   ),
@@ -6995,7 +7259,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             // [PartViewport.drawCursorHoverColor]'s own doc comment - Trim/
             // Extend now shares this same crosshair but with 2D's own
             // red-for-non-draw tint instead).
-            if (widget.drawCursorMode && _displayCursorPosition != null && !widget.suppressDrawCursor)
+            // Desktop input D1: likewise skipped for a mouse (the system
+            // crosshair, [_viewportMouseCursor], takes its place).
+            if (widget.drawCursorMode && _displayCursorPosition != null && !widget.suppressDrawCursor && !_mouseDriven)
               IgnorePointer(
                 child: CustomPaint(
                   size: size,
@@ -7159,16 +7425,20 @@ class _MarqueeRectPainter extends CustomPainter {
   final Offset corner1;
   final Offset corner2;
 
-  const _MarqueeRectPainter({required this.corner1, required this.corner2});
+  /// Desktop input D2: a crossing box (mouse, right to left) is green.
+  final bool crossing;
+
+  const _MarqueeRectPainter({required this.corner1, required this.corner2, this.crossing = false});
 
   @override
   void paint(Canvas canvas, Size size) {
     final rect = Rect.fromPoints(corner1, corner2);
-    canvas.drawRect(rect, Paint()..color = const Color(0x332196F3));
+    final colour = crossing ? kCrossingBoxColor : const Color(0xFF2196F3);
+    canvas.drawRect(rect, Paint()..color = colour.withValues(alpha: 0.2));
     canvas.drawRect(
       rect,
       Paint()
-        ..color = const Color(0xFF2196F3)
+        ..color = colour
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
@@ -7176,7 +7446,7 @@ class _MarqueeRectPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _MarqueeRectPainter oldDelegate) =>
-      oldDelegate.corner1 != corner1 || oldDelegate.corner2 != corner2;
+      oldDelegate.corner1 != corner1 || oldDelegate.corner2 != corner2 || oldDelegate.crossing != crossing;
 }
 
 /// On-device feedback ("put [the origin marker] behind the cursor, dynamic
@@ -7264,4 +7534,34 @@ class _ScenePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _ScenePainter oldDelegate) => true;
+}
+
+/// Desktop input D3: SOLIDWORKS' standard views - see
+/// [PartViewportState.animateToStandardView].
+enum StandardView {
+  front,
+  back,
+  left,
+  right,
+  top,
+  bottom,
+  isometric;
+
+  /// Where the eye is, looking at the origin (unused for [isometric]).
+  vm.Vector3 get eye => switch (this) {
+        StandardView.front => vm.Vector3(0, 0, 1),
+        StandardView.back => vm.Vector3(0, 0, -1),
+        StandardView.left => vm.Vector3(-1, 0, 0),
+        StandardView.right => vm.Vector3(1, 0, 0),
+        StandardView.top => vm.Vector3(0, 1, 0),
+        StandardView.bottom => vm.Vector3(0, -1, 0),
+        StandardView.isometric => vm.Vector3(1, 1, 1),
+      };
+
+  /// Which way is up on screen.
+  vm.Vector3 get up => switch (this) {
+        StandardView.top => vm.Vector3(0, 0, -1),
+        StandardView.bottom => vm.Vector3(0, 0, 1),
+        _ => vm.Vector3(0, 1, 0),
+      };
 }

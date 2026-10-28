@@ -6,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../config.dart';
 import 'headset_pairing.dart';
+import '../layout/desktop_width.dart';
 
 /// Connect a VR headset: checks that the headset could use this app's server ([HeadsetPairing.runChecks]), then shows a QR code
 /// the headset app scans to add it. Reached from the connection screen and from File > Connect a VR headset.
@@ -109,7 +110,7 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
     final checks = result?.checks;
     return Scaffold(
       appBar: AppBar(title: const Text('Connect a VR headset')),
-      body: SafeArea(
+      body: DesktopMaxWidth(maxWidth: 560, child: SafeArea(
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
@@ -173,7 +174,7 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
             ),
           ),
         ),
-      ),
+      )),
     );
   }
 }

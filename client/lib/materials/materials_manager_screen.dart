@@ -9,6 +9,7 @@ import 'material.dart';
 import 'material_csv.dart';
 import 'material_form_screen.dart';
 import 'material_store.dart';
+import '../layout/desktop_width.dart';
 
 /// Settings > Materials > Materials Manager: CRUD list over the client-local
 /// material library ([MaterialStore]), plus CSV export/import - structured
@@ -141,7 +142,7 @@ class _MaterialsManagerScreenState extends State<MaterialsManagerScreen> {
         icon: const Icon(Icons.add),
         label: const Text('Add Material'),
       ),
-      body: !_loaded
+      body: DesktopMaxWidth(maxWidth: 720, child: !_loaded
           ? const Center(child: CircularProgressIndicator())
           : Column(
               children: [
@@ -180,7 +181,7 @@ class _MaterialsManagerScreenState extends State<MaterialsManagerScreen> {
                         ),
                 ),
               ],
-            ),
+            )),
     );
   }
 }

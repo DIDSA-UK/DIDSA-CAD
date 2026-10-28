@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'view_preferences.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// One tappable swatch in a [showColourSwatchSheet] - a label paired with the
 /// `"#RRGGBB"` string [ViewPreferences] persists.
@@ -50,7 +51,7 @@ Future<String?> showColourSwatchSheet(
   required List<ColourSwatch> swatches,
   required String selectedHex,
 }) {
-  return showModalBottomSheet<String>(
+  return showAdaptiveSheet<String>(
     context: context,
     builder: (sheetContext) => SafeArea(
       child: Padding(
@@ -123,7 +124,7 @@ class _SwatchTile extends StatelessWidget {
 /// *opacity* (the inverse of what the slider displays) on Apply, or null if
 /// dismissed without applying.
 Future<double?> showBodyOpacitySheet(BuildContext context, {required double initialOpacity}) {
-  return showModalBottomSheet<double>(
+  return showAdaptiveSheet<double>(
     context: context,
     builder: (sheetContext) => _BodyOpacitySheet(initialOpacity: initialOpacity),
   );
@@ -196,7 +197,7 @@ class _BodyOpacitySheetState extends State<_BodyOpacitySheet> {
 /// *not* inverted: a higher percentage directly means finer/smoother
 /// curves, since "more resolution" is the intuitive direction here.
 Future<double?> showPolygonResolutionSheet(BuildContext context, {required double initialQuality}) {
-  return showModalBottomSheet<double>(
+  return showAdaptiveSheet<double>(
     context: context,
     builder: (sheetContext) => _PolygonResolutionSheet(initialQuality: initialQuality),
   );

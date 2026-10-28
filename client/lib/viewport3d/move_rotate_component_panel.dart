@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// [MoveRotateComponentPanel]'s own two tabs - which set of Delta X/Y/Z
 /// fields (and which axis meaning, distance vs. degrees) is currently shown.
@@ -198,6 +199,7 @@ class _MoveRotateComponentPanelState extends State<MoveRotateComponentPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _delta == null ? null : _apply, onCancel: widget.onDone),
               TextButton(onPressed: widget.onDone, child: const Text('Done')),
               const SizedBox(width: 8),
               FilledButton(

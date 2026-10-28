@@ -63,6 +63,7 @@ import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
 import '../vr_pairing/headset_pairing_screen.dart';
+import 'action_sheet.dart';
 import 'add_button_menu.dart';
 import 'assembly_tree_panel.dart';
 import 'body_naming.dart';
@@ -80,6 +81,8 @@ import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
 import '../materials/material_picker_sheet.dart';
 import '../materials/part_properties_screen.dart';
+import '../layout/layout_mode.dart';
+import 'desktop_chrome.dart';
 import 'feature_picker_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
@@ -114,6 +117,10 @@ import 'relative_path_dialog.dart';
 import 'render_mode.dart';
 import 'revolve_panel.dart';
 import 'revolve_surface_panel.dart';
+import 'keyboard_shortcuts.dart';
+import 'controls_preferences.dart';
+import 'controls_settings_screen.dart';
+import 'mouse_navigation.dart' show SelectClick, selectionAfterClick;
 import 'move_body_panel.dart';
 import 'move_face_panel.dart';
 import 'move_rotate_component_panel.dart';
@@ -138,7 +145,10 @@ import 'tree_multi_select_controller.dart';
 import 'sweep_panel.dart';
 import 'svg_icon.dart';
 import 'scene_preferences.dart';
+import 'view_cube.dart' show showViewCube;
+import 'viewport_context_menus.dart';
 import 'view_preferences.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
 /// own "Prompt G: profile picking" state section) is gathering picks for -
@@ -1188,6 +1198,14 @@ class _PartScreenState extends State<PartScreen> {
   /// in-memory only (no persistence across app restarts, per the brief).
   bool _referencePlanesHidden = false;
 
+  /// Planes are shown whatever [_referencePlanesHidden] says while a flow
+  /// needs one to be tapped: picking the plane for a New Sketch (and its
+  /// orientation step), and the Mirror flow's plane pick. They go back to
+  /// the user's own setting when the flow ends - nothing is stored, so there
+  /// is nothing to restore.
+  bool get _referencePlanesForcedVisible =>
+      _planeSelectionMode || _confirmingSketchOrientation || _mirrorStep == _MirrorStep.pickingPlane;
+
   /// Sectioning Tool: every live section plane - transient VIEW state, never
   /// a `Feature` (see `section_plane.dart`'s own doc comment for the full
   /// "why"). Persisted only as a client-only stash in the native save file
@@ -2037,40 +2055,52 @@ class _PartScreenState extends State<PartScreen> {
   /// deliberately less restrictive [_selectionModeFabVisible] instead - the
   /// two corners can genuinely disagree now, so this is no longer a
   /// "shared by both" condition, just the left column's own.
-  bool get _viewportFabColumnsVisible =>
-      !_featureTreeVisible &&
-      !_planeSelectionMode &&
-      !_confirmingSketchOrientation &&
-      !_extrudeActive &&
-      !_surfaceActive &&
-      !_createPlaneActive &&
-      !_filletActive &&
-      !_chamferActive &&
-      !_revolveActive &&
-      !_sweepActive &&
-      !_loftActive &&
-      !_planarSurfaceActive &&
-      !_revolveSurfaceActive &&
-      !_sweptSurfaceActive &&
-      !_loftSurfaceActive &&
-      !_ruledSurfaceActive &&
-      !_thickenActive &&
-      !_knitSurfaceActive &&
-      !_solidFromSurfacesActive &&
-      !_offsetSurfaceActive &&
-      !_mirrorActive &&
-      !_patternActive &&
-      !_mergeActive &&
-      !_booleanActive &&
-      !_deleteBodyActive &&
-      !_scaleBodyActive &&
-      !_moveBodyActive &&
-      !_deleteFaceActive &&
-      !_moveFaceActive &&
-      !_shellActive &&
-      !_profilePickerActive &&
-      !_pathPickerActive &&
-      !_measureActive;
+  bool get _viewportFabColumnsVisible => !_featureTreeVisible && !_anyToolSessionActive;
+
+  /// Whether a tool session (or plane picking / sketch orientation) owns the
+  /// viewport - [_viewportFabColumnsVisible]'s list, and the sessions in
+  /// which a click keeps collecting picks rather than replacing the
+  /// selection (desktop input D2, see [_selectClick]).
+  bool get _anyToolSessionActive =>
+      _planeSelectionMode ||
+      _confirmingSketchOrientation ||
+      _extrudeActive ||
+      _surfaceActive ||
+      _createPlaneActive ||
+      _filletActive ||
+      _chamferActive ||
+      _revolveActive ||
+      _sweepActive ||
+      _loftActive ||
+      _planarSurfaceActive ||
+      _revolveSurfaceActive ||
+      _sweptSurfaceActive ||
+      _loftSurfaceActive ||
+      _ruledSurfaceActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive ||
+      _mirrorActive ||
+      _patternActive ||
+      _mergeActive ||
+      _booleanActive ||
+      _deleteBodyActive ||
+      _scaleBodyActive ||
+      _moveBodyActive ||
+      _deleteFaceActive ||
+      _moveFaceActive ||
+      _shellActive ||
+      _profilePickerActive ||
+      _pathPickerActive ||
+      _measureActive;
+
+  /// Desktop input D2: how the viewport's current select click applies (set
+  /// by [PartViewport.onSelectClick] just before the pick arrives). With no
+  /// tool open, a plain mouse click ([SelectClick.replace]) replaces the
+  /// selection, SOLIDWORKS-style; inside a tool, and for Ctrl+click and
+  /// touch, a click toggles as it always has (a tool collects its picks).
+  SelectClick _selectClick = SelectClick.touch;
 
   /// Whether [FeatureTreePanel] is actually on screen right now - true
   /// [_featureTreeVisible] alone is not enough, since that flag stays
@@ -2373,6 +2403,18 @@ class _PartScreenState extends State<PartScreen> {
   /// the debounced live-preview re-solve while [_filletActive], same
   /// reasoning as the [_extrudeActive] case just above.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
+    // New Sketch's "tap a reference plane": in Selection mode a tap arrives
+    // here rather than at [_onPlaneTap], so it has to start the sketch from
+    // here too - it must not just select the plane.
+    if (_planeSelectionMode && entity.kind == SelectionEntityKind.referencePlane) {
+      final plane = entity.referencePlaneKind;
+      if (plane != null) _onPlaneTap(plane);
+      return;
+    }
+    if (_planeSelectionMode && entity.kind == SelectionEntityKind.createPlane) {
+      _onCreatePlaneFeatureTap(entity.planeFeatureId);
+      return;
+    }
     // Sectioning Tool bug fix (see [_tryHandleSectionPlacementToggle]'s own
     // doc comment for the full root cause): checked before every other
     // special-case below, same "this exclusive session owns every tap while
@@ -2818,10 +2860,19 @@ class _PartScreenState extends State<PartScreen> {
       if (shellBodyId != null && entity.bodyId != shellBodyId) return;
       _shellBodyId ??= entity.bodyId;
     }
+    final collecting = _anyToolSessionActive;
+    if (_selectClick == SelectClick.replace && !collecting) {
+      // Desktop input D2: a plain mouse click with no tool open replaces the
+      // selection - as an empty-space click then this click would (see
+      // [_clearSelectedEntities]), so a component's drawer closes too.
+      setState(() {
+        _selectedEntities = selectionAfterClick(_selectedEntities, entity, _selectClick, collecting: false);
+        if (_lens == AssemblyLens.assembly && !_moveRotateComponentActive) _selectedOccurrenceId = null;
+      });
+      return;
+    }
     setState(() {
-      final next = Set<SelectionEntityRef>.of(_selectedEntities);
-      if (!next.remove(entity)) next.add(entity);
-      _selectedEntities = next;
+      _selectedEntities = selectionAfterClick(_selectedEntities, entity, _selectClick, collecting: collecting);
     });
     if (_extrudeActive) _scheduleExtrudePreview();
     if (_filletActive) _scheduleFilletPreview();
@@ -2926,6 +2977,49 @@ class _PartScreenState extends State<PartScreen> {
     // ambiguous about which preview to reschedule.
     if (_revolveActive) _scheduleRevolvePreview();
     if (_revolveSurfaceActive) _scheduleRevolveSurfacePreview();
+  }
+
+  /// Desktop input D7: a box dragged on empty space picked [entities] (what the camera can see inside it).
+  /// A plain box replaces the selection, Ctrl adds, and a box over nothing clears it (as an empty click does).
+  /// Inside a tool each entity goes through the normal pick so the tool's own rules and previews apply.
+  void _onBoxSelect(List<SelectionEntityRef> entities, {bool crossing = false, bool additive = false}) {
+    if (_anyToolSessionActive) {
+      for (final entity in entities) {
+        if (!_selectedEntities.contains(entity)) _toggleSelectedEntity(entity);
+      }
+      return;
+    }
+    if (entities.isEmpty) {
+      if (!additive) _clearSelectedEntities();
+      return;
+    }
+    final components = [
+      for (final e in entities)
+        if (e.kind == SelectionEntityKind.component && !e.occurrenceId.contains('/') && !e.occurrenceId.contains('#pattern:')) e.occurrenceId,
+    ];
+    if (entities.first.kind == SelectionEntityKind.component) {
+      if (components.isEmpty) return;
+      if (components.length == 1 && !_assemblyMultiSelect.active) {
+        _toggleSelectedEntity(entities.firstWhere((e) => e.occurrenceId == components.single));
+        return;
+      }
+      if (_assemblyMultiSelect.active && additive) {
+        for (final id in components) {
+          if (!_assemblyMultiSelect.selectedIds.contains(id)) _toggleMultiSelectMember(_assemblyMultiSelect, id);
+        }
+        return;
+      }
+      if (_assemblyMultiSelect.active) _exitMultiSelect();
+      _enterMultiSelect(_assemblyMultiSelect, components.first);
+      for (final id in components.skip(1)) {
+        _toggleMultiSelectMember(_assemblyMultiSelect, id);
+      }
+      return;
+    }
+    setState(() {
+      _selectedEntities = additive ? {..._selectedEntities, ...entities} : entities.toSet();
+      if (_lens == AssemblyLens.assembly && !_moveRotateComponentActive) _selectedOccurrenceId = null;
+    });
   }
 
   /// Item 4: "Empty space tap -> clears entire selection set" - passed to
@@ -3113,7 +3207,64 @@ class _PartScreenState extends State<PartScreen> {
   /// [_confirmExitPart]'s guard. Cleared at the end of each successful save
   /// path ([_saveNativeFile]/[_saveFocusedPart]/[_saveAsNativeFile]/
   /// [_saveFocusedPartAs]/[_onSaveAllPressed]).
-  bool _isDirty = false;
+  ///
+  /// Per-part since desktop input follow-up (assembly Save): [_dirtyPartIds]
+  /// are the Parts changed since they were last written (the Part that was
+  /// focused when a guarded action ran), [_neverWrittenPartIds] are
+  /// components given a path (Create Component) that has no file behind it
+  /// yet. Both are shown as a dot in the Assembly Tree and both are written
+  /// by Save. [_isDirty] is true while either is non-empty; setting it to
+  /// `true` marks the focused Part, to `false` clears everything (a save of
+  /// the whole session).
+  final Set<String> _dirtyPartIds = {};
+  final Set<String> _neverWrittenPartIds = {};
+
+  bool get _isDirty => _dirtyPartIds.isNotEmpty || _neverWrittenPartIds.isNotEmpty;
+
+  set _isDirty(bool value) {
+    if (value) {
+      _markPartDirty();
+    } else {
+      _dirtyPartIds.clear();
+      _neverWrittenPartIds.clear();
+    }
+  }
+
+  /// The Part whose content the screen is showing and editing: the focused
+  /// component, else the root Part.
+  String? get _focusedPartId => _focusStack?.current ?? _part?.id;
+
+  void _markPartDirty([String? partId]) {
+    final id = partId ?? _focusedPartId;
+    if (id != null) _dirtyPartIds.add(id);
+  }
+
+  void _markPartWritten(String partId) {
+    _dirtyPartIds.remove(partId);
+    _neverWrittenPartIds.remove(partId);
+  }
+
+  /// Every Part with changes or no file yet - what Save writes, and what the
+  /// Assembly Tree marks.
+  Set<String> get _unsavedPartIds => {..._dirtyPartIds, ..._neverWrittenPartIds};
+
+  /// Display names for [_unsavedPartIds] where this screen knows them (the
+  /// current Part, and the Occurrences of the Part in focus).
+  List<String> _unsavedPartNames() {
+    final unsaved = _unsavedPartIds;
+    final names = <String>[];
+    final root = _part;
+    if (root != null && unsaved.contains(root.id)) names.add(root.name);
+    for (var i = 0; i < _occurrences.length; i++) {
+      final partId = _occurrences[i].resolvedPartId;
+      if (partId != null && partId != root?.id && unsaved.contains(partId)) {
+        names.add(occurrenceDisplayName(_occurrences, i));
+      }
+    }
+    final unnamed = unsaved.length - names.length;
+    if (unnamed > 0) names.add(unnamed == 1 ? '1 other part' : '$unnamed other parts');
+    return names;
+  }
 
   /// Finding moved files: the references still to review (see [PartScreen.initialReferenceReports]); the Review sheet listens
   /// to it, and an entry goes when it is used, located or left missing.
@@ -5085,6 +5236,23 @@ class _PartScreenState extends State<PartScreen> {
         _componentPatternSaving = false;
         _componentPatternError = e.message;
       });
+    }
+  }
+
+  /// Desktop input D4: a right click on a Patterns-section row. Touch's
+  /// long-press goes straight to the delete confirmation; a mouse menu
+  /// offers Edit (a tap's action) and Delete (the long-press's) by name.
+  Future<void> _onPatternContextMenu(ComponentPatternDto pattern, Offset at) async {
+    final action = await showContextMenu<MateContextMenuAction>(context, at: at, const [
+      ActionSheetEntry(action: MateContextMenuAction.edit, label: 'Edit', icon: Icons.edit_outlined),
+      ActionSheetEntry(action: MateContextMenuAction.delete, label: 'Delete', icon: Icons.delete_outline),
+    ]);
+    if (!mounted || action == null) return;
+    switch (action) {
+      case MateContextMenuAction.edit:
+        _openComponentPatternForEdit(pattern);
+      case MateContextMenuAction.delete:
+        await _confirmDeleteComponentPattern(pattern);
     }
   }
 
@@ -10333,8 +10501,6 @@ class _PartScreenState extends State<PartScreen> {
     _projectRoot = widget.initialProjectRoot;
     _relativePathByPartId = Map.of(widget.initialRelativePathByPartId);
     _referenceReports.value = widget.initialReferenceReports;
-    // A reference found by id already holds its corrected path in the session; it reaches disk with the next Save.
-    if (widget.initialReferenceReports.any((report) => !report.needsYou)) _isDirty = true;
     if (widget.initialReferenceReports.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _showReferencesBanner());
     }
@@ -10387,6 +10553,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _loadViewPreferences() async {
     await ViewPreferences.load();
     await ScenePreferences.load();
+    await ControlsPreferences.load();
     if (!mounted) return;
     // Bug fix: this async load races [_loadPart] (both fired, unawaited,
     // from initState) - on a slow/first launch, [_refreshMesh] can already
@@ -10491,13 +10658,17 @@ class _PartScreenState extends State<PartScreen> {
   /// since the last save.
   Future<bool> _confirmExitPart() async {
     if (!_isDirty) return true;
+    final unsavedNames = _unsavedPartNames();
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Exit this project?'),
-        content: const Text(
-          'Any changes since your last Save will be lost. This does not delete the current '
-          'project - it will still be there if you open it again.',
+        content: Text(
+          [
+            if (unsavedNames.isNotEmpty) 'Unsaved: ${unsavedNames.join(', ')}.',
+            'Any changes since your last Save will be lost. This does not delete the current '
+                'project - it will still be there if you open it again.',
+          ].join('\n\n'),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
@@ -10704,6 +10875,11 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
     await _firstSaveIntoProject(isSaveAs: false);
+    // The first save writes the root only; components made before it are
+    // written by the same Save.
+    if (mounted && _projectRoot != null && _unsavedPartIds.isNotEmpty) {
+      await _saveFocusedPart(includeFocused: false);
+    }
   }
 
   /// Native Save As: always prompts, and on success the open document
@@ -10796,7 +10972,7 @@ class _PartScreenState extends State<PartScreen> {
       setState(() {
         _projectRoot = root;
         _relativePathByPartId = {..._relativePathByPartId, part.id: path};
-        _isDirty = false;
+        _markPartWritten(part.id);
       });
     });
     if (!written && !hadRoot && mounted) setState(() => _projectRoot = null);
@@ -10959,66 +11135,134 @@ class _PartScreenState extends State<PartScreen> {
   /// the Part's own name via [_autoAssignPath], same auto-derive-first
   /// philosophy as component creation - never a blocking dialog for a plain
   /// Save.
-  Future<void> _saveFocusedPart() async {
-    final focusPartId = _focusStack?.current ?? _part?.id;
+  Future<void> _saveFocusedPart({bool includeFocused = true}) async {
+    final focusPartId = _focusedPartId;
     final root = _projectRoot;
     if (focusPartId == null || root == null) return;
 
-    String? failedPath;
-    String? failureReason;
+    // Taken before the guarded action below marks the focused Part dirty
+    // itself: what was really changed or never written.
+    final unsavedBefore = _unsavedPartIds;
+    final written = <String>[];
+    final failures = <_SaveFailure>[];
     await _runGuarded(() async {
       final fullSessionExport = await _api.exportNative();
-      final stamped = stampExternalRefs(
-        documentPayload: fullSessionExport,
-        relativePathByPartId: _relativePathByPartId,
-      );
+      final parts = ((fullSessionExport['document'] as Map?)?['parts'] as List?) ?? const [];
+      final names = <String, String>{
+        for (final raw in parts)
+          if (raw is Map && raw['id'] is String) raw['id'] as String: (raw['name'] as String?) ?? 'Part',
+      };
+
+      // A Part with no file yet gets one now, named like Create Component names them, so the file that is
+      // saved never points at a component file that was not written.
+      var paths = Map.of(_relativePathByPartId);
+      final newlyPathed = <String>{};
+      for (final entry in names.entries) {
+        if (paths.containsKey(entry.key)) continue;
+        paths = {...paths, entry.key: await _autoAssignPath(root, entry.value, paths)};
+        newlyPathed.add(entry.key);
+      }
+
+      // The focused Part always, plus every other Part with unsaved changes, no file yet, or whose file has gone
+      // missing from the folder. The root's own file records its components' paths, so it goes too when one
+      // was just given a path.
+      final targets = <String>{if (includeFocused) focusPartId};
+      for (final id in names.keys) {
+        if (unsavedBefore.contains(id) || newlyPathed.contains(id) || await _storageService.resolve(root, paths[id]!) == null) {
+          targets.add(id);
+        }
+      }
+      final rootId = _part?.id;
+      if (newlyPathed.isNotEmpty && rootId != null && names.containsKey(rootId)) targets.add(rootId);
+      targets.removeWhere((id) => !names.containsKey(id));
+
+      final stamped = stampExternalRefs(documentPayload: fullSessionExport, relativePathByPartId: paths);
       await _api.importNative(stamped);
+      setState(() => _relativePathByPartId = paths);
 
-      var relativePath = _relativePathByPartId[focusPartId];
-      if (relativePath == null) {
-        final part = await _api.getPart(focusPartId);
-        relativePath = await _autoAssignPath(root, part.name, _relativePathByPartId);
-        setState(() => _relativePathByPartId = {..._relativePathByPartId, focusPartId: relativePath!});
-      }
-
-      try {
-        await _assemblyDocumentClient.savePart(root, focusPartId, relativePath, extras: _extrasFor(focusPartId));
-      } on StorageException catch (e) {
-        // [_isDirty] stays true (set by [_runGuarded]) until a write really
-        // succeeds; [_recoverFromFailedSave] explains and offers Save As.
-        failedPath = relativePath;
-        failureReason = e.message;
-        return;
-      }
-      setState(() => _isDirty = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Saved')));
+      for (final id in targets) {
+        try {
+          await _assemblyDocumentClient.savePart(root, id, paths[id]!, extras: _extrasFor(id));
+          written.add(id);
+          setState(() => _markPartWritten(id));
+        } on StorageException catch (e) {
+          failures.add(_SaveFailure(partId: id, name: names[id]!, relativePath: paths[id]!, reason: e.message));
+        }
       }
     });
-    final failed = failedPath;
-    if (failed != null) await _recoverFromFailedSave(failed, failureReason ?? 'unknown error');
+    if (!mounted) return;
+
+    if (failures.isEmpty) {
+      if (written.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(written.length == 1 ? 'Saved' : 'Saved ${written.length} files')),
+        );
+      }
+      return;
+    }
+    // One file that would not write and nothing else wrong: the original explain-and-Save-As flow.
+    if (failures.length == 1 && failures.single.partId == focusPartId && written.isEmpty) {
+      await _recoverFromFailedSave(failures.single.relativePath, failures.single.reason);
+      return;
+    }
+    await _showSaveFailures(failures, written.length);
   }
 
-  /// Save/project overhaul Phase 3 (`docs/save-project-overhaul-scope.md`
-  /// §3.3): Save As's real behavior once a Project exists - saves the
-  /// *currently focused* Part's current content under a newly-chosen
-  /// project-relative path (reusing [showRelativePathPromptDialog], the
-  /// same "pick a path within this root" prompt Save All's own per-Part
-  /// loop already uses) with a freshly re-minted identity (see the comment
-  /// in the body: item 3 of `docs/bug-report-2026-10-14-plan.md`). For the
-  /// root Part the session then *becomes* the new file (it is reopened, so a
-  /// later plain Save targets it) - standard "Save As" semantics; for a
-  /// sub-component it is a "Save a copy" and the assembly is left alone.
-  ///
-  /// Deliberately always writes a *fresh* export to the new path rather
-  /// than physically moving the old file
-  /// ([StorageService.renameFile]/§3.2's own tool for that) - Save As saves
-  /// the Part's current in-session state, which could differ from
-  /// whatever was last written to its old file. If the old path differs
-  /// from the new one, the old file is simply left in place rather than
-  /// deleted - `StorageService` has no delete primitive (a real, deliberate
-  /// scope limit, not an oversight), so an orphaned stale file is the
-  /// honest, safe outcome here, never a silent data loss.
+  /// Save wrote some files and not others: says which and why, keeps the
+  /// failed Parts marked unsaved, and offers another go or another folder.
+  Future<void> _showSaveFailures(List<_SaveFailure> failures, int writtenCount) async {
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text("Couldn't save ${failures.length} ${failures.length == 1 ? 'file' : 'files'}"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (writtenCount > 0) Text('$writtenCount saved.'),
+            if (writtenCount > 0) const SizedBox(height: 8),
+            for (final failure in failures)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('${failure.name} (${failure.relativePath}): ${failure.reason}'),
+              ),
+            const SizedBox(height: 8),
+            const Text('They stay marked as unsaved.'),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop('close'), child: const Text('Close')),
+          TextButton(onPressed: () => Navigator.of(context).pop('folder'), child: const Text('Choose another folder')),
+          FilledButton(onPressed: () => Navigator.of(context).pop('retry'), child: const Text('Try again')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'retry') {
+      await _saveFocusedPart();
+    } else if (choice == 'folder') {
+      final newRoot = await _pickAnotherProjectRoot();
+      if (newRoot == null || !mounted) return;
+      // A new folder holds none of the files: every Part in the session has to be written there.
+      setState(() {
+        _projectRoot = newRoot;
+        _dirtyPartIds.addAll(_relativePathByPartId.keys);
+        final rootPartId = _part?.id;
+        if (rootPartId != null) _dirtyPartIds.add(rootPartId);
+      });
+      await _saveFocusedPart();
+    }
+  }
+
+  Future<ProjectRoot?> _pickAnotherProjectRoot() async {
+    try {
+      return await _storageService.pickOrCreateProjectRoot();
+    } on StorageException catch (e) {
+      if (mounted && !e.message.contains('No folder was selected')) setState(() => _errorMessage = e.message);
+      return null;
+    }
+  }
+
   Future<void> _saveFocusedPartAs() async {
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
@@ -11083,7 +11327,8 @@ class _PartScreenState extends State<PartScreen> {
       await _saveNeverSavedComponentAs(root, focusPartId, partName, currentPath, newPath);
       return;
     }
-    final wasDirty = _isDirty;
+    final dirtyBefore = Set.of(_dirtyPartIds);
+    final neverWrittenBefore = Set.of(_neverWrittenPartIds);
     var saved = false;
     await _runGuarded(() async {
       try {
@@ -11120,7 +11365,14 @@ class _PartScreenState extends State<PartScreen> {
     }
     // A copy leaves the session itself exactly as unsaved as it was ([_runGuarded]
     // marks every guarded action dirty).
-    setState(() => _isDirty = wasDirty);
+    setState(() {
+      _dirtyPartIds
+        ..clear()
+        ..addAll(dirtyBefore);
+      _neverWrittenPartIds
+        ..clear()
+        ..addAll(neverWrittenBefore);
+    });
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Saved a copy as $newPath')));
   }
 
@@ -11165,7 +11417,10 @@ class _PartScreenState extends State<PartScreen> {
         setState(() => _errorMessage = 'Failed to save: ${e.message}');
         return;
       }
-      setState(() => _relativePathByPartId = {..._relativePathByPartId, partId: newPath});
+      setState(() {
+        _relativePathByPartId = {..._relativePathByPartId, partId: newPath};
+        _markPartWritten(partId);
+      });
       saved = true;
     });
     if (!saved || !mounted) return;
@@ -11650,7 +11905,11 @@ class _PartScreenState extends State<PartScreen> {
       // own coarse default would mark every session dirty from the first
       // frame, defeating [_confirmExitPart]'s whole point for the common
       // "opened it, didn't touch anything, exited" case.
-      setState(() => _isDirty = false);
+      setState(() {
+        _isDirty = false;
+        // A reference found by id already holds its corrected path in the session; it reaches disk with the next Save.
+        if (widget.initialReferenceReports.any((report) => !report.needsYou)) _markPartDirty(part.id);
+      });
     });
   }
 
@@ -13160,8 +13419,8 @@ class _PartScreenState extends State<PartScreen> {
   /// the plane highlight once it's dismissed either way (action taken or
   /// just swiped away) - the highlight is only meant to last while the sheet
   /// is open.
-  Future<void> _showPlaneContextSheet(ReferencePlaneKind plane) async {
-    final action = await showPlaneContextSheet(context, plane: plane);
+  Future<void> _showPlaneContextSheet(ReferencePlaneKind plane, {Offset? at}) async {
+    final action = await showPlaneContextSheet(context, plane: plane, at: at);
     if (!mounted) return;
     setState(() => _selectedPlane = null);
     if (action == PlaneContextSheetAction.newSketch) {
@@ -13191,8 +13450,8 @@ class _PartScreenState extends State<PartScreen> {
   /// long-press menu already offers, since a created Plane is just another
   /// Feature that may have Sketches (and their own downstream Extrudes)
   /// depending on it.
-  Future<void> _showCreatePlaneContextSheet(String featureId) async {
-    final action = await showCreatePlaneContextSheet(context, featureId: featureId);
+  Future<void> _showCreatePlaneContextSheet(String featureId, {Offset? at}) async {
+    final action = await showCreatePlaneContextSheet(context, featureId: featureId, at: at);
     if (!mounted) return;
     setState(() => _selectedCreatePlaneFeatureId = null);
     if (action == CreatePlaneContextSheetAction.newSketch) {
@@ -13200,6 +13459,119 @@ class _PartScreenState extends State<PartScreen> {
     } else if (action == CreatePlaneContextSheetAction.delete) {
       final feature = _featureById(featureId);
       if (feature != null) await _cascadeDeleteFeature(feature);
+    }
+  }
+
+  /// Desktop input D4 (`docs/desktop-input-scope.md` section 4):
+  /// [PartViewport.onContextMenuRequested] - a mouse right click without a
+  /// drag. Picks the menu from what is under it: a component gets the
+  /// component menu, a plane its sheet as a popup, a face / edge / vertex /
+  /// body the SOLIDWORKS-style geometry menu, empty space the view menu.
+  /// The click selects what it is on first unless that is already selected
+  /// ([_selectForContextMenu]).
+  Future<void> _onViewportContextMenu(HoverHit? hit, Offset at) async {
+    if (_busy || _planeSelectionMode || _confirmingSketchOrientation) return;
+    final entity = hit?.entity;
+    if (entity == null) return _showViewContextMenu(at);
+    switch (entity.kind) {
+      case SelectionEntityKind.component:
+        final index = _occurrences.indexWhere((o) => o.id == entity.occurrenceId);
+        if (index == -1) return _showViewContextMenu(at);
+        return _onOccurrenceLongPress(_occurrences[index], at: at);
+      case SelectionEntityKind.referencePlane:
+        final plane = entity.referencePlaneKind;
+        if (plane == null) return _showViewContextMenu(at);
+        setState(() {
+          _selectedPlane = plane;
+          _featureTreeVisible = false;
+        });
+        return _showPlaneContextSheet(plane, at: at);
+      case SelectionEntityKind.createPlane:
+        setState(() {
+          _selectedCreatePlaneFeatureId = entity.planeFeatureId;
+          _featureTreeVisible = false;
+        });
+        return _showCreatePlaneContextSheet(entity.planeFeatureId, at: at);
+      case SelectionEntityKind.face:
+      case SelectionEntityKind.edge:
+      case SelectionEntityKind.vertex:
+      case SelectionEntityKind.body:
+        return _showGeometryContextMenu(entity, at);
+      default:
+        return _showViewContextMenu(at);
+    }
+  }
+
+  Future<void> _showGeometryContextMenu(SelectionEntityRef entity, Offset at) async {
+    final viewport = _viewportKey.currentState;
+    if (viewport == null) return;
+    _selectForContextMenu(entity);
+    final toolOpen = _anyToolSessionActive;
+    final kind = entity.kind;
+    final feature = entity.occurrenceId.isEmpty && entity.bodyId.isNotEmpty ? _featureById(baseFeatureId(entity.bodyId)) : null;
+    final action = await showGeometryContextMenu(
+      context,
+      at: at,
+      canSelectOther: viewport.hasSelectOtherCandidatesAt(at),
+      canNormalTo: viewport.planarFaceNormal(entity) != null,
+      canMeasure: !toolOpen && kind != SelectionEntityKind.body,
+      measureDisabledReason: toolOpen ? 'Close the open tool first' : 'Pick a face, edge or vertex',
+      canAppearance: !toolOpen && (kind == SelectionEntityKind.face || kind == SelectionEntityKind.body),
+      bodyHidden: feature == null ? null : _hiddenFeatureIds.contains(feature.id),
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case GeometryMenuAction.selectOther:
+        viewport.selectOtherAtGlobal(at);
+      case GeometryMenuAction.zoomToSelection:
+        viewport.zoomToEntities(_selectedEntities.contains(entity) ? _selectedEntities : {entity});
+      case GeometryMenuAction.normalTo:
+        unawaited(viewport.animateToFaceNormal(entity));
+      case GeometryMenuAction.measure:
+        _openMeasure();
+        setState(() => _selectedEntities = {entity});
+        _scheduleMeasureQuery();
+      case GeometryMenuAction.appearance:
+        final path = entity.occurrenceId.isEmpty
+            ? (_focusStack?.currentOccurrencePath ?? const <String>[])
+            : splitPath(entity.occurrenceId);
+        await _openAppearance(
+          pick: _PaintPick(
+            path: path,
+            bodyId: entity.bodyId.isEmpty ? null : entity.bodyId,
+            faceIndex: kind == SelectionEntityKind.face ? entity.id : null,
+            label: _paintPickLabel(path),
+          ),
+        );
+      case GeometryMenuAction.toggleBodyVisibility:
+        if (feature != null) await _toggleFeatureVisibility(feature);
+      case GeometryMenuAction.assignMaterial:
+        await _assignMaterialToBody(entity.bodyId);
+    }
+  }
+
+  Future<void> _showViewContextMenu(Offset at) async {
+    final viewport = _viewportKey.currentState;
+    if (viewport == null) return;
+    final action = await showViewContextMenu(
+      context,
+      at: at,
+      isPerspective: _isPerspective,
+      referencePlanesHidden: _referencePlanesHidden,
+    );
+    if (!mounted || action == null) return;
+    switch (action) {
+      case ViewMenuAction.zoomToFit:
+        viewport.zoomToFit();
+      case ViewMenuAction.standardViews:
+        final view = await showStandardViewsMenu(context, at: at);
+        if (mounted && view != null) unawaited(viewport.animateToStandardView(view));
+      case ViewMenuAction.togglePerspective:
+        await _onPerspectiveChanged(!_isPerspective);
+      case ViewMenuAction.toggleReferencePlanes:
+        _onToggleReferencePlanes();
+      case ViewMenuAction.resetView:
+        viewport.resetView();
     }
   }
 
@@ -13237,15 +13609,20 @@ class _PartScreenState extends State<PartScreen> {
     if (!mounted || action == null) return;
     switch (action) {
       case AddButtonMenuAction.newSketch:
-        setState(() {
-          _planeSelectionModeStack.push(true);
-          _selectedPlane = null;
-          _toolbarOpen = false;
-          _featureTreeVisible = false;
-        });
+        _startNewSketchPicker();
       case AddButtonMenuAction.feature:
         await _onFeaturePressed();
     }
+  }
+
+  /// "New Sketch": pick the plane or face to sketch on.
+  void _startNewSketchPicker() {
+    setState(() {
+      _planeSelectionModeStack.push(true);
+      _selectedPlane = null;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+    });
   }
 
   /// Assembly support Phase 3b/15 (`docs/assembly-scope.md` §3/§6): the
@@ -13497,7 +13874,7 @@ class _PartScreenState extends State<PartScreen> {
   void _openReferencesSheet() {
     if (!mounted) return;
     if (_referencesSheetContext != null) return; // already open
-    showModalBottomSheet<void>(
+    showAdaptiveSheet<void>(
       context: context,
       isScrollControlled: true,
       builder: (sheetContext) {
@@ -13571,7 +13948,10 @@ class _PartScreenState extends State<PartScreen> {
       if (!mounted) return null;
       setState(() => _projectRoot = root);
       return root;
-    } on StorageException {
+    } on StorageException catch (e) {
+      // Cancelling the picker is silent; anything else (no folder dialog
+      // available, a lost grant) is told to the user.
+      if (mounted && !e.message.contains('No folder was selected')) setState(() => _errorMessage = e.message);
       return null;
     }
   }
@@ -13599,6 +13979,18 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onCreateNewComponentPressed() async {
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
+
+    // The folder comes first: a component is auto-pathed inside it, and
+    // cancelling here must not leave a half-made component behind.
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) {
+      if (mounted && _errorMessage == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Choose a project folder to create a component in.')),
+        );
+      }
+      return;
+    }
 
     final name = _nextComponentName();
 
@@ -13635,9 +14027,6 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (newPartId == null || !mounted) return;
 
-    final root = await _ensureProjectRoot();
-    if (root == null || !mounted) return;
-
     var relativePathByPartId = _relativePathByPartId;
     if (!relativePathByPartId.containsKey(newPartId)) {
       final childPath = await _autoAssignPath(root, name, relativePathByPartId);
@@ -13648,7 +14037,12 @@ class _PartScreenState extends State<PartScreen> {
       relativePathByPartId = {...relativePathByPartId, rootPartId: parentPath};
     }
     if (!mounted) return;
-    setState(() => _relativePathByPartId = relativePathByPartId);
+    // No file yet: the next Save writes it (and the parent that now refers to it).
+    setState(() {
+      _relativePathByPartId = relativePathByPartId;
+      _neverWrittenPartIds.add(newPartId!);
+      _markPartDirty(rootPartId);
+    });
   }
 
   /// The auto-generated default name for a newly created component -
@@ -13785,6 +14179,12 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _onFeaturePressed() async {
     final action = await showFeaturePickerSheet(context);
     if (!mounted || action == null) return;
+    await _runFeatureAction(action);
+  }
+
+  /// Starts the feature [action] - from the Feature picker sheet, or from a ribbon button on the desktop layout.
+  Future<void> _runFeatureAction(FeaturePickerAction action) async {
+    if (_busy) return;
     switch (action) {
       case FeaturePickerAction.extrude:
         await _extrudeSelectedFeature();
@@ -13905,7 +14305,7 @@ class _PartScreenState extends State<PartScreen> {
     var helixSegments = const [HelixSegmentValue(pitch: 2, turns: 3)];
     var helixPitchPoints = const <HelixPitchPointValue>[];
     var helixRightHanded = true;
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -13975,7 +14375,7 @@ class _PartScreenState extends State<PartScreen> {
     ];
     if (newSegments.isEmpty && newPitchPoints.isEmpty) newSegments = const [HelixSegmentValue(pitch: 2, turns: 3)];
     var newRightHanded = feature.helixRightHanded;
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -14037,7 +14437,7 @@ class _PartScreenState extends State<PartScreen> {
         planeLikes.length == 1 && _selectedEntities.length == 1 ? _planeRefDtoFor(planeLikes.single) : null;
     var spring = const SpringDto(meanDiameter: 10, wireDiameter: 1, freeLength: 20, activeCoils: 5);
     var axisPlane = 'XY';
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -14070,7 +14470,7 @@ class _PartScreenState extends State<PartScreen> {
     final initial = feature.spring;
     if (initial == null) return;
     var spring = initial;
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -14110,7 +14510,7 @@ class _PartScreenState extends State<PartScreen> {
     }
     String? pickedSketchFeatureIdA;
     String? pickedSketchFeatureIdB;
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -14190,7 +14590,7 @@ class _PartScreenState extends State<PartScreen> {
       ...curveFeatureBoundaryIds
           .map((id) => FillSurfaceBoundaryChoice(label: _curveNames[id] ?? 'Curve feature ($id)', isCurveFeature: true)),
     ];
-    final confirmed = await showModalBottomSheet<bool>(
+    final confirmed = await showAdaptiveSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -14698,6 +15098,20 @@ class _PartScreenState extends State<PartScreen> {
   /// (see [_openExtrudePanelForEdit]) rather than doing nothing, which is
   /// what an Extrude-Feature tap did pre-B4.
   Future<void> _onFeatureTap(FeatureDto feature) async {
+    // Desktop input D5: the second click of a double-click lands while the
+    // first is still opening the Feature - it must not open it again.
+    if (_featureTapOpening) return;
+    _featureTapOpening = true;
+    try {
+      await _openFeatureForEdit(feature);
+    } finally {
+      _featureTapOpening = false;
+    }
+  }
+
+  bool _featureTapOpening = false;
+
+  Future<void> _openFeatureForEdit(FeatureDto feature) async {
     setState(() => _selectedFeatureId = feature.id);
     final rollbackIds = featureIdsAfter(_features, feature.id);
     if (rollbackIds.isNotEmpty) await _beginRollback(rollbackIds);
@@ -15014,14 +15428,16 @@ class _PartScreenState extends State<PartScreen> {
   /// produced it via [baseFeatureId] (`body_naming.dart`) since Hide/Show is
   /// always Feature-scoped. Defensive no-op if that Feature can no longer be
   /// found (a stale [bodyId] from a mesh response that's since changed).
-  Future<void> _onBodyLongPress(String bodyId) async {
+  Future<void> _onBodyLongPress(String bodyId, {Offset? at}) async {
     if (_busy) return;
     final feature = _featureById(baseFeatureId(bodyId));
     if (feature == null) return;
+    if (at != null) _selectForContextMenu(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId));
 
     final action = await showBodyContextMenu(
       context,
       isHidden: _hiddenFeatureIds.contains(feature.id),
+      at: at,
     );
     if (!mounted || action == null) return;
 
@@ -15088,14 +15504,16 @@ class _PartScreenState extends State<PartScreen> {
   /// [_onBodyLongPress]'s Surfaces-section counterpart - same context-menu
   /// Hide/Show flow, resolved back to the owning `SurfaceFeature` via
   /// [baseFeatureId] exactly like a Body row does.
-  Future<void> _onSurfaceLongPress(String surfaceId) async {
+  Future<void> _onSurfaceLongPress(String surfaceId, {Offset? at}) async {
     if (_busy) return;
     final feature = _featureById(baseFeatureId(surfaceId));
     if (feature == null) return;
+    if (at != null) _selectForContextMenu(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: surfaceId));
 
     final action = await showBodyContextMenu(
       context,
       isHidden: _hiddenFeatureIds.contains(feature.id),
+      at: at,
     );
     if (!mounted || action == null) return;
 
@@ -15131,6 +15549,37 @@ class _PartScreenState extends State<PartScreen> {
     final feature = _featureById(baseFeatureId(curveId));
     if (feature == null) return;
     await _toggleFeatureVisibility(feature);
+  }
+
+  /// Desktop input D4: a right click on a Curves-section row. The touch
+  /// long-press toggles Hide/Show with no menu; a right click is expected
+  /// to open one, so it offers that one action.
+  Future<void> _onCurveContextMenu(String curveId, Offset at) async {
+    if (_busy) return;
+    final feature = _featureById(baseFeatureId(curveId));
+    if (feature == null) return;
+    _selectForContextMenu(SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: curveId));
+    final hidden = _hiddenFeatureIds.contains(feature.id);
+    final action = await showContextMenu<BodyContextMenuAction>(context, at: at, [
+      ActionSheetEntry(
+        action: BodyContextMenuAction.toggleVisibility,
+        label: hidden ? 'Show' : 'Hide',
+        icon: hidden ? Icons.visibility : Icons.visibility_off,
+      ),
+    ]);
+    if (!mounted || action == null) return;
+    await _toggleFeatureVisibility(feature);
+  }
+
+  /// Desktop input D4 (`docs/desktop-input-scope.md` section 4): the
+  /// SOLIDWORKS rule for a right click - on something that isn't selected,
+  /// it selects it first (as a plain click would); on something already in
+  /// the selection, the selection stays. While a tool is open and gathering
+  /// picks a right click must not add one, so it only opens the menu.
+  void _selectForContextMenu(SelectionEntityRef entity) {
+    if (_selectedEntities.contains(entity) || _anyToolSessionActive) return;
+    _selectClick = SelectClick.replace;
+    _toggleSelectedEntity(entity);
   }
 
   /// Animates the 3D camera to face this Feature's Sketch plane (per the
@@ -15616,7 +16065,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Delete without reworking this entry point. Stage 9 adds Extrude,
   /// gated on a closed-profile check run once here (on menu open), not on
   /// every render - only a SketchFeature even offers the entry at all.
-  Future<void> _onFeatureLongPress(FeatureDto feature) async {
+  Future<void> _onFeatureLongPress(FeatureDto feature, {Offset? at}) async {
     if (_busy) return;
 
     final isSketchFeature = feature.type == 'sketch';
@@ -15677,6 +16126,7 @@ class _PartScreenState extends State<PartScreen> {
       // Boolean family, fourth/last entry: same gate as [showMerge]/
       // [showSubtract]/[showCommon] exactly.
       showSplit: _bodyProducingFeatureTypes.contains(feature.type),
+      at: at,
     );
     if (!mounted || action == null) return;
 
@@ -22796,7 +23246,7 @@ class _PartScreenState extends State<PartScreen> {
   /// opens [_openComponentPattern] - unlike Mate, this *does* use `occurrence`'s own
   /// pre-selection directly, since a ComponentPattern's source genuinely is
   /// "the whole component that was long-pressed."
-  Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence) async {
+  Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence, {Offset? at}) async {
     // Bug fix ("selecting a component doesn't highlight it in 3D"): same
     // `_selectedEntities` population as `_onOccurrenceTap`'s own identical
     // fix, so a long-press-selected component highlights too.
@@ -22824,7 +23274,7 @@ class _PartScreenState extends State<PartScreen> {
     // toolbar for the lifetime of this modal sheet so the two never render
     // (and so collide, e.g. in a `find.text('Fix')` widget test) at once.
     setState(() => _componentContextMenuOpen = true);
-    final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden, fixed: fixed);
+    final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden, fixed: fixed, at: at);
     if (mounted) setState(() => _componentContextMenuOpen = false);
     if (!mounted || action == null) return;
     switch (action) {
@@ -22929,9 +23379,9 @@ class _PartScreenState extends State<PartScreen> {
   /// row first (same "select, then offer more" precedence
   /// [_onOccurrenceLongPress]'s own doc comment already documents), then
   /// [showMateContextMenu]'s own two actions.
-  Future<void> _onMateLongPress(MateDto mate) async {
+  Future<void> _onMateLongPress(MateDto mate, {Offset? at}) async {
     _onMateTap(mate);
-    final action = await showMateContextMenu(context);
+    final action = await showMateContextMenu(context, at: at);
     if (!mounted || action == null) return;
     switch (action) {
       case MateContextMenuAction.edit:
@@ -23592,7 +24042,7 @@ class _PartScreenState extends State<PartScreen> {
           referenceGhostVertices: ghostVertices,
           referenceGhostEdges: ghostEdges,
           bodies: _visibleBodies,
-          documentPartId: _part?.id,
+          documentPartId: _focusStack?.current ?? _part?.id,
           sketchFeatureId: feature.id,
           planeBasis: basis,
           // On-device feedback: other sketches should stay visible while
@@ -23621,7 +24071,7 @@ class _PartScreenState extends State<PartScreen> {
       // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
       // §3.4): coarse dirty-flag set - see [_isDirty]'s own doc comment for
       // why "every guarded action" is the right granularity here.
-      _isDirty = true;
+      _markPartDirty();
     });
     _busyOverlayTimer?.cancel();
     _busyOverlayTimer = Timer(_busyOverlayDelay, () {
@@ -23660,48 +24110,186 @@ class _PartScreenState extends State<PartScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_activeMultiSelect != null) {
-          // Feature 1 (tree multi-select): back cancels the session, same
-          // as the action bar's own Cancel.
-          _exitMultiSelect();
-        } else if (_confirmingSketchOrientation) {
-          _cancelPendingOrientation();
-        } else if (_sketchPickerActive) {
-          _cancelSketchPicker();
-        } else if (_revolveSketchPickerActive) {
-          _cancelRevolveSketchPicker();
-        } else if (_sweepSketchPickerActive) {
-          _cancelSweepSketchPicker();
-        } else if (_loftSketchPickerActive) {
-          _cancelLoftSketchPicker();
-        } else if (_planarSurfaceSketchPickerActive) {
-          _cancelPlanarSurfaceSketchPicker();
-        } else if (_revolveSurfaceSketchPickerActive) {
-          _cancelRevolveSurfaceSketchPicker();
-        } else if (_sweptSurfaceSketchPickerActive) {
-          _cancelSweptSurfaceSketchPicker();
-        } else if (_loftSurfaceSketchPickerActive) {
-          _cancelLoftSurfaceSketchPicker();
-        } else if (_ruledSurfaceSketchPickerActive) {
-          _cancelRuledSurfaceSketchPicker();
-        } else if (_profilePickerActive) {
-          _cancelProfilePicker();
-        } else if (_pathPickerActive) {
-          _cancelPathPicker();
-        } else if (_planeSelectionMode) {
-          _cancelPlaneSelectionMode();
-        } else {
-          _confirmAndPopPart();
-        }
+        if (!_cancelActiveMode()) _confirmAndPopPart();
       },
-      child: Stack(
-        children: [
-          _buildScaffold(context),
-          if (_showBusyOverlay || _activeJob != null)
-            _BuildingGeometryOverlay(onCancel: _activeJob != null ? _cancelActiveJob : null),
-        ],
+      // Desktop input D3: the keyboard shortcuts, and the open tool panel's
+      // Enter / Esc (see [ToolPanelKeys]).
+      child: CadShortcutScope(
+        bindings: () => _shortcutBindings,
+        child: ToolPanelKeyScope(
+          registry: _toolPanelKeys,
+          child: Stack(
+            children: [
+              _buildScaffold(context),
+              if (_showBusyOverlay || _activeJob != null)
+                _BuildingGeometryOverlay(onCancel: _activeJob != null ? _cancelActiveJob : null),
+            ],
+          ),
+        ),
       ),
     );
+  }
+
+  /// Cancels whichever picker or mode the device back gesture (and Esc)
+  /// backs out of - tree multi-select, the sketch orientation step, the
+  /// sketch / profile / path pickers, plane picking. False when none is
+  /// active (then Back asks to exit the Part, and Esc clears the selection).
+  bool _cancelActiveMode() {
+    if (_activeMultiSelect != null) {
+      // Feature 1 (tree multi-select): back cancels the session, same
+      // as the action bar's own Cancel.
+      _exitMultiSelect();
+    } else if (_confirmingSketchOrientation) {
+      _cancelPendingOrientation();
+    } else if (_sketchPickerActive) {
+      _cancelSketchPicker();
+    } else if (_revolveSketchPickerActive) {
+      _cancelRevolveSketchPicker();
+    } else if (_sweepSketchPickerActive) {
+      _cancelSweepSketchPicker();
+    } else if (_loftSketchPickerActive) {
+      _cancelLoftSketchPicker();
+    } else if (_planarSurfaceSketchPickerActive) {
+      _cancelPlanarSurfaceSketchPicker();
+    } else if (_revolveSurfaceSketchPickerActive) {
+      _cancelRevolveSurfaceSketchPicker();
+    } else if (_sweptSurfaceSketchPickerActive) {
+      _cancelSweptSurfaceSketchPicker();
+    } else if (_loftSurfaceSketchPickerActive) {
+      _cancelLoftSurfaceSketchPicker();
+    } else if (_ruledSurfaceSketchPickerActive) {
+      _cancelRuledSurfaceSketchPicker();
+    } else if (_profilePickerActive) {
+      _cancelProfilePicker();
+    } else if (_pathPickerActive) {
+      _cancelPathPicker();
+    } else if (_planeSelectionMode) {
+      _cancelPlaneSelectionMode();
+    } else {
+      return false;
+    }
+    return true;
+  }
+
+  /// Desktop input D3: the open tool panels' Enter / Esc targets.
+  final ToolPanelKeyRegistry _toolPanelKeys = ToolPanelKeyRegistry();
+
+  /// Desktop input D3 (`docs/desktop-input-scope.md` R3): this screen's
+  /// shortcuts. A null entry is a shortcut that does nothing right now (the
+  /// key is left alone).
+  Map<CadShortcut, VoidCallback?> get _shortcutBindings {
+    final viewport = _viewportKey.currentState;
+    VoidCallback? view(StandardView standardView) =>
+        viewport == null ? null : () => unawaited(viewport.animateToStandardView(standardView));
+    VoidCallback? idle(VoidCallback action) => _busy ? null : action;
+    return {
+      CadShortcut.cancel: _onEscapeKey,
+      CadShortcut.confirm: _toolPanelKeys.confirm,
+      CadShortcut.delete: _deleteKeyAction,
+      CadShortcut.undo: _lens == AssemblyLens.assembly && _componentTransformUndoStack.isNotEmpty && !_busy
+          ? () => unawaited(_undoLastAssemblyAction())
+          : null,
+      CadShortcut.save: idle(() => unawaited(_saveNativeFile())),
+      CadShortcut.saveAs: idle(() => unawaited(_saveAsNativeFile())),
+      CadShortcut.open: idle(() => unawaited(_onOpenPressed())),
+      CadShortcut.newDocument: idle(() => unawaited(_startNewPart())),
+      CadShortcut.zoomToFit: viewport?.zoomToFit,
+      CadShortcut.viewFront: view(StandardView.front),
+      CadShortcut.viewBack: view(StandardView.back),
+      CadShortcut.viewLeft: view(StandardView.left),
+      CadShortcut.viewRight: view(StandardView.right),
+      CadShortcut.viewTop: view(StandardView.top),
+      CadShortcut.viewBottom: view(StandardView.bottom),
+      CadShortcut.viewIsometric: view(StandardView.isometric),
+      CadShortcut.viewNormalTo: _normalToAction,
+      CadShortcut.viewCube: viewport == null ? null : () => unawaited(_showViewCube()),
+      CadShortcut.zoomIn: viewport == null ? null : () => viewport.zoomByStep(1 / kKeyboardZoomStep),
+      CadShortcut.zoomOut: viewport == null ? null : () => viewport.zoomByStep(kKeyboardZoomStep),
+      CadShortcut.rotateLeft: viewport == null ? null : () => viewport.orbitByDegrees(-kKeyboardOrbitDegrees, 0),
+      CadShortcut.rotateRight: viewport == null ? null : () => viewport.orbitByDegrees(kKeyboardOrbitDegrees, 0),
+      CadShortcut.rotateUp: viewport == null ? null : () => viewport.orbitByDegrees(0, -kKeyboardOrbitDegrees),
+      CadShortcut.rotateDown: viewport == null ? null : () => viewport.orbitByDegrees(0, kKeyboardOrbitDegrees),
+      CadShortcut.rotate90Left: viewport == null ? null : () => viewport.orbitByDegrees(-90, 0),
+      CadShortcut.rotate90Right: viewport == null ? null : () => viewport.orbitByDegrees(90, 0),
+      CadShortcut.rotate90Up: viewport == null ? null : () => viewport.orbitByDegrees(0, -90),
+      CadShortcut.rotate90Down: viewport == null ? null : () => viewport.orbitByDegrees(0, 90),
+      CadShortcut.panLeft: viewport == null ? null : () => viewport.panByPixels(-kKeyboardPanPixels, 0),
+      CadShortcut.panRight: viewport == null ? null : () => viewport.panByPixels(kKeyboardPanPixels, 0),
+      CadShortcut.panUp: viewport == null ? null : () => viewport.panByPixels(0, -kKeyboardPanPixels),
+      CadShortcut.panDown: viewport == null ? null : () => viewport.panByPixels(0, kKeyboardPanPixels),
+      CadShortcut.togglePerspective: () => unawaited(_onPerspectiveChanged(!_isPerspective)),
+      CadShortcut.help: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+    };
+  }
+
+  /// Desktop input D5 (Ctrl+8, and the view cube's Normal To button): turns
+  /// the view to look straight at the one selected plane or flat face. Null
+  /// when the selection is anything else (the key is then left alone).
+  VoidCallback? get _normalToAction {
+    final viewport = _viewportKey.currentState;
+    if (viewport == null || _selectedEntities.length != 1) return null;
+    final entity = _selectedEntities.single;
+    switch (entity.kind) {
+      case SelectionEntityKind.referencePlane:
+        final plane = entity.referencePlaneKind;
+        return plane == null ? null : () => unawaited(viewport.animateToBasis(SketchPlaneBasis.oriented(plane, flip: false, rotationQuarterTurns: 0)));
+      case SelectionEntityKind.createPlane:
+        final basis = _customPlaneBasis(entity.planeFeatureId);
+        return basis == null ? null : () => unawaited(viewport.animateToBasis(basis));
+      case SelectionEntityKind.face:
+        return viewport.planarFaceNormal(entity) == null ? null : () => unawaited(viewport.animateToFaceNormal(entity));
+      default:
+        return null;
+    }
+  }
+
+  /// Desktop input D5 (Space): the view cube, opened under the cursor.
+  Future<void> _showViewCube() async {
+    final viewport = _viewportKey.currentState;
+    if (viewport == null) return;
+    await showViewCube(
+      context,
+      anchor: viewport.viewCubeAnchor(),
+      basis: viewport.viewCubeBasis(),
+      onPick: (target) => unawaited(viewport.animateToViewCubeTarget(target)),
+      onNormalTo: _normalToAction,
+    );
+  }
+
+  /// Esc: the open tool panel's Cancel; else whatever Back would cancel
+  /// ([_cancelActiveMode]); else the File/View toolbar; else the selection.
+  /// Never leaves the Part (Back still asks to).
+  void _onEscapeKey() {
+    final cancelPanel = _toolPanelKeys.cancel;
+    if (cancelPanel != null) {
+      cancelPanel();
+      return;
+    }
+    if (_cancelActiveMode()) return;
+    if (_toolbarOpen) {
+      setState(() => _toolbarOpen = false);
+      return;
+    }
+    _clearSelectedEntities();
+    setState(() {
+      _selectedMateId = null;
+      if (_lens == AssemblyLens.assembly) _selectedOccurrenceId = null;
+    });
+  }
+
+  /// Delete: the tree multi-select's Delete, else (assembly) the selected
+  /// mate, else the selected component - each with its existing confirm.
+  /// Nothing while a tool panel is open or the app is busy (faces and edges
+  /// are deleted through Delete Face, not here).
+  VoidCallback? get _deleteKeyAction {
+    if (_busy || _toolPanelKeys.hasPanel) return null;
+    if (_activeMultiSelect != null) return () => unawaited(_multiSelectDelete());
+    if (_lens != AssemblyLens.assembly) return null;
+    final mate = _mates.where((m) => m.id == _selectedMateId).firstOrNull;
+    if (mate != null) return () => unawaited(_confirmDeleteMate(mate));
+    final occurrence = _occurrences.where((o) => o.id == _selectedOccurrenceId).firstOrNull;
+    if (occurrence != null) return () => unawaited(_confirmDeleteOccurrence(occurrence));
+    return null;
   }
 
   /// The banner should reflect the file the user actually saved to/opened,
@@ -23730,427 +24318,486 @@ class _PartScreenState extends State<PartScreen> {
     return stripNativeExtension(savedName);
   }
 
-  Widget _buildScaffold(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        leading: const DidsaLogoButton(),
-        leadingWidth: 100,
-        centerTitle: false,
-        title: Text(_displayPartName, textAlign: TextAlign.right),
-        actions: [
-          // AI Modelling existing-Part editing (docs/ai-modelling/09-
-          // existing-part-editing.md): the "Continue with AI" entry point -
-          // distinct from `ToolChooserScreen`'s "AI Modelling" tile, which
-          // always starts a brand-new Part and stays untouched by this
-          // workstream. Disabled until `_part` has actually loaded.
-          //
-          // Multi-part/assembly overhaul, Phase C (`docs/ai-modelling/13-
-          // multi-part-assembly-overhaul.md`): a project folder is now
-          // required up front here too - `_ensureProjectRoot()` (this
-          // screen's own lazy "already have one, else last-used, else
-          // prompt" resolution, unchanged) runs before navigating, and a
-          // cancelled picker means no navigation at all, rather than
-          // reaching `AiModellingScreen` with `projectRoot` still `null` the
-          // way this call site did before this phase.
-          IconButton(
-            icon: const Icon(Icons.auto_awesome),
-            tooltip: 'Continue with AI',
-            onPressed: _part == null
-                ? null
-                : () async {
-                    final root = await _ensureProjectRoot();
-                    if (root == null || !context.mounted) return;
-                    Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => AiModellingScreen(
-                          existingPartId: _part!.id,
-                          documentApi: widget.documentApi,
-                          storageService: _storageService,
-                          projectRoot: root,
-                        ),
-                      ),
-                    );
-                  },
+  // ---- Desktop layout (D6, `docs/desktop-layout-scope.md` section 2) --------------------------------------------
+  //
+  // The ribbon, menus, left pane and status bar below only place and call what the phone layout already has: each
+  // button runs the same action as its FAB or sheet entry, and the trees are the same widgets, docked.
+
+  /// True while the app is in the desktop layout (a large window used with a mouse, or forced in Controls).
+  bool get _desktopLayout => LayoutModeScope.isDesktop(context);
+
+  /// The ribbon tab the user picked; null follows the lens (Features in Part, Assembly in Assembly).
+  String? _ribbonTabChoice;
+
+  /// The left pane (the tree) can be folded away to give the viewport the room.
+  bool _desktopPaneVisible = true;
+
+  String get _ribbonTabId => _ribbonTabChoice ?? (_lens == AssemblyLens.assembly ? 'assembly' : 'features');
+
+  double _desktopPaneWidth = DesktopLeftPane.defaultWidth;
+
+  /// A tool with its own panel is open: the panel docks at the left in place of the tree (the pickers do not -
+  /// they pick from the tree, so it stays).
+  bool get _desktopToolPanelOpen =>
+      (_anyToolPanelOpen && !_planeSelectionMode && !_profilePickerActive && !_pathPickerActive) ||
+      _mateActive ||
+      _componentPatternPanelActive;
+
+  /// Wraps the viewport stack: on the desktop layout the tree is docked to its left.
+  Widget _desktopFrame(Widget viewportStack) {
+    if (!_desktopLayout) return viewportStack;
+    return Row(
+      children: [
+        if (_desktopPaneVisible && !_desktopToolPanelOpen)
+          DesktopLeftPane(
+            width: _desktopPaneWidth,
+            onResize: (delta) => setState(
+              () => _desktopPaneWidth = (_desktopPaneWidth + delta).clamp(DesktopLeftPane.minWidth, DesktopLeftPane.maxWidth),
+            ),
+            child: Column(
+              children: [
+                Expanded(
+                  child: _lens == AssemblyLens.assembly
+                      ? _buildAssemblyTreePanel(docked: true)
+                      : _buildFeatureTreePanel(docked: true),
+                ),
+                if (_selectionDrawerShown) _buildSelectionDrawer(),
+                if (_componentDrawerShown) _buildComponentDrawer(),
+              ],
+            ),
           ),
+        Expanded(child: viewportStack),
+      ],
+    );
+  }
+
+  Widget _buildDesktopAppBarTitle(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        Flexible(
+          child: Text(
+            _displayPartName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.titleMedium,
+          ),
+        ),
+        if (_isDirty)
+          Tooltip(
+            message: 'Unsaved changes',
+            child: Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Icon(Icons.circle, size: 9, color: theme.colorScheme.tertiary),
+            ),
+          ),
+        const SizedBox(width: 12),
+        Flexible(child: _buildDesktopMenuBar(context)),
+        const SizedBox(width: 8),
+        // A thin divider between the menus (File, Options) and the ribbon tabs.
+        SizedBox(
+          key: const ValueKey('menu-tab-divider'),
+          height: 22,
+          child: VerticalDivider(width: 1, thickness: 1, color: Theme.of(context).colorScheme.outlineVariant),
+        ),
+        const SizedBox(width: 4),
+        Expanded(
+          flex: 2,
+          child: RibbonTabStrip(
+            tabs: _ribbonTabs(),
+            selectedId: _ribbonTabId,
+            onSelect: (id) => setState(() => _ribbonTabChoice = id),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _desktopAppBarActions() {
+    return [
+      _buildDesktopLensSwitch(context),
+      IconButton(
+        tooltip: _isDirty ? 'Save (Ctrl+S) - unsaved changes' : 'Save (Ctrl+S)',
+        icon: const Icon(Icons.save_outlined),
+        onPressed: _busy ? null : () => unawaited(_saveNativeFile()),
+      ),
+      IconButton(
+        tooltip: 'Keyboard shortcuts (?)',
+        icon: const Icon(Icons.keyboard_outlined),
+        onPressed: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+      ),
+    ];
+  }
+
+  /// File and View menus, as a menu bar. The shortcut text is a label only: the keys themselves are handled by
+  /// [CadShortcutScope], so none is registered here a second time.
+  Widget _buildDesktopMenuBar(BuildContext context) {
+    Widget item(String label, VoidCallback? onPressed, {String? keys, bool? checked}) => MenuItemButton(
+          onPressed: onPressed,
+          leadingIcon: checked == null ? null : Icon(checked ? Icons.check_box_outlined : Icons.check_box_outline_blank, size: 18),
+          trailingIcon: keys == null ? null : Text(keys, style: Theme.of(context).textTheme.labelSmall),
+          child: Text(label),
+        );
+    VoidCallback? idle(Future<void> Function() action) => _busy ? null : () => unawaited(action());
+    final filter = _selectionFilter;
+    return MenuBar(
+      style: const MenuStyle(
+        backgroundColor: WidgetStatePropertyAll(Colors.transparent),
+        elevation: WidgetStatePropertyAll(0),
+        padding: WidgetStatePropertyAll(EdgeInsets.zero),
+      ),
+      children: [
+        SubmenuButton(
+          key: const ValueKey('menu-file'),
+          menuChildren: [
+            item('New', idle(_startNewPart), keys: 'Ctrl+N'),
+            item('Open…', idle(_onOpenPressed), keys: 'Ctrl+O'),
+            const Divider(height: 1),
+            item('Save', idle(_saveNativeFile), keys: 'Ctrl+S'),
+            item('Save As…', idle(_saveAsNativeFile), keys: 'Ctrl+Shift+S'),
+            item('Save All', idle(_onSaveAllPressed)),
+            const Divider(height: 1),
+            item('Export…', idle(_exportPart)),
+            item('Import geometry…', idle(_importGeometry)),
+            const Divider(height: 1),
+            item('Part properties…', idle(_openPartProperties)),
+            item('Connect a headset…', idle(_openHeadsetPairing)),
+            const Divider(height: 1),
+            item('Exit', idle(_exitToConnectionScreen)),
+          ],
+          child: const Text('File'),
+        ),
+        SubmenuButton(
+          key: const ValueKey('menu-options'),
+          menuChildren: [
+            item('Select vertices', () => _setVertexFilter(!filter.vertex), checked: filter.vertex),
+            item('Select edges', () => _setEdgeFilter(!filter.edge), checked: filter.edge),
+            item('Select faces', () => _setFaceFilter(!filter.face), checked: filter.face),
+            item('Select bodies', () => _setBodyFilter(!filter.body), checked: filter.body),
+            const Divider(height: 1),
+            item('Tree pane', () => setState(() => _desktopPaneVisible = !_desktopPaneVisible), checked: _desktopPaneVisible),
+            item('Background, colour and scene…', () => setState(() => _toolbarOpen = true)),
+            item(
+              'Controls…',
+              () => unawaited(Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+              )),
+            ),
+            item(
+              'Keyboard shortcuts',
+              () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+              keys: '?',
+            ),
+          ],
+          child: const Text('Options'),
+        ),
+      ],
+    );
+  }
+
+  /// The ribbon's tabs: one per kind of work, each button the action the phone layout reaches by FAB or sheet.
+  List<RibbonTabData> _ribbonTabs() {
+    final part = _lens == AssemblyLens.part;
+    final assembly = _lens == AssemblyLens.assembly;
+    final busy = _busy;
+    final viewport = _viewportKey.currentState;
+    VoidCallback? when(bool enabled, VoidCallback action) => enabled && !busy ? action : null;
+    RibbonCommand feature(String label, String svg, FeaturePickerAction action) => RibbonCommand(
+          label: label,
+          svg: 'assets/icons/feature/$svg.svg',
+          onPressed: when(part, () => unawaited(_runFeatureAction(action))),
+        );
+    RibbonCommand standardView(String label, StandardView view, String keys) => RibbonCommand(
+          label: label,
+          icon: Icons.view_in_ar_outlined,
+          shortcut: keys,
+          onPressed: viewport == null ? null : () => unawaited(viewport.animateToStandardView(view)),
+        );
+
+    return [
+      RibbonTabData(
+        id: 'features',
+        label: 'Features',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'New Sketch',
+              svg: 'assets/icons/feature/feature_new_sketch.svg',
+              onPressed: when(part, _startNewSketchPicker),
+            ),
+          ]),
+          RibbonGroup([
+            feature('Extrude', 'feature_extrude', FeaturePickerAction.extrude),
+            feature('Revolve', 'feature_revolve', FeaturePickerAction.revolve),
+            feature('Sweep', 'feature_sweep', FeaturePickerAction.sweep),
+            feature('Loft', 'feature_loft', FeaturePickerAction.loft),
+          ]),
+          RibbonGroup([
+            feature('Fillet', 'feature_fillet', FeaturePickerAction.fillet),
+            feature('Chamfer', 'feature_chamfer', FeaturePickerAction.chamfer),
+            feature('Shell', 'feature_shell', FeaturePickerAction.shell),
+          ]),
+          RibbonGroup([
+            feature('Mirror', 'feature_mirror', FeaturePickerAction.mirror),
+            feature('Pattern', 'feature_pattern', FeaturePickerAction.pattern),
+          ]),
+          RibbonGroup([
+            feature('Merge', 'feature_merge', FeaturePickerAction.merge),
+            feature('Subtract', 'feature_merge', FeaturePickerAction.subtract),
+            feature('Common', 'feature_merge', FeaturePickerAction.common),
+            feature('Split', 'feature_split', FeaturePickerAction.split),
+          ]),
+          RibbonGroup([
+            feature('Plane', 'feature_plane', FeaturePickerAction.plane),
+            feature('Move Face', 'feature_move_face', FeaturePickerAction.moveFace),
+            feature('Move Body', 'feature_move_body', FeaturePickerAction.moveBody),
+            RibbonCommand(
+              label: 'All features',
+              icon: Icons.more_horiz,
+              tooltip: 'Every feature, including surfaces and curves',
+              onPressed: when(part, () => unawaited(_onFeaturePressed())),
+            ),
+          ]),
         ],
       ),
-      body: Column(
-        children: [
-          if (_errorMessage != null)
-            Container(
-              width: double.infinity,
-              color: Colors.red.shade100,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade900)),
+      RibbonTabData(
+        id: 'sketch',
+        label: 'Sketch',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'New Sketch',
+              svg: 'assets/icons/feature/feature_new_sketch.svg',
+              onPressed: when(part, _startNewSketchPicker),
             ),
-          Expanded(
-            child: Stack(
-              children: [
-                // Full-space by default - the tree/toolbar below are
-                // overlays, not siblings in a Row, so the viewport never
-                // loses space to a hidden panel.
-                PartViewport(
-                  loftSeamHandles: _loftSections.isEmpty ? const [] : _loftSeamHandles,
-                  onLoftSeamChanged: _onLoftSeamDragged,
-                  key: _viewportKey,
-                  bodies: _visibleBodies,
-                  // Assembly support Phase 4 (`docs/assembly-scope.md` §3):
-                  // empty for every Part with no Occurrences at all
-                  // (`_assemblyMesh` only ever populates once one exists -
-                  // see [_refreshAssemblyMesh]'s own doc comment), so this is
-                  // a zero-cost no-op for the overwhelming majority of
-                  // existing, non-assembly usage.
-                  assemblyGeometry: _assemblyMesh?.geometry ?? const [],
-                  // Assembly support Phase 4: Hide/Isolate must reach the
-                  // viewport too, not just [AssemblyTreePanel] - both now
-                  // read the same backend-true `hidden` per instance (§6
-                  // roadmap Phase 10 `[5]` - see [_displayAssemblyInstances]'s
-                  // own doc comment).
-                  // Phase 5: [_displayAssemblyInstances] additionally folds
-                  // in the gizmo's own live-drag value, if any, so the
-                  // moved Body itself tracks the drag - see that getter's
-                  // own doc comment.
-                  assemblyInstances: _displayAssemblyInstances,
-                  // Test report item 3 (New Mate ghost preview): empty
-                  // outside an active New Mate flow, or whenever there's
-                  // nothing solved to show yet - see [_matePreviewMembers]'s
-                  // own doc comment.
-                  matePreviewMembers: _matePreviewMembers,
-                  // Bug fix (assembly testing: "pattern component tool
-                  // should show a ghost preview") - empty outside an active
-                  // Pattern Component flow, or whenever a source Occurrence
-                  // hasn't resolved a placed instance yet - see
-                  // [_componentPatternPreviewInstances]'s own doc comment.
-                  componentPatternPreviewInstances: _componentPatternPreviewInstances,
-                  // Assembly support Phase 5: `null` whenever there's no
-                  // gizmo to show - see [_gizmoDisplayTransform]'s own doc
-                  // comment for every case that covers.
-                  selectedOccurrenceTransform: _gizmoDisplayTransform,
-                  // On-device feedback ("the gizmo is the wrong size"): see
-                  // [_gizmoTargetBoundingRadius]'s own doc comment.
-                  selectedOccurrenceBoundingRadius: _gizmoTargetBoundingRadius,
-                  componentGizmoCues: _gizmoCues,
-                  onComponentGizmoDragStart: _onComponentGizmoDragStart,
-                  onComponentGizmoDragUpdate: _onComponentGizmoDragUpdate,
-                  onComponentGizmoDragEnd: () => unawaited(_onComponentGizmoDragEnd()),
-                  // Fixed (§5 appendix item 4): was just `_focusStack.current`
-                  // (the focused Part's bare id) - the full occurrencePath
-                  // chain lets PartViewport tell a nested instance apart
-                  // from a genuine peer/parent (isOccurrencePathWithinFocus).
-                  focusedOccurrencePath: _focusStack?.currentOccurrencePath ?? const [],
-                  focusWorldTransformMatrix: _focusWorldTransformMatrix,
-                  focusOccurrenceColorHex: _focusOccurrenceColorHex,
-                  assemblyInstanceLooks: _instanceLooks,
-                  primaryLook: _primaryLook,
-                  selectedPlane: _selectedPlane,
-                  sketchGeometries: _visibleSketchGeometries,
-                  createPlanes: _createPlaneGeometries,
-                  onCreatePlaneTap: _onCreatePlaneFeatureTap,
-                  selectedCreatePlaneFeatureId: _selectedCreatePlaneFeatureId,
-                  onPlaneTap: _onPlaneTap,
-                  onBackgroundTap: _onViewportBackgroundTap,
-                  // Sectioning Tool - see `section_plane.dart`/`section_gizmo.dart`.
-                  // Placement is live for the whole time [SectionPanel] is
-                  // open with an active section, not just while a gizmo is
-                  // present (mirrors `MoveBodyPanel`'s own always-live pick).
-                  sectionPlanes: _sectionPlanes,
-                  activeSectionId: _activeSectionId,
-                  sectionPlacementActive: _sectionPanelOpen && _activeSectionId != null,
-                  onSectionPlacementTap: _onSectionPlacementTap,
-                  sectionPreviewMeshes: _sectionPreviewMeshes,
-                  sectionPreviewCutFaceIds: _sectionPreviewCutFaceIds,
-                  onSectionGizmoDragUpdate: _onSectionGizmoDragUpdate,
-                  onSectionGizmoDragEnd: _onSectionGizmoDragEnd,
-                  // Prompt F: Revolve uses the same simple tinted-preview
-                  // convention Extrude does (see docs/live-preview-pattern.md's
-                  // decision tree - Boss/Cut target_body_ids are Body-level
-                  // picks, stable across re-solves) - an `||`, not a separate
-                  // overlay, since only one of the three is ever active at
-                  // once. Sweep (also Body-level picks) joins the same `||`.
-                  // Pattern/Mirror scoping Phase 1/2: Mirror and Pattern
-                  // both join it too - see docs/pattern-mirror-scope.md
-                  // §2.1/§2.2/§4's own confirmation that both take this
-                  // same simple path.
-                  //
-                  // Bug fix: Surface belongs here too - it's a Body-level
-                  // pick (a Sketch, no re-picking of sub-shapes of its own
-                  // in-progress result - see docs/live-preview-pattern.md's
-                  // decision tree, step 2's "No" branch), so it was a plain
-                  // oversight that it was never added alongside Extrude/
-                  // Revolve/Sweep/Mirror/Pattern/Merge/Boolean above. Without
-                  // this, a Surface being actively configured rendered with
-                  // no live-preview tint at all (on top of - and now separate
-                  // from - the Part.produces_displayable_geometry bug that
-                  // used to hide it from `/mesh` entirely for a Sketch+
-                  // Surface-only Part).
-                  // V2: _moveFaceActive no longer belongs in this `||` -
-                  // Move Face used to show its live effect directly through
-                  // [_bodies] itself (no re-picking possible, so no
-                  // self-exclusion needed), but now that faces can be
-                  // added to/removed from `face_refs` mid-session, [_bodies]
-                  // must stay the stable, pre-move mesh the same way
-                  // Fillet's own [_bodies] does - its live effect now flows
-                  // through the [previewOverlayBodyId]/[previewOverlayMesh]
-                  // pair below instead, same as Delete Face's.
-                  isPreviewMesh: _extrudeSketchFeature != null ||
-                      _revolveSketchFeature != null ||
-                      _sweepSketchFeature != null ||
-                      _surfaceActive ||
-                      _planarSurfaceActive ||
-                      _revolveSurfaceActive ||
-                      _sweptSurfaceActive ||
-                      _loftSurfaceActive ||
-                      _ruledSurfaceActive ||
-      _thickenActive ||
-      _knitSurfaceActive ||
-      _solidFromSurfacesActive ||
-      _offsetSurfaceActive ||
-                      _mirrorActive ||
-                      _patternActive ||
-                      _mergeActive ||
-                      _booleanActive ||
-                      _scaleBodyActive ||
-                      _moveBodyActive,
-                  // Prompt E/V2: only one of _filletActive/_chamferActive/
-                  // _deleteFaceActive/_moveFaceActive is ever true at a time
-                  // (see each section's own state-field header comment), so
-                  // a chained ternary - not a list - picks whichever flow's
-                  // preview overlay is currently live; see
-                  // `docs/live-preview-pattern.md` if a concurrent live-edit
-                  // flow combination is ever actually needed.
-                  previewOverlayBodyId: _filletActive
-                      ? _filletPreviewBodyId
-                      : _chamferActive
-                          ? _chamferPreviewBodyId
-                          : _deleteFaceActive
-                              ? _deleteFacePreviewBodyId
-                              : _shellActive
-                                  ? _shellPreviewBodyId
-                                  : _moveFacePreviewBodyId,
-                  previewOverlayMesh: _filletActive
-                      ? _filletPreviewMesh
-                      : _chamferActive
-                          ? _chamferPreviewMesh
-                          : _deleteFaceActive
-                              ? _deleteFacePreviewMesh
-                              : _shellActive
-                                  ? _shellPreviewMesh
-                                  : _moveFacePreviewMesh,
-                  // `docs/lod-strategy/01-design.md` SS5 chunk 5: [_effectiveCoarseOverlayMeshes]
-                  // is [_coarseOverlayMeshes] as-is - genuinely-pending Bodies
-                  // and pinned-Feature Bodies render identically, only their
-                  // lifecycle (when the entry is removed again) differs, and
-                  // that's handled where the map is mutated, not here.
-                  coarseOverlayMeshes: _coarseOverlayMeshes,
-                  transientCoarsePreviewBodies: _pendingCreateCoarsePreviewBodies,
-                  skippedPreviewBodyIds: _patternSkippedBodyIds,
-                  // On-device UX feedback on the guided "New > Mirror" flow:
-                  // reference planes are temporarily forced visible for the
-                  // `pickingPlane` step, regardless of the user's own
-                  // [_referencePlanesHidden] preference - they're usually
-                  // auto-hidden as soon as the first Body exists (see
-                  // [_hasAutoHiddenReferencePlanes]), but a fixed-plane
-                  // mirror pick needs them shown to be pickable at all. Only
-                  // this render call site is overridden - [PartToolbar]'s
-                  // own `referencePlanesHidden:` (below) is left alone so its
-                  // toggle switch keeps reflecting the user's real
-                  // underlying preference throughout.
-                  referencePlanesHidden:
-                      _mirrorStep == _MirrorStep.pickingPlane ? false : _referencePlanesHidden,
-                  renderMode: _renderMode,
-                  bgColourHex: _bgColourHex,
-                  bodyColourHex: _bodyColourHex,
-                  bodyOpacity: _bodyOpacity,
-                  roughness: _sceneRoughness,
-                  lightIntensity: _sceneLightIntensity,
-                  emissiveIntensity: _sceneEmissiveIntensity,
-                  // On-device feedback: this used to be forced true for the
-                  // whole Extrude panel lifetime, unconditionally overriding
-                  // the mode-toggle FAB (itself hidden while the panel was
-                  // open) - target-body picking needs Selection mode, but
-                  // that shouldn't mean the user can never orbit to look
-                  // around while the panel's open. [_openExtrudePanel]/
-                  // [_openExtrudePanelForEdit] now only set [_selectionMode]
-                  // true as a one-time default on open; the FAB (visible
-                  // throughout, see floatingActionButton below) can toggle
-                  // it either way from there, same as any other time.
-                  selectionMode: _selectionMode,
-                  selectedEntities: _selectedEntities,
-                  onSelectionToggle: _toggleSelectedEntity,
-                  onClearSelection: _clearSelectedEntities,
-                  onSelectOtherRequested: _handleSelectOtherRequested,
-                  highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,
-                  suppressHoverFallback: _selectOtherSheetOpen,
-                  selectionFilter: _selectionFilter,
-                  isPerspective: _isPerspective,
-                  farClip: _farClip,
-                  onFarClipChanged: _onFarClipChanged,
-                  sketchLineLoopGroup: _sketchLineLoopGroup,
-                  // On-device feedback: must track the camera live as the
-                  // user orbits, not just refresh on a flip/rotate tap -
-                  // see [PartViewport.sketchOrientationBasis]'s own doc
-                  // comment for why this is a widget parameter into
-                  // PartViewport's own build rather than an external
-                  // overlay here.
-                  sketchOrientationBasis: _confirmingSketchOrientation ? _pendingOrientationBasis : null,
-                  anchorTriadAtOrigin: _anyToolPanelOpen,
-                ),
-                // On-device feedback ("move the select/orbit fab to the top
-                // right group of fabs under 'centre view'"): a sibling of
-                // [PartViewport] here, not a widget passed into it - that
-                // widget's own top-right "Reset view" button lives inside
-                // its scene-dependent build (`if (scene == null) return
-                // CircularProgressIndicator()`), so embedding this FAB
-                // there too would delay its first appearance until the GPU
-                // scene finishes initializing, unlike every other FAB here
-                // (all immediately available, same "stay visible regardless
-                // of anything else" precedent [hamburger-fab] already
-                // documents). `right: 8` matches PartViewport's own Reset
-                // view button exactly; `top: 56` sits directly under it (its
-                // 40px `FloatingActionButton.small`/`IconButton.filled`
-                // height + an 8px gap, the same gap this Column's other
-                // FABs already use). On-device feedback ("I do want select/
-                // orbit-mode switching available while a tool panel is
-                // open"): uses its own, deliberately wider-open
-                // [_selectionModeFabVisible] rather than sharing
-                // [_viewportFabColumnsVisible] with the top-left hamburger/
-                // feature-tree column - see that getter's own doc comment
-                // for why the two corners now genuinely differ.
-                if (_selectionModeFabVisible)
-                  Positioned(
-                    top: 56,
-                    right: 8,
-                    child: SafeArea(
-                      bottom: false,
-                      child: FloatingActionButton.small(
-                        heroTag: 'selection-mode-fab',
-                        tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
-                        backgroundColor:
-                            _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
-                        onPressed: _busy ? null : _toggleSelectionMode,
-                        // The icon shows the mode a tap will switch *into*:
-                        // a cursor/pointer while in (default) Orbit mode,
-                        // an orbit/rotate glyph while in Selection mode.
-                        child: SvgIcon(
-                          _selectionMode
-                              ? 'assets/icons/viewport/viewport_orbit_mode.svg'
-                              : 'assets/icons/viewport/viewport_selection_mode.svg',
-                        ),
-                      ),
-                    ),
-                  ),
-                // Measure tool: an always-available toggle FAB, same
-                // top-right stack as the selection-mode FAB directly above -
-                // `top: 104` is that FAB's own `top: 56` plus its 40px
-                // `FloatingActionButton.small` height plus the 8px gap this
-                // Column's other FABs already use.
-                if (_measureFabVisible)
-                  Positioned(
-                    top: 104,
-                    right: 8,
-                    child: SafeArea(
-                      bottom: false,
-                      child: FloatingActionButton.small(
-                        heroTag: 'measure-fab',
-                        tooltip: _measureActive ? 'Exit measure' : 'Measure',
-                        backgroundColor:
-                            _measureActive ? Theme.of(context).colorScheme.primaryContainer : null,
-                        onPressed: _busy ? null : _toggleMeasure,
-                        child: const SvgIcon('assets/icons/viewport/viewport_measure.svg'),
-                      ),
-                    ),
-                  ),
-                // Sectioning Tool: mirrors the Measure FAB immediately
-                // above exactly (same always-available precedent - see
-                // [_sectionFabVisible]'s own doc comment) - `top: 152` is
-                // that FAB's own `top: 104` plus its 40px height plus the
-                // same 8px gap. A plain Material [Icon] (`content_cut`)
-                // rather than a new [SvgIcon] asset - no dedicated section-
-                // tool icon exists in this app's `assets/icons/viewport/`
-                // set yet, and adding one is outside this pass's scope.
-                if (_sectionFabVisible)
-                  Positioned(
-                    top: 152,
-                    right: 8,
-                    child: SafeArea(
-                      bottom: false,
-                      child: FloatingActionButton.small(
-                        heroTag: 'section-fab',
-                        tooltip: _sectionPanelOpen ? 'Close Section' : 'Section',
-                        backgroundColor:
-                            _sectionPanelOpen ? Theme.of(context).colorScheme.primaryContainer : null,
-                        onPressed: _busy ? null : _toggleSectionPanel,
-                        child: const Icon(Icons.content_cut),
-                      ),
-                    ),
-                  ),
-                // Stage 23 Item 1: a subtle tinted border around the
-                // viewport while in Selection mode - an overlay rather than
-                // a decoration on PartViewport itself, so its own layout
-                // (and the orbit gesture handling underneath) stays
-                // untouched.
-                if (_selectionMode)
-                  Positioned.fill(
-                    child: IgnorePointer(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
-                            width: 3,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                // Stage 23 Items 5/6, Fix 5: the context action panel is
-                // passed into the drawer as its [SelectionListDrawer.header]
-                // (rendered above the entity list, inside the same draggable
-                // sheet) so the two stay visually stacked panel-above-list
-                // with no separate height bookkeeping between two
-                // independently-positioned widgets. [Positioned.fill] (not a
-                // bottom-anchored Positioned) is required here because
-                // [DraggableScrollableSheet] sizes itself as a fraction of
-                // its parent's height, which only a bounded/full-height
-                // ancestor can provide. The Stage 23 mode-toggle FAB lives in
-                // Scaffold's own floatingActionButton slot, which Flutter
-                // always paints above this body Stack, so this never needs
-                // special-cased margin to avoid obscuring it.
-                // Prompt A4: hidden while the Extrude panel is open -
-                // [_selectedEntities] is the target-body picker's selection
-                // then (see [_openExtrudePanel]), already surfaced by the
-                // top banner's count and the viewport's own highlights, and
-                // this drawer is bottom-docked (a DraggableScrollableSheet)
-                // exactly where [ExtrudePanel]'s own Confirm/Cancel controls
-                // live - showing both at once would visually collide.
-                // C2: also hidden while CreatePlanePanel is open - same
-                // bottom-docked-panel visual-collision reasoning as the
-                // Extrude case above (in practice [_selectedEntities] is
-                // already empty for the panel's whole session - see
-                // [_openCreatePlanePanel] - so [SelectionListDrawer]'s own
-                // empty-selection gate would already hide this too, but this
-                // stays explicit rather than relying on that as an implicit
-                // side effect).
-                // Bug report (assembly testing): "when a face, edge, body is
-                // selected in assembly mode, the context bar offers tools
-                // that were for use in the part editor for modelling... only
-                // assembly tools should be offered" - every action
-                // [SelectionContextPanel] can ever show (Chamfer/Fillet/
-                // Move Face/Move Body/Create Plane/Mirror/Pattern/etc., via
-                // `selection_actions.dart`'s `contextActionsFor`) is a
-                // Part-editing Feature, none of them meaningful against an
-                // Assembly's own Occurrences - so this whole drawer is
-                // Part-lens only now, mirroring how [FeatureTreePanel]
-                // itself is already gated to `_lens == AssemblyLens.part`
-                // just below. Assembly lens has its own dedicated pickers
-                // for the entity selections it does support (Mate's 2-ref
-                // cap, Pattern's source picker - see [_toggleSelectedEntity]'s
-                // own `_mateActive`/[_componentPatternPickingSources]
-                // branches), so this generic Part-tool row never needs an
-                // Assembly-lens equivalent of its own; it would otherwise
-                // still float on top of those flows too, offering the same
-                // irrelevant Part tools while picking Mate/Pattern
-                // references.
-                if (_lens == AssemblyLens.part &&
+            RibbonCommand(
+              label: 'Sketch on face',
+              svg: 'assets/icons/feature/feature_new_sketch.svg',
+              tooltip: 'New sketch on the selected flat face',
+              onPressed: when(
+                part && _selectedEntities.length == 1 && _selectedEntities.single.kind == SelectionEntityKind.face,
+                () => unawaited(_onNewSketchOnFaceTapped()),
+              ),
+            ),
+            feature('Plane', 'feature_plane', FeaturePickerAction.plane),
+          ]),
+        ],
+      ),
+      RibbonTabData(
+        id: 'assembly',
+        label: 'Assembly',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Add Component',
+              icon: Icons.view_in_ar_outlined,
+              onPressed: when(assembly, () => unawaited(_onInsertComponentPressed())),
+            ),
+            RibbonCommand(
+              label: 'Create Component',
+              icon: Icons.note_add_outlined,
+              onPressed: when(assembly, () => unawaited(_onCreateNewComponentPressed())),
+            ),
+          ]),
+          RibbonGroup([
+            RibbonCommand(label: 'Mate', icon: Icons.link, onPressed: when(assembly, _openMate)),
+            RibbonCommand(
+              label: 'Pattern',
+              icon: Icons.grid_view_outlined,
+              tooltip: 'Pattern component',
+              onPressed: when(assembly, _openComponentPattern),
+            ),
+          ]),
+        ],
+      ),
+      RibbonTabData(
+        id: 'evaluate',
+        label: 'Evaluate',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Measure',
+              svg: 'assets/icons/viewport/viewport_measure.svg',
+              selected: _measureActive,
+              onPressed: busy ? null : _toggleMeasure,
+            ),
+            RibbonCommand(
+              label: 'Section',
+              icon: Icons.content_cut,
+              selected: _sectionPanelOpen,
+              onPressed: busy ? null : _toggleSectionPanel,
+            ),
+          ]),
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Appearance',
+              icon: Icons.palette_outlined,
+              onPressed: busy ? null : () => unawaited(_openAppearance()),
+            ),
+            RibbonCommand(
+              label: 'Scenes',
+              icon: Icons.photo_camera_back_outlined,
+              onPressed: busy ? null : () => unawaited(_openScenes()),
+            ),
+            RibbonCommand(
+              label: 'Properties',
+              icon: Icons.info_outline,
+              tooltip: 'Part properties',
+              onPressed: busy ? null : () => unawaited(_openPartProperties()),
+            ),
+          ]),
+        ],
+      ),
+      RibbonTabData(
+        id: 'view',
+        label: 'View',
+        groups: [
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Fit',
+              svg: 'assets/icons/viewport/viewport_reset_view.svg',
+              tooltip: 'Fit to window',
+              shortcut: 'F',
+              onPressed: viewport?.zoomToFit,
+            ),
+            RibbonCommand(
+              label: 'View cube',
+              icon: Icons.view_in_ar,
+              shortcut: 'Space',
+              onPressed: viewport == null ? null : () => unawaited(_showViewCube()),
+            ),
+            RibbonCommand(label: 'Normal to', icon: Icons.crop_free, shortcut: 'Ctrl+8', onPressed: _normalToAction),
+          ]),
+          RibbonGroup([
+            standardView('Front', StandardView.front, 'Ctrl+1'),
+            standardView('Back', StandardView.back, 'Ctrl+2'),
+            standardView('Left', StandardView.left, 'Ctrl+3'),
+            standardView('Right', StandardView.right, 'Ctrl+4'),
+            standardView('Top', StandardView.top, 'Ctrl+5'),
+            standardView('Bottom', StandardView.bottom, 'Ctrl+6'),
+            standardView('Isometric', StandardView.isometric, 'Ctrl+7'),
+          ]),
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Perspective',
+              icon: Icons.panorama_horizontal_outlined,
+              selected: _isPerspective,
+              onPressed: () => unawaited(_onPerspectiveChanged(!_isPerspective)),
+            ),
+            RibbonCommand(
+              label: 'Planes',
+              svg: _referencePlanesHidden
+                  ? 'assets/icons/feature/parttoolbar_show_reference_planes.svg'
+                  : 'assets/icons/feature/parttoolbar_hide_reference_planes.svg',
+              tooltip: _referencePlanesHidden ? 'Show reference planes' : 'Hide reference planes',
+              onPressed: _onToggleReferencePlanes,
+            ),
+          ]),
+          RibbonGroup([
+            for (final mode in ViewportRenderMode.values)
+              RibbonCommand(
+                label: switch (mode) {
+                  ViewportRenderMode.shaded => 'Shaded',
+                  ViewportRenderMode.shadedWithEdges => 'Edges',
+                  ViewportRenderMode.wireframe => 'Wireframe',
+                },
+                tooltip: mode.label,
+                svg: mode.svgAsset,
+                selected: _renderMode == mode,
+                onPressed: () => unawaited(_onRenderModeChanged(mode)),
+              ),
+          ]),
+        ],
+      ),
+    ];
+  }
+
+  /// The ribbon's body: the active tab's buttons. The tabs themselves sit in the app bar ([_buildDesktopAppBarTitle]).
+  Widget _buildDesktopRibbon(BuildContext context) {
+    return DesktopRibbon(
+      tabs: _ribbonTabs(),
+      selectedId: _ribbonTabId,
+      onSelect: (id) => setState(() => _ribbonTabChoice = id),
+      showTabStrip: false,
+    );
+  }
+
+  /// The Part / Assembly switch and the tree-pane toggle, at the right of the app bar.
+  Widget _buildDesktopLensSwitch(BuildContext context) {
+    final theme = Theme.of(context);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: _desktopPaneVisible ? 'Hide the tree' : 'Show the tree',
+          visualDensity: VisualDensity.compact,
+          icon: Icon(_desktopPaneVisible ? Icons.view_sidebar : Icons.view_sidebar_outlined, size: 20),
+          onPressed: () => setState(() => _desktopPaneVisible = !_desktopPaneVisible),
+        ),
+        SegmentedButton<AssemblyLens>(
+          key: const ValueKey('ribbon-lens'),
+          showSelectedIcon: false,
+          style: SegmentedButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            textStyle: theme.textTheme.labelMedium,
+          ),
+          segments: const [
+            ButtonSegment(value: AssemblyLens.part, label: Text('Part')),
+            ButtonSegment(value: AssemblyLens.assembly, label: Text('Assembly')),
+          ],
+          selected: {_lens},
+          onSelectionChanged: _busy
+              ? null
+              : (selection) {
+                  if (selection.single != _lens) _toggleAssemblyLens();
+                  setState(() => _ribbonTabChoice = null);
+                },
+        ),
+        const SizedBox(width: 4),
+      ],
+    );
+  }
+
+  /// "2 edges, 1 face selected" - the selection by kind.
+  String _selectionSummary() {
+    if (_selectedEntities.isEmpty) return 'Nothing selected';
+    final counts = <String, int>{};
+    for (final entity in _selectedEntities) {
+      final name = switch (entity.kind) {
+        SelectionEntityKind.vertex => 'vertex',
+        SelectionEntityKind.edge => 'edge',
+        SelectionEntityKind.face => 'face',
+        SelectionEntityKind.body => 'body',
+        SelectionEntityKind.component => 'component',
+        SelectionEntityKind.referencePlane || SelectionEntityKind.createPlane => 'plane',
+        _ => 'sketch item',
+      };
+      counts[name] = (counts[name] ?? 0) + 1;
+    }
+    final parts = [
+      for (final entry in counts.entries)
+        '${entry.value} ${entry.key == 'vertex' && entry.value != 1 ? 'vertices' : entry.value == 1 ? entry.key : '${entry.key}s'}',
+    ];
+    return '${parts.join(', ')} selected';
+  }
+
+  Widget _buildDesktopStatusBar() {
+    return DesktopStatusBar(
+      left: [
+        _busy ? 'Working…' : _selectionSummary(),
+        if (_isDirty) 'Unsaved: ${_unsavedPartNames().join(', ')}',
+      ],
+      right: [
+        _lens == AssemblyLens.assembly ? 'Assembly' : 'Part',
+        _isPerspective ? 'Perspective' : 'Orthographic',
+        _renderMode.label,
+      ],
+    );
+  }
+
+  /// True while the Part lens's selection drawer (the selected entities and what can be done with them) shows.
+  bool get _selectionDrawerShown =>
+      _lens == AssemblyLens.part &&
                     !_extrudeActive &&
                     !_surfaceActive &&
                     !_createPlaneActive &&
@@ -24172,9 +24819,10 @@ class _PartScreenState extends State<PartScreen> {
                     !_shellActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive &&
-                    _activeMultiSelect == null)
-                  Positioned.fill(
-                    child: SelectionListDrawer(
+                    _activeMultiSelect == null;
+
+  Widget _buildSelectionDrawer() {
+    return SelectionListDrawer(
                       selectedEntities: _selectedEntities,
                       onRemove: _toggleSelectedEntity,
                       onClearAll: _clearSelectionFromDrawer,
@@ -24208,20 +24856,12 @@ class _PartScreenState extends State<PartScreen> {
                         onBreadcrumbPreview: _onBreadcrumbPreview,
                       ),
                       bodyNames: _selectionBodyNames,
-                    ),
-                  ),
-                // Bug fix ("selecting a component shows no contextual
-                // toolbar"): the Assembly-lens equivalent of the
-                // SelectionListDrawer/SelectionContextPanel block just above
-                // (deliberately Part-lens-only, per its own gating comment) -
-                // Move/Fix-Float/Delete for a single selected Occurrence,
-                // gated the same "no other tool/picker session already owns
-                // the screen" way every other overlay in this Stack is.
-                // Assembly component selection drawer - the assembly equivalent
-                // of SelectionListDrawer for Part lens. Shows selected component
-                // details and action buttons in a draggable sheet. Auto-hides
-                // when other tool panels open or component is deselected.
-                if (_lens == AssemblyLens.assembly &&
+                    );
+  }
+
+  /// True while the Assembly lens's component drawer (Move / Fix / Delete for the selected component) shows.
+  bool get _componentDrawerShown =>
+      _lens == AssemblyLens.assembly &&
                     _selectedOccurrenceId != null &&
                     !_assemblyMultiSelect.active &&
                     !_anyToolPanelOpen &&
@@ -24229,8 +24869,10 @@ class _PartScreenState extends State<PartScreen> {
                     !_mateActive &&
                     !_componentPatternPickingSources &&
                     !_selectOtherSheetOpen &&
-                    !_componentContextMenuOpen)
-                  Builder(
+                    !_componentContextMenuOpen;
+
+  Widget _buildComponentDrawer() {
+    return Builder(
                     builder: (context) {
                       final index = _occurrences.indexWhere((o) => o.id == _selectedOccurrenceId);
                       if (index == -1) return const SizedBox.shrink();
@@ -24248,21 +24890,13 @@ class _PartScreenState extends State<PartScreen> {
                         onClose: _clearSelectionFromDrawer,
                       );
                     },
-                  ),
-                // Assembly support Phase 3: only one of FeatureTreePanel/
-                // AssemblyTreePanel is ever built at a time, gated on
-                // [_lens] - both carry their own "Close" `IconButton`, and
-                // `AnimatedSlide` keeps a merely-`visible: false` child
-                // mounted (just translated off-screen), which duplicated
-                // that "Close" button in the tree and made every close-
-                // button `find`/`tap()` in this screen's own tests
-                // ambiguous. Switching lens while the panel is open loses
-                // the slide-in animation for that one transition (the panel
-                // simply swaps), an accepted v1 cost of avoiding the
-                // ambiguity.
-                if (_lens == AssemblyLens.part)
-                Positioned.fill(
-                  child: FeatureTreePanel(
+                  );
+  }
+
+  /// The Feature tree. [docked] puts it in the desktop layout's left pane; otherwise it slides over the viewport.
+  Widget _buildFeatureTreePanel({required bool docked}) {
+    return FeatureTreePanel(
+      docked: docked,
                     visible: _featureTreePanelVisible,
                     multiSelectHeader: _activeMultiSelect == null
                         ? null
@@ -24285,6 +24919,12 @@ class _PartScreenState extends State<PartScreen> {
                     // [_multiSelectMore]).
                     onFeatureLongPress: (feature) =>
                         _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.feature(feature.id)),
+                    // Desktop input D4: a right click opens the row's menu
+                    // directly at the cursor (touch reaches it via "More").
+                    onFeatureContextMenu: (feature, at) => unawaited(_onFeatureLongPress(feature, at: at)),
+                    onBodyContextMenu: (bodyId, at) => unawaited(_onBodyLongPress(bodyId, at: at)),
+                    onSurfaceContextMenu: (surfaceId, at) => unawaited(_onSurfaceLongPress(surfaceId, at: at)),
+                    onCurveContextMenu: (curveId, at) => unawaited(_onCurveContextMenu(curveId, at)),
                     isMultiSelectMode: _buildMultiSelect.active,
                     selectedMultiSelectIds: _buildMultiSelect.selectedIds,
                     onMultiSelectToggle: (key) => _toggleMultiSelectMember(_buildMultiSelect, key),
@@ -24483,18 +25123,18 @@ class _PartScreenState extends State<PartScreen> {
                       for (final body in _bodies)
                         if (body.hidden && body.isCurve) body.bodyId,
                     },
-                  ),
-                ),
-                // Assembly support Phase 3: [_lens]'s Assembly-mode
-                // counterpart to [FeatureTreePanel] just above - see that
-                // block's own comment for why only one of the two is ever
-                // built at a time. Same `onClose` fallback (no picker modes
-                // of its own yet to cancel first, unlike Feature tree's
-                // long `onClose` chain above).
-                if (_lens == AssemblyLens.assembly)
-                Positioned.fill(
-                  child: AssemblyTreePanel(
+                  );
+  }
+
+  /// The Assembly tree, as [_buildFeatureTreePanel].
+  Widget _buildAssemblyTreePanel({required bool docked}) {
+    return AssemblyTreePanel(
+      docked: docked,
                     motionSummary: _motionStatusText,
+                    unsavedPartIds: _dirtyPartIds,
+                    neverSavedPartIds: _neverWrittenPartIds,
+                    parentUnsaved: _focusedPartId != null && _dirtyPartIds.contains(_focusedPartId),
+                    parentNeverSaved: _focusedPartId != null && _neverWrittenPartIds.contains(_focusedPartId),
                     multiSelectHeader: _activeMultiSelect == null
                         ? null
                         : MultiSelectActionBar(
@@ -24530,6 +25170,11 @@ class _PartScreenState extends State<PartScreen> {
                     },
                     onMateTap: _onMateTap,
                     onMateLongPress: _onMateLongPress,
+                    // Desktop input D4: a right click opens the row's menu at
+                    // the cursor.
+                    onOccurrenceContextMenu: (occurrence, at) => unawaited(_onOccurrenceLongPress(occurrence, at: at)),
+                    onMateContextMenu: (mate, at) => unawaited(_onMateLongPress(mate, at: at)),
+                    onPatternContextMenu: (pattern, at) => unawaited(_onPatternContextMenu(pattern, at)),
                     selectedMateId: _selectedMateId,
                     onPatternTap: _openComponentPatternForEdit,
                     onPatternLongPress: _confirmDeleteComponentPattern,
@@ -24541,7 +25186,479 @@ class _PartScreenState extends State<PartScreen> {
                     // own "`_focusStack.current`, defaulting to the root
                     // Part" precedent for *which* Part's data to show.
                     rootLabel: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
+                  );
+  }
+
+  Widget _buildScaffold(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        toolbarHeight: _desktopLayout ? kDesktopBarHeight : null,
+        leading: DidsaLogoButton(height: _desktopLayout ? 24 : 32),
+        leadingWidth: _desktopLayout ? 84 : 100,
+        centerTitle: false,
+        title: _desktopLayout
+            ? _buildDesktopAppBarTitle(context)
+            : Text(_displayPartName, textAlign: TextAlign.right),
+        actions: [
+          if (_desktopLayout) ..._desktopAppBarActions(),
+          // AI Modelling existing-Part editing (docs/ai-modelling/09-
+          // existing-part-editing.md): the "Continue with AI" entry point -
+          // distinct from `ToolChooserScreen`'s "AI Modelling" tile, which
+          // always starts a brand-new Part and stays untouched by this
+          // workstream. Disabled until `_part` has actually loaded.
+          //
+          // Multi-part/assembly overhaul, Phase C (`docs/ai-modelling/13-
+          // multi-part-assembly-overhaul.md`): a project folder is now
+          // required up front here too - `_ensureProjectRoot()` (this
+          // screen's own lazy "already have one, else last-used, else
+          // prompt" resolution, unchanged) runs before navigating, and a
+          // cancelled picker means no navigation at all, rather than
+          // reaching `AiModellingScreen` with `projectRoot` still `null` the
+          // way this call site did before this phase.
+          IconButton(
+            icon: const Icon(Icons.auto_awesome),
+            tooltip: 'Continue with AI',
+            onPressed: _part == null
+                ? null
+                : () async {
+                    final root = await _ensureProjectRoot();
+                    if (root == null || !context.mounted) return;
+                    Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => AiModellingScreen(
+                          existingPartId: _part!.id,
+                          documentApi: widget.documentApi,
+                          storageService: _storageService,
+                          projectRoot: root,
+                        ),
+                      ),
+                    );
+                  },
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          if (_errorMessage != null)
+            Container(
+              width: double.infinity,
+              color: Colors.red.shade100,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade900)),
+            ),
+          if (_desktopLayout) _buildDesktopRibbon(context),
+          Expanded(
+            child: _desktopFrame(
+                Stack(
+              children: [
+                // Full-space by default - the tree/toolbar below are
+                // overlays, not siblings in a Row, so the viewport never
+                // loses space to a hidden panel.
+                PartViewport(
+                  loftSeamHandles: _loftSections.isEmpty ? const [] : _loftSeamHandles,
+                  onLoftSeamChanged: _onLoftSeamDragged,
+                  key: _viewportKey,
+                  bodies: _visibleBodies,
+                  // Assembly support Phase 4 (`docs/assembly-scope.md` §3):
+                  // empty for every Part with no Occurrences at all
+                  // (`_assemblyMesh` only ever populates once one exists -
+                  // see [_refreshAssemblyMesh]'s own doc comment), so this is
+                  // a zero-cost no-op for the overwhelming majority of
+                  // existing, non-assembly usage.
+                  assemblyGeometry: _assemblyMesh?.geometry ?? const [],
+                  // Assembly support Phase 4: Hide/Isolate must reach the
+                  // viewport too, not just [AssemblyTreePanel] - both now
+                  // read the same backend-true `hidden` per instance (§6
+                  // roadmap Phase 10 `[5]` - see [_displayAssemblyInstances]'s
+                  // own doc comment).
+                  // Phase 5: [_displayAssemblyInstances] additionally folds
+                  // in the gizmo's own live-drag value, if any, so the
+                  // moved Body itself tracks the drag - see that getter's
+                  // own doc comment.
+                  assemblyInstances: _displayAssemblyInstances,
+                  // Test report item 3 (New Mate ghost preview): empty
+                  // outside an active New Mate flow, or whenever there's
+                  // nothing solved to show yet - see [_matePreviewMembers]'s
+                  // own doc comment.
+                  matePreviewMembers: _matePreviewMembers,
+                  // Bug fix (assembly testing: "pattern component tool
+                  // should show a ghost preview") - empty outside an active
+                  // Pattern Component flow, or whenever a source Occurrence
+                  // hasn't resolved a placed instance yet - see
+                  // [_componentPatternPreviewInstances]'s own doc comment.
+                  componentPatternPreviewInstances: _componentPatternPreviewInstances,
+                  // Assembly support Phase 5: `null` whenever there's no
+                  // gizmo to show - see [_gizmoDisplayTransform]'s own doc
+                  // comment for every case that covers.
+                  selectedOccurrenceTransform: _gizmoDisplayTransform,
+                  // On-device feedback ("the gizmo is the wrong size"): see
+                  // [_gizmoTargetBoundingRadius]'s own doc comment.
+                  selectedOccurrenceBoundingRadius: _gizmoTargetBoundingRadius,
+                  componentGizmoCues: _gizmoCues,
+                  onComponentGizmoDragStart: _onComponentGizmoDragStart,
+                  onComponentGizmoDragUpdate: _onComponentGizmoDragUpdate,
+                  onComponentGizmoDragEnd: () => unawaited(_onComponentGizmoDragEnd()),
+                  // Fixed (§5 appendix item 4): was just `_focusStack.current`
+                  // (the focused Part's bare id) - the full occurrencePath
+                  // chain lets PartViewport tell a nested instance apart
+                  // from a genuine peer/parent (isOccurrencePathWithinFocus).
+                  focusedOccurrencePath: _focusStack?.currentOccurrencePath ?? const [],
+                  focusWorldTransformMatrix: _focusWorldTransformMatrix,
+                  focusOccurrenceColorHex: _focusOccurrenceColorHex,
+                  assemblyInstanceLooks: _instanceLooks,
+                  primaryLook: _primaryLook,
+                  selectedPlane: _selectedPlane,
+                  sketchGeometries: _visibleSketchGeometries,
+                  createPlanes: _createPlaneGeometries,
+                  onCreatePlaneTap: _onCreatePlaneFeatureTap,
+                  selectedCreatePlaneFeatureId: _selectedCreatePlaneFeatureId,
+                  onPlaneTap: _onPlaneTap,
+                  onBackgroundTap: _onViewportBackgroundTap,
+                  // Sectioning Tool - see `section_plane.dart`/`section_gizmo.dart`.
+                  // Placement is live for the whole time [SectionPanel] is
+                  // open with an active section, not just while a gizmo is
+                  // present (mirrors `MoveBodyPanel`'s own always-live pick).
+                  sectionPlanes: _sectionPlanes,
+                  activeSectionId: _activeSectionId,
+                  sectionPlacementActive: _sectionPanelOpen && _activeSectionId != null,
+                  onSectionPlacementTap: _onSectionPlacementTap,
+                  sectionPreviewMeshes: _sectionPreviewMeshes,
+                  sectionPreviewCutFaceIds: _sectionPreviewCutFaceIds,
+                  onSectionGizmoDragUpdate: _onSectionGizmoDragUpdate,
+                  onSectionGizmoDragEnd: _onSectionGizmoDragEnd,
+                  // Prompt F: Revolve uses the same simple tinted-preview
+                  // convention Extrude does (see docs/live-preview-pattern.md's
+                  // decision tree - Boss/Cut target_body_ids are Body-level
+                  // picks, stable across re-solves) - an `||`, not a separate
+                  // overlay, since only one of the three is ever active at
+                  // once. Sweep (also Body-level picks) joins the same `||`.
+                  // Pattern/Mirror scoping Phase 1/2: Mirror and Pattern
+                  // both join it too - see docs/pattern-mirror-scope.md
+                  // §2.1/§2.2/§4's own confirmation that both take this
+                  // same simple path.
+                  //
+                  // Bug fix: Surface belongs here too - it's a Body-level
+                  // pick (a Sketch, no re-picking of sub-shapes of its own
+                  // in-progress result - see docs/live-preview-pattern.md's
+                  // decision tree, step 2's "No" branch), so it was a plain
+                  // oversight that it was never added alongside Extrude/
+                  // Revolve/Sweep/Mirror/Pattern/Merge/Boolean above. Without
+                  // this, a Surface being actively configured rendered with
+                  // no live-preview tint at all (on top of - and now separate
+                  // from - the Part.produces_displayable_geometry bug that
+                  // used to hide it from `/mesh` entirely for a Sketch+
+                  // Surface-only Part).
+                  // V2: _moveFaceActive no longer belongs in this `||` -
+                  // Move Face used to show its live effect directly through
+                  // [_bodies] itself (no re-picking possible, so no
+                  // self-exclusion needed), but now that faces can be
+                  // added to/removed from `face_refs` mid-session, [_bodies]
+                  // must stay the stable, pre-move mesh the same way
+                  // Fillet's own [_bodies] does - its live effect now flows
+                  // through the [previewOverlayBodyId]/[previewOverlayMesh]
+                  // pair below instead, same as Delete Face's.
+                  isPreviewMesh: _extrudeSketchFeature != null ||
+                      _revolveSketchFeature != null ||
+                      _sweepSketchFeature != null ||
+                      _surfaceActive ||
+                      _planarSurfaceActive ||
+                      _revolveSurfaceActive ||
+                      _sweptSurfaceActive ||
+                      _loftSurfaceActive ||
+                      _ruledSurfaceActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive ||
+                      _mirrorActive ||
+                      _patternActive ||
+                      _mergeActive ||
+                      _booleanActive ||
+                      _scaleBodyActive ||
+                      _moveBodyActive,
+                  // Prompt E/V2: only one of _filletActive/_chamferActive/
+                  // _deleteFaceActive/_moveFaceActive is ever true at a time
+                  // (see each section's own state-field header comment), so
+                  // a chained ternary - not a list - picks whichever flow's
+                  // preview overlay is currently live; see
+                  // `docs/live-preview-pattern.md` if a concurrent live-edit
+                  // flow combination is ever actually needed.
+                  previewOverlayBodyId: _filletActive
+                      ? _filletPreviewBodyId
+                      : _chamferActive
+                          ? _chamferPreviewBodyId
+                          : _deleteFaceActive
+                              ? _deleteFacePreviewBodyId
+                              : _shellActive
+                                  ? _shellPreviewBodyId
+                                  : _moveFacePreviewBodyId,
+                  previewOverlayMesh: _filletActive
+                      ? _filletPreviewMesh
+                      : _chamferActive
+                          ? _chamferPreviewMesh
+                          : _deleteFaceActive
+                              ? _deleteFacePreviewMesh
+                              : _shellActive
+                                  ? _shellPreviewMesh
+                                  : _moveFacePreviewMesh,
+                  // `docs/lod-strategy/01-design.md` SS5 chunk 5: [_effectiveCoarseOverlayMeshes]
+                  // is [_coarseOverlayMeshes] as-is - genuinely-pending Bodies
+                  // and pinned-Feature Bodies render identically, only their
+                  // lifecycle (when the entry is removed again) differs, and
+                  // that's handled where the map is mutated, not here.
+                  coarseOverlayMeshes: _coarseOverlayMeshes,
+                  transientCoarsePreviewBodies: _pendingCreateCoarsePreviewBodies,
+                  skippedPreviewBodyIds: _patternSkippedBodyIds,
+                  // On-device UX feedback on the guided "New > Mirror" flow:
+                  // reference planes are temporarily forced visible for the
+                  // `pickingPlane` step, regardless of the user's own
+                  // [_referencePlanesHidden] preference - they're usually
+                  // auto-hidden as soon as the first Body exists (see
+                  // [_hasAutoHiddenReferencePlanes]), but a fixed-plane
+                  // mirror pick needs them shown to be pickable at all. Only
+                  // this render call site is overridden - [PartToolbar]'s
+                  // own `referencePlanesHidden:` (below) is left alone so its
+                  // toggle switch keeps reflecting the user's real
+                  // underlying preference throughout.
+                  referencePlanesHidden: _referencePlanesForcedVisible ? false : _referencePlanesHidden,
+                  renderMode: _renderMode,
+                  bgColourHex: _bgColourHex,
+                  bodyColourHex: _bodyColourHex,
+                  bodyOpacity: _bodyOpacity,
+                  roughness: _sceneRoughness,
+                  lightIntensity: _sceneLightIntensity,
+                  emissiveIntensity: _sceneEmissiveIntensity,
+                  // On-device feedback: this used to be forced true for the
+                  // whole Extrude panel lifetime, unconditionally overriding
+                  // the mode-toggle FAB (itself hidden while the panel was
+                  // open) - target-body picking needs Selection mode, but
+                  // that shouldn't mean the user can never orbit to look
+                  // around while the panel's open. [_openExtrudePanel]/
+                  // [_openExtrudePanelForEdit] now only set [_selectionMode]
+                  // true as a one-time default on open; the FAB (visible
+                  // throughout, see floatingActionButton below) can toggle
+                  // it either way from there, same as any other time.
+                  selectionMode: _selectionMode,
+                  selectedEntities: _selectedEntities,
+                  onSelectionToggle: _toggleSelectedEntity,
+                  onSelectClick: (click) => _selectClick = click,
+                  // Desktop input D4: a right click without a drag.
+                  onContextMenuRequested: (hit, at) => unawaited(_onViewportContextMenu(hit, at)),
+                  onClearSelection: _clearSelectedEntities,
+                  onBoxSelect: _onBoxSelect,
+                  onSelectOtherRequested: _handleSelectOtherRequested,
+                  highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,
+                  suppressHoverFallback: _selectOtherSheetOpen,
+                  selectionFilter: _selectionFilter,
+                  isPerspective: _isPerspective,
+                  farClip: _farClip,
+                  onFarClipChanged: _onFarClipChanged,
+                  sketchLineLoopGroup: _sketchLineLoopGroup,
+                  // On-device feedback: must track the camera live as the
+                  // user orbits, not just refresh on a flip/rotate tap -
+                  // see [PartViewport.sketchOrientationBasis]'s own doc
+                  // comment for why this is a widget parameter into
+                  // PartViewport's own build rather than an external
+                  // overlay here.
+                  sketchOrientationBasis: _confirmingSketchOrientation ? _pendingOrientationBasis : null,
+                  anchorTriadAtOrigin: _anyToolPanelOpen,
+                ),
+                // On-device feedback ("move the select/orbit fab to the top
+                // right group of fabs under 'centre view'"): a sibling of
+                // [PartViewport] here, not a widget passed into it - that
+                // widget's own top-right "Reset view" button lives inside
+                // its scene-dependent build (`if (scene == null) return
+                // CircularProgressIndicator()`), so embedding this FAB
+                // there too would delay its first appearance until the GPU
+                // scene finishes initializing, unlike every other FAB here
+                // (all immediately available, same "stay visible regardless
+                // of anything else" precedent [hamburger-fab] already
+                // documents). `right: 8` matches PartViewport's own Reset
+                // view button exactly; `top: 56` sits directly under it (its
+                // 40px `FloatingActionButton.small`/`IconButton.filled`
+                // height + an 8px gap, the same gap this Column's other
+                // FABs already use). On-device feedback ("I do want select/
+                // orbit-mode switching available while a tool panel is
+                // open"): uses its own, deliberately wider-open
+                // [_selectionModeFabVisible] rather than sharing
+                // [_viewportFabColumnsVisible] with the top-left hamburger/
+                // feature-tree column - see that getter's own doc comment
+                // for why the two corners now genuinely differ.
+                if (_selectionModeFabVisible && !_desktopLayout)
+                  Positioned(
+                    top: 56,
+                    right: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: FloatingActionButton.small(
+                        heroTag: 'selection-mode-fab',
+                        tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
+                        backgroundColor:
+                            _selectionMode ? Theme.of(context).colorScheme.primaryContainer : null,
+                        onPressed: _busy ? null : _toggleSelectionMode,
+                        // The icon shows the mode a tap will switch *into*:
+                        // a cursor/pointer while in (default) Orbit mode,
+                        // an orbit/rotate glyph while in Selection mode.
+                        child: SvgIcon(
+                          _selectionMode
+                              ? 'assets/icons/viewport/viewport_orbit_mode.svg'
+                              : 'assets/icons/viewport/viewport_selection_mode.svg',
+                        ),
+                      ),
+                    ),
                   ),
+                // Measure tool: an always-available toggle FAB, same
+                // top-right stack as the selection-mode FAB directly above -
+                // `top: 104` is that FAB's own `top: 56` plus its 40px
+                // `FloatingActionButton.small` height plus the 8px gap this
+                // Column's other FABs already use.
+                if (_measureFabVisible && !_desktopLayout)
+                  Positioned(
+                    top: 104,
+                    right: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: FloatingActionButton.small(
+                        heroTag: 'measure-fab',
+                        tooltip: _measureActive ? 'Exit measure' : 'Measure',
+                        backgroundColor:
+                            _measureActive ? Theme.of(context).colorScheme.primaryContainer : null,
+                        onPressed: _busy ? null : _toggleMeasure,
+                        child: const SvgIcon('assets/icons/viewport/viewport_measure.svg'),
+                      ),
+                    ),
+                  ),
+                // Sectioning Tool: mirrors the Measure FAB immediately
+                // above exactly (same always-available precedent - see
+                // [_sectionFabVisible]'s own doc comment) - `top: 152` is
+                // that FAB's own `top: 104` plus its 40px height plus the
+                // same 8px gap. A plain Material [Icon] (`content_cut`)
+                // rather than a new [SvgIcon] asset - no dedicated section-
+                // tool icon exists in this app's `assets/icons/viewport/`
+                // set yet, and adding one is outside this pass's scope.
+                if (_sectionFabVisible && !_desktopLayout)
+                  Positioned(
+                    top: 152,
+                    right: 8,
+                    child: SafeArea(
+                      bottom: false,
+                      child: FloatingActionButton.small(
+                        heroTag: 'section-fab',
+                        tooltip: _sectionPanelOpen ? 'Close Section' : 'Section',
+                        backgroundColor:
+                            _sectionPanelOpen ? Theme.of(context).colorScheme.primaryContainer : null,
+                        onPressed: _busy ? null : _toggleSectionPanel,
+                        child: const Icon(Icons.content_cut),
+                      ),
+                    ),
+                  ),
+                // Stage 23 Item 1: a subtle tinted border around the
+                // viewport while in Selection mode - an overlay rather than
+                // a decoration on PartViewport itself, so its own layout
+                // (and the orbit gesture handling underneath) stays
+                // untouched.
+                if (_selectionMode)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.primary.withValues(alpha: 0.5),
+                            width: 3,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                // Stage 23 Items 5/6, Fix 5: the context action panel is
+                // passed into the drawer as its [SelectionListDrawer.header]
+                // (rendered above the entity list, inside the same draggable
+                // sheet) so the two stay visually stacked panel-above-list
+                // with no separate height bookkeeping between two
+                // independently-positioned widgets. [Positioned.fill] (not a
+                // bottom-anchored Positioned) is required here because
+                // [DraggableScrollableSheet] sizes itself as a fraction of
+                // its parent's height, which only a bounded/full-height
+                // ancestor can provide. The Stage 23 mode-toggle FAB lives in
+                // Scaffold's own floatingActionButton slot, which Flutter
+                // always paints above this body Stack, so this never needs
+                // special-cased margin to avoid obscuring it.
+                // Prompt A4: hidden while the Extrude panel is open -
+                // [_selectedEntities] is the target-body picker's selection
+                // then (see [_openExtrudePanel]), already surfaced by the
+                // top banner's count and the viewport's own highlights, and
+                // this drawer is bottom-docked (a DraggableScrollableSheet)
+                // exactly where [ExtrudePanel]'s own Confirm/Cancel controls
+                // live - showing both at once would visually collide.
+                // C2: also hidden while CreatePlanePanel is open - same
+                // bottom-docked-panel visual-collision reasoning as the
+                // Extrude case above (in practice [_selectedEntities] is
+                // already empty for the panel's whole session - see
+                // [_openCreatePlanePanel] - so [SelectionListDrawer]'s own
+                // empty-selection gate would already hide this too, but this
+                // stays explicit rather than relying on that as an implicit
+                // side effect).
+                // Bug report (assembly testing): "when a face, edge, body is
+                // selected in assembly mode, the context bar offers tools
+                // that were for use in the part editor for modelling... only
+                // assembly tools should be offered" - every action
+                // [SelectionContextPanel] can ever show (Chamfer/Fillet/
+                // Move Face/Move Body/Create Plane/Mirror/Pattern/etc., via
+                // `selection_actions.dart`'s `contextActionsFor`) is a
+                // Part-editing Feature, none of them meaningful against an
+                // Assembly's own Occurrences - so this whole drawer is
+                // Part-lens only now, mirroring how [FeatureTreePanel]
+                // itself is already gated to `_lens == AssemblyLens.part`
+                // just below. Assembly lens has its own dedicated pickers
+                // for the entity selections it does support (Mate's 2-ref
+                // cap, Pattern's source picker - see [_toggleSelectedEntity]'s
+                // own `_mateActive`/[_componentPatternPickingSources]
+                // branches), so this generic Part-tool row never needs an
+                // Assembly-lens equivalent of its own; it would otherwise
+                // still float on top of those flows too, offering the same
+                // irrelevant Part tools while picking Mate/Pattern
+                // references.
+                if (_selectionDrawerShown && !_desktopLayout)
+                  Positioned.fill(
+                    child: _buildSelectionDrawer(),
+                  ),
+                // Bug fix ("selecting a component shows no contextual
+                // toolbar"): the Assembly-lens equivalent of the
+                // SelectionListDrawer/SelectionContextPanel block just above
+                // (deliberately Part-lens-only, per its own gating comment) -
+                // Move/Fix-Float/Delete for a single selected Occurrence,
+                // gated the same "no other tool/picker session already owns
+                // the screen" way every other overlay in this Stack is.
+                // Assembly component selection drawer - the assembly equivalent
+                // of SelectionListDrawer for Part lens. Shows selected component
+                // details and action buttons in a draggable sheet. Auto-hides
+                // when other tool panels open or component is deselected.
+                if (_componentDrawerShown && !_desktopLayout)
+                  _buildComponentDrawer(),
+                // Assembly support Phase 3: only one of FeatureTreePanel/
+                // AssemblyTreePanel is ever built at a time, gated on
+                // [_lens] - both carry their own "Close" `IconButton`, and
+                // `AnimatedSlide` keeps a merely-`visible: false` child
+                // mounted (just translated off-screen), which duplicated
+                // that "Close" button in the tree and made every close-
+                // button `find`/`tap()` in this screen's own tests
+                // ambiguous. Switching lens while the panel is open loses
+                // the slide-in animation for that one transition (the panel
+                // simply swaps), an accepted v1 cost of avoiding the
+                // ambiguity.
+                if (_lens == AssemblyLens.part && !_desktopLayout)
+                Positioned.fill(
+                  child: _buildFeatureTreePanel(docked: false),
+                ),
+                // Assembly support Phase 3: [_lens]'s Assembly-mode
+                // counterpart to [FeatureTreePanel] just above - see that
+                // block's own comment for why only one of the two is ever
+                // built at a time. Same `onClose` fallback (no picker modes
+                // of its own yet to cancel first, unlike Feature tree's
+                // long `onClose` chain above).
+                if (_lens == AssemblyLens.assembly && !_desktopLayout)
+                Positioned.fill(
+                  child: _buildAssemblyTreePanel(docked: false),
                 ),
                 // Feature 1 (tree multi-select): replaces the Part-lens
                 // SelectionListDrawer (and, in Assembly lens,
@@ -24588,6 +25705,10 @@ class _PartScreenState extends State<PartScreen> {
                     onSceneRoughnessChanged: _onSceneRoughnessChanged,
                     onSceneLightIntensityChanged: _onSceneLightIntensityChanged,
                     onSceneEmissiveIntensityChanged: _onSceneEmissiveIntensityChanged,
+                    // Desktop input D5: the Controls settings.
+                    onOpenControls: () => unawaited(Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+                    )),
                     isPerspective: _isPerspective,
                     onPerspectiveChanged: _onPerspectiveChanged,
                     farClip: _farClip,
@@ -25496,7 +26617,7 @@ class _PartScreenState extends State<PartScreen> {
                 // feature-tree FAB specifically (unlike the hamburger just
                 // below, which already has its own extrude-aware check) sat
                 // underneath/overlapping A4's banner.
-                if (_viewportFabColumnsVisible)
+                if (_viewportFabColumnsVisible && !_desktopLayout)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -25945,8 +27066,9 @@ class _PartScreenState extends State<PartScreen> {
                 // row via its `tooltip` param instead (null once Direction 1/
                 // the axis is picked).
               ],
-            ),
+            )),
           ),
+          if (_desktopLayout) _buildDesktopStatusBar(),
         ],
       ),
       // Stage 22 item 3: hidden while the toolbar is open - Scaffold always
@@ -26028,7 +27150,8 @@ class _PartScreenState extends State<PartScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (!_extrudeActive &&
+                  if (!_desktopLayout &&
+                      !_extrudeActive &&
                       !_surfaceActive &&
                       !_createPlaneActive &&
                       !_filletActive &&
@@ -26288,4 +27411,15 @@ class _PaintPick {
   final String label;
 
   const _PaintPick({required this.path, this.bodyId, this.faceIndex, required this.label});
+}
+
+
+/// One Part that Save could not write: shown by [_PartScreenState._showSaveFailures].
+class _SaveFailure {
+  const _SaveFailure({required this.partId, required this.name, required this.relativePath, required this.reason});
+
+  final String partId;
+  final String name;
+  final String relativePath;
+  final String reason;
 }

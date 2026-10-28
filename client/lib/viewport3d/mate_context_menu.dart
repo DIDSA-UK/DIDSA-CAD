@@ -9,6 +9,8 @@ import 'action_sheet.dart';
 /// two-action Mate case.
 enum MateContextMenuAction { edit, delete }
 
+/// Desktop input D4: [at] shows it as a popup at a right click.
+///
 /// Shows the Mate context menu - `AssemblyTreePanel.onMateLongPress`'s real
 /// call site (`part_screen.dart`'s `_onMateLongPress`). Edit opens a small
 /// dialog to revise `value`/`flipped` (and, for a `concentric` Mate, `allow
@@ -19,8 +21,8 @@ enum MateContextMenuAction { edit, delete }
 /// confirms, then calls `DocumentApiClient.deleteMate`, the same "ask
 /// first" precedent `_confirmDeleteComponentPattern` already establishes
 /// for a Pattern row's own long-press.
-Future<MateContextMenuAction?> showMateContextMenu(BuildContext context) {
-  return showActionSheet<MateContextMenuAction>(context, [
+Future<MateContextMenuAction?> showMateContextMenu(BuildContext context, {Offset? at}) {
+  return showContextMenu<MateContextMenuAction>(context, at: at, [
     const ActionSheetEntry(
       action: MateContextMenuAction.edit,
       label: 'Edit',

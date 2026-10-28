@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'scene_preferences.dart';
 import 'view_preferences.dart';
 import 'view_prefs_sheets.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// The "Scene" controls introduced alongside the `PhysicallyBasedMaterial`
 /// lighting/shading upgrade - roughness/light intensity/luminescence
@@ -176,7 +177,7 @@ Future<void> showScenePrefsSheet(
   required double emissiveIntensity,
   required ValueChanged<double> onEmissiveIntensityChanged,
 }) {
-  return showModalBottomSheet<void>(
+  return showAdaptiveSheet<void>(
     context: context,
     isScrollControlled: true,
     builder: (sheetContext) => _ScenePrefsSheet(

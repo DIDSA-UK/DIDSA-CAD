@@ -14,7 +14,22 @@ enum AddButtonMenuAction { newSketch, feature }
 /// [showAssemblyAddMenu] for the Assembly-lens counterpart this FAB shows
 /// instead when `PartScreen._lens == AssemblyLens.assembly`
 /// (`docs/assembly-scope.md` §3's Phase 3b).
-Future<AddButtonMenuAction?> showAddButtonMenu(BuildContext context) {
+Future<AddButtonMenuAction?> showAddButtonMenu(BuildContext context, {Offset? at}) {
+  // Desktop input D4: the same two rows, as a popup at [at] for a mouse.
+  if (at != null) {
+    return showContextMenu<AddButtonMenuAction>(context, at: at, const [
+      ActionSheetEntry(
+        action: AddButtonMenuAction.newSketch,
+        label: 'New Sketch',
+        leading: SvgIcon('assets/icons/feature/feature_new_sketch.svg'),
+      ),
+      ActionSheetEntry(
+        action: AddButtonMenuAction.feature,
+        label: 'Feature',
+        leading: SvgIcon('assets/icons/feature/feature_tree.svg'),
+      ),
+    ]);
+  }
   return showModalBottomSheet<AddButtonMenuAction>(
     context: context,
     builder: (context) => SafeArea(
@@ -62,8 +77,8 @@ enum AssemblyAddMenuAction {
 /// [showComponentContextMenu] rather than each building its own bottom
 /// sheet, since both are flat lists of the same kind of row and several
 /// actions (Mate/Pattern) appear in both places.
-Future<AssemblyAddMenuAction?> showAssemblyAddMenu(BuildContext context) {
-  return showActionSheet<AssemblyAddMenuAction>(context, const [
+Future<AssemblyAddMenuAction?> showAssemblyAddMenu(BuildContext context, {Offset? at}) {
+  return showContextMenu<AssemblyAddMenuAction>(context, at: at, const [
     ActionSheetEntry(
       action: AssemblyAddMenuAction.insertExistingComponent,
       label: 'Add Component',

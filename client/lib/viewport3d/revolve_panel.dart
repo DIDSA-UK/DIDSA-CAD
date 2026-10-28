@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The "boss" or "cut" choice for a Revolve - Boss/Cut parity with Extrude
 /// (Prompt F's own resolved decision) - mirrors `extrude_panel.dart`'s
@@ -214,6 +215,7 @@ class _RevolvePanelState extends State<RevolvePanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(
                   onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../layout/layout_mode.dart';
+
 import '../api/document_api_client.dart';
 import 'assembly_tree_panel.dart';
 
@@ -36,6 +38,51 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final componentName = displayName ?? occurrenceDisplayName([selectedComponent], 0);
+
+    // Desktop layout (D6): a block docked under the tree in the left pane, not a sheet over the viewport.
+    if (LayoutModeScope.isDesktop(context)) {
+      final theme = Theme.of(context);
+      return Material(
+        key: const ValueKey('docked-component-selection'),
+        color: theme.colorScheme.surfaceContainerLow,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(16, 8, 8, 12),
+          decoration: BoxDecoration(border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant))),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.view_in_ar_outlined, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(componentName, style: theme.textTheme.titleSmall, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ),
+                  if (onClose != null)
+                    IconButton(
+                      tooltip: 'Clear selection',
+                      icon: const Icon(Icons.close, size: 18),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: onClose,
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.tonal(onPressed: onMove, child: const Text('Move')),
+                  FilledButton.tonal(onPressed: onFixFloat, child: Text(selectedComponent.fixed ? 'Float' : 'Fix')),
+                  FilledButton.tonal(onPressed: onDelete, child: const Text('Delete')),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     return DraggableScrollableSheet(
       initialChildSize: 0.18,

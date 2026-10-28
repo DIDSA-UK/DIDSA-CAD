@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'action_sheet.dart';
 import 'svg_icon.dart';
 
 /// Actions available from a Feature's long-press context menu. Stage 8 adds
@@ -121,6 +122,8 @@ enum FeatureContextMenuAction {
 /// [showMerge]'s own gate exactly - same reasoning, same always-enabled-
 /// when-shown shape. Boolean family, fourth/last entry: [showSplit] mirrors
 /// [showMerge]/[showSubtract]/[showCommon]'s own gate exactly too.
+/// Desktop input D4: [at] (a mouse right click) shows it as a popup there
+/// instead of the bottom sheet.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -141,110 +144,98 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool showSubtract = false,
   bool showCommon = false,
   bool showSplit = false,
+  Offset? at,
 }) {
-  return showModalBottomSheet<FeatureContextMenuAction>(
-    context: context,
-    // Revolve/Sweep joining Extrude means up to 5 entries (3 of them with a
-    // wrapping subtitle) can appear at once - a plain Column overflows a
-    // short screen/test surface, so this needs to scroll rather than clip.
-    builder: (context) => SafeArea(
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (showExtrude)
-              ListTile(
-                enabled: canExtrude,
-                leading: const SvgIcon('assets/icons/feature/feature_extrude.svg'),
-                title: const Text('Extrude'),
-                subtitle: canExtrude ? null : Text(extrudeDisabledReason ?? 'Not available'),
-                onTap: canExtrude
-                    ? () => Navigator.of(context).pop(FeatureContextMenuAction.extrude)
-                    : null,
-              ),
-            if (showRevolve)
-              ListTile(
-                enabled: canRevolve,
-                leading: const SvgIcon('assets/icons/feature/feature_revolve.svg'),
-                title: const Text('Revolve'),
-                subtitle: canRevolve ? null : Text(revolveDisabledReason ?? 'Not available'),
-                onTap: canRevolve
-                    ? () => Navigator.of(context).pop(FeatureContextMenuAction.revolve)
-                    : null,
-              ),
-            if (showSweep)
-              ListTile(
-                enabled: canSweep,
-                leading: const SvgIcon('assets/icons/feature/feature_sweep.svg'),
-                title: const Text('Sweep'),
-                subtitle: canSweep ? null : Text(sweepDisabledReason ?? 'Not available'),
-                onTap: canSweep
-                    ? () => Navigator.of(context).pop(FeatureContextMenuAction.sweep)
-                    : null,
-              ),
-            if (showRedefineOrientation)
-              ListTile(
-                leading: const Icon(Icons.rotate_90_degrees_ccw),
-                title: const Text('Sketch Orientation'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.redefineOrientation),
-              ),
-            if (showSurface)
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_surface.svg'),
-                title: const Text('Extrude Surface'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.surface),
-              ),
-            if (showPattern)
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_pattern.svg'),
-                title: const Text('Pattern'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.pattern),
-              ),
-            if (showMirror)
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_mirror.svg'),
-                title: const Text('Mirror'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.mirror),
-              ),
-            if (showMerge)
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_merge.svg'),
-                title: const Text('Merge'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.merge),
-              ),
-            if (showSubtract)
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_merge.svg'),
-                title: const Text('Subtract'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.subtract),
-              ),
-            if (showCommon)
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_merge.svg'),
-                title: const Text('Common'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.common),
-              ),
-            if (showSplit)
-              ListTile(
-                leading: const SvgIcon('assets/icons/feature/feature_split.svg'),
-                title: const Text('Split'),
-                onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.split),
-              ),
-            ListTile(
-              leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
-              title: Text(isHidden ? 'Show' : 'Hide'),
-              onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.toggleVisibility),
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('Delete'),
-              onTap: () => Navigator.of(context).pop(FeatureContextMenuAction.delete),
-            ),
-          ],
-        ),
+  // Desktop input D4: one entry list for both presentations - the bottom
+  // sheet for touch (as before) and a popup at [at] for a mouse right click.
+  // Revolve/Sweep joining Extrude means up to 5 entries (3 of them with a
+  // wrapping subtitle) can appear at once; the sheet scrolls rather than
+  // clipping on a short screen.
+  return showContextMenu<FeatureContextMenuAction>(context, at: at, [
+    if (showExtrude)
+      ActionSheetEntry(
+        action: FeatureContextMenuAction.extrude,
+        label: 'Extrude',
+        leading: const SvgIcon('assets/icons/feature/feature_extrude.svg'),
+        enabled: canExtrude,
+        disabledReason: extrudeDisabledReason ?? 'Not available',
       ),
+    if (showRevolve)
+      ActionSheetEntry(
+        action: FeatureContextMenuAction.revolve,
+        label: 'Revolve',
+        leading: const SvgIcon('assets/icons/feature/feature_revolve.svg'),
+        enabled: canRevolve,
+        disabledReason: revolveDisabledReason ?? 'Not available',
+      ),
+    if (showSweep)
+      ActionSheetEntry(
+        action: FeatureContextMenuAction.sweep,
+        label: 'Sweep',
+        leading: const SvgIcon('assets/icons/feature/feature_sweep.svg'),
+        enabled: canSweep,
+        disabledReason: sweepDisabledReason ?? 'Not available',
+      ),
+    if (showRedefineOrientation)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.redefineOrientation,
+        label: 'Sketch Orientation',
+        icon: Icons.rotate_90_degrees_ccw,
+      ),
+    if (showSurface)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.surface,
+        label: 'Extrude Surface',
+        leading: SvgIcon('assets/icons/feature/feature_surface.svg'),
+      ),
+    if (showPattern)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.pattern,
+        label: 'Pattern',
+        leading: SvgIcon('assets/icons/feature/feature_pattern.svg'),
+      ),
+    if (showMirror)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.mirror,
+        label: 'Mirror',
+        leading: SvgIcon('assets/icons/feature/feature_mirror.svg'),
+      ),
+    if (showMerge)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.merge,
+        label: 'Merge',
+        leading: SvgIcon('assets/icons/feature/feature_merge.svg'),
+      ),
+    if (showSubtract)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.subtract,
+        label: 'Subtract',
+        leading: SvgIcon('assets/icons/feature/feature_merge.svg'),
+      ),
+    if (showCommon)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.common,
+        label: 'Common',
+        leading: SvgIcon('assets/icons/feature/feature_merge.svg'),
+      ),
+    if (showSplit)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.split,
+        label: 'Split',
+        leading: SvgIcon('assets/icons/feature/feature_split.svg'),
+      ),
+    ActionSheetEntry(
+      action: FeatureContextMenuAction.toggleVisibility,
+      label: isHidden ? 'Show' : 'Hide',
+      icon: isHidden ? Icons.visibility : Icons.visibility_off,
     ),
-  );
+    const ActionSheetEntry(
+      action: FeatureContextMenuAction.delete,
+      label: 'Delete',
+      icon: Icons.delete,
+      iconColor: Colors.red,
+    ),
+  ]);
 }
 
 /// Actions available from a Body row's long-press context menu. Only
@@ -263,25 +254,18 @@ enum BodyContextMenuAction { toggleVisibility, assignMaterial }
 Future<BodyContextMenuAction?> showBodyContextMenu(
   BuildContext context, {
   required bool isHidden,
+  Offset? at,
 }) {
-  return showModalBottomSheet<BodyContextMenuAction>(
-    context: context,
-    builder: (context) => SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          ListTile(
-            leading: Icon(isHidden ? Icons.visibility : Icons.visibility_off),
-            title: Text(isHidden ? 'Show' : 'Hide'),
-            onTap: () => Navigator.of(context).pop(BodyContextMenuAction.toggleVisibility),
-          ),
-          ListTile(
-            leading: const Icon(Icons.science_outlined),
-            title: const Text('Assign Material'),
-            onTap: () => Navigator.of(context).pop(BodyContextMenuAction.assignMaterial),
-          ),
-        ],
-      ),
+  return showContextMenu<BodyContextMenuAction>(context, at: at, [
+    ActionSheetEntry(
+      action: BodyContextMenuAction.toggleVisibility,
+      label: isHidden ? 'Show' : 'Hide',
+      icon: isHidden ? Icons.visibility : Icons.visibility_off,
     ),
-  );
+    const ActionSheetEntry(
+      action: BodyContextMenuAction.assignMaterial,
+      label: 'Assign Material',
+      icon: Icons.science_outlined,
+    ),
+  ]);
 }

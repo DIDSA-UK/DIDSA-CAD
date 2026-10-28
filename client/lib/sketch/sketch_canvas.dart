@@ -6,7 +6,14 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../api/dimension_label_placement.dart';
 import '../api/sketch_api_client.dart';
+import '../viewport3d/controls_preferences.dart';
+import '../viewport3d/mouse_navigation.dart';
+import '../viewport3d/keyboard_shortcuts.dart' show CadShortcut, withShortcut;
+import 'dimension_text.dart';
+import 'label_drag_resolver.dart';
+import 'marquee_selection.dart';
 import 'pattern_mirror_expansion.dart';
 import 'plane_indicator.dart';
 import 'sketch_controller.dart';
@@ -68,6 +75,13 @@ class SketchCanvas extends StatefulWidget {
   /// current render size.
   final void Function(Offset panOffset, double zoom, Size canvasSize)? onViewportChanged;
 
+  /// Desktop input D4: fired when a mouse right click ends without a drag.
+  /// [hit] is the entity under it, already selected by the SOLIDWORKS rule
+  /// ([SketchController.selectUnderCursorForContextMenu]), or null over
+  /// empty canvas (or outside select mode); [globalPosition] is where the
+  /// menu goes. Never fired for a touch.
+  final void Function(SketchSelection? hit, Offset globalPosition)? onContextMenuRequested;
+
   static const Color defaultColor = Color(0xFFF2F2F2);
 
   const SketchCanvas({
@@ -81,19 +95,89 @@ class SketchCanvas extends StatefulWidget {
     this.canvasColor = defaultColor,
     this.canvasOpacity = 1.0,
     this.onViewportChanged,
+    this.onContextMenuRequested,
   });
 
   @override
-  State<SketchCanvas> createState() => _SketchCanvasState();
+  State<SketchCanvas> createState() => SketchCanvasState();
 }
 
-class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixin {
+class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixin {
   final SketchViewport _viewport = SketchViewport();
 
   /// Live touch pointers by id, for pinch-zoom/two-finger-pan - tracked
   /// separately from the single-finger cursor drag, which only applies
   /// while exactly one touch is active.
   final Map<int, Offset> _activeTouches = {};
+
+  /// Desktop input D1: the kind of the last pointer seen. While it's a mouse
+  /// the painted crosshair is skipped (the system cursor is already there -
+  /// see [_canvasMouseCursor]); a touch brings it back.
+  PointerDeviceKind? _lastPointerKind;
+
+  /// Where the current middle/right mouse drag was pressed (the point a
+  /// Shift+middle drag zooms toward) and what it last did - see
+  /// `mouse_navigation.dart`. A 2D canvas has nothing to orbit, so the
+  /// middle button's orbit pans here.
+  Offset? _mouseNavAnchor;
+  MouseNavAction? _mouseNavAction;
+
+  /// Desktop input D4: whether the current middle/right press is the right
+  /// button alone, and how far it has travelled - a right release under the
+  /// tap slop is a click and asks for a context menu (a drag pans, D1).
+  bool _mouseNavIsSecondary = false;
+
+  /// Desktop input D5: whether the current press is the middle button alone - a click without a drag ends the chain being drawn, as Enter does.
+  bool _mouseNavIsMiddle = false;
+  double _mouseNavTravel = 0;
+
+  /// Desktop input D2: a left mouse press on blank canvas in select mode,
+  /// waiting to see whether it drags - past the tap threshold it becomes a
+  /// box select straight away, with no long-press hold (that's for touch).
+  Offset? _mouseMarqueeDownScreen;
+
+  /// A left mouse press in select mode, waiting to see whether it drags an entity (past the tap threshold it grabs
+  /// what is under the press); [_mouseGrabActive] once one is picked up, so releasing the button drops it.
+  Offset? _mouseGrabDownScreen;
+  bool _mouseGrabActive = false;
+
+  /// Desktop input D2: a middle double-click zooms to fit (the Zoom to fit
+  /// button).
+  final MiddleDoubleClickDetector _middleDoubleClick = MiddleDoubleClickDetector();
+
+  /// Whether the active marquee was started by a mouse: only then does its
+  /// direction pick window or crossing, and Ctrl add to the selection.
+  bool _marqueeByMouse = false;
+
+  /// A mouse box dragged right to left is a crossing select (SOLIDWORKS /
+  /// AutoCAD), drawn green; left to right is a window select, drawn blue.
+  bool get _marqueeCrossing {
+    final anchor = _longPressDownScreen;
+    final current = _marqueeCurrentScreen;
+    return _marqueeByMouse && anchor != null && current != null && current.dx < anchor.dx;
+  }
+
+  /// Desktop input D3: zoom to fit (F, a middle double-click) - what the
+  /// Zoom to fit button does.
+  void zoomToFit() {
+    final size = _lastSize;
+    if (size == null) return;
+    setState(() => _viewport.zoomToFit(widget.controller.geometryBoundingBox, size));
+  }
+
+  void _noteDeviceKind(PointerDeviceKind kind) {
+    if (_lastPointerKind == kind) return;
+    setState(() => _lastPointerKind = kind);
+  }
+
+  /// The system cursor over the canvas: what a view drag is doing, else a
+  /// crosshair for drawing and the arrow for selecting (the painted
+  /// crosshair's green/red, as a shape).
+  MouseCursor get _canvasMouseCursor {
+    final navAction = _mouseNavAction;
+    if (navAction != null) return mouseNavCursor(navAction == MouseNavAction.orbit ? MouseNavAction.pan : navAction);
+    return widget.controller.mode == SketchMode.draw ? SystemMouseCursors.precise : SystemMouseCursors.basic;
+  }
 
   /// Cumulative single-finger travel (pixels) since the touch that's about
   /// to end started - used to tell a tap (select gesture) apart from a
@@ -305,34 +389,46 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   /// No-op otherwise, so e.g. a long-press on an existing Point still just
   /// behaves like an ordinary press-and-hold (no special gesture fires).
   void _maybeStartLongPress(Offset downScreen, ViewTransform transform) {
-    final controller = widget.controller;
-    if (controller.mode != SketchMode.select) return;
-    // A marquee-select starting while something's grabbed via drag mode
-    // would be a confusing second gesture layered on top of the first - a
-    // stationary press elsewhere on the canvas while repositioning a
-    // grabbed Point/Line should just be part of that swipe, not grow into
-    // a marquee.
-    if (controller.isEntityGrabbed) return;
-    final coord = transform.screenToSketch(downScreen.dx, downScreen.dy);
-    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
-    if (controller.hasEntityNear(coord.x, coord.y, hitRadius)) return;
+    if (!_marqueeMayStartAt(downScreen, transform)) return;
     _longPressDownScreen = downScreen;
     _longPressTimer?.cancel();
     _longPressTimer = Timer(_longPressDuration, () => _startMarquee(downScreen));
   }
 
+  /// Whether a press at [downScreen] may grow into a marquee: select mode,
+  /// nothing grabbed, and blank canvas under the press.
+  bool _marqueeMayStartAt(Offset downScreen, ViewTransform transform, {bool byMouse = false}) {
+    final controller = widget.controller;
+    if (controller.mode != SketchMode.select) return false;
+    // A mouse press on a dimension label is the start of a label drag (see [_tryGrabAtCursor]), not of a box select.
+    if (byMouse && dimensionLabelAt(controller, transform, downScreen, _ghostHitRadiusPixels) != null) return false;
+    // A marquee-select starting while something's grabbed via drag mode
+    // would be a confusing second gesture layered on top of the first - a
+    // stationary press elsewhere on the canvas while repositioning a
+    // grabbed Point/Line should just be part of that swipe, not grow into
+    // a marquee.
+    if (controller.isEntityGrabbed) return false;
+    final coord = transform.screenToSketch(downScreen.dx, downScreen.dy);
+    final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
+    return !controller.hasEntityNear(coord.x, coord.y, hitRadius);
+  }
+
   /// Fires once [_longPressDuration] elapses without the pointer traveling
   /// far enough to cancel - shows the swell-and-pop circle and switches the
   /// gesture state machine over to marquee-drag mode.
-  void _startMarquee(Offset downScreen) {
+  ///
+  /// Desktop input D2: a mouse drag ([byMouse]) starts one straight away and
+  /// skips the pop - there was no hold to announce.
+  void _startMarquee(Offset downScreen, {bool byMouse = false}) {
     _longPressTimer = null;
     setState(() {
       _marqueeActive = true;
+      _marqueeByMouse = byMouse;
       _longPressDownScreen = downScreen;
       _marqueeCurrentScreen = downScreen;
-      _longPressPopCenter = downScreen;
+      if (!byMouse) _longPressPopCenter = downScreen;
     });
-    _longPressPopController.forward(from: 0);
+    if (!byMouse) _longPressPopController.forward(from: 0);
   }
 
   /// Cancels a pending (not yet fired) long-press timer - does not affect
@@ -363,7 +459,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       Offset(anchorSketch.x, anchorSketch.y),
       Offset(currentSketch.x, currentSketch.y),
     );
-    widget.controller.selectInRect(rect);
+    // Desktop input D2: a mouse box's direction picks window or crossing,
+    // and Ctrl adds; a touch marquee is a replacing window select as before.
+    final byMouse = _marqueeByMouse;
+    _marqueeByMouse = false;
+    widget.controller.selectInRect(
+      rect,
+      crossing: byMouse && current.dx < anchor.dx,
+      additive: byMouse && mouseBoxSelectIsAdditive(),
+    );
   }
 
   /// Runs every frame regardless of pointer activity: if the cursor's
@@ -440,6 +544,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // Hover events only fire for a mouse with no buttons pressed - real
     // mouse movement drives the cursor directly, 1:1.
     if (event.kind != PointerDeviceKind.mouse) return;
+    _noteDeviceKind(event.kind);
     _refreshCursorMoveTimeIfMoved(event.localPosition);
     widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
     // Drag-mode's "swipe to move" for a mouse: since a grab/drop is two
@@ -462,7 +567,8 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
   void _feedMouseSwipeToGrabbedEntity(PointerEvent event, ViewTransform transform) {
     final controller = widget.controller;
     if (!controller.isEntityGrabbed) return;
-    if (controller.draggingLabelId != null) {
+    final labelId = controller.draggingLabelId;
+    if (labelId != null && !controller.labelUsesPlacement(labelId)) {
       controller.updateLabelDrag(event.delta, transform.pixelsPerUnit);
       return;
     }
@@ -579,8 +685,11 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // whenever something is grabbed, regardless of which touch/click
     // gesture it's part of) is what actually repositions the grabbed
     // entity - see SketchController.updateGrabbedPosition.
+    // A mouse drags by pressing and moving ([_tryGrabAtCursor] from the pointer-move handler, dropping on release), so
+    // the toggle's click-to-grab and click-to-drop are for touch only.
     if (controller.mode == SketchMode.select &&
         controller.dragModeEnabled &&
+        _lastPointerKind != PointerDeviceKind.mouse &&
         _handleDragModeTap(controller, transform)) {
       return;
     }
@@ -665,9 +774,20 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       controller.dropGrabbedEntity();
       return true;
     }
+    return _tryGrabAtCursor(controller, transform);
+  }
+
+  /// Picks up the Constraint label, Text resize handle, Point or Line at the cursor, if any (the grab half of
+  /// [_handleDragModeTap], also what a mouse press-and-drag uses). True when something was picked up.
+  bool _tryGrabAtCursor(SketchController controller, ViewTransform transform) {
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
-    if (labelId != null && controller.beginLabelDrag(labelId)) return true;
+    if (labelId != null) {
+      final center = dimensionLabelCenterScreen(controller, transform, labelId);
+      final centerSketch = center == null ? null : transform.screenToSketch(center.dx, center.dy);
+      final grabOffset = centerSketch == null ? null : (centerSketch.x - controller.cursorX, centerSketch.y - controller.cursorY);
+      if (controller.beginLabelDrag(labelId, grabOffset: grabOffset)) return true;
+    }
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     // Checked before the general [dragGrabTargetAt] resolution below - a
     // Text's own resize handle sits outside its glyph fill, which is all
@@ -701,6 +821,22 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // feeding into the pinch/pan handling below, which would otherwise
     // fight the marquee over what the gesture even means.
     if (_marqueeActive) return;
+    _noteDeviceKind(event.kind);
+    final middleDoubleClick = _middleDoubleClick.registerPress(event);
+    if (isMouseNavPress(event)) {
+      if (middleDoubleClick) {
+        zoomToFit();
+        return;
+      }
+      _mouseNavAnchor = event.localPosition;
+      _mouseNavIsSecondary = event.buttons == kSecondaryMouseButton;
+      _mouseNavIsMiddle = event.buttons == kMiddleMouseButton;
+      _mouseNavTravel = 0;
+      return;
+    }
+    // Desktop input D2: how this press's select click applies (a mouse
+    // click replaces, Ctrl+click toggles; touch keeps its own rule).
+    widget.controller.selectClick = selectClickFor(event.kind);
     if (event.kind == PointerDeviceKind.mouse) {
       // Only the primary (left) button counts as a bare tap, same as a
       // touch tap - a right-click starts a pan drag instead (see
@@ -711,8 +847,14 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       // hover event.
       if (event.buttons & kPrimaryMouseButton != 0) {
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
-        _maybeStartLongPress(event.localPosition, transform);
+        // Desktop input D2: a mouse box select starts on drag, not after a
+        // hold - see [_mouseMarqueeDownScreen]. Checked before the tap,
+        // which may change what's under the press.
+        _mouseMarqueeDownScreen = _marqueeMayStartAt(event.localPosition, transform, byMouse: true) ? event.localPosition : null;
         _dispatchTap(transform);
+        _mouseGrabDownScreen = widget.controller.mode == SketchMode.select && !widget.controller.isEntityGrabbed
+            ? event.localPosition
+            : null;
       }
       return;
     }
@@ -745,6 +887,15 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       setState(() => _marqueeCurrentScreen = event.localPosition);
       return;
     }
+    final mouseMarqueeDown = _mouseMarqueeDownScreen;
+    if (mouseMarqueeDown != null &&
+        event.kind == PointerDeviceKind.mouse &&
+        (event.localPosition - mouseMarqueeDown).distance > _tapTravelThreshold) {
+      _mouseMarqueeDownScreen = null;
+      _startMarquee(mouseMarqueeDown, byMouse: true);
+      setState(() => _marqueeCurrentScreen = event.localPosition);
+      return;
+    }
     if (_longPressTimer != null) {
       final down = _longPressDownScreen;
       if (down != null && (event.localPosition - down).distance > _tapTravelThreshold) {
@@ -759,14 +910,41 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // own early-return/intercept branch the way the old continuous-hold
     // label drag did.
     if (event.kind == PointerDeviceKind.mouse) {
-      if (event.buttons & kSecondaryMouseButton != 0) {
+      final navAction = mouseNavActionForEvent(event);
+      if (navAction != null) {
+        _mouseNavTravel += event.delta.distance;
         // Panning never itself touches the cursor's sketch-space position
         // (see SketchController's class doc comment) - it may simply drift
         // off-canvas as a result, which is fine: the crosshair just stops
         // rendering (see _SketchPainter's isCursorVisible check) until the
         // next cursor-moving interaction brings it back.
-        setState(() => _viewport.panByScreenDelta(event.delta));
+        setState(() {
+          _mouseNavAction = navAction;
+          if (navAction == MouseNavAction.zoom) {
+            _viewport.zoomAtScreenPoint(
+              _mouseNavAnchor ?? event.localPosition,
+              1 / dragZoomFactor(event.delta.dy),
+              size,
+              contentBoundingBox: widget.controller.geometryBoundingBox,
+            );
+          } else {
+            _viewport.panByScreenDelta(event.delta);
+          }
+        });
       } else {
+        final grabDown = _mouseGrabDownScreen;
+        if (grabDown != null &&
+            event.buttons & kPrimaryMouseButton != 0 &&
+            (event.localPosition - grabDown).distance > _tapTravelThreshold) {
+          _mouseGrabDownScreen = null;
+          if (widget.controller.mode == SketchMode.select && !widget.controller.isEntityGrabbed) {
+            widget.controller.moveCursorAbsoluteScreen(grabDown, transform);
+            if (_tryGrabAtCursor(widget.controller, transform)) {
+              _mouseGrabActive = true;
+              _mouseMarqueeDownScreen = null;
+            }
+          }
+        }
         _refreshCursorMoveTimeIfMoved(event.localPosition);
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
         _feedMouseSwipeToGrabbedEntity(event, transform);
@@ -790,7 +968,8 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
       _refreshCursorMoveTimeIfMoved(event.localPosition);
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       if (widget.controller.isEntityGrabbed) {
-        if (widget.controller.draggingLabelId != null) {
+        final labelId = widget.controller.draggingLabelId;
+        if (labelId != null && !widget.controller.labelUsesPlacement(labelId)) {
           widget.controller.updateLabelDrag(event.delta, transform.pixelsPerUnit);
         } else {
           widget.controller.updateGrabbedPosition(widget.controller.cursorX, widget.controller.cursorY);
@@ -805,6 +984,19 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     _applyPinchPan(before, _activeTouches, size);
   }
 
+  /// Desktop input D4: a right click without a drag. The cursor goes where
+  /// the click was; in select mode an entity under it is selected (unless
+  /// already selected) and handed to [SketchCanvas.onContextMenuRequested],
+  /// else the hit is null and the screen shows the empty-canvas menu.
+  void _requestContextMenu(PointerEvent event, ViewTransform transform) {
+    final callback = widget.onContextMenuRequested;
+    if (callback == null) return;
+    final controller = widget.controller;
+    controller.moveCursorAbsoluteScreen(event.localPosition, transform);
+    final hit = controller.mode == SketchMode.select ? controller.selectUnderCursorForContextMenu(transform.pixelsPerUnit) : null;
+    callback(hit, event.position);
+  }
+
   void _handlePointerEnd(PointerEvent event, ViewTransform transform) {
     if (_marqueeActive) {
       _activeTouches.remove(event.pointer);
@@ -815,7 +1007,24 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     // fire if its pointer lifts first - same as any other gesture that's
     // still ambiguous when the pointer ends.
     _cancelLongPress();
-    if (event.kind == PointerDeviceKind.mouse) return;
+    if (event.kind == PointerDeviceKind.mouse) {
+      _mouseMarqueeDownScreen = null;
+      _mouseGrabDownScreen = null;
+      // Releasing the button drops what a mouse drag picked up.
+      if (_mouseGrabActive) {
+        _mouseGrabActive = false;
+        if (widget.controller.isEntityGrabbed) widget.controller.dropGrabbedEntity();
+      }
+      _mouseNavAnchor = null;
+      final isContextClick = event is PointerUpEvent && _mouseNavIsSecondary && _mouseNavTravel <= kTouchSlop;
+      _mouseNavIsSecondary = false;
+      final isMiddleClick = event is PointerUpEvent && _mouseNavIsMiddle && _mouseNavTravel <= kTouchSlop;
+      _mouseNavIsMiddle = false;
+      if (isMiddleClick && widget.controller.mode == SketchMode.draw) widget.controller.finishChain();
+      if (_mouseNavAction != null) setState(() => _mouseNavAction = null);
+      if (isContextClick) _requestContextMenu(event, transform);
+      return;
+    }
 
     // A lone finger lifting (not the tail end of a pinch) after barely
     // moving is a tap - the select/draw/dimension gesture - rather than a
@@ -839,7 +1048,10 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
     if (event is PointerScrollEvent) {
       // Scrolling "down" (positive dy) zooms out, matching common map/CAD
       // tool conventions.
-      final scaleFactor = event.scrollDelta.dy > 0 ? 0.9 : 1 / 0.9;
+      // Desktop input D1: scaled by the scroll distance (one notch keeps the
+      // old 10 %) - see [wheelZoomFactor]; inverted, since a bigger zoom
+      // here means zoomed in.
+      final scaleFactor = 1 / wheelZoomFactor(event.scrollDelta.dy, perNotch: 1 / 0.9, invert: ControlsPreferences.invertWheel);
       setState(() => _viewport.zoomAtScreenPoint(
             event.localPosition,
             scaleFactor,
@@ -899,31 +1111,36 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
         final transform = _viewport.transformFor(size);
         return Stack(
           children: [
-            Listener(
-              onPointerDown: (e) => _handlePointerDown(e, transform),
-              onPointerHover: (e) => _handlePointerHover(e, transform),
-              onPointerMove: (e) => _handlePointerMove(e, transform, size),
-              onPointerUp: (e) => _handlePointerEnd(e, transform),
-              onPointerCancel: (e) => _handlePointerEnd(e, transform),
-              onPointerSignal: (e) => _handlePointerSignal(e, size),
-              child: AnimatedBuilder(
-                animation: widget.controller,
-                builder: (context, _) {
-                  return CustomPaint(
-                    size: size,
-                    painter: _SketchPainter(
-                      controller: widget.controller,
-                      transform: transform,
-                      referenceGhostSegments: widget.referenceGhostSegments,
-                      referenceGhostVertices: widget.referenceGhostVertices,
-                      referenceGhostEdges: widget.referenceGhostEdges,
-                      referenceBodyHidden: widget.referenceBodyHidden,
-                      labelsVisible: widget.constraintLabelsVisible,
-                      canvasColor: widget.canvasColor,
-                      canvasOpacity: widget.canvasOpacity,
-                    ),
-                  );
-                },
+            AnimatedBuilder(
+              animation: widget.controller,
+              builder: (context, child) => MouseRegion(cursor: _canvasMouseCursor, child: child),
+              child: Listener(
+                onPointerDown: (e) => _handlePointerDown(e, transform),
+                onPointerHover: (e) => _handlePointerHover(e, transform),
+                onPointerMove: (e) => _handlePointerMove(e, transform, size),
+                onPointerUp: (e) => _handlePointerEnd(e, transform),
+                onPointerCancel: (e) => _handlePointerEnd(e, transform),
+                onPointerSignal: (e) => _handlePointerSignal(e, size),
+                child: AnimatedBuilder(
+                  animation: widget.controller,
+                  builder: (context, _) {
+                    return CustomPaint(
+                      size: size,
+                      painter: _SketchPainter(
+                        controller: widget.controller,
+                        transform: transform,
+                        referenceGhostSegments: widget.referenceGhostSegments,
+                        referenceGhostVertices: widget.referenceGhostVertices,
+                        referenceGhostEdges: widget.referenceGhostEdges,
+                        referenceBodyHidden: widget.referenceBodyHidden,
+                        labelsVisible: widget.constraintLabelsVisible,
+                        canvasColor: widget.canvasColor,
+                        canvasOpacity: widget.canvasOpacity,
+                        hideCrosshair: _lastPointerKind == PointerDeviceKind.mouse,
+                      ),
+                    );
+                  },
+                ),
               ),
             ),
             AnimatedBuilder(
@@ -957,6 +1174,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
                 child: CustomPaint(
                   size: size,
                   painter: _MarqueePainter(
+                    crossing: _marqueeCrossing,
                     rect: Rect.fromPoints(
                       _longPressDownScreen ?? Offset.zero,
                       _marqueeCurrentScreen ?? _longPressDownScreen ?? Offset.zero,
@@ -997,7 +1215,7 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
               top: 72,
               left: 8,
               child: IconButton.filled(
-                tooltip: 'Zoom to fit',
+                tooltip: withShortcut('Zoom to fit', CadShortcut.zoomToFit),
                 icon: SvgPicture.asset(
                   'assets/icons/dimbar/dimbar_zoom_to_fit.svg',
                   width: 30,
@@ -1032,32 +1250,37 @@ class _SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMix
 }
 
 /// Stage 23g: the live marquee rectangle drawn while
-/// [_SketchCanvasState._marqueeActive] - a light fill plus a solid border,
+/// [SketchCanvasState._marqueeActive] - a light fill plus a solid border,
 /// matching the conventional "rubber-band select" look.
 class _MarqueePainter extends CustomPainter {
   final Rect rect;
 
-  const _MarqueePainter({required this.rect});
+  /// Desktop input D2: a crossing box (mouse, right to left) is green.
+  final bool crossing;
+
+  const _MarqueePainter({required this.rect, this.crossing = false});
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.drawRect(rect, Paint()..color = Colors.blue.withValues(alpha: 0.12));
+    final colour = crossing ? kCrossingBoxColor : Colors.blue;
+    canvas.drawRect(rect, Paint()..color = colour.withValues(alpha: 0.12));
     canvas.drawRect(
       rect,
       Paint()
-        ..color = Colors.blue.withValues(alpha: 0.8)
+        ..color = colour.withValues(alpha: 0.8)
         ..style = PaintingStyle.stroke
         ..strokeWidth = 1.5,
     );
   }
 
   @override
-  bool shouldRepaint(covariant _MarqueePainter oldDelegate) => oldDelegate.rect != rect;
+  bool shouldRepaint(covariant _MarqueePainter oldDelegate) =>
+      oldDelegate.rect != rect || oldDelegate.crossing != crossing;
 }
 
 /// Stage 23g: the swell-and-pop circle shown at the instant a long-press
 /// fires - [radius] grows and [opacity] fades as
-/// [_SketchCanvasState._longPressPopController] runs.
+/// [SketchCanvasState._longPressPopController] runs.
 class _LongPressPopPainter extends CustomPainter {
   final Offset center;
   final double radius;
@@ -1477,7 +1700,7 @@ _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform,
 const double _ghostHitRadiusPixels = 20.0;
 
 /// Screen-space point-to-segment distance - shared by
-/// [_SketchCanvasState._referenceGhostEdgeAt] (the only caller that needs
+/// [SketchCanvasState._referenceGhostEdgeAt] (the only caller that needs
 /// segment, rather than point, hit-testing against ghost data). Clamped to
 /// the segment's own extent (not the infinite line through it), same
 /// convention as [SketchController]'s own sketch-space `_distanceToSegment`
@@ -1496,7 +1719,7 @@ double _distanceToSegmentScreen(Offset point, Offset start, Offset end) {
 
 /// The key of whichever currently-rendered ghost's label [screenPosition]
 /// landed on, or null if it missed all of them - see
-/// [_SketchCanvasState._dispatchTap].
+/// [SketchCanvasState._dispatchTap].
 String? _ghostKeyAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
   for (final ghost in controller.ghosts) {
     final layout = _layoutGhost(controller, transform, ghost);
@@ -2019,6 +2242,160 @@ Offset? _constraintLabelCenter(
   }
 }
 
+/// The pixel offset the flat canvas's painters expect for [constraint]'s label ([_SketchPainter]'s and [_constraintLabelCenter]'s
+/// `labelOffset`), worked out from where the user placed it.
+///
+/// A dimension's position is a [DimensionLabelPlacement] in sketch units (so it holds still when the view zooms, and is the same
+/// position the 3D view shows), but these painters were written around a pixel offset from their own default layout. Rather than
+/// lay every kind out a second time, this converts: it returns the offset that makes the painter's existing layout land on the placed
+/// position. A dimension with no placement gets [Offset.zero], which keeps each painter's default exactly as it was. A relationship
+/// glyph (V, H, parallel...) has no placement and keeps its session-only pixel offset.
+Offset dimensionLabelPixelOffset(
+  SketchController controller,
+  ViewTransform transform,
+  String constraintId,
+  ConstraintDto constraint,
+) {
+  if (!controller.labelUsesPlacement(constraintId)) {
+    return controller.labelOffsetForZoom(constraintId, transform.pixelsPerUnit);
+  }
+  final placement = controller.labelPlacementFor(constraintId);
+  if (placement == null) return Offset.zero;
+  final ppu = transform.pixelsPerUnit;
+  // Sketch (y up) to screen (y down) for a direction.
+  Offset screenDir((double, double) d) => Offset(d.$1, -d.$2);
+
+  switch (constraint) {
+    case DistanceConstraintDto c:
+      if (controller.isRadiusDistanceConstraint(c)) {
+        final center = controller.points[c.pointAId];
+        final rim = controller.points[c.pointBId];
+        if (center == null || rim == null) return Offset.zero;
+        final centerScreen = transform.sketchToScreen(center.x, center.y);
+        final rimScreen = transform.sketchToScreen(rim.x, rim.y);
+        final radiusPixels = c.distance * ppu;
+        final defaultDelta = rimScreen - centerScreen;
+        final defaultDirection = defaultDelta.distance < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultDelta.distance;
+        final rimAngle = math.atan2(rim.y - center.y, rim.x - center.x);
+        final angle = rimAngle + (placement.angle ?? 0.0) * math.pi / 180.0;
+        final legPixels = placement.leg != null ? placement.leg! * ppu : _radialLegLength;
+        final wanted = centerScreen + screenDir((math.cos(angle), math.sin(angle))) * (radiusPixels + legPixels);
+        return wanted - (centerScreen + defaultDirection * (radiusPixels + _radialLegLength));
+      }
+      final ellipseAxis = controller.ellipseAxisForDistanceConstraint(c);
+      final a = controller.points[ellipseAxis?.$1 ?? c.pointAId];
+      final b = controller.points[ellipseAxis?.$2 ?? c.pointBId];
+      if (a == null || b == null) return Offset.zero;
+      return _linearLabelPixelOffset(transform, (a.x, a.y), (b.x, b.y), c.orientation, placement);
+    case PointLineDistanceConstraintDto c:
+      final point = controller.points[c.pointId];
+      final foot = controller.pointLineFootFor(c);
+      if (point == null || foot == null) return Offset.zero;
+      return _linearLabelPixelOffset(transform, (point.x, point.y), foot, null, placement);
+    case LineDistanceConstraintDto c:
+      final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
+      final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+      final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+      if (midA == null || endpointsA == null || endpointsB == null) return Offset.zero;
+      final dirA = endpointsA.$2 - endpointsA.$1;
+      final lengthA = dirA.distance;
+      if (lengthA < 1e-6) return Offset.zero;
+      final alongA = dirA / lengthA;
+      final perpToA = Offset(-dirA.dy, dirA.dx) / lengthA;
+      final toLineB = endpointsB.$1 - midA;
+      final t = toLineB.dx * perpToA.dx + toLineB.dy * perpToA.dy;
+      if (t.abs() < 1e-6) return Offset.zero;
+      // The connector runs from line 1 towards line 2; the label slides along it.
+      final tangent = perpToA * (t < 0 ? -1.0 : 1.0);
+      final slide = placement.offset != null ? placement.offset! * ppu - _defaultDimensionOffset : 0.0;
+      return alongA * slide + tangent * ((placement.along ?? 0.0) * ppu);
+    case AngleConstraintDto c:
+      final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
+      final midB = _lineMidpointScreenFor(controller, transform, c.line2Id);
+      final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+      final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+      if (midA == null || midB == null || endpointsA == null || endpointsB == null) return Offset.zero;
+      final intersection = _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2);
+      final refDistance = (midB - midA).distance;
+      if (intersection == null ||
+          (refDistance > 1e-6 &&
+              ((intersection - midA).distance > refDistance * _maxAngleIntersectionRelativeDistance ||
+                  (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance))) {
+        return Offset.zero; // The painter's plain-chip fallback: no arc to place.
+      }
+      final directionA = midA - intersection;
+      final directionB = midB - intersection;
+      if (directionA.distance < 1e-6 || directionB.distance < 1e-6) return Offset.zero;
+      final dir1 = directionA / directionA.distance;
+      final dir2 = directionB / directionB.distance;
+      final bisector = dir1 + dir2;
+      final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
+      final chord = dir2 - dir1;
+      final chordDirection = chord.distance < 1e-6 ? Offset(-bisectorDirection.dy, bisectorDirection.dx) : chord / chord.distance;
+      final radiusPixels = placement.radius != null ? math.max(placement.radius! * ppu, _minDimensionOffsetMagnitude) : _angleGhostArcRadiusPixels;
+      final alongPixels = ((placement.along ?? 0.0) * ppu).clamp(-radiusPixels, radiusPixels).toDouble();
+      // The painter takes the arc's radius from the whole offset and the label's slide from its chord component, so the bisector part
+      // is chosen to leave the radius as placed.
+      final bisectorPart = math.sqrt(math.max(radiusPixels * radiusPixels - alongPixels * alongPixels, 0.0)) - _angleGhostArcRadiusPixels;
+      return bisectorDirection * bisectorPart + chordDirection * alongPixels;
+    default:
+      return Offset.zero;
+  }
+}
+
+/// [dimensionLabelPixelOffset] for a linear dimension between sketch points [a] and [b] (a point and a foot, for a point-to-line one).
+Offset _linearLabelPixelOffset(
+  ViewTransform transform,
+  (double, double) a,
+  (double, double) b,
+  String? orientation,
+  DimensionLabelPlacement placement,
+) {
+  final ppu = transform.pixelsPerUnit;
+  final aScreen = transform.sketchToScreen(a.$1, a.$2);
+  final bScreen = transform.sketchToScreen(b.$1, b.$2);
+  final alongPixels = (placement.along ?? 0.0) * ppu;
+  switch (orientation) {
+    case 'vertical':
+      // Line at x = max(a.x, b.x) + offset, so its distance from the rightmost point is offset; the label slides up (screen -y).
+      final slide = placement.offset != null ? placement.offset! * ppu - _defaultDimensionOffset : 0.0;
+      return Offset(slide, -alongPixels);
+    case 'horizontal':
+      // Line at y = max(a.y, b.y) + offset; the painter measures down from the lowest point, which is the smaller y.
+      final minY = math.min(a.$2, b.$2);
+      final maxY = math.max(a.$2, b.$2);
+      final distance = placement.offset != null ? (minY - maxY - placement.offset!) * ppu : _defaultDimensionOffset;
+      return Offset(alongPixels, distance - _defaultDimensionOffset);
+  }
+  final delta = bScreen - aScreen;
+  final length = delta.distance;
+  if (length < 1e-6) return Offset.zero;
+  final frame = LabelDragResolver.linearFrame(a, b);
+  if (frame == null) return Offset.zero;
+  final normal = _canonicalPerpendicular(delta);
+  final tangent = delta / length;
+  var slide = 0.0;
+  if (placement.offset != null) {
+    final wantedNormal = Offset(frame.$2.$1, -frame.$2.$2) * (placement.offset! * ppu);
+    final distance = wantedNormal.dx * normal.dx + wantedNormal.dy * normal.dy;
+    slide = distance - _defaultDimensionOffset;
+  }
+  return normal * slide + tangent * alongPixels;
+}
+
+/// Where [constraintId]'s label is drawn on the flat canvas, in screen pixels - null when it is not drawn (hidden, or its geometry is missing).
+/// Public so the tests can check a placed label ends up where the user put it.
+Offset? dimensionLabelCenterScreen(SketchController controller, ViewTransform transform, String constraintId) {
+  final constraint = controller.constraints[constraintId];
+  if (constraint == null) return null;
+  return _constraintLabelCenter(
+    controller,
+    transform,
+    constraint,
+    dimensionLabelPixelOffset(controller, transform, constraintId, constraint),
+  );
+}
+
 /// The id of whichever currently-rendered Constraint's label [canvasPos]
 /// landed within [radius] of, or null if it missed all of them - see
 /// [_constraintLabelCenter]'s own doc comment on how [SketchController.
@@ -2026,7 +2403,7 @@ Offset? _constraintLabelCenter(
 /// with where [_SketchPainter] actually draws it after a drag. Public
 /// (unlike its sibling hit-testers in this file) so it's directly
 /// unit-testable without pumping a real widget tree - see
-/// [_SketchCanvasState._handleDragModeTap], which checks this first,
+/// [SketchCanvasState._handleDragModeTap], which checks this first,
 /// ahead of a Point/Line grab.
 String? dimensionLabelAt(
   SketchController controller,
@@ -2034,20 +2411,26 @@ String? dimensionLabelAt(
   Offset canvasPos,
   double radius,
 ) {
+  // The nearest label within [radius], not the first in the map's order: a dimension's text and a relationship glyph
+  // (H, V, parallel) can sit within one touch target of each other, and the one under the pointer should win.
+  String? best;
+  var bestDistance = double.infinity;
   for (final entry in controller.constraints.entries) {
-    final labelOffset = controller.labelOffsetForZoom(entry.key, transform.pixelsPerUnit);
+    final labelOffset = dimensionLabelPixelOffset(controller, transform, entry.key, entry.value);
     final actual = _constraintLabelCenter(controller, transform, entry.value, labelOffset);
     if (actual == null) continue;
-    if ((canvasPos - actual).distance <= radius) {
-      return entry.key;
+    final distance = (canvasPos - actual).distance;
+    if (distance <= radius && distance < bestDistance) {
+      best = entry.key;
+      bestDistance = distance;
     }
   }
-  return null;
+  return best;
 }
 
 /// The id of whichever currently-rendered Constraint's label
 /// [screenPosition] landed on, or null if it missed all of them - see
-/// [_SketchCanvasState._dispatchTap]. Reuses [_ghostHitRadiusPixels]'s
+/// [SketchCanvasState._dispatchTap]. Reuses [_ghostHitRadiusPixels]'s
 /// touch target, same generous tolerance as ghost-label hit-testing.
 String? _constraintIdAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
   return dimensionLabelAt(controller, transform, screenPosition, _ghostHitRadiusPixels);
@@ -2088,7 +2471,7 @@ class _GhostValueEditorState extends State<GhostValueEditor> {
   void initState() {
     super.initState();
     final current = widget.controller.currentGhostValue(widget.ghost);
-    final text = current == null ? '' : current.toStringAsFixed(2);
+    final text = current == null ? '' : dimensionValueText(current);
     // On-device feedback ("the current dimension should be highlighted so
     // the user can immediately type over it"): pre-selecting the whole
     // value (not just prefilling it with the cursor at the end, as before)
@@ -2203,6 +2586,10 @@ class _SketchPainter extends CustomPainter {
   final Color canvasColor;
   final double canvasOpacity;
 
+  /// Desktop input D1: skip the crosshair while a mouse drives the cursor -
+  /// the system cursor is already drawn at the same spot.
+  final bool hideCrosshair;
+
   _SketchPainter({
     required this.controller,
     required this.transform,
@@ -2213,6 +2600,7 @@ class _SketchPainter extends CustomPainter {
     this.labelsVisible = true,
     this.canvasColor = SketchCanvas.defaultColor,
     this.canvasOpacity = 1.0,
+    this.hideCrosshair = false,
   });
 
   /// Stage 12 item 9's ghost wireframe color - faint and thinner than every
@@ -2543,7 +2931,7 @@ class _SketchPainter extends CustomPainter {
       // badges no longer share one unselected color.
       final dimensionColor = isSelected ? _selectedColor : _dimensionLineColor;
       final badgeColor = isSelected ? _selectedColor : _constraintBadgeColor;
-      final labelOffset = controller.labelOffsetForZoom(entry.key, transform.pixelsPerUnit);
+      final labelOffset = dimensionLabelPixelOffset(controller, transform, entry.key, entry.value);
       switch (entry.value) {
         case DistanceConstraintDto c:
           // Cardinal-point axis constraints are pure solver plumbing (see
@@ -2815,7 +3203,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, displayValue.toStringAsFixed(2), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(displayValue), color, plainBlackText: true);
   }
 
   /// Radial (radius/diameter) dimension for a Circle or Arc's
@@ -2859,7 +3247,7 @@ class _SketchPainter extends CustomPainter {
       _drawDimensionLabel(
         canvas,
         geometry.labelCenter,
-        '⌀${(c.distance * 2).toStringAsFixed(2)}',
+        '⌀${dimensionValueText(c.distance * 2)}',
         color,
         plainBlackText: true,
       );
@@ -2875,7 +3263,7 @@ class _SketchPainter extends CustomPainter {
       _drawDimensionLabel(
         canvas,
         geometry.labelCenter,
-        'R${c.distance.toStringAsFixed(2)}',
+        'R${dimensionValueText(c.distance)}',
         color,
         plainBlackText: true,
       );
@@ -3054,7 +3442,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(c.distance), color, plainBlackText: true);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
@@ -3099,7 +3487,7 @@ class _SketchPainter extends CustomPainter {
   /// for the same degenerate/near-parallel/implausibly-far-vertex cases
   /// [_layoutGhost]'s own angle preview already guards against.
   void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color, Offset labelOffset) {
-    final text = '${c.angleDegrees.toStringAsFixed(1)}°';
+    final text = '${dimensionValueText(c.angleDegrees, decimals: 1)}°';
     final midA = _lineMidpointScreen(c.line1Id);
     final midB = _lineMidpointScreen(c.line2Id);
     if (midA == null || midB == null) return;
@@ -3242,7 +3630,7 @@ class _SketchPainter extends CustomPainter {
 
     final delta = footScreen - pointScreen;
     if (delta.distance < 1e-6) {
-      _drawDimensionLabel(canvas, pointScreen + labelOffset, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+      _drawDimensionLabel(canvas, pointScreen + labelOffset, dimensionValueText(c.distance), color, plainBlackText: true);
       return;
     }
     final normal = _canonicalPerpendicular(delta);
@@ -3259,7 +3647,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, c.distance.toStringAsFixed(2), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(c.distance), color, plainBlackText: true);
   }
 
   Offset? _lineMidpointScreen(String lineId) {
@@ -4848,7 +5236,7 @@ class _SketchPainter extends CustomPainter {
     // SketchController.isEntityGrabbed) - the grabbed entity's own
     // highlight (see _grabbedColor above) *is* the cursor at that point,
     // showing both would be redundant/confusing.
-    if (controller.isCursorVisible(size, transform) && !controller.isEntityGrabbed) {
+    if (!hideCrosshair && controller.isCursorVisible(size, transform) && !controller.isEntityGrabbed) {
       final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
       final crosshairPaint = Paint()
         ..color = controller.mode == SketchMode.draw ? _sketchingCursorColor : _selectCursorColor

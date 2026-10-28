@@ -160,6 +160,9 @@ class PartToolbar extends StatelessWidget {
   final void Function(double value)? onSceneLightIntensityChanged;
   final void Function(double value)? onSceneEmissiveIntensityChanged;
 
+  /// Desktop input D5: opens the Controls settings (mouse bindings, wheel, orbit speed, shortcut list) from the View menu.
+  final VoidCallback? onOpenControls;
+
   // A4: perspective toggle (off = orthographic default per A4 brief).
   final bool isPerspective;
   final void Function(bool isPerspective)? onPerspectiveChanged;
@@ -234,6 +237,7 @@ class PartToolbar extends StatelessWidget {
     this.onSceneRoughnessChanged,
     this.onSceneLightIntensityChanged,
     this.onSceneEmissiveIntensityChanged,
+    this.onOpenControls,
     this.isPerspective = ViewPreferences.defaultIsPerspective,
     this.onPerspectiveChanged,
     this.farClip = kDefaultFarClip,
@@ -485,6 +489,12 @@ class PartToolbar extends StatelessWidget {
             ),
           ],
         ),
+        if (onOpenControls != null)
+          ListTile(
+            leading: const Icon(Icons.mouse_outlined),
+            title: const Text('Controls'),
+            onTap: onOpenControls,
+          ),
       ],
     );
   }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'svg_icon.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Actions available from the "Add" FAB's second-level Feature picker.
 /// [extrude], (C3) [plane], (on-device feedback) [fillet], (Prompt E)
@@ -106,7 +107,7 @@ enum FeaturePickerAction {
 /// of the screen) so each column's
 /// own [SingleChildScrollView] has something concrete to scroll within.
 Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
-  return showModalBottomSheet<FeaturePickerAction>(
+  return showAdaptiveSheet<FeaturePickerAction>(
     context: context,
     // C3: added a sixth entry (Plane) - scroll-controlled so this sheet can
     // grow past its old fixed-fraction default height instead of clipping/

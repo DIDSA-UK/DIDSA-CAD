@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Phase 2 surfacing package, first entry: the bottom-sheet-style panel
 /// [PartScreen] opens once a single surface-producing Feature has been
@@ -163,6 +164,7 @@ class _ThickenPanelState extends State<ThickenPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _thickness != null ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

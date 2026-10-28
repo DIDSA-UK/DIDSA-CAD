@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 
 import '../viewport3d/resizable_tool_panel.dart';
 import 'appearance_rule.dart';
+import '../viewport3d/keyboard_shortcuts.dart';
 
 /// What leaving a scene with unsaved changes does (D7): keep them in the scene first, drop them, or stay.
 enum SceneLeaveChoice { update, discard, stay }
@@ -139,6 +140,7 @@ class ScenesPanel extends StatelessWidget {
           Row(
             children: [
               Expanded(child: Text(_status(), key: const ValueKey('scenes-status'))),
+              ToolPanelKeys(onCancel: onClose),
               IconButton(key: const ValueKey('scenes-close'), tooltip: 'Close', icon: const Icon(Icons.close), onPressed: onClose),
             ],
           ),

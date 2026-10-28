@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import 'dimension_text.dart';
 import 'sketch_controller.dart';
 
 /// The contextual action panel for whatever is currently selected (one or
@@ -248,7 +249,7 @@ class SketchRibbon extends StatelessWidget {
           label: 'Delete',
           tooltip: blockedReason,
           onTap: blockedReason == null && !controller.busy
-              ? () => _confirmAndDelete(context, controller)
+              ? () => confirmAndDeleteSketchSelection(context, controller)
               : null,
         ),
     ];
@@ -289,40 +290,43 @@ class SketchRibbon extends StatelessWidget {
     );
   }
 
-  String _svgAssetFor(ConstraintOptionType type) {
-    return switch (type) {
-      ConstraintOptionType.vertical => 'assets/icons/ribbon/ribbon_vertical.svg',
-      ConstraintOptionType.horizontal => 'assets/icons/ribbon/ribbon_horizontal.svg',
-      ConstraintOptionType.parallel => 'assets/icons/ribbon/ribbon_parallel.svg',
-      ConstraintOptionType.perpendicular => 'assets/icons/ribbon/ribbon_perpendicular.svg',
-      ConstraintOptionType.equalLength => 'assets/icons/ribbon/ribbon_equal_length.svg',
-      ConstraintOptionType.coincident => 'assets/icons/ribbon/ribbon_coincident.svg',
-      ConstraintOptionType.collinear => 'assets/icons/ribbon/ribbon_collinear.svg',
-      ConstraintOptionType.concentric => 'assets/icons/ribbon/ribbon_concentric.svg',
-      ConstraintOptionType.equalRadius => 'assets/icons/ribbon/ribbon_equal_radius.svg',
-      ConstraintOptionType.tangent => 'assets/icons/ribbon/ribbon_tangent.svg',
-      // P35: no dedicated ribbon glyph exists yet - reuses the same
-      // dimension-tool icon `SketchDimensionBar`'s own FAB entry point
-      // uses, since this button is a fast path into that exact tool (see
-      // [SketchController.addRadiusDimensionFor]'s own doc comment).
-      ConstraintOptionType.radius => 'assets/icons/actions/action_dimensions.svg',
-      // P45: same fast-path-into-Dimension-mode rationale as radius above.
-      ConstraintOptionType.diameter => 'assets/icons/actions/action_dimensions.svg',
-      // Point coincident to line/curve - no dedicated glyph yet, reuses the
-      // same "Coinc." icon the point-to-point row above uses, since both
-      // render the same "Coinc." label and express the same underlying
-      // relationship (this Point sits exactly on that geometry).
-      ConstraintOptionType.pointOnLine => 'assets/icons/ribbon/ribbon_coincident.svg',
-      ConstraintOptionType.pointOnCircle => 'assets/icons/ribbon/ribbon_coincident.svg',
-      ConstraintOptionType.pointOnEllipse => 'assets/icons/ribbon/ribbon_coincident.svg',
-      // Reuses the same padlock pair the sketchbar's own whole-sketch
-      // fully-constrained indicator already uses (see sketch_screen.dart) -
-      // one consistent "this can't move" visual language across both the
-      // per-Point Fix action here and the whole-sketch status glyph there.
-      ConstraintOptionType.fix => 'assets/icons/sketchbar/sketchbar_lock_full.svg',
-      ConstraintOptionType.unfix => 'assets/icons/sketchbar/sketchbar_lock_partial.svg',
-    };
-  }
+  String _svgAssetFor(ConstraintOptionType type) => sketchConstraintSvgAsset(type);
+}
+
+/// The ribbon glyph for a constraint chip (desktop input D4: the right-click menu reuses it).
+String sketchConstraintSvgAsset(ConstraintOptionType type) {
+  return switch (type) {
+    ConstraintOptionType.vertical => 'assets/icons/ribbon/ribbon_vertical.svg',
+    ConstraintOptionType.horizontal => 'assets/icons/ribbon/ribbon_horizontal.svg',
+    ConstraintOptionType.parallel => 'assets/icons/ribbon/ribbon_parallel.svg',
+    ConstraintOptionType.perpendicular => 'assets/icons/ribbon/ribbon_perpendicular.svg',
+    ConstraintOptionType.equalLength => 'assets/icons/ribbon/ribbon_equal_length.svg',
+    ConstraintOptionType.coincident => 'assets/icons/ribbon/ribbon_coincident.svg',
+    ConstraintOptionType.collinear => 'assets/icons/ribbon/ribbon_collinear.svg',
+    ConstraintOptionType.concentric => 'assets/icons/ribbon/ribbon_concentric.svg',
+    ConstraintOptionType.equalRadius => 'assets/icons/ribbon/ribbon_equal_radius.svg',
+    ConstraintOptionType.tangent => 'assets/icons/ribbon/ribbon_tangent.svg',
+    // P35: no dedicated ribbon glyph exists yet - reuses the same
+    // dimension-tool icon `SketchDimensionBar`'s own FAB entry point
+    // uses, since this button is a fast path into that exact tool (see
+    // [SketchController.addRadiusDimensionFor]'s own doc comment).
+    ConstraintOptionType.radius => 'assets/icons/actions/action_dimensions.svg',
+    // P45: same fast-path-into-Dimension-mode rationale as radius above.
+    ConstraintOptionType.diameter => 'assets/icons/actions/action_dimensions.svg',
+    // Point coincident to line/curve - no dedicated glyph yet, reuses the
+    // same "Coinc." icon the point-to-point row above uses, since both
+    // render the same "Coinc." label and express the same underlying
+    // relationship (this Point sits exactly on that geometry).
+    ConstraintOptionType.pointOnLine => 'assets/icons/ribbon/ribbon_coincident.svg',
+    ConstraintOptionType.pointOnCircle => 'assets/icons/ribbon/ribbon_coincident.svg',
+    ConstraintOptionType.pointOnEllipse => 'assets/icons/ribbon/ribbon_coincident.svg',
+    // Reuses the same padlock pair the sketchbar's own whole-sketch
+    // fully-constrained indicator already uses (see sketch_screen.dart) -
+    // one consistent "this can't move" visual language across both the
+    // per-Point Fix action here and the whole-sketch status glyph there.
+    ConstraintOptionType.fix => 'assets/icons/sketchbar/sketchbar_lock_full.svg',
+    ConstraintOptionType.unfix => 'assets/icons/sketchbar/sketchbar_lock_partial.svg',
+  };
 }
 
 /// Wraps [SketchController.deleteSelected] with a confirmation step
@@ -334,7 +338,10 @@ class SketchRibbon extends StatelessWidget {
 /// ([SketchController.suppressDeleteCascadeWarning]). A no-op dialog (skips
 /// straight to deleting) whenever nothing extra would be removed, or the
 /// user already opted out this session.
-Future<void> _confirmAndDelete(BuildContext context, SketchController controller) async {
+///
+/// Deletes the sketch selection after the cascade confirm - the ribbon's
+/// Delete button, and (desktop input D3) the Delete key.
+Future<void> confirmAndDeleteSketchSelection(BuildContext context, SketchController controller) async {
   final selection = controller.selectionSet;
   final cascade = controller.computeDeleteCascade(selection);
   final selectedLineIds =
@@ -849,7 +856,7 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
 
   String _formatValue(double? value) {
     if (value == null) return '';
-    return value.toStringAsFixed(2);
+    return dimensionValueText(value);
   }
 
   void _submit() {
@@ -946,4 +953,19 @@ class _RadiusDiameterToggle extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Desktop input D3: what the Delete key does to the sketch selection - the
+/// same as the ribbon's Delete chip (a pattern / mirror instance deletes
+/// itself, everything else goes through [confirmAndDeleteSketchSelection]),
+/// or null when the ribbon's chip would be disabled (nothing selected, busy,
+/// or a lone Point that can't be deleted).
+VoidCallback? sketchDeleteAction(BuildContext context, SketchController controller) {
+  final selectionSet = controller.selectionSet;
+  if (selectionSet.isEmpty || controller.busy) return null;
+  final single = selectionSet.length == 1 ? selectionSet.first : null;
+  if (single?.kind == SelectionKind.mirrorInstance) return () => controller.deleteMirrorInstanceById(single!.id);
+  if (single?.kind == SelectionKind.patternInstance) return () => controller.deletePatternInstanceById(single!.id);
+  if (single?.kind == SelectionKind.point && controller.selectedPointDeleteBlockedReason != null) return null;
+  return () => confirmAndDeleteSketchSelection(context, controller);
 }

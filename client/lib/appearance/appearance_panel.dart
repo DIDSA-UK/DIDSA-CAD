@@ -17,6 +17,7 @@ import '../viewport3d/view_prefs_sheets.dart' show bodyColourSwatches;
 import 'appearance_model.dart';
 import 'appearance_rule.dart';
 import 'scenes_panel.dart' show askSceneName;
+import '../viewport3d/keyboard_shortcuts.dart';
 
 /// The palette (the body colours plus a few strong ones; DIDSA-VR's palette is the same idea).
 const List<(String, String)> kPaintPalette = [
@@ -185,6 +186,7 @@ class _AppearancePanelState extends State<AppearancePanel> {
                   icon: const Icon(Icons.undo),
                   onPressed: widget.busy ? null : widget.onUndo,
                 ),
+              ToolPanelKeys(onCancel: widget.onClose),
               IconButton(
                   key: const ValueKey('appearance-close'), tooltip: 'Close', icon: const Icon(Icons.close), onPressed: widget.onClose),
             ],

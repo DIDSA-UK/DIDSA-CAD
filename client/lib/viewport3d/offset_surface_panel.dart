@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Phase 2 surfacing package, fourth/last entry - which kind of source this
 /// panel's Offset Surface reads from. Mirrors [MoveFaceMode]'s own
@@ -187,6 +188,7 @@ class _OffsetSurfacePanelState extends State<OffsetSurfacePanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

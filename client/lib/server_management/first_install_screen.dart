@@ -9,6 +9,7 @@ import 'termux_controller.dart';
 import 'termux_setup_commands.dart';
 import 'termux_setup_controller.dart';
 import 'termux_urls.dart';
+import '../layout/desktop_width.dart';
 
 /// Guides a brand-new device from "just installed the DIDSA app" to "the
 /// Server Management screen's buttons work" - installing F-Droid, Termux
@@ -167,7 +168,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('First-Time Setup')),
-      body: ListView(
+      body: DesktopMaxWidth(maxWidth: 720, child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           Text(
@@ -402,7 +403,7 @@ class _FirstInstallScreenState extends State<FirstInstallScreen> {
             ),
           ),
         ],
-      ),
+      )),
     );
   }
 }

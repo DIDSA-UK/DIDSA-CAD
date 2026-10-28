@@ -1,8 +1,9 @@
 import 'dart:convert';
 import 'dart:math' as math;
-import 'dart:typed_data';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -18,16 +19,19 @@ import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
 import 'package:didsa_cad_client/assembly/reference_report.dart';
 import 'package:didsa_cad_client/assembly/relative_path.dart';
+import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 import 'package:didsa_cad_client/storage/file_cache.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
+import 'package:didsa_cad_client/viewport3d/feature_context_menu.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
+import 'package:didsa_cad_client/layout/layout_mode.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
@@ -1137,6 +1141,86 @@ void main() {
     },
   );
 
+  group('New Sketch plane picking', () {
+    Future<void> open(WidgetTester tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    Future<void> startNewSketch(WidgetTester tester) async {
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('New Sketch'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    bool planesHidden(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden;
+
+    testWidgets('hidden reference planes are shown while a plane is being picked, and hidden again after Cancel', (
+      tester,
+    ) async {
+      await open(tester);
+      await tester.tap(find.byTooltip('Open toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('View'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text('Hide Reference Planes'));
+      await tester.pump();
+      await tester.tap(find.text('Hide Reference Planes'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Close toolbar'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(planesHidden(tester), isTrue, reason: 'the user hid them');
+
+      await startNewSketch(tester);
+      expect(planesHidden(tester), isFalse, reason: 'there has to be a plane to tap');
+
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(planesHidden(tester), isTrue, reason: 'back to what the user chose');
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('in Selection mode a plane tap starts the sketch instead of just selecting the plane', (tester) async {
+      await open(tester);
+      await tester.tap(find.byTooltip('Switch to selection mode'));
+      await tester.pump();
+      await startNewSketch(tester);
+
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+        const SelectionEntityRef(kind: SelectionEntityKind.referencePlane, referencePlaneKind: ReferencePlaneKind.xy),
+      );
+      await _pumpUntil(tester, () => find.text('Continue').evaluate().isNotEmpty);
+      expect(find.text('Continue'), findsOneWidget, reason: 'the sketch orientation step, as an Orbit mode tap gives');
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities,
+        isEmpty,
+        reason: 'the plane was not left selected',
+      );
+      await tester.tap(find.text('Continue'));
+      await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+      expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   testWidgets('the toolbar\'s Hide Reference Planes entry toggles its own label between Hide/Show', (
     tester,
   ) async {
@@ -1444,6 +1528,134 @@ void main() {
     expect(find.text('Sketch 1'), findsOneWidget);
     expect(find.text('Sketch 2'), findsOneWidget);
     expect(find.text('Sketch 3'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'desktop input D4: a mouse right click on a Build Tree row opens the row menu as a popup at the cursor, '
+    'without entering multi-select; a touch long-press still enters it',
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+          {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Feature tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      final row = tester.getCenter(find.text('Sketch 1'));
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse, buttons: kSecondaryMouseButton);
+      await mouse.down(row);
+      await mouse.up();
+      await _pumpUntil(tester, () => find.byType(PopupMenuItem<FeatureContextMenuAction>).evaluate().isNotEmpty);
+
+      expect(find.byType(BottomSheet), findsNothing, reason: 'a mouse gets the popup, not the touch sheet');
+      expect(find.widgetWithText(PopupMenuItem<FeatureContextMenuAction>, 'Delete'), findsOneWidget);
+      expect(find.byTooltip('More actions'), findsNothing, reason: 'a right click does not start multi-select');
+      await tester.pump(const Duration(milliseconds: 400)); // (the menu scales in)
+      final popup = tester.getTopLeft(find.byType(PopupMenuItem<FeatureContextMenuAction>).first);
+      // (A tall menu is moved up to fit the 600 px test screen, so only the x of the cursor is checked.)
+      expect((popup.dx - row.dx).abs(), lessThan(40), reason: 'the popup opens at the cursor');
+
+      // A click outside closes it, then a touch long-press behaves as before.
+      await tester.tapAt(const Offset(790, 590));
+      await _pumpUntil(tester, () => find.byType(PopupMenuItem<FeatureContextMenuAction>).evaluate().isEmpty);
+      expect(find.byType(PopupMenuItem<FeatureContextMenuAction>), findsNothing);
+      await tester.longPress(find.text('Sketch 1'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byTooltip('More actions'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'desktop input D5: Space opens the view cube, a click on it closes it; Ctrl+8 with nothing selected does nothing',
+    (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.digit8);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pump();
+      expect(find.byKey(const Key('view-cube')), findsNothing);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await _pumpUntil(tester, () => find.byKey(const Key('view-cube')).evaluate().isNotEmpty);
+      expect(find.byKey(const Key('view-cube')), findsOneWidget);
+      expect(tester.widget<TextButton>(find.widgetWithText(TextButton, 'Normal To')).onPressed, isNull);
+
+      await tester.tap(find.byKey(const Key('view-cube')));
+      await _pumpUntil(tester, () => find.byKey(const Key('view-cube')).evaluate().isEmpty);
+      expect(find.byKey(const Key('view-cube')), findsNothing);
+      // The pick turns the view over 400 ms: let it finish before the test ends.
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('desktop input D5: a double-click on a Feature row opens it once, not twice', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    // Two clicks on the row before anything has had time to open.
+    final row = tester.getCenter(find.text('Sketch 1'));
+    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    for (var i = 0; i < 2; i++) {
+      await mouse.down(row);
+      await mouse.up();
+    }
+    await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
+    expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
+    expect(find.byType(SketchScreen), findsOneWidget, reason: 'one Sketch screen on the stack, not two');
     expect(tester.takeException(), isNull);
   });
 
@@ -5007,6 +5219,42 @@ void main() {
       expect(find.byTooltip('Undo move'), findsNothing, reason: 'exactly one entry was pushed');
     });
 
+    testWidgets('desktop input D3: Ctrl+Z undoes the move as the Undo button does; Esc deselects the component', (
+      tester,
+    ) async {
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-1', 'occ-2')],
+        target: 'occ-1',
+      );
+      backend.mateMotionHandler = flatGroup(backend);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragStart!();
+      await settle(tester);
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragUpdate!(wish(4, 6, 0));
+      await tester.pump();
+      viewport.onComponentGizmoDragEnd!();
+      await settle(tester);
+      expect((backend.occurrences[0]['transform'] as Map)['translation'], [4.0, 6.0, 0.0]);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyZ);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await settle(tester);
+      expect((backend.occurrences[0]['transform'] as Map)['translation'], [0.0, 0.0, 0.0]);
+      expect(find.byTooltip('Undo move'), findsNothing);
+
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.selectedOccurrenceTransform, isNotNull, reason: 'occ-1 is still selected');
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await settle(tester);
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport.selectedOccurrenceTransform, isNull, reason: 'Esc clears the selection');
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('a commit that does not converge stores nothing, restores every member and pushes no undo entry', (
       tester,
     ) async {
@@ -6763,6 +7011,247 @@ void main() {
       await pumpOpened(tester, backend, 'sub/Frame_C.didsa');
       await _pumpUntil(tester, () => find.text('Frame_C').evaluate().isNotEmpty);
       expect(appBarTitle(tester), 'Frame_C');
+    });
+  });
+
+  // Follow-up to the Linux build test report: Save writes every Part that
+  // needs it, the tree marks them, and a failure says which file and why.
+  group('assembly-aware Save', () {
+    Future<PartToolbar Function()> pumpWithComponent(WidgetTester tester, _FakeStorageService storage) async {
+      final backend = _FakeDocumentBackend();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await tester.tap(find.byTooltip('Assembly tree'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byTooltip('Add'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Create Component…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      return () => tester.widget<PartToolbar>(find.byType(PartToolbar));
+    }
+
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    testWidgets('Create Component asks for the folder first: cancelling creates nothing', (tester) async {
+      final storage = _FakeStorageService()..pickerCancels = true;
+      await pumpWithComponent(tester, storage);
+
+      expect(find.byType(AssemblyTreePanel), findsOneWidget);
+      expect(tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel)).occurrences, isEmpty);
+    });
+
+    testWidgets('plain Save writes the new component and its parent, and the tree marks both until then', (
+      tester,
+    ) async {
+      final storage = _FakeStorageService();
+      final toolbar = await pumpWithComponent(tester, storage);
+
+      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.neverSavedPartIds, hasLength(1));
+      expect(panel.parentUnsaved, isTrue);
+      expect(find.byKey(const Key('unsaved-dot-new')), findsOneWidget);
+      expect(storage.files, isEmpty);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+
+      expect(storage.files.keys, containsAll(['Part 1.didsa', 'Component 1.didsa']));
+      expect(find.text('Saved 2 files'), findsOneWidget);
+      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.neverSavedPartIds, isEmpty);
+      expect(panel.unsavedPartIds, isEmpty);
+      expect(panel.parentUnsaved, isFalse);
+      expect(find.byKey(const Key('unsaved-dot-new')), findsNothing);
+      expect(toolbar().hasUnsavedChanges, isFalse);
+    });
+
+    testWidgets('a file that will not write is named, and stays marked unsaved', (tester) async {
+      final storage = _FakeStorageService()..failOnWrite.add('Component 1.didsa');
+      final toolbar = await pumpWithComponent(tester, storage);
+
+      toolbar().onSaveNative!();
+      await settle(tester);
+
+      expect(find.text("Couldn't save 1 file"), findsOneWidget);
+      expect(find.textContaining('Component 1.didsa'), findsWidgets);
+      expect(find.textContaining('Permission denied'), findsOneWidget);
+      expect(storage.files.keys, contains('Part 1.didsa'));
+      await tester.tap(find.text('Close'));
+      await settle(tester);
+      expect(toolbar().hasUnsavedChanges, isTrue);
+      expect(tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel)).neverSavedPartIds, hasLength(1));
+    });
+
+    testWidgets('leaving with unsaved parts names them', (tester) async {
+      final storage = _FakeStorageService();
+      await pumpWithComponent(tester, storage);
+
+      final context = tester.element(find.byType(PartScreen));
+      final popped = Navigator.of(context).maybePop();
+      await settle(tester);
+
+      expect(find.textContaining('Unsaved: '), findsOneWidget);
+      expect(find.textContaining('Component 1'), findsWidgets);
+      await tester.tap(find.text('Cancel'));
+      await settle(tester);
+      expect(await popped, isTrue);
+    });
+  });
+
+  // Desktop layout D6 (`docs/desktop-layout-scope.md`): the part screen's ribbon, docked tree and status bar, and that
+  // the phone layout is untouched without them.
+  group('desktop layout (D6)', () {
+    Future<void> pumpScreen(WidgetTester tester, {LayoutModeController? layout}) async {
+      final backend = _FakeDocumentBackend();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      Widget screen = PartScreen(
+        documentApi: documentApi,
+        sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        storageService: _FakeStorageService(),
+      );
+      if (layout != null) screen = LayoutModeScope(controller: layout, child: screen);
+      await tester.pumpWidget(MaterialApp(home: screen));
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    LayoutModeController desktop() =>
+        LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+
+    void bigWindow(WidgetTester tester) {
+      tester.view.physicalSize = const Size(1280, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+    }
+
+    testWidgets('the phone layout has none of the desktop chrome', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester);
+      expect(find.byKey(const ValueKey('desktop-ribbon')), findsNothing);
+      expect(find.byKey(const ValueKey('desktop-status-bar')), findsNothing);
+      expect(find.byKey(const ValueKey('desktop-left-pane')), findsNothing);
+      expect(find.byTooltip('Add'), findsOneWidget);
+    });
+
+    testWidgets('the desktop layout shows the ribbon, the docked tree and the status bar, and drops the FABs', (
+      tester,
+    ) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byKey(const ValueKey('desktop-ribbon')), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-status-bar')), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+      expect(find.text('Build Tree'), findsOneWidget);
+      expect(find.byTooltip('Add'), findsNothing);
+      expect(find.byTooltip('Open toolbar'), findsNothing);
+      expect(find.text('Nothing selected'), findsOneWidget);
+      // The tree is docked, so it carries no Close button.
+      expect(find.byTooltip('Close'), findsNothing);
+    });
+
+    testWidgets('ribbon tabs switch the buttons, and the lens switch follows into the Assembly tab', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byKey(const ValueKey('ribbon-Extrude')), findsOneWidget);
+      expect(find.byKey(const ValueKey('ribbon-Add Component')), findsNothing);
+
+      await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('ribbon-Measure')), findsOneWidget);
+      expect(find.byKey(const ValueKey('ribbon-Extrude')), findsNothing);
+
+      await tester.tap(find.descendant(of: find.byKey(const ValueKey('ribbon-lens')), matching: find.text('Assembly')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('ribbon-Add Component')), findsOneWidget);
+      expect(find.text('Assembly Tree'), findsOneWidget);
+    });
+
+    testWidgets('the New Sketch button starts the plane picker, as the Add menu does', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      await tester.tap(find.byKey(const ValueKey('ribbon-New Sketch')));
+      await tester.pump();
+      expect(find.text('Tap a reference plane for the new sketch'), findsOneWidget);
+    });
+
+    testWidgets('the tree pane can be folded away and brought back, and dragged wider', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      final pane = find.byKey(const ValueKey('desktop-left-pane'));
+      final before = tester.getSize(pane).width;
+      await tester.drag(find.byKey(const ValueKey('desktop-pane-divider')), const Offset(80, 0));
+      await tester.pump();
+      expect(tester.getSize(pane).width, closeTo(before + 80, 1));
+
+      await tester.tap(find.byTooltip('Hide the tree'));
+      await tester.pump();
+      expect(pane, findsNothing);
+      await tester.tap(find.byTooltip('Show the tree'));
+      await tester.pump();
+      expect(pane, findsOneWidget);
+    });
+
+    testWidgets('a tool panel docks at the left in place of the tree, and the tree comes back on Cancel', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('docked-tool-panel')), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-left-pane')), findsNothing);
+      final panel = tester.getRect(find.byKey(const ValueKey('docked-tool-panel')));
+      expect(panel.left, 0);
+      expect(panel.width, 340);
+
+      await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('docked-tool-panel')), findsNothing);
+      expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+    });
+
+    testWidgets('the Options menu holds the settings, and View is only the ribbon tab', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byKey(const ValueKey('menu-view')), findsNothing);
+      expect(find.byKey(const ValueKey('ribbon-tab-view')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('menu-options')));
+      await tester.pump();
+      for (final label in ['Select edges', 'Tree pane', 'Controls…', 'Keyboard shortcuts']) {
+        expect(find.text(label), findsOneWidget, reason: label);
+      }
+      expect(find.text('Isometric'), findsNothing);
+    });
+
+    testWidgets('the File menu lists the file actions', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      await tester.tap(find.byKey(const ValueKey('menu-file')));
+      await tester.pump();
+      for (final label in ['New', 'Open…', 'Save', 'Save As…', 'Save All', 'Export…', 'Exit']) {
+        expect(find.text(label), findsWidgets, reason: label);
+      }
     });
   });
 

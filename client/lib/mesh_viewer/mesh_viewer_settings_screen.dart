@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'mesh_data.dart' show MeshUpAxis;
 import 'mesh_viewer_preferences.dart';
+import '../layout/desktop_width.dart';
 
 /// Reachable from a gear icon next to "View a mesh file" on the connection
 /// screen (see `connection_screen.dart`) - device/pipeline-wide defaults for
@@ -79,7 +80,7 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Mesh Viewer Settings')),
-      body: !_loaded
+      body: DesktopMaxWidth(maxWidth: 720, child: !_loaded
           ? const Center(child: CircularProgressIndicator())
           : ListView(
               padding: const EdgeInsets.all(16),
@@ -159,7 +160,7 @@ class _MeshViewerSettingsScreenState extends State<MeshViewerSettingsScreen> {
                   onChanged: _onDebugShowCameraOrientationChanged,
                 ),
               ],
-            ),
+            )),
     );
   }
 }

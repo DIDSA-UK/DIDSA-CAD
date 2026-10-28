@@ -833,4 +833,43 @@ void main() {
       expect(camera.distance, original);
     });
   });
+
+  group('orbitAboutPointByScreenDelta (desktop input D2)', () {
+    // The pivot's coordinates in the camera's own frame: unchanged means it
+    // stays put on screen while the view turns about it.
+    List<double> inCameraFrame(OrbitCamera camera, vm.Vector3 p) {
+      final rel = p - camera.position;
+      final back = (camera.position - camera.target).normalized();
+      return [rel.dot(camera.right), rel.dot(camera.up), rel.dot(back)];
+    }
+
+    test('the pivot stays fixed in view while the camera turns', () {
+      final camera = OrbitCamera()
+        ..target = vm.Vector3(0, 0, 0)
+        ..distance = 100;
+      final pivot = vm.Vector3(20, -5, 10);
+      final before = inCameraFrame(camera, pivot);
+      final orientationBefore = camera.orientation.clone();
+
+      camera.orbitAboutPointByScreenDelta(40, -25, pivot);
+
+      final after = inCameraFrame(camera, pivot);
+      for (var i = 0; i < 3; i++) {
+        expect(after[i], closeTo(before[i], 1e-3)); // vector_math is float32
+      }
+      expect(camera.orientation != orientationBefore, isTrue, reason: 'it still orbits');
+      expect(camera.distance, 100);
+    });
+
+    test('turns exactly as orbitByScreenDelta does; a pivot at the target changes nothing else', () {
+      final plain = OrbitCamera()..target = vm.Vector3(1, 2, 3);
+      final pivoted = OrbitCamera()..target = vm.Vector3(1, 2, 3);
+      plain.orbitByScreenDelta(30, 10);
+      pivoted.orbitAboutPointByScreenDelta(30, 10, vm.Vector3(1, 2, 3));
+      expect(pivoted.orientation.x, closeTo(plain.orientation.x, 1e-6));
+      expect(pivoted.orientation.w, closeTo(plain.orientation.w, 1e-6));
+      expect((pivoted.target - plain.target).length, closeTo(0, 1e-4));
+    });
+  });
 }
+

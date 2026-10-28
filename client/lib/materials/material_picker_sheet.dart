@@ -4,6 +4,7 @@ import '../api/document_api_client.dart';
 import 'material.dart';
 import 'material_form_screen.dart';
 import 'material_store.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// Bottom sheet for assigning a material - either a Body's own override
 /// (pass [isBodyOverride]: true, offering "None (use Part default)") or the
@@ -21,7 +22,7 @@ Future<MaterialPickerResult?> showMaterialPickerSheet(
   BuildContext context, {
   required bool isBodyOverride,
 }) {
-  return showModalBottomSheet<MaterialPickerResult>(
+  return showAdaptiveSheet<MaterialPickerResult>(
     context: context,
     isScrollControlled: true,
     builder: (context) => _MaterialPickerSheet(isBodyOverride: isBodyOverride),

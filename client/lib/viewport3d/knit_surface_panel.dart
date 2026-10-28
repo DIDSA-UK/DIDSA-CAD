@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Phase 2 surfacing package, second entry: the bottom-sheet-style panel
 /// [PartScreen] opens once the multi-select tree picker's `pickingSurfaces`
@@ -53,6 +54,7 @@ class KnitSurfacePanel extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: onConfirm, onCancel: onCancel),
               TextButton(onPressed: onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(onPressed: onConfirm, child: const Text('Confirm')),

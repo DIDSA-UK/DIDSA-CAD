@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'resizable_tool_panel.dart' show BottomToolPanelFrame;
+
 import 'curve_panel.dart' show SketchFeatureChoice;
+import 'keyboard_shortcuts.dart';
 
 /// Which of the three v1 plane-construction flows [CreatePlanePanel] is
 /// currently showing - decided by [PartScreen] from the selection that
@@ -182,14 +185,8 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.bottomCenter,
-      child: SafeArea(
-        top: false,
-        child: Material(
-          elevation: 4,
-          borderRadius: const BorderRadius.only(topLeft: Radius.circular(12), topRight: Radius.circular(12)),
-          child: Padding(
+    return BottomToolPanelFrame(
+      child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -252,6 +249,7 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
+                    ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
                     TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
                     const SizedBox(width: 8),
                     FilledButton(
@@ -262,9 +260,6 @@ class _CreatePlanePanelState extends State<CreatePlanePanel> {
                 ),
               ],
             ),
-          ),
-        ),
-      ),
-    );
+          ));
   }
 }

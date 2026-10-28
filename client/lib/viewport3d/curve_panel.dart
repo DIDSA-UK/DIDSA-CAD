@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'keyboard_shortcuts.dart';
 import 'resizable_tool_panel.dart';
 
 /// Which of the two `CurveFeature` construction methods [CurvePanel] shows -
@@ -400,6 +401,7 @@ class _CurvePanelState extends State<CurvePanel> {
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
+                ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
                 TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
                 const SizedBox(width: 8),
                 FilledButton(

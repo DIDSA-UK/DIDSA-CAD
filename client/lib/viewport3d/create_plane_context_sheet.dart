@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import 'action_sheet.dart';
 import 'svg_icon.dart';
+import '../layout/adaptive_sheet.dart';
 
 /// C3: actions available from a tap-selected created Plane's fly-up bottom
 /// sheet - mirrors `plane_context_sheet.dart`'s [PlaneContextSheetAction]
@@ -17,8 +19,27 @@ enum CreatePlaneContextSheetAction { newSketch, delete }
 Future<CreatePlaneContextSheetAction?> showCreatePlaneContextSheet(
   BuildContext context, {
   required String featureId,
+  Offset? at,
 }) {
-  return showModalBottomSheet<CreatePlaneContextSheetAction>(
+  // Desktop input D4: a mouse right click shows the same actions as a popup
+  // at [at]; the bottom sheet below is the touch path, unchanged.
+  if (at != null) {
+    return showContextMenu<CreatePlaneContextSheetAction>(context, at: at, [
+      const ActionSheetEntry(
+        action: CreatePlaneContextSheetAction.newSketch,
+        label: 'Create Sketch on Plane',
+        leading: SvgIcon('assets/icons/feature/feature_new_sketch.svg'),
+      ),
+      ActionSheetEntry(
+        action: CreatePlaneContextSheetAction.delete,
+        label: 'Delete Plane',
+        icon: Icons.delete_outline,
+        iconColor: Theme.of(context).colorScheme.error,
+        labelColor: Theme.of(context).colorScheme.error,
+      ),
+    ]);
+  }
+  return showAdaptiveSheet<CreatePlaneContextSheetAction>(
     context: context,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(16)),

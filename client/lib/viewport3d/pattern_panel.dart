@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Pattern/Mirror scoping's Phase 4 (`docs/pattern-mirror-scope.md`
 /// §2.3/§4): Rectangular or Circular - mirrors [RevolveMode]'s own
@@ -782,6 +783,7 @@ class _PatternPanelState extends State<PatternPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(
                   onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),

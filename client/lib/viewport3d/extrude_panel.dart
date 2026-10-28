@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The "boss" or "cut" choice for an Extrude - mirrors the backend's
 /// `extrude_type` string values exactly, so call sites can pass
@@ -450,6 +451,7 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(
                   onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),

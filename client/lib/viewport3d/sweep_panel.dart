@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The "boss" or "cut" choice for a Sweep - Boss/Cut parity with
 /// Extrude/Revolve (this feature's own resolved decision) - mirrors
@@ -167,6 +168,7 @@ class _SweepPanelState extends State<SweepPanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: _canConfirm ? widget.onConfirm : null, onCancel: widget.onCancel),
               TextButton(
                   onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),

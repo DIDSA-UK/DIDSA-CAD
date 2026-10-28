@@ -8,6 +8,7 @@ import 'first_install_screen.dart';
 import 'termux_commands.dart';
 import 'termux_controller.dart';
 import 'termux_urls.dart';
+import '../layout/desktop_width.dart';
 
 /// Lets the user control an on-device standalone backend (Termux +
 /// proot-distro, see this project's own setup discussion) from inside the
@@ -155,7 +156,7 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Server Management')),
-      body: ListView(
+      body: DesktopMaxWidth(maxWidth: 720, child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           _StatusPane(checking: _checkingLiveStatus, status: _liveStatus, onRefresh: _refreshLiveStatus),
@@ -322,7 +323,7 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
               ),
             ),
         ],
-      ),
+      )),
     );
   }
 }

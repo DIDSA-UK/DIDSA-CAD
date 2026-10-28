@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The bottom-sheet-style panel [PartScreen] opens for a Planar Surface -
 /// the simplest of the Phase 1 surfacing tools (see the backend
@@ -64,6 +65,7 @@ class PlanarSurfacePanel extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: ready ? onConfirm : null, onCancel: onCancel),
               TextButton(onPressed: onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

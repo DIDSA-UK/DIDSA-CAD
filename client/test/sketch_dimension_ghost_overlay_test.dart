@@ -1,3 +1,4 @@
+import 'package:didsa_cad_client/api/dimension_label_placement.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -92,15 +93,15 @@ void main() {
     controller.enterDimensionMode();
     await controller.handleCanvasTap(10 + 4 * 0.70710678, 10 + 4 * 0.70710678);
 
-    controller.setRadialAngleOffset('diameter', 137.0);
+    controller.setLabelPlacementForTesting('diameter', DimensionLabelPlacement(angle: 137.0));
 
     final items = controller.dimensionGhostOverlayItems();
     final diameterItem = items.cast<ConstraintRadialDimensionItem>().singleWhere((i) => i.isDiameter);
 
     expect(diameterItem.defaultAngleOffsetDegrees, 137.0);
     expect(diameterItem.labelOffset, Offset.zero);
-    expect(controller.radialAngleOffsetFor('diameter'), 137.0);
-    expect(controller.radialAngleOffsetFor('radius'), isNull, reason: 'radius was never dragged');
+    expect(controller.labelPlacementFor('diameter')?.angle, 137.0);
+    expect(controller.labelPlacementFor('radius')?.angle, isNull, reason: 'radius was never dragged');
   });
 
   test(
@@ -115,16 +116,16 @@ void main() {
     for (final item in beforeItems) {
       expect(item.sketchLocalOffsetDistance, isNull);
     }
-    expect(controller.linearOffsetDistanceFor('linear'), isNull);
+    expect(controller.labelPlacementFor('linear')?.offset, isNull);
 
-    controller.setLinearOffsetDistance('linear', 2.5);
+    controller.setLabelPlacementForTesting('linear', DimensionLabelPlacement(offset: 2.5));
 
     final afterItems = controller.dimensionGhostOverlayItems().cast<ConstraintLinearDimensionItem>();
     final byOrientation = {for (final item in afterItems) item.orientation: item};
     expect(byOrientation['linear']!.sketchLocalOffsetDistance, 2.5);
     expect(byOrientation['vertical']!.sketchLocalOffsetDistance, isNull);
     expect(byOrientation['horizontal']!.sketchLocalOffsetDistance, isNull);
-    expect(controller.linearOffsetDistanceFor('linear'), 2.5);
+    expect(controller.labelPlacementFor('linear')?.offset, 2.5);
   });
 
   test('the active ghost (tapGhost) is flagged selected; its siblings are not', () async {
@@ -193,7 +194,7 @@ void main() {
         controller.dimensionGhostOverlayItems().single as ConstraintLineDistanceDimensionItem;
     expect(beforeItem.sketchLocalOffsetDistance, isNull);
 
-    controller.setLinearOffsetDistance('lineDistance', 1.75);
+    controller.setLabelPlacementForTesting('lineDistance', DimensionLabelPlacement(offset: 1.75));
 
     final afterItem =
         controller.dimensionGhostOverlayItems().single as ConstraintLineDistanceDimensionItem;

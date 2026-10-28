@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../api/document_api_client.dart';
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
+import 'action_sheet.dart';
 import 'mate_panel.dart' show mateValueSummary;
 import 'view_preferences.dart' show colorFromHex;
 import 'width_pick.dart' show isSymmetricMate, isWidthMate;
@@ -130,6 +131,10 @@ String mateDisplayName(List<MateDto> mates, int index) {
 /// Phase 3 planning.
 class AssemblyTreePanel extends StatefulWidget {
   final bool visible;
+
+  /// Desktop layout (D6): the panel fills its parent (the left pane) instead of sliding over the viewport as an
+  /// overlay - no slide, no drag handle, no rounded edge. The pane owns the width.
+  final bool docked;
   final List<OccurrenceDto> occurrences;
   final List<MateDto> mates;
 
@@ -185,6 +190,13 @@ class AssemblyTreePanel extends StatefulWidget {
   /// [patterns] itself already got in Phase 7).
   final void Function(ComponentPatternDto pattern)? onPatternTap;
   final void Function(ComponentPatternDto pattern)? onPatternLongPress;
+
+  /// Desktop input D4: a mouse right click on a row opens that row's menu
+  /// at the click (`position` is global). Not offered during a
+  /// multi-select.
+  final void Function(OccurrenceDto occurrence, Offset position)? onOccurrenceContextMenu;
+  final void Function(MateDto mate, Offset position)? onMateContextMenu;
+  final void Function(ComponentPatternDto pattern, Offset position)? onPatternContextMenu;
 
   final VoidCallback onClose;
 
@@ -252,9 +264,18 @@ class AssemblyTreePanel extends StatefulWidget {
   /// move) - shown under the parent row while the Move/Rotate gizmo is on a mated component. `null` = nothing to show.
   final String? motionSummary;
 
+  /// Parts with changes not yet written to their file, and Parts with no file
+  /// yet. An Occurrence row of such a Part, and the header row when
+  /// [parentUnsaved] / [parentNeverSaved] say so, shows a small dot.
+  final Set<String> unsavedPartIds;
+  final Set<String> neverSavedPartIds;
+  final bool parentUnsaved;
+  final bool parentNeverSaved;
+
   const AssemblyTreePanel({
     super.key,
     required this.visible,
+    this.docked = false,
     required this.occurrences,
     required this.mates,
     this.patterns = const [],
@@ -270,6 +291,9 @@ class AssemblyTreePanel extends StatefulWidget {
     this.selectedMateId,
     this.onPatternTap,
     this.onPatternLongPress,
+    this.onOccurrenceContextMenu,
+    this.onMateContextMenu,
+    this.onPatternContextMenu,
     this.focusedLabel,
     this.onExitFocus,
     this.rootLabel = 'Assembly',
@@ -279,6 +303,10 @@ class AssemblyTreePanel extends StatefulWidget {
     this.constraintStatusByOccurrenceId = const {},
     this.multiSelectHeader,
     this.motionSummary,
+    this.unsavedPartIds = const {},
+    this.neverSavedPartIds = const {},
+    this.parentUnsaved = false,
+    this.parentNeverSaved = false,
   });
 
   @override
@@ -321,7 +349,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final totalWidth = constraints.maxWidth;
-        final panelWidth = (_effectiveWidthFraction(context) * totalWidth).clamp(
+        final panelWidth = widget.docked ? totalWidth : (_effectiveWidthFraction(context) * totalWidth).clamp(
           _minWidthFraction * totalWidth,
           _maxWidthFraction * totalWidth,
         );
@@ -329,24 +357,30 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           alignment: Alignment.topLeft,
           child: ClipRect(
             child: AnimatedSlide(
-              offset: widget.visible ? Offset.zero : const Offset(-1.05, 0),
+              offset: widget.visible || widget.docked ? Offset.zero : const Offset(-1.05, 0),
               duration: const Duration(milliseconds: 200),
               curve: Curves.easeOut,
               child: SafeArea(
+                top: !widget.docked,
+                bottom: !widget.docked,
+                left: !widget.docked,
+                right: !widget.docked,
                 child: SizedBox(
-                  width: panelWidth + _handleOverhang,
+                  width: panelWidth + (widget.docked ? 0 : _handleOverhang),
                   height: double.infinity,
                   child: Stack(
                     clipBehavior: Clip.none,
                     children: [
                       Padding(
-                        padding: const EdgeInsets.only(right: _handleOverhang),
+                        padding: EdgeInsets.only(right: widget.docked ? 0 : _handleOverhang),
                         child: Material(
-                        elevation: 2,
-                        borderRadius: const BorderRadius.only(
-                          topRight: Radius.circular(12),
-                          bottomRight: Radius.circular(12),
-                        ),
+                        elevation: widget.docked ? 0 : 2,
+                        borderRadius: widget.docked
+                            ? null
+                            : const BorderRadius.only(
+                                topRight: Radius.circular(12),
+                                bottomRight: Radius.circular(12),
+                              ),
                         child: Builder(
                           builder: (context) {
                             // Phase 3b lens theming (`docs/assembly-
@@ -397,11 +431,12 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                                           ),
                                         ),
                                       ),
-                                      IconButton(
-                                        tooltip: 'Close',
-                                        icon: Icon(Icons.close, size: 20, color: onHeaderColor),
-                                        onPressed: widget.onClose,
-                                      ),
+                                      if (!widget.docked)
+                                        IconButton(
+                                          tooltip: 'Close',
+                                          icon: Icon(Icons.close, size: 20, color: onHeaderColor),
+                                          onPressed: widget.onClose,
+                                        ),
                                     ],
                                   ),
                                 ),
@@ -443,7 +478,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                         ),
                       ),
                       ),
-                      Positioned(top: 0, bottom: 0, right: 0, child: _buildDragHandle(totalWidth)),
+                      if (!widget.docked) Positioned(top: 0, bottom: 0, right: 0, child: _buildDragHandle(totalWidth)),
                     ],
                   ),
                 ),
@@ -496,6 +531,8 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
                   style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                 ),
               ),
+              if (widget.parentUnsaved || widget.parentNeverSaved)
+                _buildUnsavedDot(context, neverSaved: widget.parentNeverSaved),
             ],
           ),
         ),
@@ -619,6 +656,28 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     );
   }
 
+  /// The "needs saving" marker: a filled dot for changes since the last
+  /// Save, a hollow one for a Part that has no file yet.
+  Widget _buildUnsavedDot(BuildContext context, {required bool neverSaved}) {
+    final colour = Theme.of(context).colorScheme.tertiary;
+    return Tooltip(
+      message: neverSaved ? 'Not saved yet' : 'Unsaved changes',
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 6),
+        child: Container(
+          key: Key(neverSaved ? 'unsaved-dot-new' : 'unsaved-dot'),
+          width: 9,
+          height: 9,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: neverSaved ? null : colour,
+            border: Border.all(color: colour, width: 1.5),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildOccurrenceTile(BuildContext context, int index) {
     final occurrence = widget.occurrences[index];
     final selected = occurrence.id == widget.selectedOccurrenceId;
@@ -633,100 +692,107 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     final multiSelected = multiSelectMode && widget.selectedMultiSelectIds.contains(occurrence.id);
     return Opacity(
       opacity: occurrence.hidden ? 0.5 : 1.0,
-      child: ListTile(
-        dense: true,
-        visualDensity: VisualDensity.compact,
-        selected: multiSelectMode ? multiSelected : selected,
-        leading: const Icon(Icons.view_in_ar_outlined, size: 24),
-        title: Text(
-          occurrenceDisplayName(widget.occurrences, index),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _rowTitleStyle,
-        ),
-        subtitle: unresolved
-            ? Text(
-                'Missing file',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: _rowSubtitleStyle.merge(const TextStyle(color: Colors.red)),
-              )
-            : occurrence.suppressed
-                ? const Text('Suppressed', maxLines: 1, overflow: TextOverflow.ellipsis, style: _rowSubtitleStyle)
-                : null,
-        // Bug fix (assembly testing): a narrow panel could push this Row of
-        // up to 4 fixed-size badges past `ListTile`'s own `trailing` width
-        // (laid out against the *whole tile width*, not just leftover
-        // space) and throw a RenderFlex overflow. `FittedBox` scales the
-        // whole badge cluster down as a unit instead of overflowing, rather
-        // than dropping badges or clipping the hide/show tap target.
-        trailing: FittedBox(
-          fit: BoxFit.scaleDown,
-          alignment: Alignment.centerRight,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (unresolved)
-                // Bug fix (assembly testing: "if the software cannot find
-                // the file, it should ask for its location") - was a
-                // plain, inert `Icon` before; now a tap target that opens a
-                // file picker to re-link the missing reference, same "still
-                // visible, but now actionable" upgrade the hide/show icon
-                // right below already got (see its own doc comment).
+      child: MouseContextMenuRegion(
+        onOpen: widget.isMultiSelectMode || widget.onOccurrenceContextMenu == null ? null : (at) => widget.onOccurrenceContextMenu!(occurrence, at),
+        child: ListTile(
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          selected: multiSelectMode ? multiSelected : selected,
+          leading: const Icon(Icons.view_in_ar_outlined, size: 24),
+          title: Text(
+            occurrenceDisplayName(widget.occurrences, index),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _rowTitleStyle,
+          ),
+          subtitle: unresolved
+              ? Text(
+                  'Missing file',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _rowSubtitleStyle.merge(const TextStyle(color: Colors.red)),
+                )
+              : occurrence.suppressed
+                  ? const Text('Suppressed', maxLines: 1, overflow: TextOverflow.ellipsis, style: _rowSubtitleStyle)
+                  : null,
+          // Bug fix (assembly testing): a narrow panel could push this Row of
+          // up to 4 fixed-size badges past `ListTile`'s own `trailing` width
+          // (laid out against the *whole tile width*, not just leftover
+          // space) and throw a RenderFlex overflow. `FittedBox` scales the
+          // whole badge cluster down as a unit instead of overflowing, rather
+          // than dropping badges or clipping the hide/show tap target.
+          trailing: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerRight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (unresolved)
+                  // Bug fix (assembly testing: "if the software cannot find
+                  // the file, it should ask for its location") - was a
+                  // plain, inert `Icon` before; now a tap target that opens a
+                  // file picker to re-link the missing reference, same "still
+                  // visible, but now actionable" upgrade the hide/show icon
+                  // right below already got (see its own doc comment).
+                  IconButton(
+                    tooltip: 'Locate missing file',
+                    icon: const Icon(Icons.link_off, size: 18, color: Colors.red),
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                    onPressed: widget.onLocateMissingFile == null || multiSelectMode
+                        ? null
+                        : () => widget.onLocateMissingFile!(occurrence),
+                  ),
+                // Assembly testing bug fix: same "still visible, clearly
+                // flagged" trailing-icon convention the `hidden`/`unresolved`
+                // icons right alongside it already use - a `fixed` Occurrence's
+                // own row now shows at a glance which component the Move/Rotate
+                // gizmo won't target (`component_context_menu.dart`'s Fix/Float
+                // entry is the only way to change it).
+                _buildConstraintBadge(context, occurrence),
+                // Bug report (assembly testing): the colour disc - see
+                // [_buildColorDisc]'s own doc comment.
+                _buildColorDisc(context, occurrence, enabled: !multiSelectMode),
+                // Bug report (assembly testing): was a plain read-only
+                // `Icons.visibility_off` icon, shown only while hidden - now an
+                // always-visible toggle (mirrors `component_context_menu.dart`'s
+                // Hide/Show entry's own icon pair, reachable directly from the
+                // row instead of only via long-press), so both hiding *and*
+                // showing a component again are one tap away without opening
+                // that menu.
                 IconButton(
-                  tooltip: 'Locate missing file',
-                  icon: const Icon(Icons.link_off, size: 18, color: Colors.red),
+                  tooltip: occurrence.hidden ? 'Show' : 'Hide',
+                  icon: Icon(
+                    occurrence.hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                    size: 18,
+                  ),
                   visualDensity: VisualDensity.compact,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                  onPressed: widget.onLocateMissingFile == null || multiSelectMode
+                  onPressed: widget.onOccurrenceVisibilityToggle == null || multiSelectMode
                       ? null
-                      : () => widget.onLocateMissingFile!(occurrence),
+                      : () => widget.onOccurrenceVisibilityToggle!(occurrence),
                 ),
-              // Assembly testing bug fix: same "still visible, clearly
-              // flagged" trailing-icon convention the `hidden`/`unresolved`
-              // icons right alongside it already use - a `fixed` Occurrence's
-              // own row now shows at a glance which component the Move/Rotate
-              // gizmo won't target (`component_context_menu.dart`'s Fix/Float
-              // entry is the only way to change it).
-              _buildConstraintBadge(context, occurrence),
-              // Bug report (assembly testing): the colour disc - see
-              // [_buildColorDisc]'s own doc comment.
-              _buildColorDisc(context, occurrence, enabled: !multiSelectMode),
-              // Bug report (assembly testing): was a plain read-only
-              // `Icons.visibility_off` icon, shown only while hidden - now an
-              // always-visible toggle (mirrors `component_context_menu.dart`'s
-              // Hide/Show entry's own icon pair, reachable directly from the
-              // row instead of only via long-press), so both hiding *and*
-              // showing a component again are one tap away without opening
-              // that menu.
-              IconButton(
-                tooltip: occurrence.hidden ? 'Show' : 'Hide',
-                icon: Icon(
-                  occurrence.hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
-                  size: 18,
-                ),
-                visualDensity: VisualDensity.compact,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                onPressed: widget.onOccurrenceVisibilityToggle == null || multiSelectMode
-                    ? null
-                    : () => widget.onOccurrenceVisibilityToggle!(occurrence),
-              ),
-              if (multiSelectMode)
-                Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Icon(multiSelected ? Icons.check_circle : Icons.radio_button_unchecked, size: 18),
-                ),
-            ],
+                if (occurrence.resolvedPartId != null &&
+                    (widget.unsavedPartIds.contains(occurrence.resolvedPartId) ||
+                        widget.neverSavedPartIds.contains(occurrence.resolvedPartId)))
+                  _buildUnsavedDot(context, neverSaved: widget.neverSavedPartIds.contains(occurrence.resolvedPartId)),
+                if (multiSelectMode)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Icon(multiSelected ? Icons.check_circle : Icons.radio_button_unchecked, size: 18),
+                  ),
+              ],
+            ),
           ),
-        ),
-        onTap: multiSelectMode
-            ? () => widget.onMultiSelectToggle?.call(occurrence.id)
-            : () => widget.onOccurrenceTap(occurrence),
-        onLongPress: multiSelectMode
-            ? () => widget.onMultiSelectToggle?.call(occurrence.id)
-            : () => widget.onOccurrenceLongPress(occurrence),
+          onTap: multiSelectMode
+              ? () => widget.onMultiSelectToggle?.call(occurrence.id)
+              : () => widget.onOccurrenceTap(occurrence),
+          onLongPress: multiSelectMode
+              ? () => widget.onMultiSelectToggle?.call(occurrence.id)
+              : () => widget.onOccurrenceLongPress(occurrence),
+      ),
       ),
     );
   }
@@ -783,22 +849,25 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     final mate = widget.mates[index];
     return Opacity(
       opacity: mate.suppressed ? 0.5 : 1.0,
-      child: ListTile(
-        dense: true,
-        visualDensity: VisualDensity.compact,
-        selected: mate.id == widget.selectedMateId,
-        leading: const Icon(Icons.link, size: 24),
-        title: Text(
-          mateDisplayName(widget.mates, index),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _rowTitleStyle,
-        ),
-        subtitle: mateValueSummary(mate) == null ? null : Text(mateValueSummary(mate)!, maxLines: 1, overflow: TextOverflow.ellipsis),
-        trailing: mate.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
-        onTap: widget.onMateTap == null || widget.isMultiSelectMode ? null : () => widget.onMateTap!(mate),
-        onLongPress:
-            widget.onMateLongPress == null || widget.isMultiSelectMode ? null : () => widget.onMateLongPress!(mate),
+      child: MouseContextMenuRegion(
+        onOpen: widget.isMultiSelectMode || widget.onMateContextMenu == null ? null : (at) => widget.onMateContextMenu!(mate, at),
+        child: ListTile(
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          selected: mate.id == widget.selectedMateId,
+          leading: const Icon(Icons.link, size: 24),
+          title: Text(
+            mateDisplayName(widget.mates, index),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _rowTitleStyle,
+          ),
+          subtitle: mateValueSummary(mate) == null ? null : Text(mateValueSummary(mate)!, maxLines: 1, overflow: TextOverflow.ellipsis),
+          trailing: mate.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
+          onTap: widget.onMateTap == null || widget.isMultiSelectMode ? null : () => widget.onMateTap!(mate),
+          onLongPress:
+              widget.onMateLongPress == null || widget.isMultiSelectMode ? null : () => widget.onMateLongPress!(mate),
+      ),
       ),
     );
   }
@@ -826,27 +895,30 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
     final pattern = widget.patterns[index];
     return Opacity(
       opacity: pattern.suppressed ? 0.5 : 1.0,
-      child: ListTile(
-        dense: true,
-        visualDensity: VisualDensity.compact,
-        leading: const Icon(Icons.grid_view_outlined, size: 24),
-        title: Text(
-          componentPatternDisplayName(widget.patterns, index),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _rowTitleStyle,
-        ),
-        subtitle: Text(
-          componentPatternSummary(pattern),
-          maxLines: 1,
-          overflow: TextOverflow.ellipsis,
-          style: _rowSubtitleStyle,
-        ),
-        trailing: pattern.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
-        onTap: widget.onPatternTap == null || widget.isMultiSelectMode ? null : () => widget.onPatternTap!(pattern),
-        onLongPress: widget.onPatternLongPress == null || widget.isMultiSelectMode
-            ? null
-            : () => widget.onPatternLongPress!(pattern),
+      child: MouseContextMenuRegion(
+        onOpen: widget.isMultiSelectMode || widget.onPatternContextMenu == null ? null : (at) => widget.onPatternContextMenu!(pattern, at),
+        child: ListTile(
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          leading: const Icon(Icons.grid_view_outlined, size: 24),
+          title: Text(
+            componentPatternDisplayName(widget.patterns, index),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _rowTitleStyle,
+          ),
+          subtitle: Text(
+            componentPatternSummary(pattern),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _rowSubtitleStyle,
+          ),
+          trailing: pattern.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
+          onTap: widget.onPatternTap == null || widget.isMultiSelectMode ? null : () => widget.onPatternTap!(pattern),
+          onLongPress: widget.onPatternLongPress == null || widget.isMultiSelectMode
+              ? null
+              : () => widget.onPatternLongPress!(pattern),
+      ),
       ),
     );
   }

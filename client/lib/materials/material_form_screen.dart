@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'material.dart';
 import 'material_store.dart';
+import '../layout/desktop_width.dart';
 
 /// Add/edit form for one [CadMaterial] - shared by the Materials Manager's own
 /// "+ Add Material"/edit actions and the material picker sheet's "+ Add new
@@ -106,7 +107,7 @@ class _MaterialFormScreenState extends State<MaterialFormScreen> {
     final isEdit = widget.existing != null;
     return Scaffold(
       appBar: AppBar(title: Text(isEdit ? 'Edit Material' : 'Add Material')),
-      body: Form(
+      body: DesktopMaxWidth(maxWidth: 640, child: Form(
         key: _formKey,
         child: ListView(
           padding: const EdgeInsets.all(16),
@@ -143,7 +144,7 @@ class _MaterialFormScreenState extends State<MaterialFormScreen> {
             FilledButton(onPressed: _save, child: Text(isEdit ? 'Save Changes' : 'Add Material')),
           ],
         ),
-      ),
+      )),
     );
   }
 }

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'loft_guides.dart';
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// The bottom-sheet-style panel [PartScreen] opens for a Loft Surface -
 /// mirrors [LoftPanel] exactly, minus the Boss/Cut segmented control,
@@ -217,6 +218,7 @@ class _LoftSurfacePanelState extends State<LoftSurfacePanel> {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: widget.onConfirm, onCancel: widget.onCancel),
               TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

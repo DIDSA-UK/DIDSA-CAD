@@ -24,11 +24,19 @@ import '../api/sketch_api_client.dart'
         TextContourDto,
         TextDto;
 import '../didsa_logo_button.dart';
+import '../layout/adaptive_sheet.dart';
+import '../layout/layout_mode.dart';
+import '../viewport3d/desktop_chrome.dart';
 import '../viewport3d/part_viewport.dart';
+import '../viewport3d/keyboard_shortcuts.dart';
+import '../viewport3d/controls_preferences.dart';
+import '../viewport3d/controls_settings_screen.dart';
+import '../viewport3d/mouse_navigation.dart' show SelectClick;
+import '../viewport3d/view_cube.dart' show showViewCube;
 import '../viewport3d/reference_planes.dart';
 import '../viewport3d/render_mode.dart';
 import '../viewport3d/selection_filter.dart' show SelectionFilterState;
-import '../viewport3d/selection_hit_test.dart' show SelectionEntityKind, SelectionEntityRef, kSketchMidpointIdPrefix;
+import '../viewport3d/selection_hit_test.dart' show HoverHit, SelectionEntityKind, SelectionEntityRef, kSketchMidpointIdPrefix;
 import '../viewport3d/sketch_geometry_3d.dart';
 import '../viewport3d/svg_icon.dart';
 import '../viewport3d/view_prefs_sheets.dart';
@@ -40,6 +48,7 @@ import 'sketch_convert_bar.dart';
 import 'sketch_dimension_bar.dart';
 import 'sketch_offset_bar.dart';
 import 'sketch_pattern_bar.dart';
+import 'sketch_context_menu.dart';
 import 'sketch_ribbon.dart';
 import 'sketch_speed_dial.dart';
 import 'sketch_text_bar.dart';
@@ -523,6 +532,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// time [_buildBaseLayer] first reads it.
   Future<void> _loadInitialOrbitViewPreference() async {
     await ViewPreferences.load();
+    await ControlsPreferences.load();
     if (!mounted || _orbitViewActive || widget.standalone) return;
     if (_effectiveOrbitBasis != null) {
       _enterOrbitView();
@@ -553,10 +563,216 @@ class _SketchScreenState extends State<SketchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Desktop input D3: the keyboard shortcuts, and the open sketch bar's
+    // Enter / Esc (see [ToolPanelKeys]).
+    return CadShortcutScope(
+      bindings: () => _shortcutBindings,
+      child: ToolPanelKeyScope(registry: _toolPanelKeys, child: _buildScaffold(context)),
+    );
+  }
+
+  /// Desktop input D3: the open sketch bars' Enter / Esc targets.
+  final ToolPanelKeyRegistry _toolPanelKeys = ToolPanelKeyRegistry();
+
+  /// Desktop input D3: lets F zoom the flat 2D canvas to fit.
+  final GlobalKey<SketchCanvasState> _canvasKey = GlobalKey<SketchCanvasState>();
+
+  /// Desktop input D3 (`docs/desktop-input-scope.md` R3): this screen's
+  /// shortcuts - the sketch tools, Esc / Enter / Delete / Ctrl+Z / Ctrl+A,
+  /// F, and (in Orbit View, the 3D view) the view keys. A null entry is a
+  /// shortcut that does nothing right now (the key is left alone).
+  Map<CadShortcut, VoidCallback?> get _shortcutBindings {
+    final controller = _controller;
+    final orbit = _orbitViewActive ? _orbitViewportKey.currentState : null;
+    final idle = !controller.busy;
+    VoidCallback? view(StandardView standardView) =>
+        orbit == null ? null : () => unawaited(orbit.animateToStandardView(standardView));
+    VoidCallback? onOrbit(void Function(PartViewportState viewport) action) =>
+        orbit == null ? null : () => action(orbit);
+    VoidCallback? tool(SketchTool sketchTool) => idle ? () => controller.selectDrawTool(sketchTool) : null;
+    return {
+      CadShortcut.cancel: _onEscapeKey,
+      CadShortcut.confirm: _toolPanelKeys.confirm ?? (controller.mode == SketchMode.draw ? controller.finishChain : null),
+      CadShortcut.delete: controller.mode == SketchMode.select ? sketchDeleteAction(context, controller) : null,
+      CadShortcut.undo: idle && controller.canUndo ? () => unawaited(controller.undo()) : null,
+      CadShortcut.selectAll: idle ? controller.selectAll : null,
+      CadShortcut.zoomToFit: orbit?.zoomToFit ?? _canvasKey.currentState?.zoomToFit,
+      CadShortcut.viewFront: view(StandardView.front),
+      CadShortcut.viewBack: view(StandardView.back),
+      CadShortcut.viewLeft: view(StandardView.left),
+      CadShortcut.viewRight: view(StandardView.right),
+      CadShortcut.viewTop: view(StandardView.top),
+      CadShortcut.viewBottom: view(StandardView.bottom),
+      CadShortcut.viewIsometric: view(StandardView.isometric),
+      CadShortcut.viewCube: orbit == null ? null : () => unawaited(_showViewCube(orbit)),
+      CadShortcut.zoomIn: onOrbit((viewport) => viewport.zoomByStep(1 / kKeyboardZoomStep)),
+      CadShortcut.zoomOut: onOrbit((viewport) => viewport.zoomByStep(kKeyboardZoomStep)),
+      CadShortcut.rotateLeft: onOrbit((viewport) => viewport.orbitByDegrees(-kKeyboardOrbitDegrees, 0)),
+      CadShortcut.rotateRight: onOrbit((viewport) => viewport.orbitByDegrees(kKeyboardOrbitDegrees, 0)),
+      CadShortcut.rotateUp: onOrbit((viewport) => viewport.orbitByDegrees(0, -kKeyboardOrbitDegrees)),
+      CadShortcut.rotateDown: onOrbit((viewport) => viewport.orbitByDegrees(0, kKeyboardOrbitDegrees)),
+      CadShortcut.panLeft: onOrbit((viewport) => viewport.panByPixels(-kKeyboardPanPixels, 0)),
+      CadShortcut.panRight: onOrbit((viewport) => viewport.panByPixels(kKeyboardPanPixels, 0)),
+      CadShortcut.panUp: onOrbit((viewport) => viewport.panByPixels(0, -kKeyboardPanPixels)),
+      CadShortcut.panDown: onOrbit((viewport) => viewport.panByPixels(0, kKeyboardPanPixels)),
+      CadShortcut.sketchLine: tool(SketchTool.line),
+      CadShortcut.sketchCircle: tool(SketchTool.circle),
+      CadShortcut.sketchArc: tool(SketchTool.arc),
+      CadShortcut.sketchRectangle: tool(SketchTool.rectangle),
+      CadShortcut.sketchDimension: idle ? controller.enterDimensionMode : null,
+      CadShortcut.sketchTrim: idle ? controller.enterTrimMode : null,
+      CadShortcut.sketchConstruction:
+          idle && controller.selectionSet.isNotEmpty ? () => unawaited(controller.toggleSelectedConstruction()) : null,
+      CadShortcut.help: () => unawaited(showCadShortcutSheet(context, _shortcutBindings.keys)),
+    };
+  }
+
+  /// Desktop input D5 (Space): the view cube over Orbit View, opened under the cursor.
+  Future<void> _showViewCube(PartViewportState viewport) => showViewCube(
+        context,
+        anchor: viewport.viewCubeAnchor(),
+        basis: viewport.viewCubeBasis(),
+        onPick: (target) => unawaited(viewport.animateToViewCubeTarget(target)),
+      );
+
+  /// Esc: the open sketch bar's Cancel; else the dimension value being
+  /// typed; else back to Select from any tool; else clear the selection.
+  /// Never leaves the sketch (the Exit Sketch button does that).
+  void _onEscapeKey() {
+    final cancelPanel = _toolPanelKeys.cancel;
+    if (cancelPanel != null) {
+      cancelPanel();
+      return;
+    }
+    final controller = _controller;
+    if (controller.activeGhostKey != null) {
+      controller.cancelGhostEdit();
+    } else if (controller.mode != SketchMode.select) {
+      controller.exitToSelectMode();
+    } else if (controller.selectionSet.isNotEmpty) {
+      controller.closeRibbon();
+    }
+  }
+
+  bool get _desktopLayout => LayoutModeScope.isDesktop(context);
+
+  /// Desktop layout (D6): the draw and edit tools as a ribbon under the app bar, in place of the speed dial. Each
+  /// button calls what the speed dial's entry calls.
+  Widget _buildDesktopSketchRibbon(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final controller = _controller;
+        final idle = !controller.busy;
+        RibbonCommand draw(String label, SketchTool tool, String svg) => RibbonCommand(
+              label: label,
+              svg: 'assets/icons/sketch_tools/$svg.svg',
+              selected: controller.mode == SketchMode.draw && controller.activeTool == tool,
+              onPressed: idle ? () => controller.selectDrawTool(tool) : null,
+            );
+        RibbonCommand mode(String label, String svg, SketchMode sketchMode, VoidCallback enter) => RibbonCommand(
+              label: label,
+              svg: svg,
+              selected: controller.mode == sketchMode,
+              onPressed: idle ? enter : null,
+            );
+        final tabs = [
+          RibbonTabData(
+            id: 'sketch',
+            label: 'Sketch',
+            groups: [
+              RibbonGroup([
+                draw('Line', SketchTool.line, 'sketch_tool_line'),
+                draw('Circle', SketchTool.circle, 'sketch_tool_circle'),
+                draw('Arc', SketchTool.arc, 'sketch_tool_arc'),
+                draw('Rectangle', SketchTool.rectangle, 'sketch_tool_rectangle'),
+                draw('Polygon', SketchTool.polygon, 'sketch_tool_polygon'),
+                draw('Slot', SketchTool.slot, 'sketch_tool_slot'),
+                draw('Ellipse', SketchTool.ellipse, 'sketch_tool_ellipse'),
+                draw('Ellipse Arc', SketchTool.ellipseArc, 'sketch_tool_ellipse_arc'),
+                draw('Spline', SketchTool.spline, 'sketch_tool_spline'),
+                draw('Point', SketchTool.point, 'sketch_tool_point'),
+                draw('Text', SketchTool.text, 'sketch_tool_text'),
+              ]),
+              RibbonGroup([
+                mode('Dimension', 'assets/icons/actions/action_dimensions.svg', SketchMode.dimension, controller.enterDimensionMode),
+                mode('Trim', 'assets/icons/actions/action_trim.svg', SketchMode.trim, controller.enterTrimMode),
+                mode('Convert', 'assets/icons/actions/action_convert_entities.svg', SketchMode.convert, controller.enterConvertEntitiesMode),
+                mode('Offset', 'assets/icons/ribbon/ribbon_offset.svg', SketchMode.offset, controller.enterOffsetMode),
+                mode('Pattern', 'assets/icons/feature/feature_pattern.svg', SketchMode.pattern, controller.enterPatternMode),
+              ]),
+              RibbonGroup([
+                RibbonCommand(
+                  label: 'Construct',
+                  icon: Icons.format_line_spacing,
+                  tooltip: 'Make the selection construction geometry (or back)',
+                  onPressed: idle && controller.selectionSet.isNotEmpty
+                      ? () => unawaited(controller.toggleSelectedConstruction())
+                      : null,
+                ),
+                // A mouse drags by pressing on an entity and moving; the toggle is for a touch.
+                if (!LayoutModeScope.mouseActiveOf(context))
+                RibbonCommand(
+                  label: 'Drag',
+                  svg: 'assets/icons/sketchbar/sketchbar_drag_mode.svg',
+                  tooltip: 'Drag mode: move entities by dragging them',
+                  selected: controller.dragModeEnabled,
+                  onPressed: controller.mode == SketchMode.select ? controller.toggleDragMode : null,
+                ),
+                RibbonCommand(
+                  label: 'Inference',
+                  icon: controller.inferenceSuppressed ? Icons.link_off : Icons.link,
+                  tooltip: controller.inferenceSuppressed
+                      ? 'Auto-inference off - click to re-enable'
+                      : 'Auto-inference on - click to suppress for this tool',
+                  selected: !controller.inferenceSuppressed,
+                  onPressed: controller.mode == SketchMode.draw ? controller.toggleInferenceSuppressed : null,
+                ),
+              ]),
+            ],
+          ),
+        ];
+        return DesktopRibbon(tabs: tabs, selectedId: 'sketch', onSelect: (_) {}, showTabStrip: false);
+      },
+    );
+  }
+
+  /// The status bar: the tool in use and whether the sketch is fully constrained.
+  Widget _buildDesktopSketchStatusBar() {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final controller = _controller;
+        final tool = switch (controller.mode) {
+          SketchMode.select => 'Select',
+          SketchMode.draw => 'Draw: ${controller.activeTool.name}',
+          SketchMode.dimension => 'Dimension',
+          SketchMode.trim => 'Trim / Extend',
+          SketchMode.convert => 'Convert entities',
+          SketchMode.offset => 'Offset',
+          SketchMode.pattern => 'Pattern / Mirror',
+        };
+        final selected = controller.selectionSet.length;
+        return DesktopStatusBar(
+          left: [
+            selected == 0 ? tool : '$tool   |   $selected selected',
+            if (controller.busy) 'Working…',
+          ],
+          right: [
+            if (controller.hasGeometry) (controller.isUnderConstrained ? 'Under-constrained' : 'Fully constrained'),
+            _orbitViewActive ? '3D view' : '2D view',
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildScaffold(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: const DidsaLogoButton(),
-        leadingWidth: 100,
+        toolbarHeight: _desktopLayout ? kDesktopBarHeight : null,
+        leading: DidsaLogoButton(height: _desktopLayout ? 24 : 32),
+        leadingWidth: _desktopLayout ? 84 : 100,
         centerTitle: false,
         title: Row(
           mainAxisSize: MainAxisSize.min,
@@ -608,6 +824,13 @@ class _SketchScreenState extends State<SketchScreen> {
           ],
         ),
         actions: [
+          if (_desktopLayout && !widget.standalone)
+            TextButton.icon(
+              key: const ValueKey('desktop-exit-sketch'),
+              onPressed: () => Navigator.of(context).pop(),
+              icon: const Icon(Icons.logout, size: 18),
+              label: const Text('Exit Sketch'),
+            ),
           // On-device feedback ("there are occasions when the sketch is
           // wrong and the next draw causes it to solve correctly... add a
           // Re-solve button"): placed left of Undo per that same feedback.
@@ -646,7 +869,7 @@ class _SketchScreenState extends State<SketchScreen> {
                   BlendMode.srcIn,
                 ),
               ),
-              tooltip: 'Undo',
+              tooltip: withShortcut('Undo', CadShortcut.undo),
               onPressed: _controller.canUndo ? _controller.undo : null,
             ),
           ),
@@ -667,7 +890,7 @@ class _SketchScreenState extends State<SketchScreen> {
                     BlendMode.srcIn,
                   ),
                 ),
-                tooltip: 'Select all',
+                tooltip: withShortcut('Select all', CadShortcut.selectAll),
                 onPressed: _controller.selectAll,
               );
             },
@@ -693,6 +916,7 @@ class _SketchScreenState extends State<SketchScreen> {
               },
             ),
             _ReferenceHealthBanner(controller: _controller),
+            if (_desktopLayout) _buildDesktopSketchRibbon(context),
             Expanded(
               child: Stack(
                 children: [
@@ -733,7 +957,7 @@ class _SketchScreenState extends State<SketchScreen> {
                           // (`_buildStandaloneFileMenu`) is the only exit
                           // path there, since a bare `.pop()` here would have
                           // nothing left on the stack to return to.
-                          if (!widget.standalone)
+                          if (!widget.standalone && !_desktopLayout)
                             FloatingActionButton.small(
                               heroTag: 'exit-sketch-fab',
                               tooltip: 'Exit Sketch',
@@ -931,7 +1155,7 @@ class _SketchScreenState extends State<SketchScreen> {
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        if (_controller.textBarTextId != null) return const SizedBox.shrink();
+                        if (_controller.textBarTextId != null || _desktopLayout) return const SizedBox.shrink();
                         return SketchSpeedDial(controller: _controller, restrictToEmbeddedTools: _orbitViewActive);
                       },
                     ),
@@ -978,7 +1202,8 @@ class _SketchScreenState extends State<SketchScreen> {
                         // already-on drag mode from before opening the
                         // bar is unaffected; toggling it on fresh
                         // requires closing the bar first.
-                        if (_controller.mode != SketchMode.select ||
+                        if (_desktopLayout ||
+                            _controller.mode != SketchMode.select ||
                             (_orbitViewActive && !_orbitCursorActive) ||
                             _controller.textBarTextId != null) {
                           return const SizedBox.shrink();
@@ -1032,7 +1257,7 @@ class _SketchScreenState extends State<SketchScreen> {
                     child: AnimatedBuilder(
                       animation: _controller,
                       builder: (context, _) {
-                        if (_controller.mode != SketchMode.draw) {
+                        if (_desktopLayout || _controller.mode != SketchMode.draw) {
                           return const SizedBox.shrink();
                         }
                         final suppressed = _controller.inferenceSuppressed;
@@ -1195,6 +1420,7 @@ class _SketchScreenState extends State<SketchScreen> {
                 ],
               ),
             ),
+            if (_desktopLayout) _buildDesktopSketchStatusBar(),
           ],
         ),
       ),
@@ -1351,17 +1577,10 @@ class _SketchScreenState extends State<SketchScreen> {
         preferConstraintOverlayHitOnCommit:
             _controller.mode == SketchMode.dimension || _dragModeActiveInOrbitView,
         onConstraintOverlayItemTap: _handleEmbeddedConstraintOverlayTap,
-        isDraggingConstraintLabel: _controller.draggingLabelId != null,
+        isDraggingConstraintLabel:
+            _controller.draggingLabelId != null && !_controller.labelUsesPlacement(_controller.draggingLabelId!),
         onConstraintLabelDragDelta: _controller.updateLabelDrag,
-        draggingConstraintLabelId: _controller.draggingLabelId,
-        onRadialLabelAngleDragged: _handleEmbeddedRadialLabelAngleDragged,
-        onRadialLabelDistanceDragged: _handleEmbeddedRadialLabelDistanceDragged,
-        onLinearLabelOffsetDragged: _handleEmbeddedLinearLabelOffsetDragged,
-        onLinearLabelAlongDragged: _handleEmbeddedLinearLabelAlongDragged,
-        onLineDistanceLabelOffsetDragged: _handleEmbeddedLineDistanceLabelOffsetDragged,
-        onLineDistanceLabelAlongDragged: _handleEmbeddedLineDistanceLabelAlongDragged,
-        onAngleLabelRadiusDragged: _handleEmbeddedAngleLabelRadiusDragged,
-        onAngleLabelAlongDragged: _handleEmbeddedAngleLabelAlongDragged,
+        onSketchLabelGrabStart: _handleEmbeddedLabelGrabStart,
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
@@ -1410,15 +1629,28 @@ class _SketchScreenState extends State<SketchScreen> {
         selectionFilter: _embeddedCursorModeFilter,
         selectedEntities: _embeddedSelectedEntities,
         onSelectionToggle: _handleEmbeddedSelectionToggle,
+        // Desktop input D2: the click rule for the pick that follows (see
+        // SketchController.selectClick).
+        onSelectClick: (click) => _controller.selectClick = click,
+        // Desktop input D4: a right click without a drag.
+        onContextMenuRequested: (hit, at) => unawaited(_onOrbitContextMenu(hit, at)),
+        // Desktop input D5: a middle click ends the chain being drawn, as Enter does.
+        onMouseMiddleClick: () {
+          if (_controller.mode == SketchMode.draw) _controller.finishChain();
+        },
         onClearSelection: _controller.closeRibbon,
         // P25 (2D-sketcher feature parity): feeds straight into
         // SketchController.selectInRect - the exact same method
         // sketch_canvas.dart's own marquee already uses.
         onMarqueeSelect: _controller.selectInRect,
+        onSketchGrabStart: _handleEmbeddedGrabStart,
+        onSketchGrabUpdate: _handleEmbeddedGrabUpdate,
+        onSketchGrabEnd: _handleEmbeddedGrabEnd,
         initialViewBasis: orbitBasis,
       );
     }
     return SketchCanvas(
+      key: _canvasKey,
       controller: _controller,
       referenceGhostSegments: widget.referenceGhostSegments,
       referenceGhostVertices: widget.referenceGhostVertices,
@@ -1426,8 +1658,55 @@ class _SketchScreenState extends State<SketchScreen> {
       referenceBodyHidden: _referenceBodyHidden,
       constraintLabelsVisible: _constraintLabelsVisible,
       canvasColor: _canvasColor,
+      // Desktop input D4: a right click opens the entity or canvas menu.
+      onContextMenuRequested: (hit, at) => unawaited(
+        hit == null
+            ? showSketchBackgroundContextMenu(context, _controller, at: at, onZoomToFit: _canvasKey.currentState?.zoomToFit)
+            : showSketchEntityContextMenu(context, _controller, at: at),
+      ),
     );
   }
+
+  /// Desktop input D4: a right click in Orbit View (the 3D view). A sketch
+  /// entity under it is selected by the same rule as in the 2D canvas (a
+  /// click replaces unless it is already selected) and gets the entity menu;
+  /// anything else gets the empty-canvas menu with the 3D view's own fit.
+  Future<void> _onOrbitContextMenu(HoverHit? hit, Offset at) async {
+    final entity = hit?.entity;
+    if (entity != null && _isSketchEntityKind(entity.kind)) {
+      if (!_embeddedSelectedEntities.contains(entity)) {
+        final savedClick = _controller.selectClick;
+        _controller.selectClick = SelectClick.replace;
+        _handleEmbeddedSelectionToggle(entity);
+        _controller.selectClick = savedClick;
+      }
+      if (_controller.selectionSet.isNotEmpty) {
+        await showSketchEntityContextMenu(context, _controller, at: at);
+        return;
+      }
+    }
+    if (!mounted) return;
+    await showSketchBackgroundContextMenu(
+      context,
+      _controller,
+      at: at,
+      onZoomToFit: _orbitViewportKey.currentState?.zoomToFit,
+    );
+  }
+
+  static bool _isSketchEntityKind(SelectionEntityKind kind) => switch (kind) {
+        SelectionEntityKind.sketchPoint ||
+        SelectionEntityKind.sketchLine ||
+        SelectionEntityKind.sketchCircle ||
+        SelectionEntityKind.sketchArc ||
+        SelectionEntityKind.sketchEllipse ||
+        SelectionEntityKind.sketchEllipseArc ||
+        SelectionEntityKind.sketchSpline ||
+        SelectionEntityKind.sketchText ||
+        SelectionEntityKind.sketchPatternMirrorInstance =>
+          true,
+        _ => false,
+      };
 
   /// P10: whether a tap in the embedded 3D view should prefer picking a
   /// real Body vertex/edge over placing new geometry on the plane - starts
@@ -1829,7 +2108,29 @@ class _SketchScreenState extends State<SketchScreen> {
   /// [_buildBaseLayer]'s own `selectionMode`/`drawCursorMode` gating so the
   /// two never both apply at once - drag mode needs the plane cursor, not
   /// Selection mode's mesh-hover one.
-  bool get _dragModeActiveInOrbitView => _controller.mode == SketchMode.select && _controller.dragModeEnabled;
+  ///
+  /// Not with a mouse: a mouse drags an entity by pressing on it and moving ([_handleEmbeddedGrabStart]), so the
+  /// toggle's click-move-click is not used and the viewport stays in selection mode.
+  bool get _dragModeActiveInOrbitView =>
+      _controller.mode == SketchMode.select && _controller.dragModeEnabled && !LayoutModeScope.mouseActiveOf(context);
+
+  /// A mouse press-and-drag on a sketch entity in Orbit View ([PartViewport.onSketchGrabStart]): picks up the Point,
+  /// Line or Text resize handle under the press. A dimension label under the press is handled by [_handleEmbeddedLabelGrabStart] first.
+  bool _handleEmbeddedGrabStart(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
+    if (_controller.mode != SketchMode.select || _controller.isEntityGrabbed || _controller.busy) return false;
+    return _grabEmbeddedEntityAt(worldPoint, localPixelsPerUnit);
+  }
+
+  void _handleEmbeddedGrabUpdate(vm.Vector3 worldPoint) {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null || !_controller.isEntityGrabbed) return;
+    final (x, y) = worldPointToSketch(basis, worldPoint);
+    unawaited(_controller.updateGrabbedPosition(x, y));
+  }
+
+  void _handleEmbeddedGrabEnd() {
+    if (_controller.isEntityGrabbed) unawaited(_controller.dropGrabbedEntity());
+  }
 
   /// P18: [PartViewport.onDrawCursorMoved]'s handler - the "always sketching
   /// should be done with the cursor" retrofit's move-side counterpart to
@@ -1875,6 +2176,36 @@ class _SketchScreenState extends State<SketchScreen> {
       unawaited(_controller.dropGrabbedEntity());
       return;
     }
+    _grabEmbeddedEntityAt(worldPoint, localPixelsPerUnit);
+  }
+
+  /// A mouse press-and-drag on a dimension label in Orbit View ([PartViewport.onSketchLabelGrabStart]).
+  bool _handleEmbeddedLabelGrabStart(String constraintId, vm.Vector3 pressPoint, vm.Vector3? labelPoint) {
+    if (_controller.mode != SketchMode.select || _controller.isEntityGrabbed || _controller.busy) return false;
+    if (!_controller.constraints.containsKey(constraintId)) return false;
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return false;
+    final (x, y) = worldPointToSketch(basis, pressPoint);
+    return _beginEmbeddedLabelDrag(constraintId, x, y, labelPoint);
+  }
+
+  /// Grabs [constraintId]'s label with the pointer at sketch point ([pointerX], [pointerY]); [labelPoint] is where the label is drawn on
+  /// the sketch plane, so the label keeps its place under the pointer instead of jumping to it.
+  bool _beginEmbeddedLabelDrag(String constraintId, double pointerX, double pointerY, vm.Vector3? labelPoint) {
+    final basis = _effectiveOrbitBasis;
+    (double, double)? grabOffset;
+    if (basis != null && labelPoint != null) {
+      final (labelX, labelY) = worldPointToSketch(basis, labelPoint);
+      grabOffset = (labelX - pointerX, labelY - pointerY);
+    }
+    return _controller.beginLabelDrag(constraintId, grabOffset: grabOffset);
+  }
+
+  /// Picks up whatever draggable sketch entity is at [worldPoint] - the grab half of the drag-mode tap and of a mouse
+  /// press-drag. True when something was picked up.
+  bool _grabEmbeddedEntityAt(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return false;
     final (x, y) = worldPointToSketch(basis, worldPoint);
     // Bug fix (on-device feedback: "the hit radius for selecting an entity
     // should match the hit radius for dynamic highlight") - same fix as
@@ -1888,19 +2219,16 @@ class _SketchScreenState extends State<SketchScreen> {
     // for why this needs to run first, not as a case inside the switch
     // below).
     final resizeTextId = _controller.textResizeHandleGrabTargetAt(x, y, grabRadius);
-    if (resizeTextId != null) {
-      _controller.beginTextResizeDrag(resizeTextId, x, y);
-      return;
-    }
+    if (resizeTextId != null) return _controller.beginTextResizeDrag(resizeTextId, x, y);
     final target = _controller.dragGrabTargetAt(x, y, grabRadius);
-    if (target == null) return;
+    if (target == null) return false;
     switch (target.kind) {
       case SelectionKind.point:
-        _controller.beginPointDrag(target.id);
+        return _controller.beginPointDrag(target.id);
       case SelectionKind.line:
-        _controller.beginLineDrag(target.id);
+        return _controller.beginLineDrag(target.id);
       default:
-        break;
+        return false;
     }
   }
 
@@ -1921,7 +2249,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// wrong-mode action - see [PartViewport.preferConstraintOverlayHitOnCommit]'s
   /// own doc comment for why *whether this fires at all* is still mode-
   /// gated one level up from this.
-  bool _handleEmbeddedConstraintOverlayTap(String? hitId) {
+  bool _handleEmbeddedConstraintOverlayTap(String? hitId, vm.Vector3? labelPoint) {
     if (_controller.mode == SketchMode.dimension) {
       final isGhost = hitId != null && _controller.ghosts.any((g) => g.key == hitId);
       if (_controller.activeGhostKey != null) {
@@ -1956,7 +2284,7 @@ class _SketchScreenState extends State<SketchScreen> {
       // which already drops whatever is grabbed unconditionally.
       if (_controller.isEntityGrabbed) return false;
       if (hitId != null && _controller.constraints.containsKey(hitId)) {
-        return _controller.beginLabelDrag(hitId);
+        return _beginEmbeddedLabelDrag(hitId, _controller.cursorX, _controller.cursorY, labelPoint);
       }
       return false;
     }
@@ -2000,92 +2328,6 @@ class _SketchScreenState extends State<SketchScreen> {
     }
     if (ghost == null) return const SizedBox.shrink();
     return GhostValueEditor(key: ValueKey(key), controller: _controller, ghost: ghost, anchor: anchor);
-  }
-
-  /// P44f bug fix (on-device feedback: "the arrow should remain at the
-  /// same angular position when orbiting"): [PartViewport.
-  /// onRadialLabelAngleDragged]'s handler - just forwards the resolved
-  /// angle straight to [SketchController.setRadialAngleOffset] against
-  /// whichever label is currently grabbed. A no-op if nothing is grabbed
-  /// (shouldn't happen in practice - PartViewport only ever calls this
-  /// while [SketchController.draggingLabelId] is non-null, since that's
-  /// what [PartViewport.draggingConstraintLabelId] is fed from - but
-  /// avoids trusting that invariant blindly).
-  void _handleEmbeddedRadialLabelAngleDragged(double angleDegrees) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setRadialAngleOffset(id, angleDegrees);
-  }
-
-  /// P52 bug fix (on-device feedback: "when orbiting, linear dimensions
-  /// slide along the line"): [PartViewport.onLinearLabelOffsetDragged]'s
-  /// handler - [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
-  /// [SketchController.setLinearOffsetDistance].
-  void _handleEmbeddedLinearLabelOffsetDragged(double distance) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setLinearOffsetDistance(id, distance);
-  }
-
-  /// Bug fix (on-device feedback: "the linear dimension only moves
-  /// left/right"): [PartViewport.onLinearLabelAlongDragged]'s handler -
-  /// [_handleEmbeddedLinearLabelOffsetDragged]'s own sibling for
-  /// [SketchController.setLinearAlongOffset].
-  void _handleEmbeddedLinearLabelAlongDragged(double along) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setLinearAlongOffset(id, along);
-  }
-
-  /// Bug fix (on-device feedback: "radius and diameter dimensions are
-  /// locked a set distance from the arc or circle"): [PartViewport.
-  /// onRadialLabelDistanceDragged]'s handler -
-  /// [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
-  /// [SketchController.setRadialLegLength].
-  void _handleEmbeddedRadialLabelDistanceDragged(double legLength) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setRadialLegLength(id, legLength);
-  }
-
-  /// [PartViewport.onLineDistanceLabelOffsetDragged]'s handler - a
-  /// Line-to-Line distance dimension reuses the exact same
-  /// [SketchController.setLinearOffsetDistance] map/setter a point-to-point
-  /// linear dimension does (see [ConstraintLineDistanceDimensionItem.
-  /// sketchLocalOffsetDistance]'s own doc comment).
-  void _handleEmbeddedLineDistanceLabelOffsetDragged(double distance) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setLinearOffsetDistance(id, distance);
-  }
-
-  /// Bug fix (on-device feedback: "the dimension...is restricted in
-  /// movement. it moves left right. it can't be moved up down"):
-  /// [PartViewport.onLineDistanceLabelAlongDragged]'s handler -
-  /// [_handleEmbeddedLineDistanceLabelOffsetDragged]'s own sibling for
-  /// [SketchController.setLineDistanceAlongOffset].
-  void _handleEmbeddedLineDistanceLabelAlongDragged(double along) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setLineDistanceAlongOffset(id, along);
-  }
-
-  /// [PartViewport.onAngleLabelRadiusDragged]'s handler -
-  /// [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
-  /// [SketchController.setAngleArcRadius].
-  void _handleEmbeddedAngleLabelRadiusDragged(double radius) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setAngleArcRadius(id, radius);
-  }
-
-  /// [PartViewport.onAngleLabelAlongDragged]'s handler -
-  /// [_handleEmbeddedAngleLabelRadiusDragged]'s own sibling for
-  /// [SketchController.setAngleAlongOffset].
-  void _handleEmbeddedAngleLabelAlongDragged(double along) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setAngleAlongOffset(id, along);
   }
 
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates
@@ -2788,6 +3030,16 @@ class _SketchScreenState extends State<SketchScreen> {
           _build3DViewMenu(context, density, titleStyle, showBodyTransparency: true)
         else
           _build2DViewMenu(context, density, titleStyle),
+        // Desktop input D5: the Controls settings (mouse bindings, wheel, orbit speed, shortcut list).
+        ListTile(
+          dense: true,
+          visualDensity: density,
+          leading: const Icon(Icons.mouse_outlined, size: 20),
+          title: Text('Controls', style: titleStyle),
+          onTap: () => unawaited(Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+          )),
+        ),
       ],
     );
   }
@@ -2992,7 +3244,7 @@ class _SketchScreenState extends State<SketchScreen> {
   ];
 
   Future<void> _pickCanvasColor(BuildContext context) async {
-    final chosen = await showModalBottomSheet<Color>(
+    final chosen = await showAdaptiveSheet<Color>(
       context: context,
       builder: (sheetContext) => SafeArea(
         child: Padding(

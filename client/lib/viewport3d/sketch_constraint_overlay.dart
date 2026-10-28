@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_scene/scene.dart' show Camera;
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../api/dimension_label_placement.dart';
+import '../sketch/label_drag_resolver.dart';
 import '../sketch/sketch_controller.dart'
     show
         ConstraintOverlayItem,
@@ -201,44 +203,7 @@ Offset _pairGlyphMidpoint(Offset a, Offset b) {
   return (touchScreen, direction);
 }
 
-/// Bug fix follow-up (on-device feedback: "the arrow should remain at the
-/// same angular position when orbiting" - reported against a radial
-/// dimension whose label had previously been dragged): [radialDimension
-/// TouchPoint] resolves a *screen-space* desired direction into a touch
-/// point for rendering, but a Constraint's own persisted drag offset
-/// ([SketchController.labelOffsetFor]) is raw screen pixels - camera-frame
-/// dependent, so a *stored* screen-pixel offset re-interpreted through a
-/// *different* camera orientation (after orbiting) resolves to a different
-/// point on the circle than the one the user actually dragged to.
-///
-/// This is the same ellipse solve as [radialDimensionTouchPoint], but
-/// returns the resolved *sketch-local angle* itself (degrees, relative to
-/// `rim`'s own angle around `center` - i.e. what [_rotateSketchPointAround
-/// Center] expects back) instead of a screen point - a camera-independent
-/// quantity safe to persist (see [SketchController.setRadialAngleOffset]).
-/// The caller (only [PartViewport]'s own label-drag handling, which alone
-/// has the live camera/projection context) is expected to call this once
-/// per drag-move frame and persist the result in place of accumulating a
-/// screen-pixel delta. Returns null exactly when [radialDimensionTouchPoint]
-/// would have fallen back to its scalar approximation (no well-defined
-/// ellipse to solve against) - the caller should simply skip that frame's
-/// update rather than persist a meaningless angle.
-double? radialDimensionAngleDegrees({
-  required Offset centerScreen,
-  required Offset rimScreen,
-  required Offset? perpScreen,
-  required Offset desiredDirection,
-}) {
-  final axisU = rimScreen - centerScreen;
-  final axisV = perpScreen == null ? null : perpScreen - centerScreen;
-  final param = _solveRadialParam(axisU: axisU, axisV: axisV, desiredDirection: desiredDirection);
-  if (param == null) return null;
-  final (cosT, sinT) = param;
-  return math.atan2(sinT, cosT) * 180.0 / math.pi;
-}
-
-/// The shared 2x2 solve behind [radialDimensionTouchPoint]/
-/// [radialDimensionAngleDegrees]: the sketch-local unit parameter `(cosT,
+/// The 2x2 solve behind [radialDimensionTouchPoint]: the sketch-local unit parameter `(cosT,
 /// sinT)` such that `cosT*axisU + sinT*axisV` points the same way as
 /// [desiredDirection] - or null if [axisV] is missing or the two vectors
 /// are degenerate/collinear (no well-defined ellipse).
@@ -257,41 +222,13 @@ double? radialDimensionAngleDegrees({
   return (cosTUnnorm / paramLength, sinTUnnorm / paramLength);
 }
 
-/// Projects [item]'s own `center`/`rim`, plus the sketch-local point 90
-/// degrees around the circle from `rim` (the same "conjugate radius
-/// vector" pair [radialDimensionTouchPoint]/[radialDimensionAngleDegrees]
-/// need) - exposed so [PartViewport]'s own radial label-drag handling can
-/// resolve [radialDimensionAngleDegrees] without duplicating this
-/// projection step, which otherwise lives entirely inside the private
-/// painter/[constraintOverlayItemLabelCenter].
-(Offset center, Offset rim, Offset? perp)? projectRadialDimensionBasis(
-  Camera camera,
-  Size viewportSize,
-  SketchPlaneBasis basis,
-  ConstraintRadialDimensionItem item, {
-  vm.Matrix4? focusTransform,
-}) {
-  Offset? project((double, double) sketchXY) =>
-      worldToScreenFocused(camera, viewportSize, focusTransform, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
-  final centerScreen = project(item.center);
-  final rimScreen = project(item.rim);
-  if (centerScreen == null || rimScreen == null) return null;
-  final rimSketchDx = item.rim.$1 - item.center.$1;
-  final rimSketchDy = item.rim.$2 - item.center.$2;
-  final perpSketch = (item.center.$1 - rimSketchDy, item.center.$2 + rimSketchDx);
-  final perpScreen = project(perpSketch);
-  return (centerScreen, rimScreen, perpScreen);
-}
-
 /// The implied vertex where [item]'s two Lines' own infinite extensions
 /// intersect, plus each Line's outward unit ray from that vertex (pointing
 /// toward whichever endpoint that Line's own drawn segment occupies, so the
 /// arc/extension lines anchor to the real segments regardless of whether the
 /// vertex sits on, before, or beyond either one). Pure sketch-local
-/// geometry, no camera/projection involved - exposed (like
-/// [projectRadialDimensionBasis]) so [PartViewport]'s own angle label-drag
-/// handling can resolve the vertex without duplicating this intersection
-/// math.
+/// geometry, no camera/projection involved - (`LabelDragResolver.angleVertexAndRays`
+/// is the same rule for the drag side).
 ///
 /// `AngleConstraint` (backend/app/sketch/constraints.py) has no vertex field
 /// of its own - the two Lines need not share an endpoint - so the standard
@@ -339,6 +276,14 @@ double? radialDimensionAngleDegrees({
   if (vertexAndRays == null) return null;
   final (vertex, ray1, ray2) = vertexAndRays;
   final vertexScreen = project(vertex);
+  final placedRadius = item.sketchLocalArcRadius;
+  if (placedRadius != null && placedRadius > 1e-9) {
+    // A placed arc is laid out in sketch space and projected, so its ends sit exactly on the lines whatever the camera.
+    final end1 = project((vertex.$1 + ray1.$1 * placedRadius, vertex.$2 + ray1.$2 * placedRadius));
+    final end2 = project((vertex.$1 + ray2.$1 * placedRadius, vertex.$2 + ray2.$2 * placedRadius));
+    if (vertexScreen == null || end1 == null || end2 == null) return null;
+    return (vertexScreen, end1, end2);
+  }
   final unit1Screen = project((vertex.$1 + ray1.$1, vertex.$2 + ray1.$2));
   final unit2Screen = project((vertex.$1 + ray2.$1, vertex.$2 + ray2.$2));
   if (vertexScreen == null || unit1Screen == null || unit2Screen == null) return null;
@@ -449,17 +394,9 @@ class _ConstraintOverlayPainter extends CustomPainter {
         (p1, p2) = endpoints;
       default:
         if (screenLength < 1e-6) return;
-        final normal = canonicalPerpendicular(screenDelta);
-        final offsetVec = normal *
-            _resolveDimensionOffsetMagnitude(
-              normal: normal,
-              labelOffset: item.labelOffset,
-              sketchLocalOffsetDistance: item.sketchLocalOffsetDistance,
-              sketchReferenceLength: sketchLength,
-              screenReferenceLength: screenLength,
-            );
-        p1 = aScreen + offsetVec;
-        p2 = bScreen + offsetVec;
+        final endpoints = _diagonalLinearEndpoints(_project, item, aScreen, bScreen, sketchLength, screenLength);
+        if (endpoints == null) return;
+        (p1, p2) = endpoints;
     }
 
     _drawExtensionLine(canvas, aScreen, p1, dimPaint);
@@ -490,7 +427,8 @@ class _ConstraintOverlayPainter extends CustomPainter {
       _ => sketchLength,
     };
     final placement = item.sketchLocalAlongOffset != null && dimSketchLength > 1e-9
-        ? _dimensionLabelPlacementAlong(p1, p2, item.sketchLocalAlongOffset! * (dimScreenLength / dimSketchLength))
+        ? _dimensionLabelPlacementAlong(
+            p1, p2, _linearAlongTowardsB(item) * (dimScreenLength / dimSketchLength))
         : _dimensionLabelPlacement(p1, p2, item.labelOffset);
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
@@ -539,8 +477,9 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final dimPaint = Paint()
       ..color = color
       ..strokeWidth = _dimensionStrokeWidth;
-    final p1 = midA + offset;
-    final p2 = midB + offset;
+    final placed = _placedLineDistanceLayout(_project, item);
+    final p1 = placed?.p1 ?? midA + offset;
+    final p2 = placed?.p2 ?? midB + offset;
     // On-device feedback ("the leader lines should originate from the ends
     // of the lines, not the mid point... to give the feeling the dimension
     // is line to line, not point to point"): the previous attempt here drew
@@ -589,9 +528,10 @@ class _ConstraintOverlayPainter extends CustomPainter {
     // label's own position along the dimension line; falls back to the old
     // raw-pixel labelOffset dot product only before that first drag - see
     // [_dimensionLabelPlacementAlong]'s own doc comment.
-    final placement = item.sketchLocalAlongOffset != null
-        ? _dimensionLabelPlacementAlong(p1, p2, item.sketchLocalAlongOffset! * (lengthA / sketchLengthA))
-        : _dimensionLabelPlacement(p1, p2, item.labelOffset);
+    final placement = placed?.label ??
+        (item.sketchLocalAlongOffset != null
+            ? _dimensionLabelPlacementAlong(p1, p2, item.sketchLocalAlongOffset! * (lengthA / sketchLengthA))
+            : _dimensionLabelPlacement(p1, p2, item.labelOffset));
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
@@ -630,7 +570,9 @@ class _ConstraintOverlayPainter extends CustomPainter {
     // old fixed on-screen leg length only before that first drag.
     final legPixels =
         item.sketchLocalLegLength != null ? item.sketchLocalLegLength! * pixelsPerUnit : _radialLegLength;
-    final labelCenter = centerScreen + defaultDirection * (radiusPixels + legPixels) + item.labelOffset;
+    final placedLabelSketch = _placedRadialLabelSketchPoint(item);
+    final placedLabel = placedLabelSketch == null ? null : _project(placedLabelSketch);
+    final labelCenter = placedLabel ?? centerScreen + defaultDirection * (radiusPixels + legPixels) + item.labelOffset;
     final desiredDelta = labelCenter - centerScreen;
     final desiredDirection =
         desiredDelta.distance < 1e-6 ? defaultDirection : desiredDelta / desiredDelta.distance;
@@ -761,10 +703,11 @@ class _ConstraintOverlayPainter extends CustomPainter {
     // sketch-unit reference for the screen-only default radius to scale
     // against), same "falls back to the old behaviour pre-drag" contract
     // every other dimension kind already has.
-    final placement = item.sketchLocalAlongOffset != null && (item.sketchLocalArcRadius ?? 0) > 1e-9
-        ? _dimensionLabelPlacementAlong(
-            arcPoint1, arcPoint2, item.sketchLocalAlongOffset! * (radiusPixels / item.sketchLocalArcRadius!))
-        : _dimensionLabelPlacement(arcPoint1, arcPoint2, item.labelOffset);
+    final placement = _placedAngleLabel(_project, item, arcPoint1, arcPoint2) ??
+        (item.sketchLocalAlongOffset != null && (item.sketchLocalArcRadius ?? 0) > 1e-9
+            ? _dimensionLabelPlacementAlong(
+                arcPoint1, arcPoint2, item.sketchLocalAlongOffset! * (radiusPixels / item.sketchLocalArcRadius!))
+            : _dimensionLabelPlacement(arcPoint1, arcPoint2, item.labelOffset));
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
@@ -849,6 +792,119 @@ double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
     return raw.isNegative ? -_minDimensionOffsetMagnitude : _minDimensionOffsetMagnitude;
   }
   return raw;
+}
+
+/// The dimension line and label of a line-to-line dimension that has been placed ([ConstraintLineDistanceDimensionItem.sketchLocalOffsetDistance]),
+/// laid out in sketch space with `LabelDragResolver`'s frame and projected, so the label lands exactly where the user dropped it and holds
+/// still when the camera orbits. Null before the first placement (or for lines that cannot be laid out), when the screen-space default
+/// applies.
+({Offset p1, Offset p2, ({Offset labelCenter, Offset? leaderFrom}) label})? _placedLineDistanceLayout(
+  Offset? Function((double, double)) project,
+  ConstraintLineDistanceDimensionItem item,
+) {
+  final offset = item.sketchLocalOffsetDistance;
+  if (offset == null) return null;
+  final frame = LabelDragResolver.lineDistanceFrame(item.line1Start, item.line1End, item.line2Start);
+  if (frame == null) return null;
+  final (midA, midB, u, tangent) = frame;
+  final p1 = project((midA.$1 + u.$1 * offset, midA.$2 + u.$2 * offset));
+  final p2 = project((midB.$1 + u.$1 * offset, midB.$2 + u.$2 * offset));
+  if (p1 == null || p2 == null) return null;
+  final along = item.sketchLocalAlongOffset ?? 0.0;
+  final anchorSketch = ((midA.$1 + midB.$1) / 2 + u.$1 * offset, (midA.$2 + midB.$2) / 2 + u.$2 * offset);
+  final labelScreen = project((anchorSketch.$1 + tangent.$1 * along, anchorSketch.$2 + tangent.$2 * along));
+  if (labelScreen == null) return null;
+  return (p1: p1, p2: p2, label: _labelOnOrOffLine((p1 + p2) / 2, labelScreen));
+}
+
+/// Where the label sits given the dimension line's middle ([anchor]) and where the label would be ([wanted]), both in screen space: on the
+/// line unless it has been moved off it by more than [_dimensionLeaderThreshold], in which case a leader joins them.
+({Offset labelCenter, Offset? leaderFrom}) _labelOnOrOffLine(Offset anchor, Offset wanted) {
+  if ((wanted - anchor).distance < _dimensionLeaderThreshold) return (labelCenter: anchor, leaderFrom: null);
+  return (labelCenter: wanted, leaderFrom: anchor);
+}
+
+/// The sketch-space point a placed radius / diameter label sits at ([ConstraintRadialDimensionItem.sketchLocalLegLength] set), or null before
+/// it has been placed.
+(double, double)? _placedRadialLabelSketchPoint(ConstraintRadialDimensionItem item) {
+  final leg = item.sketchLocalLegLength;
+  if (leg == null) return null;
+  return LabelDragResolver.radialLabelCenter(
+    center: item.center,
+    rim: item.rim,
+    radius: item.radius,
+    placement: DimensionLabelPlacement(angle: item.defaultAngleOffsetDegrees, leg: leg),
+  );
+}
+
+/// The label position, in screen space, of an angle dimension whose arc has been placed ([ConstraintAngleDimensionItem.sketchLocalArcRadius]
+/// and `sketchLocalAlongOffset` set), laid out in sketch space and projected. Null before it has been placed.
+({Offset labelCenter, Offset? leaderFrom})? _placedAngleLabel(
+  Offset? Function((double, double)) project,
+  ConstraintAngleDimensionItem item,
+  Offset arcPoint1,
+  Offset arcPoint2,
+) {
+  final radius = item.sketchLocalArcRadius;
+  if (radius == null || radius <= 1e-9 || item.sketchLocalAlongOffset == null) return null;
+  final wanted = LabelDragResolver.angleLabelCenter(
+    line1Start: item.line1Start,
+    line1End: item.line1End,
+    line2Start: item.line2Start,
+    line2End: item.line2End,
+    placement: DimensionLabelPlacement(radius: radius, along: item.sketchLocalAlongOffset),
+  );
+  if (wanted == null) return null;
+  final wantedScreen = project(wanted);
+  if (wantedScreen == null) return null;
+  return _labelOnOrOffLine((arcPoint1 + arcPoint2) / 2, wantedScreen);
+}
+
+/// The dimension line of a point-to-point (or point-to-line) linear dimension in the general direction, in screen space.
+///
+/// Once the label has been placed ([ConstraintLinearDimensionItem.sketchLocalOffsetDistance]) the line is laid out in sketch space - the
+/// measured segment shifted by that distance along the left-hand normal of A to B, the same frame `LabelDragResolver.linear` writes
+/// the offset in - and only then projected, so it holds still when the camera orbits. Before that it keeps the old default: a fixed
+/// number of pixels along the screen-canonical normal.
+(Offset, Offset)? _diagonalLinearEndpoints(
+  Offset? Function((double, double)) project,
+  ConstraintLinearDimensionItem item,
+  Offset aScreen,
+  Offset bScreen,
+  double sketchLength,
+  double screenLength,
+) {
+  final offset = item.sketchLocalOffsetDistance;
+  if (offset != null && sketchLength > 1e-9) {
+    final nx = -(item.pointB.$2 - item.pointA.$2) / sketchLength;
+    final ny = (item.pointB.$1 - item.pointA.$1) / sketchLength;
+    final p1 = project((item.pointA.$1 + nx * offset, item.pointA.$2 + ny * offset));
+    final p2 = project((item.pointB.$1 + nx * offset, item.pointB.$2 + ny * offset));
+    if (p1 == null || p2 == null) return null;
+    return (p1, p2);
+  }
+  final normal = canonicalPerpendicular(bScreen - aScreen);
+  final offsetVec = normal *
+      _resolveDimensionOffsetMagnitude(
+        normal: normal,
+        labelOffset: item.labelOffset,
+        sketchLocalOffsetDistance: null,
+        sketchReferenceLength: sketchLength,
+        screenReferenceLength: screenLength,
+      );
+  return (aScreen + offsetVec, bScreen + offsetVec);
+}
+
+/// [ConstraintLinearDimensionItem.sketchLocalAlongOffset] as a distance towards the dimension line's B end, which is how the painters
+/// move the label. A vertical or horizontal dimension stores `along` as a distance in the positive direction of its axis (up, right) -
+/// see `LabelDragResolver` - so it flips when point B has the smaller coordinate; the general direction is already towards B.
+double _linearAlongTowardsB(ConstraintLinearDimensionItem item) {
+  final along = item.sketchLocalAlongOffset ?? 0.0;
+  return switch (item.orientation) {
+    'vertical' => along * canonicalAlongSign(item.pointA, item.pointB, true),
+    'horizontal' => along * canonicalAlongSign(item.pointA, item.pointB, false),
+    _ => along,
+  };
 }
 
 /// Screen-space dimension-line endpoints for a `'vertical'`/`'horizontal'`-
@@ -1035,7 +1091,7 @@ const double _dimensionLeaderThreshold = 4.0;
 /// ([sketchReferenceLength]) against its current on-screen projection
 /// ([screenReferenceLength]), then scaling the user's stored sketch-local
 /// offset distance ([sketchLocalOffsetDistance], set by
-/// [SketchController.setLinearOffsetDistance]) by that ratio - unlike
+/// [DimensionLabelPlacement.offset]) by that ratio - unlike
 /// [labelOffset], a raw screen-pixel delta captured under whatever camera
 /// orientation was live at drag time, which goes stale (and visibly drifts)
 /// the instant the camera orbits.
@@ -1117,17 +1173,9 @@ Offset? constraintOverlayItemLabelCenter(
           (p1, p2) = endpoints;
         default:
           if (screenLength < 1e-6) return null;
-          final normal = canonicalPerpendicular(screenDelta);
-          final offsetVec = normal *
-              _resolveDimensionOffsetMagnitude(
-                normal: normal,
-                labelOffset: it.labelOffset,
-                sketchLocalOffsetDistance: it.sketchLocalOffsetDistance,
-                sketchReferenceLength: sketchLength,
-                screenReferenceLength: screenLength,
-              );
-          p1 = aScreen + offsetVec;
-          p2 = bScreen + offsetVec;
+          final endpoints = _diagonalLinearEndpoints(project, it, aScreen, bScreen, sketchLength, screenLength);
+          if (endpoints == null) return null;
+          (p1, p2) = endpoints;
       }
       // Mirrors [_ConstraintOverlayPainter._paintLinearDimension]'s own
       // [sketchLocalAlongOffset] handling exactly - see that method's own
@@ -1139,7 +1187,7 @@ Offset? constraintOverlayItemLabelCenter(
         _ => sketchLength,
       };
       return (it.sketchLocalAlongOffset != null && dimSketchLength > 1e-9
-              ? _dimensionLabelPlacementAlong(p1, p2, it.sketchLocalAlongOffset! * (dimScreenLength / dimSketchLength))
+              ? _dimensionLabelPlacementAlong(p1, p2, _linearAlongTowardsB(it) * (dimScreenLength / dimSketchLength))
               : _dimensionLabelPlacement(p1, p2, it.labelOffset))
           .labelCenter;
 
@@ -1169,6 +1217,8 @@ Offset? constraintOverlayItemLabelCenter(
             sketchReferenceLength: sketchLengthA,
             screenReferenceLength: lengthA,
           );
+      final placed = _placedLineDistanceLayout(project, it);
+      if (placed != null) return placed.label.labelCenter;
       final lineDistP1 = midA + offset;
       final lineDistP2 = midB + offset;
       return (it.sketchLocalAlongOffset != null
@@ -1194,7 +1244,9 @@ Offset? constraintOverlayItemLabelCenter(
       final defaultLength = defaultDelta.distance;
       final defaultDirection = defaultLength < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultLength;
       final legPixels = it.sketchLocalLegLength != null ? it.sketchLocalLegLength! * pixelsPerUnit : _radialLegLength;
-      return centerScreen + defaultDirection * (radiusPixels + legPixels) + it.labelOffset;
+      final placedLabelSketch = _placedRadialLabelSketchPoint(it);
+      final placedLabel = placedLabelSketch == null ? null : project(placedLabelSketch);
+      return placedLabel ?? centerScreen + defaultDirection * (radiusPixels + legPixels) + it.labelOffset;
 
     case ConstraintAngleDimensionItem it:
       final vertexAndRays = angleDimensionVertexAndRays(it);
@@ -1213,6 +1265,8 @@ Offset? constraintOverlayItemLabelCenter(
       // [sketchLocalAlongOffset] handling exactly - see that method's own
       // doc comment.
       final radiusPixels = (arcPoint1 - vertexScreen).distance;
+      final placedAngleLabel = _placedAngleLabel(project, it, arcPoint1, arcPoint2);
+      if (placedAngleLabel != null) return placedAngleLabel.labelCenter;
       return (it.sketchLocalAlongOffset != null && (it.sketchLocalArcRadius ?? 0) > 1e-9
               ? _dimensionLabelPlacementAlong(
                   arcPoint1, arcPoint2, it.sketchLocalAlongOffset! * (radiusPixels / it.sketchLocalArcRadius!))

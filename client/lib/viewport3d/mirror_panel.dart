@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
 import 'resizable_tool_panel.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Pattern/Mirror scoping's Phase 1 (`docs/pattern-mirror-scope.md`
 /// §2.1/§4): the bottom-sheet-style panel [PartScreen] opens once Mirror is
@@ -191,6 +192,7 @@ class MirrorPanel extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
+              ToolPanelKeys(onConfirm: hasPlanePicked ? onConfirm : null, onCancel: onCancel),
               TextButton(onPressed: onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(

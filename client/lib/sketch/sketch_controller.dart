@@ -5,8 +5,13 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart' show Offset, Rect, Size;
 
+import '../api/dimension_label_placement.dart';
 import '../api/sketch_api_client.dart';
+import '../viewport3d/mouse_navigation.dart' show SelectClick;
+import 'dimension_text.dart';
 import 'dof_analysis.dart';
+import 'label_drag_resolver.dart';
+import 'marquee_selection.dart';
 import 'projector/sketch_drag_stats.dart';
 import 'projector/sketch_projector.dart';
 import 'pattern_mirror_expansion.dart';
@@ -465,7 +470,7 @@ class ConstraintLinearDimensionItem extends ConstraintOverlayItem {
   final Offset labelOffset;
 
   /// Sketch-local perpendicular offset distance (see
-  /// [SketchController._linearOffsetDistances]' own doc comment) - null
+  /// [SketchController.labelPlacementFor] (its `offset`)' own doc comment) - null
   /// until the user has dragged this dimension's label at least once, in
   /// which case the renderer prefers this over [labelOffset] for the
   /// `default:` (non axis-locked) orientation, since it stays put on the
@@ -535,7 +540,7 @@ class ConstraintLineDistanceDimensionItem extends ConstraintOverlayItem {
   /// end of a linear dimension, but the other side still slides") -
   /// [ConstraintLinearDimensionItem.sketchLocalOffsetDistance]'s own
   /// sibling for a Line-to-Line distance dimension, stored in the exact
-  /// same [SketchController._linearOffsetDistances] map (keyed by
+  /// same [SketchController.labelPlacementFor] (its `offset`) map (keyed by
   /// [constraintId], which never collides between the two dimension
   /// kinds) - the P52 fix only ever touched [ConstraintLinearDimensionItem]
   /// (a point-to-point/length dimension), leaving this, genuinely
@@ -647,13 +652,13 @@ class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
   ///   radius-scaled leader; an angle scales with the circle automatically)
   ///   - only until the user actually drags either ghost.
   /// - Once dragged (either a ghost or a confirmed dimension),
-  ///   [SketchController.radialAngleOffsetFor] wins instead - the
+  ///   [SketchController.labelPlacementFor] (its `angle`) wins instead - the
   ///   camera-independent value [labelOffset]'s own doc comment explains
   ///   the need for.
   final double defaultAngleOffsetDegrees;
 
   /// The leader's own sketch-unit distance beyond the circle's rim - see
-  /// [SketchController.radialLegLengthFor]'s own doc comment.
+  /// [SketchController.labelPlacementFor] (its `leg`)'s own doc comment.
   ///
   /// Bug fix (on-device feedback: "radius and diameter dimensions are
   /// locked a set distance from the arc or circle - I should be able to
@@ -722,7 +727,7 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
   final Offset labelOffset;
 
   /// The arc's own sketch-unit radius (distance from the implied vertex) -
-  /// see [SketchController.angleArcRadiusFor]'s own doc comment. Unlike
+  /// see [SketchController.labelPlacementFor] (its `radius`)'s own doc comment. Unlike
   /// [ConstraintRadialDimensionItem.defaultAngleOffsetDegrees], this is a
   /// *distance*, not an angle: what the user actually drags for an angle
   /// dimension is how far out the arc sits, not a rotation.
@@ -2341,6 +2346,7 @@ class SketchController extends ChangeNotifier {
   }
 
   void _resetTransientDrawState() {
+    _discardOrphanTransientPoints();
     _chainStartPointId = null;
     _chainFirstPointId = null;
     _circleCenterPointId = null;
@@ -2934,6 +2940,9 @@ class SketchController extends ChangeNotifier {
     List<String> anchorPointIds = const [],
     Map<String, (double, double)> pointUpdates = const {},
   }) async {
+    // A Point an entity now uses is no longer a loose draw-tool Point to take
+    // back if the tool is cancelled (see [_transientPointUndo]).
+    _transientPointUndo.removeWhere((id, _) => !points.containsKey(id) || _pointOwnsEntities(id));
     final result =
         await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds, pointUpdates: pointUpdates);
     _dof = result.solve.dof;
@@ -2966,6 +2975,7 @@ class SketchController extends ChangeNotifier {
     constraints
       ..clear()
       ..addEntries(result.constraints.map((c) => MapEntry(c.id, c)));
+    _absorbLabelPlacements(result.constraints);
     // `pointIds.length >= 2` alone (a standalone Circle profile is exactly
     // 2 points: center, radius point) used to also drop every Text-contour
     // loop, since a Text loop's own `pointIds` is always empty (see
@@ -4702,6 +4712,25 @@ class SketchController extends ChangeNotifier {
     if (direct != null) return direct;
     if (_mode != SketchMode.select && _mode != SketchMode.dimension) return null;
     return _patternMirrorEntityAt(cursorX, cursorY, radius);
+  }
+
+  /// Desktop input D4: a right click's selection rule (SOLIDWORKS) - the
+  /// entity under the cursor ([hoveredEntity]) is selected, replacing the
+  /// selection, unless it is already in it (then the selection stays, so a
+  /// menu for several selected entities acts on all of them). Returns the
+  /// entity, or null over empty canvas, in a draw tool, or on the origin
+  /// (which is never selectable).
+  SketchSelection? selectUnderCursorForContextMenu([double? pixelsPerUnit]) {
+    final hit = hoveredEntity(pixelsPerUnit);
+    if (hit == null) return null;
+    if (hit.kind == SelectionKind.point && hit.id == _originPointId) return null;
+    if (!_selectionSet.any((s) => s.sameAs(hit))) {
+      final saved = selectClick;
+      selectClick = SelectClick.replace;
+      selectEntity(hit);
+      selectClick = saved;
+    }
+    return hit;
   }
 
   Timer? _centerRevealHideTimer;
@@ -8085,12 +8114,14 @@ class SketchController extends ChangeNotifier {
   /// grabbed (a Point, a Line, or a Text resize handle - see
   /// [isEntityGrabbed]) - lets the canvas's cursor-movement code stay
   /// agnostic to which kind of grab is active. A no-op if nothing's
-  /// grabbed, or only a label is - a label's offset lives in screen
-  /// space, not an absolute cursor position, so the canvas feeds it
-  /// directly via [updateLabelDrag] instead of through here (see
-  /// sketch_canvas.dart's `_feedMouseSwipeToGrabbedEntity` and its
-  /// touch-branch equivalent).
+  /// grabbed. A dimension label follows the cursor through
+  /// [dragLabelToPointer]; a relationship glyph's pixel offset is fed by
+  /// the canvas directly via [updateLabelDrag] instead.
   Future<void> updateGrabbedPosition(double x, double y) async {
+    if (_draggingLabelId != null) {
+      if (labelUsesPlacement(_draggingLabelId!)) dragLabelToPointer(x, y);
+      return;
+    }
     if (_draggingPointId != null) return updatePointDrag(x, y);
     if (_draggingLineId != null) return updateLineDrag(x, y);
     if (_draggingTextResizeId != null) return updateTextResizeDrag(x, y);
@@ -8428,23 +8459,10 @@ class SketchController extends ChangeNotifier {
     });
   }
 
-  /// Stage 15 item 2: per-Constraint screen-pixel offset from its default
-  /// painted label position - purely a client-side display tweak (no
-  /// backend call), so it survives a sketch refresh but not a fresh
-  /// [ensureSketch]/[adoptSketch] (same lifetime as the controller itself).
-  ///
-  /// Dual meaning depending on Constraint type (both live in
-  /// sketch_canvas.dart's `_SketchPainter`): for the value-less glyphs
-  /// (V/H, parallel/perpendicular/equal/collinear, angle), it's applied
-  /// directly as the label's own on-screen offset from its anchor, same as
-  /// always. For a real dimension (distance, line-distance - the two with
-  /// actual extension lines), it instead relocates *the dimension line
-  /// itself* (its perpendicular offset from the measured geometry - see
-  /// `_dimensionOffsetDistance`), so the extension lines stretch/shrink to
-  /// reach it and the label sits on the line, rather than the label
-  /// floating apart from a fixed dimension line connected by a leader
-  /// line (removed - reported as an unwanted line traditional technical
-  /// drawings don't have).
+  /// Stage 15 item 2: per-Constraint screen-pixel offset from its default painted label position, for the relationship glyphs only
+  /// (V/H, parallel/perpendicular/equal/collinear, coincident...). A purely client-side display tweak (no backend call), so it
+  /// survives a sketch refresh but not a fresh [ensureSketch]/[adoptSketch]. A dimension does not use it: its position is a saved
+  /// [DimensionLabelPlacement] in sketch units (see [labelPlacementFor]).
   final Map<String, Offset> _labelOffsets = {};
 
   /// [constraintId]'s current user-applied offset, or [Offset.zero] if it
@@ -8453,23 +8471,8 @@ class SketchController extends ChangeNotifier {
   /// the label actually is, not just its un-offset default anchor.
   Offset labelOffsetFor(String constraintId) => _labelOffsets[constraintId] ?? Offset.zero;
 
-  /// The flat 2D canvas's own `ViewTransform.pixelsPerUnit` active the last
-  /// time [constraintId]'s [_labelOffsets] entry was written via
-  /// [updateLabelDrag] - paired 1:1 with that map, read by
-  /// [labelOffsetForZoom] to rescale a raw screen-pixel offset recorded at
-  /// one zoom level back into the same *sketch-local* vector at whatever
-  /// zoom level it's read back at.
-  ///
-  /// Bug fix (on-device feedback: "when zooming in and out, the dimensions
-  /// should not move relative to the geometry"): [_labelOffsets] itself
-  /// deliberately stays raw screen pixels (unchanged - see that field's own
-  /// doc comment, and the embedded 3D viewport's own consumers of
-  /// [labelOffsetFor] via [constraintOverlayItems]/[dimensionGhostOverlayItems],
-  /// which have no single global "pixels per unit" to rescale by anyway and
-  /// already solve this problem per-dimension-kind via their own
-  /// `sketchLocalOffsetDistance`/`sketchLocalLegLength`/`sketchLocalArcRadius`
-  /// fields) - only the flat 2D canvas, which *does* have one global,
-  /// always-available zoom factor, gets this correction.
+  /// The flat canvas's `ViewTransform.pixelsPerUnit` at the last [updateLabelDrag] of [constraintId]'s glyph, read by [labelOffsetForZoom]
+  /// to rescale its pixel offset when the view zooms ("when zooming in and out, the labels should not move relative to the geometry").
   final Map<String, double> _labelOffsetZoomReference = {};
 
   /// [labelOffsetFor]'s own zoom-corrected sibling for the flat 2D canvas -
@@ -8483,236 +8486,186 @@ class SketchController extends ChangeNotifier {
     return raw * (currentPixelsPerUnit / reference);
   }
 
-  /// P44f bug fix (on-device feedback: "the arrow should remain at the
-  /// same angular position when orbiting" - still slid after the earlier
-  /// ellipse-projection fix, reported specifically against a radial
-  /// dimension whose label had been dragged before): a radial (Radius/
-  /// Diameter) dimension's own leader angle around the circle, in degrees
-  /// relative to its own `rim` Point's angle - a camera-independent
-  /// quantity, unlike [_labelOffsets]' screen pixels. [_labelOffsets]
-  /// itself stays exactly as-is (still the right representation for every
-  /// *other* dimension kind, and for the flat 2D canvas, which has no
-  /// camera-orbit concept at all to go stale against) - this is a wholly
-  /// separate map, only ever read/written for [GhostKind.radius]/
-  /// [GhostKind.diameter] ghosts and [isRadiusDistanceConstraint]-
-  /// classified confirmed dimensions.
-  final Map<String, double> _radialAngleOffsets = {};
+  /// Where the user put each dimension's label, in sketch units - the same in the flat canvas and the 3D sketch view, and saved on the
+  /// backend with the sketch (`PUT .../constraints/{id}/label`, written once when a drag ends). An entry means "the user placed this
+  /// one"; no entry means the default place each view draws. See [DimensionLabelPlacement] for what each field means per kind and
+  /// [LabelDragResolver] for how a pointer position becomes one. Not undoable.
+  final Map<String, DimensionLabelPlacement> _labelPlacements = {};
 
-  /// [constraintId]'s user-chosen leader angle (see [_radialAngleOffsets]'
-  /// own doc comment), or null if never dragged - callers fall back to
-  /// whatever default angle makes sense for their own context (e.g.
-  /// [dimensionGhostOverlayItems]' own radius/diameter separation).
-  double? radialAngleOffsetFor(String constraintId) => _radialAngleOffsets[constraintId];
+  /// [constraintId]'s saved placement, or null when the user has never moved its label.
+  DimensionLabelPlacement? labelPlacementFor(String constraintId) => _labelPlacements[constraintId];
 
-  /// Sets [constraintId]'s own leader angle. Unlike [updateLabelDrag]
-  /// (which accumulates a screen-pixel *delta* onto whatever offset
-  /// already exists, called every drag-move frame), this always sets an
-  /// *absolute* angle - only [PartViewport]'s own radial label-drag
-  /// handling calls this (resolved fresh from the live cursor position
-  /// each frame via [radialDimensionAngleDegrees], not accumulated), since
-  /// only it has the camera/projection context needed to resolve a screen
-  /// position into a sketch-local angle in the first place.
-  void setRadialAngleOffset(String constraintId, double degrees) {
-    _radialAngleOffsets[constraintId] = degrees;
+  /// Sets (or, with null, clears) [constraintId]'s placement without a drag or a backend write - for tests and for state restored from
+  /// somewhere other than the constraint list.
+  @visibleForTesting
+  void setLabelPlacementForTesting(String constraintId, DimensionLabelPlacement? placement) {
+    if (placement == null || placement.isEmpty) {
+      _labelPlacements.remove(constraintId);
+    } else {
+      _labelPlacements[constraintId] = placement;
+    }
     notifyListeners();
   }
 
-  /// [_radialAngleOffsets]' own sibling for a radial dimension's *distance*
-  /// from the circle, in sketch units.
-  ///
-  /// Bug fix (on-device feedback: "radius and diameter dimensions are
-  /// locked a set distance from the arc or circle - I should be able to
-  /// move them anywhere"): the P44f angle fix above never had a distance
-  /// equivalent - every radial item's distance from the circle was a
-  /// hardcoded screen-pixel constant, so only the leader's angle was ever
-  /// draggable. A sketch-unit distance is camera-independent by
-  /// construction, same reasoning as every other offset map on this class.
-  final Map<String, double> _radialLegLengths = {};
+  /// Placements still being written to the backend (or queued behind a write): a refresh that lands meanwhile must not put an older
+  /// copy over them.
+  final Set<String> _labelWritesInFlight = {};
+  final Set<String> _labelWritesQueued = {};
 
-  /// [constraintId]'s user-chosen distance from the circle (see
-  /// [_radialLegLengths]' own doc comment), or null if never dragged -
-  /// callers fall back to the old fixed on-screen leg length.
-  double? radialLegLengthFor(String constraintId) => _radialLegLengths[constraintId];
-
-  /// Sets [constraintId]'s own distance from the circle. Same
-  /// "always an absolute value, resolved fresh from the live cursor each
-  /// drag-move frame, never an accumulated delta" contract as
-  /// [setRadialAngleOffset]/[setLinearOffsetDistance].
-  void setRadialLegLength(String constraintId, double legLength) {
-    _radialLegLengths[constraintId] = legLength;
-    notifyListeners();
-  }
-
-  /// An angle dimension's own arc radius, in sketch units - see
-  /// [ConstraintAngleDimensionItem.sketchLocalArcRadius]'s own doc comment.
-  final Map<String, double> _angleArcRadii = {};
-
-  /// [constraintId]'s user-chosen arc radius (see [_angleArcRadii]' own doc
-  /// comment), or null if never dragged - callers fall back to a small
-  /// default arc radius.
-  double? angleArcRadiusFor(String constraintId) => _angleArcRadii[constraintId];
-
-  /// Sets [constraintId]'s own arc radius. Same "always an absolute value"
-  /// contract as [setRadialAngleOffset]/[setLinearOffsetDistance].
-  void setAngleArcRadius(String constraintId, double radius) {
-    _angleArcRadii[constraintId] = radius;
-    notifyListeners();
-  }
-
-  /// A Line-to-Line distance dimension's own position along the dimension
-  /// line itself (not the line-to-line perpendicular offset, which
-  /// [_linearOffsetDistances] already covers for this dimension kind too) -
-  /// see [ConstraintLineDistanceDimensionItem.sketchLocalAlongOffset]'s own
-  /// doc comment for the bug this fixes.
-  final Map<String, double> _lineDistanceAlongOffsets = {};
-
-  /// [constraintId]'s user-chosen position along the dimension line (see
-  /// [_lineDistanceAlongOffsets]' own doc comment), or null if never
-  /// dragged - callers fall back to the raw-pixel [labelOffsetFor] default.
-  double? lineDistanceAlongOffsetFor(String constraintId) => _lineDistanceAlongOffsets[constraintId];
-
-  /// Sets [constraintId]'s own position along the dimension line. Same
-  /// "always an absolute value" contract as [setLinearOffsetDistance].
-  void setLineDistanceAlongOffset(String constraintId, double along) {
-    _lineDistanceAlongOffsets[constraintId] = along;
-    notifyListeners();
-  }
-
-  /// On-device feedback ("when orbiting, linear dimensions slide along the
-  /// line. they should stay in the same place on the line. similar to what
-  /// we did with circle dimensions earlier") - [_radialAngleOffsets]'
-  /// exact sibling for a point-to-point linear dimension's own perpendicular
-  /// placement, in SKETCH UNITS (not screen pixels, and not the raw
-  /// [_labelOffsets] pixel accumulator either - see that map's own doc
-  /// comment, still correct for every *other* dimension kind and for the
-  /// flat 2D canvas). A sketch-unit distance is camera-independent by
-  /// construction, same reasoning [_radialAngleOffsets] already
-  /// established for an angle - the renderer (`sketch_constraint_
-  /// overlay.dart`'s `_paintLinearDimension`) re-derives a fresh screen-
-  /// pixel offset from it every frame using the *current* camera's own
-  /// local pixels-per-sketch-unit scale (the same technique
-  /// `_paintRadialDimension` already uses for its own radius), rather than
-  /// this ever storing - or this Sketch's own geometry ever needing to
-  /// carry - a screen-space quantity that would go stale the moment the
-  /// camera moves.
-  ///
-  /// Covers every `DistanceConstraintDto.orientation` value. For the
-  /// general (`null`) case this is a perpendicular magnitude, applied along
-  /// the live screen-projected canonical normal each frame (see
-  /// `sketch_constraint_overlay.dart`'s `canonicalPerpendicular`). For
-  /// `'vertical'`/`'horizontal'` it's a direct sketch-unit coordinate
-  /// offset along the locked axis (see `_axisLockedDimensionEndpoints`'s
-  /// own doc comment - fixed on-device feedback: "vertical dimension can't
-  /// be dragged left/right, up/down is inverted", the axis-locked case's
-  /// own sibling to this map's original "slides along the line" fix).
-  final Map<String, double> _linearOffsetDistances = {};
-
-  /// [constraintId]'s user-chosen perpendicular offset distance (see
-  /// [_linearOffsetDistances]' own doc comment), or null if never dragged -
-  /// callers fall back to whatever default distance makes sense for their
-  /// own context.
-  double? linearOffsetDistanceFor(String constraintId) => _linearOffsetDistances[constraintId];
-
-  /// Sets [constraintId]'s own perpendicular offset distance. Same
-  /// "always an absolute value, resolved fresh from the live cursor each
-  /// drag-move frame, never an accumulated delta" contract as
-  /// [setRadialAngleOffset] - only [PartViewport]'s own linear label-drag
-  /// handling calls this.
-  void setLinearOffsetDistance(String constraintId, double distance) {
-    _linearOffsetDistances[constraintId] = distance;
-    notifyListeners();
-  }
-
-  /// A point-to-point linear dimension's own position along the dimension
-  /// line itself (not the perpendicular offset, which
-  /// [_linearOffsetDistances] already covers) - [_lineDistanceAlongOffsets]'
-  /// exact sibling for this dimension kind. See
-  /// [ConstraintLinearDimensionItem.sketchLocalAlongOffset]'s own doc
-  /// comment for the bug this fixes.
-  final Map<String, double> _linearAlongOffsets = {};
-
-  /// [constraintId]'s user-chosen position along the dimension line (see
-  /// [_linearAlongOffsets]' own doc comment), or null if never dragged.
-  double? linearAlongOffsetFor(String constraintId) => _linearAlongOffsets[constraintId];
-
-  /// Sets [constraintId]'s own position along the dimension line. Same
-  /// "always an absolute value" contract as [setLinearOffsetDistance].
-  void setLinearAlongOffset(String constraintId, double along) {
-    _linearAlongOffsets[constraintId] = along;
-    notifyListeners();
-  }
-
-  /// An angle dimension's own label position along the arc's chord (not the
-  /// arc's radius, which [_angleArcRadii] already covers) -
-  /// [_lineDistanceAlongOffsets]' sibling for this dimension kind. See
-  /// [ConstraintAngleDimensionItem.sketchLocalAlongOffset]'s own doc
-  /// comment.
-  final Map<String, double> _angleAlongOffsets = {};
-
-  /// [constraintId]'s user-chosen position along the arc's chord (see
-  /// [_angleAlongOffsets]' own doc comment), or null if never dragged.
-  double? angleAlongOffsetFor(String constraintId) => _angleAlongOffsets[constraintId];
-
-  /// Sets [constraintId]'s own position along the arc's chord. Same "always
-  /// an absolute value" contract as [setLinearOffsetDistance].
-  void setAngleAlongOffset(String constraintId, double along) {
-    _angleAlongOffsets[constraintId] = along;
-    notifyListeners();
+  /// Takes the placements the backend sent with [fetched], leaving alone any being dragged or written right now, and drops those of
+  /// constraints that no longer exist. A constraint the backend holds no placement for (or an older server that sends none) keeps
+  /// whatever this session set.
+  void _absorbLabelPlacements(Iterable<ConstraintDto> fetched) {
+    final ids = <String>{};
+    for (final constraint in fetched) {
+      ids.add(constraint.id);
+      final label = constraint.label;
+      if (label == null) continue;
+      if (constraint.id == _draggingLabelId || _labelWritesInFlight.contains(constraint.id)) continue;
+      _labelPlacements[constraint.id] = label;
+    }
+    _labelPlacements.removeWhere((id, _) => !ids.contains(id));
   }
 
   String? _draggingLabelId;
 
+  /// Sketch-unit vector from the pointer to the dragged label's centre at the moment it was grabbed, so the label keeps its place under
+  /// the pointer instead of jumping to it. Zero for a label grabbed with the cursor exactly on it.
+  (double, double) _labelGrabOffset = (0.0, 0.0);
+
   /// The Constraint label currently being live-dragged via [beginLabelDrag],
   /// or null if no label drag is in progress - mirrors [draggingPointId]/
   /// [draggingLineId]; all three are mutually exclusive (see
-  /// [beginPointDrag]/[beginLineDrag]/[beginLabelDrag]'s guards). Now uses
-  /// the same tap-grab/swipe/tap-drop gesture as Point/Line grabbing (see
-  /// sketch_canvas.dart's `_handleDragModeTap`) rather than its own
-  /// separate continuous-hold mechanism.
+  /// [beginPointDrag]/[beginLineDrag]/[beginLabelDrag]'s guards). Uses the
+  /// same tap-grab/swipe/tap-drop gesture as Point/Line grabbing (see
+  /// sketch_canvas.dart's `_handleDragModeTap`), and for a mouse the same
+  /// press-drag-release.
   String? get draggingLabelId => _draggingLabelId;
 
+  /// Whether [constraintId]'s label is a dimension whose position is a [DimensionLabelPlacement] (a distance, radius, diameter,
+  /// line-distance, point-line distance or angle). The other labels are relationship glyphs (V, H, parallel...), which keep their
+  /// session-only pixel offset ([labelOffsetFor]).
+  bool labelUsesPlacement(String constraintId) => _labelDragGeometry(constraintId) != null;
+
   /// Starts a live drag of [constraintId]'s label - false (no-op) if a
-  /// Point or Line drag is already active. Unlike [beginPointDrag] this
-  /// never touches the backend, so there's no busy/sketch-id guard to fail
-  /// on.
+  /// Point or Line drag is already active. Never touches the backend until
+  /// [endLabelDrag], so there's no busy/sketch-id guard to fail on.
   ///
-  /// P44c bug fix (on-device feedback: "when I try to grab a constraint
-  /// glyph, nothing happens" - still true even after the cursor-jump fix):
-  /// this used to never call [notifyListeners], unlike every other
-  /// begin*Drag method. Point/Line dragging in the embedded 3D view never
-  /// needed one, since its own move handler reads [draggingPointId]/
-  /// [draggingLineId] straight off this controller at call time - but
-  /// label dragging is the one drag kind [PartViewport] gates through a
-  /// *widget constructor prop* instead ([PartViewport.
-  /// isDraggingConstraintLabel], computed by `sketch_screen.dart` from
-  /// [draggingLabelId] once per rebuild - see that field's own doc
-  /// comment), and a prop only ever updates when its owning
-  /// `AnimatedBuilder` rebuilds, which only happens on
-  /// [notifyListeners]. Without it, [draggingLabelId] flips internally but
-  /// the widget tree never finds out, so every subsequent drag delta kept
-  /// silently routing to the ordinary world-point path instead of
-  /// [SketchController.updateLabelDrag] - a grab that "worked" (the field
-  /// really did get set) but was completely invisible to the user, exactly
-  /// matching "nothing happens".
-  bool beginLabelDrag(String constraintId) {
+  /// [grabOffset] is the sketch-unit vector from the pointer to the label's centre; pass it so a label grabbed off-centre does not jump
+  /// (a view works it out from where it drew the label). Dimensions only; a glyph is moved by [updateLabelDrag] pixel deltas.
+  ///
+  /// P44c: notifies listeners - [PartViewport.isDraggingConstraintLabel] is a widget prop, and a prop only updates when its owning
+  /// `AnimatedBuilder` rebuilds, which only happens on [notifyListeners].
+  bool beginLabelDrag(String constraintId, {(double, double)? grabOffset}) {
     if (_draggingPointId != null || _draggingLineId != null) return false;
     _draggingLabelId = constraintId;
+    _labelGrabOffset = grabOffset ?? (0.0, 0.0);
     notifyListeners();
     return true;
   }
 
-  /// Live-updates the dragged label's offset by [canvasDelta] (screen
-  /// pixels, same convention as a raw [PointerMoveEvent.delta]).
-  /// Accumulates onto whatever offset the label already had, so repeated
-  /// calls during one drag sum correctly.
+  /// The one drag routine for a dimension label, mouse or touch, flat canvas or 3D view: the pointer (the cursor, in sketch units)
+  /// goes in, the placement for the dragged dimension comes out via [LabelDragResolver]. A no-op unless a dimension label is grabbed.
+  void dragLabelToPointer(double x, double y) {
+    final id = _draggingLabelId;
+    if (id == null) return;
+    final geometry = _labelDragGeometry(id);
+    if (geometry == null) return;
+    final p = (x + _labelGrabOffset.$1, y + _labelGrabOffset.$2);
+    final resolved = geometry(p);
+    if (resolved == null) return;
+    // A kind that fills only some fields (the angle's along when the rays coincide) keeps the others it already had.
+    final previous = _labelPlacements[id];
+    _labelPlacements[id] = DimensionLabelPlacement(
+      offset: resolved.offset ?? previous?.offset,
+      along: resolved.along ?? previous?.along,
+      angle: resolved.angle ?? previous?.angle,
+      leg: resolved.leg ?? previous?.leg,
+      radius: resolved.radius ?? previous?.radius,
+    );
+    notifyListeners();
+  }
+
+  /// The resolver call for [constraintId]'s dimension, with that dimension's current geometry bound in; null for a glyph, a hidden
+  /// dimension or one whose geometry is missing.
+  DimensionLabelPlacement? Function((double, double) p)? _labelDragGeometry(String constraintId) {
+    final constraint = constraints[constraintId];
+    switch (constraint) {
+      case DistanceConstraintDto c:
+        if (isCardinalAxisConstraint(c) || c.provisional) return null;
+        if (isRadiusDistanceConstraint(c)) {
+          final center = points[c.pointAId];
+          final rim = points[c.pointBId];
+          if (center == null || rim == null) return null;
+          return (p) => LabelDragResolver.radial(center: (center.x, center.y), rim: (rim.x, rim.y), radius: c.distance, p: p);
+        }
+        final ellipseAxis = ellipseAxisForDistanceConstraint(c);
+        final a = points[ellipseAxis?.$1 ?? c.pointAId];
+        final b = points[ellipseAxis?.$2 ?? c.pointBId];
+        if (a == null || b == null) return null;
+        return (p) => LabelDragResolver.linear(a: (a.x, a.y), b: (b.x, b.y), orientation: c.orientation, p: p);
+      case PointLineDistanceConstraintDto c:
+        final foot = pointLineFootFor(c);
+        final point = points[c.pointId];
+        if (foot == null || point == null) return null;
+        return (p) => LabelDragResolver.linear(a: (point.x, point.y), b: foot, p: p);
+      case LineDistanceConstraintDto c:
+        final line1 = lines[c.line1Id];
+        final line2 = lines[c.line2Id];
+        if (line1 == null || line2 == null) return null;
+        final line1Start = points[line1.startPointId];
+        final line1End = points[line1.endPointId];
+        final line2Start = points[line2.startPointId];
+        if (line1Start == null || line1End == null || line2Start == null) return null;
+        return (p) => LabelDragResolver.lineDistance(
+              line1Start: (line1Start.x, line1Start.y),
+              line1End: (line1End.x, line1End.y),
+              line2Start: (line2Start.x, line2Start.y),
+              p: p,
+            );
+      case AngleConstraintDto c:
+        if (isImplicitPolygonEdgeTie(c.line1Id, c.line2Id)) return null;
+        final line1 = lines[c.line1Id];
+        final line2 = lines[c.line2Id];
+        if (line1 == null || line2 == null) return null;
+        final line1Start = points[line1.startPointId];
+        final line1End = points[line1.endPointId];
+        final line2Start = points[line2.startPointId];
+        final line2End = points[line2.endPointId];
+        if (line1Start == null || line1End == null || line2Start == null || line2End == null) return null;
+        return (p) => LabelDragResolver.angle(
+              line1Start: (line1Start.x, line1Start.y),
+              line1End: (line1End.x, line1End.y),
+              line2Start: (line2Start.x, line2Start.y),
+              line2End: (line2End.x, line2End.y),
+              p: p,
+            );
+      default:
+        return null;
+    }
+  }
+
+  /// The foot of the perpendicular from [c]'s point onto its line's infinite extension, in sketch units.
+  (double, double)? pointLineFootFor(PointLineDistanceConstraintDto c) {
+    final point = points[c.pointId];
+    final line = lines[c.lineId];
+    if (point == null || line == null) return null;
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) return null;
+    final dx = end.x - start.x;
+    final dy = end.y - start.y;
+    final lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared < 1e-18) return (start.x, start.y);
+    final t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+    return (start.x + t * dx, start.y + t * dy);
+  }
+
+  /// Live-updates a relationship glyph's pixel offset by [canvasDelta] (screen pixels, a raw [PointerMoveEvent.delta]); accumulates.
+  /// Dimensions do not use this - see [dragLabelToPointer].
   ///
-  /// [pixelsPerUnit] is the flat 2D canvas's own current
-  /// `ViewTransform.pixelsPerUnit`, recorded alongside the offset for
-  /// [labelOffsetForZoom] to later rescale by (see
-  /// [_labelOffsetZoomReference]'s own doc comment) - left null by the
-  /// embedded 3D viewport's own fallback call site (glyphs/unhandled
-  /// dimension kinds, via `onConstraintLabelDragDelta`), which has no
-  /// single global zoom factor and doesn't use [labelOffsetForZoom].
+  /// [pixelsPerUnit] is the flat canvas's current `ViewTransform.pixelsPerUnit`, recorded so [labelOffsetForZoom] can rescale the offset
+  /// when the view zooms.
   void updateLabelDrag(Offset canvasDelta, [double? pixelsPerUnit]) {
     final id = _draggingLabelId;
     if (id == null) return;
@@ -8721,16 +8674,43 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Ends the current label drag (if any). The accumulated offset is kept
-  /// as-is - a drag that actually moved the label leaves it wherever it
-  /// was dropped.
+  /// Ends the current label drag (if any). The label stays where it was dropped; a dimension's placement is saved to the backend now
+  /// (once per drag, not per move).
   ///
-  /// P44c: mirrors [beginLabelDrag]'s own notifyListeners fix - without it,
-  /// [PartViewport.isDraggingConstraintLabel] would stay stuck true after a
-  /// drop, misrouting the very next cursor move as a further label drag.
+  /// P44c: mirrors [beginLabelDrag]'s own notifyListeners fix - without it, [PartViewport.isDraggingConstraintLabel] would stay stuck
+  /// true after a drop, misrouting the very next cursor move as a further label drag.
   void endLabelDrag() {
+    final id = _draggingLabelId;
     _draggingLabelId = null;
+    _labelGrabOffset = (0.0, 0.0);
     notifyListeners();
+    if (id != null && _labelPlacements.containsKey(id)) unawaited(_saveLabelPlacement(id));
+  }
+
+  /// Writes [constraintId]'s placement to the backend. One write at a time per label: a label moved again while its last write is still
+  /// out is written once more when that one finishes, with the latest placement. A failure (an older server with no such route, a lost
+  /// connection) leaves the placement in this session and sets [errorMessage]; it does not touch the sketch.
+  Future<void> _saveLabelPlacement(String constraintId) async {
+    final sketchId = _sketchId;
+    if (sketchId == null) return;
+    if (!_labelWritesInFlight.add(constraintId)) {
+      _labelWritesQueued.add(constraintId);
+      return;
+    }
+    try {
+      do {
+        _labelWritesQueued.remove(constraintId);
+        final placement = _labelPlacements[constraintId];
+        if (placement == null || !constraints.containsKey(constraintId)) break;
+        await _api.putConstraintLabel(sketchId, constraintId, placement);
+      } while (_labelWritesQueued.contains(constraintId));
+    } on ApiException catch (e) {
+      _labelWritesQueued.remove(constraintId);
+      errorMessage = 'Could not save the dimension position: ${e.message}';
+      notifyListeners();
+    } finally {
+      _labelWritesInFlight.remove(constraintId);
+    }
   }
 
   /// On-device feedback: session-only display-mode override for a circle's
@@ -9579,6 +9559,9 @@ class SketchController extends ChangeNotifier {
   /// closed is now a no-op - it used to open the flyout showing only an
   /// "Exit Sketch" action, which has moved to the hamburger menu and is no
   /// longer reachable via the canvas at all.
+  ///
+  /// Desktop input D2: a mouse click follows [selectClick] instead - see
+  /// [selectEntity]; a Ctrl+click on blank space keeps the selection.
   Future<void> _handleSelectTap(double hitRadius) async {
     if (_busy) return;
     SketchSelection? hit;
@@ -9587,6 +9570,7 @@ class SketchController extends ChangeNotifier {
     });
 
     if (hit == null) {
+      if (selectClick == SelectClick.toggle) return;
       if (_ribbonVisible) {
         _selectionSet.clear();
         _ribbonVisible = false;
@@ -9595,18 +9579,16 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
-    if (_ribbonVisible && _selectionSet.isNotEmpty) {
-      if (!_selectionSet.any((s) => s.sameAs(hit!))) {
-        _selectionSet.add(hit!);
-      }
-    } else {
-      _selectionSet
-        ..clear()
-        ..add(hit!);
-    }
-    _ribbonVisible = true;
-    notifyListeners();
+    selectEntity(hit!);
   }
+
+  /// Desktop input D2: how the next select click (a canvas tap, a
+  /// constraint label, the embedded 3D view's pick) applies - set by
+  /// whichever canvas saw the pointer press ([SketchCanvas], or
+  /// `SketchScreen` for the embedded 3D view), from the pointer kind and
+  /// Ctrl. [SelectClick.touch] (the default) is the touch rule
+  /// [selectEntity] has always had.
+  SelectClick selectClick = SelectClick.touch;
 
   /// Selects a Constraint directly by id - the entry point for tapping a
   /// dimension/constraint label on the canvas (Stage 13's hit-testing for
@@ -9625,17 +9607,32 @@ class SketchController extends ChangeNotifier {
   /// [SketchSelection] by the caller) needs the exact same rule with no
   /// hit-testing of its own to do, the same way [selectConstraint] never
   /// re-hit-tests either.
+  ///
+  /// Desktop input D2: for a mouse ([selectClick]) a plain click replaces
+  /// the selection and a Ctrl+click adds or removes [hit] (SOLIDWORKS); the
+  /// touch rule above (each tap adds while the flyout is open) is unchanged.
   void selectEntity(SketchSelection hit) {
-    if (_ribbonVisible && _selectionSet.isNotEmpty) {
-      if (!_selectionSet.any((s) => s.sameAs(hit))) {
-        _selectionSet.add(hit);
-      }
-    } else {
-      _selectionSet
-        ..clear()
-        ..add(hit);
+    switch (selectClick) {
+      case SelectClick.touch:
+        if (_ribbonVisible && _selectionSet.isNotEmpty) {
+          if (!_selectionSet.any((s) => s.sameAs(hit))) {
+            _selectionSet.add(hit);
+          }
+        } else {
+          _selectionSet
+            ..clear()
+            ..add(hit);
+        }
+      case SelectClick.replace:
+        _selectionSet
+          ..clear()
+          ..add(hit);
+      case SelectClick.toggle:
+        final before = _selectionSet.length;
+        _selectionSet.removeWhere((s) => s.sameAs(hit));
+        if (_selectionSet.length == before) _selectionSet.add(hit);
     }
-    _ribbonVisible = true;
+    _ribbonVisible = _selectionSet.isNotEmpty;
     notifyListeners();
   }
 
@@ -9750,13 +9747,25 @@ class SketchController extends ChangeNotifier {
   /// constraints-not-auto-included limitation today, so this stays
   /// consistent with existing behavior rather than introducing new
   /// special-casing.
-  void selectInRect(Rect sketchRect) {
+  ///
+  /// Desktop input D2 (`docs/desktop-input-scope.md`): [crossing] (a mouse
+  /// box dragged right to left) also picks every entity any part of which
+  /// touches the box - see `marquee_selection.dart`; [additive] (Ctrl held)
+  /// adds to [selectionSet] instead of replacing it. Both default off, which
+  /// is the touch marquee's behaviour unchanged.
+  void selectInRect(Rect sketchRect, {bool crossing = false, bool additive = false}) {
     bool insideRect(double x, double y) {
       return x >= sketchRect.left &&
           x <= sketchRect.right &&
           y >= sketchRect.top &&
           y <= sketchRect.bottom;
     }
+
+    // Crossing box only: whether [polyline] (sketch coordinates) touches
+    // the box anywhere. A window box never asks.
+    bool touches(List<Offset> polyline, {bool closed = false}) =>
+        crossing && polylineTouchesRect(polyline, sketchRect, closed: closed);
+    Offset at(SketchPointView p) => Offset(p.x, p.y);
 
     final selected = <SketchSelection>[];
     for (final point in points.values) {
@@ -9769,7 +9778,7 @@ class SketchController extends ChangeNotifier {
       final start = points[line.startPointId];
       final end = points[line.endPointId];
       if (start == null || end == null) continue;
-      if (insideRect(start.x, start.y) && insideRect(end.x, end.y)) {
+      if ((insideRect(start.x, start.y) && insideRect(end.x, end.y)) || touches([at(start), at(end)])) {
         selected.add(SketchSelection(kind: SelectionKind.line, id: line.id));
       }
     }
@@ -9780,8 +9789,8 @@ class SketchController extends ChangeNotifier {
       final radius = math.sqrt(
         math.pow(edge.x - center.x, 2) + math.pow(edge.y - center.y, 2),
       );
-      if (insideRect(center.x - radius, center.y - radius) &&
-          insideRect(center.x + radius, center.y + radius)) {
+      if ((insideRect(center.x - radius, center.y - radius) && insideRect(center.x + radius, center.y + radius)) ||
+          touches(ellipsePolyline(at(center), radius, radius, 0, 0, 2 * math.pi), closed: true)) {
         selected.add(SketchSelection(kind: SelectionKind.circle, id: circle.id));
       }
     }
@@ -9795,8 +9804,10 @@ class SketchController extends ChangeNotifier {
       // own check - a superset of the arc's actual (smaller) extent, so
       // this only ever under-selects a marquee-enclosed Arc, never
       // wrongly includes one that isn't fully inside.
-      if (insideRect(center.x - radius, center.y - radius) &&
-          insideRect(center.x + radius, center.y + radius)) {
+      final arcStart = math.atan2(start.y - center.y, start.x - center.x);
+      final arcSweep = normalizeSketchAngle(math.atan2(end.y - center.y, end.x - center.x) - arcStart);
+      if ((insideRect(center.x - radius, center.y - radius) && insideRect(center.x + radius, center.y + radius)) ||
+          touches(ellipsePolyline(at(center), radius, radius, 0, arcStart, arcSweep))) {
         selected.add(SketchSelection(kind: SelectionKind.arc, id: arc.id));
       }
     }
@@ -9811,8 +9822,12 @@ class SketchController extends ChangeNotifier {
       final majorRadius = math.sqrt(
         math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2),
       );
-      if (insideRect(center.x - majorRadius, center.y - majorRadius) &&
-          insideRect(center.x + majorRadius, center.y + majorRadius)) {
+      final ellipseMinor = points[ellipse.minorPointId];
+      final ellipseMinorRadius = ellipseMinor == null ? ellipse.minorRadius : _distanceXY((center.x, center.y), (ellipseMinor.x, ellipseMinor.y));
+      final ellipseRotation = math.atan2(major.y - center.y, major.x - center.x);
+      if ((insideRect(center.x - majorRadius, center.y - majorRadius) &&
+              insideRect(center.x + majorRadius, center.y + majorRadius)) ||
+          touches(ellipsePolyline(at(center), majorRadius, ellipseMinorRadius, ellipseRotation, 0, 2 * math.pi), closed: true)) {
         selected.add(SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id));
       }
     }
@@ -9824,8 +9839,9 @@ class SketchController extends ChangeNotifier {
       final majorRadius = math.sqrt(
         math.pow(major.x - center.x, 2) + math.pow(major.y - center.y, 2),
       );
-      if (insideRect(center.x - majorRadius, center.y - majorRadius) &&
-          insideRect(center.x + majorRadius, center.y + majorRadius)) {
+      if ((insideRect(center.x - majorRadius, center.y - majorRadius) &&
+              insideRect(center.x + majorRadius, center.y + majorRadius)) ||
+          (crossing && _ellipseArcTouchesRect(ellipseArc, sketchRect))) {
         selected.add(SketchSelection(kind: SelectionKind.ellipseArc, id: ellipseArc.id));
       }
     }
@@ -9837,7 +9853,14 @@ class SketchController extends ChangeNotifier {
         for (final id in [...spline.throughPointIds, ...spline.controlPointIds]) points[id],
       ];
       if (definingPoints.any((p) => p == null)) continue;
-      if (definingPoints.every((p) => insideRect(p!.x, p.y))) {
+      if (definingPoints.every((p) => insideRect(p!.x, p.y)) ||
+          (crossing &&
+              spline.segments().any((segment) {
+                final (p0, c1, c2, p3) = segment;
+                final ends = [points[p0], points[c1], points[c2], points[p3]];
+                if (ends.any((p) => p == null)) return false;
+                return touches(cubicPolyline(at(ends[0]!), at(ends[1]!), at(ends[2]!), at(ends[3]!)));
+              }))) {
         selected.add(SketchSelection(kind: SelectionKind.spline, id: spline.id));
       }
     }
@@ -9847,15 +9870,43 @@ class SketchController extends ChangeNotifier {
       // their own outer boundary, so they need no separate check).
       final contours = textAbsoluteContours(text);
       if (contours == null) continue;
-      if (contours.every((c) => c.outer.every((p) => insideRect(p.$1, p.$2)))) {
+      List<Offset> loop(List<(double, double)> contour) => [for (final p in contour) Offset(p.$1, p.$2)];
+      if (contours.every((c) => c.outer.every((p) => insideRect(p.$1, p.$2))) ||
+          contours.any((c) => touches(loop(c.outer), closed: true) || c.holes.any((h) => touches(loop(h), closed: true)))) {
         selected.add(SketchSelection(kind: SelectionKind.text, id: text.id));
       }
     }
-    _selectionSet
-      ..clear()
-      ..addAll(selected);
+    if (!additive) _selectionSet.clear();
+    for (final selection in selected) {
+      if (!_selectionSet.any((s) => s.sameAs(selection))) _selectionSet.add(selection);
+    }
     _ribbonVisible = _selectionSet.isNotEmpty;
     notifyListeners();
+  }
+
+  /// [selectInRect]'s crossing test for an Ellipse Arc: the same parametric
+  /// angles and counter-clockwise sweep the canvas draws it with
+  /// (`_ellipseArcScreenAngles`, `sketch_canvas.dart`).
+  bool _ellipseArcTouchesRect(SketchEllipseArcView ellipseArc, Rect rect) {
+    final center = points[ellipseArc.centerPointId];
+    final major = points[ellipseArc.majorPointId];
+    final minor = points[ellipseArc.minorPointId];
+    final start = points[ellipseArc.startPointId];
+    final end = points[ellipseArc.endPointId];
+    if (center == null || major == null || minor == null || start == null || end == null) return false;
+    final a = _distanceXY((center.x, center.y), (major.x, major.y));
+    final b = _distanceXY((center.x, center.y), (minor.x, minor.y));
+    if (a < 1e-9 || b < 1e-9) return false;
+    final rotation = math.atan2(major.y - center.y, major.x - center.x);
+    double localAngle(SketchPointView p) {
+      final dx = p.x - center.x, dy = p.y - center.y;
+      final cosR = math.cos(-rotation), sinR = math.sin(-rotation);
+      return math.atan2((dx * sinR + dy * cosR) / b, (dx * cosR - dy * sinR) / a);
+    }
+
+    final startAngle = localAngle(start);
+    final sweep = normalizeSketchAngle(localAngle(end) - startAngle);
+    return polylineTouchesRect(ellipsePolyline(Offset(center.x, center.y), a, b, rotation, startAngle, sweep), rect);
   }
 
   /// Deletes every entity in [selectionSet], cascaded via
@@ -10864,6 +10915,9 @@ class SketchController extends ChangeNotifier {
     if (current.kind != SelectionKind.constraint) return;
 
     final oldValue = selectedConstraintValue;
+    // The label shows the magnitude only, so the typed number is a magnitude
+    // too: it keeps the current side, a leading minus flips it.
+    if (oldValue != null) value = resolveDimensionSign(value, oldValue);
     // See [autoFitRequestToken]'s own doc comment - only a DistanceConstraint
     // triggers the backend's whole-sketch scale (LineDistance/PointLine
     // Distance/Angle never do, regardless of [_isFirstDimension]), and must
@@ -14672,7 +14726,7 @@ class SketchController extends ChangeNotifier {
         final existing = _findAngleConstraint(target.lineAId!, target.lineBId!);
         if (existing != null) {
           final oldValue = existing.angleDegrees;
-          await _api.updateConstraintValue(_sketchId!, existing.id, value);
+          await _api.updateConstraintValue(_sketchId!, existing.id, resolveDimensionSign(value, oldValue));
           _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
         } else {
           final constraint =
@@ -14697,7 +14751,7 @@ class SketchController extends ChangeNotifier {
         final existing = _findLineDistanceConstraint(target.lineAId!, target.lineBId!);
         if (existing != null) {
           final oldValue = existing.distance;
-          await _api.updateConstraintValue(_sketchId!, existing.id, value);
+          await _api.updateConstraintValue(_sketchId!, existing.id, resolveDimensionSign(value, oldValue));
           _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
         } else {
           final constraint = await _api.createLineDistanceConstraint(
@@ -15206,9 +15260,11 @@ class SketchController extends ChangeNotifier {
         construction: text.construction,
       );
     }
-    for (final constraint in await _api.listConstraints(sketchId)) {
+    final fetchedConstraints = await _api.listConstraints(sketchId);
+    for (final constraint in fetchedConstraints) {
       constraints[constraint.id] = constraint;
     }
+    _absorbLabelPlacements(fetchedConstraints);
     // Sketcher-roadmap Phase 7 (2D Pattern/Mirror): fetched alongside every
     // other entity collection above, so a re-entered Sketch continues to
     // show a previously-created instance's own derived ghosts (see
@@ -15277,6 +15333,7 @@ class SketchController extends ChangeNotifier {
     for (final constraint in fetched) {
       constraints[constraint.id] = constraint;
     }
+    _absorbLabelPlacements(fetched);
   }
 
   void _adoptSketchDto(SketchDto sketch) {
@@ -16881,6 +16938,73 @@ class SketchController extends ChangeNotifier {
   /// segment direction yet to reason about) has no such competing
   /// mechanism, so it's deliberately left at this method's own default.
   Future<String> _pointIdAt(double x, double y, {String? excludeId, bool inferPointOnCurve = true}) async {
+    // Remembers the Point this tap made (if it made one rather than snapping
+    // onto an existing one) and the undo entries that creating it pushed, so
+    // [_discardOrphanTransientPoints] can take it back if the tool is
+    // cancelled before the Point becomes part of an entity.
+    final knownBefore = points.keys.toSet();
+    final undoBefore = _undoStack.toSet();
+    final id = await _pointIdAtUntracked(x, y, excludeId: excludeId, inferPointOnCurve: inferPointOnCurve);
+    if (!knownBefore.contains(id)) {
+      _transientPointUndo[id] = [
+        for (final entry in _undoStack)
+          if (!undoBefore.contains(entry)) entry,
+      ];
+    }
+    return id;
+  }
+
+  /// Points a draw tap created that no entity owns yet, each with the undo
+  /// entries its creation pushed - a Rectangle's first corner, a Circle's
+  /// centre, a Line chain's start. They are real Points on the backend from
+  /// the moment of the tap (the tools need them there), so a tool that is
+  /// cancelled part-way would otherwise leave them behind as loose Points.
+  final Map<String, List<Future<void> Function()>> _transientPointUndo = {};
+
+  /// Whether any entity (not a Constraint) is built on Point [id].
+  bool _pointOwnsEntities(String id) {
+    final cascade = computeDeleteCascade([SketchSelection(kind: SelectionKind.point, id: id)]);
+    return cascade.lines.isNotEmpty ||
+        cascade.circles.isNotEmpty ||
+        cascade.arcs.isNotEmpty ||
+        cascade.ellipses.isNotEmpty ||
+        cascade.ellipseArcs.isNotEmpty ||
+        cascade.polygons.isNotEmpty ||
+        cascade.slots.isNotEmpty ||
+        cascade.rectangles.isNotEmpty ||
+        cascade.collapsedPolygons.isNotEmpty ||
+        cascade.collapsedSlots.isNotEmpty ||
+        cascade.collapsedRectangles.isNotEmpty ||
+        cascade.splines.isNotEmpty ||
+        cascade.texts.isNotEmpty;
+  }
+
+  /// A draw tool was cancelled or switched away from (see
+  /// [_resetTransientDrawState]) or a chain was ended: takes back every
+  /// Point it created that never became part of an entity, by running the
+  /// undo entries its creation pushed (so the undo history stays correct
+  /// too). Points an entity already uses are left alone.
+  void _discardOrphanTransientPoints() {
+    if (_transientPointUndo.isEmpty) return;
+    final tracked = Map.of(_transientPointUndo);
+    _transientPointUndo.clear();
+    final orphans = [
+      for (final id in tracked.keys)
+        if (points.containsKey(id) && !_pointOwnsEntities(id)) id,
+    ];
+    if (orphans.isEmpty || _sketchId == null) return;
+    unawaited(_runGuarded(() async {
+      for (final id in orphans.reversed) {
+        for (final undo in tracked[id]!.reversed) {
+          _undoStack.remove(undo);
+          await undo();
+        }
+      }
+      await _solveAndTrackDof();
+    }));
+  }
+
+  Future<String> _pointIdAtUntracked(double x, double y, {String? excludeId, bool inferPointOnCurve = true}) async {
     final existing = _existingPointIdNear(x, y, excludeId: excludeId);
     if (existing != null) {
       // Bug fix (on-device feedback: "no entity should be able to use the
@@ -17233,6 +17357,7 @@ class SketchController extends ChangeNotifier {
   /// unrelated new chain. Stays in [SketchMode.draw] - only the chain ends,
   /// not the tool/mode.
   void finishChain() {
+    _discardOrphanTransientPoints();
     _chainStartPointId = null;
     _chainFirstPointId = null;
     notifyListeners();
@@ -17580,18 +17705,18 @@ class SketchController extends ChangeNotifier {
               rim: (rim.x, rim.y),
               radius: c.distance,
               isDiameter: showsDiameter,
-              text: showsDiameter ? '⌀${(c.distance * 2).toStringAsFixed(2)}' : 'R${c.distance.toStringAsFixed(2)}',
+              text: showsDiameter ? '⌀${dimensionValueText(c.distance * 2)}' : 'R${dimensionValueText(c.distance)}',
               // P44f bug fix ("the arrow should remain at the same angular
               // position when orbiting" - reported against a dragged
               // dimension): the leader's own angle now comes from
-              // radialAngleOffsetFor (camera-independent, sketch-local),
+              // the saved placement's angle (camera-independent, sketch-local),
               // not labelOffset's screen pixels - labelOffset stays zero
               // here (see ConstraintRadialDimensionItem.labelOffset's own
               // updated doc comment for why it's unused by radial items
               // now).
               labelOffset: Offset.zero,
-              defaultAngleOffsetDegrees: radialAngleOffsetFor(entry.key) ?? 0.0,
-              sketchLocalLegLength: radialLegLengthFor(entry.key),
+              defaultAngleOffsetDegrees: labelPlacementFor(entry.key)?.angle ?? 0.0,
+              sketchLocalLegLength: labelPlacementFor(entry.key)?.leg,
             ));
             break;
           }
@@ -17616,10 +17741,10 @@ class SketchController extends ChangeNotifier {
             pointA: (a.x, a.y),
             pointB: (b.x, b.y),
             orientation: c.orientation,
-            text: displayValue.toStringAsFixed(2),
+            text: dimensionValueText(displayValue),
             labelOffset: labelOffset,
-            sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
-            sketchLocalAlongOffset: linearAlongOffsetFor(entry.key),
+            sketchLocalOffsetDistance: labelPlacementFor(entry.key)?.offset,
+            sketchLocalAlongOffset: labelPlacementFor(entry.key)?.along,
           ));
         case VerticalConstraintDto c:
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'V', entry.key, isSelected, labelOffset);
@@ -17646,10 +17771,10 @@ class SketchController extends ChangeNotifier {
             line1End: (angleLine1End.x, angleLine1End.y),
             line2Start: (angleLine2Start.x, angleLine2Start.y),
             line2End: (angleLine2End.x, angleLine2End.y),
-            text: '${c.angleDegrees.toStringAsFixed(1)}°',
+            text: '${dimensionValueText(c.angleDegrees, decimals: 1)}°',
             labelOffset: labelOffset,
-            sketchLocalArcRadius: angleArcRadiusFor(entry.key),
-            sketchLocalAlongOffset: angleAlongOffsetFor(entry.key),
+            sketchLocalArcRadius: labelPlacementFor(entry.key)?.radius,
+            sketchLocalAlongOffset: labelPlacementFor(entry.key)?.along,
           ));
         case LineDistanceConstraintDto c:
           final line1 = lines[c.line1Id];
@@ -17667,10 +17792,10 @@ class SketchController extends ChangeNotifier {
             line1End: (line1End.x, line1End.y),
             line2Start: (line2Start.x, line2Start.y),
             line2End: (line2End.x, line2End.y),
-            text: c.distance.toStringAsFixed(2),
+            text: dimensionValueText(c.distance),
             labelOffset: labelOffset,
-            sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
-            sketchLocalAlongOffset: lineDistanceAlongOffsetFor(entry.key),
+            sketchLocalOffsetDistance: labelPlacementFor(entry.key)?.offset,
+            sketchLocalAlongOffset: labelPlacementFor(entry.key)?.along,
           ));
         case CoincidentConstraintDto c:
           final labelItem = _pairMidpointLabel(c.pointAId, c.pointBId, 'Coinc.', entry.key, isSelected, labelOffset);
@@ -17756,10 +17881,10 @@ class SketchController extends ChangeNotifier {
             pointA: (point.x, point.y),
             pointB: foot,
             orientation: null,
-            text: c.distance.toStringAsFixed(2),
+            text: dimensionValueText(c.distance),
             labelOffset: labelOffset,
-            sketchLocalOffsetDistance: linearOffsetDistanceFor(entry.key),
-            sketchLocalAlongOffset: linearAlongOffsetFor(entry.key),
+            sketchLocalOffsetDistance: labelPlacementFor(entry.key)?.offset,
+            sketchLocalAlongOffset: labelPlacementFor(entry.key)?.along,
           ));
         case PointOnLineConstraintDto c:
           final labelItem = _pointGlyphLabel(c.pointId, 'Coinc.', entry.key, isSelected, labelOffset);
@@ -17828,8 +17953,8 @@ class SketchController extends ChangeNotifier {
             },
             text: '?',
             labelOffset: labelOffset,
-            sketchLocalOffsetDistance: linearOffsetDistanceFor(ghost.key),
-            sketchLocalAlongOffset: linearAlongOffsetFor(ghost.key),
+            sketchLocalOffsetDistance: labelPlacementFor(ghost.key)?.offset,
+            sketchLocalAlongOffset: labelPlacementFor(ghost.key)?.along,
           ));
         case GhostKind.radius:
         case GhostKind.diameter:
@@ -17854,13 +17979,13 @@ class SketchController extends ChangeNotifier {
           // radius-scaled leader).
           //
           // P44f bug fix ("the arrow should remain at the same angular
-          // position when orbiting"): once dragged, [radialAngleOffsetFor]
+          // position when orbiting"): once dragged, [labelPlacementFor]
           // (camera-independent, sketch-local - see its own doc comment)
           // wins over this default, same as [_labelOffsets] used to gate
           // "has this been dragged yet" for every other dimension kind -
           // `labelOffset` itself stays zero here now; it no longer carries
           // any of the leader's own direction for a radial item.
-          final defaultAngleOffsetDegrees = radialAngleOffsetFor(ghost.key) ?? (isDiameter ? 50.0 : 0.0);
+          final defaultAngleOffsetDegrees = labelPlacementFor(ghost.key)?.angle ?? (isDiameter ? 50.0 : 0.0);
           items.add(ConstraintRadialDimensionItem(
             constraintId: ghost.key,
             selected: isActive,
@@ -17874,7 +17999,7 @@ class SketchController extends ChangeNotifier {
             text: isDiameter ? '⌀?' : 'R?',
             labelOffset: Offset.zero,
             defaultAngleOffsetDegrees: defaultAngleOffsetDegrees,
-            sketchLocalLegLength: radialLegLengthFor(ghost.key),
+            sketchLocalLegLength: labelPlacementFor(ghost.key)?.leg,
           ));
         case GhostKind.lineDistance:
           final lineA = lines[ghost.lineAId];
@@ -17894,8 +18019,8 @@ class SketchController extends ChangeNotifier {
             line2End: (line2End.x, line2End.y),
             text: '?',
             labelOffset: labelOffset,
-            sketchLocalOffsetDistance: linearOffsetDistanceFor(ghost.key),
-            sketchLocalAlongOffset: lineDistanceAlongOffsetFor(ghost.key),
+            sketchLocalOffsetDistance: labelPlacementFor(ghost.key)?.offset,
+            sketchLocalAlongOffset: labelPlacementFor(ghost.key)?.along,
           ));
         case GhostKind.angle:
           final angleLineA = lines[ghost.lineAId];
@@ -17917,8 +18042,8 @@ class SketchController extends ChangeNotifier {
             line2End: (angleLine2End.x, angleLine2End.y),
             text: '?',
             labelOffset: labelOffset,
-            sketchLocalArcRadius: angleArcRadiusFor(ghost.key),
-            sketchLocalAlongOffset: angleAlongOffsetFor(ghost.key),
+            sketchLocalArcRadius: labelPlacementFor(ghost.key)?.radius,
+            sketchLocalAlongOffset: labelPlacementFor(ghost.key)?.along,
           ));
       }
     }
