@@ -1,6 +1,11 @@
+import 'dart:ui' show Size;
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'package:didsa_cad_client/viewport3d/mesh_geometry.dart' show boundsOfPoints;
+import 'package:didsa_cad_client/viewport3d/orbit_camera.dart';
+import 'package:didsa_cad_client/viewport3d/orthographic_camera.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
 
 void main() {
@@ -60,36 +65,118 @@ void main() {
     }
   });
 
-  group('adaptive grid spacing', () {
-    test('walks the 1-2-5 ladder as the scale grows', () {
-      // 24 px minimum cell: 0.1 mm/px -> 2.4 mm target -> 5 mm cells.
-      expect(sketchGridSpacingFor(0.1), 5);
-      expect(sketchGridSpacingFor(1), 50);
-      expect(sketchGridSpacingFor(0.05), 2);
-      expect(sketchGridSpacingFor(10), 500);
-      expect(sketchGridSpacingFor(0.01), 0.5);
+  // Desktop sketcher feedback 2026-10-28, items 3 and 4: a fixed grid at the
+  // sketch origin instead of one that followed the view.
+  group('fixed grid', () {
+    test('is a 100 mm square until the sketch outgrows it, then grows in 100 mm steps', () {
+      expect(sketchGridHalfExtentFor(xyBasis, const []), 50);
+      expect(sketchGridHalfExtentFor(xyBasis, [vm.Vector3(30, -40, 0)]), 50);
+      expect(sketchGridHalfExtentFor(xyBasis, [vm.Vector3(50, 0, 0)]), 50);
+      expect(sketchGridHalfExtentFor(xyBasis, [vm.Vector3(130, 0, 0)]), 150);
+      expect(sketchGridHalfExtentFor(xyBasis, [vm.Vector3(0, -201, 0)]), 250);
     });
 
-    test('a larger scale never yields a smaller spacing', () {
-      var previous = 0.0;
-      for (var scale = 0.001; scale < 1000; scale *= 1.1) {
-        final spacing = sketchGridSpacingFor(scale);
-        expect(spacing, greaterThanOrEqualTo(previous));
-        expect(spacing / scale, greaterThanOrEqualTo(sketchGridMinCellPixels - 1e-9));
-        previous = spacing;
+    test('measures the sketch along the plane axes, not the world ones', () {
+      final basis = SketchPlaneBasis(
+        origin: vm.Vector3(0, 0, 500),
+        xAxis: vm.Vector3(0, 1, 0),
+        yAxis: vm.Vector3(0, 0, 1),
+        normal: vm.Vector3(1, 0, 0),
+      );
+      // 500 mm away in world z, but only 20 mm from the sketch origin.
+      expect(sketchGridHalfExtentFor(basis, [vm.Vector3(0, 0, 520)]), 50);
+    });
+
+    test('major lines every 10 mm, minor lines between them', () {
+      final major = sketchGridLineOffsets(sketchGridMajorSpacing, 50);
+      expect(major, [-50, -40, -30, -20, -10, 0, 10, 20, 30, 40, 50]);
+      final minor = sketchGridLineOffsets(sketchGridMinorSpacing, 50, skipMultiplesOf: sketchGridMajorSpacing);
+      expect(minor.length, 101 - 11);
+      expect(minor.any((o) => o % 10 == 0), isFalse);
+    });
+
+    test('minor lines show only when 1 mm is at least 8 px, on a grid no wider than 500 mm', () {
+      expect(sketchGridShowsMinorLines(1 / 8, 50), isTrue);
+      expect(sketchGridShowsMinorLines(1 / 7.9, 50), isFalse);
+      expect(sketchGridShowsMinorLines(1 / 20, 250), isTrue);
+      expect(sketchGridShowsMinorLines(1 / 20, 300), isFalse);
+      expect(sketchGridShowsMinorLines(double.nan, 50), isFalse);
+      expect(sketchGridShowsMinorLines(0, 50), isFalse);
+    });
+
+    test('batches every line into one polyline joined by zero-width connectors, faded at the edge', () {
+      final polyline = sketchGridPolyline(xyBasis, const [-10, 0, 10], extent: 50, alpha: 0.5)!;
+      expect(polyline.points.length, polyline.widths.length);
+      expect(polyline.points.length, polyline.colors.length);
+      // Every drawn point lies in the square, on the plane.
+      for (final p in polyline.points) {
+        expect(p.x.abs(), lessThanOrEqualTo(50 + 1e-9));
+        expect(p.y.abs(), lessThanOrEqualTo(50 + 1e-9));
+        expect(p.z, 0);
+      }
+      // Six lines (three offsets, both directions), each bracketed by a
+      // zero-width point at either end.
+      var runs = 0;
+      for (var i = 1; i < polyline.widths.length; i++) {
+        if (polyline.widths[i - 1] == 0 && polyline.widths[i] > 0) runs++;
+      }
+      expect(runs, 6);
+      // Solid in the middle, gone at the edge.
+      for (var i = 0; i < polyline.points.length; i++) {
+        final p = polyline.points[i];
+        if (polyline.widths[i] == 0) continue;
+        final r = p.x.abs() > p.y.abs() ? p.x.abs() : p.y.abs();
+        if (r <= 40) expect(polyline.colors[i].w, closeTo(0.5, 1e-9));
+        if (r >= 50) expect(polyline.colors[i].w, closeTo(0, 1e-9));
       }
     });
 
-    test('falls back to the legacy spacing for a degenerate scale', () {
-      expect(sketchGridSpacingFor(0), 2.5);
-      expect(sketchGridSpacingFor(double.nan), 2.5);
-      expect(sketchGridSpacingFor(double.infinity), 2.5);
+    test('sameSketchPlaneBasis compares by value', () {
+      SketchPlaneBasis copy() => SketchPlaneBasis(
+            origin: vm.Vector3.zero(),
+            xAxis: vm.Vector3(1, 0, 0),
+            yAxis: vm.Vector3(0, 1, 0),
+            normal: vm.Vector3(0, 0, 1),
+          );
+      expect(sameSketchPlaneBasis(copy(), copy()), isTrue);
+      expect(sameSketchPlaneBasis(null, null), isTrue);
+      expect(sameSketchPlaneBasis(copy(), null), isFalse);
+      final moved = SketchPlaneBasis(
+        origin: vm.Vector3(0, 0, 5),
+        xAxis: vm.Vector3(1, 0, 0),
+        yAxis: vm.Vector3(0, 1, 0),
+        normal: vm.Vector3(0, 0, 1),
+      );
+      expect(sameSketchPlaneBasis(copy(), moved), isFalse);
     });
 
-    test('snapToGridSpacing rounds to the nearest multiple', () {
-      expect(snapToGridSpacing(12.4, 5), 10);
-      expect(snapToGridSpacing(12.6, 5), 15);
-      expect(snapToGridSpacing(-12.6, 5), -15);
+    test('leaves out the fully faded outer lines', () {
+      expect(sketchGridPolyline(xyBasis, const [-50, 50], extent: 50, alpha: 0.5), isNull);
     });
+  });
+
+  // Item 4: the grid's corners go into the scene bounds (PartViewport.
+  // _syncZoomBounds), so the orthographic depth range always spans it, even
+  // edge-on and with no bodies.
+  test('an edge-on orthographic view of an empty sketch keeps the whole grid in the depth range', () {
+    final corners = [
+      for (final (x, y) in const [(-50.0, -50.0), (50.0, -50.0), (50.0, 50.0), (-50.0, 50.0)])
+        sketchPointToWorld(xyBasis, x, y),
+    ];
+    final bounds = boundsOfPoints(corners)!;
+    final orbit = OrbitCamera()
+      ..target = vm.Vector3.zero()
+      ..distance = 20
+      ..setZoomBoundsForRadius(bounds.boundingSphereRadius, center: bounds.center)
+      ..keepOrbitOutsideScene();
+    // Look along the plane: the camera's forward lies in z = 0.
+    orbit.orientation = OrbitCamera.orientationLookingFrom(vm.Vector3(0, -1, 0), vm.Vector3.zero(), vm.Vector3(0, 0, 1));
+    final camera = orthographicCameraFor(orbit, const Size(800, 600));
+    final forward = (orbit.target - orbit.position).normalized();
+    for (final corner in corners) {
+      final depth = (corner - orbit.position).dot(forward);
+      expect(depth, greaterThan(camera.near));
+      expect(depth, lessThan(camera.far));
+    }
   });
 }

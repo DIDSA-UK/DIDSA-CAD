@@ -973,7 +973,8 @@ class _SketchScreenState extends State<SketchScreen> {
                               ),
                             ),
                           if (widget.referenceGhostSegments.isNotEmpty || widget.otherSketchGeometries.isNotEmpty) ...[
-                            const SizedBox(height: 8),
+                            // No gap when Exit Sketch above is hidden (desktop, standalone).
+                            if (!widget.standalone && !_desktopLayout) const SizedBox(height: 8),
                             FloatingActionButton.small(
                               heroTag: 'reference-body-visibility-fab',
                               // On-device feedback: this toggle now also
@@ -1647,6 +1648,8 @@ class _SketchScreenState extends State<SketchScreen> {
         onSketchGrabUpdate: _handleEmbeddedGrabUpdate,
         onSketchGrabEnd: _handleEmbeddedGrabEnd,
         initialViewBasis: orbitBasis,
+        // This screen's own Return to Default View sits in the same corner.
+        showResetViewButton: false,
       );
     }
     return SketchCanvas(
