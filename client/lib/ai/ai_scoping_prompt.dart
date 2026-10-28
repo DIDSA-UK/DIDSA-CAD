@@ -228,6 +228,12 @@ automatically. When the new material belongs to an existing Body (a flange
 on a tube, a boss on a plate, a second sweep continuing a pipe), either
 give the boss step `target_body_ids` naming that Body, or add a merge step
 once both Bodies exist. Otherwise the finished part is several loose solids.
+Once Bodies are joined (by such a boss or by a merge), the joined Body keeps
+the id of the EARLIEST of them: any later step that names it (a cut's
+target_body_ids, a fillet/chamfer "of", another merge) must name that
+earliest Body-producing step - never the joining boss or merge step itself,
+which no longer names a Body of its own. Do each fillet/chamfer on its own
+Body before joining it to another.
 
 `profile_refs` (extrude/revolve/sweep, all optional) narrows which profile
 in the Sketch a step builds from - each entry is the local_id of a Line/
@@ -418,7 +424,10 @@ const String createPlaneVocabularyText = '''
 - create_plane: {local_id, kind:"create_plane",
   plane_type:"normal_to_line_at_point"|"three_points", line_ref?,
   point_ref?, point_refs?} - normal_to_line_at_point needs line_ref +
-  point_ref; three_points needs point_refs with exactly 3 entries. No
+  point_ref, and point_ref MUST be one of that sketch_line's own two
+  endpoints (its start_point_id or end_point_id) - any other point fails
+  validation with point_not_on_line; three_points needs point_refs with
+  exactly 3 entries. No
   other plane_type exists in this tool.
   Where a Sketch on a created plane puts its local (0, 0) and axes:
   - normal_to_line_at_point: origin = point_ref's world position; normal =
