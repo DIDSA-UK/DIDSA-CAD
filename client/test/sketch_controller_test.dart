@@ -9,10 +9,11 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'package:didsa_cad_client/api/dimension_label_placement.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'support/slvs_reference/slvs_bindings.dart';
 import 'support/slvs_reference/solvespace_clamp.dart';
-import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt;
+import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt, dimensionLabelCenterScreen;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/view_transform.dart';
 import 'package:didsa_cad_client/viewport3d/mouse_navigation.dart' show SelectClick;
@@ -57,6 +58,10 @@ void _blockLocalClamp(SketchController controller, String pointId) {
 /// real network call.
 class _FakeBackend {
   int _nextId = 1;
+
+  /// The label placements PUT so far (id plus the body), and whether that route should refuse (an older server).
+  final List<Map<String, dynamic>> labelWrites = [];
+  bool labelWritesFail = false;
   final Map<String, Map<String, dynamic>> points = {};
   final Map<String, Map<String, dynamic>> lines = {};
   final Map<String, Map<String, dynamic>> circles = {};
@@ -495,6 +500,23 @@ class _FakeBackend {
       }
       points.remove(id);
       return http.Response('', 204);
+    }
+
+    // Dimension-label placements (docs/dimension-labels-scope.md): PUT saves one, DELETE clears it, a constraint list carries it as `label`.
+    final constraintLabelMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints/([^/]+)/label$').firstMatch(path);
+    if (constraintLabelMatch != null) {
+      final constraint = constraints[constraintLabelMatch.group(1)!];
+      if (constraint == null) return http.Response('not found', 404);
+      if (labelWritesFail) return _json({'detail': 'no such route'}, 404);
+      if (request.method == 'PUT') {
+        labelWrites.add({'id': constraintLabelMatch.group(1)!, ...body});
+        constraint['label'] = body;
+        return http.Response('', 204);
+      }
+      if (request.method == 'DELETE') {
+        constraint.remove('label');
+        return http.Response('', 204);
+      }
     }
 
     final constraintPatchMatch = RegExp(r'^/sketch/sketches/[^/]+/constraints/(.+)$').firstMatch(path);
@@ -3957,6 +3979,145 @@ void main() {
     expect(cascade.arcs, {arc.id});
   });
 
+  group('dimension label placement (docs/dimension-labels-scope.md)', () {
+    Future<String> confirmedLinearDimension() async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.finishChain();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 0.1);
+      controller.tapGhost('length');
+      await controller.confirmGhostValue('length', 25.0);
+      return controller.constraints.entries.firstWhere((e) => e.value is DistanceConstraintDto).key;
+    }
+
+    test('a drag follows the cursor into the placement without touching the backend, and release saves it once', () async {
+      final id = await confirmedLinearDimension();
+
+      controller.beginLabelDrag(id);
+      await controller.updateGrabbedPosition(6.0, 2.0);
+      await controller.updateGrabbedPosition(6.5, 1.4);
+      expect(controller.labelPlacementFor(id)!.offset, closeTo(1.4, 1e-9));
+      expect(backend.labelWrites, isEmpty, reason: 'nothing is written while the label is still being dragged');
+
+      controller.endLabelDrag();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(backend.labelWrites, hasLength(1));
+      expect(backend.labelWrites.single['id'], id);
+      expect(backend.labelWrites.single['offset'], closeTo(1.4, 1e-9));
+      expect(backend.labelWrites.single['along'], closeTo(1.5, 1e-9));
+    });
+
+    test('the grab offset keeps the label under the pointer instead of jumping to it', () async {
+      final id = await confirmedLinearDimension();
+
+      // The pointer grabbed 0.5 right of and 0.25 below the label's centre.
+      controller.beginLabelDrag(id, grabOffset: (-0.5, 0.25));
+      await controller.updateGrabbedPosition(7.0, 1.0);
+
+      expect(controller.labelPlacementFor(id)!.along, closeTo(1.5, 1e-9));
+      expect(controller.labelPlacementFor(id)!.offset, closeTo(1.25, 1e-9));
+    });
+
+    test('moving a label is not undoable: the undo stack is untouched', () async {
+      final id = await confirmedLinearDimension();
+      final undoBefore = controller.canUndo;
+
+      controller.beginLabelDrag(id);
+      await controller.updateGrabbedPosition(6.5, 1.4);
+      controller.endLabelDrag();
+
+      expect(controller.canUndo, undoBefore);
+      await controller.undo();
+      expect(controller.constraints.containsKey(id), isFalse, reason: 'undo took back the dimension itself, not the move');
+    });
+
+    test('a relationship glyph is not a placement: it keeps its pixel offset and writes nothing', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.finishChain();
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 5);
+      await controller.handleCanvasTap(10, 5);
+      controller.finishChain();
+      final lines = controller.lines.keys.toList();
+      controller.constraints['glyph'] = ParallelConstraintDto(id: 'glyph', line1Id: lines[0], line2Id: lines[1]);
+
+      expect(controller.labelUsesPlacement('glyph'), isFalse);
+      controller.beginLabelDrag('glyph');
+      controller.updateLabelDrag(const Offset(12, 4), 20);
+      await controller.updateGrabbedPosition(3.0, 3.0); // the cursor route does nothing for a glyph
+      controller.endLabelDrag();
+
+      expect(controller.labelOffsetFor('glyph'), const Offset(12, 4));
+      expect(controller.labelPlacementFor('glyph'), isNull);
+      expect(backend.labelWrites, isEmpty);
+    });
+
+    test('a placement saved on the backend comes back with the constraint list when the sketch is re-opened', () async {
+      final id = await confirmedLinearDimension();
+      controller.beginLabelDrag(id);
+      await controller.updateGrabbedPosition(6.5, 1.4);
+      controller.endLabelDrag();
+      await Future<void>.delayed(Duration.zero);
+
+      final reopened = SketchController(api: SketchApiClient(httpClient: MockClient((request) async => backend.handle(request))));
+      backend.sketches[controller.sketchId!] = {'id': controller.sketchId!, 'plane': 'XY', 'origin_point_id': 'origin-1'};
+      await reopened.adoptSketch(controller.sketchId!);
+
+      expect(reopened.labelPlacementFor(id), controller.labelPlacementFor(id));
+      // The re-opened sketch lays the dimension out from the saved placement, not the default.
+      final item = reopened.constraintOverlayItems().whereType<ConstraintLinearDimensionItem>().single;
+      expect(item.sketchLocalOffsetDistance, closeTo(1.4, 1e-9));
+      expect(item.sketchLocalAlongOffset, closeTo(1.5, 1e-9));
+    });
+
+    test('an older server with no label route keeps the placement for the session and says so', () async {
+      final id = await confirmedLinearDimension();
+      backend.labelWritesFail = true;
+
+      controller.beginLabelDrag(id);
+      await controller.updateGrabbedPosition(6.5, 1.4);
+      controller.endLabelDrag();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.labelPlacementFor(id)!.offset, closeTo(1.4, 1e-9));
+      expect(controller.errorMessage, contains('Could not save the dimension position'));
+    });
+
+    test('deleting a dimension drops its placement', () async {
+      final id = await confirmedLinearDimension();
+      controller.beginLabelDrag(id);
+      await controller.updateGrabbedPosition(6.5, 1.4);
+      controller.endLabelDrag();
+      await Future<void>.delayed(Duration.zero);
+
+      controller.selectConstraint(id);
+      await controller.deleteSelected();
+
+      expect(controller.constraints.containsKey(id), isFalse);
+      expect(controller.labelPlacementFor(id), isNull);
+    });
+
+    test('a dimension\'s 2D label lands where the user dragged it, in every kind and at any zoom', () async {
+      final id = await confirmedLinearDimension();
+      // Aim the label at sketch point (6.5, 1.4) at two zoom levels: the painter's label must be drawn at that very point both times.
+      controller.beginLabelDrag(id);
+      await controller.updateGrabbedPosition(6.5, 1.4);
+      controller.endLabelDrag();
+      for (final ppu in [20.0, 55.0]) {
+        final transform = ViewTransform(pixelsPerUnit: ppu, originScreen: const Offset(400, 300));
+        final center = dimensionLabelCenterScreen(controller, transform, id)!;
+        final expected = transform.sketchToScreen(6.5, 1.4);
+        expect(center.dx, closeTo(expected.dx, 1e-6), reason: 'zoom $ppu');
+        expect(center.dy, closeTo(expected.dy, 1e-6), reason: 'zoom $ppu');
+      }
+    });
+  });
+
   test('dimensionLabelAt hits a dragged label at its offset position and misses its old default anchor', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
@@ -3981,17 +4142,14 @@ void main() {
 
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), constraintId);
 
+    // Drag the label to the sketch point under screen (530, 272): 1.4 units above the line and 1.5 right of its middle. The dimension
+    // line itself moves up to sit 28px from the line (18 + 10) and the label slides 30px right along it.
     controller.beginLabelDrag(constraintId);
-    controller.updateLabelDrag(const Offset(30, -10));
+    await controller.updateGrabbedPosition(6.5, 1.4);
     controller.endLabelDrag();
 
-    // On-device feedback ("dimensions should be movable anywhere"): the
-    // drag's perpendicular component (-10 along the up-pointing normal, so
-    // the line itself moves a further 10px up: 282 - 10 = 272) and its
-    // tangential component (+30 along the line's own rightward direction,
-    // sliding the label - not just the whole line - 30px right) are now
-    // both honored, computed once by _dimensionLabelPlacement and reused
-    // identically by the painter and this hit-test.
+    expect(controller.labelPlacementFor(constraintId)!.offset, closeTo(1.4, 1e-9));
+    expect(controller.labelPlacementFor(constraintId)!.along, closeTo(1.5, 1e-9));
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), isNull);
     expect(dimensionLabelAt(controller, transform, const Offset(530, 272), 5), constraintId);
   });
@@ -4040,12 +4198,13 @@ void main() {
     expect(dimensionLabelAt(controller, transform, anchorA, 5), idA);
     expect(dimensionLabelAt(controller, transform, anchorB, 5), idB);
 
-    // Drag both labels down by the same 20px, regardless of tap order.
+    // Drag both labels down by the same 20px (one sketch unit), regardless of tap order: the pointer goes to the sketch point under
+    // each label's new place.
     controller.beginLabelDrag(idA);
-    controller.updateLabelDrag(const Offset(0, 20));
+    await controller.updateGrabbedPosition(0.9, 1.5);
     controller.endLabelDrag();
     controller.beginLabelDrag(idB);
-    controller.updateLabelDrag(const Offset(0, 20));
+    await controller.updateGrabbedPosition(20.9, 1.5);
     controller.endLabelDrag();
 
     // Both must have moved straight down by the same 20px - never up, and
@@ -4079,16 +4238,16 @@ void main() {
         .whereType<ConstraintLinearDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(beforeItem.sketchLocalOffsetDistance, isNull);
-    expect(controller.linearOffsetDistanceFor(constraintId), isNull);
+    expect(controller.labelPlacementFor(constraintId)?.offset, isNull);
 
-    controller.setLinearOffsetDistance(constraintId, 3.5);
+    controller.setLabelPlacementForTesting(constraintId, DimensionLabelPlacement(offset: 3.5));
 
     final afterItem = controller
         .constraintOverlayItems()
         .whereType<ConstraintLinearDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(afterItem.sketchLocalOffsetDistance, 3.5);
-    expect(controller.linearOffsetDistanceFor(constraintId), 3.5);
+    expect(controller.labelPlacementFor(constraintId)?.offset, 3.5);
   });
 
   test(
@@ -4111,16 +4270,16 @@ void main() {
         .whereType<ConstraintLinearDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(beforeItem.sketchLocalAlongOffset, isNull);
-    expect(controller.linearAlongOffsetFor(constraintId), isNull);
+    expect(controller.labelPlacementFor(constraintId)?.along, isNull);
 
-    controller.setLinearAlongOffset(constraintId, 4.0);
+    controller.setLabelPlacementForTesting(constraintId, DimensionLabelPlacement(along: 4.0));
 
     final afterItem = controller
         .constraintOverlayItems()
         .whereType<ConstraintLinearDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(afterItem.sketchLocalAlongOffset, 4.0);
-    expect(controller.linearAlongOffsetFor(constraintId), 4.0);
+    expect(controller.labelPlacementFor(constraintId)?.along, 4.0);
   });
 
   test(
@@ -4142,16 +4301,16 @@ void main() {
         .whereType<ConstraintRadialDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(beforeItem.sketchLocalLegLength, isNull);
-    expect(controller.radialLegLengthFor(constraintId), isNull);
+    expect(controller.labelPlacementFor(constraintId)?.leg, isNull);
 
-    controller.setRadialLegLength(constraintId, 12.0);
+    controller.setLabelPlacementForTesting(constraintId, DimensionLabelPlacement(leg: 12.0));
 
     final afterItem = controller
         .constraintOverlayItems()
         .whereType<ConstraintRadialDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(afterItem.sketchLocalLegLength, 12.0);
-    expect(controller.radialLegLengthFor(constraintId), 12.0);
+    expect(controller.labelPlacementFor(constraintId)?.leg, 12.0);
   });
 
   test(
@@ -4177,16 +4336,16 @@ void main() {
         .whereType<ConstraintAngleDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(beforeItem.sketchLocalArcRadius, isNull);
-    expect(controller.angleArcRadiusFor(constraintId), isNull);
+    expect(controller.labelPlacementFor(constraintId)?.radius, isNull);
 
-    controller.setAngleArcRadius(constraintId, 2.5);
+    controller.setLabelPlacementForTesting(constraintId, DimensionLabelPlacement(radius: 2.5));
 
     final afterItem = controller
         .constraintOverlayItems()
         .whereType<ConstraintAngleDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(afterItem.sketchLocalArcRadius, 2.5);
-    expect(controller.angleArcRadiusFor(constraintId), 2.5);
+    expect(controller.labelPlacementFor(constraintId)?.radius, 2.5);
   });
 
   test(
@@ -4212,16 +4371,16 @@ void main() {
         .whereType<ConstraintAngleDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(beforeItem.sketchLocalAlongOffset, isNull);
-    expect(controller.angleAlongOffsetFor(constraintId), isNull);
+    expect(controller.labelPlacementFor(constraintId)?.along, isNull);
 
-    controller.setAngleAlongOffset(constraintId, 1.5);
+    controller.setLabelPlacementForTesting(constraintId, DimensionLabelPlacement(along: 1.5));
 
     final afterItem = controller
         .constraintOverlayItems()
         .whereType<ConstraintAngleDimensionItem>()
         .singleWhere((i) => i.constraintId == constraintId);
     expect(afterItem.sketchLocalAlongOffset, 1.5);
-    expect(controller.angleAlongOffsetFor(constraintId), 1.5);
+    expect(controller.labelPlacementFor(constraintId)?.along, 1.5);
   });
 
   test(
@@ -11361,8 +11520,9 @@ void main() {
 
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), constraintId);
 
+    // The label moved 30px right (along line 1) and 10px up (towards line 2): the sketch point under screen (548, 240).
     controller.beginLabelDrag(constraintId);
-    controller.updateLabelDrag(const Offset(30, -10));
+    await controller.updateGrabbedPosition(7.4, 3.0);
     controller.endLabelDrag();
 
     expect(dimensionLabelAt(controller, transform, defaultAnchor, 5), isNull);

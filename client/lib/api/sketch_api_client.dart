@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import '../config.dart';
+import 'dimension_label_placement.dart';
 
 /// Raised for any backend call that fails - unreachable host, timeout, or a
 /// non-2xx response - so callers can show one consistent error message
@@ -888,7 +889,11 @@ class TextContourDto {
 /// (see SketchApiClient.createDistanceConstraint/updateConstraintValue).
 abstract class ConstraintDto {
   final String id;
-  const ConstraintDto({required this.id});
+
+  /// Where the user put this dimension's label, as saved on the backend with the sketch (null: use the default place, or no server support).
+  /// Only the list calls fill it; [SketchController] keeps the live copy of every placement.
+  final DimensionLabelPlacement? label;
+  const ConstraintDto({required this.id, this.label});
 
   /// Dispatches on the backend's `type` discriminator, defaulting to
   /// [DistanceConstraintDto] when absent - mirrors the backend's own
@@ -960,6 +965,7 @@ class DistanceConstraintDto extends ConstraintDto {
 
   const DistanceConstraintDto({
     required super.id,
+    super.label,
     required this.pointAId,
     required this.pointBId,
     required this.distance,
@@ -969,6 +975,7 @@ class DistanceConstraintDto extends ConstraintDto {
 
   factory DistanceConstraintDto.fromJson(Map<String, dynamic> json) => DistanceConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         pointAId: json['point_a_id'] as String,
         pointBId: json['point_b_id'] as String,
         distance: (json['distance'] as num).toDouble(),
@@ -984,6 +991,7 @@ class VerticalConstraintDto extends ConstraintDto {
 
   const VerticalConstraintDto({
     required super.id,
+    super.label,
     required this.lineId,
     required this.pointAId,
     required this.pointBId,
@@ -991,6 +999,7 @@ class VerticalConstraintDto extends ConstraintDto {
 
   factory VerticalConstraintDto.fromJson(Map<String, dynamic> json) => VerticalConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         lineId: json['line_id'] as String,
         pointAId: json['point_a_id'] as String,
         pointBId: json['point_b_id'] as String,
@@ -1004,6 +1013,7 @@ class HorizontalConstraintDto extends ConstraintDto {
 
   const HorizontalConstraintDto({
     required super.id,
+    super.label,
     required this.lineId,
     required this.pointAId,
     required this.pointBId,
@@ -1011,6 +1021,7 @@ class HorizontalConstraintDto extends ConstraintDto {
 
   factory HorizontalConstraintDto.fromJson(Map<String, dynamic> json) => HorizontalConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         lineId: json['line_id'] as String,
         pointAId: json['point_a_id'] as String,
         pointBId: json['point_b_id'] as String,
@@ -1024,6 +1035,7 @@ class AngleConstraintDto extends ConstraintDto {
 
   const AngleConstraintDto({
     required super.id,
+    super.label,
     required this.line1Id,
     required this.line2Id,
     required this.angleDegrees,
@@ -1031,6 +1043,7 @@ class AngleConstraintDto extends ConstraintDto {
 
   factory AngleConstraintDto.fromJson(Map<String, dynamic> json) => AngleConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
         angleDegrees: (json['angle_degrees'] as num).toDouble(),
@@ -1043,12 +1056,14 @@ class CoincidentConstraintDto extends ConstraintDto {
 
   const CoincidentConstraintDto({
     required super.id,
+    super.label,
     required this.pointAId,
     required this.pointBId,
   });
 
   factory CoincidentConstraintDto.fromJson(Map<String, dynamic> json) => CoincidentConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         pointAId: json['point_a_id'] as String,
         pointBId: json['point_b_id'] as String,
       );
@@ -1065,6 +1080,7 @@ class ConcentricConstraintDto extends ConstraintDto {
 
   const ConcentricConstraintDto({
     required super.id,
+    super.label,
     required this.entity1Id,
     required this.entity2Id,
     required this.center1PointId,
@@ -1073,6 +1089,7 @@ class ConcentricConstraintDto extends ConstraintDto {
 
   factory ConcentricConstraintDto.fromJson(Map<String, dynamic> json) => ConcentricConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         entity1Id: json['entity1_id'] as String,
         entity2Id: json['entity2_id'] as String,
         center1PointId: json['center1_point_id'] as String,
@@ -1086,12 +1103,14 @@ class ParallelConstraintDto extends ConstraintDto {
 
   const ParallelConstraintDto({
     required super.id,
+    super.label,
     required this.line1Id,
     required this.line2Id,
   });
 
   factory ParallelConstraintDto.fromJson(Map<String, dynamic> json) => ParallelConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
       );
@@ -1103,12 +1122,14 @@ class PerpendicularConstraintDto extends ConstraintDto {
 
   const PerpendicularConstraintDto({
     required super.id,
+    super.label,
     required this.line1Id,
     required this.line2Id,
   });
 
   factory PerpendicularConstraintDto.fromJson(Map<String, dynamic> json) => PerpendicularConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
       );
@@ -1120,12 +1141,14 @@ class EqualLengthConstraintDto extends ConstraintDto {
 
   const EqualLengthConstraintDto({
     required super.id,
+    super.label,
     required this.line1Id,
     required this.line2Id,
   });
 
   factory EqualLengthConstraintDto.fromJson(Map<String, dynamic> json) => EqualLengthConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
       );
@@ -1137,12 +1160,14 @@ class CollinearConstraintDto extends ConstraintDto {
 
   const CollinearConstraintDto({
     required super.id,
+    super.label,
     required this.line1Id,
     required this.line2Id,
   });
 
   factory CollinearConstraintDto.fromJson(Map<String, dynamic> json) => CollinearConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
       );
@@ -1160,6 +1185,7 @@ class LineDistanceConstraintDto extends ConstraintDto {
 
   const LineDistanceConstraintDto({
     required super.id,
+    super.label,
     required this.line1Id,
     required this.line2Id,
     required this.distance,
@@ -1167,6 +1193,7 @@ class LineDistanceConstraintDto extends ConstraintDto {
 
   factory LineDistanceConstraintDto.fromJson(Map<String, dynamic> json) => LineDistanceConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
         distance: (json['distance'] as num).toDouble(),
@@ -1186,6 +1213,7 @@ class PointLineDistanceConstraintDto extends ConstraintDto {
 
   const PointLineDistanceConstraintDto({
     required super.id,
+    super.label,
     required this.pointId,
     required this.lineId,
     required this.distance,
@@ -1194,6 +1222,7 @@ class PointLineDistanceConstraintDto extends ConstraintDto {
   factory PointLineDistanceConstraintDto.fromJson(Map<String, dynamic> json) =>
       PointLineDistanceConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         pointId: json['point_id'] as String,
         lineId: json['line_id'] as String,
         distance: (json['distance'] as num).toDouble(),
@@ -1212,12 +1241,14 @@ class AtMidpointConstraintDto extends ConstraintDto {
 
   const AtMidpointConstraintDto({
     required super.id,
+    super.label,
     required this.pointId,
     required this.lineId,
   });
 
   factory AtMidpointConstraintDto.fromJson(Map<String, dynamic> json) => AtMidpointConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         pointId: json['point_id'] as String,
         lineId: json['line_id'] as String,
       );
@@ -1242,6 +1273,7 @@ class SplineTangentConstraintDto extends ConstraintDto {
 
   const SplineTangentConstraintDto({
     required super.id,
+    super.label,
     required this.splineId,
     required this.segmentAP0,
     required this.segmentAP1,
@@ -1255,6 +1287,7 @@ class SplineTangentConstraintDto extends ConstraintDto {
 
   factory SplineTangentConstraintDto.fromJson(Map<String, dynamic> json) => SplineTangentConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         splineId: json['spline_id'] as String,
         segmentAP0: json['segment_a_p0'] as String,
         segmentAP1: json['segment_a_p1'] as String,
@@ -1278,6 +1311,7 @@ class TangentConstraintDto extends ConstraintDto {
 
   const TangentConstraintDto({
     required super.id,
+    super.label,
     required this.centerPointId,
     required this.radiusPointId,
     required this.lineId,
@@ -1285,6 +1319,7 @@ class TangentConstraintDto extends ConstraintDto {
 
   factory TangentConstraintDto.fromJson(Map<String, dynamic> json) => TangentConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         centerPointId: json['center_point_id'] as String,
         radiusPointId: json['radius_point_id'] as String,
         lineId: json['line_id'] as String,
@@ -1306,6 +1341,7 @@ class CurveTangentConstraintDto extends ConstraintDto {
 
   const CurveTangentConstraintDto({
     required super.id,
+    super.label,
     required this.entity1Id,
     required this.entity2Id,
     required this.center1PointId,
@@ -1315,6 +1351,7 @@ class CurveTangentConstraintDto extends ConstraintDto {
 
   factory CurveTangentConstraintDto.fromJson(Map<String, dynamic> json) => CurveTangentConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         entity1Id: json['entity1_id'] as String,
         entity2Id: json['entity2_id'] as String,
         center1PointId: json['center1_point_id'] as String,
@@ -1334,6 +1371,7 @@ class EqualRadiusConstraintDto extends ConstraintDto {
 
   const EqualRadiusConstraintDto({
     required super.id,
+    super.label,
     required this.center1PointId,
     required this.radius1PointId,
     required this.center2PointId,
@@ -1342,6 +1380,7 @@ class EqualRadiusConstraintDto extends ConstraintDto {
 
   factory EqualRadiusConstraintDto.fromJson(Map<String, dynamic> json) => EqualRadiusConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         center1PointId: json['center1_point_id'] as String,
         radius1PointId: json['radius1_point_id'] as String,
         center2PointId: json['center2_point_id'] as String,
@@ -1357,12 +1396,14 @@ class PointOnLineConstraintDto extends ConstraintDto {
 
   const PointOnLineConstraintDto({
     required super.id,
+    super.label,
     required this.pointId,
     required this.lineId,
   });
 
   factory PointOnLineConstraintDto.fromJson(Map<String, dynamic> json) => PointOnLineConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         pointId: json['point_id'] as String,
         lineId: json['line_id'] as String,
       );
@@ -1384,6 +1425,7 @@ class PointOnCircleConstraintDto extends ConstraintDto {
 
   const PointOnCircleConstraintDto({
     required super.id,
+    super.label,
     required this.pointId,
     required this.circleOrArcId,
     required this.centerPointId,
@@ -1392,6 +1434,7 @@ class PointOnCircleConstraintDto extends ConstraintDto {
 
   factory PointOnCircleConstraintDto.fromJson(Map<String, dynamic> json) => PointOnCircleConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         pointId: json['point_id'] as String,
         circleOrArcId: json['circle_or_arc_id'] as String,
         centerPointId: json['center_point_id'] as String,
@@ -1416,6 +1459,7 @@ class PointOnEllipseConstraintDto extends ConstraintDto {
 
   const PointOnEllipseConstraintDto({
     required super.id,
+    super.label,
     required this.pointId,
     required this.ellipseId,
     required this.centerPointId,
@@ -1425,6 +1469,7 @@ class PointOnEllipseConstraintDto extends ConstraintDto {
 
   factory PointOnEllipseConstraintDto.fromJson(Map<String, dynamic> json) => PointOnEllipseConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         pointId: json['point_id'] as String,
         ellipseId: json['ellipse_id'] as String,
         centerPointId: json['center_point_id'] as String,
@@ -1446,11 +1491,13 @@ class FixedConstraintDto extends ConstraintDto {
 
   const FixedConstraintDto({
     required super.id,
+    super.label,
     required this.pointIds,
   });
 
   factory FixedConstraintDto.fromJson(Map<String, dynamic> json) => FixedConstraintDto(
         id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
         pointIds: (json['point_ids'] as List<dynamic>).cast<String>(),
       );
 }
@@ -2822,6 +2869,25 @@ class SketchApiClient {
   Future<void> deleteConstraint(String sketchId, String constraintId) => _send(
         () => _httpClient.delete(
               _uri('/sketch/sketches/$sketchId/constraints/$constraintId'),
+              headers: _headers,
+            ),
+        (_) {},
+      );
+
+  /// Saves where the user put a dimension's label (`PUT .../constraints/{id}/label`). The backend does not re-solve for it.
+  Future<void> putConstraintLabel(String sketchId, String constraintId, DimensionLabelPlacement placement) => _send(
+        () => _httpClient.put(
+              _uri('/sketch/sketches/$sketchId/constraints/$constraintId/label'),
+              headers: _headers,
+              body: jsonEncode(placement.toJson()),
+            ),
+        (_) {},
+      );
+
+  /// Puts a dimension's label back in its default place (`DELETE .../constraints/{id}/label`).
+  Future<void> deleteConstraintLabel(String sketchId, String constraintId) => _send(
+        () => _httpClient.delete(
+              _uri('/sketch/sketches/$sketchId/constraints/$constraintId/label'),
               headers: _headers,
             ),
         (_) {},

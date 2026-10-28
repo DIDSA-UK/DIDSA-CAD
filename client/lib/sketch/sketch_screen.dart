@@ -1577,17 +1577,10 @@ class _SketchScreenState extends State<SketchScreen> {
         preferConstraintOverlayHitOnCommit:
             _controller.mode == SketchMode.dimension || _dragModeActiveInOrbitView,
         onConstraintOverlayItemTap: _handleEmbeddedConstraintOverlayTap,
-        isDraggingConstraintLabel: _controller.draggingLabelId != null,
+        isDraggingConstraintLabel:
+            _controller.draggingLabelId != null && !_controller.labelUsesPlacement(_controller.draggingLabelId!),
         onConstraintLabelDragDelta: _controller.updateLabelDrag,
-        draggingConstraintLabelId: _controller.draggingLabelId,
-        onRadialLabelAngleDragged: _handleEmbeddedRadialLabelAngleDragged,
-        onRadialLabelDistanceDragged: _handleEmbeddedRadialLabelDistanceDragged,
-        onLinearLabelOffsetDragged: _handleEmbeddedLinearLabelOffsetDragged,
-        onLinearLabelAlongDragged: _handleEmbeddedLinearLabelAlongDragged,
-        onLineDistanceLabelOffsetDragged: _handleEmbeddedLineDistanceLabelOffsetDragged,
-        onLineDistanceLabelAlongDragged: _handleEmbeddedLineDistanceLabelAlongDragged,
-        onAngleLabelRadiusDragged: _handleEmbeddedAngleLabelRadiusDragged,
-        onAngleLabelAlongDragged: _handleEmbeddedAngleLabelAlongDragged,
+        onSketchLabelGrabStart: _handleEmbeddedLabelGrabStart,
         activeConstraintOverlayItemId: _controller.activeGhostKey,
         activeConstraintOverlayItemBuilder: _buildActiveGhostValueEditor,
         sketchGeometries: _embeddedSketchGeometries,
@@ -2122,7 +2115,7 @@ class _SketchScreenState extends State<SketchScreen> {
       _controller.mode == SketchMode.select && _controller.dragModeEnabled && !LayoutModeScope.mouseActiveOf(context);
 
   /// A mouse press-and-drag on a sketch entity in Orbit View ([PartViewport.onSketchGrabStart]): picks up the Point,
-  /// Line or Text resize handle under the press. Dimension labels are not draggable this way in the 3D view yet.
+  /// Line or Text resize handle under the press. A dimension label under the press is handled by [_handleEmbeddedLabelGrabStart] first.
   bool _handleEmbeddedGrabStart(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
     if (_controller.mode != SketchMode.select || _controller.isEntityGrabbed || _controller.busy) return false;
     return _grabEmbeddedEntityAt(worldPoint, localPixelsPerUnit);
@@ -2186,6 +2179,28 @@ class _SketchScreenState extends State<SketchScreen> {
     _grabEmbeddedEntityAt(worldPoint, localPixelsPerUnit);
   }
 
+  /// A mouse press-and-drag on a dimension label in Orbit View ([PartViewport.onSketchLabelGrabStart]).
+  bool _handleEmbeddedLabelGrabStart(String constraintId, vm.Vector3 pressPoint, vm.Vector3? labelPoint) {
+    if (_controller.mode != SketchMode.select || _controller.isEntityGrabbed || _controller.busy) return false;
+    if (!_controller.constraints.containsKey(constraintId)) return false;
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return false;
+    final (x, y) = worldPointToSketch(basis, pressPoint);
+    return _beginEmbeddedLabelDrag(constraintId, x, y, labelPoint);
+  }
+
+  /// Grabs [constraintId]'s label with the pointer at sketch point ([pointerX], [pointerY]); [labelPoint] is where the label is drawn on
+  /// the sketch plane, so the label keeps its place under the pointer instead of jumping to it.
+  bool _beginEmbeddedLabelDrag(String constraintId, double pointerX, double pointerY, vm.Vector3? labelPoint) {
+    final basis = _effectiveOrbitBasis;
+    (double, double)? grabOffset;
+    if (basis != null && labelPoint != null) {
+      final (labelX, labelY) = worldPointToSketch(basis, labelPoint);
+      grabOffset = (labelX - pointerX, labelY - pointerY);
+    }
+    return _controller.beginLabelDrag(constraintId, grabOffset: grabOffset);
+  }
+
   /// Picks up whatever draggable sketch entity is at [worldPoint] - the grab half of the drag-mode tap and of a mouse
   /// press-drag. True when something was picked up.
   bool _grabEmbeddedEntityAt(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
@@ -2234,7 +2249,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// wrong-mode action - see [PartViewport.preferConstraintOverlayHitOnCommit]'s
   /// own doc comment for why *whether this fires at all* is still mode-
   /// gated one level up from this.
-  bool _handleEmbeddedConstraintOverlayTap(String? hitId) {
+  bool _handleEmbeddedConstraintOverlayTap(String? hitId, vm.Vector3? labelPoint) {
     if (_controller.mode == SketchMode.dimension) {
       final isGhost = hitId != null && _controller.ghosts.any((g) => g.key == hitId);
       if (_controller.activeGhostKey != null) {
@@ -2269,7 +2284,7 @@ class _SketchScreenState extends State<SketchScreen> {
       // which already drops whatever is grabbed unconditionally.
       if (_controller.isEntityGrabbed) return false;
       if (hitId != null && _controller.constraints.containsKey(hitId)) {
-        return _controller.beginLabelDrag(hitId);
+        return _beginEmbeddedLabelDrag(hitId, _controller.cursorX, _controller.cursorY, labelPoint);
       }
       return false;
     }
@@ -2313,92 +2328,6 @@ class _SketchScreenState extends State<SketchScreen> {
     }
     if (ghost == null) return const SizedBox.shrink();
     return GhostValueEditor(key: ValueKey(key), controller: _controller, ghost: ghost, anchor: anchor);
-  }
-
-  /// P44f bug fix (on-device feedback: "the arrow should remain at the
-  /// same angular position when orbiting"): [PartViewport.
-  /// onRadialLabelAngleDragged]'s handler - just forwards the resolved
-  /// angle straight to [SketchController.setRadialAngleOffset] against
-  /// whichever label is currently grabbed. A no-op if nothing is grabbed
-  /// (shouldn't happen in practice - PartViewport only ever calls this
-  /// while [SketchController.draggingLabelId] is non-null, since that's
-  /// what [PartViewport.draggingConstraintLabelId] is fed from - but
-  /// avoids trusting that invariant blindly).
-  void _handleEmbeddedRadialLabelAngleDragged(double angleDegrees) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setRadialAngleOffset(id, angleDegrees);
-  }
-
-  /// P52 bug fix (on-device feedback: "when orbiting, linear dimensions
-  /// slide along the line"): [PartViewport.onLinearLabelOffsetDragged]'s
-  /// handler - [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
-  /// [SketchController.setLinearOffsetDistance].
-  void _handleEmbeddedLinearLabelOffsetDragged(double distance) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setLinearOffsetDistance(id, distance);
-  }
-
-  /// Bug fix (on-device feedback: "the linear dimension only moves
-  /// left/right"): [PartViewport.onLinearLabelAlongDragged]'s handler -
-  /// [_handleEmbeddedLinearLabelOffsetDragged]'s own sibling for
-  /// [SketchController.setLinearAlongOffset].
-  void _handleEmbeddedLinearLabelAlongDragged(double along) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setLinearAlongOffset(id, along);
-  }
-
-  /// Bug fix (on-device feedback: "radius and diameter dimensions are
-  /// locked a set distance from the arc or circle"): [PartViewport.
-  /// onRadialLabelDistanceDragged]'s handler -
-  /// [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
-  /// [SketchController.setRadialLegLength].
-  void _handleEmbeddedRadialLabelDistanceDragged(double legLength) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setRadialLegLength(id, legLength);
-  }
-
-  /// [PartViewport.onLineDistanceLabelOffsetDragged]'s handler - a
-  /// Line-to-Line distance dimension reuses the exact same
-  /// [SketchController.setLinearOffsetDistance] map/setter a point-to-point
-  /// linear dimension does (see [ConstraintLineDistanceDimensionItem.
-  /// sketchLocalOffsetDistance]'s own doc comment).
-  void _handleEmbeddedLineDistanceLabelOffsetDragged(double distance) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setLinearOffsetDistance(id, distance);
-  }
-
-  /// Bug fix (on-device feedback: "the dimension...is restricted in
-  /// movement. it moves left right. it can't be moved up down"):
-  /// [PartViewport.onLineDistanceLabelAlongDragged]'s handler -
-  /// [_handleEmbeddedLineDistanceLabelOffsetDragged]'s own sibling for
-  /// [SketchController.setLineDistanceAlongOffset].
-  void _handleEmbeddedLineDistanceLabelAlongDragged(double along) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setLineDistanceAlongOffset(id, along);
-  }
-
-  /// [PartViewport.onAngleLabelRadiusDragged]'s handler -
-  /// [_handleEmbeddedRadialLabelAngleDragged]'s exact sibling for
-  /// [SketchController.setAngleArcRadius].
-  void _handleEmbeddedAngleLabelRadiusDragged(double radius) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setAngleArcRadius(id, radius);
-  }
-
-  /// [PartViewport.onAngleLabelAlongDragged]'s handler -
-  /// [_handleEmbeddedAngleLabelRadiusDragged]'s own sibling for
-  /// [SketchController.setAngleAlongOffset].
-  void _handleEmbeddedAngleLabelAlongDragged(double along) {
-    final id = _controller.draggingLabelId;
-    if (id == null) return;
-    _controller.setAngleAlongOffset(id, along);
   }
 
   /// P18: [PartViewport.drawGhostPolylines]' data source - tessellates

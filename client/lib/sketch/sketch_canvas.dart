@@ -6,11 +6,13 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../api/dimension_label_placement.dart';
 import '../api/sketch_api_client.dart';
 import '../viewport3d/controls_preferences.dart';
 import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/keyboard_shortcuts.dart' show CadShortcut, withShortcut;
 import 'dimension_text.dart';
+import 'label_drag_resolver.dart';
 import 'marquee_selection.dart';
 import 'pattern_mirror_expansion.dart';
 import 'plane_indicator.dart';
@@ -395,9 +397,11 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
 
   /// Whether a press at [downScreen] may grow into a marquee: select mode,
   /// nothing grabbed, and blank canvas under the press.
-  bool _marqueeMayStartAt(Offset downScreen, ViewTransform transform) {
+  bool _marqueeMayStartAt(Offset downScreen, ViewTransform transform, {bool byMouse = false}) {
     final controller = widget.controller;
     if (controller.mode != SketchMode.select) return false;
+    // A mouse press on a dimension label is the start of a label drag (see [_tryGrabAtCursor]), not of a box select.
+    if (byMouse && dimensionLabelAt(controller, transform, downScreen, _ghostHitRadiusPixels) != null) return false;
     // A marquee-select starting while something's grabbed via drag mode
     // would be a confusing second gesture layered on top of the first - a
     // stationary press elsewhere on the canvas while repositioning a
@@ -563,7 +567,8 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
   void _feedMouseSwipeToGrabbedEntity(PointerEvent event, ViewTransform transform) {
     final controller = widget.controller;
     if (!controller.isEntityGrabbed) return;
-    if (controller.draggingLabelId != null) {
+    final labelId = controller.draggingLabelId;
+    if (labelId != null && !controller.labelUsesPlacement(labelId)) {
       controller.updateLabelDrag(event.delta, transform.pixelsPerUnit);
       return;
     }
@@ -777,7 +782,12 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
   bool _tryGrabAtCursor(SketchController controller, ViewTransform transform) {
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
-    if (labelId != null && controller.beginLabelDrag(labelId)) return true;
+    if (labelId != null) {
+      final center = dimensionLabelCenterScreen(controller, transform, labelId);
+      final centerSketch = center == null ? null : transform.screenToSketch(center.dx, center.dy);
+      final grabOffset = centerSketch == null ? null : (centerSketch.x - controller.cursorX, centerSketch.y - controller.cursorY);
+      if (controller.beginLabelDrag(labelId, grabOffset: grabOffset)) return true;
+    }
     final hitRadius = controller.hitRadiusForPixelsPerUnit(transform.pixelsPerUnit);
     // Checked before the general [dragGrabTargetAt] resolution below - a
     // Text's own resize handle sits outside its glyph fill, which is all
@@ -840,7 +850,7 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
         // Desktop input D2: a mouse box select starts on drag, not after a
         // hold - see [_mouseMarqueeDownScreen]. Checked before the tap,
         // which may change what's under the press.
-        _mouseMarqueeDownScreen = _marqueeMayStartAt(event.localPosition, transform) ? event.localPosition : null;
+        _mouseMarqueeDownScreen = _marqueeMayStartAt(event.localPosition, transform, byMouse: true) ? event.localPosition : null;
         _dispatchTap(transform);
         _mouseGrabDownScreen = widget.controller.mode == SketchMode.select && !widget.controller.isEntityGrabbed
             ? event.localPosition
@@ -958,7 +968,8 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
       _refreshCursorMoveTimeIfMoved(event.localPosition);
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       if (widget.controller.isEntityGrabbed) {
-        if (widget.controller.draggingLabelId != null) {
+        final labelId = widget.controller.draggingLabelId;
+        if (labelId != null && !widget.controller.labelUsesPlacement(labelId)) {
           widget.controller.updateLabelDrag(event.delta, transform.pixelsPerUnit);
         } else {
           widget.controller.updateGrabbedPosition(widget.controller.cursorX, widget.controller.cursorY);
@@ -2231,6 +2242,160 @@ Offset? _constraintLabelCenter(
   }
 }
 
+/// The pixel offset the flat canvas's painters expect for [constraint]'s label ([_SketchPainter]'s and [_constraintLabelCenter]'s
+/// `labelOffset`), worked out from where the user placed it.
+///
+/// A dimension's position is a [DimensionLabelPlacement] in sketch units (so it holds still when the view zooms, and is the same
+/// position the 3D view shows), but these painters were written around a pixel offset from their own default layout. Rather than
+/// lay every kind out a second time, this converts: it returns the offset that makes the painter's existing layout land on the placed
+/// position. A dimension with no placement gets [Offset.zero], which keeps each painter's default exactly as it was. A relationship
+/// glyph (V, H, parallel...) has no placement and keeps its session-only pixel offset.
+Offset dimensionLabelPixelOffset(
+  SketchController controller,
+  ViewTransform transform,
+  String constraintId,
+  ConstraintDto constraint,
+) {
+  if (!controller.labelUsesPlacement(constraintId)) {
+    return controller.labelOffsetForZoom(constraintId, transform.pixelsPerUnit);
+  }
+  final placement = controller.labelPlacementFor(constraintId);
+  if (placement == null) return Offset.zero;
+  final ppu = transform.pixelsPerUnit;
+  // Sketch (y up) to screen (y down) for a direction.
+  Offset screenDir((double, double) d) => Offset(d.$1, -d.$2);
+
+  switch (constraint) {
+    case DistanceConstraintDto c:
+      if (controller.isRadiusDistanceConstraint(c)) {
+        final center = controller.points[c.pointAId];
+        final rim = controller.points[c.pointBId];
+        if (center == null || rim == null) return Offset.zero;
+        final centerScreen = transform.sketchToScreen(center.x, center.y);
+        final rimScreen = transform.sketchToScreen(rim.x, rim.y);
+        final radiusPixels = c.distance * ppu;
+        final defaultDelta = rimScreen - centerScreen;
+        final defaultDirection = defaultDelta.distance < 1e-6 ? const Offset(1, 0) : defaultDelta / defaultDelta.distance;
+        final rimAngle = math.atan2(rim.y - center.y, rim.x - center.x);
+        final angle = rimAngle + (placement.angle ?? 0.0) * math.pi / 180.0;
+        final legPixels = placement.leg != null ? placement.leg! * ppu : _radialLegLength;
+        final wanted = centerScreen + screenDir((math.cos(angle), math.sin(angle))) * (radiusPixels + legPixels);
+        return wanted - (centerScreen + defaultDirection * (radiusPixels + _radialLegLength));
+      }
+      final ellipseAxis = controller.ellipseAxisForDistanceConstraint(c);
+      final a = controller.points[ellipseAxis?.$1 ?? c.pointAId];
+      final b = controller.points[ellipseAxis?.$2 ?? c.pointBId];
+      if (a == null || b == null) return Offset.zero;
+      return _linearLabelPixelOffset(transform, (a.x, a.y), (b.x, b.y), c.orientation, placement);
+    case PointLineDistanceConstraintDto c:
+      final point = controller.points[c.pointId];
+      final foot = controller.pointLineFootFor(c);
+      if (point == null || foot == null) return Offset.zero;
+      return _linearLabelPixelOffset(transform, (point.x, point.y), foot, null, placement);
+    case LineDistanceConstraintDto c:
+      final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
+      final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+      final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+      if (midA == null || endpointsA == null || endpointsB == null) return Offset.zero;
+      final dirA = endpointsA.$2 - endpointsA.$1;
+      final lengthA = dirA.distance;
+      if (lengthA < 1e-6) return Offset.zero;
+      final alongA = dirA / lengthA;
+      final perpToA = Offset(-dirA.dy, dirA.dx) / lengthA;
+      final toLineB = endpointsB.$1 - midA;
+      final t = toLineB.dx * perpToA.dx + toLineB.dy * perpToA.dy;
+      if (t.abs() < 1e-6) return Offset.zero;
+      // The connector runs from line 1 towards line 2; the label slides along it.
+      final tangent = perpToA * (t < 0 ? -1.0 : 1.0);
+      final slide = placement.offset != null ? placement.offset! * ppu - _defaultDimensionOffset : 0.0;
+      return alongA * slide + tangent * ((placement.along ?? 0.0) * ppu);
+    case AngleConstraintDto c:
+      final midA = _lineMidpointScreenFor(controller, transform, c.line1Id);
+      final midB = _lineMidpointScreenFor(controller, transform, c.line2Id);
+      final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
+      final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
+      if (midA == null || midB == null || endpointsA == null || endpointsB == null) return Offset.zero;
+      final intersection = _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2);
+      final refDistance = (midB - midA).distance;
+      if (intersection == null ||
+          (refDistance > 1e-6 &&
+              ((intersection - midA).distance > refDistance * _maxAngleIntersectionRelativeDistance ||
+                  (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance))) {
+        return Offset.zero; // The painter's plain-chip fallback: no arc to place.
+      }
+      final directionA = midA - intersection;
+      final directionB = midB - intersection;
+      if (directionA.distance < 1e-6 || directionB.distance < 1e-6) return Offset.zero;
+      final dir1 = directionA / directionA.distance;
+      final dir2 = directionB / directionB.distance;
+      final bisector = dir1 + dir2;
+      final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
+      final chord = dir2 - dir1;
+      final chordDirection = chord.distance < 1e-6 ? Offset(-bisectorDirection.dy, bisectorDirection.dx) : chord / chord.distance;
+      final radiusPixels = placement.radius != null ? math.max(placement.radius! * ppu, _minDimensionOffsetMagnitude) : _angleGhostArcRadiusPixels;
+      final alongPixels = ((placement.along ?? 0.0) * ppu).clamp(-radiusPixels, radiusPixels).toDouble();
+      // The painter takes the arc's radius from the whole offset and the label's slide from its chord component, so the bisector part
+      // is chosen to leave the radius as placed.
+      final bisectorPart = math.sqrt(math.max(radiusPixels * radiusPixels - alongPixels * alongPixels, 0.0)) - _angleGhostArcRadiusPixels;
+      return bisectorDirection * bisectorPart + chordDirection * alongPixels;
+    default:
+      return Offset.zero;
+  }
+}
+
+/// [dimensionLabelPixelOffset] for a linear dimension between sketch points [a] and [b] (a point and a foot, for a point-to-line one).
+Offset _linearLabelPixelOffset(
+  ViewTransform transform,
+  (double, double) a,
+  (double, double) b,
+  String? orientation,
+  DimensionLabelPlacement placement,
+) {
+  final ppu = transform.pixelsPerUnit;
+  final aScreen = transform.sketchToScreen(a.$1, a.$2);
+  final bScreen = transform.sketchToScreen(b.$1, b.$2);
+  final alongPixels = (placement.along ?? 0.0) * ppu;
+  switch (orientation) {
+    case 'vertical':
+      // Line at x = max(a.x, b.x) + offset, so its distance from the rightmost point is offset; the label slides up (screen -y).
+      final slide = placement.offset != null ? placement.offset! * ppu - _defaultDimensionOffset : 0.0;
+      return Offset(slide, -alongPixels);
+    case 'horizontal':
+      // Line at y = max(a.y, b.y) + offset; the painter measures down from the lowest point, which is the smaller y.
+      final minY = math.min(a.$2, b.$2);
+      final maxY = math.max(a.$2, b.$2);
+      final distance = placement.offset != null ? (minY - maxY - placement.offset!) * ppu : _defaultDimensionOffset;
+      return Offset(alongPixels, distance - _defaultDimensionOffset);
+  }
+  final delta = bScreen - aScreen;
+  final length = delta.distance;
+  if (length < 1e-6) return Offset.zero;
+  final frame = LabelDragResolver.linearFrame(a, b);
+  if (frame == null) return Offset.zero;
+  final normal = _canonicalPerpendicular(delta);
+  final tangent = delta / length;
+  var slide = 0.0;
+  if (placement.offset != null) {
+    final wantedNormal = Offset(frame.$2.$1, -frame.$2.$2) * (placement.offset! * ppu);
+    final distance = wantedNormal.dx * normal.dx + wantedNormal.dy * normal.dy;
+    slide = distance - _defaultDimensionOffset;
+  }
+  return normal * slide + tangent * alongPixels;
+}
+
+/// Where [constraintId]'s label is drawn on the flat canvas, in screen pixels - null when it is not drawn (hidden, or its geometry is missing).
+/// Public so the tests can check a placed label ends up where the user put it.
+Offset? dimensionLabelCenterScreen(SketchController controller, ViewTransform transform, String constraintId) {
+  final constraint = controller.constraints[constraintId];
+  if (constraint == null) return null;
+  return _constraintLabelCenter(
+    controller,
+    transform,
+    constraint,
+    dimensionLabelPixelOffset(controller, transform, constraintId, constraint),
+  );
+}
+
 /// The id of whichever currently-rendered Constraint's label [canvasPos]
 /// landed within [radius] of, or null if it missed all of them - see
 /// [_constraintLabelCenter]'s own doc comment on how [SketchController.
@@ -2247,7 +2412,7 @@ String? dimensionLabelAt(
   double radius,
 ) {
   for (final entry in controller.constraints.entries) {
-    final labelOffset = controller.labelOffsetForZoom(entry.key, transform.pixelsPerUnit);
+    final labelOffset = dimensionLabelPixelOffset(controller, transform, entry.key, entry.value);
     final actual = _constraintLabelCenter(controller, transform, entry.value, labelOffset);
     if (actual == null) continue;
     if ((canvasPos - actual).distance <= radius) {
@@ -2760,7 +2925,7 @@ class _SketchPainter extends CustomPainter {
       // badges no longer share one unselected color.
       final dimensionColor = isSelected ? _selectedColor : _dimensionLineColor;
       final badgeColor = isSelected ? _selectedColor : _constraintBadgeColor;
-      final labelOffset = controller.labelOffsetForZoom(entry.key, transform.pixelsPerUnit);
+      final labelOffset = dimensionLabelPixelOffset(controller, transform, entry.key, entry.value);
       switch (entry.value) {
         case DistanceConstraintDto c:
           // Cardinal-point axis constraints are pure solver plumbing (see

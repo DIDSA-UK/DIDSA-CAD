@@ -10,13 +10,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 import '../api/document_api_client.dart';
 import '../appearance/appearance_look.dart';
 import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus, pathEquals;
-import '../sketch/sketch_controller.dart'
-    show
-        ConstraintOverlayItem,
-        ConstraintAngleDimensionItem,
-        ConstraintLineDistanceDimensionItem,
-        ConstraintLinearDimensionItem,
-        ConstraintRadialDimensionItem;
+import '../sketch/sketch_controller.dart' show ConstraintOverlayItem;
 import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'mesh_geometry.dart';
@@ -502,124 +496,21 @@ class PartViewport extends StatefulWidget {
   /// cancel the edit, still don't fall through to placing geometry"
   /// behaviour) - false (including when this callback is itself null) lets
   /// [onDrawCursorCommit] fire normally.
-  final bool Function(String? hitConstraintId)? onConstraintOverlayItemTap;
+  final bool Function(String? hitConstraintId, vm.Vector3? labelPoint)? onConstraintOverlayItemTap;
 
-  /// P41: while true, [_handleDrawCursorMove] feeds its own raw screen
-  /// delta to [onConstraintLabelDragDelta] instead of resolving/reporting a
-  /// world-plane hit - mirrors `sketch_canvas.dart`'s own
-  /// `_feedMouseSwipeToGrabbedEntity`'s "a grabbed label's offset lives in
-  /// screen space, not an absolute cursor position" branch exactly (see
-  /// [SketchController.updateLabelDrag]'s own doc comment for why). The
-  /// caller computes this from [SketchController.draggingLabelId] - dropping
-  /// the grabbed label again is already handled entirely by the existing
-  /// [onDrawCursorCommit]/drag-mode-commit path via
-  /// [SketchController.dropGrabbedEntity] (already routes to
-  /// [SketchController.endLabelDrag] on its own), so no separate "stop
-  /// dragging a label" plumbing was needed here.
+  /// While true, [_handleDrawCursorMove] feeds its own raw screen delta to [onConstraintLabelDragDelta] instead of resolving/reporting
+  /// a world-plane hit. Only for a relationship glyph (V, H, parallel...), whose offset is session-only screen pixels; a dimension
+  /// label is dragged through the plane point under the cursor (see [onSketchLabelGrabStart] and [SketchController.dragLabelToPointer]).
   final bool isDraggingConstraintLabel;
 
-  /// P41: fired with this State's own already-sensitivity-scaled screen
-  /// delta while [isDraggingConstraintLabel] is true, in place of
-  /// [onDrawCursorMoved].
+  /// The glyph's screen delta (already scaled by the cursor sensitivity) while [isDraggingConstraintLabel] is true.
   final void Function(Offset delta)? onConstraintLabelDragDelta;
 
-  /// P44f bug fix (on-device feedback: "the arrow should remain at the
-  /// same angular position when orbiting" - a radial dimension's leader
-  /// visibly drifted to a different point on the circle purely from
-  /// orbiting the camera, without ever dragging again): [constraintOverlayItems]'
-  /// own `constraintId` of whichever label is currently being dragged (the
-  /// caller's own [SketchController.draggingLabelId]) - only needed so
-  /// [_handleDrawCursorMove] can look the item back up (to check whether
-  /// it's a radial dimension, which needs angle-based rather than
-  /// pixel-delta-based drag handling - see [onRadialLabelAngleDragged]'s
-  /// own doc comment for why). Null whenever [isDraggingConstraintLabel]
-  /// is false.
-  final String? draggingConstraintLabelId;
-
-  /// P44f: fired in place of [onConstraintLabelDragDelta] whenever the
-  /// entry [draggingConstraintLabelId] resolves to (in [constraintOverlayItems])
-  /// is a [ConstraintRadialDimensionItem] - a screen-pixel delta
-  /// ([onConstraintLabelDragDelta]'s own convention) is camera-frame
-  /// dependent, so persisting *that* for a radial dimension's leader angle
-  /// means the very next orbit re-interprets the same stored pixels
-  /// through a different camera orientation and resolves to a different
-  /// point on the circle (see [SketchController.setRadialAngleOffset]'s
-  /// own doc comment). This fires with the resolved absolute angle
-  /// instead (via [radialDimensionAngleDegrees], using this State's own
-  /// live camera/projection - the one piece of context only [PartViewport]
-  /// itself has), for the caller to persist directly, camera-independent.
-  final void Function(double angleDegrees)? onRadialLabelAngleDragged;
-
-  /// Bug fix (on-device feedback: "radius and diameter dimensions are
-  /// locked a set distance from the arc or circle - I should be able to
-  /// move them anywhere"): [onRadialLabelAngleDragged]'s own sibling for a
-  /// radial dimension's *distance* from the circle - fires alongside it
-  /// whenever [draggingConstraintLabelId] resolves to a
-  /// [ConstraintRadialDimensionItem], with the resolved sketch-unit
-  /// distance beyond the circle's rim, for the caller to persist via
-  /// [SketchController.setRadialLegLength].
-  final void Function(double legLength)? onRadialLabelDistanceDragged;
-
-  /// P52 bug fix (on-device feedback: "when orbiting, linear dimensions
-  /// slide along the line. they should stay in the same place on the
-  /// line"), [onRadialLabelAngleDragged]'s exact sibling for a
-  /// [ConstraintLinearDimensionItem]: fired in place of
-  /// [onConstraintLabelDragDelta] whenever [draggingConstraintLabelId]
-  /// resolves to one. Unlike radial's angle (which needs a screen-space
-  /// resolve, see that field's own doc comment), a linear dimension's
-  /// perpendicular offset is directly computable in sketch-local space with
-  /// no camera-frame math at all - this State raycasts the live cursor
-  /// onto [sketchPlaneBasis] (the same plane every other cursor-mode pick
-  /// already uses) and reports the resulting sketch-unit perpendicular
-  /// distance from the dimensioned line, for the caller to persist via
-  /// [SketchController.setLinearOffsetDistance].
-  final void Function(double distance)? onLinearLabelOffsetDragged;
-
-  /// Bug fix (on-device feedback: "the linear dimension only moves
-  /// left/right" - it should also slide along its own line, matching the
-  /// 2D flat canvas): [onLinearLabelOffsetDragged]'s own sibling for the
-  /// label's position *along the dimension line itself* (the axis
-  /// [onLinearLabelOffsetDragged] doesn't cover) - fires alongside it
-  /// whenever [draggingConstraintLabelId] resolves to a
-  /// [ConstraintLinearDimensionItem], for the caller to persist via
-  /// [SketchController.setLinearAlongOffset]. Mirrors
-  /// [onLineDistanceLabelAlongDragged]'s exact contract.
-  final void Function(double along)? onLinearLabelAlongDragged;
-
-  /// [onLinearLabelOffsetDragged]'s exact sibling for a
-  /// [ConstraintLineDistanceDimensionItem] (a Line-to-Line perpendicular
-  /// distance) - previously missing entirely, so this dimension kind fell
-  /// through to the raw-pixel [onConstraintLabelDragDelta] path and visibly
-  /// drifted on camera orbit despite already carrying a camera-independent
-  /// `sketchLocalOffsetDistance` field with nothing to feed it.
-  final void Function(double distance)? onLineDistanceLabelOffsetDragged;
-
-  /// Bug fix (on-device feedback: "the dimension...is restricted in
-  /// movement. it moves left right. it can't be moved up down"):
-  /// [onLineDistanceLabelOffsetDragged]'s own sibling for the label's
-  /// position *along the dimension line itself* (the axis
-  /// [onLineDistanceLabelOffsetDragged] doesn't cover) - fires alongside it
-  /// whenever [draggingConstraintLabelId] resolves to a
-  /// [ConstraintLineDistanceDimensionItem], for the caller to persist via
-  /// [SketchController.setLineDistanceAlongOffset].
-  final void Function(double along)? onLineDistanceLabelAlongDragged;
-
-  /// Bug fix (on-device feedback: "dimensions should match technical
-  /// drawing conventions" - an angle dimension used to be a plain floating
-  /// text chip with no way to place it): fires in place of
-  /// [onConstraintLabelDragDelta] whenever [draggingConstraintLabelId]
-  /// resolves to a [ConstraintAngleDimensionItem], with the resolved
-  /// sketch-unit arc radius (distance from the implied vertex), for the
-  /// caller to persist via [SketchController.setAngleArcRadius].
-  final void Function(double radius)? onAngleLabelRadiusDragged;
-
-  /// [onAngleLabelRadiusDragged]'s own sibling for the label's position
-  /// *along the arc's chord* (the axis [onAngleLabelRadiusDragged] doesn't
-  /// cover) - fires alongside it whenever [draggingConstraintLabelId]
-  /// resolves to a [ConstraintAngleDimensionItem], for the caller to
-  /// persist via [SketchController.setAngleAlongOffset]. Same bug class as
-  /// [onLinearLabelAlongDragged].
-  final void Function(double along)? onAngleLabelAlongDragged;
+  /// A mouse press on a dimension label that drags past the tap threshold (Desktop input, like [onSketchGrabStart] for points and
+  /// lines): called with the label's constraint id, the plane point under the press and the plane point under the label's centre
+  /// (null if that is off the plane). True means the label was picked up; its moves then arrive through [onSketchGrabUpdate] and the
+  /// release through [onSketchGrabEnd], exactly as for a point.
+  final bool Function(String constraintId, vm.Vector3 pressPoint, vm.Vector3? labelPoint)? onSketchLabelGrabStart;
 
   /// P44b bug fix (on-device feedback: "when I click a ghost dimension to
   /// set its value, nothing happens"): the [constraintOverlayItems] entry
@@ -1140,15 +1031,7 @@ class PartViewport extends StatefulWidget {
     this.onConstraintOverlayItemTap,
     this.isDraggingConstraintLabel = false,
     this.onConstraintLabelDragDelta,
-    this.draggingConstraintLabelId,
-    this.onRadialLabelAngleDragged,
-    this.onRadialLabelDistanceDragged,
-    this.onLinearLabelOffsetDragged,
-    this.onLinearLabelAlongDragged,
-    this.onLineDistanceLabelOffsetDragged,
-    this.onLineDistanceLabelAlongDragged,
-    this.onAngleLabelRadiusDragged,
-    this.onAngleLabelAlongDragged,
+    this.onSketchLabelGrabStart,
     this.activeConstraintOverlayItemId,
     this.activeConstraintOverlayItemBuilder,
     this.sketchPlaneSurfaceColourHex = '#F2F2F2',
@@ -5671,7 +5554,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               focusTransform: widget.focusWorldTransformMatrix,
             )
           : null;
-      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId)) return null;
+      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId, _overlayItemPlanePoint(hitId))) return null;
     }
     final hit = _hoverHit;
     if (hit == null) {
@@ -5799,10 +5682,52 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     return hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(screen, _viewportSize)), basis)?.$1;
   }
 
+  /// The sketch-plane point under the drawn label of overlay item [constraintId], or null when it is not drawn or is off the plane. A
+  /// grab uses it to keep the label under the pointer.
+  vm.Vector3? _overlayItemPlanePoint(String constraintId) {
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) return null;
+    final item = widget.constraintOverlayItems.where((it) => it.constraintId == constraintId).lastOrNull;
+    if (item == null) return null;
+    final screen = constraintOverlayItemLabelCenter(
+      _camera.cameraFor(_viewportSize),
+      _viewportSize,
+      basis,
+      item,
+      focusTransform: widget.focusWorldTransformMatrix,
+    );
+    return screen == null ? null : _sketchPlanePointAt(screen);
+  }
+
   bool _beginMouseGrab(Offset down) {
     final basis = widget.sketchPlaneBasis;
     final point = _sketchPlanePointAt(down);
     if (basis == null || point == null) return false;
+    // A dimension label under the press is picked up before any point or line behind it.
+    final labelGrab = widget.onSketchLabelGrabStart;
+    if (labelGrab != null) {
+      final camera = _camera.cameraFor(_viewportSize);
+      final labelId = constraintOverlayItemAt(
+        camera,
+        _viewportSize,
+        basis,
+        widget.constraintOverlayItems,
+        down,
+        focusTransform: widget.focusWorldTransformMatrix,
+      );
+      if (labelId != null) {
+        final item = widget.constraintOverlayItems.lastWhere((it) => it.constraintId == labelId);
+        final labelScreen = constraintOverlayItemLabelCenter(
+          camera,
+          _viewportSize,
+          basis,
+          item,
+          focusTransform: widget.focusWorldTransformMatrix,
+        );
+        final labelPoint = labelScreen == null ? null : _sketchPlanePointAt(labelScreen);
+        if (labelGrab(labelId, point, labelPoint)) return true;
+      }
+    }
     return widget.onSketchGrabStart?.call(point, _localPixelsPerSketchUnit(point, basis)) ?? false;
   }
 
@@ -6073,305 +5998,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _recomputeHover();
       _syncHoverNode();
     });
-    // P41: a grabbed constraint label's own offset lives in screen space,
-    // not an absolute world/sketch position - see
-    // [PartViewport.isDraggingConstraintLabel]'s own doc comment.
+    // A relationship glyph (V, H, parallel...) keeps a session-only pixel offset, so it is fed the raw screen delta. A dimension label
+    // does not come here: it follows the cursor's plane point like a point or line does, and the controller turns that into its
+    // placement ([SketchController.updateGrabbedPosition]) - the same routine for a mouse drag and a touch grab.
     if (widget.isDraggingConstraintLabel) {
-      // P44f bug fix (on-device feedback: "the arrow should remain at the
-      // same angular position when orbiting"): a radial dimension's own
-      // leader angle can't safely be persisted as a screen-pixel delta
-      // (see [PartViewport.onRadialLabelAngleDragged]'s own doc comment) -
-      // resolved here instead, since this State alone has the live camera
-      // needed to convert the cursor's current screen position into a
-      // camera-independent sketch-local angle.
-      ConstraintRadialDimensionItem? radialItem;
-      for (final candidate in widget.constraintOverlayItems) {
-        if (candidate.constraintId == widget.draggingConstraintLabelId &&
-            candidate is ConstraintRadialDimensionItem) {
-          radialItem = candidate;
-          break;
-        }
-      }
-      final basis = widget.sketchPlaneBasis;
-      final cursor = _cursorPosition;
-      if (radialItem != null && basis != null && cursor != null) {
-        final projected = projectRadialDimensionBasis(
-          _camera.cameraFor(_viewportSize),
-          _viewportSize,
-          basis,
-          radialItem,
-          focusTransform: widget.focusWorldTransformMatrix,
-        );
-        if (projected != null) {
-          final (centerScreen, rimScreen, perpScreen) = projected;
-          final desiredDelta = cursor - centerScreen;
-          if (desiredDelta.distance > 1e-6) {
-            final angle = radialDimensionAngleDegrees(
-              centerScreen: centerScreen,
-              rimScreen: rimScreen,
-              perpScreen: perpScreen,
-              desiredDirection: desiredDelta / desiredDelta.distance,
-            );
-            if (angle != null) {
-              widget.onRadialLabelAngleDragged?.call(angle);
-              // Bug fix (on-device feedback: "radius and diameter
-              // dimensions are locked a set distance from the arc or
-              // circle"): [onRadialLabelDistanceDragged]'s own doc comment
-              // covers why - resolved here since [radiusPixels]/
-              // [pixelsPerUnit] need the same live camera/projection the
-              // angle resolve above already has.
-              final rimSketchDx = radialItem.rim.$1 - radialItem.center.$1;
-              final rimSketchDy = radialItem.rim.$2 - radialItem.center.$2;
-              final rimSketchDistance = math.sqrt(rimSketchDx * rimSketchDx + rimSketchDy * rimSketchDy);
-              if (rimSketchDistance > 1e-9) {
-                final pixelsPerUnit = (rimScreen - centerScreen).distance / rimSketchDistance;
-                final radiusPixels = radialItem.radius * pixelsPerUnit;
-                final legPixels = desiredDelta.distance - radiusPixels;
-                widget.onRadialLabelDistanceDragged?.call(legPixels / pixelsPerUnit);
-              }
-              return;
-            }
-          }
-        }
-      }
-      // P52 bug fix (on-device feedback: "when orbiting, linear dimensions
-      // slide along the line") - [onLinearLabelOffsetDragged]'s own doc
-      // comment covers why.
-      ConstraintLinearDimensionItem? linearItem;
-      for (final candidate in widget.constraintOverlayItems) {
-        if (candidate.constraintId == widget.draggingConstraintLabelId &&
-            candidate is ConstraintLinearDimensionItem) {
-          linearItem = candidate;
-          break;
-        }
-      }
-      if (linearItem != null && basis != null && cursor != null) {
-        // Bug fix (on-device feedback: "vertical dimension can't be dragged
-        // left/right, up/down is inverted"): an axis-locked orientation is
-        // handled entirely in sketch-local coordinates, matching
-        // [_axisLockedDimensionEndpoints]'s own reconstruction exactly (see
-        // that function's own doc comment) - no normal/dot-product needed,
-        // just the sketch-local cursor hit's own coordinate along the
-        // locked axis.
-        if (linearItem.orientation == 'vertical' || linearItem.orientation == 'horizontal') {
-          final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
-          final hit = hitTestSketchPlane(ray, basis);
-          if (hit != null) {
-            final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
-            final vertical = linearItem.orientation == 'vertical';
-            final cursorAxis = vertical ? cursorX : cursorY;
-            final reference = vertical
-                ? math.max(linearItem.pointA.$1, linearItem.pointB.$1)
-                : math.max(linearItem.pointA.$2, linearItem.pointB.$2);
-            widget.onLinearLabelOffsetDragged?.call(cursorAxis - reference);
-            // Bug fix (on-device feedback: "the linear dimension only moves
-            // left/right" on a vertical dimension): the along-axis is the
-            // locked orientation's own opposite axis (vertical's own line
-            // runs in Y, so "along" is Y; horizontal's runs in X, so
-            // "along" is X) - fires alongside the offset above every frame,
-            // same "both resolved from one cursor position" pattern
-            // [onLineDistanceLabelOffsetDragged]/[onLineDistanceLabelAlongDragged]
-            // already established.
-            final alongAxis = vertical ? cursorY : cursorX;
-            final alongReference = vertical
-                ? (linearItem.pointA.$2 + linearItem.pointB.$2) / 2
-                : (linearItem.pointA.$1 + linearItem.pointB.$1) / 2;
-            // Bug fix (on-device feedback: "dragging left moves the
-            // dimension left, dragging right moves the dimension left" /
-            // up-down likewise inverted): see [canonicalAlongSign]'s own doc
-            // comment - the raw coordinate difference above is positive
-            // whenever the cursor is on the numerically-larger side of
-            // pointA/pointB's midpoint, regardless of which point is
-            // actually A vs B, but the paint side's tangent direction does
-            // depend on that order.
-            final alongSign = canonicalAlongSign(linearItem.pointA, linearItem.pointB, vertical);
-            widget.onLinearLabelAlongDragged?.call((alongAxis - alongReference) * alongSign);
-            return;
-          }
-        } else {
-          // Bug fix (on-device feedback: same bug class as
-          // [canonicalPerpendicular]'s own doc comment, just never applied
-          // to this drag-side computation): mirrors
-          // [_ConstraintOverlayPainter._paintLinearDimension]'s `default:`
-          // branch exactly - the same screen-projected points, the same
-          // [canonicalPerpendicular] sign canonicalization - so drag-write
-          // and paint-read can never disagree on sign regardless of which
-          // constrained Point the backend happened to store as A vs B.
-          final camera = _camera.cameraFor(_viewportSize);
-          final aScreen = worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, linearItem.pointA.$1, linearItem.pointA.$2));
-          final bScreen = worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, linearItem.pointB.$1, linearItem.pointB.$2));
-          if (aScreen != null && bScreen != null) {
-            final screenDelta = bScreen - aScreen;
-            final screenLength = screenDelta.distance;
-            if (screenLength > 1e-6) {
-              final normal = canonicalPerpendicular(screenDelta);
-              final dx = linearItem.pointB.$1 - linearItem.pointA.$1;
-              final dy = linearItem.pointB.$2 - linearItem.pointA.$2;
-              final sketchLength = math.sqrt(dx * dx + dy * dy);
-              final ratio = sketchLength > 1e-9 ? sketchLength / screenLength : 1.0;
-              final cursorDelta = cursor - aScreen;
-              final screenMagnitude = cursorDelta.dx * normal.dx + cursorDelta.dy * normal.dy;
-              widget.onLinearLabelOffsetDragged?.call(screenMagnitude * ratio);
-              // Bug fix (same class as the axis-locked branch above): the
-              // along-direction is the line's own tangent (perpendicular to
-              // [normal]), projected from the dimension line's own midpoint
-              // anchor - the midpoint of aScreen/bScreen, since [normal]'s
-              // own offset is purely perpendicular and doesn't shift it
-              // along the tangent.
-              final tangent = screenDelta / screenLength;
-              final anchorScreen = (aScreen + bScreen) / 2;
-              final anchorDelta = cursor - anchorScreen;
-              final alongScreenMagnitude = anchorDelta.dx * tangent.dx + anchorDelta.dy * tangent.dy;
-              widget.onLinearLabelAlongDragged?.call(alongScreenMagnitude * ratio);
-              return;
-            }
-          }
-        }
-      }
-      // Bug fix (on-device feedback: same "locked/drifts on orbit" bug
-      // class as the radial/linear fixes above, just for a Line-to-Line
-      // distance dimension - this drag branch never existed at all, so the
-      // dimension fell through to the raw-pixel [onConstraintLabelDragDelta]
-      // path below despite [ConstraintLineDistanceDimensionItem] already
-      // carrying a working, camera-independent `sketchLocalOffsetDistance`
-      // field with nothing to feed it) - mirrors
-      // [_ConstraintOverlayPainter._paintLineDistanceDimension]'s own
-      // `alongA` direction exactly, entirely in sketch-local space.
-      ConstraintLineDistanceDimensionItem? lineDistanceItem;
-      for (final candidate in widget.constraintOverlayItems) {
-        if (candidate.constraintId == widget.draggingConstraintLabelId &&
-            candidate is ConstraintLineDistanceDimensionItem) {
-          lineDistanceItem = candidate;
-          break;
-        }
-      }
-      if (lineDistanceItem != null && basis != null && cursor != null) {
-        // Bug fix (on-device feedback: "dragging the dimension up and down
-        // is still inverted"): the previous version of this branch computed
-        // its perpendicular direction (`perpX`/`perpY`) by rotating
-        // `line1Start -> line1End` *in sketch-local space*, then dotted the
-        // raw sketch-local cursor position against it. But the paint side
-        // this has to match, [_ConstraintOverlayPainter._paintLineDistanceDimension]
-        // (`sketch_constraint_overlay.dart`), projects `line1Start`/
-        // `line1End` to screen *first* and only rotates the *projected*
-        // delta to get its own `perpToA`. A 90-degree rotation doesn't
-        // commute with a camera projection unless the sketch plane's local
-        // basis happens to already be screen-aligned, so "rotate-then-
-        // project" and "project-then-rotate" only agree by coincidence -
-        // this shows up as a consistent inversion for whatever the current
-        // camera orbit happens to be, not merely half the time. Mirrors the
-        // "unlocked"/diagonal [ConstraintLinearDimensionItem] branch just
-        // above (already correct, for exactly this reason): project first,
-        // then do every dot product in screen space, so it can never
-        // disagree with the paint side regardless of camera orbit.
-        final camera = _camera.cameraFor(_viewportSize);
-        Offset? project((double, double) sketchXY) =>
-            worldToScreen(camera, _viewportSize, sketchPointToWorld(basis, sketchXY.$1, sketchXY.$2));
-        final line1StartScreen = project(lineDistanceItem.line1Start);
-        final line1EndScreen = project(lineDistanceItem.line1End);
-        final line2StartScreen = project(lineDistanceItem.line2Start);
-        if (line1StartScreen != null && line1EndScreen != null && line2StartScreen != null) {
-          final dirAScreen = line1EndScreen - line1StartScreen;
-          final screenLengthA = dirAScreen.distance;
-          if (screenLengthA > 1e-6) {
-            final alongScreen = dirAScreen / screenLengthA;
-            final perpScreen = Offset(-alongScreen.dy, alongScreen.dx);
-            final midAScreen = (line1StartScreen + line1EndScreen) / 2;
-            final toLineBScreen = line2StartScreen - midAScreen;
-            final t = toLineBScreen.dx * perpScreen.dx + toLineBScreen.dy * perpScreen.dy;
-            final midBScreen = midAScreen + perpScreen * t;
-
-            final dx = lineDistanceItem.line1End.$1 - lineDistanceItem.line1Start.$1;
-            final dy = lineDistanceItem.line1End.$2 - lineDistanceItem.line1Start.$2;
-            final sketchLengthA = math.sqrt(dx * dx + dy * dy);
-            final ratio = sketchLengthA > 1e-9 ? sketchLengthA / screenLengthA : 1.0;
-
-            final offsetDelta = cursor - midAScreen;
-            final offsetScreenMagnitude = offsetDelta.dx * alongScreen.dx + offsetDelta.dy * alongScreen.dy;
-            widget.onLineDistanceLabelOffsetDragged?.call(offsetScreenMagnitude * ratio);
-
-            // Bug fix (on-device feedback, round 2: "the up/down movement is
-            // still reversed"): the paint side's actual along-direction
-            // isn't [perpScreen] itself - [_paintLineDistanceDimension]
-            // derives its `tangent` from `p2 - p1`, which is `midB - midA`
-            // (offset cancels in the subtraction), i.e. `perpToA * t.sign`,
-            // not `perpToA` unflipped. `t`'s sign depends on which side of
-            // line1 line2 sits on relative to [perpScreen]'s own (arbitrary,
-            // line1Start-to-line1End-derived) direction - the first attempt
-            // at this branch dotted straight against [perpScreen], which
-            // only agreed with the paint side when [t] happened to be
-            // positive. Deriving the tangent directly from
-            // `midBScreen - midAScreen`, exactly like the paint side derives
-            // it from `p2 - p1`, makes the two impossible to disagree on
-            // regardless of which side line2 falls on.
-            final midDeltaScreen = midBScreen - midAScreen;
-            final midDeltaLength = midDeltaScreen.distance;
-            if (midDeltaLength > 1e-6) {
-              final tangentScreen = midDeltaScreen / midDeltaLength;
-              final dimAnchorScreen = (midAScreen + midBScreen) / 2;
-              final alongDelta = cursor - dimAnchorScreen;
-              final alongScreenMagnitude = alongDelta.dx * tangentScreen.dx + alongDelta.dy * tangentScreen.dy;
-              widget.onLineDistanceLabelAlongDragged?.call(alongScreenMagnitude * ratio);
-            }
-            return;
-          }
-        }
-      }
-      // Bug fix (on-device feedback: "dimensions should match technical
-      // drawing conventions" - an angle dimension used to be a plain
-      // floating chip with no way to place it): what the user actually
-      // drags for an angle dimension is the arc's own distance from the
-      // implied vertex (see [angleDimensionVertexAndRays]'s own doc
-      // comment), a plain sketch-unit distance - no screen-space normal
-      // needed, mirroring [onLinearLabelOffsetDragged]'s axis-locked branch
-      // above.
-      ConstraintAngleDimensionItem? angleItem;
-      for (final candidate in widget.constraintOverlayItems) {
-        if (candidate.constraintId == widget.draggingConstraintLabelId &&
-            candidate is ConstraintAngleDimensionItem) {
-          angleItem = candidate;
-          break;
-        }
-      }
-      if (angleItem != null && basis != null && cursor != null) {
-        final vertexAndRays = angleDimensionVertexAndRays(angleItem);
-        if (vertexAndRays != null) {
-          final (vertex, ray1, ray2) = vertexAndRays;
-          final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
-          final hit = hitTestSketchPlane(ray, basis);
-          if (hit != null) {
-            final (cursorX, cursorY) = worldPointToSketch(basis, hit.$1);
-            final dx = cursorX - vertex.$1;
-            final dy = cursorY - vertex.$2;
-            final radius = math.sqrt(dx * dx + dy * dy);
-            if (radius > 1e-6) {
-              widget.onAngleLabelRadiusDragged?.call(radius);
-              // Bug fix (same class as the linear-dimension along fix
-              // above): the along-the-chord direction, entirely in
-              // sketch-local space, is the two rays' own difference (both
-              // unit vectors from [vertex] - the sketch-space arc endpoints
-              // are `vertex + radius*ray1`/`vertex + radius*ray2`, so their
-              // chord direction is exactly `ray2 - ray1` regardless of
-              // radius) - fires alongside the radius callback above every
-              // frame, from this same resolved cursor position, same
-              // "both resolved together" pattern as the linear/line-
-              // distance branches.
-              final alongDx = ray2.$1 - ray1.$1;
-              final alongDy = ray2.$2 - ray1.$2;
-              final alongLen = math.sqrt(alongDx * alongDx + alongDy * alongDy);
-              if (alongLen > 1e-9) {
-                final ux = alongDx / alongLen;
-                final uy = alongDy / alongLen;
-                final chordMidX = vertex.$1 + radius * (ray1.$1 + ray2.$1) / 2;
-                final chordMidY = vertex.$2 + radius * (ray1.$2 + ray2.$2) / 2;
-                final along = (cursorX - chordMidX) * ux + (cursorY - chordMidY) * uy;
-                widget.onAngleLabelAlongDragged?.call(along);
-              }
-              return;
-            }
-          }
-        }
-      }
       widget.onConstraintLabelDragDelta?.call(scaledDelta);
       return;
     }
@@ -6440,7 +6070,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               focusTransform: widget.focusWorldTransformMatrix,
             )
           : null;
-      final consumed = widget.onConstraintOverlayItemTap!(hitId);
+      final consumed = widget.onConstraintOverlayItemTap!(hitId, hitId == null ? null : _overlayItemPlanePoint(hitId));
       if (consumed) return;
     }
     final hit = _drawCursorWorldHit;
