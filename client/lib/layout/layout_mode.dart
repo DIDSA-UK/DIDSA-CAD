@@ -90,6 +90,9 @@ class LayoutModeController extends ChangeNotifier {
   LayoutPreference get preference => _preference;
   bool get isDesktop => _mode == LayoutMode.desktop;
 
+  /// True while the last pointer used was a mouse or trackpad.
+  bool get mouseActive => _mouseActive;
+
   set preference(LayoutPreference value) {
     if (_preference == value) return;
     _preference = value;
@@ -109,7 +112,10 @@ class LayoutModeController extends ChangeNotifier {
     final mouse = kind == PointerDeviceKind.mouse || kind == PointerDeviceKind.trackpad;
     if (mouse == _mouseActive) return;
     _mouseActive = mouse;
+    final before = _mode;
     _recompute();
+    // The mode may be unchanged (a forced layout), but what a screen does with a mouse differs from a touch.
+    if (_mode == before) notifyListeners();
   }
 
   void _recompute() {
@@ -137,6 +143,10 @@ class LayoutModeScope extends InheritedNotifier<LayoutModeController> {
 
   static LayoutModeController? controllerOf(BuildContext context) =>
       context.getInheritedWidgetOfExactType<LayoutModeScope>()?.notifier;
+
+  /// Whether the last pointer was a mouse, rebuilding the caller when that changes. False with no host.
+  static bool mouseActiveOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<LayoutModeScope>()?.notifier?.mouseActive ?? false;
 
   static bool isDesktop(BuildContext context) => modeOf(context) == LayoutMode.desktop;
 }

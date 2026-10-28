@@ -947,6 +947,15 @@ class PartViewport extends StatefulWidget {
   /// left and [additive] when Ctrl is held; a touch marquee sets neither.
   final void Function(Rect sketchRect, {bool crossing, bool additive})? onMarqueeSelect;
 
+  /// Desktop input (mouse drag of a sketch entity): in selection mode over a sketch plane, a left mouse press that
+  /// drags past the tap threshold calls [onSketchGrabStart] with the plane point where the press began. A true
+  /// answer means an entity was picked up: the pointer's moves then call [onSketchGrabUpdate] with the plane point
+  /// under it, and releasing calls [onSketchGrabEnd]. A false answer leaves the press to the box select. A touch
+  /// never starts one (it uses drag mode's tap-to-grab).
+  final bool Function(vm.Vector3 worldPoint, double? localPixelsPerUnit)? onSketchGrabStart;
+  final void Function(vm.Vector3 worldPoint)? onSketchGrabUpdate;
+  final VoidCallback? onSketchGrabEnd;
+
   /// Desktop input D7: a box dragged on empty space outside a sketch picks
   /// what the camera can see inside it (a mouse drag, or a touch tap-hold
   /// then drag). Fired once, on release, with the picked entities: whole
@@ -1184,6 +1193,9 @@ class PartViewport extends StatefulWidget {
     this.onMouseMiddleClick,
     this.onClearSelection,
     this.onMarqueeSelect,
+    this.onSketchGrabStart,
+    this.onSketchGrabUpdate,
+    this.onSketchGrabEnd,
     this.onBoxSelect,
     this.onSelectOtherRequested,
     this.highlightOverride,
@@ -1629,6 +1641,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// waiting to see whether it drags - past the tap threshold it becomes a
   /// box select straight away (no long-press hold; that's for touch).
   Offset? _mouseMarqueeDownScreen;
+
+  /// A left mouse press in selection mode over a sketch plane, waiting to see whether it drags an entity (see
+  /// [PartViewport.onSketchGrabStart]); [_mouseGrabActive] once one is picked up.
+  Offset? _mouseGrabDownScreen;
+  bool _mouseGrabActive = false;
 
   /// Whether the active marquee was started by a mouse - only then does its
   /// direction pick window or crossing, and Ctrl add.
@@ -4913,6 +4930,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // hold - see [_mouseMarqueeDownScreen].
         // Only where a box selects anything: the embedded sketch (part
         // and assembly box select is not built yet).
+        _mouseGrabDownScreen =
+            widget.sketchPlaneBasis != null && widget.onSketchGrabStart != null ? event.localPosition : null;
         final boxSelects = widget.sketchPlaneBasis != null ? widget.onMarqueeSelect != null : widget.onBoxSelect != null;
         _mouseMarqueeDownScreen =
             boxSelects && !_hasEntityNearScreenPoint(event.localPosition) ? event.localPosition : null;
@@ -4967,6 +4986,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (_marqueeActive) {
         setState(() => _marqueeCurrentScreen = event.localPosition);
         return;
+      }
+      if (_mouseGrabActive) {
+        _updateMouseGrab(event.localPosition);
+        return;
+      }
+      final mouseGrabDown = _mouseGrabDownScreen;
+      if (mouseGrabDown != null &&
+          event.kind == PointerDeviceKind.mouse &&
+          (event.localPosition - mouseGrabDown).distance > _tapTravelThreshold) {
+        _mouseGrabDownScreen = null;
+        if (_beginMouseGrab(mouseGrabDown)) {
+          _mouseMarqueeDownScreen = null;
+          _cancelSelectOtherHold();
+          _mouseGrabActive = true;
+          _updateMouseGrab(event.localPosition);
+          return;
+        }
       }
       final mouseMarqueeDown = _mouseMarqueeDownScreen;
       if (mouseMarqueeDown != null &&
@@ -5088,6 +5124,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         });
         return;
       }
+      // A mouse drag that picked up a sketch entity ends with the button: it drops, and the release is not a tap.
+      if (_mouseGrabActive) {
+        _mouseGrabActive = false;
+        _mouseGrabDownScreen = null;
+        widget.onSketchGrabEnd?.call();
+        return;
+      }
+      _mouseGrabDownScreen = null;
       // A pending (not yet fired) long-press timer never gets the chance to
       // fire if its pointer lifts first - mirrors sketch_canvas.dart's own
       // _cancelLongPress call at the same point.
@@ -5745,6 +5789,26 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       crossing: byMouse && current.dx < anchor.dx,
       additive: byMouse && mouseBoxSelectIsAdditive(),
     );
+  }
+
+  /// The plane point under [screen] on the sketch plane, or null off it.
+  vm.Vector3? _sketchPlanePointAt(Offset screen) {
+    final basis = widget.sketchPlaneBasis;
+    if (basis == null) return null;
+    final camera = _camera.cameraFor(_viewportSize);
+    return hitTestSketchPlane(_toLocalRay(camera.screenPointToRay(screen, _viewportSize)), basis)?.$1;
+  }
+
+  bool _beginMouseGrab(Offset down) {
+    final basis = widget.sketchPlaneBasis;
+    final point = _sketchPlanePointAt(down);
+    if (basis == null || point == null) return false;
+    return widget.onSketchGrabStart?.call(point, _localPixelsPerSketchUnit(point, basis)) ?? false;
+  }
+
+  void _updateMouseGrab(Offset screen) {
+    final point = _sketchPlanePointAt(screen);
+    if (point != null) widget.onSketchGrabUpdate?.call(point);
   }
 
   /// Desktop input D7: works out what [rect] picks and hands it to

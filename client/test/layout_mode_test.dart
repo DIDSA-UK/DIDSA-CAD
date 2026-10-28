@@ -81,6 +81,18 @@ void main() {
       expect(controller.mode, LayoutMode.desktop);
     });
 
+    test('a forced layout still notifies when the pointer kind changes (screens act on it)', () {
+      final controller = LayoutModeController(preference: LayoutPreference.desktop, windowSize: wide, mouseActive: true);
+      var notified = 0;
+      controller.addListener(() => notified++);
+      controller.notePointer(PointerDeviceKind.touch);
+      expect(controller.mode, LayoutMode.desktop);
+      expect(controller.mouseActive, isFalse);
+      expect(notified, 1);
+      controller.notePointer(PointerDeviceKind.touch);
+      expect(notified, 1);
+    });
+
     test('changing the preference re-decides at once', () {
       final controller = LayoutModeController(preference: LayoutPreference.automatic, windowSize: wide, mouseActive: true);
       controller.preference = LayoutPreference.phone;

@@ -133,6 +133,11 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
   /// box select straight away, with no long-press hold (that's for touch).
   Offset? _mouseMarqueeDownScreen;
 
+  /// A left mouse press in select mode, waiting to see whether it drags an entity (past the tap threshold it grabs
+  /// what is under the press); [_mouseGrabActive] once one is picked up, so releasing the button drops it.
+  Offset? _mouseGrabDownScreen;
+  bool _mouseGrabActive = false;
+
   /// Desktop input D2: a middle double-click zooms to fit (the Zoom to fit
   /// button).
   final MiddleDoubleClickDetector _middleDoubleClick = MiddleDoubleClickDetector();
@@ -674,8 +679,11 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
     // whenever something is grabbed, regardless of which touch/click
     // gesture it's part of) is what actually repositions the grabbed
     // entity - see SketchController.updateGrabbedPosition.
+    // A mouse drags by pressing and moving ([_tryGrabAtCursor] from the pointer-move handler, dropping on release), so
+    // the toggle's click-to-grab and click-to-drop are for touch only.
     if (controller.mode == SketchMode.select &&
         controller.dragModeEnabled &&
+        _lastPointerKind != PointerDeviceKind.mouse &&
         _handleDragModeTap(controller, transform)) {
       return;
     }
@@ -760,6 +768,12 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
       controller.dropGrabbedEntity();
       return true;
     }
+    return _tryGrabAtCursor(controller, transform);
+  }
+
+  /// Picks up the Constraint label, Text resize handle, Point or Line at the cursor, if any (the grab half of
+  /// [_handleDragModeTap], also what a mouse press-and-drag uses). True when something was picked up.
+  bool _tryGrabAtCursor(SketchController controller, ViewTransform transform) {
     final cursorScreen = transform.sketchToScreen(controller.cursorX, controller.cursorY);
     final labelId = dimensionLabelAt(controller, transform, cursorScreen, _ghostHitRadiusPixels);
     if (labelId != null && controller.beginLabelDrag(labelId)) return true;
@@ -827,6 +841,9 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
         // which may change what's under the press.
         _mouseMarqueeDownScreen = _marqueeMayStartAt(event.localPosition, transform) ? event.localPosition : null;
         _dispatchTap(transform);
+        _mouseGrabDownScreen = widget.controller.mode == SketchMode.select && !widget.controller.isEntityGrabbed
+            ? event.localPosition
+            : null;
       }
       return;
     }
@@ -904,6 +921,19 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
           }
         });
       } else {
+        final grabDown = _mouseGrabDownScreen;
+        if (grabDown != null &&
+            event.buttons & kPrimaryMouseButton != 0 &&
+            (event.localPosition - grabDown).distance > _tapTravelThreshold) {
+          _mouseGrabDownScreen = null;
+          if (widget.controller.mode == SketchMode.select && !widget.controller.isEntityGrabbed) {
+            widget.controller.moveCursorAbsoluteScreen(grabDown, transform);
+            if (_tryGrabAtCursor(widget.controller, transform)) {
+              _mouseGrabActive = true;
+              _mouseMarqueeDownScreen = null;
+            }
+          }
+        }
         _refreshCursorMoveTimeIfMoved(event.localPosition);
         widget.controller.moveCursorAbsoluteScreen(event.localPosition, transform);
         _feedMouseSwipeToGrabbedEntity(event, transform);
@@ -967,6 +997,12 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
     _cancelLongPress();
     if (event.kind == PointerDeviceKind.mouse) {
       _mouseMarqueeDownScreen = null;
+      _mouseGrabDownScreen = null;
+      // Releasing the button drops what a mouse drag picked up.
+      if (_mouseGrabActive) {
+        _mouseGrabActive = false;
+        if (widget.controller.isEntityGrabbed) widget.controller.dropGrabbedEntity();
+      }
       _mouseNavAnchor = null;
       final isContextClick = event is PointerUpEvent && _mouseNavIsSecondary && _mouseNavTravel <= kTouchSlop;
       _mouseNavIsSecondary = false;

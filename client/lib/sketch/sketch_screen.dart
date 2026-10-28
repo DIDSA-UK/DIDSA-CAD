@@ -710,6 +710,8 @@ class _SketchScreenState extends State<SketchScreen> {
                       ? () => unawaited(controller.toggleSelectedConstruction())
                       : null,
                 ),
+                // A mouse drags by pressing on an entity and moving; the toggle is for a touch.
+                if (!LayoutModeScope.mouseActiveOf(context))
                 RibbonCommand(
                   label: 'Drag',
                   svg: 'assets/icons/sketchbar/sketchbar_drag_mode.svg',
@@ -1648,6 +1650,9 @@ class _SketchScreenState extends State<SketchScreen> {
         // SketchController.selectInRect - the exact same method
         // sketch_canvas.dart's own marquee already uses.
         onMarqueeSelect: _controller.selectInRect,
+        onSketchGrabStart: _handleEmbeddedGrabStart,
+        onSketchGrabUpdate: _handleEmbeddedGrabUpdate,
+        onSketchGrabEnd: _handleEmbeddedGrabEnd,
         initialViewBasis: orbitBasis,
       );
     }
@@ -2110,7 +2115,29 @@ class _SketchScreenState extends State<SketchScreen> {
   /// [_buildBaseLayer]'s own `selectionMode`/`drawCursorMode` gating so the
   /// two never both apply at once - drag mode needs the plane cursor, not
   /// Selection mode's mesh-hover one.
-  bool get _dragModeActiveInOrbitView => _controller.mode == SketchMode.select && _controller.dragModeEnabled;
+  ///
+  /// Not with a mouse: a mouse drags an entity by pressing on it and moving ([_handleEmbeddedGrabStart]), so the
+  /// toggle's click-move-click is not used and the viewport stays in selection mode.
+  bool get _dragModeActiveInOrbitView =>
+      _controller.mode == SketchMode.select && _controller.dragModeEnabled && !LayoutModeScope.mouseActiveOf(context);
+
+  /// A mouse press-and-drag on a sketch entity in Orbit View ([PartViewport.onSketchGrabStart]): picks up the Point,
+  /// Line or Text resize handle under the press. Dimension labels are not draggable this way in the 3D view yet.
+  bool _handleEmbeddedGrabStart(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
+    if (_controller.mode != SketchMode.select || _controller.isEntityGrabbed || _controller.busy) return false;
+    return _grabEmbeddedEntityAt(worldPoint, localPixelsPerUnit);
+  }
+
+  void _handleEmbeddedGrabUpdate(vm.Vector3 worldPoint) {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null || !_controller.isEntityGrabbed) return;
+    final (x, y) = worldPointToSketch(basis, worldPoint);
+    unawaited(_controller.updateGrabbedPosition(x, y));
+  }
+
+  void _handleEmbeddedGrabEnd() {
+    if (_controller.isEntityGrabbed) unawaited(_controller.dropGrabbedEntity());
+  }
 
   /// P18: [PartViewport.onDrawCursorMoved]'s handler - the "always sketching
   /// should be done with the cursor" retrofit's move-side counterpart to
@@ -2156,6 +2183,14 @@ class _SketchScreenState extends State<SketchScreen> {
       unawaited(_controller.dropGrabbedEntity());
       return;
     }
+    _grabEmbeddedEntityAt(worldPoint, localPixelsPerUnit);
+  }
+
+  /// Picks up whatever draggable sketch entity is at [worldPoint] - the grab half of the drag-mode tap and of a mouse
+  /// press-drag. True when something was picked up.
+  bool _grabEmbeddedEntityAt(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null) return false;
     final (x, y) = worldPointToSketch(basis, worldPoint);
     // Bug fix (on-device feedback: "the hit radius for selecting an entity
     // should match the hit radius for dynamic highlight") - same fix as
@@ -2169,19 +2204,16 @@ class _SketchScreenState extends State<SketchScreen> {
     // for why this needs to run first, not as a case inside the switch
     // below).
     final resizeTextId = _controller.textResizeHandleGrabTargetAt(x, y, grabRadius);
-    if (resizeTextId != null) {
-      _controller.beginTextResizeDrag(resizeTextId, x, y);
-      return;
-    }
+    if (resizeTextId != null) return _controller.beginTextResizeDrag(resizeTextId, x, y);
     final target = _controller.dragGrabTargetAt(x, y, grabRadius);
-    if (target == null) return;
+    if (target == null) return false;
     switch (target.kind) {
       case SelectionKind.point:
-        _controller.beginPointDrag(target.id);
+        return _controller.beginPointDrag(target.id);
       case SelectionKind.line:
-        _controller.beginLineDrag(target.id);
+        return _controller.beginLineDrag(target.id);
       default:
-        break;
+        return false;
     }
   }
 

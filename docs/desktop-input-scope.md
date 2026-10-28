@@ -220,6 +220,18 @@ Update this table with every milestone.
   (middle click), `test/part_screen_test.dart` ("desktop input D5": Space, Ctrl+8, double-click) and, GPU-gated,
   `test/part_viewport_mouse_navigation_test.dart` (Onshape right-drag orbit, view cube pick).
 
+### Mouse drag of sketch entities (follow-up to D6)
+
+With a mouse, in Select mode, pressing on a Point, Line or a Text resize handle (or a dimension label, in the 2D canvas) and moving
+past the tap threshold picks it up; the pointer then moves it, and releasing the button drops it. A press without movement is an
+ordinary select click. There is no Drag toggle and no click-move-click for a mouse: the 2D canvas ignores drag mode when the last
+pointer was a mouse, the Orbit View ignores it while `LayoutModeScope.mouseActiveOf` is true, and the desktop ribbon only offers the
+Drag button when the last pointer was not a mouse. Touch keeps the toggle and tap-to-grab / tap-to-drop. In the 3D (Orbit) view the
+press is resolved on the sketch plane (`PartViewport.onSketchGrabStart` / `Update` / `End`); dimension labels are not draggable by
+a mouse there yet. Dragging a Point that a Circle, Ellipse or Arc is built on moves that curve; the curves themselves (grabbing the
+circumference) are not draggable. Tests: `test/sketch_canvas_mouse_drag_test.dart`; checked once by hand in the Linux build in both
+the 2D canvas and the Orbit View (a line's end point pressed, dragged and released). Not run with a device mouse or DeX.
+
 ### D7 implementation notes
 
 - `viewport3d/box_select.dart` is a pure function (`boxSelect`): it projects each Body's mesh with the camera, rasterises the nearest
@@ -292,7 +304,7 @@ Found by driving a Linux debug build with simulated mouse and keyboard input.
 ### Sketch canvas (`sketch/sketch_canvas.dart`) and mesh viewer (`mesh_viewer/mesh_viewer_screen.dart`)
 
 - Sketch: left = cursor and click, right drag = pan, wheel = zoom to cursor, hover moves the cursor 1:1. Same painted crosshair under
-  the system arrow. Marquee is still the 500 ms hold. Click-move-click and press-drag-release both move a grabbed entity: good.
+  the system arrow. Marquee is still the 500 ms hold. Dragging an entity: see "Mouse drag of sketch entities" below (this line used to say click-move-click and press-drag-release were both good; press-drag-release left the entity stuck to the cursor).
 - Mesh viewer: left drag orbit, right drag pan, wheel zoom. No middle button either.
 
 ### Keyboard
