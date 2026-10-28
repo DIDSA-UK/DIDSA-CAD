@@ -226,3 +226,21 @@ constraint list, older server, delete), and `backend/tests/test_dimension_label_
   real event wiring were not driven. The embedded sketch screen's handlers (`_handleEmbeddedLabelGrabStart`, drag-mode tap) likewise.
 - Touch drag mode in the 3D view was not exercised on a screen; the flat canvas's touch path has a widget test.
 - Backend: the suite was run without the `bevel_pair` modules (the slowest, untouched by this change).
+
+## 8. Review of the as-built work (28 Oct 2026)
+
+Checked: the full Flutter suite (3249 passed, 43 skipped), `flutter analyze` (only `material.dart` infos), the backend suite, a Linux debug build
+(a dimension created and dragged by mouse in the flat canvas and in the Orbit View; the placement was in the backend's native export as
+`label_placements`; importing that export into a fresh session returned it on the constraint list; re-entering the sketch drew the label
+at the saved place). Not run: a device, a headset, touch, the VR repo's Godot suite (no Godot here; its change is two lines plus one test).
+
+- **Typed minus.** The server's value `PATCH` for a line-distance or point-line dimension has always taken the side from the geometry
+  (`_signed_line_distance_value`, from the Phase 4 re-attach work), so a typed `-5` never flipped a side, before or after this work. The
+  "leading minus flips the side" rule in section 2.5 was a wrong assumption of the plan, not a regression. The client still sends the
+  resolved sign; it is ignored. With magnitude-only labels, the simplest honest behaviour is that the edit field takes a magnitude and a
+  minus is ignored; flipping a side, if wanted, needs its own control. Not changed.
+- **Press on a label next to a glyph.** In the flat canvas a press on a dimension's text that was within reach of its sibling glyph (the H
+  next to a horizontal line's dimension) picked up the glyph, because `dimensionLabelAt` returned the first match in the constraint map.
+  It now returns the nearest label within reach (test in `dimension_label_placement_canvas_test.dart`).
+- **Stale placements after a delete** are filtered when read and when written (`Sketch.live_label_placements`), so they never reach a file;
+  the cost is a few bytes held in memory until the sketch goes. Acceptable.

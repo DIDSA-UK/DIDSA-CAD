@@ -2411,15 +2411,21 @@ String? dimensionLabelAt(
   Offset canvasPos,
   double radius,
 ) {
+  // The nearest label within [radius], not the first in the map's order: a dimension's text and a relationship glyph
+  // (H, V, parallel) can sit within one touch target of each other, and the one under the pointer should win.
+  String? best;
+  var bestDistance = double.infinity;
   for (final entry in controller.constraints.entries) {
     final labelOffset = dimensionLabelPixelOffset(controller, transform, entry.key, entry.value);
     final actual = _constraintLabelCenter(controller, transform, entry.value, labelOffset);
     if (actual == null) continue;
-    if ((canvasPos - actual).distance <= radius) {
-      return entry.key;
+    final distance = (canvasPos - actual).distance;
+    if (distance <= radius && distance < bestDistance) {
+      best = entry.key;
+      bestDistance = distance;
     }
   }
-  return null;
+  return best;
 }
 
 /// The id of whichever currently-rendered Constraint's label

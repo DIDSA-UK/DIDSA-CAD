@@ -148,6 +148,20 @@ void main() {
     expect(dimensionLabelAt(controller, transform, before, 5), isNull);
   });
 
+  test('when two labels are within reach the nearer one is hit, whatever order they are stored in', () {
+    controller.constraints['dim'] = const DistanceConstraintDto(id: 'dim', pointAId: 'a', pointBId: 'b', distance: 10.8);
+    controller.constraints['other'] = const DistanceConstraintDto(id: 'other', pointAId: 'c', pointBId: 'd', distance: 11);
+    const transform = ViewTransform(pixelsPerUnit: 20, originScreen: Offset(300, 400));
+    // Put 'other' a few pixels from 'dim', then aim just next to 'other' (stored second): it must win over 'dim' (stored first).
+    final dimCentre = dimensionLabelCenterScreen(controller, transform, 'dim')!;
+    final target = transform.screenToSketch(dimCentre.dx + 10, dimCentre.dy);
+    dragTo('other', (target.x, target.y));
+    final otherCentre = dimensionLabelCenterScreen(controller, transform, 'other')!;
+    expect((otherCentre - dimCentre).distance, closeTo(10, 1e-6));
+    expect(dimensionLabelAt(controller, transform, otherCentre + const Offset(1, 0), 24), 'other');
+    expect(dimensionLabelAt(controller, transform, dimCentre - const Offset(1, 0), 24), 'dim');
+  });
+
   test('a placed label holds still in sketch space when the view zooms about the origin', () {
     controller.constraints['dim'] = const DistanceConstraintDto(id: 'dim', pointAId: 'a', pointBId: 'b', distance: 10.8);
     dragTo('dim', (3.0, 9.0));
