@@ -1201,6 +1201,14 @@ class Sketch:
     # `expand_pattern_and_mirror_instances` below.
     pattern_instances: dict[str, SketchPatternInstance] = field(default_factory=dict)
     mirror_instances: dict[str, SketchMirrorInstance] = field(default_factory=dict)
+    # Where the user moved each dimension's label: constraint id -> placement parameters in sketch units (offset/along, angle/leg or radius/along, depending on
+    # the dimension). Kept beside `constraints` rather than on every constraint class; the solver never sees it. An entry whose constraint has gone is ignored
+    # (see `live_label_placements`), so the many places that delete constraints need not each clear it. Persisted (additive: an older file has none).
+    label_placements: dict[str, dict[str, float]] = field(default_factory=dict)
+
+    def live_label_placements(self) -> dict[str, dict[str, float]]:
+        """`label_placements` for the constraints that still exist."""
+        return {cid: dict(placement) for cid, placement in self.label_placements.items() if cid in self.constraints and placement}
 
     def is_point_locked(self, point_id: str) -> bool:
         """Whether `point_id` must be treated as immobile - a live-tracked

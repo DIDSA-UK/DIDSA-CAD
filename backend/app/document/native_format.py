@@ -765,6 +765,8 @@ def sketch_to_dict(sketch: Sketch) -> dict:
             if sketch.reference_dimensions
             else {}
         ),
+        # Where the user moved each dimension label (constraint id -> parameters in sketch units). Written only when there are some; a file without it loads as before.
+        **({"label_placements": sketch.live_label_placements()} if sketch.live_label_placements() else {}),
         # A converted Arc/Circle centre's own pin (On-device feedback:
         # "converted edges... should be... locked at that projection
         # point") is a `FixedConstraint` now, not a separate field - it
@@ -806,6 +808,11 @@ def sketch_from_dict(data: dict) -> Sketch:
     for ref_data in data.get("external_references", []):
         sketch.external_references[ref_data["point_id"]] = _external_reference_from_dict(ref_data)
     sketch.reference_ids = set(data.get("reference_ids", []))
+    sketch.label_placements = {
+        str(cid): {str(key): float(value) for key, value in placement.items()}
+        for cid, placement in data.get("label_placements", {}).items()
+        if cid in sketch.constraints
+    }
     for dimension_data in data.get("reference_dimensions", []):
         dimension = ReferenceDimension(
             id=dimension_data["id"],
