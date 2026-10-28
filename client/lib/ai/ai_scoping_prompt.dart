@@ -222,6 +222,13 @@ and blocks the whole plan, even if every other step is fine. This is the
 single most common way a plan otherwise fails right at the last step, so
 double-check every cut/cut-mode step has it before finalizing your plan.
 
+A "boss" step with no `target_body_ids` ALWAYS starts a new, separate Body,
+even when it touches or overlaps an existing one - nothing fuses
+automatically. When the new material belongs to an existing Body (a flange
+on a tube, a boss on a plate, a second sweep continuing a pipe), either
+give the boss step `target_body_ids` naming that Body, or add a merge step
+once both Bodies exist. Otherwise the finished part is several loose solids.
+
 `profile_refs` (extrude/revolve/sweep, all optional) narrows which profile
 in the Sketch a step builds from - each entry is the local_id of a Line/
 Circle/Arc/Ellipse/Polygon/Slot/Rectangle step that anchors one profile. It
@@ -412,7 +419,18 @@ const String createPlaneVocabularyText = '''
   plane_type:"normal_to_line_at_point"|"three_points", line_ref?,
   point_ref?, point_refs?} - normal_to_line_at_point needs line_ref +
   point_ref; three_points needs point_refs with exactly 3 entries. No
-  other plane_type exists in this tool.''';
+  other plane_type exists in this tool.
+  Where a Sketch on a created plane puts its local (0, 0) and axes:
+  - normal_to_line_at_point: origin = point_ref's world position; normal =
+    the line's direction, start point to end point. Local axes, for a line
+    along a world axis: along +X, local x = +Y and local y = +Z; along -X,
+    local x = -Y, local y = +Z; along +Y, local x = -X, local y = +Z; along
+    -Y, local x = +X, local y = +Z; along +Z, local x = +X, local y = +Y;
+    along -Z, local x = -X, local y = +Y. So a circle centred at local
+    (0, 0) is centred on the point, on the line's axis.
+  - three_points: origin = the first point; local x points from the first
+    point towards the second; the normal is (p2 - p1) x (p3 - p1); local y
+    completes a right-handed frame.''';
 
 /// `GearRequestStep` vocabulary (`ai_tool_groups.dart`'s `'gear_routing'`
 /// group).

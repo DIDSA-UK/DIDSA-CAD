@@ -301,7 +301,14 @@ DeleteFace, MoveFace, Import are not `kind` values in v1's schema at all.
 were added later following exactly the pattern this section originally
 anticipated: a new `kind` per Feature type, new fields mirroring that
 Feature's own `createXFeature` signature, no change to the schema's own
-shape (`PlanStep`'s discriminated union just grew six more members). A
+shape (`PlanStep`'s discriminated union just grew six more members).
+`scale_body` and `move_body` (without `make_copy`) modify their Body in
+place, so the Body keeps its id: a later step naming such a step's
+`local_id` resolves to the Body it modified, in both the dry run and the
+translator. (Until 2026-10-28 it resolved to the move/scale Feature's own id.
+That passed validation, but a later `merge` then silently skipped at rebuild
+and left separate solids.) A `move_body` with `make_copy` mints a new Body
+under its own id. A
 future workstream extending this schema further (e.g. Split/Surface, once
 there's a real user need) follows the identical pattern.
 

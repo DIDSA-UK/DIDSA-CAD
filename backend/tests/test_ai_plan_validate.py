@@ -17,12 +17,16 @@ from fastapi.testclient import TestClient
 from app.document.ai_plan import _PlanValidator
 from app.document.ai_plan_schemas import (
     ExtrudeStep,
+    MergeStep,
+    MoveBodyStep,
+    ScaleBodyStep,
     SketchCircleStep,
     SketchLineStep,
     SketchPointStep,
     SketchRectangleStep,
     SketchStep,
 )
+from app.document.extrude import compute_part_bodies
 from app.document.models import ExtrudeType, Part
 from app.document.store import get_part_or_404
 from app.main import app
@@ -880,24 +884,122 @@ def test_sketch_line_length_creates_a_real_non_provisional_distance_constraint()
             delete_sketch(sketch_id)
 
 
-def test_sketch_line_without_length_creates_no_constraint() -> None:
-    """The explicit-`end_point_id` path with no `length` stays exactly as
-    unconstrained as it already was before this workstream - a real,
-    deliberate scope limit (08's own "Line length" section: only a literal
-    length becomes a real dimension), not an oversight."""
+def test_sketch_line_without_length_is_dimensioned_at_its_drawn_length() -> None:
+    """A two-point sketch_line with no `length` still gets a real line
+    dimension, at its drawn length (08's own "Line length" section, as
+    revised after the AI modelling sketch trials: models often leave
+    `length` out, which left AI sketches with no editable line dimensions).
+    The value equals the drawn length, so solving moves nothing."""
     part = Part(id="scratch-part", name="scratch", features=[])
     validator = _PlanValidator(part)
     steps = [
         SketchStep(local_id="sk1", plane="XY"),
         SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
-        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=10.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=30.0, y=40.0),
         SketchLineStep(local_id="l1", sketch_feature_id="sk1", start_point_id="p1", end_point_id="p2"),
     ]
     try:
         results = [validator._run_step(step) for step in steps]
         assert all(r.ok for r in results), results
         sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
+        distance_constraints = [c for c in sketch.constraints.values() if isinstance(c, DistanceConstraint)]
+        assert len(distance_constraints) == 1
+        assert distance_constraints[0].distance == pytest.approx(50.0)
+        assert distance_constraints[0].provisional is False
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_construction_sketch_line_without_length_creates_no_constraint() -> None:
+    """A construction line (an axis, a reference) stays undimensioned unless
+    the plan gives a `length` - it is not part of the shape's size."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        SketchStep(local_id="sk1", plane="XY"),
+        SketchPointStep(local_id="p1", sketch_feature_id="sk1", x=0.0, y=0.0),
+        SketchPointStep(local_id="p2", sketch_feature_id="sk1", x=10.0, y=0.0),
+        SketchLineStep(
+            local_id="l1", sketch_feature_id="sk1", start_point_id="p1", end_point_id="p2", construction=True
+        ),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+        sketch = get_sketch_or_404(validator.resolved["sk1"].sketch_id)
         assert not any(isinstance(c, DistanceConstraint) for c in sketch.constraints.values())
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def _box_steps(sketch_local_id: str, body_local_id: str) -> list:
+    """A 10 x 10 x 10 box at the origin, as plan steps."""
+    corners = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    return [
+        SketchStep(local_id=sketch_local_id, plane="XY"),
+        *[
+            SketchPointStep(local_id=f"{sketch_local_id}_p{i}", sketch_feature_id=sketch_local_id, x=x, y=y)
+            for i, (x, y) in enumerate(corners)
+        ],
+        SketchRectangleStep(
+            local_id=f"{sketch_local_id}_r",
+            sketch_feature_id=sketch_local_id,
+            corner_point_ids=[f"{sketch_local_id}_p{i}" for i in range(4)],
+            axis_aligned=True,
+        ),
+        ExtrudeStep(
+            local_id=body_local_id,
+            sketch_feature_id=sketch_local_id,
+            extrude_type=ExtrudeType.BOSS,
+            start_distance=0.0,
+            end_distance=10.0,
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "modify_step",
+    [
+        MoveBodyStep(local_id="mod", body_id="b2", delta=(10.0, 0.0, 0.0)),
+        ScaleBodyStep(local_id="mod", body_id="b2", factor=1.0),
+    ],
+    ids=["move_body", "scale_body"],
+)
+def test_reference_to_in_place_modify_step_resolves_to_the_modified_body(modify_step) -> None:
+    """An in-place move_body (make_copy=False) or scale_body keeps its Body's
+    id, so naming that step later (here in a merge) must mean the modified
+    Body. It used to resolve to the move/scale Feature's own id, which passed
+    validation but made the Merge silently skip at rebuild (two solids left)."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [*_box_steps("sk1", "b1"), *_box_steps("sk2", "b2"), modify_step, MergeStep(local_id="m", body_ids=["b1", "mod"])]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+        assert validator.resolved["mod"].feature_id == validator.resolved["b2"].feature_id
+        assert len(compute_part_bodies(validator.part)) == 1
+    finally:
+        for sketch_id in validator._scratch_sketch_ids:
+            delete_sketch(sketch_id)
+
+
+def test_reference_to_copying_move_body_resolves_to_the_new_body() -> None:
+    """make_copy=True mints a new Body under the move Feature's own id, so a
+    reference to the step keeps meaning that new Body."""
+    part = Part(id="scratch-part", name="scratch", features=[])
+    validator = _PlanValidator(part)
+    steps = [
+        *_box_steps("sk1", "b1"),
+        MoveBodyStep(local_id="mv", body_id="b1", delta=(10.0, 0.0, 0.0), make_copy=True),
+        MergeStep(local_id="m", body_ids=["b1", "mv"]),
+    ]
+    try:
+        results = [validator._run_step(step) for step in steps]
+        assert all(r.ok for r in results), results
+        assert validator.resolved["mv"].feature_id != validator.resolved["b1"].feature_id
+        assert len(compute_part_bodies(validator.part)) == 1
     finally:
         for sketch_id in validator._scratch_sketch_ids:
             delete_sketch(sketch_id)

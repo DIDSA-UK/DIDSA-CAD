@@ -637,13 +637,20 @@ def _handle_sketch_line(v: _PlanValidator, step: SketchLineStep) -> None:
     except (KeyError, ValueError, TypeError) as exc:
         raise _StepError({"type": "invalid_geometry", "message": str(exc)}) from exc
     # Unlike Circle/Arc/Ellipse/Polygon/Slot, a Line has no automatic
-    # size-defining constraint at all - only create one when the plan
-    # itself named a literal length (08's own "Line length" section: an
-    # explicit `end_point_id` with no `length` stays exactly as unconstrained
-    # as it already was, matching a human drawing two-point line with no
-    # dimension added).
-    if step.length is not None:
-        _create_distance(sk.sketch_id, line.start_point_id, line.end_point_id, step.length, orientation="linear")
+    # size-defining constraint at all. A plan-given `length` becomes one
+    # (08's own "Line length" section). A non-construction two-point line
+    # without one is dimensioned at its drawn length too: models often leave
+    # `length` out even though the prompt asks for it, which left
+    # AI-generated sketches with no editable line dimensions. The value is
+    # the line's current length, so the solver has nothing to move. Mirrored
+    # in the client's PlanTranslator.
+    length = step.length
+    if length is None and step.end_point_id is not None and not step.construction:
+        a, b = sketch.points[line.start_point_id], sketch.points[line.end_point_id]
+        drawn = math.hypot(b.x - a.x, b.y - a.y)
+        length = drawn if drawn > 1e-9 else None
+    if length is not None:
+        _create_distance(sk.sketch_id, line.start_point_id, line.end_point_id, length, orientation="linear")
     v.resolved[step.local_id] = _Resolved(
         kind="sketch_line", entity_id=line.id, owning_sketch_id=sk.sketch_id
     )
@@ -1007,7 +1014,8 @@ def _handle_scale_body(v: _PlanValidator, step: ScaleBodyStep) -> None:
     feature = ScaleBodyFeature(id=str(uuid.uuid4()), body_id=body_id, factor=step.factor)
     resolve_scale_body(v.part, feature)  # raises on an unresolvable/degenerate scale
     v.part.add_feature(feature)
-    v.resolved[step.local_id] = _Resolved(kind="scale_body", feature_id=feature.id)
+    # Scales `body_id` in place - see _handle_move_body's own comment.
+    v.resolved[step.local_id] = _Resolved(kind="scale_body", feature_id=body_id)
 
 
 def _handle_move_body(v: _PlanValidator, step: MoveBodyStep) -> None:
@@ -1026,7 +1034,11 @@ def _handle_move_body(v: _PlanValidator, step: MoveBodyStep) -> None:
     )
     resolve_move_body(v.part, feature)  # raises on an unresolvable/degenerate move
     v.part.add_feature(feature)
-    v.resolved[step.local_id] = _Resolved(kind="move_body", feature_id=feature.id)
+    # make_copy=False moves `body_id` in place, so the Body keeps its id and no
+    # Body exists under this Feature's own id: a later step naming this
+    # local_id means the moved Body. Resolving to the Feature id passed
+    # validation but made a later Merge silently skip at rebuild.
+    v.resolved[step.local_id] = _Resolved(kind="move_body", feature_id=feature.id if step.make_copy else body_id)
 
 
 # --- Assembly (Phase 8, docs/assembly-scope.md §2k) -----------------------
