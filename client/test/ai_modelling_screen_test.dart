@@ -39,7 +39,12 @@ class FakeAiProvider implements AiProvider {
   /// (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`).
   final Future<String> Function(List<AiImageAttachment> images)? imageExtractionHandler;
 
-  FakeAiProvider(this.handler, {this.supportsVision = false, this.imageExtractionHandler});
+  /// The render-back check's vision call (`14-render-back-check.md`). When
+  /// not stubbed it fails like a provider error would, so the check shows
+  /// its error line and never blocks a test about something else.
+  final Future<String> Function(List<AiImageAttachment> images, String prompt)? askAboutImagesHandler;
+
+  FakeAiProvider(this.handler, {this.supportsVision = false, this.imageExtractionHandler, this.askAboutImagesHandler});
 
   @override
   AiProviderCapabilities get capabilities =>
@@ -56,6 +61,13 @@ class FakeAiProvider implements AiProvider {
       throw StateError('FakeAiProvider.extractImageDescription called with no imageExtractionHandler stubbed');
     }
     return extractionHandler(images);
+  }
+
+  @override
+  Future<String> askAboutImages(List<AiImageAttachment> images, String prompt) {
+    final askHandler = askAboutImagesHandler;
+    if (askHandler == null) throw AiProviderException('askAboutImages not stubbed in this test');
+    return askHandler(images, prompt);
   }
 }
 
@@ -492,9 +504,9 @@ Here's the plan:
     expect(find.text('Undo this generation'), findsOneWidget);
   });
 
-  testWidgets('Generate on a validation failure shows the per-step report and never executes anything for real', (
-    tester,
-  ) async {
+  testWidgets(
+      'Generate on a validation failure sends the errors back for one automatic retry, then shows the per-step '
+      'report and never executes anything for real', (tester) async {
     final requestedPaths = <String>[];
     final client = DocumentApiClient(
       httpClient: MockClient((request) async {
@@ -514,17 +526,74 @@ Here's the plan:
         });
       }),
     );
-    final provider = FakeAiProvider((transcript, systemPrompt) async => const AiTurnResult(assistantText: minimalPlanText));
+    final transcripts = <List<AiChatMessage>>[];
+    final provider = FakeAiProvider((transcript, systemPrompt) async {
+      transcripts.add(transcript);
+      return const AiTurnResult(assistantText: minimalPlanText);
+    });
 
     await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client)));
     await sendMessage(tester, 'External spur gear, module 2, 20 teeth');
     await tester.tap(find.text('Generate'));
     await tester.pumpAndSettle();
 
-    expect(find.textContaining('unknown_local_id'), findsOneWidget);
+    // The automatic retry: the second turn carries the real error.
+    expect(transcripts, hasLength(2));
+    expect(transcripts[1].last.role, AiMessageRole.user);
+    expect(transcripts[1].last.text, contains('- step "g1" (gear_request): unknown_local_id'));
     expect(find.textContaining('1 of 1 step(s) failed validation - nothing was created'), findsOneWidget);
-    // Only the create-Part and validate calls happened - no execution.
-    expect(requestedPaths, ['/document/new', '/document/parts', '/document/parts/part-1/ai-plan/validate']);
+    // Only create-Part and validate calls happened, once per attempt - no execution.
+    expect(requestedPaths, [
+      '/document/new',
+      '/document/parts',
+      '/document/parts/part-1/ai-plan/validate',
+      '/document/new',
+      '/document/parts',
+      '/document/parts/part-1/ai-plan/validate',
+    ]);
+  });
+
+  testWidgets('A plan that fails validation is replaced by the automatic retry\'s corrected plan', (tester) async {
+    var validateCalls = 0;
+    final client = DocumentApiClient(
+      httpClient: MockClient((request) async {
+        if (request.url.path == '/document/parts') {
+          return jsonResponse({'id': 'part-1', 'name': 'AI Modelling Part', 'feature_ids': []});
+        }
+        if (request.method == 'GET' && request.url.path == '/document/parts/part-1/features') {
+          return jsonResponse([]); // the gear stop's existing-Part refresh
+        }
+        if (!request.url.path.endsWith('/ai-plan/validate')) return jsonResponse({});
+        validateCalls++;
+        final body = jsonDecode(request.body) as Map<String, dynamic>;
+        final ids = [for (final step in body['steps'] as List) (step as Map<String, dynamic>)['local_id']];
+        // Only the corrected plan (local_id "g2") validates.
+        final ok = ids.contains('g2');
+        return jsonResponse({
+          'results': [
+            for (final id in ids)
+              {'local_id': id, 'ok': ok, 'warnings': [], 'error': ok ? null : {'type': 'unknown_local_id'}},
+          ],
+        });
+      }),
+    );
+    var turns = 0;
+    final provider = FakeAiProvider((transcript, systemPrompt) async {
+      turns++;
+      return AiTurnResult(assistantText: turns == 1 ? minimalPlanText : minimalPlanText.replaceAll('"g1"', '"g2"'));
+    });
+
+    await tester.pumpWidget(MaterialApp(home: AiModellingScreen(provider: provider, documentApi: client)));
+    await sendMessage(tester, 'External spur gear, module 2, 20 teeth');
+    await tester.tap(find.text('Generate'));
+    await tester.pumpAndSettle();
+
+    expect(turns, 2);
+    expect(validateCalls, 2);
+    // The corrected plan passed validation and ran (a gear request stops
+    // there by design) - no validation failure is left on screen.
+    expect(find.textContaining('failed validation'), findsNothing);
+    expect(find.textContaining("AI Modelling can't create one automatically yet"), findsOneWidget);
   });
 
   testWidgets(

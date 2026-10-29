@@ -14,7 +14,8 @@
 ///
 /// **Locked vs. editable** (AI System Prompt Settings, see
 /// `ai_system_prompt_settings_screen.dart`): [_vocabularyReference],
-/// [_unitsConvention], [_fewShotExamples], and [_planTerminationFooter] are
+/// [_unitsConvention], [_drawingConventions], [_fewShotExamples], and
+/// [_planTerminationFooter] are
 /// the LLM's only source of schema truth and its only structural contract
 /// with [detectPlanInAssistantText] (`ai_plan_detection.dart`) - never
 /// user-editable. [_defaultAssistantInstructions] (role/premise plus
@@ -967,6 +968,42 @@ LaTeX/TeX math notation (no `\$...\$`, `\\text{}`, `\\mathrm{}`, or similar).
 This chat's message view renders plain text only, so LaTeX shows up as
 literal, unreadable source characters instead of a rendered unit.''';
 
+/// Drafting conventions for reading an attached drawing - locked, like
+/// [_unitsConvention]. Added after the AI modelling sketch trials, where
+/// models misread exactly these (`docs/ai-modelling/14-render-back-check.md`).
+const String _drawingConventions = '''
+## Reading an attached drawing
+
+When the user attached a drawing or sketch (described in an "[Automated
+analysis of the attached image]" turn), read it with the usual drafting
+conventions:
+- Views: in 3rd angle projection the top (plan) view is drawn ABOVE the
+  front view, the right side view to its RIGHT, the left side view to its
+  LEFT and the bottom view BELOW it. 1st angle swaps these (top view below,
+  right view on the left). Use the stated projection to work out which way
+  each view looks, and line features up between views.
+- Hidden (dashed) lines show edges behind material. A hole, bore, slot or
+  pocket that runs into a part shows as hidden lines in the views where it
+  is not seen directly. A circle or outline in one view with no matching
+  hidden lines in the others is an outer edge (for example the round end of
+  a tapered part), not a hole.
+- Centre lines (long-short dash) mark axes and planes of symmetry.
+- Bent tube and pipe drawings dimension lengths to the tube centrelines
+  (where centrelines meet, or to an open end), and bend radii are centreline
+  radii, unless the drawing says otherwise.
+- Sheet-metal and bent-plate drawings usually dimension flanges and heights
+  to the outside faces. A radius marked on the inside of a bend is the inside
+  radius; the outside radius is that plus the thickness.
+- "TYP" means a dimension applies to every similar feature. "=X=" or "X EQ"
+  means centred, or equally spaced, about a centre line. "PCD" is the pitch
+  circle diameter of a hole pattern, "THK" a thickness, "Ø" a diameter and
+  "R" a radius.
+- Hand sketches are not to scale: use the written dimensions. Only fall
+  back to drawn proportions for a size written nowhere on the drawing, and
+  say so in your Assumptions line.
+- A dimension written in one view applies to the whole part: check every
+  view before treating a size as missing.''';
+
 const String _fewShotExamples = '''
 ## Worked examples
 
@@ -1284,6 +1321,7 @@ String buildAiScopingSystemPrompt({
     assistantInstructions,
     _vocabularyReference(disabledToolGroups: disabledToolGroups),
     _unitsConvention,
+    _drawingConventions,
     _fewShotExamples,
     ...addOnBlocks,
     if (multiBodyPartMode) multiBodyPartVocabularyText,
@@ -1308,6 +1346,7 @@ String get defaultAssistantInstructions => _defaultAssistantInstructions;
 String lockedSystemPromptContent({Set<String> disabledToolGroups = const {}}) => [
       _vocabularyReference(disabledToolGroups: disabledToolGroups),
       _unitsConvention,
+      _drawingConventions,
       _fewShotExamples,
       _planTerminationFooter,
     ].join('\n\n');

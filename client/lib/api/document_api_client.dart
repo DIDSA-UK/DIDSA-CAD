@@ -1659,6 +1659,17 @@ class MeshDto {
 /// a [hidden] entry from the 3D viewport/camera-fit itself; this DTO just
 /// carries the flag through. Always `false` for the `source: "placeholder"`
 /// case - there is nothing to hide yet at that point.
+/// [DocumentApiClient.getPartDrawing]'s result.
+class PartDrawingDto {
+  final Uint8List png;
+
+  /// Overall size in mm along world X, Y and Z, or null if the server did
+  /// not report it.
+  final List<double>? boundingBoxSize;
+
+  const PartDrawingDto({required this.png, this.boundingBoxSize});
+}
+
 class BodyMeshDto {
   final String bodyId;
   final String source;
@@ -3286,7 +3297,11 @@ class DocumentApiClient {
   /// success body is raw binary (STEP/STL/glb) rather than JSON -
   /// [http.Response.bodyBytes] instead of [_send]'s `jsonDecode(response.
   /// body)`, which would corrupt or throw on arbitrary binary content.
-  Future<Uint8List> _sendBytes(Future<http.Response> Function() request) async {
+  Future<Uint8List> _sendBytes(Future<http.Response> Function() request) async =>
+      (await _sendRaw(request)).bodyBytes;
+
+  /// [_sendBytes] for a caller that also needs the response's headers.
+  Future<http.Response> _sendRaw(Future<http.Response> Function() request) async {
     http.Response response;
     try {
       response = await request().timeout(ApiConfig.documentRequestTimeout);
@@ -3297,7 +3312,7 @@ class DocumentApiClient {
       throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}',
           statusCode: response.statusCode);
     }
-    return response.bodyBytes;
+    return response;
   }
 
   String _detailOf(http.Response response) {
@@ -6147,6 +6162,21 @@ class DocumentApiClient {
             ),
         (body) => NativeImportResultDto.fromJson(body as Map<String, dynamic>),
       );
+
+  /// AI Modelling's render-back check (`docs/ai-modelling/14-render-back-
+  /// check.md`): the Part as a 3rd angle line drawing (PNG), plus its
+  /// overall size in mm (world X/Y/Z) from the `X-Bounding-Box` header.
+  Future<PartDrawingDto> getPartDrawing(String partId) async {
+    final response = await _sendRaw(
+      () => _httpClient.get(_uri('/document/parts/$partId/drawing.png'), headers: _headers),
+    );
+    final size = (response.headers['x-bounding-box'] ?? '')
+        .split(',')
+        .map((v) => double.tryParse(v.trim()))
+        .whereType<double>()
+        .toList();
+    return PartDrawingDto(png: response.bodyBytes, boundingBoxSize: size.length == 3 ? size : null);
+  }
 
   /// Export: raw file bytes for `format` (`'step'`/`'stl'`/`'obj'`/`'glb'`)
   /// - the backend 400s if `partId` has no solid geometry yet (surfaced as

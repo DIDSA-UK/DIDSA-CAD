@@ -142,7 +142,12 @@ const String aiImageExtractionPrompt =
     'Explicitly state how each view lines up with the others (e.g. which edge or feature in one '
     'view corresponds to which in another) so positions given in one view can be placed correctly '
     'relative to geometry defined in a different view. If any view or its text/labels appears '
-    'rotated or upside-down in a photo, say so explicitly. Do not propose CAD modelling steps or '
+    'rotated or upside-down in a photo, say so explicitly. For every dimension, say which view it is written '
+    'in and which two edges or features its extension lines touch (e.g. "50, right view, from the top face to '
+    'the bottom face"). In 3rd angle projection the top view sits above the front view and the right view to '
+    'its right; in 1st angle these are swapped. A dimension written in any view applies to the whole part, so '
+    'check every view before saying a size is not given. Hand sketches are not to scale: never estimate a size '
+    'from the picture when a dimension for it is written. Do not propose CAD modelling steps or '
     'JSON - only describe what you see.';
 
 /// The provider-agnostic interface every AI Modelling consumer (the scoping-
@@ -183,6 +188,14 @@ abstract class AiProvider {
   /// Throws [AiProviderException] if `!capabilities.supportsVision` or
   /// [images] is empty.
   Future<String> extractImageDescription(List<AiImageAttachment> images);
+
+  /// A one-shot vision call with a caller-supplied [prompt], outside the
+  /// scoping transcript - [extractImageDescription] is this with its own
+  /// fixed prompt. Used by the render-back check
+  /// (`docs/ai-modelling/14-render-back-check.md`) to compare the built
+  /// Part's drawing with the user's sketch. Same throws as
+  /// [extractImageDescription].
+  Future<String> askAboutImages(List<AiImageAttachment> images, String prompt);
 
   AiProviderCapabilities get capabilities;
 }

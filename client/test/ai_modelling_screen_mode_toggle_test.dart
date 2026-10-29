@@ -24,6 +24,9 @@ class _FakeAiProvider implements AiProvider {
 
   @override
   Future<String> extractImageDescription(List<AiImageAttachment> images) => throw UnimplementedError();
+
+  @override
+  Future<String> askAboutImages(List<AiImageAttachment> images, String prompt) => throw UnimplementedError();
 }
 
 /// Multi-part/assembly overhaul, Phase A

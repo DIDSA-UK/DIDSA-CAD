@@ -32,6 +32,9 @@ class _FakeAiProvider implements AiProvider {
 
   @override
   Future<String> extractImageDescription(List<AiImageAttachment> images) => throw UnimplementedError();
+
+  @override
+  Future<String> askAboutImages(List<AiImageAttachment> images, String prompt) => throw UnimplementedError();
 }
 
 /// A minimal in-memory [StorageService] - `listFiles`/`resolve`/`writeFile`
@@ -456,9 +459,9 @@ void main() {
           validateCalls++;
           final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
           final steps = ((body['steps'] as List?) ?? []).cast<Map<String, dynamic>>();
-          // First validate call fails outright (mirrors the test above);
-          // every later call (the retry) succeeds.
-          final ok = validateCalls > 1;
+          // The first two validate calls fail (the first attempt and its one
+          // automatic retry); every later call (the manual Retry) succeeds.
+          final ok = validateCalls > 2;
           return http.Response(
             jsonEncode({
               'results': [
@@ -530,12 +533,13 @@ I found one distinct part.
     final provider = _FakeAiProvider((transcript, __) async {
       turnCount++;
       // Turn 1: manifest. Turn 2: the initial (failing) plan. Turn 3: the
-      // retry's own revised-plan request - the failure must already be in
-      // the transcript as its own turn by this point (D-1's whole point).
-      if (turnCount == 3) {
+      // automatic retry's revised-plan request - the failure, with its real
+      // error text, must already be in the transcript as its own turn by
+      // this point (D-1's whole point). Turn 4: the manual Retry, same shape.
+      if (turnCount >= 3) {
         expect(
           transcript.map((m) => m.text),
-          anyElement(contains('Validation failed for "Mounting Plate"')),
+          anyElement(allOf(contains('For "Mounting Plate": The plan failed validation'), contains('bad plan'))),
           reason: "the failure must be fed back to the LLM before it's asked to retry",
         );
         expect(transcript.last.text, contains('Please propose a revised plan for "Mounting Plate"'));
@@ -567,6 +571,8 @@ I found one distinct part.
 
     expect(find.textContaining('Validation failed for "Mounting Plate"'), findsOneWidget);
     expect(createPartCalls, 1);
+    expect(validateCalls, 2, reason: 'one automatic retry after the first validation failure, then a stop');
+    expect(turnCount, 3);
 
     await tester.tap(find.byKey(const Key('aiModellingOrchestrationRetry')));
     await tester.pumpAndSettle();
@@ -576,7 +582,7 @@ I found one distinct part.
     // only ever created once.
     expect(find.text('Save "Mounting Plate" as…'), findsOneWidget);
     expect(createPartCalls, 1);
-    expect(validateCalls, 2);
+    expect(validateCalls, 3);
   });
 
   testWidgets('Retry after a cancelled save re-opens the save dialog directly, without another LLM turn',

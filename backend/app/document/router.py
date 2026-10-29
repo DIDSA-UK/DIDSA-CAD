@@ -9274,6 +9274,28 @@ def export_part_step(part_id: str) -> Response:
     )
 
 
+@router.get("/parts/{part_id}/drawing.png")
+def get_part_line_drawing(part_id: str) -> Response:
+    """The Part as a 3rd angle line drawing (front, top, right, isometric;
+    hidden edges dashed) for AI Modelling's render-back check - see
+    `app.document.line_drawing`. `X-Bounding-Box` carries the overall size
+    (mm, world X/Y/Z), since the drawing itself has no dimensions."""
+    from app.document.line_drawing import bounding_box_size, render_line_drawing
+
+    part = get_part_or_404(part_id)
+    bodies = list(_export_bodies_or_400(part).values())
+    try:
+        data = render_line_drawing(bodies)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Part could not be drawn: {exc}") from exc
+    size = bounding_box_size(bodies)
+    return Response(
+        content=data,
+        media_type="image/png",
+        headers={"X-Bounding-Box": ",".join(f"{v:.2f}" for v in size)},
+    )
+
+
 @router.get("/parts/{part_id}/export/stl")
 def export_part_stl(part_id: str) -> Response:
     part = get_part_or_404(part_id)
