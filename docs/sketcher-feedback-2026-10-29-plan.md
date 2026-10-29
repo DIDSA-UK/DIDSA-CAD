@@ -311,3 +311,37 @@ radius (provisional).
   a device. Say so in the PR rather than claiming they work on a device.
 - The DIDSA-VR design table talks to the same backend. Items 4 and 5 are client-only, and 2b adds a route. None of them
   changes an existing API, so VR is not affected.
+
+---
+
+## Handoff: what the next session should pick up
+
+Items 1 to 5 landed (see Progress). Remaining, in the order I would do it:
+
+1. **Point Merge (item 2b above).** Not built. Plan as written in 2b: backend `POST /sketches/{id}/points/{keep_id}/merge`
+   with `{"absorb": id}` (moves entity and constraint references, deletes `absorb`, drops constraints that collapse), a
+   client flyout action when exactly two points are selected, and undo last. Open points to settle first:
+   - **Undo.** Server-side unmerge, or a sketch snapshot restore. Check whether the sketch-file import route
+     (`router.py`, "Invalid sketch file") can serve as the snapshot before building anything new.
+   - **Refusal list.** Check 2b's list against the real model code (a point shared by a pattern or mirror instance may add
+     cases). Origin is never absorbed: do Coincident instead.
+   - Backend pytest coverage for the refusals and the reference move, then the client action and its fake-backend mirror.
+2. **Roll out to the VR client sketcher** (DIDSA-VR, same backend; `scripts/design_table/` uses the same routes). Items 4 and 5 are client-only
+   and 2b adds a route, so VR is not broken by anything here, but it does not have these behaviours yet:
+   - the zoom-scaled point snap and loop closing (item 2);
+   - the end-resolved-where-the-ghost-shows-it rule: an existing or first point wins, otherwise the end is created at the
+     snapped position, and closing within the H/V angle also adds Horizontal/Vertical;
+   - alignment guides (item 3), as a snapping aid with no constraint;
+   - Merge, once it exists.
+3. **Add the other inferred relationships to the VR sketcher.** The flat/Orbit client infers, while placing a Line end:
+   Horizontal/Vertical, parallel, perpendicular, collinear, tangent and point-on-curve (`_combinedLineInference` and
+   `_applyLineInference` in `sketch_controller.dart`), plus concentric on Circle/Arc centres and point-on-curve for dropped
+   points. Port the detection and the constraint creation, using the same backend constraint routes. Priority order to keep:
+   existing point > tangent/point-on-curve > own H/V plus alignment > parallel/perpendicular/collinear.
+
+Behaviour to carry across, because it is easy to miss: the snap radius is in pixels at the view's reported zoom (14 px points,
+7 px alignment) with the flat 0.2 `snapRadius` only until a zoom is reported; circle/ellipse cardinal points and the line's own
+start never act as alignment references; taps that only measure (radius, sweep end, width, minor radius) never align.
+
+Still unverified on a device, so judge feel there before copying numbers: touch label drag, the 14 px and 7 px tolerances,
+snapped-position line ends, and the guide's look. Item 4: the reported 422 was not reproduced (the real backend gives 404).
