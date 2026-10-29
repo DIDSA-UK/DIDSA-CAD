@@ -2450,7 +2450,20 @@ class _SketchScreenState extends State<SketchScreen> {
   /// `_hoverHit`) - showing this too would be redundant/conflicting.
   List<DrawIndicatorMarker> get _embeddedDrawIndicatorMarkers {
     final basis = _effectiveOrbitBasis;
-    if (basis == null || _controller.mode != SketchMode.draw) return const [];
+    if (basis == null) return const [];
+    if (_controller.mode != SketchMode.draw) {
+      // Select mode has its own hover system; the one thing shown here is the Point Merge will keep.
+      final keep = _controller.mergeKeepPointId;
+      final keepPoint = keep == null ? null : _controller.points[keep];
+      if (keepPoint == null) return const [];
+      return [
+        DrawIndicatorMarker(
+          point: sketchPointToWorld(basis, keepPoint.x, keepPoint.y),
+          color: sketchIndicatorCandidateColor,
+          width: sketchIndicatorCandidateWidth,
+        ),
+      ];
+    }
 
     vm.Vector3? worldOfPoint(String? pointId) {
       if (pointId == null) return null;

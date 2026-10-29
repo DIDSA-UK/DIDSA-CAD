@@ -208,6 +208,112 @@ class _FakeBackend {
 
   String _newId(String prefix) => '$prefix-${_nextId++}';
 
+  /// How many times `PUT .../state` was hit, and the last merge refusal to answer with (a test sets it to simulate a server-side refusal).
+  int restoreCount = 0;
+  Map<String, dynamic>? mergeRefusal;
+
+  /// Every map that makes up the sketch, by its key in a snapshot.
+  Map<String, Map<String, Map<String, dynamic>>> get _model => {
+        'points': points,
+        'lines': lines,
+        'circles': circles,
+        'arcs': arcs,
+        'ellipses': ellipses,
+        'ellipseArcs': ellipseArcs,
+        'polygons': polygons,
+        'slots': slots,
+        'rectangles': rectangles,
+        'splines': splines,
+        'texts': texts,
+        'constraints': constraints,
+      };
+
+  /// The whole model as the JSON *text* a real `before` is - so the test also proves the client sends it back untouched.
+  String _snapshot() => jsonEncode(_model);
+
+  void _restoreSnapshot(Map<String, dynamic> snapshot) {
+    restoreCount++;
+    for (final entry in _model.entries) {
+      entry.value
+        ..clear()
+        ..addAll({
+          for (final item in (snapshot[entry.key] as Map<String, dynamic>? ?? const {}).entries)
+            item.key: Map<String, dynamic>.from(item.value as Map),
+        });
+    }
+  }
+
+  Iterable<String> _idsIn(Map<String, dynamic> map) sync* {
+    for (final entry in map.entries) {
+      if (entry.key == 'id') continue;
+      final value = entry.value;
+      if (value is String) yield value;
+      if (value is List) {
+        for (final item in value) {
+          if (item is String) yield item;
+        }
+      }
+    }
+  }
+
+  http.Response _mergePoints(List<String> ids) {
+    if (mergeRefusal != null) return _json({'detail': mergeRefusal}, 400);
+    final wanted = ids.toSet();
+    for (final entry in _model.entries) {
+      if (entry.key == 'points' || entry.key == 'constraints') continue;
+      for (final entity in entry.value.values) {
+        if (_idsIn(entity).toSet().intersection(wanted).length >= 2) {
+          return _json({
+            'detail': {'type': 'merge_refused', 'reason': 'same_entity', 'message': 'These points both belong to the same entity.', 'ids': [entity['id']]},
+          }, 400);
+        }
+      }
+    }
+    int constraintCount(String id) =>
+        constraints.values.where((c) => c['provisional'] != true && _idsIn(c).contains(id)).length;
+    final ordered = [...ids]..sort((a, b) {
+        final lockedA = points[a]?['is_locked'] == true ? 0 : 1;
+        final lockedB = points[b]?['is_locked'] == true ? 0 : 1;
+        if (lockedA != lockedB) return lockedA - lockedB;
+        final byCount = constraintCount(b) - constraintCount(a);
+        return byCount != 0 ? byCount : ids.indexOf(a) - ids.indexOf(b);
+      });
+    final keep = ordered.first;
+    final absorbed = ordered.skip(1).toSet();
+    final before = _snapshot();
+    final dropped = <String>[];
+    String swap(String value) => absorbed.contains(value) ? keep : value;
+    for (final entry in _model.entries) {
+      if (entry.key == 'points') continue;
+      for (final item in entry.value.values) {
+        for (final key in item.keys.toList()) {
+          final value = item[key];
+          if (key == 'id') continue;
+          if (value is String) item[key] = swap(value);
+          if (value is List) item[key] = [for (final v in value) v is String ? swap(v) : v];
+        }
+      }
+    }
+    for (final constraint in constraints.values.toList()) {
+      if (constraint['type'] == 'coincident' && constraint['point_a_id'] == constraint['point_b_id']) {
+        constraints.remove(constraint['id']);
+        dropped.add(constraint['id'] as String);
+      }
+    }
+    for (final id in absorbed) {
+      points.remove(id);
+    }
+    return _json({
+      'kept_id': keep,
+      'absorbed_ids': ordered.skip(1).toList(),
+      'dropped_constraint_ids': dropped,
+      'dropped_reference_dimension_ids': <String>[],
+      'converged': true,
+      'before': before,
+    }, 200);
+  }
+
+
   /// A deterministic fake outline for [text]'s preview endpoint - a single
   /// rectangle (no holes), sized from its content length/size and placed
   /// relative to its anchor Point via the same rotate-then-translate
@@ -271,6 +377,15 @@ class _FakeBackend {
     final path = request.url.path;
     requestLog.add('${request.method} $path');
     final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
+
+    // Point Merge (docs/point-merge-and-vr-sketcher-plan.md): the real routes, on this fake's own in-memory model.
+    if (RegExp(r'^/sketch/sketches/[^/]+/points/merge$').hasMatch(path) && request.method == 'POST') {
+      return _mergePoints((body['point_ids'] as List<dynamic>).cast<String>());
+    }
+    if (RegExp(r'^/sketch/sketches/[^/]+/state$').hasMatch(path) && request.method == 'PUT') {
+      _restoreSnapshot(body);
+      return _json(sketches.values.isEmpty ? {'id': 'sketch-1', 'plane': 'XY', 'origin_point_id': 'origin-1'} : sketches.values.first, 200);
+    }
 
     final lineDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/lines/(.+)$').firstMatch(path);
     if (lineDeleteMatch != null && request.method == 'DELETE') {
@@ -15370,6 +15485,191 @@ void main() {
       expect(box.right, closeTo(20.0, 1e-9));
       expect(box.top, closeTo(-20.0, 1e-9));
       expect(box.bottom, closeTo(20.0, 1e-9));
+    });
+  });
+  // --- Point Merge (docs/point-merge-and-vr-sketcher-plan.md, M2) ----------------------------------------------------------------------------------
+
+  group('Point Merge', () {
+    late _FakeBackend mergeBackend;
+    late SketchController merging;
+
+    /// Two lines that nearly meet: line-1 runs a (10,10) -> b (20,10), line-2 runs b2 (20,10) -> c (30,30), and b and b2 are two Points stacked on
+    /// each other with nothing tying them. `rect` is a rectangle drawn separately, `lone` a Point on its own.
+    Future<SketchController> seeded() async {
+      mergeBackend = _FakeBackend();
+      mergeBackend.seedSketch('sketch-m', 'origin-m');
+      mergeBackend.points['a'] = {'id': 'a', 'x': 10.0, 'y': 10.0};
+      mergeBackend.points['b'] = {'id': 'b', 'x': 20.0, 'y': 10.0};
+      mergeBackend.points['b2'] = {'id': 'b2', 'x': 20.0, 'y': 10.0};
+      mergeBackend.points['c'] = {'id': 'c', 'x': 30.0, 'y': 30.0};
+      mergeBackend.points['lone'] = {'id': 'lone', 'x': 60.0, 'y': 60.0};
+      mergeBackend.lines['line-1'] = {'id': 'line-1', 'start_point_id': 'a', 'end_point_id': 'b', 'length': 10.0, 'construction': false};
+      mergeBackend.lines['line-2'] = {'id': 'line-2', 'start_point_id': 'b2', 'end_point_id': 'c', 'length': 22.4, 'construction': false};
+      mergeBackend.constraints['horizontal-1'] = {
+        'id': 'horizontal-1',
+        'type': 'horizontal',
+        'line_id': 'line-1',
+        'point_a_id': 'a',
+        'point_b_id': 'b',
+      };
+      final client = MockClient((request) async => mergeBackend.handle(request));
+      merging = SketchController(api: SketchApiClient(httpClient: client));
+      await merging.adoptSketch('sketch-m');
+      return merging;
+    }
+
+    void pick(SketchController c, Iterable<String> ids) {
+      for (final id in ids) {
+        c.selectEntity(SketchSelection(kind: SelectionKind.point, id: id));
+      }
+    }
+
+    test('Merge is offered for two or more Points, not for one, the origin, or two Points of one line', () async {
+      await seeded();
+      pick(merging, ['b']);
+      expect(merging.canApplyConstraint(ConstraintOptionType.merge), isFalse);
+      pick(merging, ['b2']);
+      expect(merging.canApplyConstraint(ConstraintOptionType.merge), isTrue);
+      expect(merging.canApplyConstraint(ConstraintOptionType.coincident), isTrue);
+      pick(merging, ['lone']);
+      expect(merging.canApplyConstraint(ConstraintOptionType.merge), isTrue, reason: 'three Points: Merge only');
+      expect(merging.canApplyConstraint(ConstraintOptionType.coincident), isFalse);
+
+      merging.closeRibbon();
+      pick(merging, ['a', 'b']); // the two ends of line-1
+      expect(merging.canApplyConstraint(ConstraintOptionType.merge), isFalse);
+
+      merging.closeRibbon();
+      pick(merging, [merging.originPointId!, 'lone']);
+      expect(merging.canApplyConstraint(ConstraintOptionType.merge), isFalse);
+    });
+
+    test('a circle quadrant Point is not offered Merge', () async {
+      await seeded();
+      mergeBackend.points['ctr'] = {'id': 'ctr', 'x': 100.0, 'y': 100.0};
+      mergeBackend.points['rim'] = {'id': 'rim', 'x': 105.0, 'y': 100.0};
+      mergeBackend.points['north'] = {'id': 'north', 'x': 100.0, 'y': 105.0};
+      mergeBackend.circles['circle-1'] = {
+        'id': 'circle-1',
+        'center_point_id': 'ctr',
+        'radius_point_id': 'rim',
+        'radius': 5.0,
+        'cardinal_point_ids': ['north', 'rim', 'rim', 'rim'],
+        'construction': false,
+      };
+      final client = MockClient((request) async => mergeBackend.handle(request));
+      final fresh = SketchController(api: SketchApiClient(httpClient: client));
+      await fresh.adoptSketch('sketch-m');
+      pick(fresh, ['north', 'lone']);
+      expect(fresh.canApplyConstraint(ConstraintOptionType.merge), isFalse);
+    });
+
+    test('merging reloads the sketch: one Point fewer, both lines on the kept Point, the selection cleared', () async {
+      await seeded();
+      final before = merging.points.length;
+      pick(merging, ['b', 'b2']);
+      await merging.mergeSelectedPoints();
+
+      expect(merging.errorMessage, isNull);
+      expect(merging.points.length, before - 1);
+      expect(merging.points.containsKey('b2'), isFalse);
+      expect(merging.lines['line-1']!.endPointId, 'b');
+      expect(merging.lines['line-2']!.startPointId, 'b');
+      expect(merging.selectionSet, isEmpty);
+      expect(merging.ribbonVisible, isFalse);
+    });
+
+    test('the Point with more constraints is the one that stays, and it is the one ringed', () async {
+      await seeded();
+      pick(merging, ['b2', 'b']); // b2 first, but b carries the Horizontal
+      expect(merging.mergeKeepPointId, 'b');
+      await merging.mergeSelectedPoints();
+      expect(merging.lines['line-2']!.startPointId, 'b');
+    });
+
+    test('undo restores both Points and the original line ends', () async {
+      await seeded();
+      pick(merging, ['b', 'b2']);
+      await merging.mergeSelectedPoints();
+      expect(merging.points.containsKey('b2'), isFalse);
+
+      await merging.undo();
+
+      expect(mergeBackend.restoreCount, 1);
+      expect(merging.points.containsKey('b2'), isTrue);
+      expect(merging.lines['line-2']!.startPointId, 'b2');
+      expect(merging.lines['line-1']!.endPointId, 'b');
+    });
+
+    test('draw, merge, undo, undo: the older undo entry runs after the merge was undone', () async {
+      await seeded();
+      merging.selectDrawTool(SketchTool.point);
+      await merging.handleCanvasTap(90, 90);
+      final drawn = merging.points.keys.where((id) => id.startsWith('point-')).single;
+      merging.exitToSelectMode();
+      pick(merging, ['b', 'b2']);
+      await merging.mergeSelectedPoints();
+
+      await merging.undo(); // the merge
+      await merging.undo(); // the drawn Point
+
+      expect(merging.errorMessage, isNull);
+      expect(merging.points.containsKey(drawn), isFalse);
+      expect(merging.points.containsKey('b2'), isTrue);
+    });
+
+    test('a refusal shows the server\'s words and changes nothing', () async {
+      await seeded();
+      mergeBackend.mergeRefusal = {
+        'type': 'merge_refused',
+        'reason': 'dimension_between',
+        'message': 'A dimension holds these points 12 apart. Delete it first.',
+        'ids': ['x'],
+      };
+      pick(merging, ['b', 'b2']);
+      final pointsBefore = merging.points.length;
+      await merging.mergeSelectedPoints();
+
+      expect(merging.errorMessage, contains('A dimension holds these points 12 apart'));
+      expect(merging.points.length, pointsBefore);
+      expect(merging.points.containsKey('b2'), isTrue);
+      expect(mergeBackend.restoreCount, 0);
+    });
+
+    test('a selected Coincident glyph offers Merge for its two Points', () async {
+      await seeded();
+      mergeBackend.constraints['coincident-1'] = {'id': 'coincident-1', 'type': 'coincident', 'point_a_id': 'b', 'point_b_id': 'b2'};
+      final client = MockClient((request) async => mergeBackend.handle(request));
+      final fresh = SketchController(api: SketchApiClient(httpClient: client));
+      await fresh.adoptSketch('sketch-m');
+
+      fresh.selectConstraint('coincident-1');
+      expect(fresh.canApplyConstraint(ConstraintOptionType.merge), isTrue);
+      await fresh.applyConstraintOption(ConstraintOptionType.merge);
+
+      expect(fresh.points.containsKey('b2'), isFalse);
+      expect(fresh.constraints.containsKey('coincident-1'), isFalse, reason: 'the merge removed the Coincident it came from');
+    });
+
+    test('pick cycling: a second tap on a selected Point adds the Point stacked under it', () async {
+      await seeded();
+      await merging.handleCanvasTap(20, 10, 2.0);
+      expect(merging.selectionSet.length, 1);
+      final first = merging.selectionSet.single.id;
+      expect(first, anyOf('b', 'b2'));
+
+      await merging.handleCanvasTap(20, 10, 2.0);
+
+      expect(merging.selectionSet.map((s) => s.id).toSet(), {'b', 'b2'});
+      expect(merging.canApplyConstraint(ConstraintOptionType.merge), isTrue);
+    });
+
+    test('pick cycling does not fire away from a stack: a tap on a lone selected Point leaves the selection alone', () async {
+      await seeded();
+      await merging.handleCanvasTap(60, 60, 2.0);
+      expect(merging.selectionSet.single.id, 'lone');
+      await merging.handleCanvasTap(60, 60, 2.0);
+      expect(merging.selectionSet.single.id, 'lone');
     });
   });
 }
