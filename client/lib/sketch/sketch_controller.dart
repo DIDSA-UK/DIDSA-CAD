@@ -9354,6 +9354,10 @@ class SketchController extends ChangeNotifier {
       for (final lineId in polygon.radialLineIds) {
         lineIds.remove(lineId);
       }
+      // Same for its reference circles: delete_polygon removes them too, so a
+      // second DELETE /circles/{id} would 404 with "Circle not found".
+      circleIds.remove(polygon.circumscribedCircleId);
+      circleIds.remove(polygon.inscribedCircleId);
     }
     for (final slot in slots.values) {
       // On-device feedback ("some points are not deleting because they are
@@ -10550,8 +10554,17 @@ class SketchController extends ChangeNotifier {
         idMap[polygon.vertexPointIds[0]] ?? polygon.vertexPointIds[0],
         polygon.sides,
         construction: polygon.construction,
+        referenceCircles: polygon.circumscribedCircleId != null,
       );
       idMap[polygon.id] = created.id;
+      // Reference circles are recreated with the polygon (they are no longer
+      // captured as ordinary circles), so constraints on them follow the new ids.
+      final oldCircumscribed = polygon.circumscribedCircleId;
+      final newCircumscribed = created.circumscribedCircleId;
+      if (oldCircumscribed != null && newCircumscribed != null) idMap[oldCircumscribed] = newCircumscribed;
+      final oldInscribed = polygon.inscribedCircleId;
+      final newInscribed = created.inscribedCircleId;
+      if (oldInscribed != null && newInscribed != null) idMap[oldInscribed] = newInscribed;
       polygons[created.id] = SketchPolygonView(
         id: created.id,
         centerPointId: created.centerPointId,
@@ -10587,6 +10600,7 @@ class SketchController extends ChangeNotifier {
         final point = await _api.getPoint(_sketchId!, id);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
+      await _loadPolygonReferenceCircles(created);
     }
     for (final (slot, radius) in capturedSlots) {
       final created = await _api.createSlot(
@@ -16087,6 +16101,44 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Loads a freshly created Polygon's two reference Circles (and their
+  /// cardinal/radius Points) into the local maps. Shared by
+  /// [_clickPolygonTool] and the undo restore of a deleted Polygon.
+  Future<void> _loadPolygonReferenceCircles(PolygonDto polygon) async {
+    // On-device feedback ("the 2 construction circles should be drawn
+    // and visible to the user to dimension and use in the sketch"): no
+    // single-Circle GET exists, so both freshly-created reference
+    // Circles are picked out of a full `listCircles` fetch by id - the
+    // circumscribed one's own radius Point is always already known
+    // (it's `firstVertexId`, reused directly - see `add_polygon`'s own
+    // doc comment), but every cardinal Point on *either* Circle, and the
+    // inscribed one's own radius Point, are freshly created server-side
+    // and fetched the same way the extra vertex Points above are.
+    final createdCircleIds = <String>{
+      if (polygon.circumscribedCircleId != null) polygon.circumscribedCircleId!,
+      if (polygon.inscribedCircleId != null) polygon.inscribedCircleId!,
+    };
+    if (createdCircleIds.isNotEmpty) {
+      final allCircles = await _api.listCircles(_sketchId!);
+      for (final circle in allCircles) {
+        if (!createdCircleIds.contains(circle.id)) continue;
+        _noteStructural(circle.id, circle.structuralConstraintIds);
+        circles[circle.id] = SketchCircleView(
+          id: circle.id,
+          centerPointId: circle.centerPointId,
+          radiusPointId: circle.radiusPointId,
+          construction: circle.construction,
+          cardinalPointIds: circle.cardinalPointIds,
+        );
+        for (final pointId in [circle.radiusPointId, ...circle.cardinalPointIds]) {
+          if (points.containsKey(pointId)) continue;
+          final point = await _api.getPoint(_sketchId!, pointId);
+          points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+        }
+      }
+    }
+  }
+
   /// Polygon tool's tap handling: first tap places the center Point,
   /// second tap places the first vertex (fixing circumradius and
   /// rotation) and immediately completes the shape - self-terminating,
@@ -16168,38 +16220,7 @@ class SketchController extends ChangeNotifier {
         final point = await _api.getPoint(_sketchId!, id);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
-      // On-device feedback ("the 2 construction circles should be drawn
-      // and visible to the user to dimension and use in the sketch"): no
-      // single-Circle GET exists, so both freshly-created reference
-      // Circles are picked out of a full `listCircles` fetch by id - the
-      // circumscribed one's own radius Point is always already known
-      // (it's `firstVertexId`, reused directly - see `add_polygon`'s own
-      // doc comment), but every cardinal Point on *either* Circle, and the
-      // inscribed one's own radius Point, are freshly created server-side
-      // and fetched the same way the extra vertex Points above are.
-      final createdCircleIds = <String>{
-        if (polygon.circumscribedCircleId != null) polygon.circumscribedCircleId!,
-        if (polygon.inscribedCircleId != null) polygon.inscribedCircleId!,
-      };
-      if (createdCircleIds.isNotEmpty) {
-        final allCircles = await _api.listCircles(_sketchId!);
-        for (final circle in allCircles) {
-          if (!createdCircleIds.contains(circle.id)) continue;
-          _noteStructural(circle.id, circle.structuralConstraintIds);
-          circles[circle.id] = SketchCircleView(
-            id: circle.id,
-            centerPointId: circle.centerPointId,
-            radiusPointId: circle.radiusPointId,
-            construction: circle.construction,
-            cardinalPointIds: circle.cardinalPointIds,
-          );
-          for (final pointId in [circle.radiusPointId, ...circle.cardinalPointIds]) {
-            if (points.containsKey(pointId)) continue;
-            final point = await _api.getPoint(_sketchId!, pointId);
-            points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
-          }
-        }
-      }
+      await _loadPolygonReferenceCircles(polygon);
       _pushUndo(() async {
         await _api.deletePolygon(_sketchId!, polygon.id);
         polygons.remove(polygon.id);
@@ -16209,7 +16230,7 @@ class SketchController extends ChangeNotifier {
         for (final lineId in polygon.radialLineIds) {
           lines.remove(lineId);
         }
-        for (final circleId in createdCircleIds) {
+        for (final circleId in [polygon.circumscribedCircleId, polygon.inscribedCircleId]) {
           circles.remove(circleId);
         }
       });

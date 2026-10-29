@@ -293,6 +293,10 @@ class _FakeBackend {
 
     final circleDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/circles/(.+)$').firstMatch(path);
     if (circleDeleteMatch != null && request.method == 'DELETE') {
+      // Mirrors the real router's `_get_circle_or_404`: a circle that is already gone is a 404.
+      if (circles.remove(circleDeleteMatch.group(1)) == null) {
+        return _json({'detail': 'Circle not found'}, 404);
+      }
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
@@ -352,6 +356,9 @@ class _FakeBackend {
         for (final constraintId in (polygon['_constraint_ids'] as List).cast<String>()) {
           constraints.remove(constraintId);
         }
+        // Mirrors Sketch.delete_polygon, which also removes its reference circles.
+        circles.remove(polygon['circumscribed_circle_id']);
+        circles.remove(polygon['inscribed_circle_id']);
       }
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
@@ -5415,6 +5422,7 @@ void main() {
     controller.selectAll();
     await controller.deleteSelected();
 
+    expect(controller.errorMessage, isNull);
     expect(controller.polygons, isEmpty);
     for (final lineId in staleLineIds) {
       expect(controller.lines.containsKey(lineId), isFalse);
@@ -5428,6 +5436,35 @@ void main() {
 
     await controller.deleteSelected();
     expect(controller.errorMessage, isNull);
+  });
+
+  test('computeDeleteCascade leaves a whole Polygon\'s reference circles to the Polygon delete, and undo '
+      'brings the polygon and both reference circles back', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.togglePolygonReferenceCircles();
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    final polygon = controller.polygons.values.single;
+    controller.exitToSelectMode();
+
+    controller.selectAll();
+    final cascade = controller.computeDeleteCascade(controller.selectionSet);
+    expect(cascade.polygons, contains(polygon.id));
+    expect(cascade.circles, isNot(contains(polygon.circumscribedCircleId)));
+    expect(cascade.circles, isNot(contains(polygon.inscribedCircleId)));
+
+    await controller.deleteSelected();
+    expect(controller.errorMessage, isNull);
+    expect(controller.circles, isEmpty);
+
+    await controller.undo();
+    expect(controller.errorMessage, isNull);
+    expect(controller.polygons, hasLength(1));
+    final restored = controller.polygons.values.single;
+    expect(restored.circumscribedCircleId, isNotNull);
+    expect(restored.inscribedCircleId, isNotNull);
+    expect(controller.circles.keys, unorderedEquals([restored.circumscribedCircleId, restored.inscribedCircleId]));
   });
 
   test('setPolygonSides clamps to [3, 20]', () {

@@ -19,6 +19,20 @@ was found by reading the code, and none was reproduced in a test.
 Suggested order: **4 → 1 → 5 → 2 → 3**, with **2b** after them if it is wanted. Items 4, 1 and 5 are small and local. Item 2
 adds the zoom-scaled snap radius, which item 3 needs too. Item 3 is a new feature.
 
+## Progress
+
+Implemented on branch `ccr-012a3702-zsqpvs`, one commit per item, in the order 4 → 1 → 5 → 2 → 3. Nothing has been looked
+at on a device.
+
+| Item | What landed | Tests |
+|---|---|---|
+| 4 | `computeDeleteCascade` drops a whole polygon's reference circles from `circleIds`; undo recreates the polygon with `referenceCircles` and reloads the circles (`_loadPolygonReferenceCircles`, shared with the Polygon tool) and maps their old ids to the new ones | `sketch_controller_test.dart`: the existing regression test now checks `errorMessage`; new cascade + undo test. The fake backend now removes reference circles on polygon DELETE and returns 404 for an unknown circle DELETE. No other test relied on the old lenient behaviour |
+
+Open-question answers used: item 4 status code, checked against the real backend with a throwaway `TestClient` script
+(create polygon with `reference_circles`, delete the polygon, delete its circle): **404** `{"detail":"Circle not found"}`.
+The reported 422 was not reproduced here, so it may be how the client reports a failed request; no second error was found.
+The partial (collapse) case from item 4 was not given its own test.
+
 ---
 
 ## 1. A dimension label grabbed by touch jumps, and the cursor comes back in the wrong place
