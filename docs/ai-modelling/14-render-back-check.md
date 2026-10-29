@@ -59,7 +59,7 @@ The check costs one extra vision call per such build. A failed check, from the d
 
 ### Not covered
 
-- The check is advisory: the model can be wrong in either direction, so the fix is a button, not automatic.
+- The check is advisory: the model can be wrong in either direction, so the fix is a button, not automatic. On the evaluation sketches (2026-10-29), the same model that built the part caught 5 of 7 wrong parts, but raised 3 false alarms on 23 right ones. Two of those false alarms led Sonnet to break a correct part when asked to fix it (`tools/ai_eval/README.md`).
 - Multi-part and Assembly mode builds are not checked.
 - Handedness: a mirrored part is the same as a rotated one only for symmetric prisms, so the prompt does not excuse mirroring. Whether models flag it correctly has not been measured.
 

@@ -76,5 +76,25 @@ Claude models, two runs per cell unless noted, scored against the unconfirmed ke
 | 2026-10-28 | Before any fixes (5 sketches) | 3/10 | 3/10 | 10/10 |
 | 2026-10-28 | Merge-of-moved-bodies fix, line dimensions, two prompt gaps | 3/10 | 6/10 | 9/10 |
 | 2026-10-28 | Plus joined-body ids and the `create_plane` point rule (tube and notch only, 2+2 runs) | 4/4 | 4/4 | 4/4 |
+| 2026-10-29 | Plus drawing conventions and validation feedback (5 sketches, first build) | 4/10 | 9/10 | 10/10 |
+| 2026-10-29 | The same runs after the render-back check and "Ask the AI to fix it" on every mismatch | 4/10 | 8/10 | 10/10 |
 
-The latest round, with validation feedback, drafting conventions and the render-back check (`docs/ai-modelling/14-render-back-check.md`), is recorded in that doc once run.
+In the 2026-10-29 round no plan failed validation, so the automatic retry was not exercised. Sonnet now reads `rect_round` right, citing the hidden-line convention.
+
+### Render-back check, 2026-10-29
+
+Each build was checked by the same model that built it (`docs/ai-modelling/14-render-back-check.md`), and every mismatch was sent back as the fix turn.
+
+| Outcome | Haiku | Sonnet | Opus |
+|---|---|---|---|
+| Catch (wrong part flagged) | 4 | 1 | 0 |
+| Miss (wrong part passed) | 2 | 0 | 0 |
+| False alarm (right part flagged) | 1 | 2 | 0 |
+| OK (right part passed) | 3 | 7 | 10 |
+
+What the fix turn did:
+- **Catches, 5:** one became right (Sonnet `tube_3d` r1: its 300 was to the centreline, as the check said). Haiku's four got closer but still fail: `slot_bracket` gained its R3/R6 bends and lost the stray pins, and `rect_round` stayed a revolve with a bore because Haiku still reads the Ø40 as a hole.
+- **False alarms, 3:** Haiku `tube_3d` r1 said its model was right and kept it (still right). Both Sonnet `flanged_bend` runs accepted a wrong reading of the 400s and broke a correct part.
+- **Misses, 2:** Haiku `flanged_bend` r2 and `tube_3d` r2 have the same centreline error the Sonnet check caught; a Haiku check reads the drawing the way Haiku's build did.
+
+So a check by the model that built the part mostly repeats its reading of the drawing, and a model that does not trust its own reading gives in to a wrong critique. The fix stays a button the user chooses, not automatic.

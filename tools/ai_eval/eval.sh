@@ -5,7 +5,7 @@
 #
 #   tools/ai_eval/eval.sh prompts <dir>         write the app's system and image-analysis prompts into <dir>
 #   tools/ai_eval/eval.sh build <run_dir>       build <run_dir>/reply.txt; score it against the sketch named by
-#                                               the parent folder (runs/<sketch>/<model>-r<n>/)
+#                                               the folder (runs/<sketch>/<model>-r<n>/, or its retry/ or fixed/)
 #   tools/ai_eval/eval.sh verdict <run_dir>     parse <run_dir>/check_reply.txt (render-back check reply)
 #   tools/ai_eval/eval.sh table <runs_dir>      pass/fail table for every built run under <runs_dir>
 #
@@ -31,7 +31,9 @@ case "${1:-}" in
     ;;
   build)
     D="$(realpath "$2")"
-    sketch="$(basename "$(dirname "$D")")"
+    run="$D"
+    case "$(basename "$D")" in retry|fixed) run="$(dirname "$D")" ;; esac
+    sketch="$(basename "$(dirname "$run")")"
     run_harness "AI_EVAL_REPLY=$D/reply.txt" "AI_EVAL_OUT=$D" 'run plan' > "$D/harness.log" 2>&1 || true
     if [ -f "$D/model.step" ]; then
       "$CAD_PY" -I "$HERE/harness/inspect_step.py" "$D/model.step" "$D/geometry.json" > /dev/null 2>&1
