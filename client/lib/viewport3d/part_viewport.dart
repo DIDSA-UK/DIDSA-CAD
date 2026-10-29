@@ -356,7 +356,7 @@ class PartViewport extends StatefulWidget {
   /// commit) - drives the live ghost-preview [SketchScreen] builds on top of
   /// this in P17. Null result (cursor off the plane, or [sketchPlaneBasis]
   /// unset) simply isn't fired; the caller keeps showing its last ghost.
-  final void Function(vm.Vector3 worldPoint)? onDrawCursorMoved;
+  final void Function(vm.Vector3 worldPoint, double? localPixelsPerUnit)? onDrawCursorMoved;
 
   /// P16: fired instead of [onSketchPlaneTap] when a genuine tap (not a
   /// cursor drag - same travel-threshold disambiguation [_commitSelection]
@@ -435,6 +435,10 @@ class PartViewport extends StatefulWidget {
   /// geometry too. Empty (the default) renders nothing.
   final List<List<vm.Vector3>> drawGhostGuidePolylines;
 
+  /// The dashed alignment guides (see `SketchController.activeAlignmentGuides`), already cut into dashes: one two-point world-space
+  /// polyline per dash. Drawn in the snap colour, apart from [drawGhostGuidePolylines]. Empty (the default) renders nothing.
+  final List<List<vm.Vector3>> drawAlignmentGuidePolylines;
+
   /// P20 follow-up: the 3D-embedded counterpart to `sketch_canvas.dart`'s
   /// in-progress-anchor/snap-candidate/midpoint point emphasis - see
   /// [DrawIndicatorMarker]'s own doc comment for the full rationale.
@@ -496,7 +500,10 @@ class PartViewport extends StatefulWidget {
   /// cancel the edit, still don't fall through to placing geometry"
   /// behaviour) - false (including when this callback is itself null) lets
   /// [onDrawCursorCommit] fire normally.
-  final bool Function(String? hitConstraintId, vm.Vector3? labelPoint)? onConstraintOverlayItemTap;
+  ///
+  /// `cursorPoint` is the point on the sketch plane under the cursor/tap (null when the ray misses the plane), so the
+  /// caller can measure where a label was grabbed without relying on its own, possibly stale, cursor.
+  final bool Function(String? hitConstraintId, vm.Vector3? labelPoint, vm.Vector3? cursorPoint)? onConstraintOverlayItemTap;
 
   /// While true, [_handleDrawCursorMove] feeds its own raw screen delta to [onConstraintLabelDragDelta] instead of resolving/reporting
   /// a world-plane hit. Only for a relationship glyph (V, H, parallel...), whose offset is session-only screen pixels; a dimension
@@ -1028,6 +1035,7 @@ class PartViewport extends StatefulWidget {
     this.drawGhostPolylines = const [],
     this.drawGhostColor,
     this.drawGhostGuidePolylines = const [],
+    this.drawAlignmentGuidePolylines = const [],
     this.drawIndicatorMarkers = const [],
     this.profileFillOutlines = const [],
     this.profileBranchMarkers = const [],
@@ -1472,6 +1480,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [PartViewport.drawGhostGuidePolylines].
   Node? _drawGhostGuideNode;
 
+  /// Mirrors [_drawGhostGuideNode] for [PartViewport.drawAlignmentGuidePolylines].
+  Node? _drawAlignmentGuideNode;
+
   /// P20 follow-up: mirrors [_drawGhostNode] for
   /// [PartViewport.drawIndicatorMarkers].
   Node? _drawIndicatorsNode;
@@ -1882,6 +1893,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncSketchPlaneGridNode();
         _syncDrawGhostNode();
         _syncDrawGhostGuideNode();
+        _syncDrawAlignmentGuideNode();
         _syncDrawIndicatorsNode();
         _syncProfileFillNode();
         _syncProfileBranchMarkersNode();
@@ -2101,6 +2113,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     if (widget.drawGhostGuidePolylines != oldWidget.drawGhostGuidePolylines) {
       setState(_syncDrawGhostGuideNode);
+    }
+    if (widget.drawAlignmentGuidePolylines != oldWidget.drawAlignmentGuidePolylines) {
+      setState(_syncDrawAlignmentGuideNode);
     }
     if (widget.drawIndicatorMarkers != oldWidget.drawIndicatorMarkers) {
       setState(_syncDrawIndicatorsNode);
@@ -3908,6 +3923,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (node != null) scene.add(node);
   }
 
+  /// Mirrors [_syncDrawGhostGuideNode] for [PartViewport.drawAlignmentGuidePolylines], in the snap colour.
+  void _syncDrawAlignmentGuideNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _drawAlignmentGuideNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final node = buildSketchGhostNode(widget.drawAlignmentGuidePolylines, color: sketchIndicatorSnapColor);
+    _drawAlignmentGuideNode = node;
+    if (node != null) scene.add(node);
+  }
+
   /// P20 follow-up: mirrors [_syncDrawGhostNode] for
   /// [PartViewport.drawIndicatorMarkers].
   void _syncDrawIndicatorsNode() {
@@ -5588,7 +5614,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               focusTransform: widget.focusWorldTransformMatrix,
             )
           : null;
-      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId, _overlayItemPlanePoint(hitId))) return null;
+      if (hitId != null &&
+          widget.onConstraintOverlayItemTap!(hitId, _overlayItemPlanePoint(hitId), _planePointUnderCursor())) {
+        return null;
+      }
     }
     final hit = _hoverHit;
     if (hit == null) {
@@ -6040,7 +6069,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       return;
     }
     final resolved = _drawCursorWorldHit;
-    if (resolved != null) widget.onDrawCursorMoved?.call(resolved);
+    if (resolved != null) {
+      final basis = widget.sketchPlaneBasis;
+      widget.onDrawCursorMoved?.call(resolved, basis == null ? null : _localPixelsPerSketchUnit(resolved, basis));
+    }
   }
 
   /// Mirrors [_handleSelectionPointerHover] - see [_handleDrawCursorMove]'s
@@ -6056,7 +6088,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _syncHoverNode();
     });
     final resolved = _drawCursorWorldHit;
-    if (resolved != null) widget.onDrawCursorMoved?.call(resolved);
+    if (resolved != null) {
+      final basis = widget.sketchPlaneBasis;
+      widget.onDrawCursorMoved?.call(resolved, basis == null ? null : _localPixelsPerSketchUnit(resolved, basis));
+    }
   }
 
   /// Mirrors [_recomputeHover], raycasting against
@@ -6086,6 +6121,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _drawCursorWorldHit = hit?.$1;
   }
 
+  /// The point on the sketch plane under [_cursorPosition], or null when there is no cursor or the ray misses the plane.
+  vm.Vector3? _planePointUnderCursor() {
+    final cursor = _cursorPosition;
+    final basis = widget.sketchPlaneBasis;
+    if (cursor == null || basis == null) return null;
+    final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
+    return hitTestSketchPlane(ray, basis)?.$1;
+  }
+
   /// Mirrors [_commitSelection] - fired by a genuine tap (see
   /// [_onPointerEnd]), commits the current [_drawCursorWorldHit] if the
   /// cursor is actually resolving to a point on the plane.
@@ -6104,7 +6148,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               focusTransform: widget.focusWorldTransformMatrix,
             )
           : null;
-      final consumed = widget.onConstraintOverlayItemTap!(hitId, hitId == null ? null : _overlayItemPlanePoint(hitId));
+      final consumed = widget.onConstraintOverlayItemTap!(
+        hitId,
+        hitId == null ? null : _overlayItemPlanePoint(hitId),
+        _drawCursorWorldHit,
+      );
       if (consumed) return;
     }
     final hit = _drawCursorWorldHit;
@@ -7171,6 +7219,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                       if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
                       if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
                       if (_drawGhostGuideNode != null) _drawGhostGuideNode!,
+                      if (_drawAlignmentGuideNode != null) _drawAlignmentGuideNode!,
                       if (_drawGhostNode != null) _drawGhostNode!,
                       if (_drawIndicatorsNode != null) _drawIndicatorsNode!,
                       if (_profileFillNode != null) _profileFillNode!,

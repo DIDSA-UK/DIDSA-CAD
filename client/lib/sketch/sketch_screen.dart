@@ -1571,6 +1571,7 @@ class _SketchScreenState extends State<SketchScreen> {
         drawGhostPolylines: _embeddedDrawGhostPolylines,
         drawGhostColor: _embeddedDrawGhostColor,
         drawGhostGuidePolylines: _embeddedDrawGhostGuidePolylines,
+        drawAlignmentGuidePolylines: _embeddedAlignmentGuidePolylines,
         drawIndicatorMarkers: _embeddedDrawIndicatorMarkers,
         profileFillOutlines: _embeddedProfileFillOutlines,
         profileBranchMarkers: _embeddedProfileBranchMarkers,
@@ -2082,6 +2083,7 @@ class _SketchScreenState extends State<SketchScreen> {
     final basis = _effectiveOrbitBasis;
     if (basis == null) return;
     final (x, y) = worldPointToSketch(basis, worldPoint);
+    if (localPixelsPerUnit != null) _controller.reportPixelsPerUnit(localPixelsPerUnit);
     // Bug fix (on-device feedback: "the hit radius for selecting an entity
     // should match the hit radius for dynamic highlight - it occurred when
     // selecting entities after starting the dimension tool"): this used to
@@ -2147,7 +2149,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// P24: while [_dragModeActiveInOrbitView], feeds
   /// [SketchController.updateGrabbedPosition] instead - a no-op unless
   /// something is actually grabbed (mirrors that method's own doc comment).
-  void _handleDrawCursorMoved(vm.Vector3 worldPoint) {
+  void _handleDrawCursorMoved(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
     final basis = _effectiveOrbitBasis;
     if (basis == null) return;
     final (x, y) = worldPointToSketch(basis, worldPoint);
@@ -2157,7 +2159,7 @@ class _SketchScreenState extends State<SketchScreen> {
       }
       return;
     }
-    _controller.moveCursorToSketchPoint(x, y);
+    _controller.moveCursorToSketchPoint(x, y, pixelsPerUnit: localPixelsPerUnit);
   }
 
   /// P24: [PartViewport.onDrawCursorCommit]'s handler while
@@ -2188,18 +2190,16 @@ class _SketchScreenState extends State<SketchScreen> {
     if (!_controller.constraints.containsKey(constraintId)) return false;
     final basis = _effectiveOrbitBasis;
     if (basis == null) return false;
-    final (x, y) = worldPointToSketch(basis, pressPoint);
-    return _beginEmbeddedLabelDrag(constraintId, x, y, labelPoint);
+    return _beginEmbeddedLabelDrag(constraintId, pressPoint, labelPoint);
   }
 
-  /// Grabs [constraintId]'s label with the pointer at sketch point ([pointerX], [pointerY]); [labelPoint] is where the label is drawn on
-  /// the sketch plane, so the label keeps its place under the pointer instead of jumping to it.
-  bool _beginEmbeddedLabelDrag(String constraintId, double pointerX, double pointerY, vm.Vector3? labelPoint) {
+  /// Grabs [constraintId]'s label with the pointer at [pointerPoint] on the sketch plane; [labelPoint] is where the label is drawn,
+  /// so the label keeps its place under the pointer instead of jumping to it. Without both, the offset is zero.
+  bool _beginEmbeddedLabelDrag(String constraintId, vm.Vector3? pointerPoint, vm.Vector3? labelPoint) {
     final basis = _effectiveOrbitBasis;
     (double, double)? grabOffset;
-    if (basis != null && labelPoint != null) {
-      final (labelX, labelY) = worldPointToSketch(basis, labelPoint);
-      grabOffset = (labelX - pointerX, labelY - pointerY);
+    if (basis != null && pointerPoint != null && labelPoint != null) {
+      grabOffset = embeddedLabelGrabOffset(basis, pointerPoint, labelPoint);
     }
     return _controller.beginLabelDrag(constraintId, grabOffset: grabOffset);
   }
@@ -2252,7 +2252,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// wrong-mode action - see [PartViewport.preferConstraintOverlayHitOnCommit]'s
   /// own doc comment for why *whether this fires at all* is still mode-
   /// gated one level up from this.
-  bool _handleEmbeddedConstraintOverlayTap(String? hitId, vm.Vector3? labelPoint) {
+  bool _handleEmbeddedConstraintOverlayTap(String? hitId, vm.Vector3? labelPoint, vm.Vector3? cursorPoint) {
     if (_controller.mode == SketchMode.dimension) {
       final isGhost = hitId != null && _controller.ghosts.any((g) => g.key == hitId);
       if (_controller.activeGhostKey != null) {
@@ -2287,7 +2287,9 @@ class _SketchScreenState extends State<SketchScreen> {
       // which already drops whatever is grabbed unconditionally.
       if (_controller.isEntityGrabbed) return false;
       if (hitId != null && _controller.constraints.containsKey(hitId)) {
-        return _beginEmbeddedLabelDrag(hitId, _controller.cursorX, _controller.cursorY, labelPoint);
+        // Not `_controller.cursorX/Y`: in Orbit View drag mode the controller's cursor is never moved (see
+        // [_handleDrawCursorMoved]), so it holds a stale point from some earlier tool or canvas.
+        return _beginEmbeddedLabelDrag(hitId, cursorPoint, labelPoint);
       }
       return false;
     }
@@ -2420,6 +2422,21 @@ class _SketchScreenState extends State<SketchScreen> {
     return [
       for (final polyline in ghostGuidePolylines(ghost))
         [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
+    ];
+  }
+
+  /// [PartViewport.drawAlignmentGuidePolylines]' data source: the controller's alignment guides cut into dashes at the zoom Orbit View
+  /// last reported (so a dash stays about the same size on screen).
+  List<List<vm.Vector3>> get _embeddedAlignmentGuidePolylines {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null || _controller.mode != SketchMode.draw) return const [];
+    final guides = _controller.activeAlignmentGuides;
+    if (guides.isEmpty) return const [];
+    final pixelsPerUnit = _controller.reportedPixelsPerUnit ?? 20.0;
+    return [
+      for (final guide in guides)
+        for (final dash in alignmentGuideDashes(guide, pixelsPerUnit))
+          [for (final (x, y) in dash) sketchPointToWorld(basis, x, y)],
     ];
   }
 

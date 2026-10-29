@@ -907,12 +907,11 @@ enum LineInferenceKind { horizontal, vertical, parallel, perpendicular, tangent,
 /// [target] is the existing entity being inferred against (null for
 /// [LineInferenceKind.horizontal]/[LineInferenceKind.vertical], which - like
 /// today's H/V snap - relate the segment to a fixed axis, not another
-/// entity). [snappedX]/[snappedY] is where the free end should be *drawn*
-/// (the ghost preview - never where the real endpoint Point actually gets
-/// created, exactly like [LineSnapAxis]: the real Point still lands at the
-/// raw cursor position and the solver pulls it onto the constraint after
-/// placement, see [SketchController._applyLineInference]'s own doc
-/// comment). [markerX]/[markerY] is a second, independent point - the most
+/// entity). [snappedX]/[snappedY] is where the free end is *drawn* by the
+/// ghost preview and where [SketchController._lineEndTarget] creates the real
+/// endpoint Point, so what is drawn and what is committed agree (the solver
+/// still enforces the constraint afterward, see
+/// [SketchController._applyLineInference]). [markerX]/[markerY] is a second, independent point - the most
 /// meaningful spot to draw this candidate's own glyph (the exact tangent
 /// point on a circle, the nearest point on a curve, an existing line's
 /// midpoint) - equal to [snappedX]/[snappedY] for [pointOnCurve], distinct
@@ -934,6 +933,55 @@ class LineInference {
     required this.markerX,
     required this.markerY,
   });
+}
+
+/// A dashed alignment guide: the cursor lines up horizontally or vertically with the existing Point at ([fromX], [fromY]), and the
+/// guide runs from that Point to the aligned cursor position ([toX], [toY]). A snapping aid only: it creates no constraint.
+class AlignmentGuide {
+  final double fromX;
+  final double fromY;
+  final double toX;
+  final double toY;
+
+  const AlignmentGuide(this.fromX, this.fromY, this.toX, this.toY);
+}
+
+/// [guide] cut into dashes of [dashPixels] with [gapPixels] between, as one two-point polyline per dash in sketch units at
+/// [pixelsPerUnit] - for renderers that have no dashed-line primitive (Orbit View's polyline nodes).
+List<List<(double, double)>> alignmentGuideDashes(
+  AlignmentGuide guide,
+  double pixelsPerUnit, {
+  double dashPixels = 6,
+  double gapPixels = 4,
+}) {
+  final dx = guide.toX - guide.fromX;
+  final dy = guide.toY - guide.fromY;
+  final length = math.sqrt(dx * dx + dy * dy);
+  if (length < 1e-9 || pixelsPerUnit <= 0) return const [];
+  final dash = dashPixels / pixelsPerUnit;
+  final step = (dashPixels + gapPixels) / pixelsPerUnit;
+  final dashes = <List<(double, double)>>[];
+  for (var at = 0.0; at < length; at += step) {
+    final end = math.min(at + dash, length);
+    dashes.add([
+      (guide.fromX + dx * at / length, guide.fromY + dy * at / length),
+      (guide.fromX + dx * end / length, guide.fromY + dy * end / length),
+    ]);
+  }
+  return dashes;
+}
+
+/// Where a Line's free end lands - see [SketchController._resolveLineEnd]. [pointId] is the existing Point it lands on (the chain's
+/// first Point when [closing]), null for a new Point at ([x], [y]); [inference] is the constraint to add, if any.
+class _LineEndTarget {
+  final double x;
+  final double y;
+  final String? pointId;
+  final bool closing;
+  final LineInference? inference;
+  final List<AlignmentGuide> guides;
+
+  const _LineEndTarget(this.x, this.y, {this.pointId, this.closing = false, this.inference, this.guides = const []});
 }
 
 /// How a tap-to-place Circle is built while [SketchTool.circle] is active.
@@ -1702,6 +1750,33 @@ class SketchController extends ChangeNotifier {
   /// [_lastKnownPixelsPerUnit] instead of a parameter, since
   /// [_tangentOrPointOnCurveInference] is only ever called from
   /// no-argument getters/methods.
+  /// How close, in screen pixels, the cursor must be to an existing Point (or to the Line chain's first Point) for a placement to
+  /// land on it. Scaled to the zoom the view last reported, so it stays about the size of the cursor's hover ring: zooming in makes
+  /// it smaller in sketch units and zooming out makes it larger.
+  static const double pointSnapPixels = 14.0;
+
+  /// The zoom (pixels per sketch unit) the view last reported, or null until one has. Until then [_pointSnapRadius] is the flat
+  /// [snapRadius].
+  double? _reportedPixelsPerUnit;
+
+  /// The zoom the view last reported (pixels per sketch unit), or null until one has.
+  double? get reportedPixelsPerUnit => _reportedPixelsPerUnit;
+
+  /// Tells the controller the current zoom of the view the cursor is in. The flat canvas reports it with every cursor move, Orbit
+  /// View with every draw-cursor move and commit.
+  void reportPixelsPerUnit(double pixelsPerUnit) {
+    if (pixelsPerUnit <= 0 || !pixelsPerUnit.isFinite) return;
+    _reportedPixelsPerUnit = pixelsPerUnit;
+    _lastKnownPixelsPerUnit = pixelsPerUnit;
+  }
+
+  /// [pointSnapPixels] in sketch units at the reported zoom - the merge radius for an existing Point and for closing a Line chain.
+  /// Unlike [_curveInferenceHitRadius] it has no [snapRadius] floor, so zooming in shrinks it.
+  double get _pointSnapRadius {
+    final pixelsPerUnit = _reportedPixelsPerUnit;
+    return pixelsPerUnit == null ? snapRadius : pointSnapPixels / pixelsPerUnit;
+  }
+
   double _curveInferenceHitRadius(double pixelRadius) {
     if (_lastKnownPixelsPerUnit <= 0) return snapRadius;
     return math.max(snapRadius, pixelRadius / _lastKnownPixelsPerUnit);
@@ -2997,11 +3072,15 @@ class SketchController extends ChangeNotifier {
     if (_chainStartPointId == _chainFirstPointId) {
       return false; // First segment - nothing to close onto yet.
     }
-    final start = points[_chainFirstPointId];
+    final start = points[_chainStartPointId];
     if (start == null) return false;
-    final dx = cursorX - start.x;
-    final dy = cursorY - start.y;
-    return (dx * dx + dy * dy) <= snapRadius * snapRadius;
+    return _resolveLineEnd(
+      start.x,
+      start.y,
+      anchorPointId: _chainStartPointId,
+      excludeId: _chainStartPointId,
+      closeOntoId: _chainFirstPointId,
+    ).closing;
   }
 
   /// True when the cursor is close enough to the Sketch's real origin Point
@@ -3013,7 +3092,8 @@ class SketchController extends ChangeNotifier {
     if (origin == null) return false;
     final dx = cursorX - origin.x;
     final dy = cursorY - origin.y;
-    return (dx * dx + dy * dy) <= snapRadius * snapRadius;
+    final radius = _pointSnapRadius;
+    return (dx * dx + dy * dy) <= radius * radius;
   }
 
   final List<SketchSelection> _selectionSet = [];
@@ -3077,6 +3157,22 @@ class SketchController extends ChangeNotifier {
   /// frame is exactly how it stays live.
   DrawGhost? get activeDrawGhost {
     if (_mode != SketchMode.draw) return null;
+    final (alignedX, alignedY, _) = _genericAlignment();
+    if (alignedX == cursorX && alignedY == cursorY) return _activeToolGhost();
+    // The tap will land on the aligned position, so the ghost is built from it: the tool ghosts all read the cursor fields, so they
+    // are swapped for the duration of this synchronous call.
+    final rawX = cursorX, rawY = cursorY;
+    cursorX = alignedX;
+    cursorY = alignedY;
+    try {
+      return _activeToolGhost();
+    } finally {
+      cursorX = rawX;
+      cursorY = rawY;
+    }
+  }
+
+  DrawGhost? _activeToolGhost() {
     switch (_activeTool) {
       case SketchTool.point:
         return null;
@@ -3535,8 +3631,8 @@ class SketchController extends ChangeNotifier {
             );
           }
         }
-        final snapped = _snappedLineEndWithInference(start.x, start.y, cursorX, cursorY, anchorPointId: startId);
-        return LineGhost(startX: start.x, startY: start.y, endX: snapped.$1, endY: snapped.$2);
+        final target = _lineEndTarget()!;
+        return LineGhost(startX: start.x, startY: start.y, endX: target.x, endY: target.y);
       case LineConstructionMethod.midpoint:
         final midX = _midpointAnchorX;
         final midY = _midpointAnchorY;
@@ -3544,12 +3640,12 @@ class SketchController extends ChangeNotifier {
         // Mirrors the real Line _clickMidpointLineTool would create: the
         // cursor becomes one end, its mirror image through the anchor the
         // other.
-        final snapped = _snappedLineEndWithInference(midX, midY, cursorX, cursorY);
+        final target = _lineEndTarget()!;
         return LineGhost(
-          startX: 2 * midX - snapped.$1,
-          startY: 2 * midY - snapped.$2,
-          endX: snapped.$1,
-          endY: snapped.$2,
+          startX: 2 * midX - target.x,
+          startY: 2 * midY - target.y,
+          endX: target.x,
+          endY: target.y,
         );
     }
   }
@@ -3620,15 +3716,229 @@ class SketchController extends ChangeNotifier {
       case LineConstructionMethod.endToEnd:
         final startId = _chainStartPointId;
         if (startId == null) return null;
-        final start = points[startId];
+        if (points[startId] == null) return null;
+        return _lineEndTarget()?.inference;
+      case LineConstructionMethod.midpoint:
+        if (_midpointAnchorX == null || _midpointAnchorY == null) return null;
+        return _lineEndTarget()?.inference;
+    }
+  }
+
+  /// How close, in screen pixels, the cursor must be to the x or y of another Point for an alignment guide to engage.
+  static const double alignmentSnapPixels = 7.0;
+
+  /// [alignmentSnapPixels] in sketch units at the reported zoom, or the flat [snapRadius] until a view reports one.
+  double get _alignmentRadius {
+    final pixelsPerUnit = _reportedPixelsPerUnit;
+    return pixelsPerUnit == null ? snapRadius : alignmentSnapPixels / pixelsPerUnit;
+  }
+
+  /// Points that never act as an alignment reference: circle and ellipse cardinal points would only add noise.
+  Set<String> get _alignmentExcludedPointIds => {
+        for (final circle in circles.values) ...circle.cardinalPointIds,
+        for (final ellipse in ellipses.values) ...[
+          ellipse.majorPointId,
+          ellipse.majorPointNegId,
+          ellipse.minorPointId,
+          ellipse.minorPointNegId,
+        ],
+      };
+
+  /// Lines ([x], [y]) up with the nearest existing Points: vertically with the Point whose x is within [_alignmentRadius] of [x]
+  /// (nearest along y wins), horizontally likewise, each axis independent and both able to apply at once from two different
+  /// Points. [alignX]/[alignY] switch an axis off (a Line's own H/V already fixes one). Returns the snapped position and the guides;
+  /// no guides when nothing lines up or inference is suppressed.
+  (double, double, List<AlignmentGuide>) _alignToPoints(
+    double x,
+    double y, {
+    Set<String> excludeIds = const {},
+    bool alignX = true,
+    bool alignY = true,
+  }) {
+    if (_inferenceSuppressed) return (x, y, const []);
+    final radius = _alignmentRadius;
+    final skip = _alignmentExcludedPointIds;
+    SketchPointView? vertical; // shares x
+    SketchPointView? horizontal; // shares y
+    for (final point in points.values) {
+      if (excludeIds.contains(point.id) || skip.contains(point.id)) continue;
+      if (alignX && (point.x - x).abs() <= radius) {
+        if (vertical == null || (point.y - y).abs() < (vertical.y - y).abs()) vertical = point;
+      }
+      if (alignY && (point.y - y).abs() <= radius) {
+        if (horizontal == null || (point.x - x).abs() < (horizontal.x - x).abs()) horizontal = point;
+      }
+    }
+    final alignedX = vertical?.x ?? x;
+    final alignedY = horizontal?.y ?? y;
+    return (alignedX, alignedY, [
+      if (vertical != null) AlignmentGuide(vertical.x, vertical.y, alignedX, alignedY),
+      if (horizontal != null) AlignmentGuide(horizontal.x, horizontal.y, alignedX, alignedY),
+    ]);
+  }
+
+  /// Where a Line's first point or a Point-tool Point is placed from the cursor: the raw cursor when it lands on an existing Point, a
+  /// Line midpoint or a curve (those snaps win), otherwise lined up with other Points ([_alignToPoints]).
+  (double, double, List<AlignmentGuide>) _placementTarget() {
+    if (_existingPointIdNear(cursorX, cursorY) != null ||
+        _nearestLineMidpointId(cursorX, cursorY, snapRadius) != null ||
+        _pointOnCurveTarget(cursorX, cursorY) != null) {
+      return (cursorX, cursorY, const []);
+    }
+    return _alignToPoints(cursorX, cursorY);
+  }
+
+  /// Whether the active tool's next tap places a Point that lines up with other Points through [_genericAlignment]: every draw tool but
+  /// Point and Line (which do it in their own paths, [_placementTarget] and [_resolveLineEnd]) and Text, plus the midpoint-method
+  /// Line's anchor. Taps that only measure (a radius, a sweep end, a width, the minor radius) never align.
+  bool get _usesGenericAlignment {
+    switch (_activeTool) {
+      case SketchTool.circle:
+        // Centre-radius: only the centre is a point placement (the second tap measures a radius).
+        return _circleMethod == CircleConstructionMethod.threePoint || !circleInProgress;
+      case SketchTool.rectangle:
+        return _rectangleMethod != RectangleConstructionMethod.threePoint || _rectSecondPointId == null;
+      case SketchTool.arc:
+        // Centre and start Point; the end tap only picks the sweep.
+        return _arcCenterPointId == null || _arcStartPointId == null;
+      case SketchTool.polygon:
+        return true;
+      case SketchTool.slot:
+        // Both centres; the third tap only sets the width.
+        return _slotCenter1PointId == null || _slotCenter2PointId == null;
+      case SketchTool.ellipse:
+        return _ellipseCenterPointId == null || _ellipseMajorPointId == null;
+      case SketchTool.ellipseArc:
+        return _ellipseArcCenterPointId == null || _ellipseArcMajorPointId == null;
+      case SketchTool.spline:
+        return true;
+      case SketchTool.line:
+        return _lineMethod == LineConstructionMethod.midpoint && _midpointAnchorX == null;
+      case SketchTool.point:
+      case SketchTool.text:
+        return false;
+    }
+  }
+
+  /// The cursor lined up with other Points for the tools in [_usesGenericAlignment], else the raw cursor. A Point, Line-midpoint or
+  /// curve snap under the raw cursor wins (see [_placementTarget]).
+  (double, double, List<AlignmentGuide>) _genericAlignment() =>
+      _usesGenericAlignment ? _placementTarget() : (cursorX, cursorY, const []);
+
+  /// The alignment guides the active draw tool shows right now: dashed lines from the Points the cursor
+  /// lines up with to the position a tap would place. Empty outside draw mode.
+  List<AlignmentGuide> get activeAlignmentGuides {
+    if (_mode != SketchMode.draw) return const [];
+    switch (_activeTool) {
+      case SketchTool.line:
+        final anchored = _lineMethod == LineConstructionMethod.endToEnd
+            ? chainInProgress
+            : _midpointAnchorX != null && _midpointAnchorY != null;
+        return anchored ? (_lineEndTarget()?.guides ?? const []) : _placementTarget().$3;
+      case SketchTool.point:
+        return _placementTarget().$3;
+      default:
+        return _genericAlignment().$3;
+    }
+  }
+
+  /// Where the Line tool's in-progress segment ends right now, for the current [_lineMethod]: null before the first tap. The ghost
+  /// ([activeDrawGhost]), the snap markers ([isHoveringChainStart], [snapCandidatePointId], [activeLineInference]) and the commit all
+  /// read this, so what is drawn and what is placed always agree.
+  _LineEndTarget? _lineEndTarget() {
+    switch (_lineMethod) {
+      case LineConstructionMethod.endToEnd:
+        final startId = _chainStartPointId;
+        final start = startId == null ? null : points[startId];
         if (start == null) return null;
-        return _combinedLineInference(start.x, start.y, cursorX, cursorY, anchorPointId: startId);
+        return _resolveLineEnd(
+          start.x,
+          start.y,
+          anchorPointId: startId,
+          excludeId: startId,
+          closeOntoId: startId == _chainFirstPointId ? null : _chainFirstPointId,
+        );
       case LineConstructionMethod.midpoint:
         final midX = _midpointAnchorX;
         final midY = _midpointAnchorY;
         if (midX == null || midY == null) return null;
-        return _combinedLineInference(midX, midY, cursorX, cursorY);
+        return _resolveLineEnd(midX, midY);
     }
+  }
+
+  /// The free end of a Line from ([x0], [y0]) to the cursor, in priority order:
+  ///  1. The cursor is within [_pointSnapRadius] of [closeOntoId] (the chain's first Point: close the loop) or of another existing
+  ///     Point other than [excludeId]: that Point wins.
+  ///  2. Otherwise the [_combinedLineInference] (or plain H/V) snapped end; if that lands within [_pointSnapRadius] of the first or
+  ///     another existing Point, that Point wins, else a new Point goes at the snapped position (not the raw cursor).
+  /// Closing the loop adds Horizontal/Vertical when the closing segment is within [lineSnapAngleDegrees] of an axis; nothing else is
+  /// inferred for it (its slope is dictated by the loop).
+  _LineEndTarget _resolveLineEnd(
+    double x0,
+    double y0, {
+    String? anchorPointId,
+    String? excludeId,
+    String? closeOntoId,
+  }) {
+    final radius = _pointSnapRadius;
+    final first = closeOntoId == null ? null : points[closeOntoId];
+    bool near(SketchPointView p, double x, double y) => (x - p.x) * (x - p.x) + (y - p.y) * (y - p.y) <= radius * radius;
+
+    _LineEndTarget closing(SketchPointView first) {
+      LineInference? inference;
+      final axis = _inferenceSuppressed ? null : _lineSnapAxis(x0, y0, first.x, first.y);
+      if (axis != null) {
+        inference = LineInference(
+          kind: axis == LineSnapAxis.horizontal ? LineInferenceKind.horizontal : LineInferenceKind.vertical,
+          snappedX: first.x,
+          snappedY: first.y,
+          markerX: first.x,
+          markerY: first.y,
+        );
+      }
+      return _LineEndTarget(first.x, first.y, pointId: first.id, closing: true, inference: inference);
+    }
+
+    if (first != null && near(first, cursorX, cursorY)) return closing(first);
+    final rawId = _existingPointIdNear(cursorX, cursorY, excludeId: excludeId);
+    if (rawId != null) {
+      final p = points[rawId]!;
+      return _LineEndTarget(p.x, p.y, pointId: rawId);
+    }
+
+    final inference = _combinedLineInference(x0, y0, cursorX, cursorY, anchorPointId: anchorPointId);
+    final (snappedX, snappedY) = inference != null
+        ? (inference.snappedX, inference.snappedY)
+        : (_inferenceSuppressed ? (cursorX, cursorY) : _snappedLineEnd(x0, y0, cursorX, cursorY));
+    // Alignment with other Points ranks above parallel/perpendicular/collinear and below tangent/point-on-curve; a Line's own H/V
+    // already fixes one axis, so alignment only adds the other.
+    var endX = snappedX;
+    var endY = snappedY;
+    var endInference = inference;
+    var guides = const <AlignmentGuide>[];
+    final kind = inference?.kind;
+    if (kind != LineInferenceKind.tangent && kind != LineInferenceKind.pointOnCurve) {
+      final (alignedX, alignedY, alignedGuides) = _alignToPoints(
+        snappedX,
+        snappedY,
+        excludeIds: {if (excludeId != null) excludeId},
+        alignX: kind != LineInferenceKind.vertical,
+        alignY: kind != LineInferenceKind.horizontal,
+      );
+      if (alignedGuides.isNotEmpty) {
+        endX = alignedX;
+        endY = alignedY;
+        guides = alignedGuides;
+        if (kind != LineInferenceKind.horizontal && kind != LineInferenceKind.vertical) endInference = null;
+      }
+    }
+    if (first != null && near(first, endX, endY)) return closing(first);
+    final snappedId = _existingPointIdNear(endX, endY, excludeId: excludeId);
+    if (snappedId != null) {
+      final p = points[snappedId]!;
+      return _LineEndTarget(p.x, p.y, pointId: snappedId);
+    }
+    return _LineEndTarget(endX, endY, inference: endInference, guides: guides);
   }
 
   /// Session N: the single highest-priority auto-constraint candidate for
@@ -3722,26 +4032,6 @@ class SketchController extends ChangeNotifier {
     }
 
     return _parallelOrPerpendicularInference(x0, y0, x1, y1);
-  }
-
-  /// [_snappedLineEnd] extended to also snap onto whichever
-  /// higher-priority [_combinedLineInference] candidate (if any) is
-  /// currently live - the ghost preview's own read of the same combined
-  /// result [activeLineInference] exposes, so the two never disagree.
-  /// Falls back to the raw cursor position (not [_snappedLineEnd]'s own
-  /// H/V-only snap) while [inferenceSuppressed] is on, since that toggle
-  /// is meant to suppress every kind of live snap, not just the new ones.
-  (double, double) _snappedLineEndWithInference(
-    double x0,
-    double y0,
-    double x1,
-    double y1, {
-    String? anchorPointId,
-  }) {
-    final inference = _combinedLineInference(x0, y0, x1, y1, anchorPointId: anchorPointId);
-    if (inference != null) return (inference.snappedX, inference.snappedY);
-    if (_inferenceSuppressed) return (x1, y1);
-    return _snappedLineEnd(x0, y0, x1, y1);
   }
 
   /// How many degrees apart two undirected angles (radians in, degrees
@@ -5106,6 +5396,7 @@ class SketchController extends ChangeNotifier {
   /// Any in-range non-origin Point is preferred outright, even over a
   /// numerically-closer origin.
   String? _existingPointIdNear(double x, double y, {String? excludeId}) {
+    final radius = _pointSnapRadius;
     String? bestId;
     var bestDistSq = double.infinity;
     String? originCandidateId;
@@ -5114,7 +5405,7 @@ class SketchController extends ChangeNotifier {
       final dx = x - point.x;
       final dy = y - point.y;
       final distSq = dx * dx + dy * dy;
-      if (distSq > snapRadius * snapRadius) continue;
+      if (distSq > radius * radius) continue;
       if (point.id == _originPointId) {
         originCandidateId = point.id;
         continue;
@@ -5135,6 +5426,10 @@ class SketchController extends ChangeNotifier {
   /// preview snapping onto.
   String? get snapCandidatePointId {
     if (_mode != SketchMode.draw) return null;
+    if (_activeTool == SketchTool.line) {
+      final targetId = _lineEndTarget()?.pointId;
+      if (targetId != null) return targetId;
+    }
     return _existingPointIdNear(cursorX, cursorY);
   }
 
@@ -8959,6 +9254,24 @@ class SketchController extends ChangeNotifier {
     return false;
   }
 
+  /// Whether [c] is a Polygon's own inscribed-circle tangency: `add_polygon` (with reference circles) ties the inscribed Circle
+  /// to the first edge with a real `TangentConstraint`, so the circle keeps touching the edges as the shape changes. Part of how
+  /// the shape is built, the same as the ties above, so it is not shown. Identified by membership (the Tangent's circle is the
+  /// Polygon's `inscribedCircleId`, its Line one of the Polygon's `lineIds`), like the other `isImplicit*` checks. A Tangent the
+  /// user adds between that circle and some other Line is still real and still shown.
+  bool isImplicitPolygonInscribedTangent(TangentConstraintDto c) {
+    for (final polygon in polygons.values) {
+      final circle = polygon.inscribedCircleId == null ? null : circles[polygon.inscribedCircleId];
+      if (circle == null) continue;
+      if (circle.centerPointId == c.centerPointId &&
+          circle.radiusPointId == c.radiusPointId &&
+          polygon.lineIds.contains(c.lineId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Whether [lineAId]/[lineBId] carry a `LineDistanceConstraint` between
   /// them - the exact same reasoning [isImplicitPolygonEdgeTie]/
   /// [isImplicitEllipseAxisPerpendicular] already established for other
@@ -9354,6 +9667,10 @@ class SketchController extends ChangeNotifier {
       for (final lineId in polygon.radialLineIds) {
         lineIds.remove(lineId);
       }
+      // Same for its reference circles: delete_polygon removes them too, so a
+      // second DELETE /circles/{id} would 404 with "Circle not found".
+      circleIds.remove(polygon.circumscribedCircleId);
+      circleIds.remove(polygon.inscribedCircleId);
     }
     for (final slot in slots.values) {
       // On-device feedback ("some points are not deleting because they are
@@ -10550,8 +10867,17 @@ class SketchController extends ChangeNotifier {
         idMap[polygon.vertexPointIds[0]] ?? polygon.vertexPointIds[0],
         polygon.sides,
         construction: polygon.construction,
+        referenceCircles: polygon.circumscribedCircleId != null,
       );
       idMap[polygon.id] = created.id;
+      // Reference circles are recreated with the polygon (they are no longer
+      // captured as ordinary circles), so constraints on them follow the new ids.
+      final oldCircumscribed = polygon.circumscribedCircleId;
+      final newCircumscribed = created.circumscribedCircleId;
+      if (oldCircumscribed != null && newCircumscribed != null) idMap[oldCircumscribed] = newCircumscribed;
+      final oldInscribed = polygon.inscribedCircleId;
+      final newInscribed = created.inscribedCircleId;
+      if (oldInscribed != null && newInscribed != null) idMap[oldInscribed] = newInscribed;
       polygons[created.id] = SketchPolygonView(
         id: created.id,
         centerPointId: created.centerPointId,
@@ -10587,6 +10913,7 @@ class SketchController extends ChangeNotifier {
         final point = await _api.getPoint(_sketchId!, id);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
+      await _loadPolygonReferenceCircles(created);
     }
     for (final (slot, radius) in capturedSlots) {
       final created = await _api.createSlot(
@@ -15393,7 +15720,7 @@ class SketchController extends ChangeNotifier {
     final coord = transform.screenToSketch(screenPosition.dx, screenPosition.dy);
     cursorX = coord.x;
     cursorY = coord.y;
-    _lastKnownPixelsPerUnit = transform.pixelsPerUnit;
+    reportPixelsPerUnit(transform.pixelsPerUnit);
     _trackArcSweep();
     _trackEllipseArcSweep();
     _updateShapeCenterReveal();
@@ -15407,9 +15734,10 @@ class SketchController extends ChangeNotifier {
   /// real sketch-space point, so there's no screen-to-sketch conversion left
   /// to do here - just the same [_trackArcSweep]/[notifyListeners] tail
   /// every other cursor-movement entry point already shares.
-  void moveCursorToSketchPoint(double sketchX, double sketchY) {
+  void moveCursorToSketchPoint(double sketchX, double sketchY, {double? pixelsPerUnit}) {
     cursorX = sketchX;
     cursorY = sketchY;
+    if (pixelsPerUnit != null) reportPixelsPerUnit(pixelsPerUnit);
     _trackArcSweep();
     _trackEllipseArcSweep();
     _updateShapeCenterReveal();
@@ -15453,6 +15781,11 @@ class SketchController extends ChangeNotifier {
   /// those fields) applies unchanged regardless of which method is active.
   Future<void> _handleDrawTap() async {
     if (_busy || _sketchId == null) return;
+
+    // The tap lands where the ghost shows it: lined up with other Points (see [_genericAlignment]).
+    final (alignedX, alignedY, _) = _genericAlignment();
+    cursorX = alignedX;
+    cursorY = alignedY;
 
     if (_activeTool == SketchTool.point) {
       await _clickPointTool();
@@ -15590,7 +15923,8 @@ class SketchController extends ChangeNotifier {
         final existingId = _existingPointIdNear(cursorX, cursorY);
         final onCurveTarget = existingId == null ? _pointOnCurveTarget(cursorX, cursorY) : null;
 
-        final point = await _api.createPoint(_sketchId!, cursorX, cursorY);
+        final (placeX, placeY, _) = _placementTarget();
+        final point = await _api.createPoint(_sketchId!, placeX, placeY);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
         _pushUndo(() async {
           await _api.deletePoint(_sketchId!, point.id);
@@ -15626,14 +15960,17 @@ class SketchController extends ChangeNotifier {
       _selectionSet.clear();
       _ribbonVisible = false;
       await _runGuarded(() async {
-        final pointId = await _pointIdAtCursor();
+        final (x, y, _) = _placementTarget();
+        final pointId = await _pointIdAt(x, y);
         _chainStartPointId = pointId;
         _chainFirstPointId = pointId;
       });
       return;
     }
 
-    final closingLoop = isHoveringChainStart;
+    final target = _lineEndTarget();
+    if (target == null) return;
+    final closingLoop = target.closing;
 
     // Session N (#7): tangent-arc continuation pre-empts the ordinary
     // straight-Line path entirely once toggled on and a genuine tangent
@@ -15652,20 +15989,14 @@ class SketchController extends ChangeNotifier {
       }
     }
 
-    // Phase 6.1: captured from the start Point and the tap's cursor
-    // position *before* the loop-closing case swaps in a fixed endpoint -
-    // a closing edge's slope is dictated by the loop, not freely aimed, so
-    // it never auto-snaps (Session N: same reasoning now covers every
-    // [_combinedLineInference] kind, not just H/V).
-    final chainStart = points[_chainStartPointId!];
-    final inference = (!closingLoop && chainStart != null)
-        ? _combinedLineInference(chainStart.x, chainStart.y, cursorX, cursorY, anchorPointId: _chainStartPointId)
-        : null;
+    // [target] is what the ghost shows: the first Point when closing (with Horizontal/Vertical if the closing edge is within the
+    // snap angle), an existing Point, or a new Point at the snapped position with the inference it carries.
+    final inference = target.inference;
     await _runGuarded(() async {
       final endPointId =
           closingLoop
               ? _chainFirstPointId!
-              : await _pointIdAtCursor(excludeId: _chainStartPointId, inferPointOnCurve: false);
+              : await _pointIdAt(target.x, target.y, excludeId: _chainStartPointId, inferPointOnCurve: false);
 
       final line = await _api.createLine(_sketchId!, _chainStartPointId!, endPointId);
       lines[line.id] = SketchLineView(
@@ -15812,9 +16143,10 @@ class SketchController extends ChangeNotifier {
 
     final midX = _midpointAnchorX!;
     final midY = _midpointAnchorY!;
-    final inference = _combinedLineInference(midX, midY, cursorX, cursorY);
+    final target = _resolveLineEnd(midX, midY);
+    final inference = target.inference;
     await _runGuarded(() async {
-      final endAId = await _pointIdAtCursor(inferPointOnCurve: false);
+      final endAId = await _pointIdAt(target.x, target.y, inferPointOnCurve: false);
       final endA = points[endAId]!;
       final mirrored = await _api.createPoint(_sketchId!, 2 * midX - endA.x, 2 * midY - endA.y);
       points[mirrored.id] = SketchPointView(id: mirrored.id, x: mirrored.x, y: mirrored.y);
@@ -16087,6 +16419,44 @@ class SketchController extends ChangeNotifier {
     });
   }
 
+  /// Loads a freshly created Polygon's two reference Circles (and their
+  /// cardinal/radius Points) into the local maps. Shared by
+  /// [_clickPolygonTool] and the undo restore of a deleted Polygon.
+  Future<void> _loadPolygonReferenceCircles(PolygonDto polygon) async {
+    // On-device feedback ("the 2 construction circles should be drawn
+    // and visible to the user to dimension and use in the sketch"): no
+    // single-Circle GET exists, so both freshly-created reference
+    // Circles are picked out of a full `listCircles` fetch by id - the
+    // circumscribed one's own radius Point is always already known
+    // (it's `firstVertexId`, reused directly - see `add_polygon`'s own
+    // doc comment), but every cardinal Point on *either* Circle, and the
+    // inscribed one's own radius Point, are freshly created server-side
+    // and fetched the same way the extra vertex Points above are.
+    final createdCircleIds = <String>{
+      if (polygon.circumscribedCircleId != null) polygon.circumscribedCircleId!,
+      if (polygon.inscribedCircleId != null) polygon.inscribedCircleId!,
+    };
+    if (createdCircleIds.isNotEmpty) {
+      final allCircles = await _api.listCircles(_sketchId!);
+      for (final circle in allCircles) {
+        if (!createdCircleIds.contains(circle.id)) continue;
+        _noteStructural(circle.id, circle.structuralConstraintIds);
+        circles[circle.id] = SketchCircleView(
+          id: circle.id,
+          centerPointId: circle.centerPointId,
+          radiusPointId: circle.radiusPointId,
+          construction: circle.construction,
+          cardinalPointIds: circle.cardinalPointIds,
+        );
+        for (final pointId in [circle.radiusPointId, ...circle.cardinalPointIds]) {
+          if (points.containsKey(pointId)) continue;
+          final point = await _api.getPoint(_sketchId!, pointId);
+          points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
+        }
+      }
+    }
+  }
+
   /// Polygon tool's tap handling: first tap places the center Point,
   /// second tap places the first vertex (fixing circumradius and
   /// rotation) and immediately completes the shape - self-terminating,
@@ -16168,38 +16538,7 @@ class SketchController extends ChangeNotifier {
         final point = await _api.getPoint(_sketchId!, id);
         points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
       }
-      // On-device feedback ("the 2 construction circles should be drawn
-      // and visible to the user to dimension and use in the sketch"): no
-      // single-Circle GET exists, so both freshly-created reference
-      // Circles are picked out of a full `listCircles` fetch by id - the
-      // circumscribed one's own radius Point is always already known
-      // (it's `firstVertexId`, reused directly - see `add_polygon`'s own
-      // doc comment), but every cardinal Point on *either* Circle, and the
-      // inscribed one's own radius Point, are freshly created server-side
-      // and fetched the same way the extra vertex Points above are.
-      final createdCircleIds = <String>{
-        if (polygon.circumscribedCircleId != null) polygon.circumscribedCircleId!,
-        if (polygon.inscribedCircleId != null) polygon.inscribedCircleId!,
-      };
-      if (createdCircleIds.isNotEmpty) {
-        final allCircles = await _api.listCircles(_sketchId!);
-        for (final circle in allCircles) {
-          if (!createdCircleIds.contains(circle.id)) continue;
-          _noteStructural(circle.id, circle.structuralConstraintIds);
-          circles[circle.id] = SketchCircleView(
-            id: circle.id,
-            centerPointId: circle.centerPointId,
-            radiusPointId: circle.radiusPointId,
-            construction: circle.construction,
-            cardinalPointIds: circle.cardinalPointIds,
-          );
-          for (final pointId in [circle.radiusPointId, ...circle.cardinalPointIds]) {
-            if (points.containsKey(pointId)) continue;
-            final point = await _api.getPoint(_sketchId!, pointId);
-            points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
-          }
-        }
-      }
+      await _loadPolygonReferenceCircles(polygon);
       _pushUndo(() async {
         await _api.deletePolygon(_sketchId!, polygon.id);
         polygons.remove(polygon.id);
@@ -16209,7 +16548,7 @@ class SketchController extends ChangeNotifier {
         for (final lineId in polygon.radialLineIds) {
           lines.remove(lineId);
         }
-        for (final circleId in createdCircleIds) {
+        for (final circleId in [polygon.circumscribedCircleId, polygon.inscribedCircleId]) {
           circles.remove(circleId);
         }
       });
@@ -17836,6 +18175,7 @@ class SketchController extends ChangeNotifier {
               _lineMidpointPairLabel(c.line1Id, c.line2Id, 'Collin.', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
         case TangentConstraintDto c:
+          if (isImplicitPolygonInscribedTangent(c)) break;
           // Pre-existing gap fix (found while wiring Tangent's own
           // context-flyout button): this had no overlay case at all, even
           // though a Slot's own internal corner tangency has always used

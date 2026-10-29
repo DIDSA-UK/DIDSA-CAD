@@ -293,6 +293,10 @@ class _FakeBackend {
 
     final circleDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/circles/(.+)$').firstMatch(path);
     if (circleDeleteMatch != null && request.method == 'DELETE') {
+      // Mirrors the real router's `_get_circle_or_404`: a circle that is already gone is a 404.
+      if (circles.remove(circleDeleteMatch.group(1)) == null) {
+        return _json({'detail': 'Circle not found'}, 404);
+      }
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
@@ -352,6 +356,9 @@ class _FakeBackend {
         for (final constraintId in (polygon['_constraint_ids'] as List).cast<String>()) {
           constraints.remove(constraintId);
         }
+        // Mirrors Sketch.delete_polygon, which also removes its reference circles.
+        circles.remove(polygon['circumscribed_circle_id']);
+        circles.remove(polygon['inscribed_circle_id']);
       }
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
@@ -1774,6 +1781,16 @@ class _FakeBackend {
         final inscribedRadiusPointId = _newId('point');
         points[inscribedRadiusPointId] = {'id': inscribedRadiusPointId, 'x': cx + inradius, 'y': cy};
         inscribedCircleId = makeReferenceCircle(inscribedRadiusPointId, inradius)['id'] as String;
+        // Mirrors add_polygon: the inscribed circle is tied to the first edge by a real TangentConstraint.
+        final tangentId = _newId('constraint');
+        constraints[tangentId] = {
+          'id': tangentId,
+          'type': 'tangent',
+          'center_point_id': body['center_point_id'],
+          'radius_point_id': inscribedRadiusPointId,
+          'line_id': lineIds[0],
+        };
+        constraintIds.add(tangentId);
       }
 
       final polygon = {
@@ -3170,14 +3187,15 @@ void main() {
     controller.finishChain();
     final targetLineId = controller.lines.keys.single;
 
-    await controller.handleCanvasTap(20, 0); // new chain start, well clear of the target Line
-    controller.moveCursorToSketchPoint(30, 5.773502691896258); // same direction, from the new anchor
+    // Offset in y so the cursor does not line up with the target line's own end point (alignment outranks parallel).
+    await controller.handleCanvasTap(20, -3); // new chain start, well clear of the target Line
+    controller.moveCursorToSketchPoint(30, 2.773502691896258); // same direction, from the new anchor
 
     final inference = controller.activeLineInference;
     expect(inference?.kind, LineInferenceKind.parallel);
     expect(inference?.target?.id, targetLineId);
 
-    await controller.handleCanvasTap(30, 5.773502691896258);
+    await controller.handleCanvasTap(30, 2.773502691896258);
 
     final created = controller.constraints.values.whereType<ParallelConstraintDto>().single;
     final newLineId = controller.lines.keys.last;
@@ -3197,8 +3215,8 @@ void main() {
     controller.finishChain();
     final targetLineId = controller.lines.keys.single;
 
-    await controller.handleCanvasTap(20, 0);
-    controller.moveCursorToSketchPoint(30, 5.773502691896258); // ~30 degrees from the new anchor
+    await controller.handleCanvasTap(20, -3);
+    controller.moveCursorToSketchPoint(30, 2.773502691896258); // ~30 degrees from the new anchor
 
     final inference = controller.activeLineInference;
     expect(inference?.kind, LineInferenceKind.parallel);
@@ -3209,11 +3227,11 @@ void main() {
     // behind and below the anchor, visibly flipped away from the cursor
     // instead of toward it.
     expect(inference?.snappedX, closeTo(30, 1e-9));
-    expect(inference?.snappedY, closeTo(5.773502691896258, 1e-9));
+    expect(inference?.snappedY, closeTo(2.773502691896258, 1e-9));
 
     final ghost = controller.activeDrawGhost as LineGhost;
     expect(ghost.endX, closeTo(30, 1e-9));
-    expect(ghost.endY, closeTo(5.773502691896258, 1e-9));
+    expect(ghost.endY, closeTo(2.773502691896258, 1e-9));
   });
 
   test(
@@ -3338,8 +3356,8 @@ void main() {
     await controller.handleCanvasTap(10, 5.773502691896258);
     controller.finishChain();
 
-    await controller.handleCanvasTap(20, 0);
-    controller.moveCursorToSketchPoint(30, 5.773502691896258); // would be a parallel candidate
+    await controller.handleCanvasTap(20, -3);
+    controller.moveCursorToSketchPoint(30, 2.773502691896258); // would be a parallel candidate
 
     expect(controller.activeLineInference?.kind, LineInferenceKind.parallel);
 
@@ -3350,7 +3368,7 @@ void main() {
     // position while suppressed.
     final ghost = controller.activeDrawGhost as LineGhost;
     expect(ghost.endX, 30);
-    expect(ghost.endY, 5.773502691896258);
+    expect(ghost.endY, 2.773502691896258);
 
     controller.toggleInferenceSuppressed();
     expect(controller.inferenceSuppressed, isFalse);
@@ -5415,6 +5433,7 @@ void main() {
     controller.selectAll();
     await controller.deleteSelected();
 
+    expect(controller.errorMessage, isNull);
     expect(controller.polygons, isEmpty);
     for (final lineId in staleLineIds) {
       expect(controller.lines.containsKey(lineId), isFalse);
@@ -5428,6 +5447,67 @@ void main() {
 
     await controller.deleteSelected();
     expect(controller.errorMessage, isNull);
+  });
+
+  test('computeDeleteCascade leaves a whole Polygon\'s reference circles to the Polygon delete, and undo '
+      'brings the polygon and both reference circles back', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.togglePolygonReferenceCircles();
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    final polygon = controller.polygons.values.single;
+    controller.exitToSelectMode();
+
+    controller.selectAll();
+    final cascade = controller.computeDeleteCascade(controller.selectionSet);
+    expect(cascade.polygons, contains(polygon.id));
+    expect(cascade.circles, isNot(contains(polygon.circumscribedCircleId)));
+    expect(cascade.circles, isNot(contains(polygon.inscribedCircleId)));
+
+    await controller.deleteSelected();
+    expect(controller.errorMessage, isNull);
+    expect(controller.circles, isEmpty);
+
+    await controller.undo();
+    expect(controller.errorMessage, isNull);
+    expect(controller.polygons, hasLength(1));
+    final restored = controller.polygons.values.single;
+    expect(restored.circumscribedCircleId, isNotNull);
+    expect(restored.inscribedCircleId, isNotNull);
+    expect(controller.circles.keys, unorderedEquals([restored.circumscribedCircleId, restored.inscribedCircleId]));
+  });
+
+  test('a polygon\'s inscribed-circle tangency is implicit: no Tangent overlay item, but a user Tangent still shows', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.togglePolygonReferenceCircles();
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    final polygon = controller.polygons.values.single;
+    final tangents = controller.constraints.values.whereType<TangentConstraintDto>().toList();
+    expect(tangents, hasLength(1));
+    expect(controller.isImplicitPolygonInscribedTangent(tangents.single), isTrue);
+    expect(
+      controller.constraintOverlayItems().where((i) => i.constraintId == tangents.single.id),
+      isEmpty,
+      reason: 'a hidden glyph cannot be drawn or tapped',
+    );
+
+    // The same circle tangent to some other (user) line is a real relation.
+    final circle = controller.circles[polygon.inscribedCircleId]!;
+    controller.points['u1'] = const SketchPointView(id: 'u1', x: 50, y: 50);
+    controller.points['u2'] = const SketchPointView(id: 'u2', x: 60, y: 50);
+    controller.lines['u'] = const SketchLineView(id: 'u', startPointId: 'u1', endPointId: 'u2');
+    final user = TangentConstraintDto(
+      id: 'user-tan',
+      centerPointId: circle.centerPointId,
+      radiusPointId: circle.radiusPointId,
+      lineId: 'u',
+    );
+    controller.constraints[user.id] = user;
+    expect(controller.isImplicitPolygonInscribedTangent(user), isFalse);
+    expect(controller.constraintOverlayItems().where((i) => i.constraintId == 'user-tan'), hasLength(1));
   });
 
   test('setPolygonSides clamps to [3, 20]', () {
@@ -10141,23 +10221,264 @@ void main() {
     expect(controller.constraints.values.whereType<VerticalConstraintDto>(), isEmpty);
   });
 
-  test('closing a chain loop back onto its start never auto-snaps, even if the closing edge is '
-      'exactly axis-aligned', () async {
+  test('closing a chain loop back onto its start adds Horizontal when the closing edge is exactly axis-aligned, and only to '
+      'the closing edge', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0); // chain start: the origin
     await controller.handleCanvasTap(5, 3); // edge1: ~31 degrees, no snap
     await controller.handleCanvasTap(8, 0); // edge2: 45 degrees, no snap
     // Close the loop: the closing edge runs from (8, 0) straight back to the
-    // origin (0, 0) - exactly horizontal - but must never auto-snap, since
-    // its geometry is dictated by the loop closure, not freely aimed.
+    // origin (0, 0) - exactly horizontal, so the loop closes with a Horizontal
+    // (the marker the user sees while aiming); the other two edges get nothing.
     controller.cursorX = 0;
     controller.cursorY = 0;
     await controller.handleCanvasTap(0, 0);
 
     expect(controller.errorMessage, isNull);
     expect(controller.chainInProgress, isFalse);
-    expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isEmpty);
+    final closingLine = controller.lines.values.last;
+    final horizontals = controller.constraints.values.whereType<HorizontalConstraintDto>().toList();
+    expect(horizontals, hasLength(1));
+    expect(horizontals.single.lineId, closingLine.id);
     expect(controller.constraints.values.whereType<VerticalConstraintDto>(), isEmpty);
+  });
+
+  group('line end snapping (zoom-scaled point snap, end resolved where the ghost shows it)', () {
+    Future<void> drawThreeSidesOfRectangle() async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 2);
+      await controller.handleCanvasTap(12, 12);
+      await controller.handleCanvasTap(2, 12);
+    }
+
+    test('a cursor within the zoom-scaled radius of the first point closes the loop onto it', () async {
+      await drawThreeSidesOfRectangle();
+      controller.reportPixelsPerUnit(20); // 14 px = 0.7 units
+      final firstPointId = controller.lines.values.first.startPointId;
+      final pointsBefore = controller.points.length;
+
+      controller.cursorX = 2;
+      controller.cursorY = 2.5; // 0.5 off the first point: outside the old flat 0.2
+      expect(controller.isHoveringChainStart, isTrue);
+      expect(controller.snapCandidatePointId, firstPointId);
+      await controller.handleCanvasTap(2, 2.5);
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.lines.values.last.endPointId, firstPointId);
+      expect(controller.points.length, pointsBefore);
+      expect(controller.chainInProgress, isFalse);
+      // The closing edge is vertical: the Vertical the marker showed is added.
+      expect(controller.constraints.values.whereType<VerticalConstraintDto>(), hasLength(2)); // the right side and the closing edge
+    });
+
+    test('an H snap that lands the ghost end on the first point closes the loop although the raw cursor is outside the radius',
+        () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(30, 10);
+      await controller.handleCanvasTap(30, 2);
+      controller.reportPixelsPerUnit(20);
+      final firstPointId = controller.lines.values.first.startPointId;
+      final pointsBefore = controller.points.length;
+
+      // 1.5 above the first point (outside 0.7), but the edge from (30, 2) is 3 degrees off horizontal: the H snap puts the end on it.
+      controller.cursorX = 2;
+      controller.cursorY = 3.5;
+      expect(controller.isHoveringChainStart, isTrue);
+      final ghost = controller.activeDrawGhost as LineGhost;
+      expect(ghost.endX, 2);
+      expect(ghost.endY, 2);
+      expect(controller.activeLineInference?.kind, LineInferenceKind.horizontal);
+      await controller.handleCanvasTap(2, 3.5);
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.lines.values.last.endPointId, firstPointId);
+      expect(controller.points.length, pointsBefore);
+      expect(controller.chainInProgress, isFalse);
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>().single.lineId, controller.lines.values.last.id);
+    });
+
+    test('a free end is created at the snapped position, not the raw cursor', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 2.3); // 1.6 degrees off horizontal: H snap
+
+      final end = controller.points[controller.lines.values.single.endPointId]!;
+      expect(end.x, 10);
+      expect(end.y, 2);
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), hasLength(1));
+    });
+
+    test('zoomed in, the radius shrinks: a cursor 0.1 from the first point no longer closes the loop', () async {
+      await drawThreeSidesOfRectangle();
+      controller.reportPixelsPerUnit(400); // 14 px = 0.035 units
+      final pointsBefore = controller.points.length;
+
+      controller.cursorX = 2;
+      controller.cursorY = 2.1;
+      expect(controller.isHoveringChainStart, isFalse);
+      await controller.handleCanvasTap(2, 2.1);
+
+      expect(controller.chainInProgress, isTrue);
+      expect(controller.points.length, pointsBefore + 1);
+    });
+
+    test('Orbit View reports its zoom with the cursor, which sets the radius', () async {
+      await drawThreeSidesOfRectangle();
+
+      controller.moveCursorToSketchPoint(2, 2.5, pixelsPerUnit: 20);
+      expect(controller.isHoveringChainStart, isTrue);
+      controller.moveCursorToSketchPoint(2, 2.5, pixelsPerUnit: 400);
+      expect(controller.isHoveringChainStart, isFalse);
+    });
+
+    test('without any reported zoom the flat snapRadius applies', () async {
+      await drawThreeSidesOfRectangle();
+
+      controller.cursorX = 2;
+      controller.cursorY = 2.5;
+      expect(controller.isHoveringChainStart, isFalse);
+      controller.cursorY = 2.1;
+      expect(controller.isHoveringChainStart, isTrue);
+    });
+  });
+
+  group('alignment guides (snapping aid only, no constraint)', () {
+    Future<void> placePoints(List<(double, double)> at) async {
+      controller.selectDrawTool(SketchTool.point);
+      for (final (x, y) in at) {
+        await controller.handleCanvasTap(x, y);
+      }
+    }
+
+    test('a Point-tool cursor within tolerance of another point\'s x is moved onto it and the point is created there, with no constraint',
+        () async {
+      await placePoints([(10, 3)]);
+      controller.reportPixelsPerUnit(20); // 7 px = 0.35 units
+      final constraintsBefore = controller.constraints.length;
+
+      controller.moveCursorToSketchPoint(10.3, 7);
+      final guides = controller.activeAlignmentGuides;
+      expect(guides, hasLength(1));
+      expect((guides.single.fromX, guides.single.fromY), (10.0, 3.0));
+      expect((guides.single.toX, guides.single.toY), (10.0, 7.0));
+
+      await controller.handleCanvasTap(10.3, 7);
+      final placed = controller.points.values.last;
+      expect((placed.x, placed.y), (10.0, 7.0));
+      expect(controller.constraints.length, constraintsBefore);
+    });
+
+    test('both axes can align at once, from two different points', () async {
+      await placePoints([(10, 3), (-6, 20)]);
+      controller.reportPixelsPerUnit(20);
+
+      controller.moveCursorToSketchPoint(10.2, 20.2);
+      expect(controller.activeAlignmentGuides, hasLength(2));
+      await controller.handleCanvasTap(10.2, 20.2);
+      final placed = controller.points.values.last;
+      expect((placed.x, placed.y), (10.0, 20.0));
+    });
+
+    test('outside the tolerance, or with inference suppressed, there is no guide', () async {
+      await placePoints([(10, 3)]);
+      controller.reportPixelsPerUnit(20);
+
+      controller.moveCursorToSketchPoint(10.5, 7); // 0.5 > 0.35
+      expect(controller.activeAlignmentGuides, isEmpty);
+      controller.moveCursorToSketchPoint(10.3, 7);
+      expect(controller.activeAlignmentGuides, hasLength(1));
+      controller.toggleInferenceSuppressed();
+      expect(controller.activeAlignmentGuides, isEmpty);
+    });
+
+    test('a point snap outranks alignment: near the point itself there is no guide', () async {
+      await placePoints([(10, 3)]);
+      controller.reportPixelsPerUnit(20);
+
+      controller.moveCursorToSketchPoint(10.2, 3.2);
+      expect(controller.activeAlignmentGuides, isEmpty);
+    });
+
+    test('a Line with its own H snap also lines its end up with another point\'s x, and adds only the Horizontal', () async {
+      await placePoints([(20, 9)]);
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(2, 2);
+      controller.reportPixelsPerUnit(20);
+      final constraintsBefore = controller.constraints.length;
+
+      controller.moveCursorToSketchPoint(20.2, 2.3); // 0.9 degrees off horizontal
+      expect(controller.activeLineInference?.kind, LineInferenceKind.horizontal);
+      expect(controller.activeAlignmentGuides, hasLength(1));
+      final ghost = controller.activeDrawGhost as LineGhost;
+      expect((ghost.endX, ghost.endY), (20.0, 2.0));
+
+      await controller.handleCanvasTap(20.2, 2.3);
+      final end = controller.points[controller.lines.values.single.endPointId]!;
+      expect((end.x, end.y), (20.0, 2.0));
+      expect(controller.constraints.length, constraintsBefore + 1);
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), hasLength(1));
+    });
+
+    test('alignment outranks parallel/perpendicular: an aligned cursor reports no parallel candidate', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 5.773502691896258);
+      controller.finishChain();
+      await controller.handleCanvasTap(20, 0);
+      controller.reportPixelsPerUnit(20);
+
+      // Same direction as the first line, and level with its end point (y = 5.77...).
+      controller.moveCursorToSketchPoint(30, 5.773502691896258);
+      expect(controller.activeLineInference, isNull);
+      expect(controller.activeAlignmentGuides, isNotEmpty);
+    });
+
+    test('Rectangle: both corners line up, the ghost shows the aligned corner, and no constraint is added', () async {
+      await placePoints([(10, 3), (-6, 20)]);
+      controller.reportPixelsPerUnit(20);
+      controller.selectDrawTool(SketchTool.rectangle);
+      await controller.handleCanvasTap(0, 8);
+      final constraintsBefore = controller.constraints.length;
+
+      controller.moveCursorToSketchPoint(10.2, 20.2);
+      expect(controller.activeAlignmentGuides, hasLength(2));
+      final ghost = controller.activeDrawGhost as RectGhost;
+      expect((ghost.corner2.$1, ghost.corner2.$2), (10.0, 20.0));
+      expect(controller.cursorX, 10.2, reason: 'the raw cursor is left alone');
+
+      await controller.handleCanvasTap(10.2, 20.2);
+      expect(controller.points.values.any((p) => p.x == 10 && p.y == 20), isTrue);
+      // The rectangle's own structural constraints aside, alignment adds none.
+      expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isEmpty);
+      expect(controller.constraints.length, greaterThanOrEqualTo(constraintsBefore));
+    });
+
+    test('Circle: the centre aligns, the radius tap does not', () async {
+      await placePoints([(10, 3)]);
+      controller.reportPixelsPerUnit(20);
+      controller.selectDrawTool(SketchTool.circle);
+
+      controller.moveCursorToSketchPoint(10.2, 15);
+      expect(controller.activeAlignmentGuides, hasLength(1));
+      await controller.handleCanvasTap(10.2, 15);
+      final center = controller.points[controller.points.keys.last]!;
+      expect((center.x, center.y), (10.0, 15.0));
+
+      controller.moveCursorToSketchPoint(10.2, 40); // radius tap, level in x with the point at (10, 3)
+      expect(controller.activeAlignmentGuides, isEmpty);
+    });
+
+    test('alignmentGuideDashes cuts a guide into dashes that stay on it', () {
+      final dashes = alignmentGuideDashes(const AlignmentGuide(0, 0, 10, 0), 10); // 6 px = 0.6 units on, 0.4 off
+      expect(dashes, hasLength(10));
+      expect(dashes.first, [(0.0, 0.0), (0.6, 0.0)]);
+      expect(dashes.last.last.$1, closeTo(9.6, 1e-9)); // the last dash starts at 9.0 and stops short of the end
+      for (final dash in dashes) {
+        expect(dash.every((p) => p.$2 == 0), isTrue);
+      }
+    });
   });
 
   // --- Stage 13 item 5: Dimension mode + ghost dimensions -------------------

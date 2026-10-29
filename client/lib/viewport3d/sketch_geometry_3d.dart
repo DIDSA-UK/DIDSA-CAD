@@ -129,6 +129,15 @@ vm.Vector3 sketchPointToWorld(SketchPlaneBasis basis, double x, double y) =>
   return (local.dot(basis.xAxis), local.dot(basis.yAxis));
 }
 
+/// Where a dimension label sits relative to the pointer that grabbed it, in sketch units: [labelWorld] is the label
+/// on the sketch plane, [cursorWorld] the plane point under the pointer. Handed to `beginLabelDrag` so the label keeps
+/// its place under the pointer instead of jumping to it on the first move.
+(double, double) embeddedLabelGrabOffset(SketchPlaneBasis basis, vm.Vector3 cursorWorld, vm.Vector3 labelWorld) {
+  final (cursorX, cursorY) = worldPointToSketch(basis, cursorWorld);
+  final (labelX, labelY) = worldPointToSketch(basis, labelWorld);
+  return (labelX - cursorX, labelY - cursorY);
+}
+
 /// Projects every mesh-edge [segments] pair (see [edgeSegmentsFromMesh] in
 /// mesh_geometry.dart) onto [basis] via [worldPointToSketch] - the existing
 /// solid's edges, flattened into the active Sketch's own 2D coordinate
