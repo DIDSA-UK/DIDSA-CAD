@@ -2,7 +2,7 @@ import math
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from enum import Enum
 from typing import Literal
 
@@ -1235,6 +1235,15 @@ class Sketch:
             isinstance(constraint, FixedConstraint) and point_id in constraint.fixed_point_ids
             for constraint in self.constraints.values()
         )
+
+    def copy_state_from(self, other: "Sketch") -> None:
+        """Puts `other`'s whole state onto this live object, in place - every field, so anything holding this Sketch keeps a valid reference (a
+        `SketchFeature` points at it by id; the store holds it by id). Used to roll a failed Point merge back and by `PUT /sketches/{id}/state`. The
+        transient `external_reference_decisions` is cleared: the next `refresh_external_references` recomputes it. Takes ownership of `other`'s
+        containers, so `other` must not be used afterwards."""
+        for f in fields(self):
+            setattr(self, f.name, getattr(other, f.name))
+        self.external_reference_decisions = {}
 
     def set_orientation(self, *, flip: bool, rotation_quarter_turns: int) -> None:
         """The one mutator for `flip`/`rotation_quarter_turns` - normalizes
