@@ -25,6 +25,7 @@ import '../viewport3d/relative_path_dialog.dart';
 import 'ai_component_file_summary.dart';
 import 'ai_existing_part_summary.dart';
 import 'ai_generation_mode.dart';
+import 'ai_model_check.dart';
 import 'ai_part_manifest.dart';
 import 'ai_part_naming.dart';
 import 'ai_plan.dart';
@@ -37,6 +38,7 @@ import 'ai_provider_preferences.dart';
 import 'ai_provider_settings_screen.dart';
 import 'ai_scoping_prompt.dart';
 import 'ai_system_prompt_preferences.dart';
+import 'ai_validation_feedback.dart';
 import '../layout/desktop_width.dart';
 
 /// `GearPresetStore`'s discriminator for a saved AI Modelling plan -
@@ -294,6 +296,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // asking the LLM for a plan it doesn't need to revise. `false` (ask the
   // LLM for a revised plan, the general case) otherwise.
   bool _orchestrationRetryIsSaveOnly = false;
+  // Which part cycles (by manifest index; -1 = the assembly cycle) already
+  // had their one automatic retry after a validation failure in this run.
+  final Set<int> _autoRetriedValidation = {};
   // Gap-closure (`13-...md`'s own D-2/E-3): per-step progress for whichever
   // part/assembly cycle is currently in flight, alongside the coarse
   // `_orchestrationStatus` text above - `PlanTranslator.execute`'s
@@ -336,6 +341,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // back (e.g. a network failure creating the Part).
   PlanTranslationOutcome? _finishedOutcome;
   String? _generateError;
+  // Render-back check (`14-render-back-check.md`): after a successful build
+  // from an attached drawing, the Part's own line drawing is compared with
+  // that drawing by the provider. Reset by every Generate.
+  bool _modelCheckRunning = false;
+  AiModelCheckResult? _modelCheck;
+  String? _modelCheckError;
 
   // Fix 5 from the `02` doc's own real end-to-end exercise: only set on a
   // `PlanTranslationOutcome.success` run - the Part id "View Part" pushes
@@ -926,12 +937,14 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     });
   }
 
-  Future<void> _generate() async {
+  Future<void> _generate({int autoRetriesLeft = aiAutoRetriesOnValidationFailure}) async {
     final plan = _proposedPlan;
     if (plan == null || _generating) return;
     setState(() {
       _generating = true;
       _generateError = null;
+      _modelCheck = null;
+      _modelCheckError = null;
       _preflightResults = null;
       _finishedOutcome = null;
       _generatedPartId = null;
@@ -1021,6 +1034,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             _existingFeatures = null;
             _existingPartSummary = null;
           });
+          await _checkModelAgainstDrawing(partId);
+        }
+      } else if (result.outcome == PlanTranslationOutcome.validationFailed) {
+        // Nothing was built: tell the assistant exactly what failed, and
+        // (once) ask it straight away for a corrected plan rather than
+        // leaving the user to relay the errors by hand.
+        final feedback = describeAiPlanValidationFailure(plan, result.preflightResults);
+        if (autoRetriesLeft > 0) {
+          final revised = await _sendProgrammaticTurn(feedback);
+          if (revised != null && mounted) await _generate(autoRetriesLeft: autoRetriesLeft - 1);
+        } else {
+          setState(() => _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.user, text: feedback)]);
         }
       }
     } on ApiException catch (e) {
@@ -1030,6 +1055,80 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         _generateError = e.message;
       });
     }
+  }
+
+  /// Sends [text] as a `user` turn without the user typing it (the
+  /// validation-failure retry, "Ask the AI to fix it") - the same transcript
+  /// round trip as [_send], minus images, voice and the Assembly-mode
+  /// manifest. Returns the plan the reply carries, if any (also set as
+  /// [_proposedPlan]); the panel drops back to chat until then.
+  Future<AiGenerationPlan?> _sendProgrammaticTurn(String text) async {
+    final provider = widget.provider ?? AiProviderPreferences.active;
+    setState(() {
+      _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.user, text: text)];
+      _sending = true;
+      _sendError = null;
+      _proposedPlan = null;
+      _stepStatuses = null;
+      _finishedOutcome = null;
+      _preflightResults = null;
+    });
+    _scrollToBottom();
+    try {
+      final result = await provider.sendScopingTurn(_transcript, systemPrompt: _buildSystemPrompt());
+      final plan = detectPlanInAssistantText(result.assistantText);
+      if (!mounted) return null;
+      setState(() {
+        _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText)];
+        _sending = false;
+        if (plan != null) _proposedPlan = plan;
+      });
+      _scrollToBottom();
+      return plan;
+    } on AiProviderException catch (e) {
+      if (!mounted) return null;
+      setState(() {
+        _sending = false;
+        _sendError = e.message;
+      });
+      return null;
+    }
+  }
+
+  /// Render-back check (`docs/ai-modelling/14-render-back-check.md`): only
+  /// for a fresh Part built from attached drawing(s), and only when the
+  /// provider has vision. One extra provider call. A failure here is shown
+  /// but never undoes or blocks the build itself.
+  Future<void> _checkModelAgainstDrawing(String partId) async {
+    final provider = widget.provider ?? AiProviderPreferences.active;
+    final hasImages = _transcript.any((m) => m.role == AiMessageRole.user && m.images.isNotEmpty);
+    if (!hasImages || !provider.capabilities.supportsVision || !mounted) return;
+    setState(() => _modelCheckRunning = true);
+    try {
+      final result = await runAiModelCheck(
+        provider: provider,
+        documentApi: _documentApi,
+        partId: partId,
+        transcript: _transcript,
+      );
+      if (mounted) setState(() => _modelCheck = result);
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _modelCheckError = e.message);
+    } on AiProviderException catch (e) {
+      if (mounted) setState(() => _modelCheckError = e.message);
+    } finally {
+      if (mounted) setState(() => _modelCheckRunning = false);
+    }
+  }
+
+  /// "Ask the AI to fix it": the differences go back as a `user` turn; the
+  /// reply's plan (if any) waits for the user's own Generate, which builds a
+  /// fresh Part as usual.
+  Future<void> _askToFixFromModelCheck() async {
+    final check = _modelCheck;
+    if (check == null || check.matches == true) return;
+    setState(() => _modelCheck = null);
+    await _sendProgrammaticTurn(aiModelCheckFixRequest(check.details));
   }
 
   /// `04-translator-and-execution.md`'s own "Real execution and failure
@@ -1144,6 +1243,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _currentPartIndex = 0;
       _savedAssemblyParts = [];
       _orchestrationError = null;
+      _autoRetriedValidation.clear();
     });
     await _runPartCycle(0);
   }
@@ -1387,9 +1487,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           _appendStoppedRunToTranscript(plan, translation);
         } else {
           _appendOrchestrationFailureToTranscript(
-            'Validation failed for "${entry.name}" before anything was created: please propose a '
-            'revised plan for this part.',
+            'For "${entry.name}": ${describeAiPlanValidationFailure(plan, translation.preflightResults)}',
           );
+          if (_autoRetriedValidation.add(index)) {
+            await _runPartCycle(index);
+            return;
+          }
         }
         _stopOrchestrationWithError(message);
         return;
@@ -1652,9 +1755,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           _appendStoppedRunToTranscript(plan, translation);
         } else {
           _appendOrchestrationFailureToTranscript(
-            'Validation failed for the assembly plan before anything was created: please propose a '
-            'revised assembly plan.',
+            'For the assembly plan: ${describeAiPlanValidationFailure(plan, translation.preflightResults)}',
           );
+          if (_autoRetriedValidation.add(-1)) {
+            await _runAssemblyCycle();
+            return;
+          }
         }
         _stopOrchestrationWithError(message);
         return;
@@ -2641,6 +2747,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                   const SizedBox(height: 12),
                   _buildOutcomeBanner(_finishedOutcome!, _preflightResults),
                 ],
+                if (_modelCheckRunning || _modelCheck != null || _modelCheckError != null) ...[
+                  const SizedBox(height: 8),
+                  _buildModelCheck(),
+                ],
                 // Fix 5 from the `02` doc's own real end-to-end exercise:
                 // `push` (not `pushReplacement`, unlike `GearDesignScreen`'s
                 // own successful-creation navigation this otherwise copies)
@@ -2730,14 +2840,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// target_body_ids entry") or, failing that, other detail keys (`field`,
   /// `local_id`, `body_id`, ...) worth surfacing instead of dropping them
   /// on the floor.
-  String _formatStepError(Map<String, dynamic>? error) {
-    if (error == null) return 'failed';
-    final type = (error['type'] ?? 'failed').toString();
-    final message = error['message'];
-    if (message != null) return '$type: $message';
-    final details = error.entries.where((e) => e.key != 'type').map((e) => '${e.key}=${e.value}').join(', ');
-    return details.isEmpty ? type : '$type ($details)';
-  }
+  String _formatStepError(Map<String, dynamic>? error) => formatAiStepError(error);
+
 
   Widget _stepStatusIcon(TranslationStepStatus status) => switch (status) {
         TranslationStepStatus.pending => const SizedBox(
@@ -2750,6 +2854,43 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         TranslationStepStatus.done => const Icon(Icons.check_circle, size: 18, color: Colors.green),
         TranslationStepStatus.failed => const Icon(Icons.error, size: 18, color: Colors.redAccent),
       };
+
+  /// The render-back check's result (`14-render-back-check.md`).
+  Widget _buildModelCheck() {
+    if (_modelCheckRunning) {
+      return const Row(
+        children: [
+          SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+          SizedBox(width: 8),
+          Expanded(child: Text('Checking the model against your drawing...')),
+        ],
+      );
+    }
+    if (_modelCheckError != null) {
+      return _Banner(color: Colors.white24, text: 'Could not check the model against your drawing: $_modelCheckError');
+    }
+    final check = _modelCheck!;
+    if (check.matches == true) {
+      return const _Banner(color: Colors.green, text: 'AI check: the model matches your drawing.');
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _Banner(
+          color: Colors.orange,
+          text: check.matches == false
+              ? 'AI check: the model may not match your drawing.\n${check.details}'
+              : 'AI check was inconclusive:\n${check.details}',
+        ),
+        const SizedBox(height: 6),
+        OutlinedButton.icon(
+          onPressed: _sending ? null : _askToFixFromModelCheck,
+          icon: const Icon(Icons.build_outlined),
+          label: const Text('Ask the AI to fix it'),
+        ),
+      ],
+    );
+  }
 
   Widget _buildOutcomeBanner(PlanTranslationOutcome outcome, List<AiPlanStepResultDto>? preflightResults) {
     switch (outcome) {

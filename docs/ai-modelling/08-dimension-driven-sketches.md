@@ -59,10 +59,15 @@ confirming a freshly-drawn shape's size already makes:
   constraint at all. When a `sketch_line` step gives a literal `length`,
   the translator calls `createDistanceConstraint(sketchId, startId, endId,
   length, orientation: 'linear', provisional: false)` - a brand-new,
-  already-non-provisional constraint, never something to later confirm. An
-  explicit `end_point_id` with no `length` stays exactly as unconstrained
-  as it already was (matches a human drawing a two-point line with no
-  dimension added). **`angle`-only dimensioning is out of scope for this
+  already-non-provisional constraint, never something to later confirm.
+  **Revised 2026-10-28:** a non-construction line given by two points and no
+  `length` is now dimensioned too, at its drawn length (the backend dry run
+  mirrors this). The original rule left it undimensioned, but in the AI
+  modelling sketch trials Haiku left `length` out of all 32 lines it drew
+  despite the prompt asking for it, so its parts had no editable line
+  dimensions. The value is the line's current length, so the solver moves
+  nothing. A construction line without `length` still gets none.
+  **`angle`-only dimensioning is out of scope for this
   pass** - a real, disclosed limitation: there is no second reference line
   yet for an `AngleConstraint` to measure against, and inventing one
   (construction geometry, a global-axis reference) is real, separate scope.
@@ -219,7 +224,9 @@ note for future sessions"). With that in place:
   this session's real bootstrapped `pythonocc-core`/`py-slvs` environment
   (all passing, alongside the full 1662-test pre-existing suite):
   - `test_sketch_line_length_creates_a_real_non_provisional_distance_constraint`
-  - `test_sketch_line_without_length_creates_no_constraint`
+  - `test_sketch_line_without_length_creates_no_constraint` (since replaced
+    by `test_sketch_line_without_length_is_dimensioned_at_its_drawn_length`
+    and `test_construction_sketch_line_without_length_creates_no_constraint`)
   - `test_sketch_rectangle_width_height_create_real_axis_aligned_constraints`
     (includes a real `solve_sketch` call confirming convergence - no
     over-constraint)

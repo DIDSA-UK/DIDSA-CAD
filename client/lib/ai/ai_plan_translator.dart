@@ -305,6 +305,9 @@ class PlanTranslator {
     };
 
     final localIdToRealId = <String, String>{};
+    // What a later step's reference to each local_id resolves to - the same
+    // as [localIdToRealId] except for in-place move_body/scale_body steps.
+    final resolvableIds = <String, String>{};
     // Existing-Part editing: an `existing:<feature_id>` naming a real
     // SketchFeature must resolve to that Sketch's own real id wherever a
     // step reads `sketchIds[...]` (every sketch-entity step's own
@@ -338,13 +341,22 @@ class PlanTranslator {
           step,
           plan: plan,
           partId: partId,
-          ids: localIdToRealId,
+          ids: resolvableIds,
           sketchIds: sketchIdByLocalId,
           resolvedEdgesByLocalId: resolvedEdgesByLocalId,
           resolvedMateReferencesByLocalId: resolvedMateReferencesByLocalId,
           resolvedFacesByLocalId: resolvedFacesByLocalId,
         );
         localIdToRealId[step.localId] = realId;
+        // An in-place move/scale keeps its Body's id - no Body exists under
+        // the new Feature's own id - so later references to this step must
+        // resolve to the moved Body (mirrors the backend dry run's
+        // `_handle_move_body`/`_handle_scale_body`).
+        resolvableIds[step.localId] = switch (step) {
+          AiMoveBodyStep(makeCopy: false) => _resolveId(step.bodyId, resolvableIds),
+          AiScaleBodyStep() => _resolveId(step.bodyId, resolvableIds),
+          _ => realId,
+        };
         if (_featureProducingKinds.contains(step.kind)) createdFeatureIds.add(realId);
         onStepStatusChanged?.call(i, TranslationStepStatus.done);
       } on ApiException catch (e) {
@@ -444,17 +456,26 @@ class PlanTranslator {
         }
         final line = await sketchApi.createLine(sketchId, startId, endId, construction: step.construction);
         // 08's own "Line length": unlike Circle/Arc/Ellipse/Polygon/Slot, a
-        // Line has no automatic size-defining constraint at all - only add
-        // one when the plan itself named a literal length. `angle`-only
+        // Line has no automatic size-defining constraint at all - a plan-
+        // given length becomes one, and a non-construction two-point line
+        // without one is dimensioned at its drawn length (mirrors the
+        // backend dry run's `_handle_sketch_line`: models often leave
+        // `length` out, leaving no editable line dimensions). `angle`-only
         // dimensioning is a real, deliberate v1-of-this-workstream gap (no
         // second reference line exists yet to constrain an angle against) -
         // see that doc's own note.
-        if (step.length != null) {
+        var length = step.length;
+        if (length == null && step.endPointId != null && !step.construction) {
+          final a = _pointXY(plan, step.startPointId), b = _pointXY(plan, step.endPointId!);
+          final drawn = math.sqrt(math.pow(b.x - a.x, 2) + math.pow(b.y - a.y, 2));
+          if (drawn > 1e-9) length = drawn;
+        }
+        if (length != null) {
           await sketchApi.createDistanceConstraint(
             sketchId,
             line.startPointId,
             line.endPointId,
-            step.length!,
+            length,
             orientation: 'linear',
             provisional: false,
           );

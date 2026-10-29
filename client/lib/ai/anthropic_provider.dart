@@ -115,14 +115,18 @@ class AnthropicProvider implements AiProvider {
   }
 
   @override
-  Future<String> extractImageDescription(List<AiImageAttachment> images) async {
+  Future<String> extractImageDescription(List<AiImageAttachment> images) =>
+      askAboutImages(images, aiImageExtractionPrompt);
+
+  @override
+  Future<String> askAboutImages(List<AiImageAttachment> images, String prompt) async {
     if (!capabilities.supportsVision) {
       throw AiProviderException(
         'The active provider is not configured for vision - enable it in AI Provider Settings before attaching an image.',
       );
     }
     if (images.isEmpty) {
-      throw AiProviderException('extractImageDescription called with no images');
+      throw AiProviderException('askAboutImages called with no images');
     }
     final client = httpClient ?? http.Client();
     try {
@@ -138,7 +142,7 @@ class AnthropicProvider implements AiProvider {
                   'type': 'image',
                   'source': {'type': 'base64', 'media_type': image.mimeType, 'data': base64Encode(image.bytes)},
                 },
-              {'type': 'text', 'text': aiImageExtractionPrompt},
+              {'type': 'text', 'text': prompt},
             ],
           },
         ],

@@ -644,7 +644,80 @@ void main() {
       expect(constraintCalls.single['provisional'], isFalse);
     });
 
-    test('sketch_line with no literal length creates no constraint at all', () async {
+    test('two-point sketch_line with no literal length is dimensioned at its drawn length', () async {
+      final constraintCalls = <Map<String, dynamic>>[];
+      final mock = MockClient((request) async {
+        if (request.url.path.endsWith('/ai-plan/validate')) {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'sk1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'p2', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'l1', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (request.url.path == '/document/parts/part-1/features/sketch') {
+          return jsonResponse({'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1'});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/points') {
+          final body = decodeBody(request);
+          return jsonResponse({'id': 'point-${body['x']}-${body['y']}', 'x': body['x'], 'y': body['y']});
+        }
+        if (request.url.path == '/sketch/sketches/sketch-1/lines') {
+          return jsonResponse({
+            'id': 'line-1',
+            'start_point_id': decodeBody(request)['start_point_id'],
+            'end_point_id': decodeBody(request)['end_point_id'],
+            'length': 25.0,
+            'construction': false,
+          });
+        }
+        if (request.method == 'POST' && request.url.path == '/sketch/sketches/sketch-1/constraints') {
+          final body = decodeBody(request);
+          constraintCalls.add(body);
+          return jsonResponse({
+            'type': 'distance',
+            'id': 'dist-1',
+            'point_a_id': body['point_a_id'],
+            'point_b_id': body['point_b_id'],
+            'distance': body['distance'],
+            'orientation': body['orientation'],
+            'provisional': body['provisional'],
+          });
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {'local_id': 'p1', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 0, 'y': 0},
+          {'local_id': 'p2', 'kind': 'sketch_point', 'sketch_feature_id': 'sk1', 'x': 25, 'y': 0},
+          {
+            'local_id': 'l1',
+            'kind': 'sketch_line',
+            'sketch_feature_id': 'sk1',
+            'start_point_id': 'p1',
+            'end_point_id': 'p2',
+          },
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(constraintCalls, hasLength(1));
+      expect(constraintCalls.single['distance'], 25.0);
+      expect(constraintCalls.single['provisional'], false);
+    });
+
+    test('construction sketch_line with no literal length creates no constraint at all', () async {
       final constraintCalls = <Map<String, dynamic>>[];
       final mock = MockClient((request) async {
         if (request.url.path.endsWith('/ai-plan/validate')) {
@@ -675,7 +748,7 @@ void main() {
         }
         if (request.method == 'POST' && request.url.path == '/sketch/sketches/sketch-1/constraints') {
           constraintCalls.add(decodeBody(request));
-          fail('no length was given - no constraint should ever be created');
+          fail('a construction line with no length should never be dimensioned');
         }
         return http.Response('not found', 404);
       });
@@ -692,6 +765,7 @@ void main() {
             'sketch_feature_id': 'sk1',
             'start_point_id': 'p1',
             'end_point_id': 'p2',
+            'construction': true,
           },
         ],
       });
@@ -1133,6 +1207,91 @@ void main() {
   });
 
   group('PlanTranslator.execute - Direct Editing / Boolean', () {
+    test('a reference to an in-place move_body/scale_body step resolves to the Body it modified', () async {
+      // An in-place move/scale keeps its Body's id - naming the step later
+      // must mean that Body, not the move/scale Feature's own id (which a
+      // Merge then silently skipped at rebuild, leaving loose solids). A
+      // make_copy move_body mints a new Body under its own id, so naming it
+      // keeps meaning that Feature.
+      List<dynamic>? mergeBodyIds;
+      var extrudeCount = 0;
+      final mock = MockClient((request) async {
+        final path = request.url.path;
+        if (path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              for (final id in ['sk1', 'f1', 'f2', 'mv1', 's1', 'mvc', 'm1'])
+                {'local_id': id, 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        if (path == '/document/parts/part-1/features/sketch') {
+          return jsonResponse({'type': 'sketch', 'id': 'feat-sk1', 'locked': false, 'sketch_id': 'sketch-1'});
+        }
+        if (path == '/document/parts/part-1/extrude-features') {
+          extrudeCount++;
+          return jsonResponse({
+            'type': 'extrude',
+            'id': 'feat-f$extrudeCount',
+            'locked': false,
+            'sketch_feature_id': 'feat-sk1',
+            'extrude_type': 'boss',
+            'start_distance': 0.0,
+            'end_distance': 10.0,
+            'target_body_ids': <String>[],
+          });
+        }
+        if (path == '/document/parts/part-1/scale-body-features') {
+          final body = decodeBody(request);
+          return jsonResponse({'type': 'scale_body', 'id': 'feat-scale1', 'locked': false, 'body_id': body['body_id'], 'factor': body['factor']});
+        }
+        if (path == '/document/parts/part-1/move-body-features') {
+          final body = decodeBody(request);
+          return jsonResponse({
+            'type': 'move_body',
+            'id': body['make_copy'] == true ? 'feat-move-copy' : 'feat-move1',
+            'locked': false,
+            'body_id': body['body_id'],
+            'delta': body['delta'],
+            'rotation_axis': null,
+            'rotation_angle_degrees': body['rotation_angle_degrees'],
+            'make_copy': body['make_copy'],
+          });
+        }
+        if (path == '/document/parts/part-1/merge-features') {
+          mergeBodyIds = decodeBody(request)['body_ids'] as List<dynamic>;
+          return jsonResponse({'type': 'merge', 'id': 'feat-merge1', 'locked': false, 'body_ids': mergeBodyIds});
+        }
+        return http.Response('not found', 404);
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'sk1', 'kind': 'sketch', 'plane': 'XY'},
+          {'local_id': 'f1', 'kind': 'extrude', 'sketch_feature_id': 'sk1', 'extrude_type': 'boss', 'start_distance': 0, 'end_distance': 10},
+          {'local_id': 'f2', 'kind': 'extrude', 'sketch_feature_id': 'sk1', 'extrude_type': 'boss', 'start_distance': 0, 'end_distance': 10},
+          {'local_id': 'mv1', 'kind': 'move_body', 'body_id': 'f2', 'delta': [10.0, 0.0, 0.0]},
+          {'local_id': 's1', 'kind': 'scale_body', 'body_id': 'f1', 'factor': 1.0},
+          {'local_id': 'mvc', 'kind': 'move_body', 'body_id': 's1', 'delta': [0.0, 10.0, 0.0], 'make_copy': true},
+          {'local_id': 'm1', 'kind': 'merge', 'body_ids': ['s1', 'mv1', 'mvc']},
+        ],
+      });
+
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final result = await translator.execute(plan: plan, partId: 'part-1');
+
+      expect(result.outcome, PlanTranslationOutcome.success);
+      expect(mergeBodyIds, ['feat-f1', 'feat-f2', 'feat-move-copy']);
+      // The Features themselves are still recorded under their own ids.
+      expect(result.localIdToRealId['mv1'], 'feat-move1');
+      expect(result.localIdToRealId['s1'], 'feat-scale1');
+      expect(result.createdFeatureIds, containsAll(['feat-move1', 'feat-scale1', 'feat-move-copy']));
+    });
+
     test('merge, boolean, delete_body, scale_body, and move_body each post to their own real endpoint', () async {
       final paths = <String>[];
       final mock = MockClient((request) async {
