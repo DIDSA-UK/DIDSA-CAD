@@ -23,7 +23,7 @@ left out. Tests: Rectangle corners with ghost agreement, Circle centre vs radius
 cases share the same switch and are not tested one by one.
 The look of the guide (colour, 7 px tolerance, 6/4 px dash) is untested on a device.
 | 2 | Dropping a line chain's last point on its first point does not close the profile (with an inferred Horizontal) | Closing and point merging use a fixed 0.2 sketch-unit radius around the raw cursor. The H/V snap moves the ghost end onto the first point, but the raw cursor stays outside that radius | High |
-| 2b | Should there be a Merge for two points? | Not built. Coincident already closes a profile for extrude | Question |
+| 2b | Should there be a Merge for two points? | **Built** (2026-10-29, see [`point-merge-and-vr-sketcher-plan.md`](point-merge-and-vr-sketcher-plan.md)): backend routes (M1), the flat client's Merge (M2), and VR's (V5). Coincident already closes a profile for extrude | Question |
 | 3 | No dashed alignment guide when the cursor lines up horizontally or vertically with another point | Not built in either client. The only H/V inference is a line's own segment against its own start point | Certain |
 | 4 | Polygon with reference circles, then Select All, then Delete: server error "circle not found" | The cascade deletes the polygon (the server removes its reference circles with it) and then deletes the same circles again | Certain |
 | 1 | The tap callback `PartViewport.onConstraintOverlayItemTap` now also passes the plane point under the cursor/tap; `SketchScreen` measures the label grab offset from that point with the new `embeddedLabelGrabOffset` (`sketch_geometry_3d.dart`) instead of `_controller.cursorX/Y`. The mouse grab path uses the same helper. No other stale `_controller.cursorX/Y` read exists in `sketch_screen.dart` | `dimension_label_placement_3d_test.dart`: grab with a deliberately stale controller cursor, label moves exactly with the finger from three cameras. The widget path through `SketchScreen` needs the GPU scene, so it is not covered |
@@ -41,7 +41,7 @@ at on a device.
 |---|---|---|
 | 4 | `computeDeleteCascade` drops a whole polygon's reference circles from `circleIds`; undo recreates the polygon with `referenceCircles` and reloads the circles (`_loadPolygonReferenceCircles`, shared with the Polygon tool) and maps their old ids to the new ones | `sketch_controller_test.dart`: the existing regression test now checks `errorMessage`; new cascade + undo test. The fake backend now removes reference circles on polygon DELETE and returns 404 for an unknown circle DELETE. No other test relied on the old lenient behaviour |
 
-Item 2 notes. Item 2b (point Merge) is not built, as instructed. Not covered by a test: the midpoint-method line free end
+Item 2 notes. Item 2b (point Merge) was not built in this round, as instructed; it was built afterwards (see the handoff below). Not covered by a test: the midpoint-method line free end
 (shares the resolver), and the Orbit View zoom plumbing past `moveCursorToSketchPoint` (needs the GPU scene). The pixel
 value (14) and the "snapped position instead of raw cursor" change need a device to judge. The `activeLineSnapAxis` getter
 is unchanged.
@@ -316,7 +316,7 @@ radius (provisional).
 
 ## Handoff: what the next session should pick up
 
-**Superseded by [`point-merge-and-vr-sketcher-plan.md`](point-merge-and-vr-sketcher-plan.md)**, which finishes 2b (with corrections:
+**Done (2026-10-29): superseded and carried out by [`point-merge-and-vr-sketcher-plan.md`](point-merge-and-vr-sketcher-plan.md)** (its Progress table says what landed in both repos; "Close gaps" was left out by the owner's decision), which finishes 2b (with corrections:
 undo cannot go through the import route, which gives a new id; feature references to sketch points; the refusal and collapse
 rules) and plans the VR rollout below in steps V1 to V5. The list below is kept as written.
 
