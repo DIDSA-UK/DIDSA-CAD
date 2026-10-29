@@ -316,6 +316,10 @@ radius (provisional).
 
 ## Handoff: what the next session should pick up
 
+**Superseded by [`point-merge-and-vr-sketcher-plan.md`](point-merge-and-vr-sketcher-plan.md)**, which finishes 2b (with corrections:
+undo cannot go through the import route, which gives a new id; feature references to sketch points; the refusal and collapse
+rules) and plans the VR rollout below in steps V1 to V5. The list below is kept as written.
+
 Items 1 to 5 landed (see Progress). Remaining, in the order I would do it:
 
 1. **Point Merge (item 2b above).** Not built. Plan as written in 2b: backend `POST /sketches/{id}/points/{keep_id}/merge`
