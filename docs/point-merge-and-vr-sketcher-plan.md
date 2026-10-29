@@ -7,8 +7,8 @@ rules, the inferred relationships, the alignment guides and Merge. It is written
 Checked against DIDSA-CAD `main` at `c7014a5` and DIDSA-VR `main` at `d7c7fb4`. Line numbers drift, so search for the named symbol.
 Nothing in this plan has been run. Every finding below comes from reading the code.
 
-"Inverted relationships" in the request is read as **inferred relationships** (the constraints a sketcher adds by itself while you
-draw: horizontal, parallel, tangent and so on). If something else was meant, stop and ask before starting V3.
+"Inferred relationships" are the constraints a sketcher adds by itself while you draw: horizontal, parallel, tangent and so on.
+The owner's decisions on the open points are at the [end](#decisions-owner-2026-10-29); they are folded into the steps.
 
 ## Order and size
 
@@ -21,7 +21,7 @@ draw: horizontal, parallel, tangent and so on). If something else was meant, sto
 | **V3** | VR | Inferred relationships: tangent, point on curve, collinear, parallel, perpendicular on a line end; concentric on centres | V2 | medium |
 | **V4** | VR | Alignment guides (port of flat item 3) | V2 | small to medium |
 | **V5** | VR | Merge in the Select menu, stacked-point picking | M1, V1 | small |
-| M3 (optional) | both | "Close gaps": merge every pair of unjoined points closer than the snap radius, in one call | M1, M2, V5 | small |
+| M3 (deferred, not now) | both | "Close gaps": merge every pair of unjoined points closer than the snap radius, in one call | M1, M2, V5 | small |
 
 V1 to V4 do not need M1, so the VR work can start in parallel with the backend. Do one commit per step. Each step ends with its
 test gate green (see [Verification](#verification)).
@@ -39,9 +39,10 @@ test gate green (see [Verification](#verification)).
    through import would orphan the feature. `sketch_to_dict` / `sketch_from_dict` (`app/document/native_format.py`) do keep every
    point, entity and constraint id, and cover reference ids, reference dimensions, label placements and pattern / mirror instances.
    So the serialisation is fine. What is missing is a route that puts it back **in place**. M1 adds `PUT /sketches/{id}/state`.
-2. **"Keep the one with more references" is invisible to the user.** Replace it with a fixed rule the user can predict: an anchored
-   point is kept (see M1). Otherwise the **first selected** point is kept and stays where it is, and the others move onto it. That
-   matches how Coincident is applied today (`_createSelectionSetConstraint` ties every other point to the first).
+2. **"Keep the one with more references" needs to be exact, and visible.** Owner's decision (2026-10-29): rank the points, then
+   fall back to selection order. Anchored first, then the point with more constraints on it, then the first selected (exact rule in
+   M1). The kept point stays where it is and the others move onto it. Both clients highlight the point that will be kept while
+   Merge is offered, so the rule is never a surprise.
 3. **The refusal list was too wide in one place and too narrow in others.**
    - Too wide: "two defining points of the same Rectangle, Polygon or Slot" was listed, but merging a rectangle corner with a
      *loose* line end is the main use case and is fine. The real rule is "**any one entity** uses two of the points". That covers
@@ -149,7 +150,22 @@ Follow that, and put the reason code in `detail` so a client can choose its word
 
 1. An **anchored** point is kept. Anchored means `is_point_locked` (an external reference or a `FixedConstraint`), or referenced
    by a Part feature (see below). If **two or more** points are anchored, refuse (`two_anchored`).
-2. Otherwise the **first** id in `point_ids` is kept.
+2. Otherwise the point with the **most constraints** on it: the number of constraints whose `point_ids()` include it, not counting
+   a provisional dimension (`DistanceConstraint.provisional`, which the solver skips) or a Coincident between two of the selected
+   points (the merge removes it anyway). A shape's own constraints count. A rectangle corner, with its H and V, outranks a loose
+   line end, so the rectangle stays and the line comes to it, which is what a user expects.
+3. On a tie, the **first** id in `point_ids` (the first selected).
+
+Why a count and not something cleverer. No constraint is lost whichever point is kept: the rewrite moves every one of them onto
+the kept point. So the choice only decides which geometry moves *before* the solve, and where the solve starts from. A point whose
+position is fully decided by its constraints ends up in the same place either way. The count is a cheap stand-in for "which point is
+more settled", which is what decides what visibly jumps. A true per-point degrees-of-freedom test would be better in theory, but the
+solver reports only the sketch's total DOF (`SolveResult.dof`), and the flat client's `dof_analysis.dart` is advisory and
+client-only. Do not build a per-point DOF check for this.
+
+Put the rule in one function (`merge_keep_order(sketch, point_ids, anchored_ids) -> list[str]`, kept first). The response's
+`kept_id` is its first entry. Each client computes the same rule locally, from the constraints it already holds, to highlight
+the point that will be kept (it does not know about feature references, so the server's answer wins in that rare case).
 
 The kept point does not move during the merge. Every absorbed point's references move to it, then the sketch is solved, and the
 geometry that hung on the absorbed points follows. When the points were already coincident nothing visibly moves.
@@ -241,8 +257,9 @@ route's docstring.
   This catches any field the generic rewrite misses, now and later.
 - One test per row of the collapse table, and one per refusal (`ids` and `reason` checked). After a refusal,
   `sketch_to_dict` equals `before`.
-- The kept-point rule: first id kept; a FixedConstraint point kept even when listed second; an external-reference point kept;
-  a point referenced by a Loft's `reference_point` kept; two anchored points refused.
+- The kept-point rule: a FixedConstraint point kept even when listed second; an external-reference point kept; a point
+  referenced by a Loft's `reference_point` kept; two anchored points refused; a rectangle corner kept over a loose line end
+  whatever the order; a provisional dimension and a Coincident between the pair not counted; a tie keeps the first id.
 - Three points in one call (a three-way corner).
 - `conflict`: a merge that contradicts an H and a dimension rolls back.
 - `PUT /state` round trip: merge, restore with `before`, then `sketch_to_dict` equals the original (ids included), and the
@@ -257,6 +274,9 @@ route's docstring.
   checks locally so the button is not offered when it would be refused: two points of one entity (the controller has every entity's
   point ids), or a quadrant point. Leave the rest (feature references, dimensions between, conflicts) to the server and show its
   `message` in `errorMessage`. `_everyPointPinned` already hides everything when all points are pinned.
+- **Show which point stays.** While Merge is offered, draw the point the rule will keep with a ring (the snap-candidate style), on
+  both the flat canvas and Orbit View. Compute it with a Dart port of `merge_keep_order` (anchored = locked; feature references are
+  not known here). Test it on the same cases as the backend.
 - **Apply.** `SketchApiClient.mergePoints(sketchId, ids)` and `restoreSketchState(sketchId, snapshot)`. `mergeSelectedPoints()`
   runs `_runGuarded`, calls merge, pushes
   `_pushUndo(() async { await _api.restoreSketchState(id, before); await _reloadLocalSketch(); })`, then **reloads the local
@@ -371,8 +391,22 @@ conflicting constraint back out this way.
 
 ### Turning it off
 
-The deck's Snap toggle turns all of it off, as now. **Open question:** a momentary "no inference while held" on the controller (the
-flat `inferenceSuppressed`). Check `scripts/controller.gd` for a free input before proposing one. The owner decides.
+Owner's decision (2026-10-29): **a toggle switch, readily available while sketching.**
+
+- **An "Infer" toggle on the deck,** next to Snap in the right-hand utility column (`table_ui.gd`, `_utility("infer", "Infer", true)`,
+  on by default, a `infer_toggled` signal, `design_table.gd` `infer_enabled`). Reuse the flat client's look: a link icon, broken
+  when off (`sketch_screen.dart`'s Inference command uses `Icons.link` / `Icons.link_off`). Add a `tool_infer` icon to
+  `scripts/ui/ui_icons.gd`.
+- **What it turns off:** every constraint the sketcher would add by itself (H/V, collinear, parallel, perpendicular, tangent, point
+  on curve, concentric, the at-midpoint of a midpoint snap) and the angle snaps that go with them, and the alignment guides. **What
+  stays:** snapping onto existing points, the part's corners, centres and edges, midpoints and curves (position only, a plain point).
+  Snap off still turns everything off, Infer included.
+- **It stays as set** until switched back, across tools, for the rest of the table session. It is a toggle, not a hold. Show it
+  on the status line while it is off ("Infer off: nothing is added automatically"), so a forgotten toggle explains itself.
+- The flat client's command reads "suppress for this tool". Check whether it resets on a tool change. If it does, that is a
+  difference between the two apps. Note it in the PR; do not change the flat app in this plan.
+- The resolver takes `infer_enabled` beside `enabled`. Tests: with Infer off, a line drawn near horizontal is not snapped to the
+  axis and makes no constraint, a midpoint snap makes a plain point, and an existing point is still reused.
 
 ### Tests
 
@@ -412,6 +446,8 @@ This is flat item 3, as a snapping aid only, with **no constraint** (the owner's
   `sync_undo_redo`. `before` is a string (M1), so it goes back unchanged
   (`_send` sends a `String` body as it is). On 400 show `detail.message` on the status line. Read it explicitly: `cad_api.gd`'s
   error text prefers `detail.type` over `detail.message`, so the generic path would show "merge_refused".
+- **Show which point stays.** While Merge is in the menu, ring the point the rule will keep (the same rule, ported to GDScript,
+  tested on the backend's cases), and name it on the status line ("Merge: the rectangle corner stays").
 - **Stacked points.** Pick cycling on a stack as in M2: in Select, a pull whose nearest point is already selected, with an unselected
   point within a quarter of the pick radius of it, selects that one. Otherwise a pull on a selected point deselects it, as today. The status line says "2 points here" when the aim is on a stack, so the user knows to pull twice.
 - **Fake backend.** `tests/helpers/fake_cad.gd` gets both routes, applied to its model like the real ones.
@@ -419,9 +455,9 @@ This is flat item 3, as a snapping aid only, with **no constraint** (the owner's
   cycling. A new `tests/e2e_sketch_merge.gd` against the real backend: draw two lines ending a hair apart, merge, check the profile is
   closed, undo, check it is open again. Add it to `tests/run_all.sh`, `tests/e2e_ci_list.txt` and a row in `tests/README.md`.
 
-## M3 (optional). Close gaps
+## M3 (deferred). Close gaps
 
-Ask the owner before building it. A sketch-level action, "Close gaps", that merges every pair of points not already joined (not the
+**Not now** (owner, 2026-10-29). Kept here so it is not lost. A sketch-level action, "Close gaps", that merges every pair of points not already joined (not the
 same point, not coincident) closer than a tolerance. `POST /sketches/{id}/points/merge-near {"tolerance": mm}` groups them, applies
 the M1 rules to each group, skips refused groups and reports them, and returns one `before`. The client passes its current point
 snap radius as the tolerance. It is one tap to repair the "looks closed, is not" sketches that the old item 2 bug made, and imported
@@ -448,11 +484,11 @@ DXF, without hunting for stacked points.
   inference rules and Merge in Select), `docs/design-table-gaps.md` row 7(4) "inference", `docs/status.md`, `tests/README.md`.
   Update the header comment of `snap_resolver.gd`: its "a later step here can add" note is closed by V1.
 
-## Decisions for the owner
+## Decisions (owner, 2026-10-29)
 
-1. "Inverted relationships" read as inferred relationships. Correct?
-2. VR parallel and perpendicular only against woken lines (recommended), or against every line as on the flat client?
-3. Merge keeps the first selected point in place (recommended), unless one point is pinned.
-4. Quadrant points refused in v1 (recommended), or allowed now?
-5. Build M3 "Close gaps"?
-6. A momentary "no inference" button in VR, and on which input?
+1. "Inverted relationships" was a typo for **inferred** relationships.
+2. VR parallel and perpendicular only against **woken** lines, as recommended.
+3. The kept point: **anchored, then most constraints, then selection order** (M1), with the kept point highlighted in both clients.
+4. Quadrant points **refused** in v1, as recommended.
+5. M3 "Close gaps": **not now**.
+6. An **Infer toggle on the VR deck**, next to Snap, sticky (V3, "Turning it off").
