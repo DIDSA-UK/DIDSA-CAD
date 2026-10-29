@@ -966,6 +966,7 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
       // [SketchController.updateGrabbedPosition].
       _singleTouchTravel += event.delta.distance;
       _refreshCursorMoveTimeIfMoved(event.localPosition);
+      widget.controller.reportPixelsPerUnit(transform.pixelsPerUnit);
       widget.controller.moveCursorRelative(event.delta.dx, event.delta.dy, _viewport.zoom);
       if (widget.controller.isEntityGrabbed) {
         final labelId = widget.controller.draggingLabelId;

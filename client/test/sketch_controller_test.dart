@@ -10220,23 +10220,127 @@ void main() {
     expect(controller.constraints.values.whereType<VerticalConstraintDto>(), isEmpty);
   });
 
-  test('closing a chain loop back onto its start never auto-snaps, even if the closing edge is '
-      'exactly axis-aligned', () async {
+  test('closing a chain loop back onto its start adds Horizontal when the closing edge is exactly axis-aligned, and only to '
+      'the closing edge', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0); // chain start: the origin
     await controller.handleCanvasTap(5, 3); // edge1: ~31 degrees, no snap
     await controller.handleCanvasTap(8, 0); // edge2: 45 degrees, no snap
     // Close the loop: the closing edge runs from (8, 0) straight back to the
-    // origin (0, 0) - exactly horizontal - but must never auto-snap, since
-    // its geometry is dictated by the loop closure, not freely aimed.
+    // origin (0, 0) - exactly horizontal, so the loop closes with a Horizontal
+    // (the marker the user sees while aiming); the other two edges get nothing.
     controller.cursorX = 0;
     controller.cursorY = 0;
     await controller.handleCanvasTap(0, 0);
 
     expect(controller.errorMessage, isNull);
     expect(controller.chainInProgress, isFalse);
-    expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isEmpty);
+    final closingLine = controller.lines.values.last;
+    final horizontals = controller.constraints.values.whereType<HorizontalConstraintDto>().toList();
+    expect(horizontals, hasLength(1));
+    expect(horizontals.single.lineId, closingLine.id);
     expect(controller.constraints.values.whereType<VerticalConstraintDto>(), isEmpty);
+  });
+
+  group('line end snapping (zoom-scaled point snap, end resolved where the ghost shows it)', () {
+    Future<void> drawThreeSidesOfRectangle() async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 2);
+      await controller.handleCanvasTap(12, 12);
+      await controller.handleCanvasTap(2, 12);
+    }
+
+    test('a cursor within the zoom-scaled radius of the first point closes the loop onto it', () async {
+      await drawThreeSidesOfRectangle();
+      controller.reportPixelsPerUnit(20); // 14 px = 0.7 units
+      final firstPointId = controller.lines.values.first.startPointId;
+      final pointsBefore = controller.points.length;
+
+      controller.cursorX = 2;
+      controller.cursorY = 2.5; // 0.5 off the first point: outside the old flat 0.2
+      expect(controller.isHoveringChainStart, isTrue);
+      expect(controller.snapCandidatePointId, firstPointId);
+      await controller.handleCanvasTap(2, 2.5);
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.lines.values.last.endPointId, firstPointId);
+      expect(controller.points.length, pointsBefore);
+      expect(controller.chainInProgress, isFalse);
+      // The closing edge is vertical: the Vertical the marker showed is added.
+      expect(controller.constraints.values.whereType<VerticalConstraintDto>(), hasLength(2)); // the right side and the closing edge
+    });
+
+    test('an H snap that lands the ghost end on the first point closes the loop although the raw cursor is outside the radius',
+        () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(30, 10);
+      await controller.handleCanvasTap(30, 2);
+      controller.reportPixelsPerUnit(20);
+      final firstPointId = controller.lines.values.first.startPointId;
+      final pointsBefore = controller.points.length;
+
+      // 1.5 above the first point (outside 0.7), but the edge from (30, 2) is 3 degrees off horizontal: the H snap puts the end on it.
+      controller.cursorX = 2;
+      controller.cursorY = 3.5;
+      expect(controller.isHoveringChainStart, isTrue);
+      final ghost = controller.activeDrawGhost as LineGhost;
+      expect(ghost.endX, 2);
+      expect(ghost.endY, 2);
+      expect(controller.activeLineInference?.kind, LineInferenceKind.horizontal);
+      await controller.handleCanvasTap(2, 3.5);
+
+      expect(controller.errorMessage, isNull);
+      expect(controller.lines.values.last.endPointId, firstPointId);
+      expect(controller.points.length, pointsBefore);
+      expect(controller.chainInProgress, isFalse);
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>().single.lineId, controller.lines.values.last.id);
+    });
+
+    test('a free end is created at the snapped position, not the raw cursor', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(10, 2.3); // 1.6 degrees off horizontal: H snap
+
+      final end = controller.points[controller.lines.values.single.endPointId]!;
+      expect(end.x, 10);
+      expect(end.y, 2);
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), hasLength(1));
+    });
+
+    test('zoomed in, the radius shrinks: a cursor 0.1 from the first point no longer closes the loop', () async {
+      await drawThreeSidesOfRectangle();
+      controller.reportPixelsPerUnit(400); // 14 px = 0.035 units
+      final pointsBefore = controller.points.length;
+
+      controller.cursorX = 2;
+      controller.cursorY = 2.1;
+      expect(controller.isHoveringChainStart, isFalse);
+      await controller.handleCanvasTap(2, 2.1);
+
+      expect(controller.chainInProgress, isTrue);
+      expect(controller.points.length, pointsBefore + 1);
+    });
+
+    test('Orbit View reports its zoom with the cursor, which sets the radius', () async {
+      await drawThreeSidesOfRectangle();
+
+      controller.moveCursorToSketchPoint(2, 2.5, pixelsPerUnit: 20);
+      expect(controller.isHoveringChainStart, isTrue);
+      controller.moveCursorToSketchPoint(2, 2.5, pixelsPerUnit: 400);
+      expect(controller.isHoveringChainStart, isFalse);
+    });
+
+    test('without any reported zoom the flat snapRadius applies', () async {
+      await drawThreeSidesOfRectangle();
+
+      controller.cursorX = 2;
+      controller.cursorY = 2.5;
+      expect(controller.isHoveringChainStart, isFalse);
+      controller.cursorY = 2.1;
+      expect(controller.isHoveringChainStart, isTrue);
+    });
   });
 
   // --- Stage 13 item 5: Dimension mode + ghost dimensions -------------------

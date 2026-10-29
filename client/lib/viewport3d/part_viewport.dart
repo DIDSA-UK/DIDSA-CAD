@@ -356,7 +356,7 @@ class PartViewport extends StatefulWidget {
   /// commit) - drives the live ghost-preview [SketchScreen] builds on top of
   /// this in P17. Null result (cursor off the plane, or [sketchPlaneBasis]
   /// unset) simply isn't fired; the caller keeps showing its last ghost.
-  final void Function(vm.Vector3 worldPoint)? onDrawCursorMoved;
+  final void Function(vm.Vector3 worldPoint, double? localPixelsPerUnit)? onDrawCursorMoved;
 
   /// P16: fired instead of [onSketchPlaneTap] when a genuine tap (not a
   /// cursor drag - same travel-threshold disambiguation [_commitSelection]
@@ -6046,7 +6046,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       return;
     }
     final resolved = _drawCursorWorldHit;
-    if (resolved != null) widget.onDrawCursorMoved?.call(resolved);
+    if (resolved != null) {
+      final basis = widget.sketchPlaneBasis;
+      widget.onDrawCursorMoved?.call(resolved, basis == null ? null : _localPixelsPerSketchUnit(resolved, basis));
+    }
   }
 
   /// Mirrors [_handleSelectionPointerHover] - see [_handleDrawCursorMove]'s
@@ -6062,7 +6065,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _syncHoverNode();
     });
     final resolved = _drawCursorWorldHit;
-    if (resolved != null) widget.onDrawCursorMoved?.call(resolved);
+    if (resolved != null) {
+      final basis = widget.sketchPlaneBasis;
+      widget.onDrawCursorMoved?.call(resolved, basis == null ? null : _localPixelsPerSketchUnit(resolved, basis));
+    }
   }
 
   /// Mirrors [_recomputeHover], raycasting against

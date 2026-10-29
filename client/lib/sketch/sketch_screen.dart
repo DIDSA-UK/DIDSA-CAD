@@ -2082,6 +2082,7 @@ class _SketchScreenState extends State<SketchScreen> {
     final basis = _effectiveOrbitBasis;
     if (basis == null) return;
     final (x, y) = worldPointToSketch(basis, worldPoint);
+    if (localPixelsPerUnit != null) _controller.reportPixelsPerUnit(localPixelsPerUnit);
     // Bug fix (on-device feedback: "the hit radius for selecting an entity
     // should match the hit radius for dynamic highlight - it occurred when
     // selecting entities after starting the dimension tool"): this used to
@@ -2147,7 +2148,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// P24: while [_dragModeActiveInOrbitView], feeds
   /// [SketchController.updateGrabbedPosition] instead - a no-op unless
   /// something is actually grabbed (mirrors that method's own doc comment).
-  void _handleDrawCursorMoved(vm.Vector3 worldPoint) {
+  void _handleDrawCursorMoved(vm.Vector3 worldPoint, double? localPixelsPerUnit) {
     final basis = _effectiveOrbitBasis;
     if (basis == null) return;
     final (x, y) = worldPointToSketch(basis, worldPoint);
@@ -2157,7 +2158,7 @@ class _SketchScreenState extends State<SketchScreen> {
       }
       return;
     }
-    _controller.moveCursorToSketchPoint(x, y);
+    _controller.moveCursorToSketchPoint(x, y, pixelsPerUnit: localPixelsPerUnit);
   }
 
   /// P24: [PartViewport.onDrawCursorCommit]'s handler while
