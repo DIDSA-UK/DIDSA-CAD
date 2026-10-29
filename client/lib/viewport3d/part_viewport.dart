@@ -496,7 +496,10 @@ class PartViewport extends StatefulWidget {
   /// cancel the edit, still don't fall through to placing geometry"
   /// behaviour) - false (including when this callback is itself null) lets
   /// [onDrawCursorCommit] fire normally.
-  final bool Function(String? hitConstraintId, vm.Vector3? labelPoint)? onConstraintOverlayItemTap;
+  ///
+  /// `cursorPoint` is the point on the sketch plane under the cursor/tap (null when the ray misses the plane), so the
+  /// caller can measure where a label was grabbed without relying on its own, possibly stale, cursor.
+  final bool Function(String? hitConstraintId, vm.Vector3? labelPoint, vm.Vector3? cursorPoint)? onConstraintOverlayItemTap;
 
   /// While true, [_handleDrawCursorMove] feeds its own raw screen delta to [onConstraintLabelDragDelta] instead of resolving/reporting
   /// a world-plane hit. Only for a relationship glyph (V, H, parallel...), whose offset is session-only screen pixels; a dimension
@@ -5588,7 +5591,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               focusTransform: widget.focusWorldTransformMatrix,
             )
           : null;
-      if (hitId != null && widget.onConstraintOverlayItemTap!(hitId, _overlayItemPlanePoint(hitId))) return null;
+      if (hitId != null &&
+          widget.onConstraintOverlayItemTap!(hitId, _overlayItemPlanePoint(hitId), _planePointUnderCursor())) {
+        return null;
+      }
     }
     final hit = _hoverHit;
     if (hit == null) {
@@ -6086,6 +6092,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     _drawCursorWorldHit = hit?.$1;
   }
 
+  /// The point on the sketch plane under [_cursorPosition], or null when there is no cursor or the ray misses the plane.
+  vm.Vector3? _planePointUnderCursor() {
+    final cursor = _cursorPosition;
+    final basis = widget.sketchPlaneBasis;
+    if (cursor == null || basis == null) return null;
+    final ray = _toLocalRay(_camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize));
+    return hitTestSketchPlane(ray, basis)?.$1;
+  }
+
   /// Mirrors [_commitSelection] - fired by a genuine tap (see
   /// [_onPointerEnd]), commits the current [_drawCursorWorldHit] if the
   /// cursor is actually resolving to a point on the plane.
@@ -6104,7 +6119,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               focusTransform: widget.focusWorldTransformMatrix,
             )
           : null;
-      final consumed = widget.onConstraintOverlayItemTap!(hitId, hitId == null ? null : _overlayItemPlanePoint(hitId));
+      final consumed = widget.onConstraintOverlayItemTap!(
+        hitId,
+        hitId == null ? null : _overlayItemPlanePoint(hitId),
+        _drawCursorWorldHit,
+      );
       if (consumed) return;
     }
     final hit = _drawCursorWorldHit;

@@ -2188,18 +2188,16 @@ class _SketchScreenState extends State<SketchScreen> {
     if (!_controller.constraints.containsKey(constraintId)) return false;
     final basis = _effectiveOrbitBasis;
     if (basis == null) return false;
-    final (x, y) = worldPointToSketch(basis, pressPoint);
-    return _beginEmbeddedLabelDrag(constraintId, x, y, labelPoint);
+    return _beginEmbeddedLabelDrag(constraintId, pressPoint, labelPoint);
   }
 
-  /// Grabs [constraintId]'s label with the pointer at sketch point ([pointerX], [pointerY]); [labelPoint] is where the label is drawn on
-  /// the sketch plane, so the label keeps its place under the pointer instead of jumping to it.
-  bool _beginEmbeddedLabelDrag(String constraintId, double pointerX, double pointerY, vm.Vector3? labelPoint) {
+  /// Grabs [constraintId]'s label with the pointer at [pointerPoint] on the sketch plane; [labelPoint] is where the label is drawn,
+  /// so the label keeps its place under the pointer instead of jumping to it. Without both, the offset is zero.
+  bool _beginEmbeddedLabelDrag(String constraintId, vm.Vector3? pointerPoint, vm.Vector3? labelPoint) {
     final basis = _effectiveOrbitBasis;
     (double, double)? grabOffset;
-    if (basis != null && labelPoint != null) {
-      final (labelX, labelY) = worldPointToSketch(basis, labelPoint);
-      grabOffset = (labelX - pointerX, labelY - pointerY);
+    if (basis != null && pointerPoint != null && labelPoint != null) {
+      grabOffset = embeddedLabelGrabOffset(basis, pointerPoint, labelPoint);
     }
     return _controller.beginLabelDrag(constraintId, grabOffset: grabOffset);
   }
@@ -2252,7 +2250,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// wrong-mode action - see [PartViewport.preferConstraintOverlayHitOnCommit]'s
   /// own doc comment for why *whether this fires at all* is still mode-
   /// gated one level up from this.
-  bool _handleEmbeddedConstraintOverlayTap(String? hitId, vm.Vector3? labelPoint) {
+  bool _handleEmbeddedConstraintOverlayTap(String? hitId, vm.Vector3? labelPoint, vm.Vector3? cursorPoint) {
     if (_controller.mode == SketchMode.dimension) {
       final isGhost = hitId != null && _controller.ghosts.any((g) => g.key == hitId);
       if (_controller.activeGhostKey != null) {
@@ -2287,7 +2285,9 @@ class _SketchScreenState extends State<SketchScreen> {
       // which already drops whatever is grabbed unconditionally.
       if (_controller.isEntityGrabbed) return false;
       if (hitId != null && _controller.constraints.containsKey(hitId)) {
-        return _beginEmbeddedLabelDrag(hitId, _controller.cursorX, _controller.cursorY, labelPoint);
+        // Not `_controller.cursorX/Y`: in Orbit View drag mode the controller's cursor is never moved (see
+        // [_handleDrawCursorMoved]), so it holds a stale point from some earlier tool or canvas.
+        return _beginEmbeddedLabelDrag(hitId, cursorPoint, labelPoint);
       }
       return false;
     }

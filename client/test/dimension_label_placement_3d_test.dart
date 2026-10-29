@@ -160,6 +160,38 @@ void main() {
     }
   });
 
+  test('a touch grab uses the plane point under the finger (not a stale controller cursor): '
+      'the label moves with the finger from the first move', () {
+    controller.constraints['dim'] = const DistanceConstraintDto(id: 'dim', pointAId: 'a', pointBId: 'b', distance: 10.8);
+    // The controller's cursor holds an unrelated point from an earlier tool, as it does in Orbit View drag mode.
+    controller.cursorX = 40;
+    controller.cursorY = -25;
+    for (final camera in cameras) {
+      controller.setLabelPlacementForTesting('dim', null);
+      final items = controller.constraintOverlayItems();
+      final labelScreen = constraintOverlayItemLabelCenter(camera, viewportSize, basis, items.single)!;
+      final tap = labelScreen + const Offset(5, -4);
+      final cursorWorld = hitTestSketchPlane(camera.screenPointToRay(tap, viewportSize), basis)!.$1;
+      final labelWorld = hitTestSketchPlane(camera.screenPointToRay(labelScreen, viewportSize), basis)!.$1;
+
+      final offset = embeddedLabelGrabOffset(basis, cursorWorld, labelWorld);
+      final cursor = worldPointToSketch(basis, cursorWorld);
+      final label = worldPointToSketch(basis, labelWorld);
+      expect(offset.$1, closeTo(label.$1 - cursor.$1, 1e-9));
+      expect(offset.$2, closeTo(label.$2 - cursor.$2, 1e-9));
+
+      expect(controller.beginLabelDrag('dim', grabOffset: offset), isTrue);
+      // The finger moves; the label moves by exactly the same screen distance, with no initial jump from the stale cursor.
+      const move = Offset(15, -10);
+      final moved = worldPointToSketch(basis, hitTestSketchPlane(camera.screenPointToRay(tap + move, viewportSize), basis)!.$1);
+      controller.dragLabelToPointer(moved.$1, moved.$2);
+      controller.endLabelDrag();
+      final after = constraintOverlayItemLabelCenter(camera, viewportSize, basis, controller.constraintOverlayItems().single)!;
+      expect(after.dx, closeTo(labelScreen.dx + move.dx, 1e-4), reason: 'from ${camera.position}');
+      expect(after.dy, closeTo(labelScreen.dy + move.dy, 1e-4), reason: 'from ${camera.position}');
+    }
+  });
+
   test('orbiting after a drag does not move the label off its place on the geometry', () {
     controller.constraints['dim'] = const DistanceConstraintDto(id: 'dim', pointAId: 'a', pointBId: 'b', distance: 10.8);
     dragTo('dim', (3.0, 9.0));
