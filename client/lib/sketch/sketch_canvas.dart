@@ -3905,6 +3905,25 @@ class _SketchPainter extends CustomPainter {
     );
   }
 
+  /// The dashed alignment guides ([SketchController.activeAlignmentGuides]): thin dashed lines from the Points the cursor lines up
+  /// with to where a tap would place the new point. In the same green as the horizontal/vertical snap; a snapping aid only.
+  void _paintAlignmentGuides(Canvas canvas) {
+    final guides = controller.activeAlignmentGuides;
+    if (guides.isEmpty) return;
+    final paint = Paint()
+      ..color = _lineInferenceColors[LineInferenceKind.horizontal]!
+      ..strokeWidth = 1.0
+      ..style = PaintingStyle.stroke;
+    for (final guide in guides) {
+      _drawDashedLine(
+        canvas,
+        transform.sketchToScreen(guide.fromX, guide.fromY),
+        transform.sketchToScreen(guide.toX, guide.toY),
+        paint,
+      );
+    }
+  }
+
   void _paintActiveDrawGhost(Canvas canvas) {
     final ghost = controller.activeDrawGhost;
     if (ghost == null) return;
@@ -5220,6 +5239,7 @@ class _SketchPainter extends CustomPainter {
     _paintMidpointSnapIndicator(canvas);
     _paintSnapCandidateHighlight(canvas);
     _paintAutoCoincidentIndicator(canvas);
+    _paintAlignmentGuides(canvas);
     _paintActiveDrawGhost(canvas);
     _paintLineInferenceMarker(canvas);
     _paintOffsetPreviewGhosts(canvas);

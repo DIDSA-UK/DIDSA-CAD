@@ -1571,6 +1571,7 @@ class _SketchScreenState extends State<SketchScreen> {
         drawGhostPolylines: _embeddedDrawGhostPolylines,
         drawGhostColor: _embeddedDrawGhostColor,
         drawGhostGuidePolylines: _embeddedDrawGhostGuidePolylines,
+        drawAlignmentGuidePolylines: _embeddedAlignmentGuidePolylines,
         drawIndicatorMarkers: _embeddedDrawIndicatorMarkers,
         profileFillOutlines: _embeddedProfileFillOutlines,
         profileBranchMarkers: _embeddedProfileBranchMarkers,
@@ -2421,6 +2422,21 @@ class _SketchScreenState extends State<SketchScreen> {
     return [
       for (final polyline in ghostGuidePolylines(ghost))
         [for (final (x, y) in polyline) sketchPointToWorld(basis, x, y)],
+    ];
+  }
+
+  /// [PartViewport.drawAlignmentGuidePolylines]' data source: the controller's alignment guides cut into dashes at the zoom Orbit View
+  /// last reported (so a dash stays about the same size on screen).
+  List<List<vm.Vector3>> get _embeddedAlignmentGuidePolylines {
+    final basis = _effectiveOrbitBasis;
+    if (basis == null || _controller.mode != SketchMode.draw) return const [];
+    final guides = _controller.activeAlignmentGuides;
+    if (guides.isEmpty) return const [];
+    final pixelsPerUnit = _controller.reportedPixelsPerUnit ?? 20.0;
+    return [
+      for (final guide in guides)
+        for (final dash in alignmentGuideDashes(guide, pixelsPerUnit))
+          [for (final (x, y) in dash) sketchPointToWorld(basis, x, y)],
     ];
   }
 

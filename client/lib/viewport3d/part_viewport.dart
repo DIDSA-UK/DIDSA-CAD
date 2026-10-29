@@ -435,6 +435,10 @@ class PartViewport extends StatefulWidget {
   /// geometry too. Empty (the default) renders nothing.
   final List<List<vm.Vector3>> drawGhostGuidePolylines;
 
+  /// The dashed alignment guides (see `SketchController.activeAlignmentGuides`), already cut into dashes: one two-point world-space
+  /// polyline per dash. Drawn in the snap colour, apart from [drawGhostGuidePolylines]. Empty (the default) renders nothing.
+  final List<List<vm.Vector3>> drawAlignmentGuidePolylines;
+
   /// P20 follow-up: the 3D-embedded counterpart to `sketch_canvas.dart`'s
   /// in-progress-anchor/snap-candidate/midpoint point emphasis - see
   /// [DrawIndicatorMarker]'s own doc comment for the full rationale.
@@ -1031,6 +1035,7 @@ class PartViewport extends StatefulWidget {
     this.drawGhostPolylines = const [],
     this.drawGhostColor,
     this.drawGhostGuidePolylines = const [],
+    this.drawAlignmentGuidePolylines = const [],
     this.drawIndicatorMarkers = const [],
     this.profileFillOutlines = const [],
     this.profileBranchMarkers = const [],
@@ -1475,6 +1480,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [PartViewport.drawGhostGuidePolylines].
   Node? _drawGhostGuideNode;
 
+  /// Mirrors [_drawGhostGuideNode] for [PartViewport.drawAlignmentGuidePolylines].
+  Node? _drawAlignmentGuideNode;
+
   /// P20 follow-up: mirrors [_drawGhostNode] for
   /// [PartViewport.drawIndicatorMarkers].
   Node? _drawIndicatorsNode;
@@ -1885,6 +1893,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncSketchPlaneGridNode();
         _syncDrawGhostNode();
         _syncDrawGhostGuideNode();
+        _syncDrawAlignmentGuideNode();
         _syncDrawIndicatorsNode();
         _syncProfileFillNode();
         _syncProfileBranchMarkersNode();
@@ -2104,6 +2113,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     if (widget.drawGhostGuidePolylines != oldWidget.drawGhostGuidePolylines) {
       setState(_syncDrawGhostGuideNode);
+    }
+    if (widget.drawAlignmentGuidePolylines != oldWidget.drawAlignmentGuidePolylines) {
+      setState(_syncDrawAlignmentGuideNode);
     }
     if (widget.drawIndicatorMarkers != oldWidget.drawIndicatorMarkers) {
       setState(_syncDrawIndicatorsNode);
@@ -3908,6 +3920,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (oldNode != null) scene.remove(oldNode);
     final node = buildSketchGhostNode(widget.drawGhostGuidePolylines, color: sketchGhostGuideColor);
     _drawGhostGuideNode = node;
+    if (node != null) scene.add(node);
+  }
+
+  /// Mirrors [_syncDrawGhostGuideNode] for [PartViewport.drawAlignmentGuidePolylines], in the snap colour.
+  void _syncDrawAlignmentGuideNode() {
+    final scene = _scene;
+    if (scene == null) return;
+    final oldNode = _drawAlignmentGuideNode;
+    if (oldNode != null) scene.remove(oldNode);
+    final node = buildSketchGhostNode(widget.drawAlignmentGuidePolylines, color: sketchIndicatorSnapColor);
+    _drawAlignmentGuideNode = node;
     if (node != null) scene.add(node);
   }
 
@@ -7196,6 +7219,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                       if (_sketchPlaneSurfaceNode != null) _sketchPlaneSurfaceNode!,
                       if (_sketchPlaneGridNode != null) _sketchPlaneGridNode!,
                       if (_drawGhostGuideNode != null) _drawGhostGuideNode!,
+                      if (_drawAlignmentGuideNode != null) _drawAlignmentGuideNode!,
                       if (_drawGhostNode != null) _drawGhostNode!,
                       if (_drawIndicatorsNode != null) _drawIndicatorsNode!,
                       if (_profileFillNode != null) _profileFillNode!,

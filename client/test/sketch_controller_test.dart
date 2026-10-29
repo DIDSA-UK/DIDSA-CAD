@@ -3187,14 +3187,15 @@ void main() {
     controller.finishChain();
     final targetLineId = controller.lines.keys.single;
 
-    await controller.handleCanvasTap(20, 0); // new chain start, well clear of the target Line
-    controller.moveCursorToSketchPoint(30, 5.773502691896258); // same direction, from the new anchor
+    // Offset in y so the cursor does not line up with the target line's own end point (alignment outranks parallel).
+    await controller.handleCanvasTap(20, -3); // new chain start, well clear of the target Line
+    controller.moveCursorToSketchPoint(30, 2.773502691896258); // same direction, from the new anchor
 
     final inference = controller.activeLineInference;
     expect(inference?.kind, LineInferenceKind.parallel);
     expect(inference?.target?.id, targetLineId);
 
-    await controller.handleCanvasTap(30, 5.773502691896258);
+    await controller.handleCanvasTap(30, 2.773502691896258);
 
     final created = controller.constraints.values.whereType<ParallelConstraintDto>().single;
     final newLineId = controller.lines.keys.last;
@@ -3214,8 +3215,8 @@ void main() {
     controller.finishChain();
     final targetLineId = controller.lines.keys.single;
 
-    await controller.handleCanvasTap(20, 0);
-    controller.moveCursorToSketchPoint(30, 5.773502691896258); // ~30 degrees from the new anchor
+    await controller.handleCanvasTap(20, -3);
+    controller.moveCursorToSketchPoint(30, 2.773502691896258); // ~30 degrees from the new anchor
 
     final inference = controller.activeLineInference;
     expect(inference?.kind, LineInferenceKind.parallel);
@@ -3226,11 +3227,11 @@ void main() {
     // behind and below the anchor, visibly flipped away from the cursor
     // instead of toward it.
     expect(inference?.snappedX, closeTo(30, 1e-9));
-    expect(inference?.snappedY, closeTo(5.773502691896258, 1e-9));
+    expect(inference?.snappedY, closeTo(2.773502691896258, 1e-9));
 
     final ghost = controller.activeDrawGhost as LineGhost;
     expect(ghost.endX, closeTo(30, 1e-9));
-    expect(ghost.endY, closeTo(5.773502691896258, 1e-9));
+    expect(ghost.endY, closeTo(2.773502691896258, 1e-9));
   });
 
   test(
@@ -3355,8 +3356,8 @@ void main() {
     await controller.handleCanvasTap(10, 5.773502691896258);
     controller.finishChain();
 
-    await controller.handleCanvasTap(20, 0);
-    controller.moveCursorToSketchPoint(30, 5.773502691896258); // would be a parallel candidate
+    await controller.handleCanvasTap(20, -3);
+    controller.moveCursorToSketchPoint(30, 2.773502691896258); // would be a parallel candidate
 
     expect(controller.activeLineInference?.kind, LineInferenceKind.parallel);
 
@@ -3367,7 +3368,7 @@ void main() {
     // position while suppressed.
     final ghost = controller.activeDrawGhost as LineGhost;
     expect(ghost.endX, 30);
-    expect(ghost.endY, 5.773502691896258);
+    expect(ghost.endY, 2.773502691896258);
 
     controller.toggleInferenceSuppressed();
     expect(controller.inferenceSuppressed, isFalse);
@@ -10340,6 +10341,108 @@ void main() {
       expect(controller.isHoveringChainStart, isFalse);
       controller.cursorY = 2.1;
       expect(controller.isHoveringChainStart, isTrue);
+    });
+  });
+
+  group('alignment guides (snapping aid only, no constraint)', () {
+    Future<void> placePoints(List<(double, double)> at) async {
+      controller.selectDrawTool(SketchTool.point);
+      for (final (x, y) in at) {
+        await controller.handleCanvasTap(x, y);
+      }
+    }
+
+    test('a Point-tool cursor within tolerance of another point\'s x is moved onto it and the point is created there, with no constraint',
+        () async {
+      await placePoints([(10, 3)]);
+      controller.reportPixelsPerUnit(20); // 7 px = 0.35 units
+      final constraintsBefore = controller.constraints.length;
+
+      controller.moveCursorToSketchPoint(10.3, 7);
+      final guides = controller.activeAlignmentGuides;
+      expect(guides, hasLength(1));
+      expect((guides.single.fromX, guides.single.fromY), (10.0, 3.0));
+      expect((guides.single.toX, guides.single.toY), (10.0, 7.0));
+
+      await controller.handleCanvasTap(10.3, 7);
+      final placed = controller.points.values.last;
+      expect((placed.x, placed.y), (10.0, 7.0));
+      expect(controller.constraints.length, constraintsBefore);
+    });
+
+    test('both axes can align at once, from two different points', () async {
+      await placePoints([(10, 3), (-6, 20)]);
+      controller.reportPixelsPerUnit(20);
+
+      controller.moveCursorToSketchPoint(10.2, 20.2);
+      expect(controller.activeAlignmentGuides, hasLength(2));
+      await controller.handleCanvasTap(10.2, 20.2);
+      final placed = controller.points.values.last;
+      expect((placed.x, placed.y), (10.0, 20.0));
+    });
+
+    test('outside the tolerance, or with inference suppressed, there is no guide', () async {
+      await placePoints([(10, 3)]);
+      controller.reportPixelsPerUnit(20);
+
+      controller.moveCursorToSketchPoint(10.5, 7); // 0.5 > 0.35
+      expect(controller.activeAlignmentGuides, isEmpty);
+      controller.moveCursorToSketchPoint(10.3, 7);
+      expect(controller.activeAlignmentGuides, hasLength(1));
+      controller.toggleInferenceSuppressed();
+      expect(controller.activeAlignmentGuides, isEmpty);
+    });
+
+    test('a point snap outranks alignment: near the point itself there is no guide', () async {
+      await placePoints([(10, 3)]);
+      controller.reportPixelsPerUnit(20);
+
+      controller.moveCursorToSketchPoint(10.2, 3.2);
+      expect(controller.activeAlignmentGuides, isEmpty);
+    });
+
+    test('a Line with its own H snap also lines its end up with another point\'s x, and adds only the Horizontal', () async {
+      await placePoints([(20, 9)]);
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(2, 2);
+      controller.reportPixelsPerUnit(20);
+      final constraintsBefore = controller.constraints.length;
+
+      controller.moveCursorToSketchPoint(20.2, 2.3); // 0.9 degrees off horizontal
+      expect(controller.activeLineInference?.kind, LineInferenceKind.horizontal);
+      expect(controller.activeAlignmentGuides, hasLength(1));
+      final ghost = controller.activeDrawGhost as LineGhost;
+      expect((ghost.endX, ghost.endY), (20.0, 2.0));
+
+      await controller.handleCanvasTap(20.2, 2.3);
+      final end = controller.points[controller.lines.values.single.endPointId]!;
+      expect((end.x, end.y), (20.0, 2.0));
+      expect(controller.constraints.length, constraintsBefore + 1);
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), hasLength(1));
+    });
+
+    test('alignment outranks parallel/perpendicular: an aligned cursor reports no parallel candidate', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 5.773502691896258);
+      controller.finishChain();
+      await controller.handleCanvasTap(20, 0);
+      controller.reportPixelsPerUnit(20);
+
+      // Same direction as the first line, and level with its end point (y = 5.77...).
+      controller.moveCursorToSketchPoint(30, 5.773502691896258);
+      expect(controller.activeLineInference, isNull);
+      expect(controller.activeAlignmentGuides, isNotEmpty);
+    });
+
+    test('alignmentGuideDashes cuts a guide into dashes that stay on it', () {
+      final dashes = alignmentGuideDashes(const AlignmentGuide(0, 0, 10, 0), 10); // 6 px = 0.6 units on, 0.4 off
+      expect(dashes, hasLength(10));
+      expect(dashes.first, [(0.0, 0.0), (0.6, 0.0)]);
+      expect(dashes.last.last.$1, closeTo(9.6, 1e-9)); // the last dash starts at 9.0 and stops short of the end
+      for (final dash in dashes) {
+        expect(dash.every((p) => p.$2 == 0), isTrue);
+      }
     });
   });
 
