@@ -3157,6 +3157,22 @@ class SketchController extends ChangeNotifier {
   /// frame is exactly how it stays live.
   DrawGhost? get activeDrawGhost {
     if (_mode != SketchMode.draw) return null;
+    final (alignedX, alignedY, _) = _genericAlignment();
+    if (alignedX == cursorX && alignedY == cursorY) return _activeToolGhost();
+    // The tap will land on the aligned position, so the ghost is built from it: the tool ghosts all read the cursor fields, so they
+    // are swapped for the duration of this synchronous call.
+    final rawX = cursorX, rawY = cursorY;
+    cursorX = alignedX;
+    cursorY = alignedY;
+    try {
+      return _activeToolGhost();
+    } finally {
+      cursorX = rawX;
+      cursorY = rawY;
+    }
+  }
+
+  DrawGhost? _activeToolGhost() {
     switch (_activeTool) {
       case SketchTool.point:
         return null;
@@ -3772,7 +3788,44 @@ class SketchController extends ChangeNotifier {
     return _alignToPoints(cursorX, cursorY);
   }
 
-  /// The alignment guides the active draw tool shows right now (Line and Point only so far): dashed lines from the Points the cursor
+  /// Whether the active tool's next tap places a Point that lines up with other Points through [_genericAlignment]: every draw tool but
+  /// Point and Line (which do it in their own paths, [_placementTarget] and [_resolveLineEnd]) and Text, plus the midpoint-method
+  /// Line's anchor. Taps that only measure (a radius, a sweep end, a width, the minor radius) never align.
+  bool get _usesGenericAlignment {
+    switch (_activeTool) {
+      case SketchTool.circle:
+        // Centre-radius: only the centre is a point placement (the second tap measures a radius).
+        return _circleMethod == CircleConstructionMethod.threePoint || !circleInProgress;
+      case SketchTool.rectangle:
+        return _rectangleMethod != RectangleConstructionMethod.threePoint || _rectSecondPointId == null;
+      case SketchTool.arc:
+        // Centre and start Point; the end tap only picks the sweep.
+        return _arcCenterPointId == null || _arcStartPointId == null;
+      case SketchTool.polygon:
+        return true;
+      case SketchTool.slot:
+        // Both centres; the third tap only sets the width.
+        return _slotCenter1PointId == null || _slotCenter2PointId == null;
+      case SketchTool.ellipse:
+        return _ellipseCenterPointId == null || _ellipseMajorPointId == null;
+      case SketchTool.ellipseArc:
+        return _ellipseArcCenterPointId == null || _ellipseArcMajorPointId == null;
+      case SketchTool.spline:
+        return true;
+      case SketchTool.line:
+        return _lineMethod == LineConstructionMethod.midpoint && _midpointAnchorX == null;
+      case SketchTool.point:
+      case SketchTool.text:
+        return false;
+    }
+  }
+
+  /// The cursor lined up with other Points for the tools in [_usesGenericAlignment], else the raw cursor. A Point, Line-midpoint or
+  /// curve snap under the raw cursor wins (see [_placementTarget]).
+  (double, double, List<AlignmentGuide>) _genericAlignment() =>
+      _usesGenericAlignment ? _placementTarget() : (cursorX, cursorY, const []);
+
+  /// The alignment guides the active draw tool shows right now: dashed lines from the Points the cursor
   /// lines up with to the position a tap would place. Empty outside draw mode.
   List<AlignmentGuide> get activeAlignmentGuides {
     if (_mode != SketchMode.draw) return const [];
@@ -3785,7 +3838,7 @@ class SketchController extends ChangeNotifier {
       case SketchTool.point:
         return _placementTarget().$3;
       default:
-        return const [];
+        return _genericAlignment().$3;
     }
   }
 
@@ -15728,6 +15781,11 @@ class SketchController extends ChangeNotifier {
   /// those fields) applies unchanged regardless of which method is active.
   Future<void> _handleDrawTap() async {
     if (_busy || _sketchId == null) return;
+
+    // The tap lands where the ghost shows it: lined up with other Points (see [_genericAlignment]).
+    final (alignedX, alignedY, _) = _genericAlignment();
+    cursorX = alignedX;
+    cursorY = alignedY;
 
     if (_activeTool == SketchTool.point) {
       await _clickPointTool();

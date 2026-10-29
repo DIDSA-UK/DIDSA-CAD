@@ -10435,6 +10435,41 @@ void main() {
       expect(controller.activeAlignmentGuides, isNotEmpty);
     });
 
+    test('Rectangle: both corners line up, the ghost shows the aligned corner, and no constraint is added', () async {
+      await placePoints([(10, 3), (-6, 20)]);
+      controller.reportPixelsPerUnit(20);
+      controller.selectDrawTool(SketchTool.rectangle);
+      await controller.handleCanvasTap(0, 8);
+      final constraintsBefore = controller.constraints.length;
+
+      controller.moveCursorToSketchPoint(10.2, 20.2);
+      expect(controller.activeAlignmentGuides, hasLength(2));
+      final ghost = controller.activeDrawGhost as RectGhost;
+      expect((ghost.corner2.$1, ghost.corner2.$2), (10.0, 20.0));
+      expect(controller.cursorX, 10.2, reason: 'the raw cursor is left alone');
+
+      await controller.handleCanvasTap(10.2, 20.2);
+      expect(controller.points.values.any((p) => p.x == 10 && p.y == 20), isTrue);
+      // The rectangle's own structural constraints aside, alignment adds none.
+      expect(controller.constraints.values.whereType<CoincidentConstraintDto>(), isEmpty);
+      expect(controller.constraints.length, greaterThanOrEqualTo(constraintsBefore));
+    });
+
+    test('Circle: the centre aligns, the radius tap does not', () async {
+      await placePoints([(10, 3)]);
+      controller.reportPixelsPerUnit(20);
+      controller.selectDrawTool(SketchTool.circle);
+
+      controller.moveCursorToSketchPoint(10.2, 15);
+      expect(controller.activeAlignmentGuides, hasLength(1));
+      await controller.handleCanvasTap(10.2, 15);
+      final center = controller.points[controller.points.keys.last]!;
+      expect((center.x, center.y), (10.0, 15.0));
+
+      controller.moveCursorToSketchPoint(10.2, 40); // radius tap, level in x with the point at (10, 3)
+      expect(controller.activeAlignmentGuides, isEmpty);
+    });
+
     test('alignmentGuideDashes cuts a guide into dashes that stay on it', () {
       final dashes = alignmentGuideDashes(const AlignmentGuide(0, 0, 10, 0), 10); // 6 px = 0.6 units on, 0.4 off
       expect(dashes, hasLength(10));
