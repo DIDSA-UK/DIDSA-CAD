@@ -8959,6 +8959,24 @@ class SketchController extends ChangeNotifier {
     return false;
   }
 
+  /// Whether [c] is a Polygon's own inscribed-circle tangency: `add_polygon` (with reference circles) ties the inscribed Circle
+  /// to the first edge with a real `TangentConstraint`, so the circle keeps touching the edges as the shape changes. Part of how
+  /// the shape is built, the same as the ties above, so it is not shown. Identified by membership (the Tangent's circle is the
+  /// Polygon's `inscribedCircleId`, its Line one of the Polygon's `lineIds`), like the other `isImplicit*` checks. A Tangent the
+  /// user adds between that circle and some other Line is still real and still shown.
+  bool isImplicitPolygonInscribedTangent(TangentConstraintDto c) {
+    for (final polygon in polygons.values) {
+      final circle = polygon.inscribedCircleId == null ? null : circles[polygon.inscribedCircleId];
+      if (circle == null) continue;
+      if (circle.centerPointId == c.centerPointId &&
+          circle.radiusPointId == c.radiusPointId &&
+          polygon.lineIds.contains(c.lineId)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Whether [lineAId]/[lineBId] carry a `LineDistanceConstraint` between
   /// them - the exact same reasoning [isImplicitPolygonEdgeTie]/
   /// [isImplicitEllipseAxisPerpendicular] already established for other
@@ -17857,6 +17875,7 @@ class SketchController extends ChangeNotifier {
               _lineMidpointPairLabel(c.line1Id, c.line2Id, 'Collin.', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
         case TangentConstraintDto c:
+          if (isImplicitPolygonInscribedTangent(c)) break;
           // Pre-existing gap fix (found while wiring Tangent's own
           // context-flyout button): this had no overlay case at all, even
           // though a Slot's own internal corner tangency has always used

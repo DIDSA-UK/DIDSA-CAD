@@ -1781,6 +1781,16 @@ class _FakeBackend {
         final inscribedRadiusPointId = _newId('point');
         points[inscribedRadiusPointId] = {'id': inscribedRadiusPointId, 'x': cx + inradius, 'y': cy};
         inscribedCircleId = makeReferenceCircle(inscribedRadiusPointId, inradius)['id'] as String;
+        // Mirrors add_polygon: the inscribed circle is tied to the first edge by a real TangentConstraint.
+        final tangentId = _newId('constraint');
+        constraints[tangentId] = {
+          'id': tangentId,
+          'type': 'tangent',
+          'center_point_id': body['center_point_id'],
+          'radius_point_id': inscribedRadiusPointId,
+          'line_id': lineIds[0],
+        };
+        constraintIds.add(tangentId);
       }
 
       final polygon = {
@@ -5465,6 +5475,38 @@ void main() {
     expect(restored.circumscribedCircleId, isNotNull);
     expect(restored.inscribedCircleId, isNotNull);
     expect(controller.circles.keys, unorderedEquals([restored.circumscribedCircleId, restored.inscribedCircleId]));
+  });
+
+  test('a polygon\'s inscribed-circle tangency is implicit: no Tangent overlay item, but a user Tangent still shows', () async {
+    controller.selectDrawTool(SketchTool.polygon);
+    controller.togglePolygonReferenceCircles();
+    controller.setPolygonSides(6);
+    await controller.handleCanvasTap(0, 0);
+    await controller.handleCanvasTap(10, 0);
+    final polygon = controller.polygons.values.single;
+    final tangents = controller.constraints.values.whereType<TangentConstraintDto>().toList();
+    expect(tangents, hasLength(1));
+    expect(controller.isImplicitPolygonInscribedTangent(tangents.single), isTrue);
+    expect(
+      controller.constraintOverlayItems().where((i) => i.constraintId == tangents.single.id),
+      isEmpty,
+      reason: 'a hidden glyph cannot be drawn or tapped',
+    );
+
+    // The same circle tangent to some other (user) line is a real relation.
+    final circle = controller.circles[polygon.inscribedCircleId]!;
+    controller.points['u1'] = const SketchPointView(id: 'u1', x: 50, y: 50);
+    controller.points['u2'] = const SketchPointView(id: 'u2', x: 60, y: 50);
+    controller.lines['u'] = const SketchLineView(id: 'u', startPointId: 'u1', endPointId: 'u2');
+    final user = TangentConstraintDto(
+      id: 'user-tan',
+      centerPointId: circle.centerPointId,
+      radiusPointId: circle.radiusPointId,
+      lineId: 'u',
+    );
+    controller.constraints[user.id] = user;
+    expect(controller.isImplicitPolygonInscribedTangent(user), isFalse);
+    expect(controller.constraintOverlayItems().where((i) => i.constraintId == 'user-tan'), hasLength(1));
   });
 
   test('setPolygonSides clamps to [3, 20]', () {

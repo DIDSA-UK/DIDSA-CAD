@@ -10,6 +10,7 @@ was found by reading the code, and none was reproduced in a test.
 | Item | Summary | Cause found | Confidence |
 |---|---|---|---|
 | 1 | A dimension label grabbed by touch jumps on the first move, and the cursor reappears somewhere unexpected after the drop | The grab offset is measured from the controller's cursor, which Orbit View's drag mode never updates | High |
+| 5 | `isImplicitPolygonInscribedTangent` hides the inscribed circle's tangency to the polygon's own edges in `constraintOverlayItems` (so it is neither drawn nor tappable in Orbit View). A coincident to the origin is deliberately **not** hidden, as instructed; nothing changed for it | `sketch_controller_test.dart`: hex with reference circles has no Tangent overlay item; a user Tangent on the same circle to another line still shows. The fake backend now adds the inscribed tangent like `add_polygon` does |
 | 2 | Dropping a line chain's last point on its first point does not close the profile (with an inferred Horizontal) | Closing and point merging use a fixed 0.2 sketch-unit radius around the raw cursor. The H/V snap moves the ghost end onto the first point, but the raw cursor stays outside that radius | High |
 | 2b | Should there be a Merge for two points? | Not built. Coincident already closes a profile for extrude | Question |
 | 3 | No dashed alignment guide when the cursor lines up horizontally or vertically with another point | Not built in either client. The only H/V inference is a line's own segment against its own start point | Certain |
