@@ -27,6 +27,24 @@ class SketchResponse(BaseModel):
     rotation_quarter_turns: int = 0
 
 
+class MergePointsRequest(BaseModel):
+    """`POST /sketches/{id}/points/merge`: two or more distinct Point ids, in selection order (the order breaks ties for which Point is kept)."""
+
+    point_ids: list[str]
+
+
+class MergePointsResponse(BaseModel):
+    kept_id: str
+    absorbed_ids: list[str]
+    dropped_constraint_ids: list[str]
+    dropped_reference_dimension_ids: list[str]
+    converged: bool
+    # The whole Sketch before the merge, as a JSON *string* (`json.dumps(sketch_to_dict(...))`), so a client sends it back byte for byte to
+    # `PUT /sketches/{id}/state` to undo: a client that parsed and re-serialised it could turn `rotation_quarter_turns: 0` into `0.0` (Godot reads every
+    # JSON number as a float), which the backend refuses.
+    before: str
+
+
 class ReferenceDimensionRef(BaseModel):
     """One thing a reference dimension measures: a Point, Line, Circle or Arc of the Sketch."""
 

@@ -3874,6 +3874,25 @@ class _SketchPainter extends CustomPainter {
     );
   }
 
+  /// Point Merge: rings the Point that Merge will keep while it is offered (same cyan ring as the snap candidate), so the rule is never a surprise.
+  void _paintMergeKeepRing(Canvas canvas) {
+    final pointId = controller.mergeKeepPointId;
+    if (pointId == null) return;
+    final point = controller.points[pointId];
+    if (point == null) return;
+    final screenPos = transform.sketchToScreen(point.x, point.y);
+    const highlightRadius = _snapHighlightPointRadius * 2;
+    canvas.drawCircle(screenPos, highlightRadius, Paint()..color = _snapCandidateColor.withValues(alpha: 0.35));
+    canvas.drawCircle(
+      screenPos,
+      highlightRadius + 3,
+      Paint()
+        ..color = _snapCandidateColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+  }
+
   /// Session N: the live glyph for whichever parallel/perpendicular/
   /// tangent/point-on-curve candidate (if any)
   /// [SketchController.activeLineInference] currently reports - a small
@@ -5239,6 +5258,7 @@ class _SketchPainter extends CustomPainter {
     _paintMidpointSnapIndicator(canvas);
     _paintSnapCandidateHighlight(canvas);
     _paintAutoCoincidentIndicator(canvas);
+    _paintMergeKeepRing(canvas);
     _paintAlignmentGuides(canvas);
     _paintActiveDrawGhost(canvas);
     _paintLineInferenceMarker(canvas);

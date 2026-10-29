@@ -1,4 +1,5 @@
 import dataclasses
+import json
 import math
 import uuid
 
@@ -48,8 +49,11 @@ from app.sketch.models import (
     TextEntity,
     _signed_point_line_distance,
 )
+from app.sketch.point_merge import MergeRefused, merge_points
 from app.sketch.profile import Profile, detect_profile
 from app.sketch.schemas import (
+    MergePointsRequest,
+    MergePointsResponse,
     ReferenceDimensionCreate,
     ReferenceDimensionRef,
     ReferenceDimensionResponse,
@@ -736,6 +740,27 @@ def import_sketch(payload: dict) -> SketchResponse:
     return _sketch_response(sketch)
 
 
+@router.put("/sketches/{sketch_id}/state", response_model=SketchResponse)
+def restore_sketch_state(sketch_id: str, payload: dict) -> SketchResponse:
+    """Puts a Sketch's whole state back **in place**: the body is a `sketch_to_dict` object (the `before` text of a Point merge, sent unchanged) whose `id`
+    must be this Sketch's. Unlike [import_sketch] this keeps the Sketch's id, which a Part's `SketchFeature` points at, so it is a snapshot undo for any edit
+    that has no inverse call. The fields are copied onto the live `Sketch` object rather than replacing the store entry, so anything holding it stays valid.
+
+    Same wording as import for a malformed body (422). Known limit: a restore puts back the *whole* sketch, so an edit another client made to the same
+    session between the change and its undo is lost. Every undo in both clients already assumes a single editor."""
+    from app.document.native_format import NativeFormatError, sketch_from_dict
+
+    sketch = _get_sketch_or_404(sketch_id)
+    try:
+        restored = sketch_from_dict(payload)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid sketch file: {exc}")
+    if restored.id != sketch_id:
+        raise HTTPException(status_code=422, detail=f"Invalid sketch file: it is the state of sketch {restored.id}, not {sketch_id}")
+    sketch.copy_state_from(restored)
+    return _sketch_response(sketch)
+
+
 @router.patch("/sketches/{sketch_id}/orientation", response_model=SketchResponse)
 def update_sketch_orientation(sketch_id: str, payload: SketchOrientationUpdate) -> SketchResponse:
     """Sketcher-roadmap Phase 5: the retrospective-redefine entry point -
@@ -766,6 +791,37 @@ def list_points(sketch_id: str) -> list[PointResponse]:
     re-entering a Sketch it didn't just create), mirroring list_constraints."""
     sketch = _get_sketch_or_404(sketch_id)
     return [_point_response(sketch, point) for point in sketch.points.values()]
+
+
+@router.post(
+    "/sketches/{sketch_id}/points/merge",
+    response_model=MergePointsResponse,
+    dependencies=[Depends(_prune_reference_helpers_after)],
+)
+def merge_sketch_points(sketch_id: str, payload: MergePointsRequest) -> MergePointsResponse:
+    """Merges two or more Points into one (see `app.sketch.point_merge`). `point_ids` are in selection order. Which Point is kept: a pinned one (a Fix, an
+    external reference, or one a Part feature references), then the one with the most constraints, then the first listed; the others are absorbed, their
+    references move to the kept Point, and the Sketch is solved. Atomic: a refusal (400, `detail` = `{"type": "merge_refused", "reason", "message", "ids"}`)
+    changes nothing. `before` is the Sketch before the merge as a JSON string, for `PUT .../state` (undo)."""
+    from app.document.graph import points_referenced_by_features
+    from app.document.native_format import sketch_to_dict
+
+    sketch = _get_sketch_or_404(sketch_id)
+    for point_id in payload.point_ids:
+        _get_point_or_404(sketch, point_id)
+    before = json.dumps(sketch_to_dict(sketch))
+    try:
+        result = merge_points(sketch, payload.point_ids, anchored_ids=points_referenced_by_features(sketch_id))
+    except MergeRefused as exc:
+        raise HTTPException(status_code=400, detail={"type": "merge_refused", "reason": exc.reason, "message": exc.message, "ids": exc.ids}) from exc
+    return MergePointsResponse(
+        kept_id=result.kept_id,
+        absorbed_ids=result.absorbed_ids,
+        dropped_constraint_ids=result.dropped_constraint_ids,
+        dropped_reference_dimension_ids=result.dropped_reference_dimension_ids,
+        converged=result.converged,
+        before=before,
+    )
 
 
 @router.get("/sketches/{sketch_id}/points/{point_id}", response_model=PointResponse)

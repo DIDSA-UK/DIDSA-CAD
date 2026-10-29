@@ -26,6 +26,43 @@ The owner's decisions on the open points are at the [end](#decisions-owner-2026-
 V1 to V4 do not need M1, so the VR work can start in parallel with the backend. Do one commit per step. Each step ends with its
 test gate green (see [Verification](#verification)).
 
+## Progress
+
+Built in the order of the table above, one commit per step, on branch `ccr-a2e167db-tvjb7l` in both repos (DIDSA-CAD: M1, M2; DIDSA-VR: V1 to V5). Each step's gate was green
+before the next. **Nothing was looked at on a headset or a device.**
+
+| Step | Repo | What landed | Tests |
+|---|---|---|---|
+| M1 | CAD | `app/sketch/point_merge.py` (`merge_keep_order`, `merge_points`, the collapse table in `_collapse`), `Sketch.copy_state_from`, the routes `POST /sketch/sketches/{id}/points/merge` and `PUT /sketch/sketches/{id}/state`, `points_referenced_by_features` in `app/document/graph.py` (walks every Part feature generically for a `SketchEntityRef` of type point) | `backend/tests/test_sketch_point_merge.py` (46): the generic "no absorbed id left in `sketch_to_dict`" test (it fails if the rewrite skips list fields: checked by breaking it), one test per collapse row and per refusal (`sketch_to_dict` equal to `before` after each), the kept-point rule (Fix, external reference, a Loft's `reference_point`, a rectangle corner over a loose end, provisional and Coincident not counted, a tie), a three-way corner, `conflict` rolled back, the restore round trip, the `SketchFeature` still resolving its sketch. Core suite 2721 passed, gears 413 (bevel pairs not re-run) |
+| M2 | CAD | Merge in the flyout (`ConstraintOptionType.merge`), `point_merge_rule.dart` (the Dart `mergeKeepOrder`), the kept-point ring on the flat canvas and in Orbit View, snapshot undo (`mergePoints` / `restoreSketchState`, `_reloadLocalSketch`), pick cycling on stacked points, Merge from a selected Coincident glyph | `sketch_controller_test.dart` group "Point Merge" (10; the fake backend has both routes on its own model), `sketch_point_merge_rule_test.dart` (5, the backend's kept-point cases). `flutter test` 3326 passed, 43 skipped; `flutter analyze` 222 infos, all the SDK's `material.dart` deprecation, none new |
+| V1 | VR | origin not welded, held midpoint and on-curve snaps, a closed run ends | `design_table_logic.gd`, `sketch_session.gd`, `e2e_sketch_select.gd` follows the unwelded start |
+| V2 | VR | the line end resolved where the ghost shows it, closing side with H/V | `design_table_logic.gd`, `sketch_session.gd` |
+| V3 | VR | inferred relationships, woken lines, concentric centres, the Infer switch | `design_table_logic.gd` (the resolver and `woken_lines.gd`), `sketch_session.gd`, `design_table_editing.gd`, new `e2e_sketch_infer.gd` |
+| V4 | VR | alignment guides | same files |
+| V5 | VR | Merge in Select, kept-point ring and name, pick cycling, "2 points here" | `sketch_session.gd` (with the fake's two new routes), `design_table_editing.gd`, new `e2e_sketch_merge.gd` against a backend with M1 |
+| M3 | both | **Not built** (owner, 2026-10-29) | |
+
+**Where the code differed from the plan** (the code was followed):
+
+- `Sketch.merge_points` is a module, `app/sketch/point_merge.py`, not a method in `models.py`: its last step needs `app.sketch.solver`, which imports `models`. `Sketch` got
+  `copy_state_from` instead, shared by the rollback and by `PUT .../state`.
+- The routes sit under the sketch router's `/sketch` prefix: `/sketch/sketches/{id}/points/merge`, not `/sketches/{id}/points/merge`.
+- An Ellipse's four axis ends (major, minor and their negatives) are refused as quadrant points, with a Circle's cardinal points. The plan said "cardinal (quadrant) point"; the code
+  has no separate name for the ellipse's.
+- A provisional `DistanceConstraint` that ends up measuring a point to itself is **dropped** and reported, not refused as `dimension_between`: it is a shape tool's placeholder size,
+  not a dimension the user wrote, and the solver skips it. Any other self-distance is refused as planned.
+- The flat client's inference toggle ("suppress for this tool", `toggleInferenceSuppressed`) is not reset anywhere on a tool change: it stays as set until toggled, the same as the
+  VR Infer switch. No difference to note.
+- The plan names the icon `tool_infer` while the deck's utility buttons use plain names (`snap`, `eye`): the VR icons are `infer` and `infer_off`.
+- The plan expected the flat canvas to have no tappable Coincident glyph; it does draw one (`sketch_canvas.dart`, `_constraintLabelCenter`) and selecting it goes through the same `selectConstraint`, so
+  Merge from a selected Coincident glyph works on the flat canvas as well as in Orbit View, besides pick cycling.
+- The environment: today's Flutter master (`6e16887f`, 29 Oct) crashes at start-up when run as root ("Dependency cycle detected: Analytics -> Cache -> Xcode"), so the client was
+  tested on master of 27 Oct (`4e9c63a8`) with a local tag for its version. CI uses its own pinned setup.
+
+**Not verified (needs a headset or a device):** the 15 mm inference reach and the 6 mm alignment tolerance in VR; whether the "woken" lines feel natural with a laser; the look of
+the dashed guides, the lit woken lines and the glyph on the sheet; the stacked-point "pull twice" flow and the "2 points here" line; the ring round the kept point in either client;
+the Infer switch's size and place on the deck; the flat client's pick cycling and ring on a device. The rest of the numbers (4 and 6 degrees, 12 mm) are the flat app's.
+
 ---
 
 ## 1. What is there, checked for validity, best practice and intuitive use

@@ -1781,6 +1781,32 @@ class SketchMirrorInstanceDto {
       );
 }
 
+/// What `POST .../points/merge` did: [keptId] stayed, [absorbedIds] are gone (their references moved to [keptId]). [before] is the whole sketch before the
+/// merge as the JSON *text* the server sent: pass it back unchanged to [SketchApiClient.restoreSketchState] to undo.
+class MergePointsResult {
+  final String keptId;
+  final List<String> absorbedIds;
+  final List<String> droppedConstraintIds;
+  final bool converged;
+  final String before;
+
+  const MergePointsResult({
+    required this.keptId,
+    required this.absorbedIds,
+    required this.droppedConstraintIds,
+    required this.converged,
+    required this.before,
+  });
+
+  factory MergePointsResult.fromJson(Map<String, dynamic> json) => MergePointsResult(
+        keptId: json['kept_id'] as String,
+        absorbedIds: (json['absorbed_ids'] as List<dynamic>).cast<String>(),
+        droppedConstraintIds: (json['dropped_constraint_ids'] as List<dynamic>).cast<String>(),
+        converged: json['converged'] as bool,
+        before: json['before'] as String,
+      );
+}
+
 /// Thin wrapper over the backend's `/sketch` REST API. Knows nothing about
 /// UI/cursor state - it only translates Dart calls into the HTTP contract
 /// defined by backend/app/sketch/router.py and schemas.py.
@@ -1825,6 +1851,11 @@ class SketchApiClient {
       final decoded = jsonDecode(response.body);
       if (decoded is Map<String, dynamic> && decoded['detail'] is String) {
         return decoded['detail'] as String;
+      }
+      // A structured refusal (a Point merge's `merge_refused`): the words meant for the user.
+      if (decoded is Map<String, dynamic> && decoded['detail'] is Map<String, dynamic>) {
+        final message = (decoded['detail'] as Map<String, dynamic>)['message'];
+        if (message is String) return message;
       }
     } catch (_) {
       // Not JSON (or no `detail` field) - fall through to the raw body.
@@ -1874,6 +1905,28 @@ class SketchApiClient {
               body: jsonEncode(data),
             ),
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Merges two or more Points into one (`POST .../points/merge`), [pointIds] in selection order. The server picks the Point that stays (see
+  /// [MergePointsResult.keptId]); a refusal is an [ApiException] (400) whose message is the reason in plain words.
+  Future<MergePointsResult> mergePoints(String sketchId, List<String> pointIds) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/points/merge'),
+              headers: _headers,
+              body: jsonEncode({'point_ids': pointIds}),
+            ),
+        (body) => MergePointsResult.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Puts the whole sketch back as it was (`PUT .../state`), in place and under the same id: the undo of a Point merge. [snapshot] is
+  /// [MergePointsResult.before], sent as the exact text the server gave (not parsed and re-encoded).
+  Future<void> restoreSketchState(String sketchId, String snapshot) => _send(
+        () => _httpClient.put(
+              _uri('/sketch/sketches/$sketchId/state'),
+              headers: _headers,
+              body: snapshot,
+            ),
+        (_) {},
       );
 
   /// Sketcher-roadmap Phase 5's retrospective-redefine entry point - both

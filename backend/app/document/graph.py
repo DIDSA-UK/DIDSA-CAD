@@ -384,6 +384,40 @@ def sketch_feature_id_for_sketch(part: Part, sketch_id: str) -> str | None:
     return None
 
 
+def points_referenced_by_features(sketch_id: str) -> set[str]:
+    """The ids of the Points of Sketch `sketch_id` that a Part feature of the current document refers to (a Loft's `reference_point` / `alignment_point`, a
+    Create Plane's `PointRef.sketch_point_ref`...): such a Point can't be absorbed by a Point merge. The sketch layer can't see features (it never imports
+    `app.document`), so its router asks here.
+
+    Walks every Part's features generically - any `SketchEntityRef` with `entity_type == POINT` and this `sketch_id`, at any depth of dataclass / list / tuple /
+    dict - rather than naming Loft and Create Plane, so a future feature that holds a Sketch Point is covered without touching this. A standalone Sketch
+    (no document) gets the empty set."""
+    from dataclasses import fields, is_dataclass
+
+    from app.document.store import get_document
+    from app.sketch.models import SketchEntityRef, SketchEntityType
+
+    found: set[str] = set()
+
+    def walk(value: object) -> None:
+        if isinstance(value, SketchEntityRef):
+            if value.sketch_id == sketch_id and value.entity_type == SketchEntityType.POINT:
+                found.add(value.entity_id)
+        elif is_dataclass(value) and not isinstance(value, type):
+            for f in fields(value):
+                walk(getattr(value, f.name))
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for item in value:
+                walk(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+
+    for part in get_document().parts.values():
+        walk(part.features)
+    return found
+
+
 def _sketch_or_edge_ref_dependency(part: Part, ref: SketchOrEdgeRef) -> str | None:
     """On-device feedback ("surface tools should support edges, curves...
     as well as sketch lines"): the Feature id one `SketchOrEdgeRef` entry

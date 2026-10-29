@@ -326,6 +326,7 @@ String sketchConstraintSvgAsset(ConstraintOptionType type) {
     // per-Point Fix action here and the whole-sketch status glyph there.
     ConstraintOptionType.fix => 'assets/icons/sketchbar/sketchbar_lock_full.svg',
     ConstraintOptionType.unfix => 'assets/icons/sketchbar/sketchbar_lock_partial.svg',
+    ConstraintOptionType.merge => 'assets/icons/ribbon/ribbon_merge.svg',
   };
 }
 

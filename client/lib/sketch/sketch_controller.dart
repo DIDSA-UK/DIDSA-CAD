@@ -15,6 +15,7 @@ import 'marquee_selection.dart';
 import 'projector/sketch_drag_stats.dart';
 import 'projector/sketch_projector.dart';
 import 'pattern_mirror_expansion.dart';
+import 'point_merge_rule.dart';
 import 'view_transform.dart';
 
 /// Returns [candidate] unchanged if it is within [canvasSize] bounds.
@@ -1507,6 +1508,9 @@ enum ConstraintOptionType {
   pointOnEllipse,
   fix,
   unfix,
+
+  /// Point Merge: two or more Points become one (see [SketchController.mergeSelectedPoints]).
+  merge,
 }
 
 class ConstraintOption {
@@ -9896,7 +9900,29 @@ class SketchController extends ChangeNotifier {
       return;
     }
 
-    selectEntity(hit!);
+    selectEntity(_cycleStackedPoint(hit!, hitRadius));
+  }
+
+  /// Pick cycling on a stack of Points. Two Points on top of each other (a profile that looks closed and is not) can't be picked one by one - a tap only
+  /// ever finds the nearest. So when the tapped Point is already selected and another, unselected Point sits on top of it (within a quarter of the pick
+  /// radius), the tap selects that one instead; a second tap on a stacked pair then adds the other Point. Anywhere else the tap is [hit], as before.
+  SketchSelection _cycleStackedPoint(SketchSelection hit, double hitRadius) {
+    if (hit.kind != SelectionKind.point || !_selectionSet.any((s) => s.sameAs(hit))) return hit;
+    final here = points[hit.id];
+    if (here == null) return hit;
+    final reach = hitRadius / 4;
+    String? best;
+    var bestDistance = double.infinity;
+    for (final candidate in points.values) {
+      if (candidate.id == hit.id || candidate.id == _originPointId) continue;
+      if (_selectionSet.any((s) => s.kind == SelectionKind.point && s.id == candidate.id)) continue;
+      final distance = math.sqrt(math.pow(candidate.x - here.x, 2) + math.pow(candidate.y - here.y, 2));
+      if (distance <= reach && distance < bestDistance) {
+        best = candidate.id;
+        bestDistance = distance;
+      }
+    }
+    return best == null ? hit : SketchSelection(kind: SelectionKind.point, id: best);
   }
 
   /// Desktop input D2: how the next select click (a canvas tap, a
@@ -11609,6 +11635,11 @@ class SketchController extends ChangeNotifier {
     // Nothing is offered between two pinned things (see [_rebuildDimensionGhosts]): every Point of the selection is already immovable.
     if (_everyPointPinned(sel)) return const [];
 
+    // A selected Coincident glyph offers to merge its two Points (Orbit View can tap a glyph where two stacked Points can't be told apart).
+    if (sel.length == 1 && sel.first.kind == SelectionKind.constraint) {
+      return [if (_mergeOffered) const ConstraintOption(type: ConstraintOptionType.merge, label: 'Merge points', wired: true)];
+    }
+
     if (sel.length == 1 && sel.first.kind == SelectionKind.line) {
       return const [
         ConstraintOption(type: ConstraintOptionType.vertical, label: 'Vert.', wired: true),
@@ -11663,6 +11694,11 @@ class SketchController extends ChangeNotifier {
         ConstraintOption(type: ConstraintOptionType.concentric, label: 'Concentric', wired: true),
         ConstraintOption(type: ConstraintOptionType.equalRadius, label: 'Equal radius', wired: true),
       ];
+    }
+
+    // Point Merge (docs/point-merge-and-vr-sketcher-plan.md, M2): 3 or more Points. Exactly 2 are handled with Coincident below.
+    if (sel.length > 2 && sel.every((s) => s.kind == SelectionKind.point)) {
+      return [if (_mergeOffered) const ConstraintOption(type: ConstraintOptionType.merge, label: 'Merge', wired: true)];
     }
 
     if (sel.length != 2) return const [];
@@ -11721,7 +11757,10 @@ class SketchController extends ChangeNotifier {
     }
 
     if (kinds.length == 1 && kinds.single == SelectionKind.point) {
-      return const [ConstraintOption(type: ConstraintOptionType.coincident, label: 'Coinc.', wired: true)];
+      return [
+        const ConstraintOption(type: ConstraintOptionType.coincident, label: 'Coinc.', wired: true),
+        if (_mergeOffered) const ConstraintOption(type: ConstraintOptionType.merge, label: 'Merge', wired: true),
+      ];
     }
 
     // Bug fix (found while adding "point coincident to line/curve"): this
@@ -11751,6 +11790,137 @@ class SketchController extends ChangeNotifier {
     }
 
     return const [];
+  }
+
+  // --- Point Merge (docs/point-merge-and-vr-sketcher-plan.md, M2) ---------------------------------------------------------------------------------
+
+  /// The Points a Merge of the current selection would act on: the selected Points in selection order, or the two Points of a single selected
+  /// Coincident glyph. Null for any other selection.
+  List<String>? get _mergeCandidatePointIds {
+    final sel = _selectionSet;
+    if (sel.length == 1 && sel.first.kind == SelectionKind.constraint) {
+      final constraint = constraints[sel.first.id];
+      return constraint is CoincidentConstraintDto ? [constraint.pointAId, constraint.pointBId] : null;
+    }
+    if (sel.length >= 2 && sel.every((s) => s.kind == SelectionKind.point)) return [for (final s in sel) s.id];
+    return null;
+  }
+
+  /// Every entity's own Points, each entity's Points as one set - the client-side mirror of the backend's `_entity_defining_point_ids`.
+  Iterable<Set<String>> get _entityPointSets sync* {
+    for (final line in lines.values) {
+      yield {line.startPointId, line.endPointId};
+    }
+    for (final circle in circles.values) {
+      yield {circle.centerPointId, circle.radiusPointId, ...circle.cardinalPointIds};
+    }
+    for (final arc in arcs.values) {
+      yield {arc.centerPointId, arc.startPointId, arc.endPointId};
+    }
+    for (final e in ellipses.values) {
+      yield {e.centerPointId, e.majorPointId, e.majorPointNegId, e.minorPointId, e.minorPointNegId};
+    }
+    for (final e in ellipseArcs.values) {
+      yield {e.centerPointId, e.majorPointId, e.minorPointId, e.startPointId, e.endPointId};
+    }
+    for (final polygon in polygons.values) {
+      yield {polygon.centerPointId, ...polygon.vertexPointIds};
+    }
+    for (final slot in slots.values) {
+      yield {slot.center1PointId, slot.center2PointId, slot.aPointId, slot.bPointId, slot.cPointId, slot.dPointId};
+    }
+    for (final rectangle in rectangles.values) {
+      yield {...rectangle.cornerPointIds, if (rectangle.centerPointId != null) rectangle.centerPointId!};
+    }
+    for (final spline in splines.values) {
+      yield {...spline.throughPointIds, ...spline.controlPointIds};
+    }
+    for (final text in texts.values) {
+      yield {text.anchorPointId};
+    }
+  }
+
+  /// The quadrant Points a Circle or Ellipse owns (v1 refuses to merge these - Coincident ties them instead).
+  Set<String> get _quadrantPointIds => {
+        for (final circle in circles.values) ...circle.cardinalPointIds,
+        for (final e in ellipses.values) ...[e.majorPointId, e.majorPointNegId, e.minorPointId, e.minorPointNegId],
+      };
+
+  /// The cheap checks that decide whether Merge is offered for [ids]: at least two distinct Points, none the origin or a quadrant Point, and no
+  /// single entity using two of them (that would collapse it). The rest (a dimension between them, a Part feature, a conflict) is the server's.
+  bool _canMerge(List<String> ids) {
+    final distinct = ids.toSet();
+    if (distinct.length < 2 || !distinct.every(points.containsKey)) return false;
+    if (_originPointId != null && distinct.contains(_originPointId)) return false;
+    final quadrant = _quadrantPointIds;
+    if (distinct.any(quadrant.contains)) return false;
+    for (final entityPoints in _entityPointSets) {
+      if (entityPoints.intersection(distinct).length >= 2) return false;
+    }
+    return true;
+  }
+
+  bool get _mergeOffered {
+    final ids = _mergeCandidatePointIds;
+    return ids != null && _canMerge(ids);
+  }
+
+  Map<String, (String, String)> get _lineEnds => {for (final line in lines.values) line.id: (line.startPointId, line.endPointId)};
+
+  /// While Merge is offered, the Point it will keep (anchored, then most constraints, then selection order - see [mergeKeepOrder]); null otherwise. Both
+  /// canvases ring it. Part-feature references are not known here, so in that rare case the server's choice wins.
+  String? get mergeKeepPointId {
+    final ids = _mergeCandidatePointIds;
+    if (ids == null || !_canMerge(ids)) return null;
+    return mergeKeepOrder(pointIds: ids, anchoredIds: _lockedPointIds, constraints: constraints.values, lineEnds: _lineEnds).first;
+  }
+
+  /// Merges the selected Points (or a selected Coincident glyph's two Points) into one. The server picks which stays and refuses what it cannot do (its
+  /// message lands in [errorMessage], nothing changes). Undo restores the whole sketch from the snapshot the server returned, in place.
+  Future<void> mergeSelectedPoints() async {
+    final ids = _mergeCandidatePointIds;
+    if (_busy || _sketchId == null || ids == null || !_canMerge(ids)) return;
+    final sketchId = _sketchId!;
+    await _runGuarded(() async {
+      final result = await _api.mergePoints(sketchId, ids);
+      _pushUndo(() async {
+        await _api.restoreSketchState(sketchId, result.before);
+        await _reloadLocalSketch();
+      });
+      for (final absorbed in result.absorbedIds) {
+        _transientPointUndo.remove(absorbed);
+        _lockedPointIds.remove(absorbed);
+      }
+      await _reloadLocalSketch();
+      _selectionSet.clear();
+      _ribbonVisible = false;
+      await _solveAndTrackDof();
+    });
+  }
+
+  /// Forgets every local copy of the sketch's geometry and loads it again from the server - after a change that rewrites ids under the client's feet
+  /// (a Point merge or its undo): entities' Point ids change and Points disappear or come back.
+  Future<void> _reloadLocalSketch() async {
+    final sketchId = _sketchId;
+    if (sketchId == null) return;
+    points.clear();
+    lines.clear();
+    circles.clear();
+    arcs.clear();
+    ellipses.clear();
+    ellipseArcs.clear();
+    polygons.clear();
+    slots.clear();
+    rectangles.clear();
+    splines.clear();
+    texts.clear();
+    patternInstances.clear();
+    mirrorInstances.clear();
+    constraints.clear();
+    _structuralConstraintIds.clear();
+    _lockedPointIds.clear();
+    if (_originPointId != null) points[_originPointId!] = SketchPointView(id: _originPointId!, x: 0, y: 0);
+    await _loadExistingContent(sketchId);
   }
 
   /// Applies a wired [ConstraintOption] from the flyout - a no-op (besides
@@ -11802,6 +11972,9 @@ class SketchController extends ChangeNotifier {
         break;
       case ConstraintOptionType.tangent:
         await addTangentConstraint();
+        break;
+      case ConstraintOptionType.merge:
+        await mergeSelectedPoints();
         break;
       default:
         break;
