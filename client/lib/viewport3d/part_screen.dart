@@ -83,6 +83,7 @@ import '../materials/part_properties_screen.dart';
 import '../layout/layout_mode.dart';
 import 'desktop_chrome.dart';
 import 'feature_picker_sheet.dart';
+import 'start_button.dart';
 import 'start_menu_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
@@ -2146,6 +2147,82 @@ class _PartScreenState extends State<PartScreen> {
       // the `!_mirrorActive`/`!_patternActive` guards above would
       // otherwise keep this hidden for.
       _sourceFeaturePickerTarget != null;
+
+  /// Whether the Start button shows. This is the Add button's old visibility condition, moved here unchanged: the long list of
+  /// tool sessions and panels that hide it, each with the on-device report that put it there.
+  bool get _startButtonVisible =>
+      !_desktopLayout &&
+      !_extrudeActive &&
+      !_surfaceActive &&
+      !_createPlaneActive &&
+      !_filletActive &&
+      !_chamferActive &&
+      !_revolveActive &&
+      !_sweepActive &&
+      !_loftActive &&
+      !_planarSurfaceActive &&
+      !_revolveSurfaceActive &&
+      !_sweptSurfaceActive &&
+      !_loftSurfaceActive &&
+      !_ruledSurfaceActive &&
+      !_thickenActive &&
+      !_knitSurfaceActive &&
+      !_solidFromSurfacesActive &&
+      !_offsetSurfaceActive &&
+      !_mirrorActive &&
+      !_patternActive &&
+      !_mergeActive &&
+      !_booleanActive &&
+      !_deleteBodyActive &&
+      !_scaleBodyActive &&
+      !_moveBodyActive &&
+      !_deleteFaceActive &&
+      !_moveFaceActive &&
+      !_shellActive &&
+      // Bug fix ("the 'new' FAB should not obscure the
+      // Move/Rotate toolbar"): same "hide the FAB outright"
+      // list every other bottom-docked ResizableToolPanel
+      // tool is already in (see the Measure/Section fix
+      // comment below) - Move/Rotate's own panel was never
+      // added when it was introduced.
+      !_moveRotateComponentActive &&
+      !_profilePickerActive &&
+      !_pathPickerActive &&
+      // On-device feedback ("the tooltip at the top of the
+      // screen blocks the FABs"): plane-selection mode's own
+      // Cancel used to live in a top banner, nowhere near
+      // this corner - now it's in a bottom [PickerRibbon]
+      // (see where `_planeSelectionMode` builds one above),
+      // which this FAB would otherwise sit directly on top
+      // of.
+      !_planeSelectionMode &&
+      // Bug fix (on-device feedback: "the 'new' fab sits on
+      // top of the [section] tool obscuring part of it"):
+      // Measure/Section only ever got added to the *offset*
+      // list above (bottom: 180) - the ResizableToolPanel
+      // both actually render in defaults to 50% of the
+      // viewport (resizable 25%-85%), far taller than a
+      // fixed 180px, so the FAB kept overlapping it. Every
+      // other tool panel avoids this by being in *this* list
+      // instead, hiding the FAB outright - Measure/Section
+      // just never got added here too.
+      !_measureActive &&
+      // Bug report (assembly testing): "the 'new' fab sits
+      // on top of the assembly mode 'pattern component' tool
+      // bar" - same gap as the Measure/Section/Mate panels'
+      // own fixes just above/below - ComponentPatternPanel
+      // was never added to this hide list.
+      !_componentPatternPanelActive &&
+      // Bug report (assembly testing): "the 'new' fab sits
+      // on top of the mates tool bar obscuring part of it" -
+      // `MatePanel` is the same bottom-docked
+      // `ResizableToolPanel` shape as every other tool in
+      // this list (see its own `if (_mateActive)
+      // Positioned.fill(...)` slot above), it just never got
+      // added here - same omission as the Measure/Section
+      // and Move/Rotate fixes right above.
+      !_mateActive &&
+      !_sectionPanelOpen;
 
   /// On-device feedback ("I do want select/orbit-mode switching available
   /// while a tool panel is open"): deliberately a separate, wider-open
@@ -13573,7 +13650,10 @@ class _PartScreenState extends State<PartScreen> {
   /// pop-then-act order the Add menu it replaces used, so a tool opens on a clear screen.
   Future<void> _onStartPressed() async {
     if (_busy) return;
-    setState(() => _startMenuOpen = true);
+    setState(() {
+      _startMenuOpen = true;
+      _quickColumnOpen = false;
+    });
     RibbonCommand? command;
     try {
       command = await showStartMenuSheet(
@@ -13591,8 +13671,48 @@ class _PartScreenState extends State<PartScreen> {
     command.onPressed?.call();
   }
 
-  /// Whether the Start menu is showing (the Start FAB draws an X meanwhile).
+  /// Whether the Start menu is showing (the Start button draws an X meanwhile).
   bool _startMenuOpen = false;
+
+  /// Whether the Start button's quick column is open. It closes by itself when the Start button goes away (a tool
+  /// session started), see [build], and when the Start menu opens.
+  bool _quickColumnOpen = false;
+
+  /// The Orbit / Select button stays on screen by itself while a tool session hides the Start button and its column
+  /// (plan section 5.4): the user still orbits to see what they are about to pick. Outside tool sessions it lives in the
+  /// quick column.
+  bool get _standaloneSelectionModeFabVisible => _selectionModeFabVisible && !_startButtonVisible;
+
+  /// The quick column's buttons, nearest the Start button first. Every one closes the column once it has run.
+  List<QuickColumnButton> _quickColumnButtons() => [
+        if (_viewportFabColumnsVisible)
+          QuickColumnButton(
+            key: const ValueKey('quick-menu-fab'),
+            tooltip: 'Menu',
+            child: const Icon(Icons.menu),
+            onPressed: () => setState(() => _toolbarOpen = true),
+          ),
+        QuickColumnButton(
+          key: const ValueKey('quick-fit-fab'),
+          tooltip: 'Fit',
+          child: const SvgIcon('assets/icons/viewport/viewport_reset_view.svg'),
+          onPressed: () => _viewportKey.currentState?.zoomToFit(),
+        ),
+        if (_selectionModeFabVisible)
+          QuickColumnButton(
+            key: const ValueKey('quick-selection-mode-fab'),
+            tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
+            selected: _selectionMode,
+            // The icon shows the mode a tap will switch *into*: a cursor while in (default) Orbit mode, an orbit glyph
+            // while in Selection mode.
+            child: SvgIcon(
+              _selectionMode
+                  ? 'assets/icons/viewport/viewport_orbit_mode.svg'
+                  : 'assets/icons/viewport/viewport_selection_mode.svg',
+            ),
+            onPressed: _toggleSelectionMode,
+          ),
+      ];
 
   /// The Start menu's last-used tab per lens, for the session.
   final Map<AssemblyLens, String> _startMenuTabByLens = {};
@@ -24051,6 +24171,9 @@ class _PartScreenState extends State<PartScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // The quick column closes when a tool session takes the Start button away, so it is not sitting open when the
+    // session ends (a plain field reset: nothing below reads it before this).
+    if (!_startButtonVisible) _quickColumnOpen = false;
     return PopScope(
       // While choosing a plane for a new Sketch (Stage 10b) or a Sketch to
       // extrude (Prompt D), the device back gesture cancels that mode
@@ -25443,6 +25566,9 @@ class _PartScreenState extends State<PartScreen> {
                   // overlay here.
                   sketchOrientationBasis: _confirmingSketchOrientation ? _pendingOrientationBasis : null,
                   anchorTriadAtOrigin: _anyToolPanelOpen,
+                  // The phone layout's Fit lives in the Start button's quick column; the desktop layout keeps the
+                  // button in the viewport's corner.
+                  showResetViewButton: _desktopLayout,
                 ),
                 // On-device feedback ("move the select/orbit fab to the top
                 // right group of fabs under 'centre view'"): a sibling of
@@ -25465,7 +25591,7 @@ class _PartScreenState extends State<PartScreen> {
                 // [_viewportFabColumnsVisible] with the top-left hamburger/
                 // feature-tree column - see that getter's own doc comment
                 // for why the two corners now genuinely differ.
-                if (_selectionModeFabVisible && !_desktopLayout)
+                if (_standaloneSelectionModeFabVisible && !_desktopLayout)
                   Positioned(
                     top: 56,
                     right: 8,
@@ -25611,6 +25737,10 @@ class _PartScreenState extends State<PartScreen> {
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,
+                    // No hamburger button on the phone layout any more (the quick column opens this), so the panel
+                    // brings its own close icon and starts at the top.
+                    onClose: _desktopLayout ? null : () => setState(() => _toolbarOpen = false),
+                    topInset: _desktopLayout ? 104 : 8,
                     lens: _lens,
                     referencePlanesHidden: _referencePlanesHidden,
                     onToggleReferencePlanes: _onToggleReferencePlanes,
@@ -26562,31 +26692,8 @@ class _PartScreenState extends State<PartScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // On-device feedback ("move the select/orbit fab
-                          // to the top right group of fabs under 'centre
-                          // view'"): the selection/orbit-mode toggle used
-                          // to live here first in this Column - moved to
-                          // [PartViewport]'s own top-right corner (see
-                          // [topRightSecondaryAction] below), directly
-                          // under its "Reset view" FAB. Hamburger/feature-
-                          // tree now lead this Column instead.
-                          // Fix 7: was an IconButton.filled, now a FAB above
-                          // 'feature-tree-fab' in this same Column, matching
-                          // how every other toolbar/viewport toggle here is a
-                          // FAB. Stage 22's _extrudeSketchFeature/_toolbarOpen
-                          // hiding rule applies for the extrude-panel case
-                          // specifically, but never while _toolbarOpen is
-                          // true - the hamburger is the only way to close the
-                          // toolbar once it's open, so it must stay visible
-                          // then regardless of anything else.
-                          if (_toolbarOpen || _extrudeSketchFeature == null)
-                            FloatingActionButton.small(
-                              heroTag: 'hamburger-fab',
-                              tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
-                              onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
-                              child: Icon(_toolbarOpen ? Icons.close : Icons.menu),
-                            ),
-                          const SizedBox(height: 8),
+                          // The hamburger button that led this column is gone: Menu, Fit and Orbit / Select are in the
+                          // Start button's quick column now (`docs/touch-viewport-ux-plan.md`).
                           // Stage 19b Item 1: dedicated secondary FAB,
                           // replacing the hamburger drawer's old "Show
                           // Feature Tree" entry.
@@ -27044,92 +27151,25 @@ class _PartScreenState extends State<PartScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (!_desktopLayout &&
-                      !_extrudeActive &&
-                      !_surfaceActive &&
-                      !_createPlaneActive &&
-                      !_filletActive &&
-                      !_chamferActive &&
-                      !_revolveActive &&
-                      !_sweepActive &&
-                      !_loftActive &&
-                      !_planarSurfaceActive &&
-                      !_revolveSurfaceActive &&
-                      !_sweptSurfaceActive &&
-                      !_loftSurfaceActive &&
-                      !_ruledSurfaceActive &&
-      !_thickenActive &&
-      !_knitSurfaceActive &&
-      !_solidFromSurfacesActive &&
-      !_offsetSurfaceActive &&
-                      !_mirrorActive &&
-                      !_patternActive &&
-                      !_mergeActive &&
-                      !_booleanActive &&
-                      !_deleteBodyActive &&
-                      !_scaleBodyActive &&
-                      !_moveBodyActive &&
-                      !_deleteFaceActive &&
-                      !_moveFaceActive &&
-                      !_shellActive &&
-                      // Bug fix ("the 'new' FAB should not obscure the
-                      // Move/Rotate toolbar"): same "hide the FAB outright"
-                      // list every other bottom-docked ResizableToolPanel
-                      // tool is already in (see the Measure/Section fix
-                      // comment below) - Move/Rotate's own panel was never
-                      // added when it was introduced.
-                      !_moveRotateComponentActive &&
-                      !_profilePickerActive &&
-                      !_pathPickerActive &&
-                      // On-device feedback ("the tooltip at the top of the
-                      // screen blocks the FABs"): plane-selection mode's own
-                      // Cancel used to live in a top banner, nowhere near
-                      // this corner - now it's in a bottom [PickerRibbon]
-                      // (see where `_planeSelectionMode` builds one above),
-                      // which this FAB would otherwise sit directly on top
-                      // of.
-                      !_planeSelectionMode &&
-                      // Bug fix (on-device feedback: "the 'new' fab sits on
-                      // top of the [section] tool obscuring part of it"):
-                      // Measure/Section only ever got added to the *offset*
-                      // list above (bottom: 180) - the ResizableToolPanel
-                      // both actually render in defaults to 50% of the
-                      // viewport (resizable 25%-85%), far taller than a
-                      // fixed 180px, so the FAB kept overlapping it. Every
-                      // other tool panel avoids this by being in *this* list
-                      // instead, hiding the FAB outright - Measure/Section
-                      // just never got added here too.
-                      !_measureActive &&
-                      // Bug report (assembly testing): "the 'new' fab sits
-                      // on top of the assembly mode 'pattern component' tool
-                      // bar" - same gap as the Measure/Section/Mate panels'
-                      // own fixes just above/below - ComponentPatternPanel
-                      // was never added to this hide list.
-                      !_componentPatternPanelActive &&
-                      // Bug report (assembly testing): "the 'new' fab sits
-                      // on top of the mates tool bar obscuring part of it" -
-                      // `MatePanel` is the same bottom-docked
-                      // `ResizableToolPanel` shape as every other tool in
-                      // this list (see its own `if (_mateActive)
-                      // Positioned.fill(...)` slot above), it just never got
-                      // added here - same omission as the Measure/Section
-                      // and Move/Rotate fixes right above.
-                      !_mateActive &&
-                      !_sectionPanelOpen)
-                    // The Start button: opens the Start menu (`docs/touch-viewport-ux-plan.md`). It keeps the old
-                    // "Add" FAB's visibility condition above as it was, and the lens tint that FAB had, so Assembly
-                    // lens still reads at a glance.
-                    FloatingActionButton(
-                      heroTag: 'start-fab',
-                      tooltip: 'Start',
-                      onPressed: _busy ? null : _onStartPressed,
+                  if (_startButtonVisible)
+                    // The Start button and its quick column (`docs/touch-viewport-ux-plan.md`). It keeps the old "Add"
+                    // button's lens tint, so Assembly lens still reads at a glance.
+                    StartButton(
+                      enabled: !_busy,
+                      menuOpen: _startMenuOpen,
+                      columnOpen: _quickColumnOpen,
+                      onStart: _onStartPressed,
+                      onColumnOpenChanged: (open) => setState(() => _quickColumnOpen = open),
+                      onColumnOpenedByUser: () => unawaited(ControlsPreferences.noteQuickColumnOpened()),
+                      showSwipeHint: ControlsPreferences.showQuickColumnHint,
+                      quickButtons: _quickColumnButtons(),
                       backgroundColor: _lens == AssemblyLens.assembly
                           ? assemblyLensButtonColors(Theme.of(context).colorScheme).$1
                           : null,
                       foregroundColor: _lens == AssemblyLens.assembly
                           ? assemblyLensButtonColors(Theme.of(context).colorScheme).$2
                           : null,
-                      child: Icon(_startMenuOpen ? Icons.close : Icons.apps),
+                      modeBadge: _selectionMode ? const SvgIcon('assets/icons/viewport/viewport_selection_mode.svg') : null,
                     ),
                   // On-device feedback ("the tooltip at the top of the
                   // screen blocks the FABs"): the profile/path/Mirror-

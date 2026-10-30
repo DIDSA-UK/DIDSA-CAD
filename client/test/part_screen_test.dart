@@ -992,7 +992,7 @@ Future<void> _pumpUntil(WidgetTester tester, bool Function() done, {int maxPumps
 }
 
 /// The phone layout's Start button.
-final _startFab = find.byWidgetPredicate((w) => w is FloatingActionButton && w.heroTag == 'start-fab');
+final _startFab = find.byKey(const ValueKey('start-fab'));
 
 Future<void> _settleSheet(WidgetTester tester) async {
   await tester.pump();
@@ -1019,6 +1019,26 @@ Future<void> tapStartCommand(WidgetTester tester, String label, {String? tab}) a
   await tester.tap(tile);
   await _settleSheet(tester);
 }
+
+/// Opens the Start button's quick column the way a user can without a precise swipe: a long press on Start.
+Future<void> openQuickColumn(WidgetTester tester) async {
+  if (find.byKey(const ValueKey('quick-column')).evaluate().isNotEmpty) return;
+  await tester.longPress(_startFab);
+  await _settleSheet(tester);
+}
+
+/// Taps the quick-column button [key] (opening the column first), then lets it close.
+Future<void> tapQuickButton(WidgetTester tester, String key) async {
+  await openQuickColumn(tester);
+  await tester.tap(find.byKey(ValueKey(key)));
+  await _settleSheet(tester);
+}
+
+/// Flips Orbit / Select through the quick column.
+Future<void> toggleSelectionMode(WidgetTester tester) => tapQuickButton(tester, 'quick-selection-mode-fab');
+
+/// Opens the toolbar (File, View, Selection Filters) through the quick column's Menu button.
+Future<void> openToolbar(WidgetTester tester) => tapQuickButton(tester, 'quick-menu-fab');
 
 /// Switches the lens through the Start menu's Part / Assembly switch ([to] is 'Part' or 'Assembly') and closes the menu.
 Future<void> switchLens(WidgetTester tester, String to) async {
@@ -1109,6 +1129,8 @@ void main() {
       // border yet. The FAB's glyph is an SVG asset, not a named IconData
       // (see the 'exit-sketch-fab' heroTag predicate comment below) - byIcon
       // no longer matches it, so this checks the SvgIcon's own asset path.
+      // The button now lives in the Start button's quick column (a long press opens it).
+      await openQuickColumn(tester);
       expect(find.byTooltip('Switch to selection mode'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
@@ -1118,22 +1140,26 @@ void main() {
       );
 
       await tester.tap(find.byTooltip('Switch to selection mode'));
-      await tester.pump();
+      await _settleSheet(tester);
 
+      // Every quick button closes the column once it has run: reopen it to read the new state.
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      await openQuickColumn(tester);
       expect(find.byTooltip('Switch to orbit mode'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
           (w) => w is SvgIcon && w.asset == 'assets/icons/viewport/viewport_orbit_mode.svg',
         ),
-        findsOneWidget,
+        findsWidgets,
       );
       expect(tester.takeException(), isNull);
 
       // Switching back to Orbit mode removes the FAB's active styling and
       // the viewport's tinted border again.
       await tester.tap(find.byTooltip('Switch to orbit mode'));
-      await tester.pump();
+      await _settleSheet(tester);
 
+      await openQuickColumn(tester);
       expect(find.byTooltip('Switch to selection mode'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
@@ -1202,9 +1228,7 @@ void main() {
       tester,
     ) async {
       await open(tester);
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('View'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -1212,7 +1236,7 @@ void main() {
       await tester.pump();
       await tester.tap(find.text('Hide Reference Planes'));
       await tester.pump();
-      await tester.tap(find.byTooltip('Close toolbar'));
+      await tester.tap(find.byKey(const ValueKey('toolbar-close')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(planesHidden(tester), isTrue, reason: 'the user hid them');
@@ -1229,8 +1253,7 @@ void main() {
 
     testWidgets('in Selection mode a plane tap starts the sketch instead of just selecting the plane', (tester) async {
       await open(tester);
-      await tester.tap(find.byTooltip('Switch to selection mode'));
-      await tester.pump();
+      await toggleSelectionMode(tester);
       await startNewSketch(tester);
 
       tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
@@ -1268,9 +1291,7 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
+    await openToolbar(tester);
 
     // The toolbar's "View" section is an ExpansionTile, collapsed by
     // default - its children (including "Hide Reference Planes") aren't
@@ -1329,9 +1350,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
 
       // The toolbar's "View" section is an ExpansionTile, collapsed by
       // default - its children (including the render-mode entries) aren't
@@ -1517,6 +1536,127 @@ void main() {
       expect(find.descendant(of: _startFab, matching: find.byIcon(Icons.close)), findsNothing);
     });
 
+    testWidgets('an idle phone screen has no top-right buttons, no hamburger and no stand-alone Orbit / Select', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+      expect(find.byTooltip('Reset view'), findsNothing, reason: 'Fit is in the quick column');
+      expect(find.byTooltip('Switch to selection mode'), findsNothing);
+      expect(find.byTooltip('Open toolbar'), findsNothing);
+      expect(find.byTooltip('Feature tree'), findsOneWidget, reason: 'the tree button stays top left');
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+    });
+
+    testWidgets('a long press opens the quick column: Menu, Fit and Orbit / Select, nearest Start first', (tester) async {
+      await pumpScreen(tester);
+      await openQuickColumn(tester);
+      final start = tester.getTopLeft(_startFab).dy;
+      final menu = tester.getTopLeft(find.byKey(const ValueKey('quick-menu-fab'))).dy;
+      final fit = tester.getTopLeft(find.byKey(const ValueKey('quick-fit-fab'))).dy;
+      final select = tester.getTopLeft(find.byKey(const ValueKey('quick-selection-mode-fab'))).dy;
+      expect(menu, lessThan(start));
+      expect(fit, lessThan(menu));
+      expect(select, lessThan(fit));
+    });
+
+    testWidgets('a swipe up from Start opens the column', (tester) async {
+      await pumpScreen(tester);
+      await tester.drag(_startFab, const Offset(0, -80));
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsOneWidget);
+      expect(find.byKey(const ValueKey('start-menu')), findsNothing, reason: 'a swipe is not a tap');
+    });
+
+    testWidgets('Menu opens the toolbar and closes the column; the toolbar closes with its own icon', (tester) async {
+      await pumpScreen(tester);
+      await openToolbar(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(tester.widget<PartToolbar>(find.byType(PartToolbar)).visible, isTrue);
+      await tester.tap(find.byKey(const ValueKey('toolbar-close')));
+      await _settleSheet(tester);
+      expect(tester.widget<PartToolbar>(find.byType(PartToolbar)).visible, isFalse);
+    });
+
+    testWidgets('Fit closes the column', (tester) async {
+      await pumpScreen(tester);
+      await tapQuickButton(tester, 'quick-fit-fab');
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Orbit / Select flips the mode, closes the column, and Start shows the mode', (tester) async {
+      await pumpScreen(tester);
+      expect(find.byKey(const ValueKey('start-mode-badge')), findsNothing);
+      await toggleSelectionMode(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isTrue);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(find.byKey(const ValueKey('start-mode-badge')), findsOneWidget);
+      await toggleSelectionMode(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isFalse);
+      expect(find.byKey(const ValueKey('start-mode-badge')), findsNothing);
+    });
+
+    testWidgets('tapping X closes the column, and tapping Start with the column closed opens the menu', (tester) async {
+      await pumpScreen(tester);
+      await openQuickColumn(tester);
+      await tester.tap(_startFab);
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(find.byKey(const ValueKey('start-menu')), findsNothing, reason: 'X never opens the menu');
+      await openStartMenu(tester);
+      expect(find.byKey(const ValueKey('start-menu')), findsOneWidget);
+    });
+
+    testWidgets('the column closes when a tool session starts and is still closed when it ends', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await openQuickColumn(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await _settleSheet(tester);
+      await tester.longPress(find.text('Sketch 1'));
+      await _settleSheet(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await _settleSheet(tester);
+      await tester.tap(find.text('Extrude'));
+      await _settleSheet(tester);
+      expect(find.byTooltip('Start'), findsNothing, reason: 'the Extrude session hides Start');
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+
+      await tester.ensureVisible(find.text('Cancel').last);
+      await tester.tap(find.text('Cancel').last);
+      await _settleSheet(tester);
+      expect(find.byTooltip('Start'), findsOneWidget);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing, reason: 'it does not come back by itself');
+    });
+
+    testWidgets('the Start menu opening closes the column', (tester) async {
+      await pumpScreen(tester);
+      await openQuickColumn(tester);
+      // The X closes the column; Start (now idle) opens the menu. A column that was left open never survives the menu.
+      await tester.tap(_startFab);
+      await _settleSheet(tester);
+      await openStartMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('start-menu-close')));
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+    });
+
     testWidgets('the last tab used is remembered per lens for the session', (tester) async {
       await pumpScreen(tester);
       await openStartMenu(tester);
@@ -1569,11 +1709,14 @@ void main() {
     // last (previously "unlocked") one.
     expect(find.text('Editable'), findsNWidgets(2));
 
-    // The hamburger toggle sits in the same top-left corner as the tree's
-    // header, so it's hidden while the tree is open to avoid overlapping
-    // its text - the tree's own X button is the way to close it instead.
-    expect(find.byTooltip('Open toolbar'), findsNothing);
+    // The toolbar's Menu button is left out of the quick column while the tree is open (the tree's own X button is the
+    // way to close it instead); the column's other buttons are still there.
+    await openQuickColumn(tester);
+    expect(find.byKey(const ValueKey('quick-menu-fab')), findsNothing);
+    expect(find.byKey(const ValueKey('quick-fit-fab')), findsOneWidget);
     expect(find.byTooltip('Close toolbar'), findsNothing);
+    await tester.tap(_startFab); // the X closes the column again
+    await _settleSheet(tester);
 
     await tester.tap(find.text('Sketch 1'));
     // B4: true SolidWorks-style rollback means a tap on a locked Feature no
@@ -3819,7 +3962,7 @@ void main() {
 
       // Still hidden - opening either would abandon the in-progress Extrude.
       expect(find.byTooltip('Feature tree'), findsNothing);
-      expect(find.byTooltip('Open toolbar'), findsNothing);
+      expect(find.byKey(const ValueKey('quick-menu-fab')), findsNothing);
       expect(find.byTooltip('Close toolbar'), findsNothing);
 
       // But the select/orbit toggle is still there and still works. Extrude
@@ -4401,9 +4544,7 @@ void main() {
       expect(viewport.isPerspective, isFalse);
 
       // Open the toolbar via the hamburger toggle button.
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
 
       // Expand the View sub-menu.
       await tester.tap(find.text('View'));
@@ -5060,8 +5201,7 @@ void main() {
       // already reachable, same as every other test in this group reaches
       // `AssemblyTreePanel.onOccurrenceLongPress` directly rather than via
       // an on-screen tap into the (slid-off-by-default) tree.
-      await tester.tap(find.byTooltip('Switch to selection mode'));
-      await tester.pump();
+      await toggleSelectionMode(tester);
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isTrue);
 
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
@@ -6063,9 +6203,7 @@ void main() {
         // given a path in the same step - Save All needs no further prompt
         // for either (the gap `docs/save-project-pipeline-findings.md` §3
         // originally flagged: only the child ever used to get one).
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -6108,9 +6246,7 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
 
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -6161,9 +6297,7 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
 
         await tester.tap(find.text('File'));
         await tester.pump();
@@ -6269,9 +6403,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6327,9 +6459,7 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -6367,9 +6497,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6440,9 +6568,7 @@ void main() {
 
         // Save All first, so `part-2` already has a known on-disk file for
         // Rename to also rename.
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -6604,9 +6730,7 @@ void main() {
 
       // Save All first, to establish the Project and give both Parts a
       // known path.
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6689,9 +6813,7 @@ void main() {
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
       // Save All first, to establish the Project and a known path.
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6783,9 +6905,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -7159,7 +7279,7 @@ void main() {
       expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
       expect(find.text('Build Tree'), findsOneWidget);
       expect(find.byTooltip('Start'), findsNothing);
-      expect(find.byTooltip('Open toolbar'), findsNothing);
+      expect(find.byKey(const ValueKey('quick-menu-fab')), findsNothing);
       expect(find.text('Nothing selected'), findsOneWidget);
       // The tree is docked, so it carries no Close button.
       expect(find.byTooltip('Close'), findsNothing);
@@ -7297,9 +7417,7 @@ void main() {
       // Save All - both Parts were already auto-pathed by Create Component
       // itself (§3.1), so this succeeds with no further prompt - a full,
       // un-failed save clears the indicator.
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -7382,9 +7500,7 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
