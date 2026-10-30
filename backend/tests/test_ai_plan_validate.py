@@ -427,6 +427,51 @@ def test_edge_from_sketch_point_selects_one_specific_corner_edge() -> None:
     assert resolved_edges[0]["shape_type"] == "edge"
 
 
+def test_edge_from_sketch_point_selects_a_corner_of_a_hole_loop() -> None:
+    """A hollow section drawn as two nested rectangles in ONE Sketch: the inner
+    loop becomes a hole of the extruded profile, and its own corner points are
+    just as nameable as the outer loop's (previously only the outer loop's
+    points were matched, so filleting an inner corner failed with
+    `edge_selector_no_matching_edges`)."""
+    part = _create_part()
+
+    def corner(local_id: str, x: float, y: float) -> dict:
+        return {"local_id": local_id, "kind": "sketch_point", "sketch_feature_id": "sk1", "x": x, "y": y}
+
+    steps = [
+        {"local_id": "sk1", "kind": "sketch", "plane": "XY"},
+        corner("o1", 0, 0),
+        corner("o2", 50, 0),
+        corner("o3", 50, 50),
+        corner("o4", 0, 50),
+        corner("i1", 4, 4),
+        corner("i2", 46, 4),
+        corner("i3", 46, 46),
+        corner("i4", 4, 46),
+        {"local_id": "r_outer", "kind": "sketch_rectangle", "sketch_feature_id": "sk1", "corner_point_ids": ["o1", "o2", "o3", "o4"]},
+        {"local_id": "r_inner", "kind": "sketch_rectangle", "sketch_feature_id": "sk1", "corner_point_ids": ["i1", "i2", "i3", "i4"]},
+        _extrude_step("tube", "sk1") | {"end_distance": 100},
+        {
+            "local_id": "fo1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "tube", "sketch_point_ref": "o1"},
+            "radius": 6,
+        },
+        {
+            "local_id": "fi1",
+            "kind": "fillet",
+            "edges": {"selector": "edge_from_sketch_point", "of": "tube", "sketch_point_ref": "i1"},
+            "radius": 2,
+        },
+    ]
+
+    results = _results_by_local_id(_validate(part["id"], steps))
+
+    assert results["fo1"]["ok"] is True, results["fo1"]
+    assert results["fi1"]["ok"] is True, results["fi1"]
+    assert len(results["fi1"]["resolved_edges"]) == 1
+
+
 def test_edge_from_sketch_point_discriminates_between_different_corners() -> None:
     """The real point of Workstream 12 over the four heuristics: two
     different corners must resolve to two different real edges, not the
