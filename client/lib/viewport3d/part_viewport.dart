@@ -628,6 +628,11 @@ class PartViewport extends StatefulWidget {
   /// this up renders/behaves exactly as before this tool existed.
   final List<SectionPlane> sectionPlanes;
 
+  /// Whether the section planes' quads are drawn. The clip itself always
+  /// follows [sectionPlanes]; once the section panel is confirmed closed the
+  /// cutaway stays but the plane quads are hidden.
+  final bool showSectionPlanes;
+
   /// Which of [sectionPlanes] is the one [SectionPanel] is currently editing
   /// - drives which one gets its own gizmo drawn/hit-tested (only one gizmo
   /// is ever shown at a time), and which one a face/plane tap while
@@ -1060,6 +1065,7 @@ class PartViewport extends StatefulWidget {
     this.onSketchEntityTap,
     this.hasEntityNearSketchTap,
     this.sectionPlanes = const [],
+    this.showSectionPlanes = true,
     this.activeSectionId,
     this.sectionPlacementActive = false,
     this.onSectionPlacementTap,
@@ -2032,7 +2038,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.componentGizmoCues != oldWidget.componentGizmoCues) {
       setState(_syncComponentGizmoNode);
     }
-    if (widget.sectionPlanes != oldWidget.sectionPlanes || widget.activeSectionId != oldWidget.activeSectionId) {
+    if (widget.sectionPlanes != oldWidget.sectionPlanes ||
+        widget.activeSectionId != oldWidget.activeSectionId ||
+        widget.showSectionPlanes != oldWidget.showSectionPlanes) {
       setState(_syncSectionNodes);
     }
     // Bug fix, defense in depth: if the section tool becomes inactive or
@@ -3315,7 +3323,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (gizmoNode != null) scene.remove(gizmoNode);
 
     _sectionQuadNodes = {
-      for (final plane in widget.sectionPlanes)
+      for (final plane in widget.showSectionPlanes ? widget.sectionPlanes : const <SectionPlane>[])
         plane.id: buildSectionPlaneQuadNode(
           plane,
           active: plane.id == widget.activeSectionId,
