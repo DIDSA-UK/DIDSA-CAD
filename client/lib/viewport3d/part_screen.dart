@@ -25779,6 +25779,7 @@ class _PartScreenState extends State<PartScreen> {
                   // open with an active section, not just while a gizmo is
                   // present (mirrors `MoveBodyPanel`'s own always-live pick).
                   sectionPlanes: _sectionPlanes,
+                  showSectionPlanes: _sectionPanelOpen,
                   activeSectionId: _activeSectionId,
                   sectionPlacementActive: _sectionPanelOpen && _activeSectionId != null,
                   onSectionPlacementTap: _onSectionPlacementTap,
