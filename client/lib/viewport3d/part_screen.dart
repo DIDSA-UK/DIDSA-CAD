@@ -64,7 +64,6 @@ import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
 import '../vr_pairing/headset_pairing_screen.dart';
 import 'action_sheet.dart';
-import 'add_button_menu.dart';
 import 'assembly_tree_panel.dart';
 import 'body_naming.dart';
 import 'boolean_panel.dart';
@@ -84,6 +83,7 @@ import '../materials/part_properties_screen.dart';
 import '../layout/layout_mode.dart';
 import 'desktop_chrome.dart';
 import 'feature_picker_sheet.dart';
+import 'start_menu_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
 import 'fill_surface_panel.dart';
@@ -2202,21 +2202,6 @@ class _PartScreenState extends State<PartScreen> {
       _sweptSurfaceSketchPickerActive ||
       _sourceFeaturePickerTarget != null;
 
-  /// The Measure FAB - available whenever nothing else is mid-flow, plus
-  /// always while Measure itself is active (so it stays tappable to turn
-  /// back off). Unlike [_selectionModeFabVisible] (a pure gesture-mode
-  /// toggle that stays meaningful during *any* other tool's own picking
-  /// session), Measure hides itself while another tool ([_anyToolPanelOpen])
-  /// is open rather than force-closing it - every other tool's own Cancel
-  /// path does real async cleanup (deleting a preview Feature, reverting a
-  /// PATCH, popping its filter override), and there's no existing
-  /// precedent in this app for a second tool's FAB reaching in and
-  /// triggering that teardown on another tool's behalf.
-  bool get _measureFabVisible =>
-      !_featureTreePanelVisible &&
-      !_confirmingSketchOrientation &&
-      (_measureActive || !_anyToolPanelOpen);
-
   /// Bug fix ("XYZ triad hidden behind any open tool panel",
   /// `docs/roadmap.md`): every tool panel (`ExtrudePanel`, `CreatePlanePanel`,
   /// `FilletPanel`, `ChamferPanel`, `RevolvePanel`, `SweepPanel`,
@@ -3673,15 +3658,6 @@ class _PartScreenState extends State<PartScreen> {
     sketchCircle: false,
     plane: false,
   );
-
-  /// Sectioning Tool's own toolbar entry point - an always-available toggle
-  /// FAB, same precedent as [_measureFabVisible]/[_toggleMeasure] (not
-  /// selection-gated, per this tool's own brief: "always available, like
-  /// Create Plane" - Measure is this app's actual existing precedent for
-  /// that shape, `Create Plane` itself is selection-gated via
-  /// `selection_actions.dart`'s context menu instead).
-  bool get _sectionFabVisible =>
-      !_featureTreePanelVisible && !_confirmingSketchOrientation && (_sectionPanelOpen || !_anyToolPanelOpen);
 
   void _toggleSectionPanel() {
     if (_sectionPanelOpen) {
@@ -13380,8 +13356,8 @@ class _PartScreenState extends State<PartScreen> {
 
   /// A tap that landed on a reference plane rectangle in the 3D viewport.
   ///
-  /// During [_planeSelectionMode] (entered via the "Add" FAB's flyout - see
-  /// [_onAddPressed]), this immediately creates a SketchFeature on the
+  /// During [_planeSelectionMode] (entered via the Start menu's New Sketch - see
+  /// [_onStartPressed]), this immediately creates a SketchFeature on the
   /// tapped plane and navigates to its canvas, exiting the mode - per the
   /// Stage 10b brief, that flow has no separate confirmation step. Otherwise
   /// it's the pre-existing free-tap flow: selects the plane (brighter
@@ -13592,28 +13568,34 @@ class _PartScreenState extends State<PartScreen> {
     if (_sketchPickerActive) _cancelSketchPicker();
   }
 
-  /// Opens the "Add" FAB's flyout - Part lens shows the existing Feature-
-  /// authoring flyout ([showAddButtonMenu], unchanged); Assembly lens shows
-  /// [showAssemblyAddMenu] instead (`docs/assembly-scope.md` §3's Phase
-  /// 3b), closing the gap Phase 3 left open (no in-UI way to add a first
-  /// component). "New Sketch" enters [_planeSelectionMode] rather than
-  /// acting directly (Stage 10b); Stage 19b Item 3's "Feature" opens the
-  /// second-level Feature picker instead.
-  Future<void> _onAddPressed() async {
+  /// The Start FAB: opens the Start menu (`docs/touch-viewport-ux-plan.md` section 4), which lists the same commands as the
+  /// desktop ribbon ([_ribbonTabs] with `touch: true`) and runs the tapped one once the sheet has closed - the same
+  /// pop-then-act order the Add menu it replaces used, so a tool opens on a clear screen.
+  Future<void> _onStartPressed() async {
     if (_busy) return;
-    if (_lens == AssemblyLens.assembly) {
-      await _onAssemblyAddPressed();
-      return;
+    setState(() => _startMenuOpen = true);
+    RibbonCommand? command;
+    try {
+      command = await showStartMenuSheet(
+        context,
+        tabs: () => _ribbonTabs(touch: true),
+        lens: () => _lens,
+        onLensSwitch: _toggleAssemblyLens,
+        initialTabId: (lens) => _startMenuTabByLens[lens],
+        onTabChanged: (lens, id) => _startMenuTabByLens[lens] = id,
+      );
+    } finally {
+      if (mounted) setState(() => _startMenuOpen = false);
     }
-    final action = await showAddButtonMenu(context);
-    if (!mounted || action == null) return;
-    switch (action) {
-      case AddButtonMenuAction.newSketch:
-        _startNewSketchPicker();
-      case AddButtonMenuAction.feature:
-        await _onFeaturePressed();
-    }
+    if (!mounted || command == null) return;
+    command.onPressed?.call();
   }
+
+  /// Whether the Start menu is showing (the Start FAB draws an X meanwhile).
+  bool _startMenuOpen = false;
+
+  /// The Start menu's last-used tab per lens, for the session.
+  final Map<AssemblyLens, String> _startMenuTabByLens = {};
 
   /// "New Sketch": pick the plane or face to sketch on.
   void _startNewSketchPicker() {
@@ -13623,31 +13605,6 @@ class _PartScreenState extends State<PartScreen> {
       _toolbarOpen = false;
       _featureTreeVisible = false;
     });
-  }
-
-  /// Assembly support Phase 3b/15 (`docs/assembly-scope.md` §3/§6): the
-  /// "Add" FAB's Assembly-lens branch - shows [showAssemblyAddMenu] and
-  /// acts on whichever entry was tapped. Every entry is real as of Phase 15
-  /// (`createNewComponent` was the last one still disabled, needing a
-  /// multi-file save flow this app didn't have yet - see
-  /// [_onCreateNewComponentPressed]).
-  Future<void> _onAssemblyAddPressed() async {
-    final action = await showAssemblyAddMenu(context);
-    if (!mounted || action == null) return;
-    switch (action) {
-      case AssemblyAddMenuAction.insertExistingComponent:
-        await _onInsertComponentPressed();
-      case AssemblyAddMenuAction.addMate:
-        _openMate();
-      case AssemblyAddMenuAction.patternComponent:
-        _openComponentPattern();
-      case AssemblyAddMenuAction.createNewComponent:
-        await _onCreateNewComponentPressed();
-      case AssemblyAddMenuAction.appearance:
-        await _openAppearance();
-      case AssemblyAddMenuAction.scenes:
-        await _openScenes();
-    }
   }
 
   /// "Add Component" (bottom-up insert an existing `.didsa` file) - the
@@ -23238,7 +23195,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [_selectionMode] off, see that case's own doc comment for why a
   /// manipulator tool left in Selection mode broke orbiting entirely).
   /// Mate (Phase 6) opens the same generic 2-entity picking
-  /// flow [_onAssemblyAddPressed]'s own "Add Mate" entry does -
+  /// flow the Start menu's Mate tile does -
   /// `occurrence` itself isn't pre-selected into it (a Mate targets a
   /// specific face/edge/vertex, not a whole component), so long-pressing a
   /// tree row is only a discoverable second door into the identical flow,
@@ -24496,7 +24453,11 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// The ribbon's tabs: one per kind of work, each button the action the phone layout reaches by FAB or sheet.
-  List<RibbonTabData> _ribbonTabs() {
+  ///
+  /// With [touch] (the phone layout's Start menu) the Features tab lists every feature in [kFeatureGroups] instead of the
+  /// short desktop list, and tabs with nothing to do in the current lens are left out. Every command and handler is the
+  /// same either way.
+  List<RibbonTabData> _ribbonTabs({bool touch = false}) {
     final part = _lens == AssemblyLens.part;
     final assembly = _lens == AssemblyLens.assembly;
     final busy = _busy;
@@ -24507,6 +24468,11 @@ class _PartScreenState extends State<PartScreen> {
           svg: 'assets/icons/feature/$svg.svg',
           onPressed: when(part, () => unawaited(_runFeatureAction(action))),
         );
+    RibbonCommand featureAt(FeatureEntrySpec entry) => RibbonCommand(
+          label: entry.label,
+          svg: entry.icon,
+          onPressed: when(part, () => unawaited(_runFeatureAction(entry.action))),
+        );
     RibbonCommand standardView(String label, StandardView view, String keys) => RibbonCommand(
           label: label,
           icon: Icons.view_in_ar_outlined,
@@ -24514,11 +24480,23 @@ class _PartScreenState extends State<PartScreen> {
           onPressed: viewport == null ? null : () => unawaited(viewport.animateToStandardView(view)),
         );
 
-    return [
+    final tabs = [
       RibbonTabData(
         id: 'features',
         label: 'Features',
-        groups: [
+        groups: touch
+            ? [
+                RibbonGroup([
+                  RibbonCommand(
+                    label: 'New Sketch',
+                    svg: 'assets/icons/feature/feature_new_sketch.svg',
+                    onPressed: when(part, _startNewSketchPicker),
+                  ),
+                ]),
+                for (final group in kFeatureGroups)
+                  RibbonGroup([for (final entry in group.entries) featureAt(entry)], title: group.title),
+              ]
+            : [
           RibbonGroup([
             RibbonCommand(
               label: 'New Sketch',
@@ -24710,6 +24688,9 @@ class _PartScreenState extends State<PartScreen> {
         ],
       ),
     ];
+    if (!touch) return tabs;
+    final shown = part ? const {'features', 'sketch', 'evaluate', 'view'} : const {'assembly', 'evaluate', 'view'};
+    return [for (final tab in tabs) if (shown.contains(tab.id)) tab];
   }
 
   /// The ribbon's body: the active tab's buttons. The tabs themselves sit in the app bar ([_buildDesktopAppBarTitle]).
@@ -25504,51 +25485,6 @@ class _PartScreenState extends State<PartScreen> {
                               ? 'assets/icons/viewport/viewport_orbit_mode.svg'
                               : 'assets/icons/viewport/viewport_selection_mode.svg',
                         ),
-                      ),
-                    ),
-                  ),
-                // Measure tool: an always-available toggle FAB, same
-                // top-right stack as the selection-mode FAB directly above -
-                // `top: 104` is that FAB's own `top: 56` plus its 40px
-                // `FloatingActionButton.small` height plus the 8px gap this
-                // Column's other FABs already use.
-                if (_measureFabVisible && !_desktopLayout)
-                  Positioned(
-                    top: 104,
-                    right: 8,
-                    child: SafeArea(
-                      bottom: false,
-                      child: FloatingActionButton.small(
-                        heroTag: 'measure-fab',
-                        tooltip: _measureActive ? 'Exit measure' : 'Measure',
-                        backgroundColor:
-                            _measureActive ? Theme.of(context).colorScheme.primaryContainer : null,
-                        onPressed: _busy ? null : _toggleMeasure,
-                        child: const SvgIcon('assets/icons/viewport/viewport_measure.svg'),
-                      ),
-                    ),
-                  ),
-                // Sectioning Tool: mirrors the Measure FAB immediately
-                // above exactly (same always-available precedent - see
-                // [_sectionFabVisible]'s own doc comment) - `top: 152` is
-                // that FAB's own `top: 104` plus its 40px height plus the
-                // same 8px gap. A plain Material [Icon] (`content_cut`)
-                // rather than a new [SvgIcon] asset - no dedicated section-
-                // tool icon exists in this app's `assets/icons/viewport/`
-                // set yet, and adding one is outside this pass's scope.
-                if (_sectionFabVisible && !_desktopLayout)
-                  Positioned(
-                    top: 152,
-                    right: 8,
-                    child: SafeArea(
-                      bottom: false,
-                      child: FloatingActionButton.small(
-                        heroTag: 'section-fab',
-                        tooltip: _sectionPanelOpen ? 'Close Section' : 'Section',
-                        backgroundColor:
-                            _sectionPanelOpen ? Theme.of(context).colorScheme.primaryContainer : null,
-                        onPressed: _busy ? null : _toggleSectionPanel,
-                        child: const Icon(Icons.content_cut),
                       ),
                     ),
                   ),
@@ -26682,48 +26618,6 @@ class _PartScreenState extends State<PartScreen> {
                                   : null,
                               child: const SvgIcon('assets/icons/feature/feature_tree.svg'),
                             ),
-                          const SizedBox(height: 8),
-                          // Assembly support Phase 3: [_lens]'s own toggle -
-                          // lives in this same Column as the hamburger/
-                          // feature-tree FABs above, same "hidden while the
-                          // toolbar is open" rule as the feature-tree FAB
-                          // just above (its own tooltip/icon flips with
-                          // [_lens] so the button always names the *other*
-                          // lens - the one tapping it switches to).
-                          if (!_toolbarOpen)
-                            FloatingActionButton.small(
-                              heroTag: 'assembly-lens-fab',
-                              tooltip: _lens == AssemblyLens.part ? 'Assembly tree' : 'Feature tree',
-                              onPressed: _toggleAssemblyLens,
-                              // Phase 3b lens theming (`docs/assembly-
-                              // scope.md` §3): this button is itself the
-                              // clearest place to signal "you're in
-                              // Assembly lens now" - tinted with the same
-                              // accent `PartToolbar`'s border and
-                              // `AssemblyTreePanel`'s header use, reverting
-                              // to the FAB's own default color (`null`) in
-                              // Part lens.
-                              //
-                              // Bug report (assembly testing): "lighter tone
-                              // of the same reddish colour closer to the
-                              // tone of the blue buttons in part lens" - was
-                              // [assemblyLensAccentColor]'s bare `tertiary`
-                              // (a saturated, darker red than the light
-                              // `primaryContainer` blue Part lens buttons
-                              // default to); now [assemblyLensButtonColors]'
-                              // `tertiaryContainer`/`onTertiaryContainer`
-                              // pair, the equivalent lighter "container"
-                              // tone - see that function's own doc comment.
-                              backgroundColor: _lens == AssemblyLens.assembly
-                                  ? assemblyLensButtonColors(Theme.of(context).colorScheme).$1
-                                  : null,
-                              foregroundColor: _lens == AssemblyLens.assembly
-                                  ? assemblyLensButtonColors(Theme.of(context).colorScheme).$2
-                                  : null,
-                              child: Icon(
-                                _lens == AssemblyLens.part ? Icons.view_in_ar_outlined : Icons.category_outlined,
-                              ),
-                            ),
                           // Assembly support Phase 5, widened by assembly-audit
                           // gap `[27]` (`docs/assembly-scope.md`): "local
                           // component-transform undo built in this phase, not
@@ -27222,24 +27116,20 @@ class _PartScreenState extends State<PartScreen> {
                       // and Move/Rotate fixes right above.
                       !_mateActive &&
                       !_sectionPanelOpen)
+                    // The Start button: opens the Start menu (`docs/touch-viewport-ux-plan.md`). It keeps the old
+                    // "Add" FAB's visibility condition above as it was, and the lens tint that FAB had, so Assembly
+                    // lens still reads at a glance.
                     FloatingActionButton(
-                      heroTag: 'add-fab',
-                      tooltip: 'Add',
-                      onPressed: _busy ? null : _onAddPressed,
-                      // Phase 3b lens theming: same accent as the lens-
-                      // toggle FAB above - this is the FAB whose own flyout
-                      // changes shape between lenses (Feature tools vs Add
-                      // Component/Mate/Pattern), so it gets the same signal.
-                      // Bug report (assembly testing): now the lighter
-                      // `tertiaryContainer`/`onTertiaryContainer` pair - see
-                      // [assemblyLensButtonColors]'s own doc comment.
+                      heroTag: 'start-fab',
+                      tooltip: 'Start',
+                      onPressed: _busy ? null : _onStartPressed,
                       backgroundColor: _lens == AssemblyLens.assembly
                           ? assemblyLensButtonColors(Theme.of(context).colorScheme).$1
                           : null,
                       foregroundColor: _lens == AssemblyLens.assembly
                           ? assemblyLensButtonColors(Theme.of(context).colorScheme).$2
                           : null,
-                      child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
+                      child: Icon(_startMenuOpen ? Icons.close : Icons.apps),
                     ),
                   // On-device feedback ("the tooltip at the top of the
                   // screen blocks the FABs"): the profile/path/Mirror-
