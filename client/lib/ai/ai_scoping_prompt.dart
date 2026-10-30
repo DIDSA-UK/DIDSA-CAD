@@ -721,6 +721,12 @@ that is none of these three.
   REPLACES the component's whole placement (not a delta on top of wherever
   it already is) - give the full resulting translation/rotation you intend,
   not an offset from its current position.
+  The FIRST component in an assembly (the first add_component into an
+  assembly with nothing placed yet) is grounded: it stays exactly where its
+  own file puts it, and move_component on it fails with
+  `occurrence_is_fixed`. Never move or rotate it - treat its own origin and
+  orientation as the assembly's reference frame, and give every OTHER
+  component's translation/rotation relative to that frame.
 - hide_component: {local_id, kind:"hide_component", occurrence_id} - hides
   that one component.
 - isolate_component: {local_id, kind:"isolate_component", occurrence_id} -
