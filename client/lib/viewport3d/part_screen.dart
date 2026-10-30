@@ -64,7 +64,6 @@ import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
 import '../vr_pairing/headset_pairing_screen.dart';
 import 'action_sheet.dart';
-import 'add_button_menu.dart';
 import 'assembly_tree_panel.dart';
 import 'body_naming.dart';
 import 'boolean_panel.dart';
@@ -84,6 +83,9 @@ import '../materials/part_properties_screen.dart';
 import '../layout/layout_mode.dart';
 import 'desktop_chrome.dart';
 import 'feature_picker_sheet.dart';
+import 'start_button.dart';
+import 'visibility_panel.dart';
+import 'start_menu_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
 import 'fill_surface_panel.dart';
@@ -1116,6 +1118,7 @@ class _PartScreenState extends State<PartScreen> {
   /// itself) don't hand `PartViewport` a freshly-allocated `List` each time.
   List<BodyMeshDto>? _visibleBodiesCache;
   List<BodyMeshDto>? _visibleBodiesCacheSource;
+  String _visibleBodiesCacheForced = '';
 
   /// [_bodies] filtered down to what should actually render/hit-test in the
   /// 3D viewport - everything that isn't [BodyMeshDto.hidden]. Use this
@@ -1136,9 +1139,11 @@ class _PartScreenState extends State<PartScreen> {
   /// against [_bodies]' own identity (only reassigned where [_bodies] itself
   /// is, i.e. on a genuine mesh refetch) restores the contract.
   List<BodyMeshDto> get _visibleBodies {
-    if (!identical(_visibleBodiesCacheSource, _bodies)) {
+    final forced = _forcedVisibleCategories.join(',');
+    if (!identical(_visibleBodiesCacheSource, _bodies) || _visibleBodiesCacheForced != forced) {
       _visibleBodiesCacheSource = _bodies;
-      _visibleBodiesCache = _bodies.where((b) => !b.hidden).toList();
+      _visibleBodiesCacheForced = forced;
+      _visibleBodiesCache = _bodies.where((b) => !b.hidden || _bodyForcedVisible(b)).toList();
     }
     return _visibleBodiesCache!;
   }
@@ -1779,6 +1784,348 @@ class _PartScreenState extends State<PartScreen> {
     return _hiddenFeatureIdsByPart.putIfAbsent(key, () => {});
   }
 
+  // ---- Hide / Show as saved Part state (`docs/touch-viewport-ux-plan.md` section 6.1) ----
+  //
+  // The backend keeps each Part's hidden Features and whether its default reference planes are hidden, and saves them in the
+  // file. [_hiddenFeatureIdsByPart] and [_referencePlanesHidden] are a cache of that: filled from the Part when it loads and
+  // replaced by every `PATCH .../visibility` response. Every hide / show goes through [_setFeaturesHidden] (or the category
+  // and reference-plane counterparts below), which applies the change to the cache at once, so a tap feels instant, and
+  // sends it; a failed call puts the backend's state back and shows the error.
+
+  /// Replaces the cache with what the backend holds for [part].
+  void _seedVisibility(PartDto part) {
+    _visibilitySeededParts.add(part.id);
+    _hiddenFeatureIdsByPart[part.id] = {...part.hiddenFeatureIds};
+    if (_part == null || part.id == _part!.id) _referencePlanesHidden = part.referencePlanesHidden;
+  }
+
+  /// The Parts whose Hide / Show state has been read from the backend ([_hiddenFeatureIds] creates empty entries on read, so
+  /// the map itself cannot say).
+  final Set<String> _visibilitySeededParts = {};
+
+  /// Calls to the backend run one after another, so their responses arrive in the order they were made.
+  Future<void> _visibilityQueue = Future<void>.value();
+  final Map<String, int> _visibilityPendingByPart = {};
+
+  /// Hides ([hidden]) or shows the Features [ids] of the focused Part, now in the cache and then in the backend. Safe to call
+  /// inside `setState`; does nothing for an id already in the wanted state.
+  void _setFeaturesHidden(Iterable<String> ids, bool hidden) {
+    final partId = _focusPartIdOrNull;
+    if (partId == null) return;
+    final cache = _hiddenFeatureIdsByPart.putIfAbsent(partId, () => {});
+    final changing = [
+      for (final id in ids.toSet())
+        if (cache.contains(id) != hidden) id,
+    ];
+    if (changing.isEmpty) return;
+    if (hidden) {
+      cache.addAll(changing);
+    } else {
+      cache.removeAll(changing);
+    }
+    unawaited(_sendVisibility(partId, hidden: hidden, featureIds: changing));
+  }
+
+  /// Hides or shows a whole category of Features ([category] is a `produces`: plane, sketch, curve, body, surface) in the
+  /// Part(s) the Visibility panel acts on - the focused Part in the cache at once, every target Part in the backend, which
+  /// resolves the category itself when it gets the call (so a Feature made since is covered).
+  void _setCategoryHidden(String category, bool hidden) {
+    final partId = _focusPartIdOrNull;
+    if (partId == null) return;
+    final cache = _hiddenFeatureIdsByPart.putIfAbsent(partId, () => {});
+    final ids = [
+      for (final f in _features)
+        if (f.produces == category) f.id,
+    ];
+    setState(() {
+      if (hidden) {
+        cache.addAll(ids);
+      } else {
+        cache.removeAll(ids);
+      }
+      // An explicit act: the user's choice now stands for the consumed-sketch auto-hide too.
+      _autoHiddenSketchFeatureIds.removeAll(ids);
+      _refreshVisibilityDisplay();
+    });
+    for (final target in _visibilityTargetPartIds()) {
+      unawaited(_sendVisibility(target, hidden: hidden, categories: [category]));
+    }
+  }
+
+  /// Hides or shows the default reference planes (the root Part's flag).
+  void _setReferencePlanesHidden(bool hidden) {
+    setState(() => _referencePlanesHidden = hidden);
+    final rootId = _part?.id;
+    if (rootId == null) return;
+    for (final target in _visibilityTargetPartIds()) {
+      unawaited(_sendVisibility(target, hidden: hidden, referencePlanes: true));
+    }
+  }
+
+  /// The Parts the Visibility panel acts on: the focused Part, plus every Part of the composed assembly in Assembly lens.
+  Set<String> _visibilityTargetPartIds() {
+    final focus = _focusPartIdOrNull;
+    return {
+      if (focus != null) focus,
+      if (_lens == AssemblyLens.assembly)
+        for (final geometry in _assemblyMesh?.geometry ?? const <AssemblyBodyGeometryDto>[]) geometry.partId,
+    };
+  }
+
+  Future<void> _sendVisibility(
+    String partId, {
+    required bool hidden,
+    List<String> featureIds = const [],
+    List<String> categories = const [],
+    bool referencePlanes = false,
+  }) {
+    _visibilityPendingByPart[partId] = (_visibilityPendingByPart[partId] ?? 0) + 1;
+    final run = _visibilityQueue.then((_) async {
+      try {
+        final result = await _api.setVisibility(
+          partId,
+          hidden: hidden,
+          featureIds: featureIds,
+          categories: categories,
+          referencePlanes: referencePlanes,
+        );
+        // Only the last call for a Part is authoritative: an earlier response would undo what a later tap already
+        // showed.
+        if (mounted && _visibilityPendingByPart[partId] == 1) {
+          setState(() => _applyVisibility(partId, result));
+          if (_lens == AssemblyLens.assembly) unawaited(_refreshAssemblyMesh());
+        }
+      } catch (e) {
+        // Any failure (a 422, no network): the backend's state is the truth. Caught whatever it is, so one bad call can
+        // never poison the queue behind it.
+        if (!mounted) return;
+        await _restoreVisibility(partId);
+        if (mounted) setState(() => _errorMessage = e is ApiException ? e.message : '$e');
+      } finally {
+        _visibilityPendingByPart[partId] = (_visibilityPendingByPart[partId] ?? 1) - 1;
+      }
+    });
+    _visibilityQueue = run;
+    return run;
+  }
+
+  void _applyVisibility(String partId, PartVisibilityDto state) {
+    _hiddenFeatureIdsByPart[partId] = {...state.hiddenFeatureIds};
+    if (partId == _part?.id) _referencePlanesHidden = state.referencePlanesHidden;
+    _refreshVisibilityDisplay();
+  }
+
+  /// After a failed call: puts the cache back to what the backend actually holds.
+  Future<void> _restoreVisibility(String partId) async {
+    try {
+      final part = await _api.getPart(partId);
+      if (mounted) {
+        setState(() {
+          _seedVisibility(part);
+          _refreshVisibilityDisplay();
+        });
+      }
+    } catch (_) {
+      // The backend is out of reach: keep what the screen shows.
+    }
+  }
+
+  /// Brings everything derived from the hidden sets up to date: the Bodies' own `hidden` flag (so the mesh needs no refetch
+  /// for a hide), the sketch outlines and the created planes drawn.
+  void _refreshVisibilityDisplay() {
+    final hidden = _hiddenFeatureIds;
+    var changed = false;
+    final next = <BodyMeshDto>[];
+    for (final body in _bodies) {
+      final nowHidden = hidden.contains(baseFeatureId(body.bodyId));
+      if (nowHidden == body.hidden) {
+        next.add(body);
+        continue;
+      }
+      changed = true;
+      next.add(
+        BodyMeshDto(
+          bodyId: body.bodyId,
+          source: body.source,
+          mesh: body.mesh,
+          hidden: nowHidden,
+          isSurface: body.isSurface,
+          isCurve: body.isCurve,
+        ),
+      );
+    }
+    if (changed) _bodies = next;
+    _recomputeVisibleSketchGeometries();
+    _recomputeCreatePlaneGeometries();
+  }
+
+  /// Categories (a Feature's `produces`) drawn and pickable whatever their hidden state, because the flow the user is in has
+  /// them tap one (plan section 6.1). Display only, never written to the backend; a Feature hidden because a downstream
+  /// Feature consumed it ([_autoHiddenSketchFeatureIds]) stays hidden, as before.
+  Set<String> get _forcedVisibleCategories => {
+        if (_sketchPicksActive) 'sketch',
+        if (_surfacePicksActive) 'surface',
+        if (_bodyPicksActive) 'body',
+        if (_planePicksActive) 'plane',
+      };
+
+  bool get _sketchPicksActive =>
+      _sketchPickerActive ||
+      _surfaceSketchPickerActive ||
+      _revolveSketchPickerActive ||
+      _sweepSketchPickerActive ||
+      _loftSketchPickerActive ||
+      _loftSurfaceSketchPickerActive ||
+      _ruledSurfaceSketchPickerActive ||
+      _planarSurfaceSketchPickerActive ||
+      _revolveSurfaceSketchPickerActive ||
+      _sweptSurfaceSketchPickerActive ||
+      _profilePickerActive ||
+      _pathPickerActive;
+
+  bool get _surfacePicksActive =>
+      _thickenSourcePickerActive ||
+      _knitSurfacePickerActive ||
+      _solidFromSurfacesPickerActive ||
+      _offsetSurfaceSourcePickerActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive;
+
+  bool get _bodyPicksActive =>
+      _extrudeActive ||
+      _mirrorActive ||
+      _patternActive ||
+      _mergeActive ||
+      _booleanActive ||
+      _splitActive ||
+      _shellActive ||
+      _deleteBodyActive ||
+      _scaleBodyActive ||
+      _moveBodyActive ||
+      _deleteFaceActive ||
+      _moveFaceActive;
+
+  bool get _planePicksActive =>
+      _planeSelectionMode || _confirmingSketchOrientation || _mirrorStep == _MirrorStep.pickingPlane || _createPlaneActive;
+
+  /// The Feature ids to leave out of the viewport for Hide / Show: the hidden set less what the flow in use forces visible.
+  Set<String> get _displayHiddenFeatureIds {
+    final hidden = _hiddenFeatureIds;
+    final forced = _forcedVisibleCategories;
+    if (forced.isEmpty || hidden.isEmpty) return hidden;
+    return {
+      for (final id in hidden)
+        if (_autoHiddenSketchFeatureIds.contains(id) || !forced.contains(_featureById(id)?.produces)) id,
+    };
+  }
+
+  /// Whether a hidden Body is drawn and pickable anyway, because [_forcedVisibleCategories] has its category.
+  bool _bodyForcedVisible(BodyMeshDto body) {
+    final forced = _forcedVisibleCategories;
+    if (forced.isEmpty) return false;
+    if (_autoHiddenSketchFeatureIds.contains(baseFeatureId(body.bodyId))) return false;
+    return forced.contains(body.isSurface ? 'surface' : (body.isCurve ? 'curve' : 'body'));
+  }
+
+  String _lastForcedSignature = '';
+
+  /// Whether the Visibility panel is open: it stays until its own close button, and is only drawn while the Start button
+  /// is (no tool owns the screen), coming back when the tool closes.
+  bool _visibilityPanelOpen = false;
+  bool _visibilityViewsFolded = false;
+
+  /// One category's state, from the focused Part's Features and its hidden set.
+  VisibilityChipState _categoryState(String category) {
+    final ids = [
+      for (final f in _features)
+        if (f.produces == category) f.id,
+    ];
+    if (ids.isEmpty) return VisibilityChipState.shown;
+    final hiddenCount = ids.where(_hiddenFeatureIds.contains).length;
+    if (hiddenCount == 0) return VisibilityChipState.shown;
+    return hiddenCount == ids.length ? VisibilityChipState.hidden : VisibilityChipState.partial;
+  }
+
+  /// Whether anything is hidden: the badge on the quick column's Visibility button, so hidden geometry is never a surprise.
+  bool get _anythingHidden =>
+      _referencePlanesHidden || _features.any((f) => _hiddenFeatureIds.contains(f.id) && f.produces != 'none');
+
+  List<VisibilityChipData> _visibilityChips() {
+    VisibilityChipData chip(String id, String label, String noun, Widget icon, String category) {
+      final hasAny = _features.any((f) => f.produces == category);
+      final state = _categoryState(category);
+      return VisibilityChipData(
+        id: id,
+        label: label,
+        icon: icon,
+        state: state,
+        locked: _forcedVisibleCategories.contains(category) && state != VisibilityChipState.shown,
+        tooltip: hasAny
+            ? '${state == VisibilityChipState.shown ? 'Hide' : 'Show'} all $noun. Features made later start shown.'
+            : 'No $noun yet',
+        onTap: hasAny ? () => _setCategoryHidden(category, state == VisibilityChipState.shown) : null,
+      );
+    }
+
+    return [
+      VisibilityChipData(
+        id: 'reference-planes',
+        label: 'Ref planes',
+        icon: SvgIcon(
+          _referencePlanesHidden
+              ? 'assets/icons/feature/parttoolbar_show_reference_planes.svg'
+              : 'assets/icons/feature/parttoolbar_hide_reference_planes.svg',
+        ),
+        state: _referencePlanesHidden ? VisibilityChipState.hidden : VisibilityChipState.shown,
+        locked: _referencePlanesForcedVisible && _referencePlanesHidden,
+        tooltip: _referencePlanesHidden ? 'Show the reference planes' : 'Hide the reference planes',
+        onTap: () => _setReferencePlanesHidden(!_referencePlanesHidden),
+      ),
+      chip('plane', 'Planes', 'created planes', const Icon(Icons.layers_outlined), 'plane'),
+      chip('sketch', 'Sketches', 'sketches', const Icon(Icons.draw_outlined), 'sketch'),
+      chip('curve', 'Curves', 'curves', const Icon(Icons.timeline), 'curve'),
+      chip('body', 'Solids', 'solids', const Icon(Icons.view_in_ar_outlined), 'body'),
+      chip('surface', 'Surfaces', 'surfaces', const Icon(Icons.waves), 'surface'),
+    ];
+  }
+
+  List<VisibilityViewData> _visibilityViews() {
+    VisibilityViewData view(String label, StandardView standardView) => VisibilityViewData(
+          id: standardView.name,
+          label: label,
+          onTap: () => unawaited(_viewportKey.currentState?.animateToStandardView(standardView) ?? Future<void>.value()),
+        );
+    return [
+      view('Front', StandardView.front),
+      view('Back', StandardView.back),
+      view('Left', StandardView.left),
+      view('Right', StandardView.right),
+      view('Top', StandardView.top),
+      view('Bottom', StandardView.bottom),
+      view('Iso', StandardView.isometric),
+    ];
+  }
+
+  /// [_assemblyMesh]'s geometry less the Bodies a Part has hidden (the backend flags them, Part by Part). One list per mesh,
+  /// so [PartViewport] only sees a change when the mesh itself changed.
+  List<AssemblyBodyGeometryDto> get _displayAssemblyGeometry {
+    final mesh = _assemblyMesh;
+    if (mesh == null) return const [];
+    if (!identical(_displayAssemblyGeometrySource, mesh)) {
+      _displayAssemblyGeometrySource = mesh;
+      _displayAssemblyGeometryCache = [
+        for (final geometry in mesh.geometry)
+          AssemblyBodyGeometryDto(partId: geometry.partId, bodies: [for (final b in geometry.bodies) if (!b.hidden) b]),
+      ];
+    }
+    return _displayAssemblyGeometryCache;
+  }
+
+  Object? _displayAssemblyGeometrySource;
+  List<AssemblyBodyGeometryDto> _displayAssemblyGeometryCache = const [];
+
   Set<String> get _rollbackExcludedFeatureIds {
     final key = _focusPartIdOrNull;
     if (key == null) return <String>{};
@@ -1867,7 +2214,7 @@ class _PartScreenState extends State<PartScreen> {
   /// viewport itself (unlike the backend's `/mesh` computation) has no
   /// reason to tell the two apart - either way, nothing of that Feature's
   /// should render or be tappable right now.
-  Set<String> get _viewportHiddenFeatureIds => {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds};
+  Set<String> get _viewportHiddenFeatureIds => {..._displayHiddenFeatureIds, ..._rollbackExcludedFeatureIds};
 
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5 - the "re-opening a Part"
   /// flow: `body_id` -> coarse [MeshDto] for every Body currently rendering
@@ -2147,6 +2494,82 @@ class _PartScreenState extends State<PartScreen> {
       // otherwise keep this hidden for.
       _sourceFeaturePickerTarget != null;
 
+  /// Whether the Start button shows. This is the Add button's old visibility condition, moved here unchanged: the long list of
+  /// tool sessions and panels that hide it, each with the on-device report that put it there.
+  bool get _startButtonVisible =>
+      !_desktopLayout &&
+      !_extrudeActive &&
+      !_surfaceActive &&
+      !_createPlaneActive &&
+      !_filletActive &&
+      !_chamferActive &&
+      !_revolveActive &&
+      !_sweepActive &&
+      !_loftActive &&
+      !_planarSurfaceActive &&
+      !_revolveSurfaceActive &&
+      !_sweptSurfaceActive &&
+      !_loftSurfaceActive &&
+      !_ruledSurfaceActive &&
+      !_thickenActive &&
+      !_knitSurfaceActive &&
+      !_solidFromSurfacesActive &&
+      !_offsetSurfaceActive &&
+      !_mirrorActive &&
+      !_patternActive &&
+      !_mergeActive &&
+      !_booleanActive &&
+      !_deleteBodyActive &&
+      !_scaleBodyActive &&
+      !_moveBodyActive &&
+      !_deleteFaceActive &&
+      !_moveFaceActive &&
+      !_shellActive &&
+      // Bug fix ("the 'new' FAB should not obscure the
+      // Move/Rotate toolbar"): same "hide the FAB outright"
+      // list every other bottom-docked ResizableToolPanel
+      // tool is already in (see the Measure/Section fix
+      // comment below) - Move/Rotate's own panel was never
+      // added when it was introduced.
+      !_moveRotateComponentActive &&
+      !_profilePickerActive &&
+      !_pathPickerActive &&
+      // On-device feedback ("the tooltip at the top of the
+      // screen blocks the FABs"): plane-selection mode's own
+      // Cancel used to live in a top banner, nowhere near
+      // this corner - now it's in a bottom [PickerRibbon]
+      // (see where `_planeSelectionMode` builds one above),
+      // which this FAB would otherwise sit directly on top
+      // of.
+      !_planeSelectionMode &&
+      // Bug fix (on-device feedback: "the 'new' fab sits on
+      // top of the [section] tool obscuring part of it"):
+      // Measure/Section only ever got added to the *offset*
+      // list above (bottom: 180) - the ResizableToolPanel
+      // both actually render in defaults to 50% of the
+      // viewport (resizable 25%-85%), far taller than a
+      // fixed 180px, so the FAB kept overlapping it. Every
+      // other tool panel avoids this by being in *this* list
+      // instead, hiding the FAB outright - Measure/Section
+      // just never got added here too.
+      !_measureActive &&
+      // Bug report (assembly testing): "the 'new' fab sits
+      // on top of the assembly mode 'pattern component' tool
+      // bar" - same gap as the Measure/Section/Mate panels'
+      // own fixes just above/below - ComponentPatternPanel
+      // was never added to this hide list.
+      !_componentPatternPanelActive &&
+      // Bug report (assembly testing): "the 'new' fab sits
+      // on top of the mates tool bar obscuring part of it" -
+      // `MatePanel` is the same bottom-docked
+      // `ResizableToolPanel` shape as every other tool in
+      // this list (see its own `if (_mateActive)
+      // Positioned.fill(...)` slot above), it just never got
+      // added here - same omission as the Measure/Section
+      // and Move/Rotate fixes right above.
+      !_mateActive &&
+      !_sectionPanelOpen;
+
   /// On-device feedback ("I do want select/orbit-mode switching available
   /// while a tool panel is open"): deliberately a separate, wider-open
   /// condition from [_viewportFabColumnsVisible] - unlike the hamburger/
@@ -2201,21 +2624,6 @@ class _PartScreenState extends State<PartScreen> {
       _revolveSurfaceSketchPickerActive ||
       _sweptSurfaceSketchPickerActive ||
       _sourceFeaturePickerTarget != null;
-
-  /// The Measure FAB - available whenever nothing else is mid-flow, plus
-  /// always while Measure itself is active (so it stays tappable to turn
-  /// back off). Unlike [_selectionModeFabVisible] (a pure gesture-mode
-  /// toggle that stays meaningful during *any* other tool's own picking
-  /// session), Measure hides itself while another tool ([_anyToolPanelOpen])
-  /// is open rather than force-closing it - every other tool's own Cancel
-  /// path does real async cleanup (deleting a preview Feature, reverting a
-  /// PATCH, popping its filter override), and there's no existing
-  /// precedent in this app for a second tool's FAB reaching in and
-  /// triggering that teardown on another tool's behalf.
-  bool get _measureFabVisible =>
-      !_featureTreePanelVisible &&
-      !_confirmingSketchOrientation &&
-      (_measureActive || !_anyToolPanelOpen);
 
   /// Bug fix ("XYZ triad hidden behind any open tool panel",
   /// `docs/roadmap.md`): every tool panel (`ExtrudePanel`, `CreatePlanePanel`,
@@ -3673,15 +4081,6 @@ class _PartScreenState extends State<PartScreen> {
     sketchCircle: false,
     plane: false,
   );
-
-  /// Sectioning Tool's own toolbar entry point - an always-available toggle
-  /// FAB, same precedent as [_measureFabVisible]/[_toggleMeasure] (not
-  /// selection-gated, per this tool's own brief: "always available, like
-  /// Create Plane" - Measure is this app's actual existing precedent for
-  /// that shape, `Create Plane` itself is selection-gated via
-  /// `selection_actions.dart`'s context menu instead).
-  bool get _sectionFabVisible =>
-      !_featureTreePanelVisible && !_confirmingSketchOrientation && (_sectionPanelOpen || !_anyToolPanelOpen);
 
   void _toggleSectionPanel() {
     if (_sectionPanelOpen) {
@@ -7792,7 +8191,7 @@ class _PartScreenState extends State<PartScreen> {
       // doc comment for the full reasoning.
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -8423,7 +8822,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       if (!wasEditing) {
         for (final section in sections) {
-          _hiddenFeatureIds.add(section.id);
+          _setFeaturesHidden([section.id], true);
           _autoHiddenSketchFeatureIds.add(section.id);
         }
       }
@@ -9084,7 +9483,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       if (!wasEditing) {
         for (final section in sections) {
-          _hiddenFeatureIds.add(section.id);
+          _setFeaturesHidden([section.id], true);
           _autoHiddenSketchFeatureIds.add(section.id);
         }
       }
@@ -9453,7 +9852,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       if (!wasEditing) {
         for (final section in sections) {
-          _hiddenFeatureIds.add(section.id);
+          _setFeaturesHidden([section.id], true);
           _autoHiddenSketchFeatureIds.add(section.id);
         }
       }
@@ -10751,7 +11150,6 @@ class _PartScreenState extends State<PartScreen> {
   /// `AssemblyDocumentClient.savePart` of the root Part, so a project-mode
   /// save no longer drops them.
   Map<String, dynamic> _rootClientExtras() => {
-    'hidden_feature_ids': (_hiddenFeatureIdsByPart[_part!.id] ?? const <String>{}).toList(),
     'section_planes': [for (final s in _sectionPlanesByPart[_part!.id] ?? const <SectionPlane>[]) s.toJson()],
   };
 
@@ -10762,8 +11160,7 @@ class _PartScreenState extends State<PartScreen> {
   /// top-level keys. Tolerant of a single corrupt section entry (skips just
   /// that one, per [SectionPlane.fromJson]'s own doc comment) rather than
   /// failing the whole Open over one typo in a hand-edited file.
-  ({List<String> hiddenFeatureIds, List<SectionPlane> sectionPlanes}) _parseClientExtras(Map<String, dynamic> data) {
-    final hiddenFeatureIds = (data['hidden_feature_ids'] as List?)?.cast<String>() ?? const <String>[];
+  ({List<SectionPlane> sectionPlanes}) _parseClientExtras(Map<String, dynamic> data) {
     final sectionPlanes = <SectionPlane>[];
     for (final raw in (data['section_planes'] as List?) ?? const []) {
       if (raw is! Map<String, dynamic>) continue;
@@ -10773,7 +11170,7 @@ class _PartScreenState extends State<PartScreen> {
         // Skip just this malformed entry.
       }
     }
-    return (hiddenFeatureIds: hiddenFeatureIds, sectionPlanes: sectionPlanes);
+    return (sectionPlanes: sectionPlanes);
   }
 
   /// Shared by [_saveNativeFile]/[_saveAsNativeFile]: exports the whole
@@ -11630,7 +12027,6 @@ class _PartScreenState extends State<PartScreen> {
     // malformed, and losing every section over one typo in one of them
     // would be a needlessly harsh failure mode.
     final extras = _parseClientExtras(decoded);
-    final hiddenFeatureIds = extras.hiddenFeatureIds;
     final sectionPlanes = extras.sectionPlanes;
 
     NativeImportResultDto? imported;
@@ -11648,7 +12044,6 @@ class _PartScreenState extends State<PartScreen> {
           assemblyDocumentClient: widget.assemblyDocumentClient,
           canPersistFilePathForReuse: widget.canPersistFilePathForReuse,
           initialPartId: imported!.partIds.first,
-          initialHiddenFeatureIds: hiddenFeatureIds,
           initialSectionPlanes: sectionPlanes,
           initialFileName: fileName,
           initialFilePath: filePath,
@@ -11692,7 +12087,6 @@ class _PartScreenState extends State<PartScreen> {
           initialProjectRoot: root,
           initialRelativePathByPartId: result.relativePathByPartId,
           initialReferenceReports: result.references,
-          initialHiddenFeatureIds: extras.hiddenFeatureIds,
           initialSectionPlanes: extras.sectionPlanes,
         ),
       ),
@@ -11853,7 +12247,10 @@ class _PartScreenState extends State<PartScreen> {
       // in [initState], just deferred to the first point it's actually
       // safe. A no-op (empty) for every non-native-Load launch, same as
       // before.
-      _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
+      _seedVisibility(part);
+      // A caller that still hands over a hidden set (the legacy PartScreen.initialHiddenFeatureIds) has it saved on the
+      // Part like any other hide.
+      if (widget.initialHiddenFeatureIds.isNotEmpty) _setFeaturesHidden(widget.initialHiddenFeatureIds, true);
       _sectionPlanes = widget.initialSectionPlanes;
       // LOD Phase 2 chunk 4: fire-and-forget, same convention
       // `_refreshMesh`'s own background coarse-tier fetch below uses - a
@@ -13380,8 +13777,8 @@ class _PartScreenState extends State<PartScreen> {
 
   /// A tap that landed on a reference plane rectangle in the 3D viewport.
   ///
-  /// During [_planeSelectionMode] (entered via the "Add" FAB's flyout - see
-  /// [_onAddPressed]), this immediately creates a SketchFeature on the
+  /// During [_planeSelectionMode] (entered via the Start menu's New Sketch - see
+  /// [_onStartPressed]), this immediately creates a SketchFeature on the
   /// tapped plane and navigates to its canvas, exiting the mode - per the
   /// Stage 10b brief, that flow has no separate confirmation step. Otherwise
   /// it's the pre-existing free-tap flow: selects the plane (brighter
@@ -13592,28 +13989,84 @@ class _PartScreenState extends State<PartScreen> {
     if (_sketchPickerActive) _cancelSketchPicker();
   }
 
-  /// Opens the "Add" FAB's flyout - Part lens shows the existing Feature-
-  /// authoring flyout ([showAddButtonMenu], unchanged); Assembly lens shows
-  /// [showAssemblyAddMenu] instead (`docs/assembly-scope.md` §3's Phase
-  /// 3b), closing the gap Phase 3 left open (no in-UI way to add a first
-  /// component). "New Sketch" enters [_planeSelectionMode] rather than
-  /// acting directly (Stage 10b); Stage 19b Item 3's "Feature" opens the
-  /// second-level Feature picker instead.
-  Future<void> _onAddPressed() async {
+  /// The Start FAB: opens the Start menu (`docs/touch-viewport-ux-plan.md` section 4), which lists the same commands as the
+  /// desktop ribbon ([_ribbonTabs] with `touch: true`) and runs the tapped one once the sheet has closed - the same
+  /// pop-then-act order the Add menu it replaces used, so a tool opens on a clear screen.
+  Future<void> _onStartPressed() async {
     if (_busy) return;
-    if (_lens == AssemblyLens.assembly) {
-      await _onAssemblyAddPressed();
-      return;
+    setState(() {
+      _startMenuOpen = true;
+      _quickColumnOpen = false;
+    });
+    RibbonCommand? command;
+    try {
+      command = await showStartMenuSheet(
+        context,
+        tabs: () => _ribbonTabs(touch: true),
+        lens: () => _lens,
+        onLensSwitch: _toggleAssemblyLens,
+        initialTabId: (lens) => _startMenuTabByLens[lens],
+        onTabChanged: (lens, id) => _startMenuTabByLens[lens] = id,
+      );
+    } finally {
+      if (mounted) setState(() => _startMenuOpen = false);
     }
-    final action = await showAddButtonMenu(context);
-    if (!mounted || action == null) return;
-    switch (action) {
-      case AddButtonMenuAction.newSketch:
-        _startNewSketchPicker();
-      case AddButtonMenuAction.feature:
-        await _onFeaturePressed();
-    }
+    if (!mounted || command == null) return;
+    command.onPressed?.call();
   }
+
+  /// Whether the Start menu is showing (the Start button draws an X meanwhile).
+  bool _startMenuOpen = false;
+
+  /// Whether the Start button's quick column is open. It closes by itself when the Start button goes away (a tool
+  /// session started), see [build], and when the Start menu opens.
+  bool _quickColumnOpen = false;
+
+  /// The Orbit / Select button stays on screen by itself while a tool session hides the Start button and its column
+  /// (plan section 5.4): the user still orbits to see what they are about to pick. Outside tool sessions it lives in the
+  /// quick column.
+  bool get _standaloneSelectionModeFabVisible => _selectionModeFabVisible && !_startButtonVisible;
+
+  /// The quick column's buttons, nearest the Start button first. Every one closes the column once it has run.
+  List<QuickColumnButton> _quickColumnButtons() => [
+        if (_viewportFabColumnsVisible)
+          QuickColumnButton(
+            key: const ValueKey('quick-menu-fab'),
+            tooltip: 'Menu',
+            child: const Icon(Icons.menu),
+            onPressed: () => setState(() => _toolbarOpen = true),
+          ),
+        QuickColumnButton(
+          key: const ValueKey('quick-fit-fab'),
+          tooltip: 'Fit',
+          child: const SvgIcon('assets/icons/viewport/viewport_reset_view.svg'),
+          onPressed: () => _viewportKey.currentState?.zoomToFit(),
+        ),
+        if (_selectionModeFabVisible)
+          QuickColumnButton(
+            key: const ValueKey('quick-selection-mode-fab'),
+            tooltip: _selectionMode ? 'Switch to orbit mode' : 'Switch to selection mode',
+            selected: _selectionMode,
+            // The icon shows the mode a tap will switch *into*: a cursor while in (default) Orbit mode, an orbit glyph
+            // while in Selection mode.
+            child: SvgIcon(
+              _selectionMode
+                  ? 'assets/icons/viewport/viewport_orbit_mode.svg'
+                  : 'assets/icons/viewport/viewport_selection_mode.svg',
+            ),
+            onPressed: _toggleSelectionMode,
+          ),
+        QuickColumnButton(
+          key: const ValueKey('quick-visibility-fab'),
+          tooltip: 'Visibility',
+          badge: _anythingHidden,
+          child: const Icon(Icons.visibility_outlined),
+          onPressed: () => setState(() => _visibilityPanelOpen = true),
+        ),
+      ];
+
+  /// The Start menu's last-used tab per lens, for the session.
+  final Map<AssemblyLens, String> _startMenuTabByLens = {};
 
   /// "New Sketch": pick the plane or face to sketch on.
   void _startNewSketchPicker() {
@@ -13623,31 +14076,6 @@ class _PartScreenState extends State<PartScreen> {
       _toolbarOpen = false;
       _featureTreeVisible = false;
     });
-  }
-
-  /// Assembly support Phase 3b/15 (`docs/assembly-scope.md` §3/§6): the
-  /// "Add" FAB's Assembly-lens branch - shows [showAssemblyAddMenu] and
-  /// acts on whichever entry was tapped. Every entry is real as of Phase 15
-  /// (`createNewComponent` was the last one still disabled, needing a
-  /// multi-file save flow this app didn't have yet - see
-  /// [_onCreateNewComponentPressed]).
-  Future<void> _onAssemblyAddPressed() async {
-    final action = await showAssemblyAddMenu(context);
-    if (!mounted || action == null) return;
-    switch (action) {
-      case AssemblyAddMenuAction.insertExistingComponent:
-        await _onInsertComponentPressed();
-      case AssemblyAddMenuAction.addMate:
-        _openMate();
-      case AssemblyAddMenuAction.patternComponent:
-        _openComponentPattern();
-      case AssemblyAddMenuAction.createNewComponent:
-        await _onCreateNewComponentPressed();
-      case AssemblyAddMenuAction.appearance:
-        await _openAppearance();
-      case AssemblyAddMenuAction.scenes:
-        await _openScenes();
-    }
   }
 
   /// "Add Component" (bottom-up insert an existing `.didsa` file) - the
@@ -14907,7 +15335,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -15071,9 +15499,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Toggles [_referencePlanesHidden] (Stage 10b) - the toolbar's
   /// "Hide/Show Reference Planes" entry.
-  void _onToggleReferencePlanes() {
-    setState(() => _referencePlanesHidden = !_referencePlanesHidden);
-  }
+  void _onToggleReferencePlanes() => _setReferencePlanesHidden(!_referencePlanesHidden);
 
   /// Stage 11: the toolbar's render-mode entries - sets [_renderMode]
   /// directly to whichever entry was tapped (unlike
@@ -15818,18 +16244,13 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// Bulk counterpart of [_toggleFeatureVisibility] - purely local
-  /// ([_hiddenFeatureIds] only, no HTTP call), applied to every selected
-  /// Feature in one `setState` so the caller refreshes the mesh just once.
+  /// Bulk counterpart of [_toggleFeatureVisibility] - one [_setFeaturesHidden] for every selected Feature in one `setState`
+  /// (so one request), and the caller refreshes the mesh just once.
   void _buildMultiSelectSetHidden(bool hide) {
     final featureIds = _buildMultiSelectFeatureIds;
     setState(() {
+      _setFeaturesHidden(featureIds, hide);
       for (final id in featureIds) {
-        if (hide) {
-          _hiddenFeatureIds.add(id);
-        } else {
-          _hiddenFeatureIds.remove(id);
-        }
         _autoHiddenSketchFeatureIds.remove(id);
       }
       _recomputeVisibleSketchGeometries();
@@ -16476,7 +16897,7 @@ class _PartScreenState extends State<PartScreen> {
       // Fillet/Chamfer).
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         // This is *the* auto-hide-on-consume case [_autoHiddenSketchFeatureIds]
         // exists for - mark it so a later event that un-consumes this
         // Sketch (deleting its Extrude) can auto-restore its visibility.
@@ -16812,7 +17233,7 @@ class _PartScreenState extends State<PartScreen> {
       // fix this mirrors.
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -17074,7 +17495,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -17387,7 +17808,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -17628,7 +18049,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -23010,12 +23431,10 @@ class _PartScreenState extends State<PartScreen> {
         : 'Select bodies to merge into ($count selected)';
   }
 
-  /// Client-side-only Hide/Show for a Feature - [_hiddenFeatureIds] itself
-  /// is never sent to the backend, but it *is* re-sent as the mesh
-  /// endpoint's `hidden_feature_ids` query param (see [_refreshMesh]), so
-  /// hiding an ExtrudeFeature also drops its volume from the displayed
-  /// solid, not just its own Sketch geometry from [_visibleSketchGeometries]
-  /// (a SketchFeature has no solid of its own to drop).
+  /// Hide/Show for a Feature, through [_setFeaturesHidden] (a saved Part state, see there). [_hiddenFeatureIds] is also
+  /// re-sent as the mesh endpoint's `hidden_feature_ids` query param (see [_refreshMesh]), so hiding an ExtrudeFeature also
+  /// drops its volume from the displayed solid, not just its own Sketch geometry from [_visibleSketchGeometries] (a
+  /// SketchFeature has no solid of its own to drop).
   ///
   /// Prompt C1: an explicit Hide here always removes [feature.id] from
   /// [_autoHiddenSketchFeatureIds] too (a no-op unless it was already
@@ -23025,11 +23444,7 @@ class _PartScreenState extends State<PartScreen> {
   /// exception.
   Future<void> _toggleFeatureVisibility(FeatureDto feature) async {
     setState(() {
-      if (_hiddenFeatureIds.contains(feature.id)) {
-        _hiddenFeatureIds.remove(feature.id);
-      } else {
-        _hiddenFeatureIds.add(feature.id);
-      }
+      _setFeaturesHidden([feature.id], !_hiddenFeatureIds.contains(feature.id));
       _autoHiddenSketchFeatureIds.remove(feature.id);
       _recomputeVisibleSketchGeometries();
       _recomputeCreatePlaneGeometries();
@@ -23097,7 +23512,7 @@ class _PartScreenState extends State<PartScreen> {
     // hidden because something depended on it; once the new last Feature
     // is unlocked again, there's nothing left to make it redundant clutter.
     if (_features.isNotEmpty && !_features.last.locked) {
-      _hiddenFeatureIds.remove(_features.last.id);
+      _setFeaturesHidden([_features.last.id], false);
       _autoHiddenSketchFeatureIds.remove(_features.last.id);
     }
     _recomputeVisibleSketchGeometries();
@@ -23238,7 +23653,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [_selectionMode] off, see that case's own doc comment for why a
   /// manipulator tool left in Selection mode broke orbiting entirely).
   /// Mate (Phase 6) opens the same generic 2-entity picking
-  /// flow [_onAssemblyAddPressed]'s own "Add Mate" entry does -
+  /// flow the Start menu's Mate tile does -
   /// `occurrence` itself isn't pre-selected into it (a Mate targets a
   /// specific face/edge/vertex, not a whole component), so long-pressing a
   /// tree row is only a discoverable second door into the identical flow,
@@ -23783,6 +24198,15 @@ class _PartScreenState extends State<PartScreen> {
   /// disappears after exiting focus" until an unrelated hide/unhide toggle
   /// happened to re-run both fetches together.
   Future<void> _refreshFocusTargetContent() async {
+    // A sub-component focused for the first time: its Hide / Show state is on the backend, not in the cache yet.
+    final focusId = _focusPartIdOrNull;
+    if (focusId != null && !_visibilitySeededParts.contains(focusId)) {
+      try {
+        _seedVisibility(await _api.getPart(focusId));
+      } on ApiException {
+        // Leave it empty: nothing is shown hidden, which is the safe wrong answer.
+      }
+    }
     await _refreshAssemblyTree();
     await _refreshAssemblyMesh();
     await _refreshMesh();
@@ -24094,6 +24518,16 @@ class _PartScreenState extends State<PartScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // The quick column closes when a tool session takes the Start button away, so it is not sitting open when the
+    // session ends (a plain field reset: nothing below reads it before this).
+    if (!_startButtonVisible) _quickColumnOpen = false;
+    // What a flow forces visible changes the sketch outlines and planes drawn: refresh them when it does.
+    final forcedSignature = _forcedVisibleCategories.toList()..sort();
+    if (forcedSignature.join(',') != _lastForcedSignature) {
+      _lastForcedSignature = forcedSignature.join(',');
+      _recomputeVisibleSketchGeometries();
+      _recomputeCreatePlaneGeometries();
+    }
     return PopScope(
       // While choosing a plane for a new Sketch (Stage 10b) or a Sketch to
       // extrude (Prompt D), the device back gesture cancels that mode
@@ -24496,7 +24930,11 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// The ribbon's tabs: one per kind of work, each button the action the phone layout reaches by FAB or sheet.
-  List<RibbonTabData> _ribbonTabs() {
+  ///
+  /// With [touch] (the phone layout's Start menu) the Features tab lists every feature in [kFeatureGroups] instead of the
+  /// short desktop list, and tabs with nothing to do in the current lens are left out. Every command and handler is the
+  /// same either way.
+  List<RibbonTabData> _ribbonTabs({bool touch = false}) {
     final part = _lens == AssemblyLens.part;
     final assembly = _lens == AssemblyLens.assembly;
     final busy = _busy;
@@ -24507,6 +24945,11 @@ class _PartScreenState extends State<PartScreen> {
           svg: 'assets/icons/feature/$svg.svg',
           onPressed: when(part, () => unawaited(_runFeatureAction(action))),
         );
+    RibbonCommand featureAt(FeatureEntrySpec entry) => RibbonCommand(
+          label: entry.label,
+          svg: entry.icon,
+          onPressed: when(part, () => unawaited(_runFeatureAction(entry.action))),
+        );
     RibbonCommand standardView(String label, StandardView view, String keys) => RibbonCommand(
           label: label,
           icon: Icons.view_in_ar_outlined,
@@ -24514,11 +24957,23 @@ class _PartScreenState extends State<PartScreen> {
           onPressed: viewport == null ? null : () => unawaited(viewport.animateToStandardView(view)),
         );
 
-    return [
+    final tabs = [
       RibbonTabData(
         id: 'features',
         label: 'Features',
-        groups: [
+        groups: touch
+            ? [
+                RibbonGroup([
+                  RibbonCommand(
+                    label: 'New Sketch',
+                    svg: 'assets/icons/feature/feature_new_sketch.svg',
+                    onPressed: when(part, _startNewSketchPicker),
+                  ),
+                ]),
+                for (final group in kFeatureGroups)
+                  RibbonGroup([for (final entry in group.entries) featureAt(entry)], title: group.title),
+              ]
+            : [
           RibbonGroup([
             RibbonCommand(
               label: 'New Sketch',
@@ -24710,6 +25165,9 @@ class _PartScreenState extends State<PartScreen> {
         ],
       ),
     ];
+    if (!touch) return tabs;
+    final shown = part ? const {'features', 'sketch', 'evaluate', 'view'} : const {'assembly', 'evaluate', 'view'};
+    return [for (final tab in tabs) if (shown.contains(tab.id)) tab];
   }
 
   /// The ribbon's body: the active tab's buttons. The tabs themselves sit in the app bar ([_buildDesktopAppBarTitle]).
@@ -24911,7 +25369,9 @@ class _PartScreenState extends State<PartScreen> {
                           ),
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
-                    hiddenFeatureIds: _viewportHiddenFeatureIds,
+                    // The tree always shows the real hidden state (the eye-slash), also while a flow forces a category
+                    // into view in the viewport.
+                    hiddenFeatureIds: {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds},
                     onFeatureTap: _onFeatureTap,
                     // Feature 1 (tree multi-select): long-press enters bulk
                     // multi-select; the old per-row context menu is reached
@@ -25265,7 +25725,7 @@ class _PartScreenState extends State<PartScreen> {
                   // see [_refreshAssemblyMesh]'s own doc comment), so this is
                   // a zero-cost no-op for the overwhelming majority of
                   // existing, non-assembly usage.
-                  assemblyGeometry: _assemblyMesh?.geometry ?? const [],
+                  assemblyGeometry: _displayAssemblyGeometry,
                   // Assembly support Phase 4: Hide/Isolate must reach the
                   // viewport too, not just [AssemblyTreePanel] - both now
                   // read the same backend-true `hidden` per instance (§6
@@ -25462,6 +25922,9 @@ class _PartScreenState extends State<PartScreen> {
                   // overlay here.
                   sketchOrientationBasis: _confirmingSketchOrientation ? _pendingOrientationBasis : null,
                   anchorTriadAtOrigin: _anyToolPanelOpen,
+                  // The phone layout's Fit lives in the Start button's quick column; the desktop layout keeps the
+                  // button in the viewport's corner.
+                  showResetViewButton: _desktopLayout,
                 ),
                 // On-device feedback ("move the select/orbit fab to the top
                 // right group of fabs under 'centre view'"): a sibling of
@@ -25484,7 +25947,7 @@ class _PartScreenState extends State<PartScreen> {
                 // [_viewportFabColumnsVisible] with the top-left hamburger/
                 // feature-tree column - see that getter's own doc comment
                 // for why the two corners now genuinely differ.
-                if (_selectionModeFabVisible && !_desktopLayout)
+                if (_standaloneSelectionModeFabVisible && !_desktopLayout)
                   Positioned(
                     top: 56,
                     right: 8,
@@ -25504,51 +25967,6 @@ class _PartScreenState extends State<PartScreen> {
                               ? 'assets/icons/viewport/viewport_orbit_mode.svg'
                               : 'assets/icons/viewport/viewport_selection_mode.svg',
                         ),
-                      ),
-                    ),
-                  ),
-                // Measure tool: an always-available toggle FAB, same
-                // top-right stack as the selection-mode FAB directly above -
-                // `top: 104` is that FAB's own `top: 56` plus its 40px
-                // `FloatingActionButton.small` height plus the 8px gap this
-                // Column's other FABs already use.
-                if (_measureFabVisible && !_desktopLayout)
-                  Positioned(
-                    top: 104,
-                    right: 8,
-                    child: SafeArea(
-                      bottom: false,
-                      child: FloatingActionButton.small(
-                        heroTag: 'measure-fab',
-                        tooltip: _measureActive ? 'Exit measure' : 'Measure',
-                        backgroundColor:
-                            _measureActive ? Theme.of(context).colorScheme.primaryContainer : null,
-                        onPressed: _busy ? null : _toggleMeasure,
-                        child: const SvgIcon('assets/icons/viewport/viewport_measure.svg'),
-                      ),
-                    ),
-                  ),
-                // Sectioning Tool: mirrors the Measure FAB immediately
-                // above exactly (same always-available precedent - see
-                // [_sectionFabVisible]'s own doc comment) - `top: 152` is
-                // that FAB's own `top: 104` plus its 40px height plus the
-                // same 8px gap. A plain Material [Icon] (`content_cut`)
-                // rather than a new [SvgIcon] asset - no dedicated section-
-                // tool icon exists in this app's `assets/icons/viewport/`
-                // set yet, and adding one is outside this pass's scope.
-                if (_sectionFabVisible && !_desktopLayout)
-                  Positioned(
-                    top: 152,
-                    right: 8,
-                    child: SafeArea(
-                      bottom: false,
-                      child: FloatingActionButton.small(
-                        heroTag: 'section-fab',
-                        tooltip: _sectionPanelOpen ? 'Close Section' : 'Section',
-                        backgroundColor:
-                            _sectionPanelOpen ? Theme.of(context).colorScheme.primaryContainer : null,
-                        onPressed: _busy ? null : _toggleSectionPanel,
-                        child: const Icon(Icons.content_cut),
                       ),
                     ),
                   ),
@@ -25675,6 +26093,10 @@ class _PartScreenState extends State<PartScreen> {
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen,
+                    // No hamburger button on the phone layout any more (the quick column opens this), so the panel
+                    // brings its own close icon and starts at the top.
+                    onClose: _desktopLayout ? null : () => setState(() => _toolbarOpen = false),
+                    topInset: _desktopLayout ? 104 : 8,
                     lens: _lens,
                     referencePlanesHidden: _referencePlanesHidden,
                     onToggleReferencePlanes: _onToggleReferencePlanes,
@@ -26626,31 +27048,8 @@ class _PartScreenState extends State<PartScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // On-device feedback ("move the select/orbit fab
-                          // to the top right group of fabs under 'centre
-                          // view'"): the selection/orbit-mode toggle used
-                          // to live here first in this Column - moved to
-                          // [PartViewport]'s own top-right corner (see
-                          // [topRightSecondaryAction] below), directly
-                          // under its "Reset view" FAB. Hamburger/feature-
-                          // tree now lead this Column instead.
-                          // Fix 7: was an IconButton.filled, now a FAB above
-                          // 'feature-tree-fab' in this same Column, matching
-                          // how every other toolbar/viewport toggle here is a
-                          // FAB. Stage 22's _extrudeSketchFeature/_toolbarOpen
-                          // hiding rule applies for the extrude-panel case
-                          // specifically, but never while _toolbarOpen is
-                          // true - the hamburger is the only way to close the
-                          // toolbar once it's open, so it must stay visible
-                          // then regardless of anything else.
-                          if (_toolbarOpen || _extrudeSketchFeature == null)
-                            FloatingActionButton.small(
-                              heroTag: 'hamburger-fab',
-                              tooltip: _toolbarOpen ? 'Close toolbar' : 'Open toolbar',
-                              onPressed: () => setState(() => _toolbarOpen = !_toolbarOpen),
-                              child: Icon(_toolbarOpen ? Icons.close : Icons.menu),
-                            ),
-                          const SizedBox(height: 8),
+                          // The hamburger button that led this column is gone: Menu, Fit and Orbit / Select are in the
+                          // Start button's quick column now (`docs/touch-viewport-ux-plan.md`).
                           // Stage 19b Item 1: dedicated secondary FAB,
                           // replacing the hamburger drawer's old "Show
                           // Feature Tree" entry.
@@ -26682,48 +27081,6 @@ class _PartScreenState extends State<PartScreen> {
                                   : null,
                               child: const SvgIcon('assets/icons/feature/feature_tree.svg'),
                             ),
-                          const SizedBox(height: 8),
-                          // Assembly support Phase 3: [_lens]'s own toggle -
-                          // lives in this same Column as the hamburger/
-                          // feature-tree FABs above, same "hidden while the
-                          // toolbar is open" rule as the feature-tree FAB
-                          // just above (its own tooltip/icon flips with
-                          // [_lens] so the button always names the *other*
-                          // lens - the one tapping it switches to).
-                          if (!_toolbarOpen)
-                            FloatingActionButton.small(
-                              heroTag: 'assembly-lens-fab',
-                              tooltip: _lens == AssemblyLens.part ? 'Assembly tree' : 'Feature tree',
-                              onPressed: _toggleAssemblyLens,
-                              // Phase 3b lens theming (`docs/assembly-
-                              // scope.md` §3): this button is itself the
-                              // clearest place to signal "you're in
-                              // Assembly lens now" - tinted with the same
-                              // accent `PartToolbar`'s border and
-                              // `AssemblyTreePanel`'s header use, reverting
-                              // to the FAB's own default color (`null`) in
-                              // Part lens.
-                              //
-                              // Bug report (assembly testing): "lighter tone
-                              // of the same reddish colour closer to the
-                              // tone of the blue buttons in part lens" - was
-                              // [assemblyLensAccentColor]'s bare `tertiary`
-                              // (a saturated, darker red than the light
-                              // `primaryContainer` blue Part lens buttons
-                              // default to); now [assemblyLensButtonColors]'
-                              // `tertiaryContainer`/`onTertiaryContainer`
-                              // pair, the equivalent lighter "container"
-                              // tone - see that function's own doc comment.
-                              backgroundColor: _lens == AssemblyLens.assembly
-                                  ? assemblyLensButtonColors(Theme.of(context).colorScheme).$1
-                                  : null,
-                              foregroundColor: _lens == AssemblyLens.assembly
-                                  ? assemblyLensButtonColors(Theme.of(context).colorScheme).$2
-                                  : null,
-                              child: Icon(
-                                _lens == AssemblyLens.part ? Icons.view_in_ar_outlined : Icons.category_outlined,
-                              ),
-                            ),
                           // Assembly support Phase 5, widened by assembly-audit
                           // gap `[27]` (`docs/assembly-scope.md`): "local
                           // component-transform undo built in this phase, not
@@ -26753,6 +27110,27 @@ class _PartScreenState extends State<PartScreen> {
                               child: const Icon(Icons.undo),
                             ),
                         ],
+                      ),
+                    ),
+                  ),
+                // The Visibility panel (`docs/touch-viewport-ux-plan.md` section 6): docked bottom left, left of the Start
+                // button, open until its own close. Drawn only while the Start button is - a tool that owns the screen
+                // hides it, and it is back when the tool closes.
+                if (_visibilityPanelOpen && _startButtonVisible)
+                  Positioned(
+                    left: 8,
+                    bottom: 8,
+                    child: SafeArea(
+                      top: false,
+                      child: SizedBox(
+                        width: math.min(MediaQuery.sizeOf(context).width - 88, 420),
+                        child: VisibilityPanel(
+                          chips: _visibilityChips(),
+                          views: _visibilityViews(),
+                          onClose: () => setState(() => _visibilityPanelOpen = false),
+                          viewsFolded: _visibilityViewsFolded,
+                          onViewsFoldedChanged: (folded) => setState(() => _visibilityViewsFolded = folded),
+                        ),
                       ),
                     ),
                   ),
@@ -27150,96 +27528,25 @@ class _PartScreenState extends State<PartScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (!_desktopLayout &&
-                      !_extrudeActive &&
-                      !_surfaceActive &&
-                      !_createPlaneActive &&
-                      !_filletActive &&
-                      !_chamferActive &&
-                      !_revolveActive &&
-                      !_sweepActive &&
-                      !_loftActive &&
-                      !_planarSurfaceActive &&
-                      !_revolveSurfaceActive &&
-                      !_sweptSurfaceActive &&
-                      !_loftSurfaceActive &&
-                      !_ruledSurfaceActive &&
-      !_thickenActive &&
-      !_knitSurfaceActive &&
-      !_solidFromSurfacesActive &&
-      !_offsetSurfaceActive &&
-                      !_mirrorActive &&
-                      !_patternActive &&
-                      !_mergeActive &&
-                      !_booleanActive &&
-                      !_deleteBodyActive &&
-                      !_scaleBodyActive &&
-                      !_moveBodyActive &&
-                      !_deleteFaceActive &&
-                      !_moveFaceActive &&
-                      !_shellActive &&
-                      // Bug fix ("the 'new' FAB should not obscure the
-                      // Move/Rotate toolbar"): same "hide the FAB outright"
-                      // list every other bottom-docked ResizableToolPanel
-                      // tool is already in (see the Measure/Section fix
-                      // comment below) - Move/Rotate's own panel was never
-                      // added when it was introduced.
-                      !_moveRotateComponentActive &&
-                      !_profilePickerActive &&
-                      !_pathPickerActive &&
-                      // On-device feedback ("the tooltip at the top of the
-                      // screen blocks the FABs"): plane-selection mode's own
-                      // Cancel used to live in a top banner, nowhere near
-                      // this corner - now it's in a bottom [PickerRibbon]
-                      // (see where `_planeSelectionMode` builds one above),
-                      // which this FAB would otherwise sit directly on top
-                      // of.
-                      !_planeSelectionMode &&
-                      // Bug fix (on-device feedback: "the 'new' fab sits on
-                      // top of the [section] tool obscuring part of it"):
-                      // Measure/Section only ever got added to the *offset*
-                      // list above (bottom: 180) - the ResizableToolPanel
-                      // both actually render in defaults to 50% of the
-                      // viewport (resizable 25%-85%), far taller than a
-                      // fixed 180px, so the FAB kept overlapping it. Every
-                      // other tool panel avoids this by being in *this* list
-                      // instead, hiding the FAB outright - Measure/Section
-                      // just never got added here too.
-                      !_measureActive &&
-                      // Bug report (assembly testing): "the 'new' fab sits
-                      // on top of the assembly mode 'pattern component' tool
-                      // bar" - same gap as the Measure/Section/Mate panels'
-                      // own fixes just above/below - ComponentPatternPanel
-                      // was never added to this hide list.
-                      !_componentPatternPanelActive &&
-                      // Bug report (assembly testing): "the 'new' fab sits
-                      // on top of the mates tool bar obscuring part of it" -
-                      // `MatePanel` is the same bottom-docked
-                      // `ResizableToolPanel` shape as every other tool in
-                      // this list (see its own `if (_mateActive)
-                      // Positioned.fill(...)` slot above), it just never got
-                      // added here - same omission as the Measure/Section
-                      // and Move/Rotate fixes right above.
-                      !_mateActive &&
-                      !_sectionPanelOpen)
-                    FloatingActionButton(
-                      heroTag: 'add-fab',
-                      tooltip: 'Add',
-                      onPressed: _busy ? null : _onAddPressed,
-                      // Phase 3b lens theming: same accent as the lens-
-                      // toggle FAB above - this is the FAB whose own flyout
-                      // changes shape between lenses (Feature tools vs Add
-                      // Component/Mate/Pattern), so it gets the same signal.
-                      // Bug report (assembly testing): now the lighter
-                      // `tertiaryContainer`/`onTertiaryContainer` pair - see
-                      // [assemblyLensButtonColors]'s own doc comment.
+                  if (_startButtonVisible)
+                    // The Start button and its quick column (`docs/touch-viewport-ux-plan.md`). It keeps the old "Add"
+                    // button's lens tint, so Assembly lens still reads at a glance.
+                    StartButton(
+                      enabled: !_busy,
+                      menuOpen: _startMenuOpen,
+                      columnOpen: _quickColumnOpen,
+                      onStart: _onStartPressed,
+                      onColumnOpenChanged: (open) => setState(() => _quickColumnOpen = open),
+                      onColumnOpenedByUser: () => unawaited(ControlsPreferences.noteQuickColumnOpened()),
+                      showSwipeHint: ControlsPreferences.showQuickColumnHint,
+                      quickButtons: _quickColumnButtons(),
                       backgroundColor: _lens == AssemblyLens.assembly
                           ? assemblyLensButtonColors(Theme.of(context).colorScheme).$1
                           : null,
                       foregroundColor: _lens == AssemblyLens.assembly
                           ? assemblyLensButtonColors(Theme.of(context).colorScheme).$2
                           : null,
-                      child: const SvgIcon('assets/icons/viewport/viewport_add.svg'),
+                      modeBadge: _selectionMode ? const SvgIcon('assets/icons/viewport/viewport_selection_mode.svg') : null,
                     ),
                   // On-device feedback ("the tooltip at the top of the
                   // screen blocks the FABs"): the profile/path/Mirror-

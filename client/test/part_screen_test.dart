@@ -26,6 +26,8 @@ import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
+import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
+import 'package:didsa_cad_client/viewport3d/measurement_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_context_menu.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
@@ -38,6 +40,7 @@ import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
+import 'package:didsa_cad_client/viewport3d/visibility_panel.dart';
 import 'package:didsa_cad_client/viewport3d/resizable_tool_panel.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
@@ -76,6 +79,29 @@ class _FakeDocumentBackend {
   /// re-fetches the Feature list on Confirm, not just that a freshly-loaded
   /// `_features` happens to already contain what the test expects.
   int featuresGetCount = 0;
+
+  /// Hide / Show as Part state (`PATCH .../visibility`): each Part's hidden Feature ids and reference-planes flag, every
+  /// request body in order, and a switch that makes the route fail.
+  final Map<String, Set<String>> hiddenByPart = {};
+  final Map<String, bool> referencePlanesHiddenByPart = {};
+  final List<Map<String, dynamic>> visibilityRequests = [];
+  bool failVisibility = false;
+
+  /// The most recent `POST .../import/native` body (what the Open flows send the backend).
+  Map<String, dynamic>? lastImportBody;
+
+  /// Part ids the fake's `assembly-mesh` carries (empty) geometry for, so a test can have several Parts in the scene.
+  List<String> assemblyGeometryPartIds = const [];
+
+  /// When set, `GET .../part-1/mesh` returns these Bodies (`body_id` / `source` / `mesh` maps, optionally
+  /// `is_surface` / `is_curve`) with `hidden` worked out from [hiddenByPart] and the `hidden_feature_ids` query parameter,
+  /// the way the real route does.
+  List<Map<String, dynamic>>? meshBodies;
+
+  Map<String, dynamic> _visibilityFields(String partId) => {
+        'hidden_feature_ids': (hiddenByPart[partId] ?? <String>{}).toList()..sort(),
+        'reference_planes_hidden': referencePlanesHiddenByPart[partId] ?? false,
+      };
 
   /// Every Curve feature PATCH body, in order (the Helix edit test).
   final List<Map<String, dynamic>> curvePatchBodies = [];
@@ -235,6 +261,7 @@ class _FakeDocumentBackend {
           'name': partOneName,
           'feature_ids': features.map((f) => f['id']).toList(),
           'occurrence_ids': occurrences.map((o) => o['id']).toList(),
+          ..._visibilityFields('part-1'),
         }, 200);
       }
       final extra = extraParts[id];
@@ -244,6 +271,7 @@ class _FakeDocumentBackend {
         'name': extra['name'],
         'feature_ids': <String>[],
         'occurrence_ids': (extra['occurrences'] as List).map((o) => o['id']).toList(),
+        ..._visibilityFields(id!),
       }, 200);
     }
 
@@ -266,6 +294,34 @@ class _FakeDocumentBackend {
       if (extra == null) return http.Response('not found: part', 404);
       if (newName != null) extra['name'] = newName;
       return _json({'id': extra['id'], 'name': extra['name'], 'feature_ids': <String>[]}, 200);
+    }
+
+    // Hide / Show (`docs/touch-viewport-ux-plan.md` section 6.1): the real route's rules - ids, categories (a Feature's
+    // `produces`, 'none' when a seed leaves it out) and reference planes, an unknown id is a 422.
+    final visibilityMatch = RegExp(r'^/document/parts/([^/]+)/visibility$').firstMatch(path);
+    if (visibilityMatch != null && method == 'PATCH') {
+      visibilityRequests.add({'part_id': visibilityMatch.group(1), ...body});
+      if (failVisibility) return http.Response(jsonEncode({'detail': 'visibility refused'}), 500);
+      final partId = visibilityMatch.group(1)!;
+      final ids = ((body['feature_ids'] as List?) ?? const []).cast<String>();
+      final categories = ((body['categories'] as List?) ?? const []).cast<String>();
+      final planes = body['reference_planes'] == true;
+      if (ids.isEmpty && categories.isEmpty && !planes) return http.Response(jsonEncode({'detail': 'no target'}), 422);
+      final known = features.map((f) => f['id']).toSet();
+      if (partId == 'part-1' && ids.any((id) => !known.contains(id))) {
+        return http.Response(jsonEncode({'detail': 'Unknown feature ids'}), 422);
+      }
+      final hidden = body['hidden'] == true;
+      final targets = {
+        ...ids,
+        if (partId == 'part-1')
+          for (final f in features)
+            if (categories.contains(f['produces'] ?? 'none')) f['id'] as String,
+      };
+      final set = hiddenByPart.putIfAbsent(partId, () => <String>{});
+      hidden ? set.addAll(targets) : set.removeAll(targets);
+      if (planes) referencePlanesHiddenByPart[partId] = hidden;
+      return _json(_visibilityFields(partId), 200);
     }
 
     // Phase 15 (`docs/assembly-scope.md` §6): `AssemblyDocumentClient.savePart`/
@@ -308,6 +364,7 @@ class _FakeDocumentBackend {
       }, 200);
     }
     if (path == '/document/import/native' && method == 'POST') {
+      lastImportBody = body;
       final parts = ((body['document'] as Map?)?['parts'] as List?) ?? const [];
       for (final partRaw in parts) {
         if (partRaw is! Map) continue;
@@ -378,6 +435,17 @@ class _FakeDocumentBackend {
       return _json(<Map<String, dynamic>>[], 200);
     }
 
+    if (path == '/document/parts/part-1/mesh' && method == 'GET' && meshBodies != null) {
+      meshRequests.add(request.url.queryParameters);
+      final hiddenNow = {
+        ...(hiddenByPart['part-1'] ?? <String>{}),
+        ...request.url.queryParametersAll['hidden_feature_ids'] ?? const <String>[],
+      };
+      return _json([
+        for (final b in meshBodies!)
+          {...b, 'hidden': hiddenNow.contains((b['body_id'] as String).split('#').first)},
+      ], 200);
+    }
     if (path == '/document/parts/part-1/mesh' && method == 'GET') {
       meshRequests.add(request.url.queryParameters);
       // Prompt A3: the backend (Prompt A1) now returns an array of Bodies -
@@ -772,7 +840,9 @@ class _FakeDocumentBackend {
     if (assemblyMeshMatch != null && method == 'GET') {
       final forRoot = assemblyMeshMatch.group(1) == 'part-1';
       return _json({
-        'geometry': <dynamic>[],
+        'geometry': [
+          for (final id in assemblyGeometryPartIds) {'part_id': id, 'bodies': <dynamic>[]},
+        ],
         'instances': [
           if (forRoot)
             for (final occurrence in occurrences)
@@ -989,6 +1059,64 @@ Future<void> _pumpUntil(WidgetTester tester, bool Function() done, {int maxPumps
   }
 }
 
+/// The phone layout's Start button.
+final _startFab = find.byKey(const ValueKey('start-fab'));
+
+Future<void> _settleSheet(WidgetTester tester) async {
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 250));
+}
+
+/// Opens the phone layout's Start menu (taps the Start button).
+Future<void> openStartMenu(WidgetTester tester) async {
+  await tester.tap(_startFab);
+  await _settleSheet(tester);
+}
+
+/// Taps [label]'s tile in the Start menu - opening the menu first unless it is open, and choosing the tab [tab] (a
+/// `RibbonTabData.id`: features, sketch, assembly, evaluate, view) when the tile is not on the lens's first tab. The menu
+/// closes and the command runs, as for a user.
+Future<void> tapStartCommand(WidgetTester tester, String label, {String? tab}) async {
+  if (find.byKey(const ValueKey('start-menu')).evaluate().isEmpty) await openStartMenu(tester);
+  if (tab != null) {
+    await tester.tap(find.byKey(ValueKey('ribbon-tab-$tab')));
+    await _settleSheet(tester);
+  }
+  final tile = find.byKey(ValueKey('start-tile-$label'));
+  await tester.ensureVisible(tile);
+  await tester.tap(tile);
+  await _settleSheet(tester);
+}
+
+/// Opens the Start button's quick column the way a user can without a precise swipe: a long press on Start.
+Future<void> openQuickColumn(WidgetTester tester) async {
+  if (find.byKey(const ValueKey('quick-column')).evaluate().isNotEmpty) return;
+  await tester.longPress(_startFab);
+  await _settleSheet(tester);
+}
+
+/// Taps the quick-column button [key] (opening the column first), then lets it close.
+Future<void> tapQuickButton(WidgetTester tester, String key) async {
+  await openQuickColumn(tester);
+  await tester.tap(find.byKey(ValueKey(key)));
+  await _settleSheet(tester);
+}
+
+/// Flips Orbit / Select through the quick column.
+Future<void> toggleSelectionMode(WidgetTester tester) => tapQuickButton(tester, 'quick-selection-mode-fab');
+
+/// Opens the toolbar (File, View, Selection Filters) through the quick column's Menu button.
+Future<void> openToolbar(WidgetTester tester) => tapQuickButton(tester, 'quick-menu-fab');
+
+/// Switches the lens through the Start menu's Part / Assembly switch ([to] is 'Part' or 'Assembly') and closes the menu.
+Future<void> switchLens(WidgetTester tester, String to) async {
+  await openStartMenu(tester);
+  await tester.tap(find.descendant(of: find.byKey(const ValueKey('start-lens')), matching: find.text(to)));
+  await _settleSheet(tester);
+  await tester.tap(find.byKey(const ValueKey('start-menu-close')));
+  await _settleSheet(tester);
+}
+
 void main() {
   // PartScreen now loads Stage 18's view preferences (background/body
   // colour, opacity) via shared_preferences on initState - without a mock
@@ -1028,12 +1156,7 @@ void main() {
     // Feature and navigates, same as before. Stage 19b Item 1 added a second
     // (small, "Feature tree") FAB, so target the main "Add" one by tooltip
     // rather than by type.
-    await tester.tap(find.byTooltip('Add'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    expect(find.text('New Sketch'), findsOneWidget);
-
-    await tester.tap(find.text('New Sketch'));
+    await tapStartCommand(tester, 'New Sketch');
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -1074,6 +1197,8 @@ void main() {
       // border yet. The FAB's glyph is an SVG asset, not a named IconData
       // (see the 'exit-sketch-fab' heroTag predicate comment below) - byIcon
       // no longer matches it, so this checks the SvgIcon's own asset path.
+      // The button now lives in the Start button's quick column (a long press opens it).
+      await openQuickColumn(tester);
       expect(find.byTooltip('Switch to selection mode'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
@@ -1083,22 +1208,26 @@ void main() {
       );
 
       await tester.tap(find.byTooltip('Switch to selection mode'));
-      await tester.pump();
+      await _settleSheet(tester);
 
+      // Every quick button closes the column once it has run: reopen it to read the new state.
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      await openQuickColumn(tester);
       expect(find.byTooltip('Switch to orbit mode'), findsOneWidget);
       expect(
         find.byWidgetPredicate(
           (w) => w is SvgIcon && w.asset == 'assets/icons/viewport/viewport_orbit_mode.svg',
         ),
-        findsOneWidget,
+        findsWidgets,
       );
       expect(tester.takeException(), isNull);
 
       // Switching back to Orbit mode removes the FAB's active styling and
       // the viewport's tinted border again.
       await tester.tap(find.byTooltip('Switch to orbit mode'));
-      await tester.pump();
+      await _settleSheet(tester);
 
+      await openQuickColumn(tester);
       expect(find.byTooltip('Switch to selection mode'), findsOneWidget);
       expect(tester.takeException(), isNull);
     },
@@ -1121,10 +1250,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Add'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('New Sketch'));
+      await tapStartCommand(tester, 'New Sketch');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -1159,10 +1285,7 @@ void main() {
     }
 
     Future<void> startNewSketch(WidgetTester tester) async {
-      await tester.tap(find.byTooltip('Add'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('New Sketch'));
+      await tapStartCommand(tester, 'New Sketch');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
     }
@@ -1173,9 +1296,7 @@ void main() {
       tester,
     ) async {
       await open(tester);
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('View'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -1183,7 +1304,7 @@ void main() {
       await tester.pump();
       await tester.tap(find.text('Hide Reference Planes'));
       await tester.pump();
-      await tester.tap(find.byTooltip('Close toolbar'));
+      await tester.tap(find.byKey(const ValueKey('toolbar-close')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(planesHidden(tester), isTrue, reason: 'the user hid them');
@@ -1200,8 +1321,7 @@ void main() {
 
     testWidgets('in Selection mode a plane tap starts the sketch instead of just selecting the plane', (tester) async {
       await open(tester);
-      await tester.tap(find.byTooltip('Switch to selection mode'));
-      await tester.pump();
+      await toggleSelectionMode(tester);
       await startNewSketch(tester);
 
       tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
@@ -1239,9 +1359,7 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Open toolbar'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
+    await openToolbar(tester);
 
     // The toolbar's "View" section is an ExpansionTile, collapsed by
     // default - its children (including "Hide Reference Planes") aren't
@@ -1300,9 +1418,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
 
       // The toolbar's "View" section is an ExpansionTile, collapsed by
       // default - its children (including the render-mode entries) aren't
@@ -1351,7 +1467,7 @@ void main() {
     },
   );
 
-  testWidgets('the "Add" FAB is hidden while the Extrude panel is open', (tester) async {
+  testWidgets('the Start button is hidden while the Extrude panel is open', (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
         {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
@@ -1372,7 +1488,7 @@ void main() {
 
     // Stage 19b Item 1 added a second (small, "Feature tree") FAB, so target
     // the main "Add" one by tooltip rather than by type.
-    expect(find.byTooltip('Add'), findsOneWidget);
+    expect(find.byTooltip('Start'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
@@ -1391,7 +1507,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Confirm'), findsOneWidget);
-    expect(find.byTooltip('Add'), findsNothing);
+    expect(find.byTooltip('Start'), findsNothing);
     expect(tester.takeException(), isNull);
 
     // Prompt A4's target-body-picker banner adds its own Cancel button
@@ -1403,7 +1519,546 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    expect(find.byTooltip('Add'), findsOneWidget);
+    expect(find.byTooltip('Start'), findsOneWidget);
+  });
+
+  group('Start menu (phone layout)', () {
+    Future<void> pumpScreen(WidgetTester tester) async {
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    testWidgets('the Part lens offers Features, Sketch, Evaluate and View, and Features lists every feature', (tester) async {
+      await pumpScreen(tester);
+      await openStartMenu(tester);
+      for (final id in ['features', 'sketch', 'evaluate', 'view']) {
+        expect(find.byKey(ValueKey('ribbon-tab-$id')), findsOneWidget, reason: id);
+      }
+      expect(find.byKey(const ValueKey('ribbon-tab-assembly')), findsNothing);
+      expect(find.byKey(const ValueKey('start-tile-New Sketch')), findsOneWidget);
+      // The group titles and every tile come from the picker's own table.
+      final list = find.descendant(of: find.byKey(const ValueKey('start-menu')), matching: find.byType(Scrollable)).first;
+      for (final group in kFeatureGroups) {
+        await tester.scrollUntilVisible(find.text(group.title), 200, scrollable: list);
+        for (final entry in group.entries) {
+          await tester.scrollUntilVisible(find.byKey(ValueKey('start-tile-${entry.label}')), 200, scrollable: list);
+        }
+      }
+    });
+
+    testWidgets('Measure and Section are Evaluate tiles, and the old Measure, Section and lens buttons are gone', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+      expect(find.byTooltip('Measure'), findsNothing);
+      expect(find.byTooltip('Section'), findsNothing);
+      expect(find.byTooltip('Assembly tree'), findsNothing);
+      await openStartMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('start-tile-Measure')), findsOneWidget);
+      expect(find.byKey(const ValueKey('start-tile-Section')), findsOneWidget);
+    });
+
+    testWidgets('the lens switch swaps the tabs in place, and the Assembly lens drops the Part-only tabs', (tester) async {
+      await pumpScreen(tester);
+      await openStartMenu(tester);
+      await tester.tap(find.descendant(of: find.byKey(const ValueKey('start-lens')), matching: find.text('Assembly')));
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('start-menu')), findsOneWidget, reason: 'the sheet stays open');
+      expect(find.byKey(const ValueKey('ribbon-tab-assembly')), findsOneWidget);
+      expect(find.byKey(const ValueKey('ribbon-tab-features')), findsNothing);
+      expect(find.byKey(const ValueKey('ribbon-tab-sketch')), findsNothing);
+      expect(find.byKey(const ValueKey('start-tile-Add Component')), findsOneWidget);
+      expect(find.byKey(const ValueKey('start-tile-Mate')), findsOneWidget);
+    });
+
+    testWidgets('a tile closes the sheet, then runs its command (Measure opens the Measure panel and Start hides)', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+      await tapStartCommand(tester, 'Measure', tab: 'evaluate');
+      expect(find.byKey(const ValueKey('start-menu')), findsNothing);
+      expect(find.byType(MeasurementPanel), findsOneWidget);
+      expect(find.byTooltip('Start'), findsNothing);
+    });
+
+    testWidgets('Start shows an X while its menu is open', (tester) async {
+      await pumpScreen(tester);
+      expect(find.descendant(of: _startFab, matching: find.byIcon(Icons.close)), findsNothing);
+      await openStartMenu(tester);
+      expect(find.descendant(of: _startFab, matching: find.byIcon(Icons.close)), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('start-menu-close')));
+      await _settleSheet(tester);
+      expect(find.descendant(of: _startFab, matching: find.byIcon(Icons.close)), findsNothing);
+    });
+
+    testWidgets('an idle phone screen has no top-right buttons, no hamburger and no stand-alone Orbit / Select', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).showResetViewButton,
+        isFalse,
+        reason: 'Fit is in the quick column',
+      );
+      expect(find.byTooltip('Switch to selection mode'), findsNothing);
+      expect(find.byTooltip('Open toolbar'), findsNothing);
+      expect(find.byTooltip('Feature tree'), findsOneWidget, reason: 'the tree button stays top left');
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+    });
+
+    testWidgets('a long press opens the quick column: Menu, Fit and Orbit / Select, nearest Start first', (tester) async {
+      await pumpScreen(tester);
+      await openQuickColumn(tester);
+      final start = tester.getTopLeft(_startFab).dy;
+      final menu = tester.getTopLeft(find.byKey(const ValueKey('quick-menu-fab'))).dy;
+      final fit = tester.getTopLeft(find.byKey(const ValueKey('quick-fit-fab'))).dy;
+      final select = tester.getTopLeft(find.byKey(const ValueKey('quick-selection-mode-fab'))).dy;
+      expect(menu, lessThan(start));
+      expect(fit, lessThan(menu));
+      expect(select, lessThan(fit));
+    });
+
+    testWidgets('a swipe up from Start opens the column', (tester) async {
+      await pumpScreen(tester);
+      await tester.drag(_startFab, const Offset(0, -80));
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsOneWidget);
+      expect(find.byKey(const ValueKey('start-menu')), findsNothing, reason: 'a swipe is not a tap');
+    });
+
+    testWidgets('Menu opens the toolbar and closes the column; the toolbar closes with its own icon', (tester) async {
+      await pumpScreen(tester);
+      await openToolbar(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(tester.widget<PartToolbar>(find.byType(PartToolbar)).visible, isTrue);
+      await tester.tap(find.byKey(const ValueKey('toolbar-close')));
+      await _settleSheet(tester);
+      expect(tester.widget<PartToolbar>(find.byType(PartToolbar)).visible, isFalse);
+    });
+
+    testWidgets('Fit closes the column', (tester) async {
+      await pumpScreen(tester);
+      await tapQuickButton(tester, 'quick-fit-fab');
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('Orbit / Select flips the mode, closes the column, and Start shows the mode', (tester) async {
+      await pumpScreen(tester);
+      expect(find.byKey(const ValueKey('start-mode-badge')), findsNothing);
+      await toggleSelectionMode(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isTrue);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(find.byKey(const ValueKey('start-mode-badge')), findsOneWidget);
+      await toggleSelectionMode(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isFalse);
+      expect(find.byKey(const ValueKey('start-mode-badge')), findsNothing);
+    });
+
+    testWidgets('tapping X closes the column, and tapping Start with the column closed opens the menu', (tester) async {
+      await pumpScreen(tester);
+      await openQuickColumn(tester);
+      await tester.tap(_startFab);
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(find.byKey(const ValueKey('start-menu')), findsNothing, reason: 'X never opens the menu');
+      await openStartMenu(tester);
+      expect(find.byKey(const ValueKey('start-menu')), findsOneWidget);
+    });
+
+    testWidgets('the column closes when a tool session starts and is still closed when it ends', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+        ],
+      );
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await openQuickColumn(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await _settleSheet(tester);
+      await tester.longPress(find.text('Sketch 1'));
+      await _settleSheet(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await _settleSheet(tester);
+      await tester.tap(find.text('Extrude'));
+      await _settleSheet(tester);
+      expect(find.byTooltip('Start'), findsNothing, reason: 'the Extrude session hides Start');
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+
+      await tester.ensureVisible(find.text('Cancel').last);
+      await tester.tap(find.text('Cancel').last);
+      await _settleSheet(tester);
+      expect(find.byTooltip('Start'), findsOneWidget);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing, reason: 'it does not come back by itself');
+    });
+
+    testWidgets('the Start menu opening closes the column', (tester) async {
+      await pumpScreen(tester);
+      await openQuickColumn(tester);
+      // The X closes the column; Start (now idle) opens the menu. A column that was left open never survives the menu.
+      await tester.tap(_startFab);
+      await _settleSheet(tester);
+      await openStartMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('start-menu-close')));
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+    });
+
+    testWidgets('the last tab used is remembered per lens for the session', (tester) async {
+      await pumpScreen(tester);
+      await openStartMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-view')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('start-menu-close')));
+      await _settleSheet(tester);
+      await openStartMenu(tester);
+      expect(find.byKey(const ValueKey('start-tile-Fit')), findsOneWidget, reason: 'reopened on View');
+    });
+  });
+
+  group('Hide / Show is Part state, with the Visibility panel (phone layout)', () {
+    final List<Map<String, dynamic>> twoSketches = [
+      {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+      {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false, 'produces': 'sketch'},
+    ];
+
+    Future<_FakeDocumentBackend> pumpScreen(
+      WidgetTester tester,
+      _FakeDocumentBackend backend, {
+      String? initialPartId,
+    }) async {
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            initialPartId: initialPartId,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      return backend;
+    }
+
+    Future<void> openPanel(WidgetTester tester) async {
+      await tapQuickButton(tester, 'quick-visibility-fab');
+    }
+
+    /// The chips scroll sideways when the card is narrower than the row: bring one into view, then tap it.
+    Future<void> tapChip(WidgetTester tester, String id) async {
+      final chip = find.byKey(ValueKey('vis-chip-$id'));
+      await tester.ensureVisible(chip);
+      await tester.pump();
+      await tester.tap(chip);
+    }
+
+    VisibilityChipData chipData(WidgetTester tester, String id) =>
+        tester.widget<VisibilityPanel>(find.byType(VisibilityPanel)).chips.firstWhere((c) => c.id == id);
+
+    Future<void> settleRequests(WidgetTester tester) async {
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    testWidgets('the quick column has a Visibility button; it opens the panel, closes the column, and the panel stays', (
+      tester,
+    ) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      expect(find.byType(VisibilityPanel), findsNothing);
+      await openPanel(tester);
+      expect(find.byType(VisibilityPanel), findsOneWidget);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing, reason: 'opening it closes the column');
+      // It stays while the user works: opening the column again leaves it open.
+      await openQuickColumn(tester);
+      expect(find.byType(VisibilityPanel), findsOneWidget);
+      await tester.tap(_startFab);
+      await _settleSheet(tester);
+      await tester.tap(find.byKey(const ValueKey('vis-close')));
+      await _settleSheet(tester);
+      expect(find.byType(VisibilityPanel), findsNothing);
+    });
+
+    testWidgets('a chip sends one batch call and applies the response; the chip then reads hidden', (tester) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.shown);
+
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+
+      expect(backend.visibilityRequests, [
+        {
+          'part_id': 'part-1',
+          'hidden': true,
+          'feature_ids': <String>[],
+          'categories': ['sketch'],
+          'reference_planes': false,
+        },
+      ]);
+      expect(backend.hiddenByPart['part-1'], {'feature-1', 'feature-2'});
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.hidden);
+
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.last['hidden'], isFalse);
+      expect(backend.hiddenByPart['part-1'], isEmpty);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.shown);
+    });
+
+    testWidgets('a chip with nothing in its category is disabled', (tester) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      expect(chipData(tester, 'surface').onTap, isNull);
+      expect(chipData(tester, 'body').onTap, isNull);
+      expect(chipData(tester, 'sketch').onTap, isNotNull);
+    });
+
+    testWidgets('a failed call rolls the chip back and shows the error', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: twoSketches)..failVisibility = true;
+      await pumpScreen(tester, backend);
+      await openPanel(tester);
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests, hasLength(1));
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.shown, reason: 'back to what the backend holds');
+      expect(find.textContaining('visibility refused'), findsOneWidget);
+    });
+
+    testWidgets('a tree hide goes through the same call, and shows the chip half-filled', (tester) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await tester.tap(find.byTooltip('Feature tree'));
+      await _settleSheet(tester);
+      await tester.longPress(find.text('Sketch 1'));
+      await _settleSheet(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await _settleSheet(tester);
+      await tester.tap(find.text('Hide'));
+      await settleRequests(tester);
+      await _settleSheet(tester);
+
+      expect(backend.visibilityRequests.first, containsPair('feature_ids', ['feature-1']));
+      expect(backend.visibilityRequests.first, containsPair('hidden', true));
+      expect(backend.hiddenByPart['part-1'], {'feature-1'});
+      await tester.tap(find.byTooltip('Close')); // the tree's own X
+      await _settleSheet(tester);
+      await openPanel(tester);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.partial);
+
+      // A partly hidden category: a tap shows all of it.
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.last, containsPair('hidden', false));
+      expect(backend.hiddenByPart['part-1'], isEmpty);
+    });
+
+    testWidgets('the reference planes chip sends the planes flag and hides them in the viewport', (tester) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      await tapChip(tester, 'reference-planes');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.single, containsPair('reference_planes', true));
+      expect(backend.referencePlanesHiddenByPart['part-1'], isTrue);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isTrue);
+      expect(chipData(tester, 'reference-planes').state, VisibilityChipState.hidden);
+    });
+
+    testWidgets('what the backend holds when the Part loads is what the screen shows', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: twoSketches)
+        ..hiddenByPart['part-1'] = {'feature-1'}
+        ..referencePlanesHiddenByPart['part-1'] = true;
+      // An existing Part opened: its Hide / Show state comes with it from the backend.
+      await pumpScreen(tester, backend, initialPartId: 'part-1');
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isTrue);
+      await openQuickColumn(tester);
+      expect(find.byKey(const ValueKey('quick-badge')), findsOneWidget, reason: 'something is hidden');
+      await tester.tap(find.byKey(const ValueKey('quick-visibility-fab')));
+      await _settleSheet(tester);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.partial, reason: 'one of the two sketches is hidden');
+      expect(chipData(tester, 'reference-planes').state, VisibilityChipState.hidden);
+    });
+
+    testWidgets('the quick button has no badge while nothing is hidden', (tester) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openQuickColumn(tester);
+      expect(find.byKey(const ValueKey('quick-badge')), findsNothing);
+    });
+
+    testWidgets('hiding Solids removes the bodies from the viewport', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+          {'type': 'extrude', 'id': 'feature-2', 'locked': false, 'produces': 'body'},
+        ],
+      )..meshBodies = [
+          {'body_id': 'feature-2', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+        ];
+      await pumpScreen(tester, backend);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies, hasLength(1));
+      await openPanel(tester);
+      await tapChip(tester, 'body');
+      await settleRequests(tester);
+      await _settleSheet(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies, isEmpty);
+      expect(chipData(tester, 'body').state, VisibilityChipState.hidden);
+    });
+
+    testWidgets('a plane pick shows hidden created planes while it lasts, with the chip locked, and hides them again', (
+      tester,
+    ) async {
+      final Map<String, dynamic> plane = {
+        'type': 'create_plane',
+        'id': 'feature-3',
+        'locked': false,
+        'produces': 'plane',
+        'origin': [0.0, 0.0, 5.0],
+        'normal': [0.0, 0.0, 1.0],
+        'x_axis': [1.0, 0.0, 0.0],
+        'y_axis': [0.0, 1.0, 0.0],
+      };
+      final backend = _FakeDocumentBackend(seedFeatures: [...twoSketches, plane]);
+      await pumpScreen(tester, backend);
+      PartViewport viewport() => tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport().createPlanes, hasLength(1));
+
+      await openPanel(tester);
+      await tapChip(tester, 'plane');
+      await settleRequests(tester);
+      await _settleSheet(tester);
+      expect(viewport().createPlanes, isEmpty, reason: 'hidden');
+      expect(chipData(tester, 'plane').locked, isFalse);
+
+      // New Sketch asks for a plane to be tapped: the created plane has to be drawn and pickable meanwhile.
+      await tester.tap(find.byKey(const ValueKey('vis-close')));
+      await _settleSheet(tester);
+      await tapStartCommand(tester, 'New Sketch');
+      expect(viewport().createPlanes, hasLength(1), reason: 'forced into view for the pick');
+      expect(backend.hiddenByPart['part-1'], {'feature-3'}, reason: 'forcing is display only');
+      expect(backend.visibilityRequests, hasLength(1), reason: 'nothing was sent for it');
+
+      await tester.tap(find.text('Cancel'));
+      await _settleSheet(tester);
+      expect(viewport().createPlanes, isEmpty, reason: 'back to hidden when the pick ends');
+    });
+
+    testWidgets('a body pick shows hidden solids while it lasts, and the chip shows the lock', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+          {'type': 'extrude', 'id': 'feature-2', 'locked': false, 'produces': 'body'},
+        ],
+      )..meshBodies = [
+          {'body_id': 'feature-2', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+        ];
+      await pumpScreen(tester, backend);
+      PartViewport viewport() => tester.widget<PartViewport>(find.byType(PartViewport));
+      await openPanel(tester);
+      await tapChip(tester, 'body');
+      await settleRequests(tester);
+      await _settleSheet(tester);
+      expect(viewport().bodies, isEmpty);
+      await tester.tap(find.byKey(const ValueKey('vis-close')));
+      await _settleSheet(tester);
+
+      await tapStartCommand(tester, 'Mirror');
+      expect(viewport().bodies, hasLength(1), reason: 'Mirror picks bodies: they are drawn and pickable meanwhile');
+      expect(backend.hiddenByPart['part-1'], {'feature-2'});
+    });
+
+    testWidgets('the panel is not drawn while a tool owns the screen and is back when it closes', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: twoSketches);
+      await pumpScreen(tester, backend);
+      await openPanel(tester);
+      await tapStartCommand(tester, 'Measure', tab: 'evaluate');
+      expect(find.byType(VisibilityPanel), findsNothing, reason: 'Measure owns the bottom of the screen');
+      await tester.tap(find.widgetWithText(FilledButton, 'Done'));
+      await _settleSheet(tester);
+      expect(find.byType(VisibilityPanel), findsOneWidget, reason: 'nothing was lost');
+    });
+
+    testWidgets('the View row has the standard views and folds away', (tester) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      for (final name in ['front', 'back', 'left', 'right', 'top', 'bottom', 'isometric']) {
+        expect(find.byKey(ValueKey('vis-view-$name')), findsOneWidget, reason: name);
+      }
+      await tester.tap(find.byKey(const ValueKey('vis-view-top')));
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 100)); // the 400 ms camera move, frame by frame
+      }
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byKey(const ValueKey('vis-fold-views')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('vis-view-top')), findsNothing);
+    });
+
+    testWidgets('in Assembly lens a chip makes one call for every Part in the scene', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: twoSketches,
+        seedOccurrences: [
+          {
+            'id': 'occ-1',
+            'external_ref': 'a.didsa',
+            'resolved_part_id': 'part-2',
+            'name_override': null,
+            'transform': {
+              'translation': [0.0, 0.0, 0.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 0.0,
+            },
+            'suppressed': false,
+            'hidden': false,
+          },
+        ],
+      )
+        ..extraParts['part-2'] = {'id': 'part-2', 'name': 'Part 2', 'occurrences': <Map<String, dynamic>>[]}
+        ..assemblyGeometryPartIds = ['part-1', 'part-2'];
+      await pumpScreen(tester, backend);
+      await switchLens(tester, 'Assembly');
+      await openPanel(tester);
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect({for (final r in backend.visibilityRequests) r['part_id']}, {'part-1', 'part-2'});
+      expect(backend.visibilityRequests.every((r) => (r['categories'] as List).contains('sketch')), isTrue);
+    });
+
+    testWidgets('a hide that is still in flight is not undone by an earlier response', (tester) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      await tapChip(tester, 'sketch');
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.map((r) => r['hidden']), [true, false]);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.shown);
+      expect(backend.hiddenByPart['part-1'], isEmpty);
+    });
   });
 
   testWidgets('tapping a locked Feature still selects it and opens its Sketch (B4: no longer gated on lock state)', (
@@ -1446,11 +2101,14 @@ void main() {
     // last (previously "unlocked") one.
     expect(find.text('Editable'), findsNWidgets(2));
 
-    // The hamburger toggle sits in the same top-left corner as the tree's
-    // header, so it's hidden while the tree is open to avoid overlapping
-    // its text - the tree's own X button is the way to close it instead.
-    expect(find.byTooltip('Open toolbar'), findsNothing);
+    // The toolbar's Menu button is left out of the quick column while the tree is open (the tree's own X button is the
+    // way to close it instead); the column's other buttons are still there.
+    await openQuickColumn(tester);
+    expect(find.byKey(const ValueKey('quick-menu-fab')), findsNothing);
+    expect(find.byKey(const ValueKey('quick-fit-fab')), findsOneWidget);
     expect(find.byTooltip('Close toolbar'), findsNothing);
+    await tester.tap(_startFab); // the X closes the column again
+    await _settleSheet(tester);
 
     await tester.tap(find.text('Sketch 1'));
     // B4: true SolidWorks-style rollback means a tap on a locked Feature no
@@ -2250,20 +2908,8 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Add'));
-    await tester.pump();
+    await tapStartCommand(tester, 'Spring');
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Feature'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
-    await tester.ensureVisible(find.text('Sketch-based'));
-    await tester.tap(find.text('Sketch-based'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
-    await tester.ensureVisible(find.text('Spring'));
-    await tester.tap(find.text('Spring'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('Create Spring'), findsOneWidget);
     await tester.enterText(find.byKey(const ValueKey('spring-wire')), '0.3');
     await tester.pump();
@@ -2842,29 +3488,7 @@ void main() {
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-    await tester.tap(find.byTooltip('Add'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Feature'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    // Bug fix: every picker-sheet section now starts collapsed (previously
-    // only Combine did) - expand Repeat before its Pattern entry is
-    // reachable. ensureVisible before each tap: the sheet's two
-    // independently-scrolling columns mean a section header or its entries
-    // can still sit outside the fixed 800x600 test viewport even once
-    // expanded (the same class of failure earlier CI runs against this
-    // sheet already hit twice - see bevel_design_screen_test.dart's
-    // identical use of ensureVisible for the same "long form, small test
-    // viewport" reason).
-    await tester.ensureVisible(find.text('Repeat'));
-    await tester.tap(find.text('Repeat'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    await tester.ensureVisible(find.text('Pattern'));
-    await tester.tap(find.text('Pattern'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
+    await tapStartCommand(tester, 'Pattern');
 
     expect(find.text('Select Body to Pattern'), findsOneWidget);
     expect(find.text('Select Feature'), findsOneWidget);
@@ -3537,10 +4161,7 @@ void main() {
       // Tool 1: the "New Sketch" plane picker (a PickerRibbon-backed mode,
       // not a full ResizableToolPanel, but still a Stack overlay covering
       // the viewport's own bottom-left corner).
-      await tester.tap(find.byTooltip('Add'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('New Sketch'));
+      await tapStartCommand(tester, 'New Sketch');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(anchored(), isTrue);
@@ -3733,7 +4354,7 @@ void main() {
 
       // Still hidden - opening either would abandon the in-progress Extrude.
       expect(find.byTooltip('Feature tree'), findsNothing);
-      expect(find.byTooltip('Open toolbar'), findsNothing);
+      expect(find.byKey(const ValueKey('quick-menu-fab')), findsNothing);
       expect(find.byTooltip('Close toolbar'), findsNothing);
 
       // But the select/orbit toggle is still there and still works. Extrude
@@ -3844,34 +4465,7 @@ void main() {
     /// second-level picker's "Extrude" entry - the trigger every test below
     /// shares.
     Future<void> tapAddFeatureExtrude(WidgetTester tester) async {
-      // find.byTooltip taps at the Tooltip's own computed showing position,
-      // not necessarily the wrapped FAB's actual center - unreliable enough
-      // in this file (see the identical "Exit Sketch" fix above) that the
-      // "one pre-selected Sketch" test in this group, which reaches this
-      // helper after a full push/pop through the Sketch screen, kept
-      // missing. A heroTag predicate targets the real rendered button
-      // directly (find.widgetWithIcon no longer works now that the FAB's
-      // glyph is an SVG asset, not a named IconData - same fix as the
-      // 'exit-sketch-fab' case below).
-      await tester.tap(
-        find.byWidgetPredicate((w) => w is FloatingActionButton && w.heroTag == 'add-fab'),
-      );
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('Feature'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      // Bug fix: every picker-sheet section now starts collapsed (previously
-      // only Combine did) - expand Sketch-based before its Extrude entry is
-      // reachable.
-      await tester.ensureVisible(find.text('Sketch-based'));
-      await tester.tap(find.text('Sketch-based'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.ensureVisible(find.text('Extrude'));
-      await tester.tap(find.text('Extrude'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await tapStartCommand(tester, 'Extrude');
     }
 
     testWidgets('opens the Feature tree with the picker banner visible', (tester) async {
@@ -4342,9 +4936,7 @@ void main() {
       expect(viewport.isPerspective, isFalse);
 
       // Open the toolbar via the hamburger toggle button.
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
 
       // Expand the View sub-menu.
       await tester.tap(find.text('View'));
@@ -4390,22 +4982,7 @@ void main() {
   // simulated-viewport-tap coverage here either).
   group('Direct Editing family - guided "Add" FAB entries', () {
     Future<void> tapAddFeatureDirectEdit(WidgetTester tester, String entryLabel) async {
-      await tester.tap(
-        find.byWidgetPredicate((w) => w is FloatingActionButton && w.heroTag == 'add-fab'),
-      );
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('Feature'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.ensureVisible(find.text('Direct Edit'));
-      await tester.tap(find.text('Direct Edit'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.ensureVisible(find.text(entryLabel));
-      await tester.tap(find.text(entryLabel));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await tapStartCommand(tester, entryLabel);
     }
 
     Future<void> pumpPartScreen(WidgetTester tester) async {
@@ -4563,9 +5140,7 @@ void main() {
         () => tester.widget<PartViewport>(find.byType(PartViewport)).bodies.isNotEmpty,
       );
 
-      await tester.tap(find.byTooltip('Section'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await tapStartCommand(tester, 'Section', tab: 'evaluate');
       await tester.tap(find.widgetWithText(FilledButton, 'Add Section'));
       await tester.pump();
 
@@ -4747,9 +5322,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await switchLens(tester, 'Assembly');
       return backend;
     }
 
@@ -4800,9 +5373,7 @@ void main() {
         ),
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await switchLens(tester, 'Assembly');
 
       expect(backend.constraintStatusRequests, greaterThan(0));
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
@@ -5022,8 +5593,7 @@ void main() {
       // already reachable, same as every other test in this group reaches
       // `AssemblyTreePanel.onOccurrenceLongPress` directly rather than via
       // an on-screen tap into the (slid-off-by-default) tree.
-      await tester.tap(find.byTooltip('Switch to selection mode'));
-      await tester.pump();
+      await toggleSelectionMode(tester);
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isTrue);
 
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
@@ -5144,9 +5714,7 @@ void main() {
         ),
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await switchLens(tester, 'Assembly');
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       panel.onOccurrenceLongPress(panel.occurrences.firstWhere((o) => o.id == target));
       await tester.pump();
@@ -5420,9 +5988,7 @@ void main() {
         ),
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await switchLens(tester, 'Assembly');
 
       // Plain selection (a tap on the tree row): the component's context drawer shows.
       var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
@@ -5456,13 +6022,12 @@ void main() {
       expect(backend.mateMotionRequests.length, 1);
       expect(tester.widget<Text>(find.byKey(const ValueKey('move-rotate-status'))).data, 'Group: 2 DOF');
 
-      // The plate gets fixed (here: straight in the backend), the tree is refreshed (lens round trip).
+      // The plate gets fixed (here: straight in the backend) and the tree refreshed. The Start button is hidden while the
+      // Move/Rotate panel is open, so no lens round trip: a tree row's eye toggle refreshes the tree just the same.
       plateFixed = true;
       backend.occurrences[1]['fixed'] = true;
-      await tester.tap(find.byTooltip('Feature tree').last);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.byTooltip('Assembly tree').last);
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      tree.onOccurrenceVisibilityToggle!(tree.occurrences.firstWhere((o) => o.id == 'occ-2'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await settle(tester);
@@ -5543,9 +6108,7 @@ void main() {
         ),
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await switchLens(tester, 'Assembly');
 
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       final occurrence = panel.occurrences.single;
@@ -5634,9 +6197,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await switchLens(tester, 'Assembly');
       return backend;
     }
 
@@ -5838,9 +6399,7 @@ void main() {
       final rootMeshRequestsBeforeFocus = backend.meshRequests.length;
       final rootFeaturesGetCountBeforeFocus = backend.featuresGetCount;
 
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await switchLens(tester, 'Assembly');
       final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
@@ -5933,9 +6492,7 @@ void main() {
 
         expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusOccurrenceColorHex, isNull);
 
-        await tester.tap(find.byTooltip('Assembly tree'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await switchLens(tester, 'Assembly');
         final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
         panel.onOccurrenceLongPress(panel.occurrences.single);
         await tester.pump();
@@ -6007,15 +6564,9 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Assembly tree'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await switchLens(tester, 'Assembly');
 
-        await tester.tap(find.byTooltip('Add'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
-
-        await tester.tap(find.text('Create Component…'));
+        await tapStartCommand(tester, 'Create Component');
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
 
@@ -6044,9 +6595,7 @@ void main() {
         // given a path in the same step - Save All needs no further prompt
         // for either (the gap `docs/save-project-pipeline-findings.md` §3
         // originally flagged: only the child ever used to get one).
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -6084,19 +6633,12 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Assembly tree'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
-        await tester.tap(find.byTooltip('Add'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
-        await tester.tap(find.text('Create Component…'));
+        await switchLens(tester, 'Assembly');
+        await tapStartCommand(tester, 'Create Component');
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
 
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -6147,9 +6689,7 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
 
         await tester.tap(find.text('File'));
         await tester.pump();
@@ -6250,19 +6790,12 @@ void main() {
       // makes a real change first - creating a component, same zero-dialog
       // flow Phase 1's own tests exercise - to genuinely put something at
       // risk of being lost.
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.byTooltip('Add'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('Create Component…'));
+      await switchLens(tester, 'Assembly');
+      await tapStartCommand(tester, 'Create Component');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6318,9 +6851,7 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -6358,9 +6889,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6431,9 +6960,7 @@ void main() {
 
         // Save All first, so `part-2` already has a known on-disk file for
         // Rename to also rename.
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -6462,9 +6989,7 @@ void main() {
         expect(find.text('Saved 2 file(s)'), findsOneWidget);
         expect(storage.files.keys, contains('bracket.DIDSAprt'));
 
-        await tester.tap(find.byTooltip('Assembly tree'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await switchLens(tester, 'Assembly');
 
         final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
         panel.onOccurrenceLongPress(panel.occurrences.single);
@@ -6520,9 +7045,7 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Assembly tree'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await switchLens(tester, 'Assembly');
 
         final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
         final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
@@ -6599,9 +7122,7 @@ void main() {
 
       // Save All first, to establish the Project and give both Parts a
       // known path.
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6684,9 +7205,7 @@ void main() {
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
       // Save All first, to establish the Project and a known path.
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6778,9 +7297,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -6935,7 +7452,7 @@ void main() {
       expect(find.text('Save "Part 1" as…'), findsOneWidget);
     });
 
-    testWidgets('the written file carries the root Part\'s client-only extras', (tester) async {
+    testWidgets('the written file carries the root Part\'s client-only section planes, and no client hidden set', (tester) async {
       final storage = _FakeStorageService();
       final toolbar = await pumpFresh(tester, storage);
 
@@ -6944,8 +7461,10 @@ void main() {
       await answerNamePrompt(tester, 'extras');
 
       final written = jsonDecode(utf8.decode(storage.files['extras.didsa']!)) as Map<String, dynamic>;
-      expect(written, containsPair('hidden_feature_ids', isA<List>()));
       expect(written, containsPair('section_planes', isA<List>()));
+      // Hide / Show is Part state now: the backend's own export carries it (and the legacy top-level key), the client
+      // stash does not.
+      expect(written, isNot(contains('hidden_feature_ids')));
     });
 
     testWidgets('a failed overwrite shows the error, keeps the Part dirty and falls back to Save As', (tester) async {
@@ -7031,13 +7550,8 @@ void main() {
         ),
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.byTooltip('Add'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('Create Component…'));
+      await switchLens(tester, 'Assembly');
+      await tapStartCommand(tester, 'Create Component');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       return () => tester.widget<PartToolbar>(find.byType(PartToolbar));
@@ -7146,7 +7660,7 @@ void main() {
       expect(find.byKey(const ValueKey('desktop-ribbon')), findsNothing);
       expect(find.byKey(const ValueKey('desktop-status-bar')), findsNothing);
       expect(find.byKey(const ValueKey('desktop-left-pane')), findsNothing);
-      expect(find.byTooltip('Add'), findsOneWidget);
+      expect(find.byTooltip('Start'), findsOneWidget);
     });
 
     testWidgets('the desktop layout shows the ribbon, the docked tree and the status bar, and drops the FABs', (
@@ -7163,6 +7677,22 @@ void main() {
       expect(find.text('Nothing selected'), findsOneWidget);
       // The tree is docked, so it carries no Close button.
       expect(find.byTooltip('Close'), findsNothing);
+    });
+
+    testWidgets('the desktop layout has no Start button or quick column and keeps its Reset view button', (tester) async {
+      bigWindow(tester);
+      // (The button itself is drawn by the 3D scene, which the test runner cannot start: check what the screen asks for.)
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byKey(const ValueKey('start-fab')), findsNothing);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).showResetViewButton, isTrue);
+      await pumpScreen(tester);
+      expect(find.byKey(const ValueKey('start-fab')), findsOneWidget, reason: 'the phone layout has it');
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).showResetViewButton,
+        isFalse,
+        reason: 'Fit is in the phone layout\'s quick column',
+      );
     });
 
     testWidgets('ribbon tabs switch the buttons, and the lens switch follows into the Assembly tab', (tester) async {
@@ -7287,13 +7817,8 @@ void main() {
       expect(toolbar().hasUnsavedChanges, isFalse);
 
       // Create a component - a real, guarded change.
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.byTooltip('Add'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('Create Component…'));
+      await switchLens(tester, 'Assembly');
+      await tapStartCommand(tester, 'Create Component');
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -7302,9 +7827,7 @@ void main() {
       // Save All - both Parts were already auto-pathed by Create Component
       // itself (§3.1), so this succeeds with no further prompt - a full,
       // un-failed save clears the indicator.
-      await tester.tap(find.byTooltip('Open toolbar'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
@@ -7325,7 +7848,7 @@ void main() {
   // than making the user pick the right menu entry up front.
   group('Save/project overhaul Phase 6: unified Open', () {
     testWidgets(
-      'opening a legacy multi-Part Bundle imports it directly and restores hidden features/sections, '
+      'opening a legacy multi-Part Bundle imports it directly (hidden features go to the backend with it) and restores sections, '
       'with no Project attached',
       (tester) async {
         final backend = _FakeDocumentBackend();
@@ -7387,9 +7910,7 @@ void main() {
         );
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
-        await tester.tap(find.byTooltip('Open toolbar'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
+        await openToolbar(tester);
         await tester.tap(find.text('File'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
@@ -7411,7 +7932,10 @@ void main() {
         // new screen in the tree - `.last` is the one just pushed.
         final pushedScreen = tester.widgetList<PartScreen>(find.byType(PartScreen)).last;
         expect(pushedScreen.initialPartId, 'part-1');
-        expect(pushedScreen.initialHiddenFeatureIds, ['feature-abc']);
+        // Hide / Show is Part state: the whole file (its legacy top-level hidden_feature_ids included) goes to the backend's
+        // import, which moves it into the Part, and the new screen reads it back from the Part.
+        expect(pushedScreen.initialHiddenFeatureIds, isEmpty);
+        expect(backend.lastImportBody, containsPair('hidden_feature_ids', ['feature-abc']));
         expect(pushedScreen.initialSectionPlanes, hasLength(1));
         expect(pushedScreen.initialSectionPlanes.single.id, 'section-1');
         // A Bundle never gets a Project attached - it stays exactly the
@@ -7472,9 +7996,7 @@ void main() {
         ),
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      await tester.tap(find.byTooltip('Assembly tree'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
+      await switchLens(tester, 'Assembly');
       return backend;
     }
 
@@ -7531,9 +8053,7 @@ void main() {
 
     testWidgets('a scene: Hide is on screen only, Save as new sends it, Back to default and Show', (tester) async {
       final backend = await openAssembly(tester);
-      await tester.tap(find.byTooltip('Add'));
-      await settle(tester);
-      await tester.tap(find.text('Scenes…'));
+      await tapStartCommand(tester, 'Scenes', tab: 'evaluate');
       await settle(tester);
       expect(find.byKey(const ValueKey('scenes-panel-slot')), findsOneWidget);
       expect(find.text('No scenes in this assembly yet.'), findsOneWidget);
@@ -7556,9 +8076,7 @@ void main() {
       expect(viewport(tester).assemblyInstances.firstWhere((i) => i.occurrencePath.join('/') == 'occ-2').hidden, isFalse);
 
       // Save as new: the hidden part is the scene's one override.
-      await tester.tap(find.byTooltip('Add'));
-      await settle(tester);
-      await tester.tap(find.text('Scenes…'));
+      await tapStartCommand(tester, 'Scenes', tab: 'evaluate');
       await settle(tester);
       await tester.tap(find.byKey(const ValueKey('scenes-save-new')));
       await settle(tester);
@@ -7588,9 +8106,7 @@ void main() {
     testWidgets('leaving a changed scene asks Update / Discard / Stay', (tester) async {
       final backend = await openAssembly(tester);
       backend.scenes.add({'id': 'scene-1', 'name': 'Shown', 'overrides': <dynamic>[], 'section_planes': <dynamic>[], 'viewpoint': null, 'unresolved': <dynamic>[]});
-      await tester.tap(find.byTooltip('Add'));
-      await settle(tester);
-      await tester.tap(find.text('Scenes…'));
+      await tapStartCommand(tester, 'Scenes', tab: 'evaluate');
       await settle(tester);
       // (The panel's own callbacks: in the 800x600 test window a snackbar can sit over the list.)
       final scenesPanel = tester.widget<ScenesPanel>(find.byType(ScenesPanel));
@@ -7606,9 +8122,7 @@ void main() {
       await tester.tap(find.text('Hide'));
       await settle(tester);
 
-      await tester.tap(find.byTooltip('Add'));
-      await settle(tester);
-      await tester.tap(find.text('Scenes…'));
+      await tapStartCommand(tester, 'Scenes', tab: 'evaluate');
       await settle(tester);
       expect(find.textContaining('(changed since shown)'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('scenes-back')));
@@ -7749,7 +8263,7 @@ void main() {
           ),
         ));
         await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-        await tester.tap(find.byTooltip('Assembly tree'));
+        await switchLens(tester, 'Assembly');
         await tester.pump(const Duration(milliseconds: 300));
 
         final rng = math.Random(seed);
@@ -7800,14 +8314,22 @@ void main() {
           'close appearance': () => tapKey('appearance-close'),
           'open scenes': () async {
             if (find.byKey(const ValueKey('scenes-panel-slot')).evaluate().isNotEmpty) return;
-            final add = find.byTooltip('Add');
-            if (add.evaluate().isEmpty) return;
-            await tester.tap(add, warnIfMissed: false);
+            final start = _startFab;
+            if (start.evaluate().isEmpty) return;
+            await tester.tap(start, warnIfMissed: false);
             await settle();
-            final item = find.text('Scenes…');
+            final evaluateTab = find.byKey(const ValueKey('ribbon-tab-evaluate'));
+            if (evaluateTab.evaluate().isNotEmpty) {
+              await tester.tap(evaluateTab, warnIfMissed: false);
+              await settle();
+            }
+            final item = find.byKey(const ValueKey('start-tile-Scenes'));
             if (item.evaluate().isNotEmpty) {
               log.add('open scenes');
               await tester.tap(item, warnIfMissed: false);
+              await settle();
+            } else if (find.byKey(const ValueKey('start-menu-close')).evaluate().isNotEmpty) {
+              await tester.tap(find.byKey(const ValueKey('start-menu-close')), warnIfMissed: false);
               await settle();
             }
           },

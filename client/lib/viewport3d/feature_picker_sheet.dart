@@ -120,6 +120,17 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
     ),
     builder: (context) {
       final columnAreaHeight = MediaQuery.sizeOf(context).height * 0.6;
+      Widget column(List<FeatureGroupSpec> groups) => Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  for (final group in groups) _FeatureSection(group: group),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          );
       return SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -133,257 +144,8 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Expanded(
-                    child: SingleChildScrollView(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _FeatureSection(
-                            title: 'Sketch-based',
-                            initiallyExpanded: false,
-                            entries: [
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_extrude.svg',
-                                label: 'Extrude',
-                                action: FeaturePickerAction.extrude,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_revolve.svg',
-                                label: 'Revolve',
-                                action: FeaturePickerAction.revolve,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_sweep.svg',
-                                label: 'Sweep',
-                                action: FeaturePickerAction.sweep,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_loft.svg',
-                                label: 'Loft',
-                                action: FeaturePickerAction.loft,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_sweep.svg',
-                                label: 'Helix',
-                                action: FeaturePickerAction.helix,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_sweep.svg',
-                                label: 'Intersection Curve',
-                                action: FeaturePickerAction.intersectionCurve,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_spring.svg',
-                                label: 'Spring',
-                                action: FeaturePickerAction.spring,
-                              ),
-                            ],
-                          ),
-                          _FeatureSection(
-                            title: 'Reference',
-                            initiallyExpanded: false,
-                            entries: [
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_plane.svg',
-                                label: 'Plane',
-                                action: FeaturePickerAction.plane,
-                              ),
-                            ],
-                          ),
-                          _FeatureSection(
-                            // Phase 1 surfacing package: five new entries
-                            // join the pre-existing "Extrude Surface" -
-                            // Revolve/Swept/Loft Surface reuse their solid-
-                            // tool sibling's own icon (same underlying
-                            // construction technique, just wire-vs-face -
-                            // see each backend Feature's own docstring);
-                            // Planar Surface and Ruled Surface get their
-                            // own new glyphs (no solid-tool analog to
-                            // borrow from).
-                            title: 'Surfacing',
-                            initiallyExpanded: false,
-                            entries: [
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_surface.svg',
-                                label: 'Extrude Surface',
-                                action: FeaturePickerAction.surface,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_planar_surface.svg',
-                                label: 'Planar Surface',
-                                action: FeaturePickerAction.planarSurface,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_revolve.svg',
-                                label: 'Revolve Surface',
-                                action: FeaturePickerAction.revolveSurface,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_sweep.svg',
-                                label: 'Swept Surface',
-                                action: FeaturePickerAction.sweptSurface,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_loft.svg',
-                                label: 'Loft Surface',
-                                action: FeaturePickerAction.loftSurface,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_ruled_surface.svg',
-                                label: 'Ruled Surface',
-                                action: FeaturePickerAction.ruledSurface,
-                              ),
-                              // Phase 2 surfacing package: both surface-
-                              // producing (Knit sews 2+ surfaces into one,
-                              // Offset Surface offsets a face/surface into a
-                              // brand-new one), so both join this section
-                              // rather than the new "From Surfaces" one
-                              // below (see that section's own doc comment).
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_knit.svg',
-                                label: 'Knit Surfaces',
-                                action: FeaturePickerAction.knitSurface,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_offset_surface.svg',
-                                label: 'Offset Surface',
-                                action: FeaturePickerAction.offsetSurface,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_surface.svg',
-                                label: 'Fill Surface',
-                                action: FeaturePickerAction.fillSurface,
-                              ),
-                            ],
-                          ),
-                          _FeatureSection(
-                            // Phase 2 surfacing package: Thicken/Solid from
-                            // Surfaces are solid-producing/surface-consuming
-                            // (the mirror image of "Surfacing" above, which
-                            // means "produces a Surface") - a new, small
-                            // section directly below it rather than folded
-                            // into it, per this work package's own plan
-                            // (mixing the two would blur "Surfacing"'s
-                            // established "produces a Surface" meaning).
-                            title: 'From Surfaces',
-                            initiallyExpanded: false,
-                            entries: [
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_thicken.svg',
-                                label: 'Thicken',
-                                action: FeaturePickerAction.thicken,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_solid_from_surfaces.svg',
-                                label: 'Solid from Surfaces',
-                                action: FeaturePickerAction.solidFromSurfaces,
-                              ),
-                            ],
-                          ),
-                          _FeatureSection(
-                            // Direct Editing family (docs/direct-editing-
-                            // scope.md): all five were ambient-entry-only
-                            // before this - selectable only by picking a
-                            // Body/face in the viewport first, with no
-                            // discoverable path from this "Add" FAB sheet at
-                            // all. Each entry here starts the exact same
-                            // picking flow `selection_actions.dart`'s
-                            // `contextActionsFor` buttons already trigger
-                            // (`part_screen.dart`'s own `_start*Picker`
-                            // functions) - same icons `feature_tree_panel.dart`
-                            // already uses for these Features' own tree rows.
-                            title: 'Direct Edit',
-                            initiallyExpanded: false,
-                            entries: [
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_delete_body.svg',
-                                label: 'Delete Body',
-                                action: FeaturePickerAction.deleteBody,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_scale.svg',
-                                label: 'Scale Body',
-                                action: FeaturePickerAction.scaleBody,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_move_body.svg',
-                                label: 'Move/Copy Body',
-                                action: FeaturePickerAction.moveBody,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_delete_face.svg',
-                                label: 'Delete Face',
-                                action: FeaturePickerAction.deleteFace,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_move_face.svg',
-                                label: 'Move Face',
-                                action: FeaturePickerAction.moveFace,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_shell.svg',
-                                label: 'Shell',
-                                action: FeaturePickerAction.shell,
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 8),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Expanded(
-                    child: SingleChildScrollView(
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _FeatureSection(
-                            title: 'Modify',
-                            initiallyExpanded: false,
-                            entries: [
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_fillet.svg',
-                                label: 'Fillet',
-                                action: FeaturePickerAction.fillet,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_chamfer.svg',
-                                label: 'Chamfer',
-                                action: FeaturePickerAction.chamfer,
-                              ),
-                            ],
-                          ),
-                          _FeatureSection(
-                            // Bug fix (real CI failure - widget tests): naming
-                            // this section "Pattern" collided with the
-                            // "Pattern" entry it contains - `find.text('Pattern')`/
-                            // a plain tap-by-label could no longer tell the
-                            // section header from the row inside it (both
-                            // matched, ambiguously). "Repeat" groups Mirror/
-                            // Pattern under the same "duplicate existing
-                            // geometry" umbrella without repeating either
-                            // entry's own label.
-                            title: 'Repeat',
-                            initiallyExpanded: false,
-                            entries: [
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_mirror.svg',
-                                label: 'Mirror',
-                                action: FeaturePickerAction.mirror,
-                              ),
-                              _FeatureEntry(
-                                icon: 'assets/icons/feature/feature_pattern.svg',
-                                label: 'Pattern',
-                                action: FeaturePickerAction.pattern,
-                              ),
-                            ],
-                          ),
-                          const _CombineSection(),
-                          const SizedBox(height: 8),
-                        ],
-                      ),
-                    ),
-                  ),
+                  column(kFeatureGroups.sublist(0, kFeaturePickerLeftColumnGroups)),
+                  column(kFeatureGroups.sublist(kFeaturePickerLeftColumnGroups)),
                 ],
               ),
             ),
@@ -394,71 +156,97 @@ Future<FeaturePickerAction?> showFeaturePickerSheet(BuildContext context) {
   );
 }
 
+/// One feature the picker (and the phone Start menu's Features tab) offers.
+class FeatureEntrySpec {
+  const FeatureEntrySpec(this.label, this.icon, this.action);
+
+  final String label;
+  final String icon;
+  final FeaturePickerAction action;
+}
+
+/// A titled run of [FeatureEntrySpec]s.
+class FeatureGroupSpec {
+  const FeatureGroupSpec(this.title, this.entries);
+
+  final String title;
+  final List<FeatureEntrySpec> entries;
+}
+
+/// How many of [kFeatureGroups] the picker puts in its left column (the rest go right).
+const int kFeaturePickerLeftColumnGroups = 5;
+
+/// Every feature, grouped. The one table behind [showFeaturePickerSheet] and the Start menu's Features tab
+/// (`docs/touch-viewport-ux-plan.md` section 3), so the two cannot drift. Notes on the groups:
+///
+/// - "Surfacing" holds every surface-producing tool (Extrude Surface was split out of "Reference"; Revolve / Swept / Loft
+///   Surface reuse their solid sibling's icon, Planar and Ruled Surface have their own); "From Surfaces" is the mirror image
+///   (solid-producing, surface-consuming), kept apart so "Surfacing" keeps meaning "produces a Surface".
+/// - "Direct Edit" was ambient-entry-only before the picker listed it; each entry starts the same picking flow
+///   `selection_actions.dart`'s `contextActionsFor` buttons trigger.
+/// - "Repeat" is not called "Pattern": that collided with the "Pattern" entry it contains (`find.text('Pattern')` matched
+///   both the header and the row).
+const List<FeatureGroupSpec> kFeatureGroups = [
+  FeatureGroupSpec('Sketch-based', [
+    FeatureEntrySpec('Extrude', 'assets/icons/feature/feature_extrude.svg', FeaturePickerAction.extrude),
+    FeatureEntrySpec('Revolve', 'assets/icons/feature/feature_revolve.svg', FeaturePickerAction.revolve),
+    FeatureEntrySpec('Sweep', 'assets/icons/feature/feature_sweep.svg', FeaturePickerAction.sweep),
+    FeatureEntrySpec('Loft', 'assets/icons/feature/feature_loft.svg', FeaturePickerAction.loft),
+    FeatureEntrySpec('Helix', 'assets/icons/feature/feature_sweep.svg', FeaturePickerAction.helix),
+    FeatureEntrySpec('Intersection Curve', 'assets/icons/feature/feature_sweep.svg', FeaturePickerAction.intersectionCurve),
+    FeatureEntrySpec('Spring', 'assets/icons/feature/feature_spring.svg', FeaturePickerAction.spring),
+  ]),
+  FeatureGroupSpec('Reference', [
+    FeatureEntrySpec('Plane', 'assets/icons/feature/feature_plane.svg', FeaturePickerAction.plane),
+  ]),
+  FeatureGroupSpec('Surfacing', [
+    FeatureEntrySpec('Extrude Surface', 'assets/icons/feature/feature_surface.svg', FeaturePickerAction.surface),
+    FeatureEntrySpec('Planar Surface', 'assets/icons/feature/feature_planar_surface.svg', FeaturePickerAction.planarSurface),
+    FeatureEntrySpec('Revolve Surface', 'assets/icons/feature/feature_revolve.svg', FeaturePickerAction.revolveSurface),
+    FeatureEntrySpec('Swept Surface', 'assets/icons/feature/feature_sweep.svg', FeaturePickerAction.sweptSurface),
+    FeatureEntrySpec('Loft Surface', 'assets/icons/feature/feature_loft.svg', FeaturePickerAction.loftSurface),
+    FeatureEntrySpec('Ruled Surface', 'assets/icons/feature/feature_ruled_surface.svg', FeaturePickerAction.ruledSurface),
+    FeatureEntrySpec('Knit Surfaces', 'assets/icons/feature/feature_knit.svg', FeaturePickerAction.knitSurface),
+    FeatureEntrySpec('Offset Surface', 'assets/icons/feature/feature_offset_surface.svg', FeaturePickerAction.offsetSurface),
+    FeatureEntrySpec('Fill Surface', 'assets/icons/feature/feature_surface.svg', FeaturePickerAction.fillSurface),
+  ]),
+  FeatureGroupSpec('From Surfaces', [
+    FeatureEntrySpec('Thicken', 'assets/icons/feature/feature_thicken.svg', FeaturePickerAction.thicken),
+    FeatureEntrySpec('Solid from Surfaces', 'assets/icons/feature/feature_solid_from_surfaces.svg', FeaturePickerAction.solidFromSurfaces),
+  ]),
+  FeatureGroupSpec('Direct Edit', [
+    FeatureEntrySpec('Delete Body', 'assets/icons/feature/feature_delete_body.svg', FeaturePickerAction.deleteBody),
+    FeatureEntrySpec('Scale Body', 'assets/icons/feature/feature_scale.svg', FeaturePickerAction.scaleBody),
+    FeatureEntrySpec('Move/Copy Body', 'assets/icons/feature/feature_move_body.svg', FeaturePickerAction.moveBody),
+    FeatureEntrySpec('Delete Face', 'assets/icons/feature/feature_delete_face.svg', FeaturePickerAction.deleteFace),
+    FeatureEntrySpec('Move Face', 'assets/icons/feature/feature_move_face.svg', FeaturePickerAction.moveFace),
+    FeatureEntrySpec('Shell', 'assets/icons/feature/feature_shell.svg', FeaturePickerAction.shell),
+  ]),
+  FeatureGroupSpec('Modify', [
+    FeatureEntrySpec('Fillet', 'assets/icons/feature/feature_fillet.svg', FeaturePickerAction.fillet),
+    FeatureEntrySpec('Chamfer', 'assets/icons/feature/feature_chamfer.svg', FeaturePickerAction.chamfer),
+  ]),
+  FeatureGroupSpec('Repeat', [
+    FeatureEntrySpec('Mirror', 'assets/icons/feature/feature_mirror.svg', FeaturePickerAction.mirror),
+    FeatureEntrySpec('Pattern', 'assets/icons/feature/feature_pattern.svg', FeaturePickerAction.pattern),
+  ]),
+  FeatureGroupSpec('Combine', [
+    FeatureEntrySpec('Merge', 'assets/icons/feature/feature_merge.svg', FeaturePickerAction.merge),
+    FeatureEntrySpec('Subtract', 'assets/icons/feature/feature_merge.svg', FeaturePickerAction.subtract),
+    FeatureEntrySpec('Common', 'assets/icons/feature/feature_merge.svg', FeaturePickerAction.common),
+    FeatureEntrySpec('Split', 'assets/icons/feature/feature_split.svg', FeaturePickerAction.split),
+  ]),
+];
+
 /// One collapsible group of Feature entries - mirrors [FeatureTreePanel]'s
 /// own Bodies/Planes `ExpansionTile` convention (dense, compact visual
 /// density, a section-weight title) rather than inventing a new grouping
-/// widget.
+/// widget. Every section starts collapsed: opened fully expanded, the
+/// sheet showed more rows than fit most viewports at once.
 class _FeatureSection extends StatelessWidget {
-  final String title;
-  final bool initiallyExpanded;
-  final List<_FeatureEntry> entries;
+  final FeatureGroupSpec group;
 
-  const _FeatureSection({
-    required this.title,
-    required this.initiallyExpanded,
-    required this.entries,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ExpansionTile(
-      initiallyExpanded: initiallyExpanded,
-      dense: true,
-      visualDensity: VisualDensity.compact,
-      title: Text(
-        title,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-      ),
-      children: [for (final entry in entries) entry],
-    );
-  }
-}
-
-/// One tappable row inside a [_FeatureSection] - pops [action] off the
-/// sheet's own `Navigator`, same as every entry did before the ExpansionTile
-/// regrouping.
-class _FeatureEntry extends StatelessWidget {
-  final String icon;
-  final String label;
-  final FeaturePickerAction action;
-
-  const _FeatureEntry({required this.icon, required this.label, required this.action});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: SvgIcon(icon),
-      title: Text(label),
-      onTap: () => Navigator.of(context).pop(action),
-    );
-  }
-}
-
-/// The Combine section (Merge/Subtract/Common/Split) - Boolean family, first
-/// entry: [FeaturePickerAction.merge] is now a real, enabled entry (mirrors
-/// every other [_FeatureEntry] row). Boolean family, Subtract/Common:
-/// [FeaturePickerAction.subtract]/[FeaturePickerAction.common] are now real,
-/// enabled entries too, replacing their own former disabled placeholders.
-/// Boolean family, fourth/last entry: [FeaturePickerAction.split] replaces
-/// its own former disabled "Coming soon" placeholder the same way - every
-/// entry in this section is now real, so this could revert to a plain
-/// [_FeatureSection]; kept as its own bespoke widget anyway to minimize the
-/// diff against the disabled-placeholder era rather than churning this
-/// section's own structure in the same change that finally fills it in.
-class _CombineSection extends StatelessWidget {
-  const _CombineSection();
+  const _FeatureSection({required this.group});
 
   @override
   Widget build(BuildContext context) {
@@ -466,33 +254,19 @@ class _CombineSection extends StatelessWidget {
       initiallyExpanded: false,
       dense: true,
       visualDensity: VisualDensity.compact,
-      title: const Text(
-        'Combine',
+      title: Text(
+        group.title,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
-        style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
       ),
-      children: const [
-        _FeatureEntry(
-          icon: 'assets/icons/feature/feature_merge.svg',
-          label: 'Merge',
-          action: FeaturePickerAction.merge,
-        ),
-        _FeatureEntry(
-          icon: 'assets/icons/feature/feature_merge.svg',
-          label: 'Subtract',
-          action: FeaturePickerAction.subtract,
-        ),
-        _FeatureEntry(
-          icon: 'assets/icons/feature/feature_merge.svg',
-          label: 'Common',
-          action: FeaturePickerAction.common,
-        ),
-        _FeatureEntry(
-          icon: 'assets/icons/feature/feature_split.svg',
-          label: 'Split',
-          action: FeaturePickerAction.split,
-        ),
+      children: [
+        for (final entry in group.entries)
+          ListTile(
+            leading: SvgIcon(entry.icon),
+            title: Text(entry.label),
+            onTap: () => Navigator.of(context).pop(entry.action),
+          ),
       ],
     );
   }

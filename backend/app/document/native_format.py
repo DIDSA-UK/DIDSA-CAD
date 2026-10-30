@@ -2328,6 +2328,11 @@ def _part_to_dict(part: Part) -> dict:
     # Scenes (`docs/scenes-scope.md` section 4): written only when there is one, so files without scenes stay byte-identical.
     if part.scenes:
         data["scenes"] = [_scene_to_dict(scene) for scene in part.scenes]
+    # Hide / Show (`docs/touch-viewport-ux-plan.md` section 6.1): likewise only when there is something hidden.
+    if part.hidden_feature_ids:
+        data["hidden_feature_ids"] = sorted(part.hidden_feature_ids)
+    if part.reference_planes_hidden:
+        data["reference_planes_hidden"] = True
     return data
 
 
@@ -2441,6 +2446,8 @@ def _part_from_dict(data: dict) -> Part:
     ]
     part.appearance_overrides = [_appearance_override_from_dict(o) for o in data.get("appearance_overrides") or []]
     part.scenes = [_scene_from_dict(sc) for sc in data.get("scenes") or []]
+    part.hidden_feature_ids = {fid for fid in data.get("hidden_feature_ids") or [] if isinstance(fid, str)}
+    part.reference_planes_hidden = data.get("reference_planes_hidden") is True
     return part
 
 
@@ -2478,7 +2485,7 @@ def export_native(document: Document, sketches: dict[str, Sketch], part_id: str 
         for feature in part.features
         if isinstance(feature, SketchFeature)
     }
-    return {
+    exported = {
         "schema_version": SCHEMA_VERSION,
         "document": {
             "id": document.id,
@@ -2491,6 +2498,11 @@ def export_native(document: Document, sketches: dict[str, Sketch], part_id: str 
             if sketch_id in sketches
         ],
     }
+    # The legacy top-level key (the root Part's set) older app builds and the VR client read; see `import_native`.
+    root_part = parts.get(root_part_id) if root_part_id is not None else None
+    if root_part is not None and root_part.hidden_feature_ids:
+        exported["hidden_feature_ids"] = sorted(root_part.hidden_feature_ids)
+    return exported
 
 
 def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
@@ -2526,8 +2538,23 @@ def import_native(data: dict) -> tuple[Document, dict[str, Sketch]]:
         document.parts[part.id] = part
     document.root_part_id = document_data.get("root_part_id")
     _resolve_occurrence_part_ids(document)
+    _migrate_legacy_hidden_feature_ids(data, document)
 
     return document, sketches
+
+
+def _migrate_legacy_hidden_feature_ids(data: dict, document: Document) -> None:
+    """A file saved before Hide / Show became Part state (`docs/touch-viewport-ux-plan.md` section 6.1) has the root
+    Part's hidden set only as the client's top-level `hidden_feature_ids` key. When the root Part carries no hidden
+    state of its own, move that key's ids (those naming a real Feature) into it. A file with per-Part state wins."""
+    legacy = data.get("hidden_feature_ids")
+    root_part = document.parts.get(document.root_part_id) if document.root_part_id is not None else None
+    if root_part is None and len(document.parts) == 1:
+        root_part = next(iter(document.parts.values()))
+    if not isinstance(legacy, list) or root_part is None or root_part.hidden_feature_ids:
+        return
+    known_ids = {f.id for f in root_part.features}
+    root_part.hidden_feature_ids = {fid for fid in legacy if isinstance(fid, str) and fid in known_ids}
 
 
 def _resolve_occurrence_part_ids(document: Document) -> None:

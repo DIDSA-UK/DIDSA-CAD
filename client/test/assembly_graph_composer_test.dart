@@ -239,11 +239,12 @@ void main() {
   test('the root file\'s client-only extras are carried out; a child\'s are not', () async {
     storage.put('bolt.didsa', {
       ..._singlePartPayload(id: 'part-bolt', name: 'Bolt'),
-      'hidden_feature_ids': ['child-hidden'],
+      'section_planes': [
+        {'k': 2},
+      ],
     });
     storage.put('top.didsa', {
       ..._singlePartPayload(id: 'part-top', name: 'Top', occurrences: [_occurrence('occ-1', 'bolt.didsa')]),
-      'hidden_feature_ids': ['f1'],
       'section_planes': [
         {'k': 1},
       ],
@@ -251,8 +252,46 @@ void main() {
 
     final result = await composer.compose(root, 'top.didsa');
 
-    expect(result.rootClientExtras['hidden_feature_ids'], ['f1']);
-    expect(result.rootClientExtras['section_planes'], hasLength(1));
+    expect(result.rootClientExtras['section_planes'], [
+      {'k': 1},
+    ]);
+    expect(result.rootClientExtras, isNot(contains('hidden_feature_ids')), reason: 'Hide / Show is Part state now');
+  });
+
+  group('Hide / Show saved before it was Part state (the legacy top-level key)', () {
+    Map<String, dynamic> rootPart(Map<String, dynamic> result) =>
+        ((result['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>().firstWhere((p) => p['id'] == 'part-top');
+
+    test('moves into the root Part, so the import that follows carries it', () async {
+      storage.put('top.didsa', {
+        ..._singlePartPayload(id: 'part-top', name: 'Top'),
+        'hidden_feature_ids': ['f1'],
+      });
+      final result = await composer.compose(root, 'top.didsa');
+      expect(rootPart(result.documentPayload)['hidden_feature_ids'], ['f1']);
+    });
+
+    test('is left alone when the root Part already holds its own hidden set', () async {
+      final payload = _singlePartPayload(id: 'part-top', name: 'Top');
+      ((payload['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>().single['hidden_feature_ids'] = ['own'];
+      storage.put('top.didsa', {...payload, 'hidden_feature_ids': ['legacy']});
+      final result = await composer.compose(root, 'top.didsa');
+      expect(rootPart(result.documentPayload)['hidden_feature_ids'], ['own']);
+    });
+
+    test('is not read from a child file\'s top level', () async {
+      storage.put('bolt.didsa', {
+        ..._singlePartPayload(id: 'part-bolt', name: 'Bolt'),
+        'hidden_feature_ids': ['child-hidden'],
+      });
+      storage.put(
+        'top.didsa',
+        _singlePartPayload(id: 'part-top', name: 'Top', occurrences: [_occurrence('occ-1', 'bolt.didsa')]),
+      );
+      final result = await composer.compose(root, 'top.didsa');
+      final parts = ((result.documentPayload['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>();
+      expect(parts.where((p) => p.containsKey('hidden_feature_ids')), isEmpty);
+    });
   });
 
   // Bug report 2026-10-14, item 3: two files sharing a Part id (a Save As copy

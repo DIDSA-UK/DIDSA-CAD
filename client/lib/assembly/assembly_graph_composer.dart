@@ -47,8 +47,7 @@ class ComposedAssemblyGraph {
   /// Occurrence's `external_ref` already holds the new path - an unsaved change), or left unresolved with candidates.
   final List<ReferenceReport> references;
 
-  /// The root file's client-only top-level keys (`hidden_feature_ids`,
-  /// `section_planes`) - never part of [documentPayload]'s Parts, kept so the
+  /// The root file's client-only top-level keys (`section_planes`) - never part of [documentPayload]'s Parts, kept so the
   /// screen can restore them the way a legacy bundle Open does.
   final Map<String, dynamic> rootClientExtras;
 
@@ -339,14 +338,21 @@ class AssemblyGraphComposer {
 
       if (ancestorPath.isEmpty) {
         rootClientExtras = {
-          for (final key in const ['hidden_feature_ids', 'section_planes'])
+          for (final key in const ['section_planes'])
             if (payload[key] != null) key: payload[key],
         };
       }
 
       final documentData = payload['document'] as Map<String, dynamic>;
       final parts = (documentData['parts'] as List).cast<Map<String, dynamic>>();
-      final partDict = parts.single;
+      var partDict = parts.single;
+      // Hide / Show is Part state now (`hidden_feature_ids` on the Part, `docs/touch-viewport-ux-plan.md` section 6.1). A
+      // file saved before that has the root Part's set only as the top-level key, which this compose would otherwise drop
+      // (only the Part dicts reach the import): move it into the root Part, as the backend's own import does for a whole
+      // file.
+      if (ancestorPath.isEmpty && payload['hidden_feature_ids'] is List && !partDict.containsKey('hidden_feature_ids')) {
+        partDict = {...partDict, 'hidden_feature_ids': payload['hidden_feature_ids']};
+      }
       final partId = partDict['id'] as String;
       partIdByPath[relativePath] = partId;
 

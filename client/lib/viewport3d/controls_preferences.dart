@@ -28,6 +28,7 @@ class ControlsPreferences {
   static const String invertWheelPrefKey = 'controls_invert_wheel_zoom';
   static const String orbitSpeedPrefKey = 'controls_orbit_speed';
   static const String layoutPrefKey = 'controls_layout_preference';
+  static const String quickColumnOpensPrefKey = 'controls_quick_column_opens';
 
   static const NavigationPreset defaultPreset = NavigationPreset.solidworks;
   static const bool defaultInvertWheel = false;
@@ -42,11 +43,18 @@ class ControlsPreferences {
   static bool _invertWheel = defaultInvertWheel;
   static double _orbitSpeed = defaultOrbitSpeed;
   static LayoutPreference _layoutPreference = LayoutPreference.automatic;
+  static int _quickColumnOpens = 0;
+
+  /// The Start button's swipe hint goes after the quick column has been opened this many times.
+  static const int quickColumnHintLimit = 3;
 
   static NavigationPreset get preset => _preset;
   static bool get invertWheel => _invertWheel;
   static double get orbitSpeed => _orbitSpeed;
   static LayoutPreference get layoutPreference => _layoutPreference;
+
+  /// Whether the Start button still draws its swipe-up hint (a once-per-install hint: never reset by [reset]).
+  static bool get showQuickColumnHint => _quickColumnOpens < quickColumnHintLimit;
 
   static Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -57,6 +65,15 @@ class ControlsPreferences {
     _layoutPreference =
         LayoutPreference.values.where((p) => p.name == storedLayout).firstOrNull ?? LayoutPreference.automatic;
     _orbitSpeed = (prefs.getDouble(orbitSpeedPrefKey) ?? defaultOrbitSpeed).clamp(minOrbitSpeed, maxOrbitSpeed);
+    _quickColumnOpens = prefs.getInt(quickColumnOpensPrefKey) ?? 0;
+  }
+
+  /// Counts one more user-opened quick column, towards dropping the swipe hint.
+  static Future<void> noteQuickColumnOpened() async {
+    if (!showQuickColumnHint) return;
+    _quickColumnOpens++;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(quickColumnOpensPrefKey, _quickColumnOpens);
   }
 
   static Future<void> setPreset(NavigationPreset value) async {

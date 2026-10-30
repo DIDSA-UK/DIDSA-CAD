@@ -3355,6 +3355,11 @@ class Part:
     appearance_overrides: list[AppearanceOverride] = field(default_factory=list)
     # Scenes (`docs/scenes-scope.md` D1 B): named display arrangements of this Part's assembly, never its real state.
     scenes: list[Scene] = field(default_factory=list)
+    # Hide / Show (`docs/touch-viewport-ux-plan.md` section 6.1): the Features the user has hidden, and whether the three
+    # default reference planes are hidden. Purely cosmetic - every Body is still computed against the real history; the
+    # mesh routes only flag a hidden Body. Saved in the file (`native_format._part_to_dict`).
+    hidden_feature_ids: set[str] = field(default_factory=set)
+    reference_planes_hidden: bool = False
 
     def resolve_material(self, body_id: str) -> MaterialAssignment | None:
         """The material that applies to `body_id`: its own override if one
@@ -3408,7 +3413,7 @@ class Part:
         defensive double-check rather than the primary enforcement point."""
         if self.is_locked(feature_id):
             raise ValueError("Only the last Feature in a Part can be deleted")
-        self.features.pop()
+        self.hidden_feature_ids.discard(self.features.pop().id)
 
     def delete_features(self, feature_ids: set[str]) -> list[Feature]:
         """B2: deletes exactly the Features named in `feature_ids` (in their
@@ -3435,6 +3440,7 @@ class Part:
         underlying Sketch."""
         deleted = [f for f in self.features if f.id in feature_ids]
         self.features = [f for f in self.features if f.id not in feature_ids]
+        self.hidden_feature_ids -= feature_ids
         return deleted
 
 

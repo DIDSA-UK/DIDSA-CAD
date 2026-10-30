@@ -38,6 +38,13 @@ double clipToSlider(double farClip) =>
 class PartToolbar extends StatelessWidget {
   final bool visible;
 
+  /// The phone layout has no hamburger button to close the panel with any more (it opens from the Start button's quick
+  /// column): when set, the panel draws a close icon.
+  final VoidCallback? onClose;
+
+  /// How far down the panel starts, clearing whatever sits in the top-left corner.
+  final double topInset;
+
   /// Stage 10b: whether all three reference planes are currently hidden -
   /// mirrors [PartViewport]'s controlled `referencePlanesHidden`, the same
   /// pattern [selectedPlane] already uses. Flips the toggle entry's
@@ -208,6 +215,8 @@ class PartToolbar extends StatelessWidget {
   const PartToolbar({
     super.key,
     required this.visible,
+    this.onClose,
+    this.topInset = 104,
     this.referencePlanesHidden = false,
     this.onToggleReferencePlanes,
     this.renderMode = ViewportRenderMode.shaded,
@@ -276,7 +285,7 @@ class PartToolbar extends StatelessWidget {
               // `part_screen.dart`'s own top-left `Positioned` Column) -
               // 8px top inset + two 40px small FABs + an 8px gap between
               // them + a little breathing room before this panel starts.
-              padding: const EdgeInsets.only(top: 104),
+              padding: EdgeInsets.only(top: topInset),
               child: Material(
                 elevation: 4,
                 shape: RoundedRectangleBorder(
@@ -294,17 +303,40 @@ class PartToolbar extends StatelessWidget {
                   constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height / 3),
                   child: SizedBox(
                     width: 240,
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          _buildFileMenu(context),
-                          _buildViewMenu(context),
-                          _buildSelectionFilterMenu(context),
-                        ],
-                      ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Outside the scroll view, so it stays put however far the menus below are scrolled.
+                        if (onClose != null && visible)
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: Padding(
+                              padding: const EdgeInsets.only(right: 4, top: 4),
+                              child: IconButton(
+                                key: const ValueKey('toolbar-close'),
+                                tooltip: 'Close toolbar',
+                                visualDensity: VisualDensity.compact,
+                                icon: const Icon(Icons.close),
+                                onPressed: onClose,
+                              ),
+                            ),
+                          ),
+                        Flexible(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                _buildFileMenu(context),
+                                _buildViewMenu(context),
+                                _buildSelectionFilterMenu(context),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
