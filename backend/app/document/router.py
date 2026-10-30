@@ -342,6 +342,8 @@ from app.document.schemas import (
     PartCreate,
     PartResponse,
     PartUpdate,
+    PartVisibilityResponse,
+    PartVisibilityUpdate,
     PatternAxisRefSchema,
     PatternDirectionRefSchema,
     PatternFeatureCreate,
@@ -456,6 +458,8 @@ def _part_response(part: Part) -> PartResponse:
             body_id: _material_assignment_to_schema(assignment)
             for body_id, assignment in part.body_material_assignments.items()
         },
+        hidden_feature_ids=sorted(part.hidden_feature_ids),
+        reference_planes_hidden=part.reference_planes_hidden,
         **part_appearance_fields(part),
     )
 
@@ -3525,6 +3529,36 @@ def update_part(part_id: str, payload: PartUpdate) -> PartResponse:
         part.name = stripped_name
     apply_part_appearance_update(part, payload)
     return _part_response(part)
+
+
+@router.patch("/parts/{part_id}/visibility", response_model=PartVisibilityResponse)
+def set_part_visibility(part_id: str, payload: PartVisibilityUpdate) -> PartVisibilityResponse:
+    """Hide / Show as saved Part state (`docs/touch-viewport-ux-plan.md` section 6.1). Hides (`hidden=true`) or shows
+    (`hidden=false`) every target named: explicit `feature_ids`, whole `categories` (every Feature whose `produces`, resolved
+    through `resolve_feature_produces` so a Mirror / Pattern of a Surface counts as a surface, matches at call time), and the
+    default `reference_planes`. At least one target is required and an unknown Feature id is a 422, not ignored; nothing is
+    changed on a 422. Purely cosmetic: it never changes what is computed, only what the mesh routes flag `hidden`. Returns
+    the Part's whole state so the client replaces its copy."""
+    part = get_part_or_404(part_id)
+    if not (payload.feature_ids or payload.categories or payload.reference_planes):
+        raise HTTPException(status_code=422, detail="At least one of feature_ids, categories or reference_planes is required")
+    known_ids = {f.id for f in part.features}
+    unknown = sorted(set(payload.feature_ids) - known_ids)
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unknown feature ids: {', '.join(unknown)}")
+    targets = set(payload.feature_ids)
+    if payload.categories:
+        categories = {Produces(c) for c in payload.categories}
+        targets |= {f.id for f in part.features if resolve_feature_produces(f, part) in categories}
+    if payload.hidden:
+        part.hidden_feature_ids |= targets
+    else:
+        part.hidden_feature_ids -= targets
+    if payload.reference_planes:
+        part.reference_planes_hidden = payload.hidden
+    return PartVisibilityResponse(
+        hidden_feature_ids=sorted(part.hidden_feature_ids), reference_planes_hidden=part.reference_planes_hidden
+    )
 
 
 @router.put("/parts/{part_id}/default-material", response_model=PartResponse)
@@ -8530,8 +8564,11 @@ def get_part_mesh(
       resolve if what it depends on is being edited out from under it, and
       there is truly no Body to report at all - not even a hidden one).
 
-    Both are purely client-side and never persisted here; the client
-    re-sends whichever apply on every mesh fetch.
+    `rollback_excluded_feature_ids` is purely client-side and never persisted
+    here; the client re-sends it on every mesh fetch. Hide / Show is also kept
+    on the Part now (`Part.hidden_feature_ids`, set by `PATCH .../visibility`,
+    saved in the file): the stored set is unioned with `hidden_feature_ids`,
+    which stays accepted for older clients.
 
     `quality`: the 3D viewport's own Polygon Resolution slider (hamburger
     menu > View > Polygon Resolution, same bottom-sheet-slider UX as Body
@@ -8582,7 +8619,8 @@ def get_part_mesh(
             )
         ]
 
-    hidden = frozenset(hidden_feature_ids)
+    # The Part's saved Hide / Show set, unioned with the query parameter older clients still send.
+    hidden = frozenset(hidden_feature_ids) | part.hidden_feature_ids
 
     if tier == "coarse":
         rollback_excluded = frozenset(rollback_excluded_feature_ids)
@@ -8632,13 +8670,8 @@ def _assembly_body_mesh_responses(part: Part, mesh_quality: MeshQuality) -> list
     meaningful for a whole-tree scene fetch of Parts the user isn't
     actively editing right now. A Part's `hidden` Body state is still
     reported per-Body below (same as `get_part_mesh`'s own convention) -
-    only the *editing-session* exclusions are dropped, not the persisted
-    hidden flag itself... except there is no persisted per-Body hidden flag
-    on `Part` today (it's purely the client's own `hidden_feature_ids` set,
-    per `get_part_mesh`'s own docstring) - so every Body here reports
-    `hidden=False`, and it's each client's job to apply its own hide/show
-    state when rendering, exactly as it already must for any Part it isn't
-    the primary editing target of."""
+    only the *editing-session* exclusions are dropped. The Part's saved Hide / Show set (`Part.hidden_feature_ids`) is
+    reported as `hidden` for every Part in the scene, not just the open one."""
     if not part.produces_displayable_geometry:
         # No placeholder box here (unlike `get_part_mesh`): in an assembly
         # scene a geometry-less Part - typically the root assembly itself,
@@ -8655,6 +8688,7 @@ def _assembly_body_mesh_responses(part: Part, mesh_quality: MeshQuality) -> list
                 body_id=body_id,
                 source="computed",
                 mesh=_mesh_vertex_data(tessellate_shape(shape, mesh_quality)),
+                hidden=base_feature_id(body_id) in part.hidden_feature_ids,
                 is_surface=owning_feature is not None
                 and resolve_feature_produces(owning_feature, part) == Produces.SURFACE,
                 is_curve=owning_feature is not None
@@ -8860,6 +8894,7 @@ def _assembly_glb_part_mesh_data(
         }
     else:
         bodies = compute_part_bodies(part, rollback_excluded)
+    hidden = hidden | part.hidden_feature_ids  # the Part's saved Hide / Show set, for every Part in the scene
     if hidden:
         bodies = {body_id: shape for body_id, shape in bodies.items() if base_feature_id(body_id) not in hidden}
     return _merged_body_mesh_data(bodies, mesh_quality)
