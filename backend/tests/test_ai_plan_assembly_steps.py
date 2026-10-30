@@ -299,6 +299,7 @@ def test_add_component_then_move_component_references_the_plan_local_occurrence(
 
     results = validator.run(
         [
+            AddComponentStep(local_id="base", relative_path="parts/base.DIDSAprt"),
             AddComponentStep(local_id="ac1", relative_path="parts/bracket.DIDSAprt"),
             MoveComponentStep(local_id="m1", occurrence_id="ac1", translation=(1.0, 2.0, 3.0)),
         ]
@@ -307,6 +308,25 @@ def test_add_component_then_move_component_references_the_plan_local_occurrence(
     assert all(r.ok for r in results), results
     scratch = validator._local_occurrence_by_id["ac1"]
     assert scratch.transform.translation == (1.0, 2.0, 3.0)
+
+
+def test_move_component_on_the_grounded_first_component_is_rejected_in_the_dry_run():
+    """The first component placed is auto-grounded (`fixed`), and the real
+    move endpoint 422s `occurrence_is_fixed` for it - the dry run reports the
+    same thing up front instead of only failing mid-generation."""
+    top = _create_part("Top")
+    real_part = get_part_or_404(top["id"])
+
+    results = _PlanValidator(real_part).run(
+        [
+            AddComponentStep(local_id="first", relative_path="parts/base.DIDSAprt"),
+            MoveComponentStep(local_id="m1", occurrence_id="first", translation=(1.0, 0.0, 0.0)),
+        ]
+    )
+
+    assert results[0].ok is True
+    assert results[1].ok is False
+    assert results[1].error["type"] == "occurrence_is_fixed"
 
 
 def test_add_component_then_hide_component_references_the_plan_local_occurrence():

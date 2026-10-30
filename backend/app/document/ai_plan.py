@@ -1247,6 +1247,11 @@ def _handle_move_component(v: _PlanValidator, step: MoveComponentStep) -> None:
     from app.document.router import _validate_occurrence_transform_payload
 
     occurrence = v._lookup_occurrence(step.occurrence_id, "occurrence_id")
+    if occurrence.fixed:
+        # The real `move_component` endpoint rejects a grounded occurrence the
+        # same way (`_occurrence_is_fixed`) - fail here, in the dry run, rather
+        # than only after earlier steps have already been built.
+        raise _StepError({"type": "occurrence_is_fixed", "occurrence_id": step.occurrence_id})
     _validate_occurrence_transform_payload(step.rotation_axis, step.rotation_angle_degrees)
     occurrence.transform = RigidTransform(
         translation=step.translation,
