@@ -2016,6 +2016,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
         widget.assemblyInstances != oldWidget.assemblyInstances ||
         widget.renderMode != oldWidget.renderMode ||
+        widget.sectionPlanes != oldWidget.sectionPlanes ||
         widget.bodiesHidden != oldWidget.bodiesHidden) {
       setState(_syncAssemblyInstanceEdgesNode);
     }
@@ -2075,6 +2076,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.previewOverlayMesh != oldWidget.previewOverlayMesh ||
         widget.coarseOverlayMeshes != oldWidget.coarseOverlayMeshes ||
         widget.renderMode != oldWidget.renderMode ||
+        widget.sectionPlanes != oldWidget.sectionPlanes ||
         widget.bodiesHidden != oldWidget.bodiesHidden) {
       setState(_syncEdgesNode);
     }
@@ -2914,6 +2916,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             for (final s in edgeSegmentsFromMesh(body.mesh))
               (transform.transformed3(s.$1), transform.transformed3(s.$2)),
           ];
+          segments = clipSegmentsByPlanes(segments, widget.sectionPlanes);
           if (segments.isEmpty) continue;
           if (biased) {
             segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
@@ -3145,6 +3148,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           ? widget.previewOverlayMesh!
           : widget.coarseOverlayMeshes[body.bodyId] ?? body.mesh;
       var segments = edgeSegmentsFromMesh(mesh);
+      segments = clipSegmentsByPlanes(segments, widget.sectionPlanes);
       if (segments.isEmpty) continue;
       if (biased) {
         segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);

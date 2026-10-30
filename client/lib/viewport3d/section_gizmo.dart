@@ -601,6 +601,39 @@ bool _isKeptBySinglePlane(vm.Vector3 p, SectionPlane plane) {
   return plane.flipped ? side <= 0 : side >= 0;
 }
 
+/// Clips wireframe [segments] to the kept side of every enabled plane in
+/// [planes] (intersection, like [approximateClipMesh]), cutting a straddling
+/// segment at the plane so edges stop exactly at the section.
+List<(vm.Vector3, vm.Vector3)> clipSegmentsByPlanes(List<(vm.Vector3, vm.Vector3)> segments, List<SectionPlane> planes) {
+  final enabled = planes.where((p) => p.enabled).toList();
+  if (enabled.isEmpty) return segments;
+  final out = <(vm.Vector3, vm.Vector3)>[];
+  for (final seg in segments) {
+    var a = seg.$1;
+    var b = seg.$2;
+    var alive = true;
+    for (final plane in enabled) {
+      final sign = plane.flipped ? -1.0 : 1.0;
+      final da = sign * (a - plane.origin).dot(plane.normal);
+      final db = sign * (b - plane.origin).dot(plane.normal);
+      if (da >= 0 && db >= 0) continue;
+      if (da < 0 && db < 0) {
+        alive = false;
+        break;
+      }
+      final t = da / (da - db);
+      final hit = a + (b - a) * t;
+      if (da < 0) {
+        a = hit;
+      } else {
+        b = hit;
+      }
+    }
+    if (alive) out.add((a, b));
+  }
+  return out;
+}
+
 /// The fast, momentary "cheap approximate clip" this app's section-tool
 /// brief calls for during an active gizmo drag: discards every triangle of
 /// [mesh] whose centroid falls on the clipped-away side of *any* enabled
