@@ -1437,17 +1437,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     }
     String? partId = retryPartId;
     try {
-      AiGenerationPlan? plan;
+      AiGenerationPlan? detectedPlan;
       if (bundle != null) {
-        plan = bundle.partPlans[index];
+        detectedPlan = bundle.partPlans[index];
       } else {
         final result = await provider.sendScopingTurn(_transcript, systemPrompt: _buildSystemPrompt());
         final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
         if (!mounted) return;
         setState(() => _transcript = [..._transcript, assistantMessage]);
         _scrollToBottom();
-        plan = detectPlanInAssistantText(result.assistantText);
+        detectedPlan = detectPlanInAssistantText(result.assistantText);
       }
+      final plan = detectedPlan;
       if (plan == null) {
         _appendOrchestrationFailureToTranscript(
           'That reply was not a plan for "${entry.name}" - please reply with an ordinary plan for this '
@@ -1712,19 +1713,20 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         multiBodyPartMode: _mode == AiGenerationMode.multiBodyPart,
         assemblyMode: _mode == AiGenerationMode.assembly,
       );
-      AiGenerationPlan? plan;
+      AiGenerationPlan? detectedPlan;
       if (bundle != null) {
         // The imported assembly refers to parts by the names the external AI
         // chose; point each reference at the path it was really saved under.
-        plan = bundle.assemblyPlanFor([for (final part in _savedAssemblyParts) part.relativePath]);
+        detectedPlan = bundle.assemblyPlanFor([for (final part in _savedAssemblyParts) part.relativePath]);
       } else {
         final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
         final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
         if (!mounted) return;
         setState(() => _transcript = [..._transcript, assistantMessage]);
         _scrollToBottom();
-        plan = detectPlanInAssistantText(result.assistantText);
+        detectedPlan = detectPlanInAssistantText(result.assistantText);
       }
+      final plan = detectedPlan;
       if (plan == null) {
         _appendOrchestrationFailureToTranscript(
           'That reply was not an assembly plan - please reply with an ordinary plan placing and mating '
