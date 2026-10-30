@@ -1,7 +1,8 @@
 # Touch viewport UX: the Start button - plan
 
-**Status:** planned 30 Oct 2026, owner's answers to the open questions taken the same day (section 7). Nothing built. The UX
-applies to the **phone layout** of the part screen only (`LayoutMode.phone`, `PartScreen` in
+**Status:** planned 30 Oct 2026, owner's answers to the open questions taken the same day (section 7). **T0-T3 built** 30 Oct
+2026 (section 12 says what each phase left out); T4 (polish) is not built, and **nothing has been checked on a device** (section
+10 is all "not verified"). The UX applies to the **phone layout** of the part screen only (`LayoutMode.phone`, `PartScreen` in
 `client/lib/viewport3d/part_screen.dart`). The desktop layout (D6, `docs/desktop-layout-scope.md`) keeps its look; it shares the
 command list (section 3) and the backend hide / show state (section 6.1).
 
@@ -290,3 +291,100 @@ any of it was checked on a device unless it was.
   the add FAB's condition **as is**; do not rewrite it.
 - Gesture conflicts: the drag recognizer sits only on the Start button's own area, never the viewport, so orbit / pan / pinch are
   unaffected.
+
+## 12. What is built (30 Oct 2026)
+
+One commit per phase on the same branch. Each phase ran its own tests, the full backend pytest suite (T0) and `flutter analyze`
+(no finding beyond the repo's standing `deprecated_member_use` infos) plus the full `flutter test` suite (T1-T3). None of it ran
+on a device; section 10 is untouched and every item in it is **not verified**.
+
+### T0 - backend
+
+Built: `Part.hidden_feature_ids` / `reference_planes_hidden`; `PATCH /document/parts/{id}/visibility` (ids, categories resolved
+through `resolve_feature_produces` so a Mirror of a surface is a surface, reference planes; 422 for an unknown id, an empty
+request or an unknown category; nothing changes on a 422); `PartResponse` and the native format carry both fields (written only
+when something is hidden); `GET .../mesh` unions the stored set with the old `hidden_feature_ids` query parameter; the assembly
+JSON and `.glb` routes apply every Part's stored set; a save keeps writing the legacy top-level `hidden_feature_ids` (the root
+Part's set) and a load with only that key moves it into the root Part (ids that name no Feature are dropped); deleting Features
+prunes the set. `backend/tests/test_part_visibility.py`.
+
+Left out:
+
+- `DIDSA-VR/docs/backend-api-notes.md` is not touched (another repo): the new route and fields go in the PR description as a
+  follow-up. No VR change is needed.
+- The `.glb` route's docstring still describes only the query parameters as root-only; the stored set applies to every Part.
+- The e2e / round-trip tests that save and reopen a file with hidden features are the pytest round trips; no `tests/e2e` file
+  was added.
+
+### T1 - Start menu
+
+Built: `_ribbonTabs({touch})` (the same data the desktop ribbon uses; with `touch` the Features tab lists `kFeatureGroups`, tabs
+with nothing to do in the lens are left out); `kFeatureGroups` in `feature_picker_sheet.dart`, which the picker sheet is now built
+from too; `start_menu_sheet.dart` (lens switch, tab strip, tiles, last tab per lens kept for the session, lens tint); the Add FAB
+became the Start FAB with its visibility condition moved unchanged into `_startButtonVisible`; the lens, Measure and Section FABs
+and the Add menus are gone from the phone layout.
+
+Left out:
+
+- The sheet is a plain modal bottom sheet (60% of the height at least, 90% at most, content scrolls), not a sheet that is dragged
+  between the two heights.
+- Section 4's "Recent" row (T4, optional) is not built.
+- `add_button_menu.dart` is not deleted: `assembly_add_menu_test.dart` still covers `showAssemblyAddMenu`, and deleting a test is
+  not deleting dead code. Nothing in `lib/` uses either menu now.
+- Because Start inherits the Add FAB's condition as it was, it is hidden while Move / Rotate is open, so the lens cannot be
+  switched from there (the old lens FAB could). One part-screen test that did a lens round trip in that state now refreshes the
+  tree through a tree row's eye toggle instead.
+- The desktop ribbon still has its short Features list and "All features"; only the Start menu uses the full table.
+
+### T2 - Start button and quick column
+
+Built: `start_button.dart` (`StartButton`, `QuickColumnButton`): tap, swipe up past 24 dp or fling up, long press, X (tap or swipe
+down closes, never opens the menu), staggered 150 ms scale and fade, every quick button closes the column after it ran, the swipe
+hint (counted in `ControlsPreferences`, gone after three opens), a mode glyph while Selection mode is on. The column holds Menu,
+Fit and Orbit / Select. It closes when the Start menu opens and when a tool session takes Start away (`build` resets it). The
+hamburger FAB and the viewport's Reset view button are gone from the phone layout (`showResetViewButton: _desktopLayout`). The
+stand-alone Orbit / Select button stays while a tool session hides Start (`_standaloneSelectionModeFabVisible`). `PartToolbar`
+got an optional close icon and `topInset` for the phone layout.
+
+Left out / worth knowing:
+
+- **The Visibility quick button is T3's**, with its panel: a button with nowhere to go would have been dead in T2's commit.
+- Fit is not reachable while a tool session hides Start, since the Reset view button is gone from the phone layout and section 5.4
+  keeps only Orbit / Select. If Fit should stay reachable there, it is one more stand-alone button; say so.
+- Fit calls `zoomToFit` (keeps the orientation, as the plan says); the old Reset view button also reset the orientation.
+- The quick column leaves out Menu while the feature tree is open or a tool session runs (the hamburger's old condition) and
+  Orbit / Select while `_selectionModeFabVisible` is false (the sketch orientation step), so those two rules did not change.
+- The Start button's tooltip is a manual one: the default long-press tooltip would take the long press that opens the column.
+- Haptic feedback, the swipe against the system gesture area, one-handed reach and the animation on a heavy model are unchecked.
+
+### T3 - client side of hide / show and the Visibility panel
+
+Built: `DocumentApiClient.setVisibility`, `PartDto.hiddenFeatureIds` / `referencePlanesHidden`; the hidden sets and
+`_referencePlanesHidden` are a cache of the backend's state (seeded when a Part loads or is first focused, replaced by each
+response); every hide / show goes through `_setFeaturesHidden` (the tree eye, the context menu, the multi-select bar, the
+consumed-sketch auto-hide sites, the cleanup after a delete) or `_setCategoryHidden` / `_setReferencePlanesHidden`; optimistic,
+queued so responses arrive in order, only the last response for a Part replaces the cache, any failure restores the backend's
+state and shows the error. The client stash no longer reads or writes `hidden_feature_ids` (`section_planes` stays); the project
+compose moves a legacy top-level key into the root Part. `visibility_panel.dart` (three-state chips, lock badge, View row that
+folds), the quick column's Visibility button with its dot badge, forced-visible categories for picks, and the Assembly lens
+(one call per Part in the scene, child Parts' hidden Bodies dropped from the assembly geometry).
+
+Left out / worth knowing:
+
+- Forced-visible is display only and is by flow, not by exact pick: sketches during the sketch / profile / path pickers, surfaces
+  during the Thicken / Knit / Solid-from-surfaces / Offset flows, solids while an Extrude, Mirror, Pattern, Merge, Boolean, Split,
+  Shell or Direct Edit tool is open, created planes during plane picks. A sketch hidden because a later feature consumed it stays
+  hidden (as before). The feature tree keeps showing the real hidden state.
+- The chips read the focused Part's state; in Assembly lens they still act on every Part, but show the focused Part's state.
+- A chip toggle re-flags the Bodies in memory and does not refetch the mesh; the tree-eye paths still refetch it as before.
+- "Fit frames only what is visible": Fit uses the visible Bodies, so a hidden Body should not count (no test pins this); sketch
+  outlines were never part of Fit.
+- Icons: the reference-planes chip reuses the toolbar SVGs; the others are Material icons (`layers_outlined`, `draw_outlined`,
+  `timeline`, `view_in_ar_outlined`, `waves`). Proper SVGs are a follow-up.
+- `PartScreen.initialHiddenFeatureIds` is kept: a caller that still hands over a set has it saved on the Part like any hide.
+- The reference-planes flag shown is the root Part's.
+
+### T4 - not built
+
+Recent row, animation timing pass, the landscape and 360 x 640 layout pass, the `docs/roadmap.md` / `docs/status.md` entries and
+the on-device checklist run.
