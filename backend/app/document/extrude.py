@@ -505,32 +505,18 @@ def _profile_boundary_shapes(
     per-hop line/point to distinguish, and the AI-plan schema's
     `sketch_line_ref`/`sketch_point_ref` can never name one of those entity
     types' own sub-parts anyway (they only ever name a `sketch_point`/
-    `sketch_line` step)."""
-    if len(profile.line_ids) == 1 and isinstance(
-        sketch.entities.get(profile.line_ids[0]), (Circle, Ellipse, TextEntity)
-    ):
-        return {}, {}
-
+    `sketch_line` step). Applies per loop: `profile`'s own outer loop and each
+    of its `inner_loops` (holes) are matched independently."""
     def world_point(point_id: str) -> gp_Pnt:
         point = sketch.points[point_id]
         pnt = basis_point_to_world(basis, point.x, point.y)
         return pnt.Transformed(transform) if transform is not None else pnt
-
-    point_ids = profile.point_ids
-    point_world = {point_id: world_point(point_id) for point_id in point_ids}
 
     face_vertices: list[TopoDS_Vertex] = []
     explorer = TopExp_Explorer(face, TopAbs_VERTEX)
     while explorer.More():
         face_vertices.append(topods.Vertex(explorer.Current()))
         explorer.Next()
-
-    point_to_vertex: dict[str, TopoDS_Vertex] = {}
-    for point_id, target in point_world.items():
-        for vertex in face_vertices:
-            if BRep_Tool.Pnt(vertex).Distance(target) < _PROVENANCE_TOLERANCE:
-                point_to_vertex[point_id] = vertex
-                break
 
     face_edges: list[TopoDS_Edge] = []
     explorer = TopExp_Explorer(face, TopAbs_EDGE)
@@ -543,18 +529,37 @@ def _profile_boundary_shapes(
         topexp.Vertices(edge, v1, v2)
         return BRep_Tool.Pnt(v1), BRep_Tool.Pnt(v2)
 
+    point_to_vertex: dict[str, TopoDS_Vertex] = {}
     line_to_edge: dict[str, TopoDS_Edge] = {}
-    count = len(point_ids)
-    for i, line_id in enumerate(profile.line_ids):
-        p1 = point_world[point_ids[i]]
-        p2 = point_world[point_ids[(i + 1) % count]]
-        for edge in face_edges:
-            e1, e2 = edge_endpoints(edge)
-            if (e1.Distance(p1) < _PROVENANCE_TOLERANCE and e2.Distance(p2) < _PROVENANCE_TOLERANCE) or (
-                e1.Distance(p2) < _PROVENANCE_TOLERANCE and e2.Distance(p1) < _PROVENANCE_TOLERANCE
-            ):
-                line_to_edge[line_id] = edge
-                break
+
+    # The outer loop and every hole loop (`profile.inner_loops`, e.g. the
+    # inner rectangle of a hollow section drawn in the same Sketch) are
+    # matched identically - a hole's own corner points/lines are just as
+    # nameable by an `edge_from_sketch_point`/`edge_from_sketch_line` plan
+    # selector as the outer loop's.
+    for loop in (profile, *profile.inner_loops):
+        if len(loop.line_ids) == 1 and isinstance(sketch.entities.get(loop.line_ids[0]), (Circle, Ellipse, TextEntity)):
+            continue
+        point_ids = loop.point_ids
+        point_world = {point_id: world_point(point_id) for point_id in point_ids}
+
+        for point_id, target in point_world.items():
+            for vertex in face_vertices:
+                if BRep_Tool.Pnt(vertex).Distance(target) < _PROVENANCE_TOLERANCE:
+                    point_to_vertex[point_id] = vertex
+                    break
+
+        count = len(point_ids)
+        for i, line_id in enumerate(loop.line_ids):
+            p1 = point_world[point_ids[i]]
+            p2 = point_world[point_ids[(i + 1) % count]]
+            for edge in face_edges:
+                e1, e2 = edge_endpoints(edge)
+                if (e1.Distance(p1) < _PROVENANCE_TOLERANCE and e2.Distance(p2) < _PROVENANCE_TOLERANCE) or (
+                    e1.Distance(p2) < _PROVENANCE_TOLERANCE and e2.Distance(p1) < _PROVENANCE_TOLERANCE
+                ):
+                    line_to_edge[line_id] = edge
+                    break
 
     return point_to_vertex, line_to_edge
 

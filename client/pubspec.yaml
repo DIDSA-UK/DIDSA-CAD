@@ -66,6 +66,7 @@ dependencies:
   # transitively (via flutter_svg et al.) - pinned here as a direct
   # dependency since `ai_modelling_screen.dart` now imports it directly.
   image: ^4.9.1
+  archive: ^4.0.0
 
   # AI Modelling workstream 11 (voice input, `docs/ai-modelling/11-voice-
   # input.md`): on-device speech-to-text for the mic button beside Send.

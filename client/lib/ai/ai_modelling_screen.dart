@@ -29,6 +29,7 @@ import 'ai_model_check.dart';
 import 'ai_part_manifest.dart';
 import 'ai_part_naming.dart';
 import 'ai_plan.dart';
+import 'ai_plan_bundle.dart';
 import 'ai_plan_detection.dart';
 import 'ai_plan_export.dart';
 import 'ai_plan_summary.dart';
@@ -262,6 +263,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // to open-and-merge-into that file (`AssemblyDocumentClient.openAssembly`)
   // instead of `DocumentApiClient.createPart('Assembly')`.
   String? _assemblyTargetRelativePath;
+
+  // Set by importing an external AI's `.zip` (`_importBundleFromFile`): the
+  // part cycles and the assembly cycle take their plans from here instead of
+  // asking the provider. Cleared with the rest of the orchestration state.
+  AiPlanBundle? _importedBundle;
 
   // Set once "Confirm & Generate All" is pressed - drives which panel
   // `build()` shows in place of `_buildChat`/`_buildReviewAndGenerate`.
@@ -1209,6 +1215,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     }
     setState(() {
       _partManifest = null;
+      _importedBundle = null;
       _manifestNameControllers = [];
       _manifestPrefixControllers = [];
       _existingAssemblyFileOptions = [];
@@ -1406,29 +1413,42 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       return;
     }
 
+    final bundle = _importedBundle;
     final provider = widget.provider ?? AiProviderPreferences.active;
-    final requestMessage = AiChatMessage(
-      role: AiMessageRole.user,
-      text: retryPartId == null
-          ? assemblyModePartRequestText(index: index, total: manifest.parts.length, name: entry.name, summary: entry.summary)
-          : assemblyModePartRetryRequestText(name: entry.name),
-    );
-    setState(() {
-      _transcript = [..._transcript, requestMessage];
-      _orchestrationStatus =
-          retryPartId == null ? 'Requesting the plan for "${entry.name}"...' : 'Requesting a revised plan for "${entry.name}"...';
-      _orchestrationError = null;
-    });
-    _scrollToBottom();
+    if (bundle == null) {
+      final requestMessage = AiChatMessage(
+        role: AiMessageRole.user,
+        text: retryPartId == null
+            ? assemblyModePartRequestText(index: index, total: manifest.parts.length, name: entry.name, summary: entry.summary)
+            : assemblyModePartRetryRequestText(name: entry.name),
+      );
+      setState(() {
+        _transcript = [..._transcript, requestMessage];
+        _orchestrationStatus =
+            retryPartId == null ? 'Requesting the plan for "${entry.name}"...' : 'Requesting a revised plan for "${entry.name}"...';
+        _orchestrationError = null;
+      });
+      _scrollToBottom();
+    } else {
+      setState(() {
+        _orchestrationStatus = 'Using the imported plan for "${entry.name}"...';
+        _orchestrationError = null;
+      });
+    }
     String? partId = retryPartId;
     try {
-      final result = await provider.sendScopingTurn(_transcript, systemPrompt: _buildSystemPrompt());
-      final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
-      if (!mounted) return;
-      setState(() => _transcript = [..._transcript, assistantMessage]);
-      _scrollToBottom();
-
-      final plan = detectPlanInAssistantText(result.assistantText);
+      AiGenerationPlan? detectedPlan;
+      if (bundle != null) {
+        detectedPlan = bundle.partPlans[index];
+      } else {
+        final result = await provider.sendScopingTurn(_transcript, systemPrompt: _buildSystemPrompt());
+        final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
+        if (!mounted) return;
+        setState(() => _transcript = [..._transcript, assistantMessage]);
+        _scrollToBottom();
+        detectedPlan = detectPlanInAssistantText(result.assistantText);
+      }
+      final plan = detectedPlan;
       if (plan == null) {
         _appendOrchestrationFailureToTranscript(
           'That reply was not a plan for "${entry.name}" - please reply with an ordinary plan for this '
@@ -1489,7 +1509,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           _appendOrchestrationFailureToTranscript(
             'For "${entry.name}": ${describeAiPlanValidationFailure(plan, translation.preflightResults)}',
           );
-          if (_autoRetriedValidation.add(index)) {
+          if (bundle == null && _autoRetriedValidation.add(index)) {
             await _runPartCycle(index);
             return;
           }
@@ -1664,6 +1684,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         return;
       }
     }
+    final bundle = _importedBundle;
     final requestMessage = AiChatMessage(
       role: AiMessageRole.user,
       text: retryPartId != null
@@ -1676,8 +1697,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                   existingComponentsListing: existingComponentsListing,
                 ),
     );
-    setState(() => _transcript = [..._transcript, requestMessage]);
-    _scrollToBottom();
+    if (bundle == null) {
+      setState(() => _transcript = [..._transcript, requestMessage]);
+      _scrollToBottom();
+    }
     try {
       final provider = widget.provider ?? AiProviderPreferences.active;
       final systemPrompt = buildAiScopingSystemPrompt(
@@ -1690,13 +1713,20 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         multiBodyPartMode: _mode == AiGenerationMode.multiBodyPart,
         assemblyMode: _mode == AiGenerationMode.assembly,
       );
-      final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
-      final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
-      if (!mounted) return;
-      setState(() => _transcript = [..._transcript, assistantMessage]);
-      _scrollToBottom();
-
-      final plan = detectPlanInAssistantText(result.assistantText);
+      AiGenerationPlan? detectedPlan;
+      if (bundle != null) {
+        // The imported assembly refers to parts by the names the external AI
+        // chose; point each reference at the path it was really saved under.
+        detectedPlan = bundle.assemblyPlanFor([for (final part in _savedAssemblyParts) part.relativePath]);
+      } else {
+        final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
+        final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
+        if (!mounted) return;
+        setState(() => _transcript = [..._transcript, assistantMessage]);
+        _scrollToBottom();
+        detectedPlan = detectPlanInAssistantText(result.assistantText);
+      }
+      final plan = detectedPlan;
       if (plan == null) {
         _appendOrchestrationFailureToTranscript(
           'That reply was not an assembly plan - please reply with an ordinary plan placing and mating '
@@ -1757,7 +1787,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           _appendOrchestrationFailureToTranscript(
             'For the assembly plan: ${describeAiPlanValidationFailure(plan, translation.preflightResults)}',
           );
-          if (_autoRetriedValidation.add(-1)) {
+          if (bundle == null && _autoRetriedValidation.add(-1)) {
             await _runAssemblyCycle();
             return;
           }
@@ -1837,7 +1867,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// handle a `null` retry-part-id themselves (a plain fresh request, for
   /// failures that happened before any Part existed yet - "no plan
   /// detected", "no project folder").
-  bool get _canRetryOrchestration => _orchestrationError != null;
+  // An imported bundle's plans are fixed - re-running the same failed plan
+  // can't succeed, so only a cancelled save is retryable there.
+  bool get _canRetryOrchestration =>
+      _orchestrationError != null && (_importedBundle == null || _orchestrationRetryIsSaveOnly);
 
   /// Gap-closure (`13-...md`'s own D-1/E-2): re-enters whichever cycle was
   /// in flight when it stopped - `_runAssemblyCycle` once every part is
@@ -1877,6 +1910,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     setState(() {
       _orchestrating = false;
       _partManifest = null;
+      _importedBundle = null;
       _manifestNameControllers = [];
       _manifestPrefixControllers = [];
       _existingAssemblyFileOptions = [];
@@ -2084,6 +2118,35 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     }
   }
 
+  /// A `.zip` from an external AI holding a part manifest, one plan per
+  /// part and an assembly plan (`AiPlanBundle`). Lands on the same
+  /// confirm-parts panel an in-app manifest does; "Confirm & Generate All"
+  /// then builds and saves each part from its imported plan, then the
+  /// assembly, with no provider calls.
+  Future<void> _importBundleFromFile(String path) async {
+    AiPlanBundle bundle;
+    try {
+      bundle = AiPlanBundle.fromZipBytes(await File(path).readAsBytes());
+    } on AiPlanBundleException catch (e) {
+      if (!mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Could not import zip'),
+          content: Text(e.message),
+          actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
+        ),
+      );
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _importedBundle = bundle;
+      _setPartManifest(bundle.manifest);
+    });
+    unawaited(_loadExistingAssemblyFileOptions());
+  }
+
   /// External-LLM hand-off (inbound leg): reads a plan JSON back in from a
   /// file - either a bare `.json` (parsed directly, for a precise error if
   /// it's malformed/truncated) or an `.md`/`.txt` export from a web LLM that
@@ -2097,7 +2160,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// failed import shows the real parse error - the file_picker call itself
   /// mirrors `_attachImage`'s pattern.
   Future<void> _importPlanFromFile() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt']);
+    final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt', 'zip']);
     if (result == null) return;
     final path = result.files.single.path;
     if (path == null) {
@@ -2110,6 +2173,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
         ),
       );
+      return;
+    }
+
+    if (path.toLowerCase().endsWith('.zip')) {
+      await _importBundleFromFile(path);
       return;
     }
 
@@ -2174,7 +2242,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             IconButton(icon: const Icon(Icons.ios_share), tooltip: 'Share with external AI', onPressed: _shareExternalHandoff),
             IconButton(
               icon: const Icon(Icons.upload_file_outlined),
-              tooltip: 'Import plan from file',
+              tooltip: 'Import plan from file (.json or .zip)',
               onPressed: _importPlanFromFile,
             ),
           ],

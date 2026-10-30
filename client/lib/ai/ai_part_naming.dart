@@ -49,6 +49,10 @@ String nextAvailablePartName(List<String> existingRelativePaths, {required Strin
   return '${prefix}_${nextSequence.toString().padLeft(padWidth, '0')}';
 }
 
+/// Public form of the sanitizing `nextAvailablePartName` applies to a type
+/// prefix, so other code can compare prefixes the same way.
+String sanitizePartTypePrefix(String raw) => _sanitizeTypePrefix(raw);
+
 String _sanitizeTypePrefix(String raw) {
   final upper = raw.trim().toUpperCase();
   final collapsed = upper.replaceAll(RegExp(r'[^A-Z0-9]+'), '_');
