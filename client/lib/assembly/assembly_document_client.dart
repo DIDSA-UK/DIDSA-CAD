@@ -30,8 +30,8 @@ class OpenedAssembly {
 
   final String rootPartId;
 
-  /// The root file's client-only top-level keys (`hidden_feature_ids`,
-  /// `section_planes`), for the caller to restore - the backend ignores them.
+  /// The root file's client-only top-level keys (`section_planes`), for the caller to restore - the backend ignores them.
+  /// (Hide / Show is Part state now, not a client extra.)
   final Map<String, dynamic> rootClientExtras;
   final Map<String, String> relativePathByPartId;
   final Set<String> staleRelativePaths;
@@ -155,7 +155,7 @@ class AssemblyDocumentClient {
     );
     if (remintIdentity) exported = remintNativeIdentity(exported);
     // Client-only state the backend's export knows nothing about
-    // (`hidden_feature_ids`, `section_planes` - see
+    // (`section_planes` - see
     // `PartScreen._rootClientExtras`), merged at the top level so the
     // backend's `import_native` ignores it and `_openComposedProject` reads
     // it back. Without this a project-mode save silently dropped it.

@@ -84,6 +84,7 @@ import '../layout/layout_mode.dart';
 import 'desktop_chrome.dart';
 import 'feature_picker_sheet.dart';
 import 'start_button.dart';
+import 'visibility_panel.dart';
 import 'start_menu_sheet.dart';
 import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
@@ -1117,6 +1118,7 @@ class _PartScreenState extends State<PartScreen> {
   /// itself) don't hand `PartViewport` a freshly-allocated `List` each time.
   List<BodyMeshDto>? _visibleBodiesCache;
   List<BodyMeshDto>? _visibleBodiesCacheSource;
+  String _visibleBodiesCacheForced = '';
 
   /// [_bodies] filtered down to what should actually render/hit-test in the
   /// 3D viewport - everything that isn't [BodyMeshDto.hidden]. Use this
@@ -1137,9 +1139,11 @@ class _PartScreenState extends State<PartScreen> {
   /// against [_bodies]' own identity (only reassigned where [_bodies] itself
   /// is, i.e. on a genuine mesh refetch) restores the contract.
   List<BodyMeshDto> get _visibleBodies {
-    if (!identical(_visibleBodiesCacheSource, _bodies)) {
+    final forced = _forcedVisibleCategories.join(',');
+    if (!identical(_visibleBodiesCacheSource, _bodies) || _visibleBodiesCacheForced != forced) {
       _visibleBodiesCacheSource = _bodies;
-      _visibleBodiesCache = _bodies.where((b) => !b.hidden).toList();
+      _visibleBodiesCacheForced = forced;
+      _visibleBodiesCache = _bodies.where((b) => !b.hidden || _bodyForcedVisible(b)).toList();
     }
     return _visibleBodiesCache!;
   }
@@ -1780,6 +1784,348 @@ class _PartScreenState extends State<PartScreen> {
     return _hiddenFeatureIdsByPart.putIfAbsent(key, () => {});
   }
 
+  // ---- Hide / Show as saved Part state (`docs/touch-viewport-ux-plan.md` section 6.1) ----
+  //
+  // The backend keeps each Part's hidden Features and whether its default reference planes are hidden, and saves them in the
+  // file. [_hiddenFeatureIdsByPart] and [_referencePlanesHidden] are a cache of that: filled from the Part when it loads and
+  // replaced by every `PATCH .../visibility` response. Every hide / show goes through [_setFeaturesHidden] (or the category
+  // and reference-plane counterparts below), which applies the change to the cache at once, so a tap feels instant, and
+  // sends it; a failed call puts the backend's state back and shows the error.
+
+  /// Replaces the cache with what the backend holds for [part].
+  void _seedVisibility(PartDto part) {
+    _visibilitySeededParts.add(part.id);
+    _hiddenFeatureIdsByPart[part.id] = {...part.hiddenFeatureIds};
+    if (_part == null || part.id == _part!.id) _referencePlanesHidden = part.referencePlanesHidden;
+  }
+
+  /// The Parts whose Hide / Show state has been read from the backend ([_hiddenFeatureIds] creates empty entries on read, so
+  /// the map itself cannot say).
+  final Set<String> _visibilitySeededParts = {};
+
+  /// Calls to the backend run one after another, so their responses arrive in the order they were made.
+  Future<void> _visibilityQueue = Future<void>.value();
+  final Map<String, int> _visibilityPendingByPart = {};
+
+  /// Hides ([hidden]) or shows the Features [ids] of the focused Part, now in the cache and then in the backend. Safe to call
+  /// inside `setState`; does nothing for an id already in the wanted state.
+  void _setFeaturesHidden(Iterable<String> ids, bool hidden) {
+    final partId = _focusPartIdOrNull;
+    if (partId == null) return;
+    final cache = _hiddenFeatureIdsByPart.putIfAbsent(partId, () => {});
+    final changing = [
+      for (final id in ids.toSet())
+        if (cache.contains(id) != hidden) id,
+    ];
+    if (changing.isEmpty) return;
+    if (hidden) {
+      cache.addAll(changing);
+    } else {
+      cache.removeAll(changing);
+    }
+    unawaited(_sendVisibility(partId, hidden: hidden, featureIds: changing));
+  }
+
+  /// Hides or shows a whole category of Features ([category] is a `produces`: plane, sketch, curve, body, surface) in the
+  /// Part(s) the Visibility panel acts on - the focused Part in the cache at once, every target Part in the backend, which
+  /// resolves the category itself when it gets the call (so a Feature made since is covered).
+  void _setCategoryHidden(String category, bool hidden) {
+    final partId = _focusPartIdOrNull;
+    if (partId == null) return;
+    final cache = _hiddenFeatureIdsByPart.putIfAbsent(partId, () => {});
+    final ids = [
+      for (final f in _features)
+        if (f.produces == category) f.id,
+    ];
+    setState(() {
+      if (hidden) {
+        cache.addAll(ids);
+      } else {
+        cache.removeAll(ids);
+      }
+      // An explicit act: the user's choice now stands for the consumed-sketch auto-hide too.
+      _autoHiddenSketchFeatureIds.removeAll(ids);
+      _refreshVisibilityDisplay();
+    });
+    for (final target in _visibilityTargetPartIds()) {
+      unawaited(_sendVisibility(target, hidden: hidden, categories: [category]));
+    }
+  }
+
+  /// Hides or shows the default reference planes (the root Part's flag).
+  void _setReferencePlanesHidden(bool hidden) {
+    setState(() => _referencePlanesHidden = hidden);
+    final rootId = _part?.id;
+    if (rootId == null) return;
+    for (final target in _visibilityTargetPartIds()) {
+      unawaited(_sendVisibility(target, hidden: hidden, referencePlanes: true));
+    }
+  }
+
+  /// The Parts the Visibility panel acts on: the focused Part, plus every Part of the composed assembly in Assembly lens.
+  Set<String> _visibilityTargetPartIds() {
+    final focus = _focusPartIdOrNull;
+    return {
+      if (focus != null) focus,
+      if (_lens == AssemblyLens.assembly)
+        for (final geometry in _assemblyMesh?.geometry ?? const <AssemblyBodyGeometryDto>[]) geometry.partId,
+    };
+  }
+
+  Future<void> _sendVisibility(
+    String partId, {
+    required bool hidden,
+    List<String> featureIds = const [],
+    List<String> categories = const [],
+    bool referencePlanes = false,
+  }) {
+    _visibilityPendingByPart[partId] = (_visibilityPendingByPart[partId] ?? 0) + 1;
+    final run = _visibilityQueue.then((_) async {
+      try {
+        final result = await _api.setVisibility(
+          partId,
+          hidden: hidden,
+          featureIds: featureIds,
+          categories: categories,
+          referencePlanes: referencePlanes,
+        );
+        // Only the last call for a Part is authoritative: an earlier response would undo what a later tap already
+        // showed.
+        if (mounted && _visibilityPendingByPart[partId] == 1) {
+          setState(() => _applyVisibility(partId, result));
+          if (_lens == AssemblyLens.assembly) unawaited(_refreshAssemblyMesh());
+        }
+      } catch (e) {
+        // Any failure (a 422, no network): the backend's state is the truth. Caught whatever it is, so one bad call can
+        // never poison the queue behind it.
+        if (!mounted) return;
+        await _restoreVisibility(partId);
+        if (mounted) setState(() => _errorMessage = e is ApiException ? e.message : '$e');
+      } finally {
+        _visibilityPendingByPart[partId] = (_visibilityPendingByPart[partId] ?? 1) - 1;
+      }
+    });
+    _visibilityQueue = run;
+    return run;
+  }
+
+  void _applyVisibility(String partId, PartVisibilityDto state) {
+    _hiddenFeatureIdsByPart[partId] = {...state.hiddenFeatureIds};
+    if (partId == _part?.id) _referencePlanesHidden = state.referencePlanesHidden;
+    _refreshVisibilityDisplay();
+  }
+
+  /// After a failed call: puts the cache back to what the backend actually holds.
+  Future<void> _restoreVisibility(String partId) async {
+    try {
+      final part = await _api.getPart(partId);
+      if (mounted) {
+        setState(() {
+          _seedVisibility(part);
+          _refreshVisibilityDisplay();
+        });
+      }
+    } catch (_) {
+      // The backend is out of reach: keep what the screen shows.
+    }
+  }
+
+  /// Brings everything derived from the hidden sets up to date: the Bodies' own `hidden` flag (so the mesh needs no refetch
+  /// for a hide), the sketch outlines and the created planes drawn.
+  void _refreshVisibilityDisplay() {
+    final hidden = _hiddenFeatureIds;
+    var changed = false;
+    final next = <BodyMeshDto>[];
+    for (final body in _bodies) {
+      final nowHidden = hidden.contains(baseFeatureId(body.bodyId));
+      if (nowHidden == body.hidden) {
+        next.add(body);
+        continue;
+      }
+      changed = true;
+      next.add(
+        BodyMeshDto(
+          bodyId: body.bodyId,
+          source: body.source,
+          mesh: body.mesh,
+          hidden: nowHidden,
+          isSurface: body.isSurface,
+          isCurve: body.isCurve,
+        ),
+      );
+    }
+    if (changed) _bodies = next;
+    _recomputeVisibleSketchGeometries();
+    _recomputeCreatePlaneGeometries();
+  }
+
+  /// Categories (a Feature's `produces`) drawn and pickable whatever their hidden state, because the flow the user is in has
+  /// them tap one (plan section 6.1). Display only, never written to the backend; a Feature hidden because a downstream
+  /// Feature consumed it ([_autoHiddenSketchFeatureIds]) stays hidden, as before.
+  Set<String> get _forcedVisibleCategories => {
+        if (_sketchPicksActive) 'sketch',
+        if (_surfacePicksActive) 'surface',
+        if (_bodyPicksActive) 'body',
+        if (_planePicksActive) 'plane',
+      };
+
+  bool get _sketchPicksActive =>
+      _sketchPickerActive ||
+      _surfaceSketchPickerActive ||
+      _revolveSketchPickerActive ||
+      _sweepSketchPickerActive ||
+      _loftSketchPickerActive ||
+      _loftSurfaceSketchPickerActive ||
+      _ruledSurfaceSketchPickerActive ||
+      _planarSurfaceSketchPickerActive ||
+      _revolveSurfaceSketchPickerActive ||
+      _sweptSurfaceSketchPickerActive ||
+      _profilePickerActive ||
+      _pathPickerActive;
+
+  bool get _surfacePicksActive =>
+      _thickenSourcePickerActive ||
+      _knitSurfacePickerActive ||
+      _solidFromSurfacesPickerActive ||
+      _offsetSurfaceSourcePickerActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive;
+
+  bool get _bodyPicksActive =>
+      _extrudeActive ||
+      _mirrorActive ||
+      _patternActive ||
+      _mergeActive ||
+      _booleanActive ||
+      _splitActive ||
+      _shellActive ||
+      _deleteBodyActive ||
+      _scaleBodyActive ||
+      _moveBodyActive ||
+      _deleteFaceActive ||
+      _moveFaceActive;
+
+  bool get _planePicksActive =>
+      _planeSelectionMode || _confirmingSketchOrientation || _mirrorStep == _MirrorStep.pickingPlane || _createPlaneActive;
+
+  /// The Feature ids to leave out of the viewport for Hide / Show: the hidden set less what the flow in use forces visible.
+  Set<String> get _displayHiddenFeatureIds {
+    final hidden = _hiddenFeatureIds;
+    final forced = _forcedVisibleCategories;
+    if (forced.isEmpty || hidden.isEmpty) return hidden;
+    return {
+      for (final id in hidden)
+        if (_autoHiddenSketchFeatureIds.contains(id) || !forced.contains(_featureById(id)?.produces)) id,
+    };
+  }
+
+  /// Whether a hidden Body is drawn and pickable anyway, because [_forcedVisibleCategories] has its category.
+  bool _bodyForcedVisible(BodyMeshDto body) {
+    final forced = _forcedVisibleCategories;
+    if (forced.isEmpty) return false;
+    if (_autoHiddenSketchFeatureIds.contains(baseFeatureId(body.bodyId))) return false;
+    return forced.contains(body.isSurface ? 'surface' : (body.isCurve ? 'curve' : 'body'));
+  }
+
+  String _lastForcedSignature = '';
+
+  /// Whether the Visibility panel is open: it stays until its own close button, and is only drawn while the Start button
+  /// is (no tool owns the screen), coming back when the tool closes.
+  bool _visibilityPanelOpen = false;
+  bool _visibilityViewsFolded = false;
+
+  /// One category's state, from the focused Part's Features and its hidden set.
+  VisibilityChipState _categoryState(String category) {
+    final ids = [
+      for (final f in _features)
+        if (f.produces == category) f.id,
+    ];
+    if (ids.isEmpty) return VisibilityChipState.shown;
+    final hiddenCount = ids.where(_hiddenFeatureIds.contains).length;
+    if (hiddenCount == 0) return VisibilityChipState.shown;
+    return hiddenCount == ids.length ? VisibilityChipState.hidden : VisibilityChipState.partial;
+  }
+
+  /// Whether anything is hidden: the badge on the quick column's Visibility button, so hidden geometry is never a surprise.
+  bool get _anythingHidden =>
+      _referencePlanesHidden || _features.any((f) => _hiddenFeatureIds.contains(f.id) && f.produces != 'none');
+
+  List<VisibilityChipData> _visibilityChips() {
+    VisibilityChipData chip(String id, String label, String noun, Widget icon, String category) {
+      final hasAny = _features.any((f) => f.produces == category);
+      final state = _categoryState(category);
+      return VisibilityChipData(
+        id: id,
+        label: label,
+        icon: icon,
+        state: state,
+        locked: _forcedVisibleCategories.contains(category) && state != VisibilityChipState.shown,
+        tooltip: hasAny
+            ? '${state == VisibilityChipState.shown ? 'Hide' : 'Show'} all $noun. Features made later start shown.'
+            : 'No $noun yet',
+        onTap: hasAny ? () => _setCategoryHidden(category, state == VisibilityChipState.shown) : null,
+      );
+    }
+
+    return [
+      VisibilityChipData(
+        id: 'reference-planes',
+        label: 'Ref planes',
+        icon: SvgIcon(
+          _referencePlanesHidden
+              ? 'assets/icons/feature/parttoolbar_show_reference_planes.svg'
+              : 'assets/icons/feature/parttoolbar_hide_reference_planes.svg',
+        ),
+        state: _referencePlanesHidden ? VisibilityChipState.hidden : VisibilityChipState.shown,
+        locked: _referencePlanesForcedVisible && _referencePlanesHidden,
+        tooltip: _referencePlanesHidden ? 'Show the reference planes' : 'Hide the reference planes',
+        onTap: () => _setReferencePlanesHidden(!_referencePlanesHidden),
+      ),
+      chip('plane', 'Planes', 'created planes', const Icon(Icons.layers_outlined), 'plane'),
+      chip('sketch', 'Sketches', 'sketches', const Icon(Icons.draw_outlined), 'sketch'),
+      chip('curve', 'Curves', 'curves', const Icon(Icons.timeline), 'curve'),
+      chip('body', 'Solids', 'solids', const Icon(Icons.view_in_ar_outlined), 'body'),
+      chip('surface', 'Surfaces', 'surfaces', const Icon(Icons.waves), 'surface'),
+    ];
+  }
+
+  List<VisibilityViewData> _visibilityViews() {
+    VisibilityViewData view(String label, StandardView standardView) => VisibilityViewData(
+          id: standardView.name,
+          label: label,
+          onTap: () => unawaited(_viewportKey.currentState?.animateToStandardView(standardView) ?? Future<void>.value()),
+        );
+    return [
+      view('Front', StandardView.front),
+      view('Back', StandardView.back),
+      view('Left', StandardView.left),
+      view('Right', StandardView.right),
+      view('Top', StandardView.top),
+      view('Bottom', StandardView.bottom),
+      view('Iso', StandardView.isometric),
+    ];
+  }
+
+  /// [_assemblyMesh]'s geometry less the Bodies a Part has hidden (the backend flags them, Part by Part). One list per mesh,
+  /// so [PartViewport] only sees a change when the mesh itself changed.
+  List<AssemblyBodyGeometryDto> get _displayAssemblyGeometry {
+    final mesh = _assemblyMesh;
+    if (mesh == null) return const [];
+    if (!identical(_displayAssemblyGeometrySource, mesh)) {
+      _displayAssemblyGeometrySource = mesh;
+      _displayAssemblyGeometryCache = [
+        for (final geometry in mesh.geometry)
+          AssemblyBodyGeometryDto(partId: geometry.partId, bodies: [for (final b in geometry.bodies) if (!b.hidden) b]),
+      ];
+    }
+    return _displayAssemblyGeometryCache;
+  }
+
+  Object? _displayAssemblyGeometrySource;
+  List<AssemblyBodyGeometryDto> _displayAssemblyGeometryCache = const [];
+
   Set<String> get _rollbackExcludedFeatureIds {
     final key = _focusPartIdOrNull;
     if (key == null) return <String>{};
@@ -1868,7 +2214,7 @@ class _PartScreenState extends State<PartScreen> {
   /// viewport itself (unlike the backend's `/mesh` computation) has no
   /// reason to tell the two apart - either way, nothing of that Feature's
   /// should render or be tappable right now.
-  Set<String> get _viewportHiddenFeatureIds => {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds};
+  Set<String> get _viewportHiddenFeatureIds => {..._displayHiddenFeatureIds, ..._rollbackExcludedFeatureIds};
 
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5 - the "re-opening a Part"
   /// flow: `body_id` -> coarse [MeshDto] for every Body currently rendering
@@ -7845,7 +8191,7 @@ class _PartScreenState extends State<PartScreen> {
       // doc comment for the full reasoning.
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -8476,7 +8822,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       if (!wasEditing) {
         for (final section in sections) {
-          _hiddenFeatureIds.add(section.id);
+          _setFeaturesHidden([section.id], true);
           _autoHiddenSketchFeatureIds.add(section.id);
         }
       }
@@ -9137,7 +9483,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       if (!wasEditing) {
         for (final section in sections) {
-          _hiddenFeatureIds.add(section.id);
+          _setFeaturesHidden([section.id], true);
           _autoHiddenSketchFeatureIds.add(section.id);
         }
       }
@@ -9506,7 +9852,7 @@ class _PartScreenState extends State<PartScreen> {
       _featureTreeVisible = false;
       if (!wasEditing) {
         for (final section in sections) {
-          _hiddenFeatureIds.add(section.id);
+          _setFeaturesHidden([section.id], true);
           _autoHiddenSketchFeatureIds.add(section.id);
         }
       }
@@ -10804,7 +11150,6 @@ class _PartScreenState extends State<PartScreen> {
   /// `AssemblyDocumentClient.savePart` of the root Part, so a project-mode
   /// save no longer drops them.
   Map<String, dynamic> _rootClientExtras() => {
-    'hidden_feature_ids': (_hiddenFeatureIdsByPart[_part!.id] ?? const <String>{}).toList(),
     'section_planes': [for (final s in _sectionPlanesByPart[_part!.id] ?? const <SectionPlane>[]) s.toJson()],
   };
 
@@ -10815,8 +11160,7 @@ class _PartScreenState extends State<PartScreen> {
   /// top-level keys. Tolerant of a single corrupt section entry (skips just
   /// that one, per [SectionPlane.fromJson]'s own doc comment) rather than
   /// failing the whole Open over one typo in a hand-edited file.
-  ({List<String> hiddenFeatureIds, List<SectionPlane> sectionPlanes}) _parseClientExtras(Map<String, dynamic> data) {
-    final hiddenFeatureIds = (data['hidden_feature_ids'] as List?)?.cast<String>() ?? const <String>[];
+  ({List<SectionPlane> sectionPlanes}) _parseClientExtras(Map<String, dynamic> data) {
     final sectionPlanes = <SectionPlane>[];
     for (final raw in (data['section_planes'] as List?) ?? const []) {
       if (raw is! Map<String, dynamic>) continue;
@@ -10826,7 +11170,7 @@ class _PartScreenState extends State<PartScreen> {
         // Skip just this malformed entry.
       }
     }
-    return (hiddenFeatureIds: hiddenFeatureIds, sectionPlanes: sectionPlanes);
+    return (sectionPlanes: sectionPlanes);
   }
 
   /// Shared by [_saveNativeFile]/[_saveAsNativeFile]: exports the whole
@@ -11683,7 +12027,6 @@ class _PartScreenState extends State<PartScreen> {
     // malformed, and losing every section over one typo in one of them
     // would be a needlessly harsh failure mode.
     final extras = _parseClientExtras(decoded);
-    final hiddenFeatureIds = extras.hiddenFeatureIds;
     final sectionPlanes = extras.sectionPlanes;
 
     NativeImportResultDto? imported;
@@ -11701,7 +12044,6 @@ class _PartScreenState extends State<PartScreen> {
           assemblyDocumentClient: widget.assemblyDocumentClient,
           canPersistFilePathForReuse: widget.canPersistFilePathForReuse,
           initialPartId: imported!.partIds.first,
-          initialHiddenFeatureIds: hiddenFeatureIds,
           initialSectionPlanes: sectionPlanes,
           initialFileName: fileName,
           initialFilePath: filePath,
@@ -11745,7 +12087,6 @@ class _PartScreenState extends State<PartScreen> {
           initialProjectRoot: root,
           initialRelativePathByPartId: result.relativePathByPartId,
           initialReferenceReports: result.references,
-          initialHiddenFeatureIds: extras.hiddenFeatureIds,
           initialSectionPlanes: extras.sectionPlanes,
         ),
       ),
@@ -11906,7 +12247,10 @@ class _PartScreenState extends State<PartScreen> {
       // in [initState], just deferred to the first point it's actually
       // safe. A no-op (empty) for every non-native-Load launch, same as
       // before.
-      _hiddenFeatureIds.addAll(widget.initialHiddenFeatureIds);
+      _seedVisibility(part);
+      // A caller that still hands over a hidden set (the legacy PartScreen.initialHiddenFeatureIds) has it saved on the
+      // Part like any other hide.
+      if (widget.initialHiddenFeatureIds.isNotEmpty) _setFeaturesHidden(widget.initialHiddenFeatureIds, true);
       _sectionPlanes = widget.initialSectionPlanes;
       // LOD Phase 2 chunk 4: fire-and-forget, same convention
       // `_refreshMesh`'s own background coarse-tier fetch below uses - a
@@ -13712,6 +14056,13 @@ class _PartScreenState extends State<PartScreen> {
             ),
             onPressed: _toggleSelectionMode,
           ),
+        QuickColumnButton(
+          key: const ValueKey('quick-visibility-fab'),
+          tooltip: 'Visibility',
+          badge: _anythingHidden,
+          child: const Icon(Icons.visibility_outlined),
+          onPressed: () => setState(() => _visibilityPanelOpen = true),
+        ),
       ];
 
   /// The Start menu's last-used tab per lens, for the session.
@@ -14984,7 +15335,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -15148,9 +15499,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Toggles [_referencePlanesHidden] (Stage 10b) - the toolbar's
   /// "Hide/Show Reference Planes" entry.
-  void _onToggleReferencePlanes() {
-    setState(() => _referencePlanesHidden = !_referencePlanesHidden);
-  }
+  void _onToggleReferencePlanes() => _setReferencePlanesHidden(!_referencePlanesHidden);
 
   /// Stage 11: the toolbar's render-mode entries - sets [_renderMode]
   /// directly to whichever entry was tapped (unlike
@@ -15895,18 +16244,13 @@ class _PartScreenState extends State<PartScreen> {
     }
   }
 
-  /// Bulk counterpart of [_toggleFeatureVisibility] - purely local
-  /// ([_hiddenFeatureIds] only, no HTTP call), applied to every selected
-  /// Feature in one `setState` so the caller refreshes the mesh just once.
+  /// Bulk counterpart of [_toggleFeatureVisibility] - one [_setFeaturesHidden] for every selected Feature in one `setState`
+  /// (so one request), and the caller refreshes the mesh just once.
   void _buildMultiSelectSetHidden(bool hide) {
     final featureIds = _buildMultiSelectFeatureIds;
     setState(() {
+      _setFeaturesHidden(featureIds, hide);
       for (final id in featureIds) {
-        if (hide) {
-          _hiddenFeatureIds.add(id);
-        } else {
-          _hiddenFeatureIds.remove(id);
-        }
         _autoHiddenSketchFeatureIds.remove(id);
       }
       _recomputeVisibleSketchGeometries();
@@ -16553,7 +16897,7 @@ class _PartScreenState extends State<PartScreen> {
       // Fillet/Chamfer).
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         // This is *the* auto-hide-on-consume case [_autoHiddenSketchFeatureIds]
         // exists for - mark it so a later event that un-consumes this
         // Sketch (deleting its Extrude) can auto-restore its visibility.
@@ -16889,7 +17233,7 @@ class _PartScreenState extends State<PartScreen> {
       // fix this mirrors.
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -17151,7 +17495,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -17464,7 +17808,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -17705,7 +18049,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _featureTreeVisible = false;
       if (sketchFeature != null && !wasEditing) {
-        _hiddenFeatureIds.add(sketchFeature.id);
+        _setFeaturesHidden([sketchFeature.id], true);
         _autoHiddenSketchFeatureIds.add(sketchFeature.id);
       }
       _recomputeVisibleSketchGeometries();
@@ -23087,12 +23431,10 @@ class _PartScreenState extends State<PartScreen> {
         : 'Select bodies to merge into ($count selected)';
   }
 
-  /// Client-side-only Hide/Show for a Feature - [_hiddenFeatureIds] itself
-  /// is never sent to the backend, but it *is* re-sent as the mesh
-  /// endpoint's `hidden_feature_ids` query param (see [_refreshMesh]), so
-  /// hiding an ExtrudeFeature also drops its volume from the displayed
-  /// solid, not just its own Sketch geometry from [_visibleSketchGeometries]
-  /// (a SketchFeature has no solid of its own to drop).
+  /// Hide/Show for a Feature, through [_setFeaturesHidden] (a saved Part state, see there). [_hiddenFeatureIds] is also
+  /// re-sent as the mesh endpoint's `hidden_feature_ids` query param (see [_refreshMesh]), so hiding an ExtrudeFeature also
+  /// drops its volume from the displayed solid, not just its own Sketch geometry from [_visibleSketchGeometries] (a
+  /// SketchFeature has no solid of its own to drop).
   ///
   /// Prompt C1: an explicit Hide here always removes [feature.id] from
   /// [_autoHiddenSketchFeatureIds] too (a no-op unless it was already
@@ -23102,11 +23444,7 @@ class _PartScreenState extends State<PartScreen> {
   /// exception.
   Future<void> _toggleFeatureVisibility(FeatureDto feature) async {
     setState(() {
-      if (_hiddenFeatureIds.contains(feature.id)) {
-        _hiddenFeatureIds.remove(feature.id);
-      } else {
-        _hiddenFeatureIds.add(feature.id);
-      }
+      _setFeaturesHidden([feature.id], !_hiddenFeatureIds.contains(feature.id));
       _autoHiddenSketchFeatureIds.remove(feature.id);
       _recomputeVisibleSketchGeometries();
       _recomputeCreatePlaneGeometries();
@@ -23174,7 +23512,7 @@ class _PartScreenState extends State<PartScreen> {
     // hidden because something depended on it; once the new last Feature
     // is unlocked again, there's nothing left to make it redundant clutter.
     if (_features.isNotEmpty && !_features.last.locked) {
-      _hiddenFeatureIds.remove(_features.last.id);
+      _setFeaturesHidden([_features.last.id], false);
       _autoHiddenSketchFeatureIds.remove(_features.last.id);
     }
     _recomputeVisibleSketchGeometries();
@@ -23860,6 +24198,15 @@ class _PartScreenState extends State<PartScreen> {
   /// disappears after exiting focus" until an unrelated hide/unhide toggle
   /// happened to re-run both fetches together.
   Future<void> _refreshFocusTargetContent() async {
+    // A sub-component focused for the first time: its Hide / Show state is on the backend, not in the cache yet.
+    final focusId = _focusPartIdOrNull;
+    if (focusId != null && !_visibilitySeededParts.contains(focusId)) {
+      try {
+        _seedVisibility(await _api.getPart(focusId));
+      } on ApiException {
+        // Leave it empty: nothing is shown hidden, which is the safe wrong answer.
+      }
+    }
     await _refreshAssemblyTree();
     await _refreshAssemblyMesh();
     await _refreshMesh();
@@ -24174,6 +24521,13 @@ class _PartScreenState extends State<PartScreen> {
     // The quick column closes when a tool session takes the Start button away, so it is not sitting open when the
     // session ends (a plain field reset: nothing below reads it before this).
     if (!_startButtonVisible) _quickColumnOpen = false;
+    // What a flow forces visible changes the sketch outlines and planes drawn: refresh them when it does.
+    final forcedSignature = _forcedVisibleCategories.toList()..sort();
+    if (forcedSignature.join(',') != _lastForcedSignature) {
+      _lastForcedSignature = forcedSignature.join(',');
+      _recomputeVisibleSketchGeometries();
+      _recomputeCreatePlaneGeometries();
+    }
     return PopScope(
       // While choosing a plane for a new Sketch (Stage 10b) or a Sketch to
       // extrude (Prompt D), the device back gesture cancels that mode
@@ -25015,7 +25369,9 @@ class _PartScreenState extends State<PartScreen> {
                           ),
                     features: _features,
                     selectedFeatureId: _selectedFeatureId,
-                    hiddenFeatureIds: _viewportHiddenFeatureIds,
+                    // The tree always shows the real hidden state (the eye-slash), also while a flow forces a category
+                    // into view in the viewport.
+                    hiddenFeatureIds: {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds},
                     onFeatureTap: _onFeatureTap,
                     // Feature 1 (tree multi-select): long-press enters bulk
                     // multi-select; the old per-row context menu is reached
@@ -25369,7 +25725,7 @@ class _PartScreenState extends State<PartScreen> {
                   // see [_refreshAssemblyMesh]'s own doc comment), so this is
                   // a zero-cost no-op for the overwhelming majority of
                   // existing, non-assembly usage.
-                  assemblyGeometry: _assemblyMesh?.geometry ?? const [],
+                  assemblyGeometry: _displayAssemblyGeometry,
                   // Assembly support Phase 4: Hide/Isolate must reach the
                   // viewport too, not just [AssemblyTreePanel] - both now
                   // read the same backend-true `hidden` per instance (§6
@@ -26754,6 +27110,27 @@ class _PartScreenState extends State<PartScreen> {
                               child: const Icon(Icons.undo),
                             ),
                         ],
+                      ),
+                    ),
+                  ),
+                // The Visibility panel (`docs/touch-viewport-ux-plan.md` section 6): docked bottom left, left of the Start
+                // button, open until its own close. Drawn only while the Start button is - a tool that owns the screen
+                // hides it, and it is back when the tool closes.
+                if (_visibilityPanelOpen && _startButtonVisible)
+                  Positioned(
+                    left: 8,
+                    bottom: 8,
+                    child: SafeArea(
+                      top: false,
+                      child: SizedBox(
+                        width: math.min(MediaQuery.sizeOf(context).width - 88, 420),
+                        child: VisibilityPanel(
+                          chips: _visibilityChips(),
+                          views: _visibilityViews(),
+                          onClose: () => setState(() => _visibilityPanelOpen = false),
+                          viewsFolded: _visibilityViewsFolded,
+                          onViewsFoldedChanged: (folded) => setState(() => _visibilityViewsFolded = folded),
+                        ),
                       ),
                     ),
                   ),

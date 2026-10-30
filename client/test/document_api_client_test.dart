@@ -3043,4 +3043,68 @@ void main() {
       expect(status['e']?.state, ConstraintState.underConstrained);
     });
   });
+
+  group('Hide / Show as Part state', () {
+    test('PartDto reads hidden_feature_ids and reference_planes_hidden, defaulting to nothing hidden', () {
+      final withState = PartDto.fromJson({
+        'id': 'p',
+        'name': 'P',
+        'feature_ids': <String>[],
+        'hidden_feature_ids': ['f1', 'f2'],
+        'reference_planes_hidden': true,
+      });
+      expect(withState.hiddenFeatureIds, ['f1', 'f2']);
+      expect(withState.referencePlanesHidden, isTrue);
+
+      final oldBackend = PartDto.fromJson({'id': 'p', 'name': 'P', 'feature_ids': <String>[]});
+      expect(oldBackend.hiddenFeatureIds, isEmpty);
+      expect(oldBackend.referencePlanesHidden, isFalse);
+    });
+
+    test('setVisibility PATCHes the visibility route and returns the Part\'s whole state', () async {
+      http.Request? captured;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          captured = request;
+          return http.Response(
+            jsonEncode({
+              'hidden_feature_ids': ['f1'],
+              'reference_planes_hidden': true,
+            }),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      final state = await client.setVisibility(
+        'part-1',
+        hidden: true,
+        featureIds: ['f1'],
+        categories: ['sketch'],
+        referencePlanes: true,
+      );
+
+      expect(captured!.method, 'PATCH');
+      expect(captured!.url.path, '/document/parts/part-1/visibility');
+      expect(jsonDecode(captured!.body), {
+        'hidden': true,
+        'feature_ids': ['f1'],
+        'categories': ['sketch'],
+        'reference_planes': true,
+      });
+      expect(state.hiddenFeatureIds, {'f1'});
+      expect(state.referencePlanesHidden, isTrue);
+    });
+
+    test('a 422 from the backend is an ApiException', () async {
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async => http.Response(jsonEncode({'detail': 'Unknown feature ids: x'}), 422)),
+      );
+      expect(
+        () => client.setVisibility('part-1', hidden: true, featureIds: ['x']),
+        throwsA(isA<ApiException>().having((e) => e.message, 'message', contains('Unknown feature ids'))),
+      );
+    });
+  });
 }

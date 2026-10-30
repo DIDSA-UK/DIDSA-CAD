@@ -56,6 +56,11 @@ class PartDto {
   final MaterialAssignmentDto? defaultMaterial;
   final Map<String, MaterialAssignmentDto> bodyMaterialAssignments;
 
+  /// Hide / Show, saved with the Part (`PATCH /parts/{id}/visibility`): the Features the user has hidden, and whether the
+  /// three default reference planes are.
+  final List<String> hiddenFeatureIds;
+  final bool referencePlanesHidden;
+
   PartDto({
     required this.id,
     required this.name,
@@ -71,6 +76,8 @@ class PartDto {
     this.supplierPartNumber,
     this.defaultMaterial,
     this.bodyMaterialAssignments = const {},
+    this.hiddenFeatureIds = const [],
+    this.referencePlanesHidden = false,
   });
 
   factory PartDto.fromJson(Map<String, dynamic> json) => PartDto(
@@ -92,6 +99,22 @@ class PartDto {
         bodyMaterialAssignments: (json['body_material_assignments'] as Map<String, dynamic>? ?? {}).map(
           (k, v) => MapEntry(k, MaterialAssignmentDto.fromJson(v as Map<String, dynamic>)),
         ),
+        hiddenFeatureIds: (json['hidden_feature_ids'] as List? ?? const []).cast<String>(),
+        referencePlanesHidden: json['reference_planes_hidden'] as bool? ?? false,
+      );
+}
+
+/// `PATCH /parts/{part_id}/visibility` response: a Part's whole Hide / Show state. The client replaces its copy with this,
+/// it never patches it.
+class PartVisibilityDto {
+  final Set<String> hiddenFeatureIds;
+  final bool referencePlanesHidden;
+
+  const PartVisibilityDto({required this.hiddenFeatureIds, required this.referencePlanesHidden});
+
+  factory PartVisibilityDto.fromJson(Map<String, dynamic> json) => PartVisibilityDto(
+        hiddenFeatureIds: ((json['hidden_feature_ids'] as List? ?? const []).cast<String>()).toSet(),
+        referencePlanesHidden: json['reference_planes_hidden'] as bool? ?? false,
       );
 }
 
@@ -3398,6 +3421,30 @@ class DocumentApiClient {
               }),
             ),
         (body) => PartDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Hides ([hidden] true) or shows every target named: explicit [featureIds], whole [categories] (`plane`, `sketch`,
+  /// `curve`, `body`, `surface`, resolved on the server from each Feature's `produces` when the call is made) and the
+  /// default reference planes ([referencePlanes]). At least one target is needed. Returns the Part's whole state.
+  Future<PartVisibilityDto> setVisibility(
+    String partId, {
+    required bool hidden,
+    List<String> featureIds = const [],
+    List<String> categories = const [],
+    bool referencePlanes = false,
+  }) =>
+      _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/visibility'),
+              headers: _headers,
+              body: jsonEncode({
+                'hidden': hidden,
+                'feature_ids': featureIds,
+                'categories': categories,
+                'reference_planes': referencePlanes,
+              }),
+            ),
+        (body) => PartVisibilityDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Sets (or, with `material: null`, clears) this Part's own default

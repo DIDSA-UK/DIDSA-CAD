@@ -40,6 +40,7 @@ import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
+import 'package:didsa_cad_client/viewport3d/visibility_panel.dart';
 import 'package:didsa_cad_client/viewport3d/resizable_tool_panel.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
@@ -78,6 +79,29 @@ class _FakeDocumentBackend {
   /// re-fetches the Feature list on Confirm, not just that a freshly-loaded
   /// `_features` happens to already contain what the test expects.
   int featuresGetCount = 0;
+
+  /// Hide / Show as Part state (`PATCH .../visibility`): each Part's hidden Feature ids and reference-planes flag, every
+  /// request body in order, and a switch that makes the route fail.
+  final Map<String, Set<String>> hiddenByPart = {};
+  final Map<String, bool> referencePlanesHiddenByPart = {};
+  final List<Map<String, dynamic>> visibilityRequests = [];
+  bool failVisibility = false;
+
+  /// The most recent `POST .../import/native` body (what the Open flows send the backend).
+  Map<String, dynamic>? lastImportBody;
+
+  /// Part ids the fake's `assembly-mesh` carries (empty) geometry for, so a test can have several Parts in the scene.
+  List<String> assemblyGeometryPartIds = const [];
+
+  /// When set, `GET .../part-1/mesh` returns these Bodies (`body_id` / `source` / `mesh` maps, optionally
+  /// `is_surface` / `is_curve`) with `hidden` worked out from [hiddenByPart] and the `hidden_feature_ids` query parameter,
+  /// the way the real route does.
+  List<Map<String, dynamic>>? meshBodies;
+
+  Map<String, dynamic> _visibilityFields(String partId) => {
+        'hidden_feature_ids': (hiddenByPart[partId] ?? <String>{}).toList()..sort(),
+        'reference_planes_hidden': referencePlanesHiddenByPart[partId] ?? false,
+      };
 
   /// Every Curve feature PATCH body, in order (the Helix edit test).
   final List<Map<String, dynamic>> curvePatchBodies = [];
@@ -237,6 +261,7 @@ class _FakeDocumentBackend {
           'name': partOneName,
           'feature_ids': features.map((f) => f['id']).toList(),
           'occurrence_ids': occurrences.map((o) => o['id']).toList(),
+          ..._visibilityFields('part-1'),
         }, 200);
       }
       final extra = extraParts[id];
@@ -246,6 +271,7 @@ class _FakeDocumentBackend {
         'name': extra['name'],
         'feature_ids': <String>[],
         'occurrence_ids': (extra['occurrences'] as List).map((o) => o['id']).toList(),
+        ..._visibilityFields(id!),
       }, 200);
     }
 
@@ -268,6 +294,34 @@ class _FakeDocumentBackend {
       if (extra == null) return http.Response('not found: part', 404);
       if (newName != null) extra['name'] = newName;
       return _json({'id': extra['id'], 'name': extra['name'], 'feature_ids': <String>[]}, 200);
+    }
+
+    // Hide / Show (`docs/touch-viewport-ux-plan.md` section 6.1): the real route's rules - ids, categories (a Feature's
+    // `produces`, 'none' when a seed leaves it out) and reference planes, an unknown id is a 422.
+    final visibilityMatch = RegExp(r'^/document/parts/([^/]+)/visibility$').firstMatch(path);
+    if (visibilityMatch != null && method == 'PATCH') {
+      visibilityRequests.add({'part_id': visibilityMatch.group(1), ...body});
+      if (failVisibility) return http.Response(jsonEncode({'detail': 'visibility refused'}), 500);
+      final partId = visibilityMatch.group(1)!;
+      final ids = ((body['feature_ids'] as List?) ?? const []).cast<String>();
+      final categories = ((body['categories'] as List?) ?? const []).cast<String>();
+      final planes = body['reference_planes'] == true;
+      if (ids.isEmpty && categories.isEmpty && !planes) return http.Response(jsonEncode({'detail': 'no target'}), 422);
+      final known = features.map((f) => f['id']).toSet();
+      if (partId == 'part-1' && ids.any((id) => !known.contains(id))) {
+        return http.Response(jsonEncode({'detail': 'Unknown feature ids'}), 422);
+      }
+      final hidden = body['hidden'] == true;
+      final targets = {
+        ...ids,
+        if (partId == 'part-1')
+          for (final f in features)
+            if (categories.contains(f['produces'] ?? 'none')) f['id'] as String,
+      };
+      final set = hiddenByPart.putIfAbsent(partId, () => <String>{});
+      hidden ? set.addAll(targets) : set.removeAll(targets);
+      if (planes) referencePlanesHiddenByPart[partId] = hidden;
+      return _json(_visibilityFields(partId), 200);
     }
 
     // Phase 15 (`docs/assembly-scope.md` §6): `AssemblyDocumentClient.savePart`/
@@ -310,6 +364,7 @@ class _FakeDocumentBackend {
       }, 200);
     }
     if (path == '/document/import/native' && method == 'POST') {
+      lastImportBody = body;
       final parts = ((body['document'] as Map?)?['parts'] as List?) ?? const [];
       for (final partRaw in parts) {
         if (partRaw is! Map) continue;
@@ -380,6 +435,17 @@ class _FakeDocumentBackend {
       return _json(<Map<String, dynamic>>[], 200);
     }
 
+    if (path == '/document/parts/part-1/mesh' && method == 'GET' && meshBodies != null) {
+      meshRequests.add(request.url.queryParameters);
+      final hiddenNow = {
+        ...(hiddenByPart['part-1'] ?? <String>{}),
+        ...request.url.queryParametersAll['hidden_feature_ids'] ?? const <String>[],
+      };
+      return _json([
+        for (final b in meshBodies!)
+          {...b, 'hidden': hiddenNow.contains((b['body_id'] as String).split('#').first)},
+      ], 200);
+    }
     if (path == '/document/parts/part-1/mesh' && method == 'GET') {
       meshRequests.add(request.url.queryParameters);
       // Prompt A3: the backend (Prompt A1) now returns an array of Bodies -
@@ -774,7 +840,9 @@ class _FakeDocumentBackend {
     if (assemblyMeshMatch != null && method == 'GET') {
       final forRoot = assemblyMeshMatch.group(1) == 'part-1';
       return _json({
-        'geometry': <dynamic>[],
+        'geometry': [
+          for (final id in assemblyGeometryPartIds) {'part_id': id, 'bodies': <dynamic>[]},
+        ],
         'instances': [
           if (forRoot)
             for (final occurrence in occurrences)
@@ -1540,7 +1608,11 @@ void main() {
       tester,
     ) async {
       await pumpScreen(tester);
-      expect(find.byTooltip('Reset view'), findsNothing, reason: 'Fit is in the quick column');
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).showResetViewButton,
+        isFalse,
+        reason: 'Fit is in the quick column',
+      );
       expect(find.byTooltip('Switch to selection mode'), findsNothing);
       expect(find.byTooltip('Open toolbar'), findsNothing);
       expect(find.byTooltip('Feature tree'), findsOneWidget, reason: 'the tree button stays top left');
@@ -1666,6 +1738,326 @@ void main() {
       await _settleSheet(tester);
       await openStartMenu(tester);
       expect(find.byKey(const ValueKey('start-tile-Fit')), findsOneWidget, reason: 'reopened on View');
+    });
+  });
+
+  group('Hide / Show is Part state, with the Visibility panel (phone layout)', () {
+    final List<Map<String, dynamic>> twoSketches = [
+      {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+      {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false, 'produces': 'sketch'},
+    ];
+
+    Future<_FakeDocumentBackend> pumpScreen(
+      WidgetTester tester,
+      _FakeDocumentBackend backend, {
+      String? initialPartId,
+    }) async {
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            initialPartId: initialPartId,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      return backend;
+    }
+
+    Future<void> openPanel(WidgetTester tester) async {
+      await tapQuickButton(tester, 'quick-visibility-fab');
+    }
+
+    /// The chips scroll sideways when the card is narrower than the row: bring one into view, then tap it.
+    Future<void> tapChip(WidgetTester tester, String id) async {
+      final chip = find.byKey(ValueKey('vis-chip-$id'));
+      await tester.ensureVisible(chip);
+      await tester.pump();
+      await tester.tap(chip);
+    }
+
+    VisibilityChipData chipData(WidgetTester tester, String id) =>
+        tester.widget<VisibilityPanel>(find.byType(VisibilityPanel)).chips.firstWhere((c) => c.id == id);
+
+    Future<void> settleRequests(WidgetTester tester) async {
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+    }
+
+    testWidgets('the quick column has a Visibility button; it opens the panel, closes the column, and the panel stays', (
+      tester,
+    ) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      expect(find.byType(VisibilityPanel), findsNothing);
+      await openPanel(tester);
+      expect(find.byType(VisibilityPanel), findsOneWidget);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing, reason: 'opening it closes the column');
+      // It stays while the user works: opening the column again leaves it open.
+      await openQuickColumn(tester);
+      expect(find.byType(VisibilityPanel), findsOneWidget);
+      await tester.tap(_startFab);
+      await _settleSheet(tester);
+      await tester.tap(find.byKey(const ValueKey('vis-close')));
+      await _settleSheet(tester);
+      expect(find.byType(VisibilityPanel), findsNothing);
+    });
+
+    testWidgets('a chip sends one batch call and applies the response; the chip then reads hidden', (tester) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.shown);
+
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+
+      expect(backend.visibilityRequests, [
+        {
+          'part_id': 'part-1',
+          'hidden': true,
+          'feature_ids': <String>[],
+          'categories': ['sketch'],
+          'reference_planes': false,
+        },
+      ]);
+      expect(backend.hiddenByPart['part-1'], {'feature-1', 'feature-2'});
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.hidden);
+
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.last['hidden'], isFalse);
+      expect(backend.hiddenByPart['part-1'], isEmpty);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.shown);
+    });
+
+    testWidgets('a chip with nothing in its category is disabled', (tester) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      expect(chipData(tester, 'surface').onTap, isNull);
+      expect(chipData(tester, 'body').onTap, isNull);
+      expect(chipData(tester, 'sketch').onTap, isNotNull);
+    });
+
+    testWidgets('a failed call rolls the chip back and shows the error', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: twoSketches)..failVisibility = true;
+      await pumpScreen(tester, backend);
+      await openPanel(tester);
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests, hasLength(1));
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.shown, reason: 'back to what the backend holds');
+      expect(find.textContaining('visibility refused'), findsOneWidget);
+    });
+
+    testWidgets('a tree hide goes through the same call, and shows the chip half-filled', (tester) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await tester.tap(find.byTooltip('Feature tree'));
+      await _settleSheet(tester);
+      await tester.longPress(find.text('Sketch 1'));
+      await _settleSheet(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await _settleSheet(tester);
+      await tester.tap(find.text('Hide'));
+      await settleRequests(tester);
+      await _settleSheet(tester);
+
+      expect(backend.visibilityRequests.first, containsPair('feature_ids', ['feature-1']));
+      expect(backend.visibilityRequests.first, containsPair('hidden', true));
+      expect(backend.hiddenByPart['part-1'], {'feature-1'});
+      await tester.tap(find.byTooltip('Close')); // the tree's own X
+      await _settleSheet(tester);
+      await openPanel(tester);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.partial);
+
+      // A partly hidden category: a tap shows all of it.
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.last, containsPair('hidden', false));
+      expect(backend.hiddenByPart['part-1'], isEmpty);
+    });
+
+    testWidgets('the reference planes chip sends the planes flag and hides them in the viewport', (tester) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      await tapChip(tester, 'reference-planes');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.single, containsPair('reference_planes', true));
+      expect(backend.referencePlanesHiddenByPart['part-1'], isTrue);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isTrue);
+      expect(chipData(tester, 'reference-planes').state, VisibilityChipState.hidden);
+    });
+
+    testWidgets('what the backend holds when the Part loads is what the screen shows', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: twoSketches)
+        ..hiddenByPart['part-1'] = {'feature-1'}
+        ..referencePlanesHiddenByPart['part-1'] = true;
+      // An existing Part opened: its Hide / Show state comes with it from the backend.
+      await pumpScreen(tester, backend, initialPartId: 'part-1');
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isTrue);
+      await openQuickColumn(tester);
+      expect(find.byKey(const ValueKey('quick-badge')), findsOneWidget, reason: 'something is hidden');
+      await tester.tap(find.byKey(const ValueKey('quick-visibility-fab')));
+      await _settleSheet(tester);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.partial, reason: 'one of the two sketches is hidden');
+      expect(chipData(tester, 'reference-planes').state, VisibilityChipState.hidden);
+    });
+
+    testWidgets('the quick button has no badge while nothing is hidden', (tester) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openQuickColumn(tester);
+      expect(find.byKey(const ValueKey('quick-badge')), findsNothing);
+    });
+
+    testWidgets('hiding Solids removes the bodies from the viewport', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+          {'type': 'extrude', 'id': 'feature-2', 'locked': false, 'produces': 'body'},
+        ],
+      )..meshBodies = [
+          {'body_id': 'feature-2', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+        ];
+      await pumpScreen(tester, backend);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies, hasLength(1));
+      await openPanel(tester);
+      await tapChip(tester, 'body');
+      await settleRequests(tester);
+      await _settleSheet(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies, isEmpty);
+      expect(chipData(tester, 'body').state, VisibilityChipState.hidden);
+    });
+
+    testWidgets('a plane pick shows hidden created planes while it lasts, with the chip locked, and hides them again', (
+      tester,
+    ) async {
+      final Map<String, dynamic> plane = {
+        'type': 'create_plane',
+        'id': 'feature-3',
+        'locked': false,
+        'produces': 'plane',
+        'origin': [0.0, 0.0, 5.0],
+        'normal': [0.0, 0.0, 1.0],
+        'x_axis': [1.0, 0.0, 0.0],
+        'y_axis': [0.0, 1.0, 0.0],
+      };
+      final backend = _FakeDocumentBackend(seedFeatures: [...twoSketches, plane]);
+      await pumpScreen(tester, backend);
+      PartViewport viewport() => tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewport().createPlanes, hasLength(1));
+
+      await openPanel(tester);
+      await tapChip(tester, 'plane');
+      await settleRequests(tester);
+      await _settleSheet(tester);
+      expect(viewport().createPlanes, isEmpty, reason: 'hidden');
+      expect(chipData(tester, 'plane').locked, isFalse);
+
+      // New Sketch asks for a plane to be tapped: the created plane has to be drawn and pickable meanwhile.
+      await tester.tap(find.byKey(const ValueKey('vis-close')));
+      await _settleSheet(tester);
+      await tapStartCommand(tester, 'New Sketch');
+      expect(viewport().createPlanes, hasLength(1), reason: 'forced into view for the pick');
+      expect(backend.hiddenByPart['part-1'], {'feature-3'}, reason: 'forcing is display only');
+      expect(backend.visibilityRequests, hasLength(1), reason: 'nothing was sent for it');
+
+      await tester.tap(find.text('Cancel'));
+      await _settleSheet(tester);
+      expect(viewport().createPlanes, isEmpty, reason: 'back to hidden when the pick ends');
+    });
+
+    testWidgets('a body pick shows hidden solids while it lasts, and the chip shows the lock', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+          {'type': 'extrude', 'id': 'feature-2', 'locked': false, 'produces': 'body'},
+        ],
+      )..meshBodies = [
+          {'body_id': 'feature-2', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+        ];
+      await pumpScreen(tester, backend);
+      PartViewport viewport() => tester.widget<PartViewport>(find.byType(PartViewport));
+      await openPanel(tester);
+      await tapChip(tester, 'body');
+      await settleRequests(tester);
+      await _settleSheet(tester);
+      expect(viewport().bodies, isEmpty);
+      await tester.tap(find.byKey(const ValueKey('vis-close')));
+      await _settleSheet(tester);
+
+      await tapStartCommand(tester, 'Mirror');
+      expect(viewport().bodies, hasLength(1), reason: 'Mirror picks bodies: they are drawn and pickable meanwhile');
+      expect(backend.hiddenByPart['part-1'], {'feature-2'});
+    });
+
+    testWidgets('the panel is not drawn while a tool owns the screen and is back when it closes', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: twoSketches);
+      await pumpScreen(tester, backend);
+      await openPanel(tester);
+      await tapStartCommand(tester, 'Measure', tab: 'evaluate');
+      expect(find.byType(VisibilityPanel), findsNothing, reason: 'Measure owns the bottom of the screen');
+      await tester.tap(find.widgetWithText(FilledButton, 'Done'));
+      await _settleSheet(tester);
+      expect(find.byType(VisibilityPanel), findsOneWidget, reason: 'nothing was lost');
+    });
+
+    testWidgets('the View row has the standard views and folds away', (tester) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      for (final name in ['front', 'back', 'left', 'right', 'top', 'bottom', 'isometric']) {
+        expect(find.byKey(ValueKey('vis-view-$name')), findsOneWidget, reason: name);
+      }
+      await tester.tap(find.byKey(const ValueKey('vis-view-top')));
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 100)); // the 400 ms camera move, frame by frame
+      }
+      expect(tester.takeException(), isNull);
+      await tester.tap(find.byKey(const ValueKey('vis-fold-views')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('vis-view-top')), findsNothing);
+    });
+
+    testWidgets('in Assembly lens a chip makes one call for every Part in the scene', (tester) async {
+      final backend = _FakeDocumentBackend(
+        seedFeatures: twoSketches,
+        seedOccurrences: [
+          {
+            'id': 'occ-1',
+            'external_ref': 'a.didsa',
+            'resolved_part_id': 'part-2',
+            'name_override': null,
+            'transform': {
+              'translation': [0.0, 0.0, 0.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 0.0,
+            },
+            'suppressed': false,
+            'hidden': false,
+          },
+        ],
+      )
+        ..extraParts['part-2'] = {'id': 'part-2', 'name': 'Part 2', 'occurrences': <Map<String, dynamic>>[]}
+        ..assemblyGeometryPartIds = ['part-1', 'part-2'];
+      await pumpScreen(tester, backend);
+      await switchLens(tester, 'Assembly');
+      await openPanel(tester);
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect({for (final r in backend.visibilityRequests) r['part_id']}, {'part-1', 'part-2'});
+      expect(backend.visibilityRequests.every((r) => (r['categories'] as List).contains('sketch')), isTrue);
+    });
+
+    testWidgets('a hide that is still in flight is not undone by an earlier response', (tester) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      await tapChip(tester, 'sketch');
+      await tapChip(tester, 'sketch');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.map((r) => r['hidden']), [true, false]);
+      expect(chipData(tester, 'sketch').state, VisibilityChipState.shown);
+      expect(backend.hiddenByPart['part-1'], isEmpty);
     });
   });
 
@@ -7060,7 +7452,7 @@ void main() {
       expect(find.text('Save "Part 1" as…'), findsOneWidget);
     });
 
-    testWidgets('the written file carries the root Part\'s client-only extras', (tester) async {
+    testWidgets('the written file carries the root Part\'s client-only section planes, and no client hidden set', (tester) async {
       final storage = _FakeStorageService();
       final toolbar = await pumpFresh(tester, storage);
 
@@ -7069,8 +7461,10 @@ void main() {
       await answerNamePrompt(tester, 'extras');
 
       final written = jsonDecode(utf8.decode(storage.files['extras.didsa']!)) as Map<String, dynamic>;
-      expect(written, containsPair('hidden_feature_ids', isA<List>()));
       expect(written, containsPair('section_planes', isA<List>()));
+      // Hide / Show is Part state now: the backend's own export carries it (and the legacy top-level key), the client
+      // stash does not.
+      expect(written, isNot(contains('hidden_feature_ids')));
     });
 
     testWidgets('a failed overwrite shows the error, keeps the Part dirty and falls back to Save As', (tester) async {
@@ -7278,11 +7672,27 @@ void main() {
       expect(find.byKey(const ValueKey('desktop-status-bar')), findsOneWidget);
       expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
       expect(find.text('Build Tree'), findsOneWidget);
-      expect(find.byTooltip('Start'), findsNothing);
-      expect(find.byKey(const ValueKey('quick-menu-fab')), findsNothing);
+      expect(find.byTooltip('Add'), findsNothing);
+      expect(find.byTooltip('Open toolbar'), findsNothing);
       expect(find.text('Nothing selected'), findsOneWidget);
       // The tree is docked, so it carries no Close button.
       expect(find.byTooltip('Close'), findsNothing);
+    });
+
+    testWidgets('the desktop layout has no Start button or quick column and keeps its Reset view button', (tester) async {
+      bigWindow(tester);
+      // (The button itself is drawn by the 3D scene, which the test runner cannot start: check what the screen asks for.)
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byKey(const ValueKey('start-fab')), findsNothing);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).showResetViewButton, isTrue);
+      await pumpScreen(tester);
+      expect(find.byKey(const ValueKey('start-fab')), findsOneWidget, reason: 'the phone layout has it');
+      expect(
+        tester.widget<PartViewport>(find.byType(PartViewport)).showResetViewButton,
+        isFalse,
+        reason: 'Fit is in the phone layout\'s quick column',
+      );
     });
 
     testWidgets('ribbon tabs switch the buttons, and the lens switch follows into the Assembly tab', (tester) async {
@@ -7438,7 +7848,7 @@ void main() {
   // than making the user pick the right menu entry up front.
   group('Save/project overhaul Phase 6: unified Open', () {
     testWidgets(
-      'opening a legacy multi-Part Bundle imports it directly and restores hidden features/sections, '
+      'opening a legacy multi-Part Bundle imports it directly (hidden features go to the backend with it) and restores sections, '
       'with no Project attached',
       (tester) async {
         final backend = _FakeDocumentBackend();
@@ -7522,7 +7932,10 @@ void main() {
         // new screen in the tree - `.last` is the one just pushed.
         final pushedScreen = tester.widgetList<PartScreen>(find.byType(PartScreen)).last;
         expect(pushedScreen.initialPartId, 'part-1');
-        expect(pushedScreen.initialHiddenFeatureIds, ['feature-abc']);
+        // Hide / Show is Part state: the whole file (its legacy top-level hidden_feature_ids included) goes to the backend's
+        // import, which moves it into the Part, and the new screen reads it back from the Part.
+        expect(pushedScreen.initialHiddenFeatureIds, isEmpty);
+        expect(backend.lastImportBody, containsPair('hidden_feature_ids', ['feature-abc']));
         expect(pushedScreen.initialSectionPlanes, hasLength(1));
         expect(pushedScreen.initialSectionPlanes.single.id, 'section-1');
         // A Bundle never gets a Project attached - it stays exactly the
