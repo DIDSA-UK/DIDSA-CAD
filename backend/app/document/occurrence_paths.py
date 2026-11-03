@@ -70,6 +70,25 @@ def walk_segments(document: Document, part: Part, path: str) -> Iterator[tuple[P
         current = document.parts.get(occurrence.part_id) if occurrence and occurrence.part_id else None
 
 
+def rewrite_segments(document: Document, from_part: Part, path: str, owner_part_id: str, renames: dict[str, str]) -> str:
+    """`path` (from `from_part`) with every segment that is read in the Part `owner_part_id` and named in `renames` replaced
+    by its new name. A path that never passes through that Part (or never names those segments) comes back unchanged."""
+    if not path:
+        return path
+    out = split_path(path)
+    for position, (level, segment) in enumerate(walk_segments(document, from_part, path)):
+        if level.id == owner_part_id and segment in renames:
+            out[position] = renames[segment]
+    return "/".join(out)
+
+
+def rewrite_segment(
+    document: Document, from_part: Part, path: str, owner_part_id: str, old_segment: str, new_segment: str
+) -> str:
+    """`rewrite_segments` for one segment (a dissolved pattern copy's `<src>#pattern:<pid>:<i>` -> its new occurrence id)."""
+    return rewrite_segments(document, from_part, path, owner_part_id, {old_segment: new_segment})
+
+
 def path_goes_through(document: Document, part: Part, path: str, owner_id: str, occurrence_id: str) -> bool:
     """Whether `path` (from `part`) passes through the occurrence `occurrence_id` of the Part `owner_id` (itself or
     any pattern copy of it): the paths a delete of that occurrence takes away (the Mate cascade, scenes D8)."""

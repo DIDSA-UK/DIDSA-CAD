@@ -2962,6 +2962,43 @@ void main() {
       expect(capturedBody, {'count': 5});
     });
 
+    test('dissolveComponentPattern POSTs to .../dissolve and parses the new occurrences and the rename map', () async {
+      Uri? capturedUri;
+      String? capturedMethod;
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          capturedUri = request.url;
+          capturedMethod = request.method;
+          return http.Response(
+            jsonEncode({
+              'occurrences': [
+                {
+                  'id': 'new-1',
+                  'external_ref': 'parts/a.didsa',
+                  'resolved_part_id': 'a-part',
+                  'name_override': 'Rail (2)',
+                  'transform': {'translation': [300.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+                  'suppressed': false,
+                  'hidden': false,
+                  'fixed': false,
+                },
+              ],
+              'renamed': {'src#pattern:pat-1:1': 'new-1'},
+            }),
+            200,
+          );
+        }),
+      );
+
+      final result = await client.dissolveComponentPattern('part-1', 'pat-1');
+
+      expect(capturedMethod, 'POST');
+      expect(capturedUri?.path, '/document/parts/part-1/component-patterns/pat-1/dissolve');
+      expect(result.occurrences.single.id, 'new-1');
+      expect(result.occurrences.single.nameOverride, 'Rail (2)');
+      expect(result.renamed, {'src#pattern:pat-1:1': 'new-1'});
+    });
+
     test('deleteComponentPattern calls DELETE and completes with no error on a 204', () async {
       Uri? capturedUri;
       String? capturedMethod;

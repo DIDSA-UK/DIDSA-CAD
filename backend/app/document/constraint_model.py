@@ -142,6 +142,10 @@ def pose_to_rigid(pose: Pose):
 
 def export_constraint_model(model) -> dict | None:
     """The wire form of a `GroupModel`'s mates; `None` when a mate type is not one the client can evaluate."""
+    if any(x is not None and (x.follow is not None) for _mate, a, b in model.sides for x in (a, b, a.partner, b.partner)):
+        # A pattern copy that follows its source (`_Side.follow`): the wire model has no follower side, so there is none (the
+        # Jacobian falls back to central differences and a client keeps server-side projection).
+        return None
     ids = list(model.member_ids)
     mates = []
     has_pair = False

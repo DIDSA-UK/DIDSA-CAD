@@ -2063,6 +2063,19 @@ class MidplaneRefDto {
 /// The Assembly tree's own Mates list - what
 /// [DocumentApiClient.listMates] returns, one entry per `app.document.
 /// models.Mate`.
+/// `POST .../component-patterns/{id}/dissolve`'s response: the occurrences the copies became, and old copy segment -> new id.
+class DissolvedPatternDto {
+  final List<OccurrenceDto> occurrences;
+  final Map<String, String> renamed;
+
+  const DissolvedPatternDto({required this.occurrences, required this.renamed});
+
+  factory DissolvedPatternDto.fromJson(Map<String, dynamic> json) => DissolvedPatternDto(
+        occurrences: (json['occurrences'] as List).map((o) => OccurrenceDto.fromJson(o as Map<String, dynamic>)).toList(),
+        renamed: (json['renamed'] as Map<String, dynamic>).map((k, v) => MapEntry(k, v as String)),
+      );
+}
+
 class MateDto {
   final String id;
   final String type;
@@ -2092,6 +2105,13 @@ class MateDto {
   /// A limit mate: the measured value at the stored poses.
   final double? limitValue;
 
+  /// `'ok'` or `'broken'` (computed by the backend at every listing, never stored): a broken mate's residual at the stored poses is
+  /// above tolerance (a pattern edit it could not follow, a part edited under it ...), its limit is outside its range, or a
+  /// reference no longer resolves. Older backends omit it: `'ok'`.
+  final String status;
+
+  bool get isBroken => status == 'broken';
+
   MateDto({
     required this.id,
     required this.type,
@@ -2105,6 +2125,7 @@ class MateDto {
     this.limitMin,
     this.limitMax,
     this.limitValue,
+    this.status = 'ok',
   });
 
   factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
@@ -2122,6 +2143,7 @@ class MateDto {
         limitMin: (json['limit_min'] as num?)?.toDouble(),
         limitMax: (json['limit_max'] as num?)?.toDouble(),
         limitValue: (json['limit_value'] as num?)?.toDouble(),
+        status: json['status'] as String? ?? 'ok',
       );
 }
 
@@ -2542,6 +2564,10 @@ class ComponentPatternDto {
   final bool orientWithRotation;
   final bool suppressed;
 
+  /// Only in the response of `PATCH .../component-patterns/{id}`: the mates the edit left unsatisfied (the edit is always stored;
+  /// a mate on one of the pattern's copies that its part could not follow is left broken). Empty everywhere else.
+  final List<String> brokenMateIds;
+
   const ComponentPatternDto({
     required this.id,
     required this.sourceOccurrenceIds,
@@ -2561,6 +2587,7 @@ class ComponentPatternDto {
     this.skipIndices = const [],
     this.orientWithRotation = true,
     this.suppressed = false,
+    this.brokenMateIds = const [],
   });
 
   factory ComponentPatternDto.fromJson(Map<String, dynamic> json) => ComponentPatternDto(
@@ -2586,6 +2613,7 @@ class ComponentPatternDto {
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
         orientWithRotation: json['orient_with_rotation'] as bool? ?? true,
         suppressed: json['suppressed'] as bool? ?? false,
+        brokenMateIds: (json['broken_mate_ids'] as List?)?.cast<String>() ?? const [],
       );
 }
 
@@ -6131,6 +6159,17 @@ class DocumentApiClient {
               headers: _headers,
             ),
         (_) {},
+      );
+
+  /// `POST /document/parts/{part_id}/component-patterns/{pattern_id}/dissolve` - turns every live copy of the pattern into a real,
+  /// floating occurrence at exactly the copy's pose, re-points everything that named a copy at it and deletes the pattern (422 for a
+  /// suppressed pattern, 404 for an unknown one). The result lists the new occurrences and `renamed` (old copy segment -> new id).
+  Future<DissolvedPatternDto> dissolveComponentPattern(String partId, String patternId) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/component-patterns/$patternId/dissolve'),
+              headers: _headers,
+            ),
+        (body) => DissolvedPatternDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Sectioning Tool: `POST /document/parts/{part_id}/section-preview` - a

@@ -32,12 +32,15 @@ from app.document.assembly import (
     resolve_pattern_copy_transform,
     resolve_occurrence_target,
     expand_component_pattern_instances,
+    mate_drivers,
     mate_ref_tops,
     mate_tops,
+    parse_pattern_segment,
     top_level_occurrence_id,
 )
 from app.document.assembly_group import (
     BranchChange,
+    GroupError,
     GroupSolveResult,
     bounding_radius,
     branch_alternatives,
@@ -52,6 +55,9 @@ from app.document.assembly_group import (
     validate_mate_geometry,
 )
 from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
+from app.document.mate_status import mate_status, mate_statuses
+from app.document.occurrence_paths import resolve_path
+from app.document.pattern_dissolve import PatternDissolveError, dissolve_component_pattern
 from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES
 from app.document.limit import current_limit_value, prepare_limit, validate_limit_fields
 from app.document.coupler import prepare_coupler
@@ -225,7 +231,9 @@ from app.document.schemas import (
     ComponentPatternCreate,
     ComponentPatternDirectionFromRefRequest,
     ComponentPatternDirectionFromRefResponse,
+    ComponentPatternDissolveResponse,
     ComponentPatternResponse,
+    ComponentPatternUpdateResponse,
     ComponentPatternUpdate,
     MateCreate,
     MateEntityRefResponse,
@@ -3650,8 +3658,13 @@ def _midplane_ref_to_domain(schema: MidplaneRefSchema) -> MidplaneRef:
     return MidplaneRef(a=_plane_ref_to_domain(schema.a), b=_plane_ref_to_domain(schema.b), b_occurrence_id=schema.b_occurrence_id)
 
 
-def _mate_response(mate: Mate, part: Part | None = None) -> MateResponse:
+def _mate_response(mate: Mate, part: Part | None = None, status: str | None = None) -> MateResponse:
+    """`status` (`mate_status`): given by a listing that computed every mate's at once (one tessellation per target Part); else
+    computed here for `part`'s mate; `ok` when there is no Part to measure against."""
+    if status is None:
+        status = mate_status(get_document(), part, mate) if part is not None else "ok"
     return MateResponse(
+        status=status,
         id=mate.id,
         type=mate.type.value,
         references=[_mate_entity_ref_response(ref) for ref in mate.references],
@@ -3701,7 +3714,8 @@ def list_mates(part_id: str) -> list[MateResponse]:
     Mates list - `part_id`'s own `mates`, full detail (unlike
     `PartResponse.mate_ids`, ids only)."""
     part = get_part_or_404(part_id)
-    return [_mate_response(mate, part) for mate in part.mates]
+    statuses = mate_statuses(get_document(), part)
+    return [_mate_response(mate, part, statuses.get(mate.id, "ok")) for mate in part.mates]
 
 
 def _get_occurrence_or_404(part: Part, occurrence_id: str) -> Occurrence:
@@ -3958,6 +3972,21 @@ def _schema_ref_tops(ref: MateEntityRefResponse) -> tuple[str, ...]:
     return mate_ref_tops(_mate_entity_ref_to_domain(ref))
 
 
+def _schema_ref_paths(ref: MateEntityRefResponse) -> list[str]:
+    """Every occurrence path a wire reference names (its own, and a Width mid-plane's second face's)."""
+    paths = [ref.occurrence_id]
+    if ref.midplane is not None and ref.midplane.b_occurrence_id is not None:
+        paths.append(ref.midplane.b_occurrence_id)
+    return paths
+
+
+COUPLER_TYPE_NAMES = tuple(t.value for t in COUPLER_TYPES)
+LIMIT_TYPE_NAMES = tuple(t.value for t in LIMIT_TYPES)
+_COPY_COUPLER_MESSAGE = (
+    "A gear, rack-and-pinion, screw or limit mate can't reference a pattern copy - mate the pattern's source occurrence instead."
+)
+
+
 def _schema_ref_bases(ref: MateEntityRefResponse) -> set[str]:
     """The top-level occurrences a wire reference involves with a pattern copy folded onto its source - a copy is rigidly
     derived from its source, so for the 'different occurrences' check they are one body."""
@@ -3971,31 +4000,40 @@ _COPY_MATE_MESSAGE = (
 
 
 def _drop_mates_with_dead_pattern_copies(part: Part) -> list[str]:
-    """Removes (and returns the ids of) every Mate with a reference naming a pattern copy that no longer resolves - its
-    pattern was deleted/suppressed, its count/skip no longer derives that index, or its source was deleted."""
-    def dead(path: str) -> bool:
+    """Removes (and returns the ids of) every Mate - in EVERY Part of the document, since a parent assembly's mate can reach
+    a copy through a nested path (`sub/src#pattern:...`) - with a reference naming a pattern copy that no longer resolves: its
+    pattern was deleted/suppressed, its count/skip no longer derives that index, or its source was deleted. `part` is the Part
+    whose pattern or occurrence changed (kept for the callers; the sweep itself covers the whole document)."""
+    document = get_document()
+
+    def dead(owner: Part, path: str) -> bool:
         if PATTERN_SEGMENT not in path:
             return False
-        try:
-            resolve_occurrence_target(get_document(), part, path)
-        except KeyError:
-            return True
-        return False
+        if owner is part:
+            try:
+                resolve_occurrence_target(document, owner, path)
+            except KeyError:
+                return True
+            return False
+        # Another Part reaches the copy through a nested path: only a path that fails ON a pattern copy (or an occurrence
+        # that is gone) counts as dead; one that merely names a part that is not loaded is left alone.
+        return resolve_path(document, owner, path).error in ("pattern_copy_not_found", "occurrence_not_found")
 
     removed: list[str] = []
-    kept = []
-    for mate in part.mates:
-        paths = []
-        for ref in mate.references:
-            paths.append(ref.occurrence_id)
-            midplane = getattr(ref, "midplane", None)
-            if midplane is not None and midplane.b_occurrence_id is not None:
-                paths.append(midplane.b_occurrence_id)
-        if any(dead(p) for p in paths):
-            removed.append(mate.id)
-        else:
-            kept.append(mate)
-    part.mates = kept
+    for owner in [part, *(p for p in document.parts.values() if p is not part)]:
+        kept = []
+        for mate in owner.mates:
+            paths = []
+            for ref in mate.references:
+                paths.append(ref.occurrence_id)
+                midplane = getattr(ref, "midplane", None)
+                if midplane is not None and midplane.b_occurrence_id is not None:
+                    paths.append(midplane.b_occurrence_id)
+            if any(dead(owner, p) for p in paths):
+                removed.append(mate.id)
+            else:
+                kept.append(mate)
+        owner.mates = kept
     return removed
 
 
@@ -4018,6 +4056,11 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     for ref in payload.references:
         _validate_mate_entity_ref(part, ref, payload.type)
+    if payload.type in COUPLER_TYPE_NAMES or payload.type in LIMIT_TYPE_NAMES:
+        # A copy follows its source in a solve (`_Side.follow`), but a coupler / limit measures its own body's motion from the
+        # solve's start - not expressible through a follower. v1: refuse them on a copy (mate the source instead).
+        if any(PATTERN_SEGMENT in path for ref in payload.references for path in _schema_ref_paths(ref)):
+            raise HTTPException(status_code=422, detail=_COPY_COUPLER_MESSAGE)
     if _schema_ref_bases(payload.references[0]) & _schema_ref_bases(payload.references[1]):
         # Compares the top-level Occurrence each reference belongs to, not the
         # full path: two faces inside the same sub-assembly can never be
@@ -4138,7 +4181,7 @@ def create_mate(
             _fill_new_mate_branch(mate, outcome.result)
             response.headers["X-Movement-Used"] = outcome.used
     part.mates.append(mate)
-    return _mate_response(mate)
+    return _mate_response(mate, part)
 
 
 def _mate_with_branch_fields(document: Document, part: Part, mate: Mate, fields_set: set[str]) -> Mate:
@@ -4191,7 +4234,7 @@ def update_mate(
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
     if mate.type in COUPLER_TYPES:
-        return _update_coupler(mate, payload)
+        return _update_coupler(part, mate, payload)
     if mate.type in LIMIT_TYPES:
         return _update_limit(part, mate, payload)
     _reject_negative_distance(mate.type.value, payload.value)
@@ -4243,10 +4286,10 @@ def update_mate(
         _apply_branch_changes(part, outcome.changes)
         _commit_group(part, outcome.result)
         response.headers["X-Movement-Used"] = outcome.used
-    return _mate_response(mate)
+    return _mate_response(mate, part)
 
 
-def _update_coupler(mate: Mate, payload: MateUpdate) -> MateResponse:
+def _update_coupler(part: Part, mate: Mate, payload: MateUpdate) -> MateResponse:
     """A coupler's PATCH: `value` (above zero), `secondary_flip` (a bool: the user's sense) and `suppressed`. Nothing moves (its
     rows are zero at the poses the next solve starts from), so there is no solve; the other fields do not apply to it."""
     if payload.value is not None:
@@ -4261,7 +4304,7 @@ def _update_coupler(mate: Mate, payload: MateUpdate) -> MateResponse:
         mate.branch_source = BRANCH_USER
     if payload.suppressed is not None:
         mate.suppressed = payload.suppressed
-    return _mate_response(mate)
+    return _mate_response(mate, part)
 
 
 def _update_limit(part: Part, mate: Mate, payload: MateUpdate) -> MateResponse:
@@ -4509,10 +4552,54 @@ def _get_component_pattern_or_404(part: Part, pattern_id: str) -> ComponentPatte
     raise HTTPException(status_code=404, detail="ComponentPattern not found")
 
 
-@router.patch("/parts/{part_id}/component-patterns/{pattern_id}", response_model=ComponentPatternResponse)
+def _ref_uses_pattern(ref, pattern_id: str) -> bool:
+    """Whether a mate reference (or its Width mid-plane's second face) names a copy of the pattern `pattern_id`."""
+    paths = [ref.occurrence_id]
+    midplane = getattr(ref, "midplane", None)
+    if midplane is not None and midplane.b_occurrence_id is not None:
+        paths.append(midplane.b_occurrence_id)
+    for path in paths:
+        for segment in path.split("/"):
+            copy = parse_pattern_segment(segment)
+            if copy is not None and copy[1] == pattern_id:
+                return True
+    return False
+
+
+def _resolve_mates_on_pattern_copies(part: Part, pattern: ComponentPattern) -> list[str]:
+    """After a pattern edit: every part mated to one of the pattern's copies follows the copies to where they now are.
+    Each such part (B) gets a group solve with the pattern's SOURCES frozen (an edit of the pattern never moves a source) and
+    its group committed when it converges; a group that does not (or whose B is `fixed`) stays where it was. Returns the ids of the
+    mates on this pattern's copies that are still unsatisfied afterwards (the edit itself is never refused)."""
+    document = get_document()
+    sources = frozenset(pattern.source_occurrence_ids)
+    copy_mates = [
+        m for m in part.mates if not m.suppressed and len(m.references) == 2 and any(_ref_uses_pattern(r, pattern.id) for r in m.references)
+    ]
+    by_id = {o.id: o for o in part.occurrences}
+    followers: list[str] = []
+    for mate in copy_mates:
+        for driver in mate_drivers(mate):
+            if driver and driver not in sources and driver in by_id and driver not in followers:
+                followers.append(driver)
+    solved: set[str] = set()
+    for follower in followers:
+        if follower in solved or by_id[follower].fixed:
+            continue
+        try:
+            result = solve_group(document, part, follower, None, also_frozen=sources, with_jump=False)
+        except (GroupError, HTTPException):
+            continue  # not expressible / not resolvable: left where it is (and reported broken below)
+        if result.converged:
+            _commit_group(part, result)
+            solved.update(result.poses)
+    return [m.id for m in copy_mates if mate_status(document, part, m) == "broken"]
+
+
+@router.patch("/parts/{part_id}/component-patterns/{pattern_id}", response_model=ComponentPatternUpdateResponse)
 def update_component_pattern(
     part_id: str, pattern_id: str, payload: ComponentPatternUpdate
-) -> ComponentPatternResponse:
+) -> ComponentPatternUpdateResponse:
     """Partial update - `pattern_type` is never revised (see
     `ComponentPatternUpdate`'s own docstring); every other field can be
     adjusted in place (count/spacing/direction/axis/angle are the normal
@@ -4567,7 +4654,9 @@ def update_component_pattern(
     )
     # A smaller count / new skip list / suppression can take away copies a mate still names.
     _drop_mates_with_dead_pattern_copies(part)
-    return _component_pattern_response(pattern)
+    # The copies may have moved (spacing, direction, axis, angle, orientation, the source list): what is mated to them follows.
+    broken = _resolve_mates_on_pattern_copies(part, pattern)
+    return ComponentPatternUpdateResponse(**_component_pattern_response(pattern).model_dump(), broken_mate_ids=broken)
 
 
 @router.delete("/parts/{part_id}/component-patterns/{pattern_id}", status_code=204)
@@ -4579,6 +4668,28 @@ def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
     part.component_patterns.remove(pattern)
     _drop_mates_with_dead_pattern_copies(part)
     return Response(status_code=204)
+
+
+@router.post(
+    "/parts/{part_id}/component-patterns/{pattern_id}/dissolve", response_model=ComponentPatternDissolveResponse
+)
+def dissolve_component_pattern_route(part_id: str, pattern_id: str) -> ComponentPatternDissolveResponse:
+    """F2 (`docs/pattern-followers-and-dissolve-plan.md`): replaces every LIVE copy of the pattern with a real Occurrence at exactly
+    the copy's pose (floating - `fixed` is never inherited - and named per `pattern_dissolve._new_name`), re-points every mate /
+    appearance override / scene override that named a copy (in every Part of the document) at the new occurrence, splits the
+    pattern's `scope: "pattern"` appearance overrides into plain per-occurrence ones, and deletes the pattern. Nothing visibly
+    moves. A suppressed pattern (no live copies) is a 422; all-or-nothing."""
+    part = get_part_or_404(part_id)
+    pattern = _get_component_pattern_or_404(part, pattern_id)
+
+    def check(owner: Part, path: str) -> None:
+        _check_mate_occurrence_path(owner, path)
+
+    try:
+        created, renamed = dissolve_component_pattern(get_document(), part, pattern, check)
+    except PatternDissolveError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return ComponentPatternDissolveResponse(occurrences=[_occurrence_response(o) for o in created], renamed=renamed)
 
 
 def _mate_solve_did_not_converge(
@@ -8761,8 +8872,14 @@ def _assembly_body_mesh_responses(part: Part, mesh_quality: MeshQuality) -> list
 def get_assembly_mesh(
     part_id: str,
     quality: float | None = Query(default=None, ge=0.0, le=1.0),
+    geometry: bool = Query(default=True),
 ) -> AssemblyMeshResponse:
-    """Assembly support (`docs/assembly-scope.md` Phase 2): everything
+    """`geometry=false` (default `true`, unchanged) returns the same `instances` - every placed instance's `occurrence_path` and
+    world transform, pattern copies and nested parts included - with an EMPTY `geometry` list and only each instance's node-level
+    `appearance` (no tessellation, no per-face painting): a client that only needs to refresh poses (the VR client after a solve)
+    does not download or build any mesh.
+
+    Assembly support (`docs/assembly-scope.md` Phase 2): everything
     visible in `part_id`'s own assembly scene - its own local bodies (from
     `part.features`, exactly like `GET /mesh`) *and* every Occurrence's
     resolved geometry, recursively (an Occurrence's target Part can itself
@@ -8802,7 +8919,7 @@ def get_assembly_mesh(
     instances: list[AssemblyOccurrenceInstance] = []
 
     def _geometry_for(part: Part) -> None:
-        if part.id in geometry_by_part_id:
+        if not geometry or part.id in geometry_by_part_id:
             return
         geometry_by_part_id[part.id] = AssemblyBodyGeometry(
             part_id=part.id, bodies=_assembly_body_mesh_responses(part, mesh_quality)
@@ -8879,7 +8996,7 @@ def get_assembly_mesh(
                     )
 
     _walk(root_part, [], [], hidden=False, ancestors=frozenset())
-    _paint_json_instances(document, root_part, instances, geometry_by_part_id)
+    _paint_json_instances(document, root_part, instances, geometry_by_part_id)  # no geometry -> the node-level look only
 
     return AssemblyMeshResponse(geometry=list(geometry_by_part_id.values()), instances=instances)
 
