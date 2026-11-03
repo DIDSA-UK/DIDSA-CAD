@@ -1,4 +1,8 @@
-"""B2 steps 2-3: mates may reference faces of component-pattern copies (frozen sides), with clear 422s and cascades."""
+"""B2 steps 2-3: mates may reference faces of component-pattern copies, with clear 422s and cascades.
+
+F1 (docs/pattern-followers-and-dissolve-plan.md, the tests from `_poses` down): a copy is a FOLLOWER of its source in the group solver (it is only frozen,
+at the source's stored pose, when the source is fixed or outside the group), so a part mated to a copy follows when the source moves or the pattern is edited;
+a mate the part cannot follow is reported broken."""
 
 from fastapi.testclient import TestClient
 

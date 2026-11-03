@@ -4399,3 +4399,31 @@ Implemented in the plan's recommended order, one commit per item.
   row pick, X, Esc (via `ToolPanelKeys`), a viewport tap (consumed - it does not change the selection), a lens switch or a
   tool opening (`_clearTransientError`). Pan/orbit/zoom keep working; the body dimming and hover preview are unchanged, the
   preview also clears when the mouse leaves the panel, and the selection drawer is hidden while it is open.
+
+## 2aa. Pattern followers, broken mates, Dissolve pattern (`docs/pattern-followers-and-dissolve-plan.md`)
+
+- **F1 - a part mated to a pattern copy follows it.** `assembly.mate_ref_drivers` / `mate_drivers` fold a `#pattern:` segment to its source id and
+  `assembly_group.discover_component` uses them for the graph, so a mate B - copy-of-A joins A and B in one component (a fixed source stays frozen).
+  `_Side.follow = (pattern, index)` makes the copy side's world pose `assembly.pattern_copy_pose(pattern, the source's pose being evaluated, index)`
+  (`expand_component_pattern_instances` now calls it, so the two cannot drift); with the source fixed or outside the group the side is the old frozen one.
+  `export_constraint_model` returns `None` for a model with a follower (the Jacobian falls back to central differences, clients keep server projection), the
+  py-slvs single-member fallback is skipped, `_seed_poses` maps its rotations / slides into the source's frame, and gear / rack-pinion / screw / limit mates on a
+  copy are refused (422) and keep the old frozen rule. *Behaviour change:* a new mate B - copy-of-A solves a group that contains A, so with group movement A may move
+  (as for a direct mate); minimal movement still moves only B; `occurrence_id=<copy>` stays a 422.
+- **F1 - pattern edits.** `PATCH /component-patterns/{id}` always stores the edit, then solves every part mated to one of the copies with the pattern's sources frozen and
+  commits each converging group; the rest is left where it was and the response's `broken_mate_ids` names the mates still unsatisfied. Dead-copy cleanup now sweeps every Part.
+- **F1 - broken mates.** `MateResponse.status` (`ok` | `broken`) is computed at every listing (`app.document.mate_status`): residual at the stored poses above `_NOISE_TOL`, a limit
+  outside its range, or an unresolvable reference; suppressed mates and couplers are `ok`. It also marks mates broken for other reasons (on the frame fixture, four of its 16 mates are reported broken because a face they
+  reference does not resolve in the composed document, e.g. face 4 of body 77cd0f36). Cost on the frame fixture (16 mates): a warm listing about 12 ms with status against about 4.4 ms without; the
+  first call tessellates the parts (about 220 ms). Client: `MateDto.status`, broken rows in the error colour with a warning icon, the rows in `broken_mate_ids` pulse after a
+  pattern edit and a SnackBar says how many could not be kept; `mateTopLevelOccurrences` folds copies to their source so a source whose copies are mated counts as mated
+  (its gizmo drag / numeric Move go through the solver). Undo restores the dragged source and every follower the constrained commit recorded. *Not changed:* the AI plan's
+  `move_component` only PATCHes the pose and never solves, for a direct mate as much as for a copy mate.
+- **F2 - Dissolve pattern.** `POST /parts/{id}/component-patterns/{pid}/dissolve` replaces every live copy by a floating occurrence at the copy's pose (named `<override> (n)` or left
+  to the tree), re-points mates, appearance overrides and scene overrides of EVERY Part (`occurrence_paths.rewrite_segment(s)`), splits `scope: "pattern"` paint onto the source and each
+  new occurrence (merged field by field into a copy's own override) and deletes the pattern, all or nothing. The Patterns row's long-press and right click both offer Edit / Dissolve /
+  Delete (`pattern_context_menu.dart`).
+- **`GET .../assembly-mesh?geometry=false`:** the same instances, no geometry (node-level appearance only), for clients that refresh poses (the VR client).
+- Tests: `test_mate_pattern_copy.py` (follower solve, Circular both orientation flags, fixed source, pattern edits, broken / ok status, limit status, cross-Part cleanup, coupler / limit 422,
+  no constraint model, no py-slvs fallback), `test_component_pattern_dissolve.py`, `test_assembly_mesh_geometry_flag.py`; client `pattern_followers_test.dart` and additions to the tree-panel,
+  part-screen and API-client tests. VR: DIDSA-VR `CHANGELOG.md` (V1-V3).

@@ -1,6 +1,6 @@
 # Component patterns: mated parts follow pattern copies, and "Dissolve pattern" — investigation & plan
 
-Status: **investigated, not implemented; product decisions confirmed** (hand-off document for one Sonnet 5.5 session working in both `DIDSA-UK/DIDSA-CAD` and `DIDSA-UK/didsa-vr`). Builds on
+Status: **implemented** on branch `ccr-c5027d07-sd8k7a` in both repos (F1, F2, `geometry=false`, V1-V3; see `docs/assembly-scope.md` §2aa and DIDSA-VR `CHANGELOG.md`; product decisions below were confirmed). Originally a hand-off document for one Sonnet 5.5 session working in both `DIDSA-UK/DIDSA-CAD` and `DIDSA-UK/didsa-vr`. Builds on
 `docs/pattern-component-bugfix-plan.md` (B2 step 4 was deferred there) and `docs/assembly-scope.md` §2y/§2z.
 
 | # | Request | Size |
