@@ -3858,6 +3858,14 @@ class ComponentPatternUpdateResponse(ComponentPatternResponse):
     broken_mate_ids: list[str] = []
 
 
+class ComponentPatternDissolveResponse(BaseModel):
+    """`POST .../component-patterns/{id}/dissolve`'s response: the new occurrences (tree order: each right after its source, in
+    index order) and `renamed`, every old copy segment (`<source>#pattern:<pattern id>:<index>`) -> the new occurrence's id."""
+
+    occurrences: list[OccurrenceResponse]
+    renamed: dict[str, str]
+
+
 class ComponentPatternCreate(BaseModel):
     """Phase 7 (`docs/assembly-scope.md` §3 item 7): `POST /parts/
     {part_id}/component-patterns`'s request body - creates a `ComponentPattern`

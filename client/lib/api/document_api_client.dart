@@ -2063,6 +2063,19 @@ class MidplaneRefDto {
 /// The Assembly tree's own Mates list - what
 /// [DocumentApiClient.listMates] returns, one entry per `app.document.
 /// models.Mate`.
+/// `POST .../component-patterns/{id}/dissolve`'s response: the occurrences the copies became, and old copy segment -> new id.
+class DissolvedPatternDto {
+  final List<OccurrenceDto> occurrences;
+  final Map<String, String> renamed;
+
+  const DissolvedPatternDto({required this.occurrences, required this.renamed});
+
+  factory DissolvedPatternDto.fromJson(Map<String, dynamic> json) => DissolvedPatternDto(
+        occurrences: (json['occurrences'] as List).map((o) => OccurrenceDto.fromJson(o as Map<String, dynamic>)).toList(),
+        renamed: (json['renamed'] as Map<String, dynamic>).map((k, v) => MapEntry(k, v as String)),
+      );
+}
+
 class MateDto {
   final String id;
   final String type;
@@ -6146,6 +6159,17 @@ class DocumentApiClient {
               headers: _headers,
             ),
         (_) {},
+      );
+
+  /// `POST /document/parts/{part_id}/component-patterns/{pattern_id}/dissolve` - turns every live copy of the pattern into a real,
+  /// floating occurrence at exactly the copy's pose, re-points everything that named a copy at it and deletes the pattern (422 for a
+  /// suppressed pattern, 404 for an unknown one). The result lists the new occurrences and `renamed` (old copy segment -> new id).
+  Future<DissolvedPatternDto> dissolveComponentPattern(String partId, String patternId) => _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/component-patterns/$patternId/dissolve'),
+              headers: _headers,
+            ),
+        (body) => DissolvedPatternDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Sectioning Tool: `POST /document/parts/{part_id}/section-preview` - a

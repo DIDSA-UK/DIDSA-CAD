@@ -169,6 +169,9 @@ class _FakeDocumentBackend {
   final List<Map<String, dynamic>> mates;
   final List<Map<String, dynamic>> componentPatterns;
 
+  /// F2: every dissolve call, `"<part id>/<pattern id>"`.
+  final List<String> dissolveCalls = [];
+
   /// F1: every `PATCH .../component-patterns/{id}` body, and the mates its scripted answer reports as left broken.
   final List<Map<String, dynamic>> patternPatches = [];
   List<String> brokenMateIdsOnPatternEdit = [];
@@ -815,6 +818,31 @@ class _FakeDocumentBackend {
         if (brokenMateIdsOnPatternEdit.contains(mate['id'])) mate['status'] = 'broken';
       }
       return _json({...componentPatterns[index], 'broken_mate_ids': brokenMateIdsOnPatternEdit}, 200);
+    }
+    // F2: `POST .../component-patterns/{id}/dissolve` - the pattern goes, two new occurrences take its copies' place.
+    final patternDissolveMatch =
+        RegExp(r'^/document/parts/([^/]+)/component-patterns/([^/]+)/dissolve$').firstMatch(path);
+    if (patternDissolveMatch != null && method == 'POST') {
+      dissolveCalls.add('${patternDissolveMatch.group(1)}/${patternDissolveMatch.group(2)}');
+      final patternId = patternDissolveMatch.group(2);
+      final index = componentPatterns.indexWhere((p) => p['id'] == patternId);
+      if (index == -1) return http.Response('not found: pattern', 404);
+      componentPatterns.removeAt(index);
+      final created = [
+        for (var i = 1; i <= 2; i++)
+          {
+            'id': 'dissolved-$i',
+            'external_ref': 'parts/dissolved.didsa',
+            'resolved_part_id': 'dissolved-part',
+            'name_override': null,
+            'transform': {'translation': [10.0 * i, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+            'suppressed': false,
+            'hidden': false,
+            'fixed': false,
+          },
+      ];
+      occurrences.addAll(created);
+      return _json({'occurrences': created, 'renamed': {'occ-1#pattern:$patternId:1': 'dissolved-1', 'occ-1#pattern:$patternId:2': 'dissolved-2'}}, 200);
     }
     final patternDeleteMatch =
         RegExp(r'^/document/parts/part-1/component-patterns/([^/]+)$').firstMatch(path);
@@ -6548,6 +6576,76 @@ void main() {
       panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
       expect(panel.flashMateIds, isEmpty);
       expect(find.textContaining('could not be kept'), findsNothing);
+    });
+
+    testWidgets('a Patterns row long-press offers Edit / Dissolve / Delete; Dissolve asks first and calls the focused part once', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+      );
+      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onPatternLongPress!(panel.patterns.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.text('Edit'), findsOneWidget);
+      expect(find.text('Dissolve'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
+
+      await tester.tap(find.text('Dissolve'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.text('Dissolve pattern?'), findsOneWidget);
+      expect(backend.dissolveCalls, isEmpty, reason: 'asks first');
+      await tester.tap(find.widgetWithText(TextButton, 'Dissolve'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(backend.dissolveCalls, ['part-1/pattern-1'], reason: 'one call, routed through the focused part');
+      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.patterns, isEmpty, reason: 'the tree was refreshed');
+      expect(panel.occurrences.map((o) => o.id), containsAll(['occ-1', 'dissolved-1', 'dissolved-2']));
+    });
+
+    testWidgets('cancelling the dissolve confirmation makes no call', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+      );
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onPatternLongPress!(panel.patterns.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Dissolve'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.text('Cancel'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(backend.dissolveCalls, isEmpty);
+      expect(tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel)).patterns, hasLength(1));
+    });
+
+    testWidgets('Dissolve is disabled for a suppressed pattern (and makes no call when tapped)', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1')],
+        seedComponentPatterns: [
+          {...patternSourcedFrom('pattern-1', ['occ-1']), 'suppressed': true},
+        ],
+      );
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onPatternLongPress!(panel.patterns.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      final dissolve = tester.widget<ListTile>(find.ancestor(of: find.text('Dissolve'), matching: find.byType(ListTile)));
+      expect(dissolve.enabled, isFalse);
+      await tester.tap(find.text('Dissolve'));
+      await tester.pump();
+      expect(find.text('Dissolve pattern?'), findsNothing);
+      expect(backend.dissolveCalls, isEmpty);
     });
 
     testWidgets('the warning dialog names every affected mate and pattern', (tester) async {

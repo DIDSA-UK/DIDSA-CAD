@@ -96,6 +96,7 @@ import 'loft_panel.dart';
 import 'loft_surface_panel.dart';
 import 'merge_panel.dart';
 import 'mate_context_menu.dart';
+import 'pattern_context_menu.dart';
 import 'mate_panel.dart';
 import 'width_pick.dart';
 import 'component_pattern_panel.dart';
@@ -5810,21 +5811,67 @@ class _PartScreenState extends State<PartScreen> {
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('Pattern updated - $n mate${n == 1 ? '' : 's'} could not be kept')));
   }
 
-  /// Desktop input D4: a right click on a Patterns-section row. Touch's
-  /// long-press goes straight to the delete confirmation; a mouse menu
-  /// offers Edit (a tap's action) and Delete (the long-press's) by name.
-  Future<void> _onPatternContextMenu(ComponentPatternDto pattern, Offset at) async {
-    final action = await showContextMenu<MateContextMenuAction>(context, at: at, const [
-      ActionSheetEntry(action: MateContextMenuAction.edit, label: 'Edit', icon: Icons.edit_outlined),
-      ActionSheetEntry(action: MateContextMenuAction.delete, label: 'Delete', icon: Icons.delete_outline),
-    ]);
+  /// A Patterns-section row's menu - touch long-press ([at] null: the action sheet) and desktop right click (a popup at [at]) show
+  /// the same Edit / Dissolve / Delete (`pattern_context_menu.dart`).
+  Future<void> _onPatternContextMenu(ComponentPatternDto pattern, Offset? at) async {
+    final action = await showPatternContextMenu(context, suppressed: pattern.suppressed, at: at);
     if (!mounted || action == null) return;
     switch (action) {
-      case MateContextMenuAction.edit:
+      case PatternContextMenuAction.edit:
         _openComponentPatternForEdit(pattern);
-      case MateContextMenuAction.delete:
+      case PatternContextMenuAction.dissolve:
+        await _confirmDissolveComponentPattern(pattern);
+      case PatternContextMenuAction.delete:
         await _confirmDeleteComponentPattern(pattern);
     }
+  }
+
+  /// "Dissolve" on a Patterns row: after a confirmation, every copy becomes a separate, floating component (the backend re-points
+  /// every mate / paint / scene entry that named a copy). Nothing is re-written here: the tree and the mesh are re-fetched.
+  Future<void> _confirmDissolveComponentPattern(ComponentPatternDto pattern) async {
+    final part = _part;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null) return;
+    final copies = _dissolveCopyCount(pattern);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Dissolve pattern?'),
+        content: Text(
+          'Its $copies cop${copies == 1 ? 'y becomes a separate component' : 'ies become separate components'}. '
+          "They no longer update when the source or the pattern changes, and they float even if the source is fixed. This can't be undone.",
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          TextButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Dissolve')),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    try {
+      await _api.dissolveComponentPattern(focusPartId, pattern.id);
+      if (!mounted) return;
+      setState(() {
+        _selectedOccurrenceId = null;
+        _selectedMateId = null;
+      });
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _errorMessage = e.message);
+    }
+  }
+
+  /// How many live copies [pattern] derives (what Dissolve turns into components): the copy segments the mesh reports for it.
+  int _dissolveCopyCount(ComponentPatternDto pattern) {
+    final marker = '#pattern:${pattern.id}:';
+    final paths = <String>{
+      for (final i in _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[])
+        for (final segment in i.occurrencePath)
+          if (segment.contains(marker)) segment,
+    };
+    return paths.isEmpty ? 1 : paths.length;
   }
 
   /// Phase 11 (`docs/assembly-scope.md` §6 `[8]`): [AssemblyTreePanel.
@@ -25828,7 +25875,7 @@ class _PartScreenState extends State<PartScreen> {
                     onPatternContextMenu: (pattern, at) => unawaited(_onPatternContextMenu(pattern, at)),
                     selectedMateId: _selectedMateId,
                     onPatternTap: _openComponentPatternForEdit,
-                    onPatternLongPress: _confirmDeleteComponentPattern,
+                    onPatternLongPress: (pattern) => unawaited(_onPatternContextMenu(pattern, null)),
                     flashMateIds: _flashMateIds,
                     flashToken: _flashMateToken,
                     focusedLabel: _focusStack?.currentLabel,

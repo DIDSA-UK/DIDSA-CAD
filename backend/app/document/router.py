@@ -57,6 +57,7 @@ from app.document.assembly_group import (
 from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
 from app.document.mate_status import mate_status, mate_statuses
 from app.document.occurrence_paths import resolve_path
+from app.document.pattern_dissolve import PatternDissolveError, dissolve_component_pattern
 from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES
 from app.document.limit import current_limit_value, prepare_limit, validate_limit_fields
 from app.document.coupler import prepare_coupler
@@ -230,6 +231,7 @@ from app.document.schemas import (
     ComponentPatternCreate,
     ComponentPatternDirectionFromRefRequest,
     ComponentPatternDirectionFromRefResponse,
+    ComponentPatternDissolveResponse,
     ComponentPatternResponse,
     ComponentPatternUpdateResponse,
     ComponentPatternUpdate,
@@ -4666,6 +4668,28 @@ def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
     part.component_patterns.remove(pattern)
     _drop_mates_with_dead_pattern_copies(part)
     return Response(status_code=204)
+
+
+@router.post(
+    "/parts/{part_id}/component-patterns/{pattern_id}/dissolve", response_model=ComponentPatternDissolveResponse
+)
+def dissolve_component_pattern_route(part_id: str, pattern_id: str) -> ComponentPatternDissolveResponse:
+    """F2 (`docs/pattern-followers-and-dissolve-plan.md`): replaces every LIVE copy of the pattern with a real Occurrence at exactly
+    the copy's pose (floating - `fixed` is never inherited - and named per `pattern_dissolve._new_name`), re-points every mate /
+    appearance override / scene override that named a copy (in every Part of the document) at the new occurrence, splits the
+    pattern's `scope: "pattern"` appearance overrides into plain per-occurrence ones, and deletes the pattern. Nothing visibly
+    moves. A suppressed pattern (no live copies) is a 422; all-or-nothing."""
+    part = get_part_or_404(part_id)
+    pattern = _get_component_pattern_or_404(part, pattern_id)
+
+    def check(owner: Part, path: str) -> None:
+        _check_mate_occurrence_path(owner, path)
+
+    try:
+        created, renamed = dissolve_component_pattern(get_document(), part, pattern, check)
+    except PatternDissolveError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return ComponentPatternDissolveResponse(occurrences=[_occurrence_response(o) for o in created], renamed=renamed)
 
 
 def _mate_solve_did_not_converge(

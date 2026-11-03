@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
+import 'package:didsa_cad_client/viewport3d/pattern_context_menu.dart';
 
 RigidTransformDto _identity() =>
     RigidTransformDto(translation: const [0, 0, 0], rotationAxis: const [0, 0, 1], rotationAngleDegrees: 0);
@@ -953,6 +954,43 @@ void main() {
       expect(tileColour(), isNull, reason: 'the flash ends');
       // the unnamed row never flashed
       expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 2')).tileColor, isNull);
+    });
+  });
+
+  group('pattern context menu (F2)', () {
+    Future<PatternContextMenuAction?> open(WidgetTester tester, {required bool suppressed, required String tap}) async {
+      PatternContextMenuAction? result;
+      var done = false;
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => TextButton(
+              onPressed: () async {
+                result = await showPatternContextMenu(context, suppressed: suppressed);
+                done = true;
+              },
+              child: const Text('open'),
+            ),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('open'));
+      await tester.pumpAndSettle();
+      expect(find.text('Edit'), findsOneWidget);
+      expect(find.text('Dissolve'), findsOneWidget);
+      expect(find.text('Delete'), findsOneWidget);
+      await tester.tap(find.text(tap));
+      await tester.pumpAndSettle();
+      return done ? result : null;
+    }
+
+    testWidgets('lists Edit, Dissolve and Delete and resolves to the tapped action', (tester) async {
+      expect(await open(tester, suppressed: false, tap: 'Dissolve'), PatternContextMenuAction.dissolve);
+    });
+
+    testWidgets('Dissolve is disabled for a suppressed pattern: tapping it picks nothing', (tester) async {
+      expect(await open(tester, suppressed: true, tap: 'Dissolve'), isNull);
+      expect(find.text('Dissolve'), findsOneWidget, reason: 'the sheet stays open');
     });
   });
 }
