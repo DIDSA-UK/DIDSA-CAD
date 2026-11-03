@@ -70,28 +70,46 @@ def _mat3_to_axis_angle(m: Mat3) -> tuple[Vec3, float]:
     stored in `RigidTransform`'s own axis-angle wire format (see that
     class's own docstring for why axis-angle, not a matrix/quaternion, is
     this codebase's wire convention)."""
+    # Shepperd's method: pivot on the largest of trace / diagonal entries so
+    # the quaternion is numerically stable for every angle, incl. 180 degrees
+    # about any axis (the previous 180-degree branch took signs relative to
+    # the X component, which is pure noise when n_x ~ 0).
     trace = m[0][0] + m[1][1] + m[2][2]
-    cos_theta = max(-1.0, min(1.0, (trace - 1.0) / 2.0))
-    theta = math.acos(cos_theta)
+    pivot = max(trace, m[0][0], m[1][1], m[2][2])
+    if pivot == trace:
+        s = math.sqrt(max(0.0, trace + 1.0)) * 2.0
+        w = 0.25 * s
+        x = (m[2][1] - m[1][2]) / s
+        y = (m[0][2] - m[2][0]) / s
+        z = (m[1][0] - m[0][1]) / s
+    elif pivot == m[0][0]:
+        s = math.sqrt(max(0.0, 1.0 + m[0][0] - m[1][1] - m[2][2])) * 2.0
+        w = (m[2][1] - m[1][2]) / s
+        x = 0.25 * s
+        y = (m[0][1] + m[1][0]) / s
+        z = (m[0][2] + m[2][0]) / s
+    elif pivot == m[1][1]:
+        s = math.sqrt(max(0.0, 1.0 + m[1][1] - m[0][0] - m[2][2])) * 2.0
+        w = (m[0][2] - m[2][0]) / s
+        x = (m[0][1] + m[1][0]) / s
+        y = 0.25 * s
+        z = (m[1][2] + m[2][1]) / s
+    else:
+        s = math.sqrt(max(0.0, 1.0 + m[2][2] - m[0][0] - m[1][1])) * 2.0
+        w = (m[1][0] - m[0][1]) / s
+        x = (m[0][2] + m[2][0]) / s
+        y = (m[1][2] + m[2][1]) / s
+        z = 0.25 * s
+    vec_len = math.sqrt(x * x + y * y + z * z)
+    if vec_len < 1e-12:
+        return (0.0, 0.0, 1.0), 0.0
+    if w < 0.0:
+        # keep the angle in [0, 180]
+        w, x, y, z = -w, -x, -y, -z
+    theta = 2.0 * math.atan2(vec_len, w)
     if theta < 1e-9:
         return (0.0, 0.0, 1.0), 0.0
-    if abs(theta - math.pi) < 1e-6:
-        # 180-degree rotation: (m - m^T) vanishes, so the usual off-
-        # diagonal extraction below is degenerate - pull the axis from the
-        # symmetric part instead ((m + I) / 2's diagonal), then disambiguate
-        # signs from the off-diagonal terms.
-        axis = (
-            math.sqrt(max(0.0, (m[0][0] + 1.0) / 2.0)),
-            math.sqrt(max(0.0, (m[1][1] + 1.0) / 2.0)),
-            math.sqrt(max(0.0, (m[2][2] + 1.0) / 2.0)),
-        )
-        if m[0][1] < 0:
-            axis = (axis[0], -axis[1], axis[2])
-        if m[0][2] < 0:
-            axis = (axis[0], axis[1], -axis[2])
-        return _normalize(axis), math.degrees(theta)
-    axis = (m[2][1] - m[1][2], m[0][2] - m[2][0], m[1][0] - m[0][1])
-    return _normalize(axis), math.degrees(theta)
+    return (x / vec_len, y / vec_len, z / vec_len), math.degrees(theta)
 
 
 def compose(parent: RigidTransform, child: RigidTransform) -> RigidTransform:
