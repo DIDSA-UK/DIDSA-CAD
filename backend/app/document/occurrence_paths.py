@@ -11,19 +11,8 @@ from dataclasses import dataclass
 from typing import Iterator
 
 from app.document.appearance import PATTERN_SEGMENT, base_segment, split_path
-from app.document.assembly import expand_component_pattern_instances
+from app.document.assembly import expand_component_pattern_instances, parse_pattern_segment
 from app.document.models import Document, Part
-
-
-def parse_pattern_segment(segment: str) -> tuple[str, str, int] | None:
-    """`(source occurrence id, pattern id, index)` of a pattern-copy segment, or None for a plain occurrence id."""
-    if PATTERN_SEGMENT not in segment:
-        return None
-    source, rest = segment.split(PATTERN_SEGMENT, 1)
-    pattern_id, _, index = rest.rpartition(":")
-    if not pattern_id or not index.lstrip("-").isdigit():
-        return None
-    return source, pattern_id, int(index)
 
 
 @dataclass(frozen=True)

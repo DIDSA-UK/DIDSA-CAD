@@ -18,6 +18,7 @@ transform composition agree.
 
 import math
 
+from app.document.appearance import PATTERN_SEGMENT, base_segment
 from app.document.models import ComponentPattern, ComponentPatternAxis, ComponentPatternType, Document, Part, RigidTransform
 
 Vec3 = tuple[float, float, float]
@@ -192,6 +193,37 @@ def top_level_occurrence_id(occurrence_id: str) -> str:
     return occurrence_id.split("/", 1)[0]
 
 
+def parse_pattern_segment(segment: str) -> tuple[str, str, int] | None:
+    """`(source occurrence id, pattern id, index)` of a pattern-copy segment, or None for a plain occurrence id."""
+    if PATTERN_SEGMENT not in segment:
+        return None
+    source, rest = segment.split(PATTERN_SEGMENT, 1)
+    pattern_id, _, index = rest.rpartition(":")
+    if not pattern_id or not index.lstrip("-").isdigit():
+        return None
+    return source, pattern_id, int(index)
+
+
+def resolve_pattern_copy_transform(part: Part, segment: str) -> RigidTransform:
+    """The derived local transform of the pattern copy named by `segment` (`<src>#pattern:<pid>:<i>`) inside `part`.
+    Raises `KeyError(segment)` unless the copy is live (pattern exists and is not suppressed, the occurrence is one of
+    its sources and not suppressed, and the index is one the pattern currently derives)."""
+    copy = parse_pattern_segment(segment)
+    if copy is None:
+        raise KeyError(segment)
+    source_id, pattern_id, index = copy
+    occurrence = next((o for o in part.occurrences if o.id == source_id), None)
+    pattern = next((p for p in part.component_patterns if p.id == pattern_id), None)
+    if occurrence is None or occurrence.suppressed or pattern is None or pattern.suppressed:
+        raise KeyError(segment)
+    if occurrence.id not in pattern.source_occurrence_ids:
+        raise KeyError(segment)
+    derived = expand_component_pattern_instances(pattern, occurrence.transform)
+    if index not in derived:
+        raise KeyError(segment)
+    return derived[index]
+
+
 def resolve_occurrence_target(document: Document, part: Part, occurrence_id: str) -> tuple[Part, RigidTransform | None]:
     """The Part `occurrence_id` places, plus that Occurrence's own current
     `transform` - `None` for the special `""` ("this Part's own root
@@ -225,10 +257,16 @@ def resolve_occurrence_target(document: Document, part: Part, occurrence_id: str
     current = part
     chain: list[RigidTransform] = []
     for segment in occurrence_id.split("/"):
-        occurrence = next((o for o in current.occurrences if o.id == segment), None)
+        occurrence = next((o for o in current.occurrences if o.id == base_segment(segment)), None)
         if occurrence is None or occurrence.part_id is None or occurrence.part_id not in document.parts:
             raise KeyError(occurrence_id)
-        chain.append(occurrence.transform)
+        if PATTERN_SEGMENT in segment:
+            try:
+                chain.append(resolve_pattern_copy_transform(current, segment))
+            except KeyError:
+                raise KeyError(occurrence_id) from None
+        else:
+            chain.append(occurrence.transform)
         current = document.parts[occurrence.part_id]
     if len(chain) == 1:
         return current, chain[0]
