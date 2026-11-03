@@ -42,10 +42,10 @@ void main() {
       expect(mateBranchNotice(const [], const []), isNull);
     });
 
-    test('one earlier mate moving is named by its type and Confirm applies it', () {
+    test('one earlier mate moving is named by its type and OK or Next applies it', () {
       final text = mateBranchNotice([change('m1')], [mate('m1', 'distance')])!;
       expect(text, contains('Distance mate'));
-      expect(text, contains('Confirm applies it'));
+      expect(text, contains('OK or Next applies it'));
     });
 
     test('several mates are counted once each, even with two fields changed on one mate', () {
@@ -498,7 +498,7 @@ void main() {
       expect(find.text('Mate could not be solved'), findsOneWidget);
     });
 
-    testWidgets('shows a progress indicator while saving, and disables Cancel/Confirm', (tester) async {
+    testWidgets('shows a progress indicator while saving, and disables Cancel/OK', (tester) async {
       await tester.pumpWidget(wrap(MatePanel(
         selectedEntities: const {},
         bodyNames: const {},
@@ -515,7 +515,7 @@ void main() {
       )));
       expect(find.byType(LinearProgressIndicator), findsOneWidget);
       expect(tester.widget<TextButton>(find.widgetWithText(TextButton, 'Cancel')).onPressed, isNull);
-      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull);
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'OK')).onPressed, isNull);
     });
 
     testWidgets('Cancel fires onCancel when not saving', (tester) async {
@@ -596,7 +596,7 @@ void main() {
         expect(find.text('Clear selection'), findsNothing);
       });
 
-      testWidgets('with two references, Clear selection empties the list and Confirm disables', (tester) async {
+      testWidgets('with two references, Clear selection empties the list and OK disables', (tester) async {
         var selected = <SelectionEntityRef>{faceA, faceB};
         await tester.pumpWidget(
           wrap(
@@ -609,7 +609,7 @@ void main() {
             ),
           ),
         );
-        expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNotNull);
+        expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'OK')).onPressed, isNotNull);
         expect(find.text('Clear selection'), findsOneWidget);
 
         await tester.tap(find.text('Clear selection'));
@@ -617,7 +617,7 @@ void main() {
 
         expect(selected, isEmpty);
         expect(find.text('Clear selection'), findsNothing);
-        expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull);
+        expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'OK')).onPressed, isNull);
       });
 
       testWidgets('the per-row X removes just that reference', (tester) async {
@@ -776,6 +776,53 @@ void main() {
         onCancel: () {},
       )));
       expect(find.byKey(const ValueKey('limit-min')), findsNothing);
+    });
+  });
+
+  group('Next / OK buttons', () {
+    Widget panel({VoidCallback? onNext, int addedCount = 0, bool saving = false}) => MaterialApp(
+          home: Scaffold(
+            body: MatePanel(
+              selectedEntities: const {},
+              bodyNames: const {},
+              mateType: 'coincident',
+              value: null,
+              onMateTypeChanged: (_) {},
+              onValueChanged: (_) {},
+              allowRotation: false,
+              onAllowRotationChanged: (_) {},
+              saving: saving,
+              error: null,
+              onConfirm: () {},
+              onCancel: () {},
+              onNext: onNext,
+              addedCount: addedCount,
+            ),
+          ),
+        );
+
+    testWidgets('Next only renders when onNext is given', (tester) async {
+      await tester.pumpWidget(panel());
+      expect(find.text('Next'), findsNothing);
+      await tester.pumpWidget(panel(onNext: () {}));
+      expect(find.text('Next'), findsOneWidget);
+      expect(find.text('OK'), findsOneWidget);
+      expect(find.text('Confirm'), findsNothing);
+    });
+
+    testWidgets('Next is disabled while saving', (tester) async {
+      await tester.pumpWidget(panel(onNext: () {}, saving: true));
+      expect(tester.widget<FilledButton>(find.byKey(const ValueKey('mate-next'))).onPressed, isNull);
+    });
+
+    testWidgets('Cancel reads Close and "N mates added" shows after a Next', (tester) async {
+      await tester.pumpWidget(panel(onNext: () {}));
+      expect(find.text('Cancel'), findsOneWidget);
+      expect(find.byKey(const ValueKey('mates-added')), findsNothing);
+      await tester.pumpWidget(panel(onNext: () {}, addedCount: 2));
+      expect(find.text('Close'), findsOneWidget);
+      expect(find.text('Cancel'), findsNothing);
+      expect(find.text('2 mates added'), findsOneWidget);
     });
   });
 }

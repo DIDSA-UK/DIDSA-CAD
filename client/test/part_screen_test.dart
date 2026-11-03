@@ -27,6 +27,7 @@ import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
+import 'package:didsa_cad_client/viewport3d/mate_panel.dart';
 import 'package:didsa_cad_client/viewport3d/measurement_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_context_menu.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
@@ -73,6 +74,9 @@ class _FakeDocumentBackend {
   /// body, for tests that need to assert on a field (e.g. `source_feature_
   /// ids`) this fake doesn't otherwise expose any other way.
   Map<String, dynamic>? lastPatternPatchBody;
+
+  /// M1: makes `POST .../mates` answer 422.
+  bool failMateCreate = false;
 
   /// Bug fix regression coverage ("patterns have stopped showing in the
   /// feature tree... this was working before"): how many times `GET
@@ -745,6 +749,7 @@ class _FakeDocumentBackend {
       return _json(matesGetMatch.group(1) == 'part-1' ? mates : <dynamic>[], 200);
     }
     if (matesGetMatch != null && method == 'POST') {
+      if (failMateCreate) return _json({'detail': 'No placement satisfies these mates together.'}, 422);
       final mate = {
         'id': 'mate-${_nextMateId++}',
         'type': body['type'],
@@ -5362,6 +5367,62 @@ void main() {
         expect(panel.occurrences.single.id, 'occ-1');
       },
     );
+
+    SelectionEntityRef mateFace(String occ, int id) =>
+        SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'body-$occ', occurrenceId: occ, id: id);
+
+    Future<void> pickTwoFaces(WidgetTester tester) async {
+      final toggle = tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!;
+      toggle(mateFace('occ-1', 1));
+      await tester.pump();
+      toggle(mateFace('occ-2', 1));
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    testWidgets('M1: Next creates the mate and keeps the tool open (type kept, picks cleared); OK creates and closes',
+        (tester) async {
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      await tapStartCommand(tester, 'Mate');
+      expect(find.byType(MatePanel), findsOneWidget);
+      expect(find.text('Cancel'), findsWidgets);
+
+      tester.widget<MatePanel>(find.byType(MatePanel)).onMateTypeChanged('parallel');
+      await tester.pump();
+      await pickTwoFaces(tester);
+      final next = tester.widget<MatePanel>(find.byType(MatePanel)).onNext;
+      expect(next, isNotNull);
+      next!();
+      await _pumpUntil(tester, () => backend.mates.length == 1);
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(find.byType(MatePanel), findsOneWidget, reason: 'Next keeps the tool open');
+      expect(find.byType(ModalBarrier).evaluate().length, lessThanOrEqualTo(1));
+      var panel = tester.widget<MatePanel>(find.byType(MatePanel));
+      expect(panel.mateType, 'parallel', reason: 'the type is kept');
+      expect(panel.selectedEntities, isEmpty, reason: 'the picks are cleared');
+      expect(panel.addedCount, 1);
+      expect(find.text('Close'), findsOneWidget);
+      expect(find.text('1 mate added'), findsOneWidget);
+
+      await pickTwoFaces(tester);
+      tester.widget<MatePanel>(find.byType(MatePanel)).onConfirm!();
+      await _pumpUntil(tester, () => backend.mates.length == 2);
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byType(MatePanel), findsNothing, reason: 'OK closes the tool');
+    });
+
+    testWidgets('M1: a Next whose create fails keeps the picks and shows the error', (tester) async {
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      backend.failMateCreate = true;
+      await tapStartCommand(tester, 'Mate');
+      await pickTwoFaces(tester);
+      tester.widget<MatePanel>(find.byType(MatePanel)).onNext!();
+      await _pumpUntil(tester, () => find.textContaining('No placement satisfies').evaluate().isNotEmpty);
+      final panel = tester.widget<MatePanel>(find.byType(MatePanel));
+      expect(panel.selectedEntities.length, 2, reason: 'the picks are kept');
+      expect(panel.addedCount, 0);
+      expect(backend.mates, isEmpty);
+    });
 
     testWidgets('B7: Pattern Component opens with nothing selected, on the Direction step, without an error banner', (
       tester,

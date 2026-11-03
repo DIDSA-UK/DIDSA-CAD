@@ -4995,23 +4995,35 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _mateActive = true;
       _entitiesBeforeMate = _selectedEntities;
-      _selectedEntities = {};
       _mateType = kMateTypes.first;
-      _mateValue = null;
-      _mateLimitMin = null;
-      _mateLimitMax = null;
-      _resetWidth();
-      _resetMateBranchChoice();
       _mateAllowRotation = true;
-      _mateError = null;
-      _mateSaving = false;
-      _matePreviewMembers = const [];
-      _applyMateBranchPreview(null);
+      _mateAppliedCount = 0;
+      _resetMateForNext();
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_mateSelectionFilter);
     });
+  }
+
+  /// How many mates this Mate session has created with Next (cancel then reads "Close").
+  int _mateAppliedCount = 0;
+
+  /// The per-mate field reset shared by [_openMate] and Next: clears the picks, value, limits, Width picks, branch
+  /// choice, preview and error, and keeps the mate type, allow-rotation and movement settings and the selection-filter
+  /// override. Call inside `setState`.
+  void _resetMateForNext() {
+    _selectedEntities = {};
+    _mateValue = null;
+    _mateLimitMin = null;
+    _mateLimitMax = null;
+    _mateLimitCurrent = null;
+    _resetWidth();
+    _resetMateBranchChoice();
+    _mateError = null;
+    _mateSaving = false;
+    _matePreviewMembers = const [];
+    _applyMateBranchPreview(null);
   }
 
   void _closeMate() {
@@ -5159,7 +5171,7 @@ class _PartScreenState extends State<PartScreen> {
   /// (`_onComponentGizmoDragEnd`/`_undoLastAssemblyAction`), which
   /// already routed via `focusPartId = _focusStack?.current ?? _part?.id`
   /// since Phase 5/8. Now matches that same convention.
-  Future<void> _confirmMate() async {
+  Future<void> _confirmMate({bool keepOpen = false}) async {
     final part = _part;
     final focusPartId = _focusStack?.current ?? part?.id;
     if (part == null || focusPartId == null || !_matePicksComplete) return;
@@ -5196,16 +5208,23 @@ class _PartScreenState extends State<PartScreen> {
         limitMax: isLimitMateType(_mateType) ? _mateLimitMax : null,
       );
       if (!mounted) return;
-      setState(() {
-        _resetWidth();
-        _applyMateBranchPreview(null);
-        _mateActive = false;
-        _selectedEntities = {};
-        _entitiesBeforeMate = null;
-        _mateSaving = false;
-        _matePreviewMembers = const [];
-        _selectionFilterOverrides.pop();
-      });
+      if (keepOpen) {
+        setState(() {
+          _mateAppliedCount++;
+          _resetMateForNext();
+        });
+      } else {
+        setState(() {
+          _resetWidth();
+          _applyMateBranchPreview(null);
+          _mateActive = false;
+          _selectedEntities = {};
+          _entitiesBeforeMate = null;
+          _mateSaving = false;
+          _matePreviewMembers = const [];
+          _selectionFilterOverrides.pop();
+        });
+      }
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     } on ApiException catch (e) {
@@ -26483,6 +26502,12 @@ class _PartScreenState extends State<PartScreen> {
                               (!isLimitMateType(_mateType) || mateLimitValid(_mateType, _mateLimitMin, _mateLimitMax))
                           ? _confirmMate
                           : null,
+                      onNext: _matePicksComplete &&
+                              (!mateTypeNeedsValue(_mateType) || _mateValue != null) &&
+                              (!isLimitMateType(_mateType) || mateLimitValid(_mateType, _mateLimitMin, _mateLimitMax))
+                          ? () => _confirmMate(keepOpen: true)
+                          : null,
+                      addedCount: _mateAppliedCount,
                       onCancel: _closeMate,
                       onClearSelection: () {
                         setState(() {
