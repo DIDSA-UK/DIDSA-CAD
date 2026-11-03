@@ -19,14 +19,16 @@ So a run tests what ships, not a copy of it.
 
 | Path | What |
 |---|---|
-| `sketches/` | The test drawings, downscaled to 1568 px on the long edge as the app does. |
+| `sketches/` | The test drawings, downscaled to 1568 px on the long edge as the app does. `asm_*` are multi-part assemblies (see "Assembly mode"). |
+| `sketches/source/` | The reference models the generated assembly sheets are drawn from, and the answer keys come from. |
 | `harness/expected.py` | The answer key for each sketch, and the scorer. |
+| `harness/expected_assembly.py`, `harness/assembly_keys.json` | The same for the assembly sketches. |
 | `harness/ai_eval_harness_test.dart` | The app-code side, run through `eval.sh`. |
 | `harness/inspect_step.py` | Geometry report for a STEP file: volume, bounding box, faces, cylinder radii. |
 | `harness/table.py` | Pass table, plus how the render-back check's verdicts compare with the scores. |
-| `agent_prompts/` | Instructions for the model standing in for the provider. `model.md` covers the image analysis and the chat; `check.md` covers the render-back check. |
-| `eval.sh` | `prompts`, `build`, `verdict` and `table`. |
-| `runs/`, `prompts/` | Output (git-ignored). |
+| `agent_prompts/` | Instructions for the model standing in for the provider. `model.md` covers the image analysis and the chat; `check.md` covers the render-back check; `model_assembly.md` is `model.md` for Assembly mode. |
+| `eval.sh` | `prompts`, `build`, `verdict` and `table`; for assemblies `prompts-assembly`, `manifest` and `assemble`. |
+| `runs/`, `prompts/`, `prompts_asm/` | Output (git-ignored). |
 
 ## Setup
 
@@ -50,6 +52,33 @@ DIDSA-VR's `tools/setup_test_env.sh backend flutter` installs the backend's cond
 Two runs per sketch and model shows consistent errors, not small differences. Use more runs or new sketches before trusting a few points either way.
 
 **Cost:** about 80-100k tokens per run per model, mostly reading the system prompt. A render-back check adds a few thousand.
+
+## Assembly mode
+
+The `asm_*` sketches test Assembly mode (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): the model names
+the parts in a `part_manifest`, the app asks for each part's plan in turn and saves each one to its own file, then
+asks for one assembly plan of `add_component` and `mate` steps against those files. The harness does the same with
+the app's code: the same request turns, the same file names the save dialog proposes, a real project folder, and
+every part and the assembly built in one backend document.
+
+1. `tools/ai_eval/eval.sh prompts-assembly tools/ai_eval/prompts_asm`.
+2. Run a fresh model on `agent_prompts/model_assembly.md` with `{PROMPTS}`, `{IMAGES}` (every sheet of the sketch)
+   and `{RUN}` filled in. It writes `extraction.txt`, `reply1.txt` and maybe `reply2.txt`.
+3. Copy the reply with the manifest to `reply.txt` and run `eval.sh manifest <run>`. That writes `requests/`: one
+   turn per part, the assembly turn, and the section the assembly turn's system prompt gains.
+4. Send the same model conversation the part turns in order, then the assembly turn, with the system-prompt
+   section; it writes `part_NN_reply.txt` and `assembly_reply.txt`. The app sends each part turn after the
+   previous part is built; nothing in a reply depends on that build unless it fails, so they can go together.
+5. `eval.sh assemble <run>` builds and scores. A failure writes `part_NN_retry_request.txt` or
+   `assembly_retry_request.txt` (the turn the app would send); the reply goes to `..._retry_reply.txt` and
+   `assemble` is run again.
+
+Scoring (`expected_assembly.py`): each distinct part is matched by volume, bounding box and radii; the assembly by
+solid count, bounding box, union volume (parts that overlap make it smaller) and placement (each component's
+distance from the assembly's centroid). A nested sub-assembly is scored flattened, since Assembly mode can only
+build one level.
+
+Assembly mode has no render-back check in the app (only the single-part flow has one), so these runs have none.
 
 ## Answer keys: please confirm
 

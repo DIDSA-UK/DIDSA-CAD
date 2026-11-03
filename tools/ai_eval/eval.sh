@@ -9,6 +9,12 @@
 #   tools/ai_eval/eval.sh verdict <run_dir>     parse <run_dir>/check_reply.txt (render-back check reply)
 #   tools/ai_eval/eval.sh table <runs_dir>      pass/fail table for every built run under <runs_dir>
 #
+# Assembly mode (multi-part sketches, sketches/asm_*; see README "Assembly mode"):
+#   tools/ai_eval/eval.sh prompts-assembly <dir> write the Assembly-mode system prompt and the image-analysis prompt
+#   tools/ai_eval/eval.sh manifest <run_dir>     read the part_manifest from reply.txt; write the part and assembly
+#                                               request turns into <run_dir>/requests/
+#   tools/ai_eval/eval.sh assemble <run_dir>     build every part and the assembly; score against the sketch's key
+#
 # Needs the backend running (DIDSA-VR tools/start_backend.sh), Flutter on PATH, and CAD_PY = the backend's
 # conda python (DIDSA-VR tools/setup_test_env.sh sets both up; `source /opt/tools/env.sh`).
 set -euo pipefail
@@ -42,6 +48,28 @@ case "${1:-}" in
     python3 -I -c "import json,sys; r=json.load(open(sys.argv[1])); print(r.get('outcome') or ('no plan' if not r.get('plan_detected') else '?'))" "$D/result.json"
     [ -f "$D/score.json" ] && cat "$D/score.json" && echo
     [ -f "$D/retry_request.txt" ] && echo "validation failed: send retry_request.txt back to the same conversation"
+    ;;
+  prompts-assembly)
+    run_harness "AI_EVAL_DUMP_PROMPTS=$(realpath -m "$2")" AI_EVAL_MODE=assembly 'dump prompts' > /dev/null
+    echo "wrote $2/system_prompt.txt and $2/extraction_prompt.txt (Assembly mode)"
+    ;;
+  manifest)
+    D="$(realpath "$2")"
+    run_harness "AI_EVAL_MANIFEST=$D/reply.txt" "AI_EVAL_OUT=$D" 'manifest' > "$D/harness.log" 2>&1 || true
+    cat "$D/manifest.json"; echo
+    ;;
+  assemble)
+    D="$(realpath "$2")"
+    sketch="$(basename "$(dirname "$D")")"
+    rm -f "$D"/part_*.step "$D"/assembly.step "$D"/*geometry.json
+    run_harness "AI_EVAL_ASSEMBLY=$D" 'run assembly' > "$D/harness.log" 2>&1 || true
+    for f in "$D"/part_*.step; do
+      [ -f "$f" ] && "$CAD_PY" -I "$HERE/harness/inspect_step.py" "$f" "${f%.step}_geometry.json" > /dev/null 2>&1
+    done
+    [ -f "$D/assembly.step" ] && "$CAD_PY" -I "$HERE/harness/inspect_step.py" --solids "$D/assembly.step" "$D/assembly_geometry.json" > /dev/null 2>&1
+    python3 -I "$HERE/harness/expected_assembly.py" "$sketch" "$D" > "$D/score.json"
+    cat "$D/score.json"; echo
+    ls "$D"/*retry_request.txt 2>/dev/null | sed 's/^/retry needed: /'
     ;;
   verdict)
     D="$(realpath "$2")"
