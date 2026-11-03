@@ -33,6 +33,7 @@ import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
+import 'package:didsa_cad_client/viewport3d/component_pattern_panel.dart';
 import 'package:didsa_cad_client/layout/layout_mode.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
@@ -5361,6 +5362,56 @@ void main() {
         expect(panel.occurrences.single.id, 'occ-1');
       },
     );
+
+    testWidgets('B7: Pattern Component opens with nothing selected, on the Direction step, without an error banner', (
+      tester,
+    ) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+      await tapStartCommand(tester, 'Pattern');
+
+      expect(find.byType(ComponentPatternPanel), findsOneWidget);
+      expect(find.text('Select a component first to pattern it'), findsNothing);
+      final panel = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+      expect(panel.sourceOccurrenceNames, isEmpty);
+      expect(panel.pickingDirectionSlot, 1);
+      expect(panel.confirmDisabledReason, 'Choose a direction first');
+      expect(find.textContaining('pick an edge'), findsOneWidget);
+
+      // Choosing a preset direction advances to the Components step.
+      panel.onDirectionChanged(ComponentPatternAxisPreset.z);
+      await tester.pump();
+      final after = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+      expect(after.pickingMoreSources, isTrue);
+      expect(after.confirmDisabledReason, 'Pick at least one component');
+    });
+
+    testWidgets('B6: in the Components step a viewport component tap toggles a source; a copy tap shows an inline hint',
+        (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+      await tapStartCommand(tester, 'Pattern');
+      tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel)).onDirectionChanged(
+            ComponentPatternAxisPreset.z,
+          );
+      await tester.pump();
+
+      void tap(String id) => tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: id),
+          );
+      tap('occ-1');
+      await tester.pump();
+      var panel = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+      expect(panel.sourceOccurrenceNames.length, 1);
+      expect(panel.confirmDisabledReason, isNull);
+      tap('occ-1');
+      await tester.pump();
+      panel = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+      expect(panel.sourceOccurrenceNames, isEmpty);
+
+      tap('occ-1#pattern:pat-1:1');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('component-pattern-inline-note')), findsOneWidget);
+      expect(find.byKey(const ValueKey('error-banner-dismiss')), findsNothing, reason: 'not the global banner');
+    });
 
     testWidgets('item 7: the tree fetches constraint-status with the occurrence list and passes it to the panel', (
       tester,

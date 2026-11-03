@@ -2855,6 +2855,17 @@ class _PartScreenState extends State<PartScreen> {
     // ahead of the generic toggle" precedence every branch below already
     // uses for its own kind-specific behaviour.
     if (entity.kind == SelectionEntityKind.component) {
+      if (_componentPatternPanelActive && _componentPatternPickingSources) {
+        final id = entity.occurrenceId;
+        if (id.contains('#pattern:')) {
+          setState(() => _componentPatternInlineNote = 'That is a pattern copy - pick its source component instead');
+        } else if (id.contains('/')) {
+          setState(() => _componentPatternInlineNote = 'Only top-level components can be patterned');
+        } else {
+          _toggleComponentPatternSource(id);
+        }
+        return;
+      }
       // §6 roadmap Phase 10 (`[11]`), appendix item 8's own suggested
       // smaller fix: a derived `ComponentPattern` instance's own synthetic
       // `occurrencePath` segment always contains `"#pattern:"`
@@ -5227,6 +5238,76 @@ class _PartScreenState extends State<PartScreen> {
   /// behavior (see that method's own doc comment).
   bool _componentPatternPickingSources = false;
 
+  /// B7: `true` from a fresh open until a direction is chosen (an edge pick
+  /// or an X/Y/Z preset) - Confirm stays disabled meanwhile and the panel
+  /// shows "Pick an edge for the direction".
+  bool _componentPatternDirectionUnset = false;
+
+  /// B6/B7: whether the Pattern Component tool currently owns a
+  /// [_selectionFilterOverrides] entry (edge-only during the Direction step,
+  /// component-only during the Components step) - kept symmetrical by
+  /// [_applyComponentPatternFilter].
+  bool _componentPatternFilterPushed = false;
+
+  /// Inline (non-banner) hint shown in the panel, e.g. when a pattern copy
+  /// is tapped while picking sources.
+  String? _componentPatternInlineNote;
+
+  static const _componentPatternEdgeFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: false,
+    body: false,
+    component: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  static const _componentPatternComponentFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    component: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// Re-syncs the selection-filter override with the tool's active step.
+  void _applyComponentPatternFilter() {
+    if (_componentPatternFilterPushed) {
+      _selectionFilterOverrides.pop();
+      _componentPatternFilterPushed = false;
+    }
+    if (!_componentPatternPanelActive) return;
+    if (_componentPatternPickingDirectionSlot != 0) {
+      _selectionFilterOverrides.push(_componentPatternEdgeFilter);
+      _componentPatternFilterPushed = true;
+    } else if (_componentPatternPickingSources) {
+      _selectionFilterOverrides.push(_componentPatternComponentFilter);
+      _componentPatternFilterPushed = true;
+    }
+  }
+
+  /// Top-level (non-copy, non-nested) component ids among the current
+  /// selection - what pre-populates the source list on open.
+  List<String> _preselectedPatternSources() {
+    final ids = <String>[];
+    void add(String? id) {
+      if (id == null || id.isEmpty || id.contains('#pattern:') || id.contains('/') || ids.contains(id)) return;
+      ids.add(id);
+    }
+    add(_selectedOccurrenceId);
+    for (final e in _selectedEntities) {
+      if (e.kind == SelectionEntityKind.component) add(e.occurrenceId);
+    }
+    return ids;
+  }
+
   ComponentPatternMode _componentPatternMode = ComponentPatternMode.linear;
   ComponentPatternAxisPreset _componentPatternDirection = ComponentPatternAxisPreset.x;
   List<double> _componentPatternCustomDirection = [1.0, 0.0, 0.0];
@@ -5373,18 +5454,16 @@ class _PartScreenState extends State<PartScreen> {
 
   void _openComponentPattern() {
     _clearTransientError();
-    final sourceId = _selectedOccurrenceId;
-    if (sourceId == null) {
-      setState(() => _errorMessage = 'Select a component first to pattern it');
-      return;
-    }
+    final sources = _preselectedPatternSources();
     setState(() {
       _componentPatternPanelActive = true;
       _componentPatternEditingId = null;
-      _componentPatternSourceOccurrenceIds = [sourceId];
+      _componentPatternSourceOccurrenceIds = sources;
       _componentPatternPickingSources = false;
+      _componentPatternDirectionUnset = true;
+      _componentPatternInlineNote = null;
       _componentPatternMode = ComponentPatternMode.linear;
-      _componentPatternDirection = ComponentPatternAxisPreset.x;
+      _componentPatternDirection = ComponentPatternAxisPreset.custom;
       _componentPatternCustomDirection = [1.0, 0.0, 0.0];
       _componentPatternCount = 3;
       _componentPatternSpacing = 10.0;
@@ -5403,9 +5482,10 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternReverseAngular = false;
       _componentPatternSaving = false;
       _componentPatternError = null;
-      _componentPatternPickingDirectionSlot = 0;
+      _componentPatternPickingDirectionSlot = 1;
       _toolbarOpen = false;
       _featureTreeVisible = false;
+      _applyComponentPatternFilter();
     });
   }
 
@@ -5424,7 +5504,9 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternPanelActive = true;
       _componentPatternEditingId = pattern.id;
       _componentPatternSourceOccurrenceIds = List.of(pattern.sourceOccurrenceIds);
-      _componentPatternPickingSources = false;
+      _componentPatternPickingSources = true;
+      _componentPatternDirectionUnset = false;
+      _componentPatternInlineNote = null;
       _componentPatternMode = ComponentPatternMode.fromApiValue(pattern.patternType);
       _componentPatternDirection = presetForVector(pattern.direction);
       _componentPatternCustomDirection = List.of(pattern.direction);
@@ -5449,6 +5531,7 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternPickingDirectionSlot = 0;
       _toolbarOpen = false;
       _featureTreeVisible = false;
+      _applyComponentPatternFilter();
     });
   }
 
@@ -5461,6 +5544,8 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternError = null;
       _componentPatternSaving = false;
       _componentPatternPickingDirectionSlot = 0;
+      _componentPatternInlineNote = null;
+      _applyComponentPatternFilter();
     });
   }
 
@@ -5472,6 +5557,8 @@ class _PartScreenState extends State<PartScreen> {
   void _toggleComponentPatternDirectionPicking(int slot) {
     setState(() {
       _componentPatternPickingDirectionSlot = _componentPatternPickingDirectionSlot == slot ? 0 : slot;
+      if (_componentPatternPickingDirectionSlot != 0) _componentPatternPickingSources = false;
+      _applyComponentPatternFilter();
     });
   }
 
@@ -5488,7 +5575,10 @@ class _PartScreenState extends State<PartScreen> {
     final part = _part;
     final slot = _componentPatternPickingDirectionSlot;
     if (part == null || slot == 0) return;
-    setState(() => _componentPatternPickingDirectionSlot = 0);
+    setState(() {
+      _componentPatternPickingDirectionSlot = 0;
+      _applyComponentPatternFilter();
+    });
     try {
       final direction = await _api.componentPatternDirectionFromRef(
         part.id,
@@ -5503,13 +5593,19 @@ class _PartScreenState extends State<PartScreen> {
           case 1:
             _componentPatternDirection = ComponentPatternAxisPreset.custom;
             _componentPatternCustomDirection = direction;
+            _componentPatternDirectionUnset = false;
           case 2:
             _componentPatternDirection2 = ComponentPatternAxisPreset.custom;
             _componentPatternCustomDirection2 = direction;
           case 3:
             _componentPatternAxisDirection = ComponentPatternAxisPreset.custom;
             _componentPatternCustomAxisDirection = direction;
+            _componentPatternDirectionUnset = false;
         }
+        // Step 1 done: advance to the Components step.
+        _componentPatternPickingSources = true;
+        _componentPatternInlineNote = null;
+        _applyComponentPatternFilter();
       });
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -5635,6 +5731,9 @@ class _PartScreenState extends State<PartScreen> {
         _componentPatternEditingId = null;
         _componentPatternSourceOccurrenceIds = [];
         _componentPatternSaving = false;
+        _componentPatternPickingSources = false;
+        _componentPatternPickingDirectionSlot = 0;
+        _applyComponentPatternFilter();
       });
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
@@ -5670,7 +5769,8 @@ class _PartScreenState extends State<PartScreen> {
   /// tree's own delete flow)'s "ask first" precedent.
   Future<void> _confirmDeleteComponentPattern(ComponentPatternDto pattern) async {
     final part = _part;
-    if (part == null) return;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -5684,7 +5784,7 @@ class _PartScreenState extends State<PartScreen> {
     );
     if (confirmed != true || !mounted) return;
     try {
-      await _api.deleteComponentPattern(part.id, pattern.id);
+      await _api.deleteComponentPattern(focusPartId, pattern.id);
       if (!mounted) return;
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
@@ -16102,7 +16202,12 @@ class _PartScreenState extends State<PartScreen> {
     if (_sourceFeaturePickerTarget != null) _cancelSourceFeaturePicker();
     if (_profilePickerActive) _cancelProfilePicker();
     if (_pathPickerActive) _cancelPathPicker();
-    if (_componentPatternPickingSources) setState(() => _componentPatternPickingSources = false);
+    if (_componentPatternPickingSources) {
+      setState(() {
+        _componentPatternPickingSources = false;
+        _applyComponentPatternFilter();
+      });
+    }
   }
 
   /// Ends whichever tree multi-select session is active (a no-op if none
@@ -23597,17 +23702,18 @@ class _PartScreenState extends State<PartScreen> {
   /// behavior above - the panel-local multi-select mechanism that field's
   /// own doc comment describes, deliberately intercepted at this single
   /// existing call site rather than adding a second, viewport-wide one.
+  void _toggleComponentPatternSource(String occurrenceId) {
+    setState(() {
+      final ids = [..._componentPatternSourceOccurrenceIds];
+      if (!ids.remove(occurrenceId)) ids.add(occurrenceId);
+      _componentPatternSourceOccurrenceIds = ids;
+      _componentPatternInlineNote = null;
+    });
+  }
+
   void _onOccurrenceTap(OccurrenceDto occurrence) {
-    if (_componentPatternPickingSources) {
-      setState(() {
-        final ids = [..._componentPatternSourceOccurrenceIds];
-        if (ids.contains(occurrence.id)) {
-          if (ids.length > 1) ids.remove(occurrence.id);
-        } else {
-          ids.add(occurrence.id);
-        }
-        _componentPatternSourceOccurrenceIds = ids;
-      });
+    if (_componentPatternPanelActive && _componentPatternPickingSources) {
+      _toggleComponentPatternSource(occurrence.id);
       return;
     }
     // Bug fix ("selecting a component doesn't highlight it in 3D"):
@@ -26382,7 +26488,12 @@ class _PartScreenState extends State<PartScreen> {
                     key: const ValueKey('component-pattern-panel-slot'),
                     child: ComponentPatternPanel(
                       mode: _componentPatternMode,
-                      onModeChanged: (mode) => setState(() => _componentPatternMode = mode),
+                      onModeChanged: (mode) => setState(() {
+                        _componentPatternMode = mode;
+                        if (_componentPatternPickingDirectionSlot != 0) {
+                          _componentPatternPickingDirectionSlot = mode == ComponentPatternMode.linear ? 1 : 3;
+                        }
+                      }),
                       sourceOccurrenceNames: [
                         for (final id in _componentPatternSourceOccurrenceIds)
                           _occurrenceNameForId(id) ?? id,
@@ -26391,10 +26502,35 @@ class _PartScreenState extends State<PartScreen> {
                       pickingMoreSources: _componentPatternPickingSources,
                       onPickingMoreSourcesChanged: (picking) {
                         if (picking) _exitAllPickerAndSelectModes();
-                        setState(() => _componentPatternPickingSources = picking);
+                        setState(() {
+                          _componentPatternPickingSources = picking;
+                          if (picking) _componentPatternPickingDirectionSlot = 0;
+                          _applyComponentPatternFilter();
+                        });
                       },
+                      stepHint: _componentPatternPickingDirectionSlot != 0
+                          ? (_componentPatternMode == ComponentPatternMode.linear
+                              ? 'Step 1: pick an edge for the direction'
+                              : 'Step 1: pick an edge for the axis')
+                          : _componentPatternPickingSources
+                              ? 'Step 2: click components to add or remove them'
+                              : null,
+                      inlineNote: _componentPatternInlineNote,
+                      confirmDisabledReason: _componentPatternDirectionUnset
+                          ? 'Choose a direction first'
+                          : _componentPatternSourceOccurrenceIds.isEmpty
+                              ? 'Pick at least one component'
+                              : null,
                       direction: _componentPatternDirection,
-                      onDirectionChanged: (preset) => setState(() => _componentPatternDirection = preset),
+                      onDirectionChanged: (preset) => setState(() {
+                        _componentPatternDirection = preset;
+                        _componentPatternDirectionUnset = false;
+                        if (_componentPatternPickingDirectionSlot == 1) {
+                          _componentPatternPickingDirectionSlot = 0;
+                          _componentPatternPickingSources = true;
+                          _applyComponentPatternFilter();
+                        }
+                      }),
                       customDirection: _componentPatternCustomDirection,
                       onCustomDirectionChanged: (vector) =>
                           setState(() => _componentPatternCustomDirection = vector),
@@ -26420,7 +26556,15 @@ class _PartScreenState extends State<PartScreen> {
                       axisOrigin: _componentPatternAxisOrigin,
                       onAxisOriginChanged: (origin) => setState(() => _componentPatternAxisOrigin = origin),
                       axisDirection: _componentPatternAxisDirection,
-                      onAxisDirectionChanged: (preset) => setState(() => _componentPatternAxisDirection = preset),
+                      onAxisDirectionChanged: (preset) => setState(() {
+                        _componentPatternAxisDirection = preset;
+                        _componentPatternDirectionUnset = false;
+                        if (_componentPatternPickingDirectionSlot == 3) {
+                          _componentPatternPickingDirectionSlot = 0;
+                          _componentPatternPickingSources = true;
+                          _applyComponentPatternFilter();
+                        }
+                      }),
                       customAxisDirection: _componentPatternCustomAxisDirection,
                       onCustomAxisDirectionChanged: (vector) =>
                           setState(() => _componentPatternCustomAxisDirection = vector),
