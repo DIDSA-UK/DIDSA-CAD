@@ -4344,3 +4344,58 @@ existing export endpoints only ever exported a Part's own local Bodies;
 new `.../export/assembly-{format}` endpoints walk the full occurrence
 tree (including `ComponentPattern`-derived instances) and export every
 placed instance's own real, world-transformed geometry instead.
+
+## 2y. Pattern Component bug-fix pass (B1-B7, from `docs/pattern-component-bugfix-plan.md`)
+
+Implemented in the plan's recommended order, one commit per item.
+
+- **B1 - 180-degree axis-angle sign bug.** `assembly._mat3_to_axis_angle` now converts via a quaternion (Shepperd's method,
+  pivot on the largest of trace/diagonal) instead of the old 180-degree branch that took the y/z signs relative to X (noise
+  when n_x ~ 0). A flipped rail (axis `(0, .707, -.707)`, 180 deg) survives repeated `compose`/`compose_chain` round trips.
+  Tests: `test_assembly_axis_angle_roundtrip.py` (property test over axes in the coordinate planes + random axes, angles
+  0 / 180 +- 1e-10 / 179.9999 ...; BOT_RIGHT regression). Follow-up: the tester's frame files are now a fixture
+  (`backend/tests/data/frame_ai_test/`, `test_frame_ai_pattern_regression.py`): every copy's world rotation *and*
+  translation in `assembly-mesh` is checked against an independent expectation (4 of its 5 tests fail on the pre-fix code).
+  `CORNER_GUSSET_001.DIDSAprt` is the tester's `GUSSET_001.didsa`, whose part id differs from the assembly's `ref_part_id`;
+  the gussets are not patterned, so it only needs to load.
+- **B5 - latched error banner.** The red banner in `part_screen.dart` has a dismiss (x) button and
+  `_clearTransientError()` runs on Pattern Component / Mate open (and edit), and (follow-up) on Move/Rotate (context menu and
+  component drawer), Add Component, Create Component, Make Focus / Exit Focus and the Part/Assembly lens switch.
+- **B2 step 1 (fixes B3).** `resolve_occurrence_target` understands `<src>#pattern:<pid>:<i>` segments (new
+  `assembly.parse_pattern_segment` / `resolve_pattern_copy_transform`; `occurrence_paths` re-uses the parser, which
+  resolves the import cycle). So `direction-from-ref`, Measure and Section accept copy edges/faces. Endpoint tests
+  (follow-up, in `test_frame_ai_pattern_regression.py`): a linear copy edge gives the seed's line, a circular copy edge is
+  rotated by the pattern, a non-derived copy index is a `missing_reference` 422.
+- **B7 + B6 - tool flow.** Pattern Component opens without a selection; pre-selected top-level components pre-fill the
+  sources. Step 1 is the direction (edge-only selection filter; fresh open has no direction, Confirm disabled "Choose a
+  direction first"), an edge pick or X/Y/Z preset advances to step 2 (component-only filter; a viewport click toggles a
+  source, tree taps still work, copy/nested taps show an inline note rather than the global banner). The source list may be
+  empty while open; Confirm needs a direction and >= 1 source. Edit mode opens on step 2. Also fixed
+  `_confirmDeleteComponentPattern` using `part.id` instead of the focused part.
+- **B2 steps 2-3 - mates on copies.** Mates accept copy references (`_check_mate_occurrence_path` validates liveness). A copy
+  is a **frozen** side in the group model (`discover_component`), never driven: an explicit `occurrence_id=<copy>` is a 422
+  ("A pattern copy follows its source..."), the default solve target skips copies, and a source mated to its own copy is
+  rejected by the "different occurrences" check (copies fold onto their source). Deleting/suppressing/shrinking a pattern or
+  deleting its source occurrence cascades to mates naming a dead copy. Tests: `test_mate_pattern_copy.py`,
+  `test_resolve_pattern_copy_target.py`. *Skipped (optional step 4):* copies do not follow their source when it is re-solved.
+- **B4 - instance names.** `occurrenceDisplayName` appends `:<n>` (display-time ordinal among same-part siblings) when a part
+  is placed more than once; overrides are verbatim. New `occurrencePathDisplayName`: pattern copies read
+  `Source [Linear 1 #2]`, nested paths show the last segment. `_selectionBodyNames` now includes every instance path, so the
+  drawer / Select Other / Mate / Measure panels no longer fall back to "Body". No persisted instance number was added.
+
+## 2z. Mate "Next" and non-modal Select Other (`docs/mate-apply-and-select-other-plan.md`)
+
+- **M1 - Mate Next.** The Mate panel buttons are **Cancel | Next | OK** ("Confirm" renamed OK). `_confirmMate({keepOpen})`:
+  Next creates the mate (same atomic create+solve), refreshes the tree/mesh and calls the new `_resetMateForNext()`
+  (shared with `_openMate`), which clears the picks, value, limits, Width picks, branch choice, preview and error but keeps
+  the mate type, allow-rotation and Minimal-movement settings, the pushed selection-filter override and `_entitiesBeforeMate`.
+  After a Next the Cancel button reads "Close" and "N mates added" shows. A failing Next keeps the picks and shows the error.
+  The branch-notice strings now say "OK or Next applies it". *Skipped:* Shift+Enter for Next (the optional item - it would
+  have meant a second activator in the `ToolPanelKeys` registry); Enter still means OK.
+- **S1 - non-modal Select Other.** `showSelectOtherSheet` (a modal route with a dark barrier) is replaced by `SelectOtherPanel`,
+  drawn in `PartScreen`'s viewport Stack with no barrier: a compact (280 x <= 320) popup anchored at the click point and
+  clamped inside the viewport on desktop, a short bottom panel on phone. `PartViewport.onSelectOtherRequested` now also
+  passes the viewport-local anchor. Everything closes through `_closeSelectOther()` (clears the candidates and the highlight):
+  row pick, X, Esc (via `ToolPanelKeys`), a viewport tap (consumed - it does not change the selection), a lens switch or a
+  tool opening (`_clearTransientError`). Pan/orbit/zoom keep working; the body dimming and hover preview are unchanged, the
+  preview also clears when the mouse leaves the panel, and the selection drawer is hidden while it is open.

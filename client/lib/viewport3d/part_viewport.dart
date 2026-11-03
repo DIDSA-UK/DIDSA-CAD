@@ -875,7 +875,8 @@ class PartViewport extends StatefulWidget {
   /// position, nearest first - the caller ([PartScreen]) owns showing the
   /// disambiguation list and feeding a chosen entity back through
   /// [onSelectionToggle], the same callback every other pick already uses.
-  final void Function(List<HoverHit> candidates)? onSelectOtherRequested;
+  /// Fired with the candidates and the viewport-local point of the gesture (where a popup is anchored).
+  final void Function(List<HoverHit> candidates, Offset anchor)? onSelectOtherRequested;
 
   /// Bug report follow-up: lets [PartScreen]'s Select Other list force a
   /// live 3D highlight on whichever candidate the user is currently
@@ -897,6 +898,13 @@ class PartViewport extends StatefulWidget {
   /// Setting this true suppresses that fallback entirely while the sheet is
   /// up, so nothing is highlighted except an explicit [highlightOverride].
   final bool suppressHoverFallback;
+
+  /// True while a non-modal overlay that a viewport tap should only dismiss is open ([PartScreen]'s Select Other panel).
+  /// A tap then calls [onClearSelection] (the screen closes the overlay) instead of toggling the hovered entity, and is
+  /// not remembered as a "first click" toggle - so a click-then-hold over the viewport while the panel is open opens a new
+  /// Select Other list without its hold "undoing" a toggle that never happened (which used to add the entity to the
+  /// selection).
+  final bool tapDismissesOverlay;
 
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
@@ -1102,6 +1110,7 @@ class PartViewport extends StatefulWidget {
     this.onSelectOtherRequested,
     this.highlightOverride,
     this.suppressHoverFallback = false,
+    this.tapDismissesOverlay = false,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.showResetViewButton = true,
@@ -5109,7 +5118,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // Bug report ("Select Other"): remembers what this tap toggled (if
         // anything) so a click-then-hold that grows out of it can undo the
         // toggle instead - see [_lastTapToggledEntity]'s own doc comment.
-        _lastTapToggledEntity = _commitSelection();
+        if (widget.tapDismissesOverlay) {
+          widget.onClearSelection?.call();
+          _lastTapToggledEntity = null;
+        } else {
+          _lastTapToggledEntity = _commitSelection();
+        }
         // Bug report ("Select Other"): records this tap's own release time
         // as a candidate "first click" for the *next* gesture's
         // click-then-hold check - see
@@ -5973,7 +5987,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       widget.onSelectClick?.call(SelectClick.toggle);
       widget.onSelectionToggle?.call(toUndo);
     }
-    widget.onSelectOtherRequested?.call(candidates);
+    widget.onSelectOtherRequested?.call(candidates, cursor);
   }
 
   /// Every selectable candidate under [screenPosition], nearest first - the
@@ -6028,9 +6042,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   bool selectOtherAtGlobal(Offset global) {
     final box = context.findRenderObject();
     if (box is! RenderBox || _viewportSize.isEmpty) return false;
-    final candidates = _selectOtherCandidatesAt(box.globalToLocal(global));
+    final local = box.globalToLocal(global);
+    final candidates = _selectOtherCandidatesAt(local);
     if (candidates.isEmpty) return false;
-    widget.onSelectOtherRequested?.call(candidates);
+    widget.onSelectOtherRequested?.call(candidates, local);
     return true;
   }
 

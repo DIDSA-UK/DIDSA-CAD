@@ -91,8 +91,8 @@ String? mateBranchNotice(
   if (changes.isNotEmpty) {
     final ids = <String>{for (final c in changes) c.mateId};
     return ids.length == 1
-        ? 'To fit, an earlier mate (${describe(ids)}) moves to its other side or orientation. Confirm applies it.'
-        : 'To fit, ${ids.length} earlier mates (${describe(ids)}) move to their other side or orientation. Confirm applies them.';
+        ? 'To fit, an earlier mate (${describe(ids)}) moves to its other side or orientation. OK or Next applies it.'
+        : 'To fit, ${ids.length} earlier mates (${describe(ids)}) move to their other side or orientation. OK or Next applies them.';
   }
   if (blockedBy.isNotEmpty) {
     return 'A mate you set to one side or orientation stands in the way (${describe(blockedBy)}). Change it to allow this mate.';
@@ -407,6 +407,12 @@ class MatePanel extends StatelessWidget {
   final VoidCallback? onConfirm;
   final VoidCallback onCancel;
 
+  /// "Next": create this mate and keep the tool open for the next one (`null` hides the button).
+  final VoidCallback? onNext;
+
+  /// Mates already created with Next in this session: Cancel then reads "Close" and "N mates added" shows.
+  final int addedCount;
+
   /// Bug report 2026-10-14, item 8: the only way to reset the references used
   /// to be the undiscoverable "a third distinct tap starts fresh" rule. When
   /// given, a "Clear selection" button appears under the references (only
@@ -438,6 +444,8 @@ class MatePanel extends StatelessWidget {
     this.notice,
     required this.onConfirm,
     required this.onCancel,
+    this.onNext,
+    this.addedCount = 0,
     this.onClearSelection,
     this.onRemoveEntity,
     this.widthPick,
@@ -565,11 +573,29 @@ class MatePanel extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               ToolPanelKeys(onConfirm: saving ? null : onConfirm, onCancel: saving ? null : onCancel),
-              TextButton(onPressed: saving ? null : onCancel, child: const Text('Cancel')),
+              TextButton(onPressed: saving ? null : onCancel, child: Text(addedCount > 0 ? 'Close' : 'Cancel')),
               const SizedBox(width: 8),
-              FilledButton(onPressed: saving ? null : onConfirm, child: const Text('Confirm')),
+              if (onNext != null || addedCount > 0) ...[
+                FilledButton.tonal(
+                  key: const ValueKey('mate-next'),
+                  onPressed: saving ? null : onNext,
+                  child: const Text('Next'),
+                ),
+                const SizedBox(width: 8),
+              ],
+              FilledButton(onPressed: saving ? null : onConfirm, child: const Text('OK')),
             ],
           ),
+          if (addedCount > 0)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                addedCount == 1 ? '1 mate added' : '$addedCount mates added',
+                key: const ValueKey('mates-added'),
+                textAlign: TextAlign.end,
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
         ],
       ),
     );

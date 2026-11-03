@@ -1184,7 +1184,16 @@ class _PartScreenState extends State<PartScreen> {
   /// `selection_list_drawer.dart`'s own `curveFeature` branch), for the
   /// identical "a shared id-to-name map, not a raw id truncation" reason.
   Map<String, String> get _selectionBodyNames =>
-      {..._bodyNames, ..._surfaceNames, ..._curveNames, ...occurrenceDisplayNames(_occurrences)};
+      {
+        ..._bodyNames,
+        ..._surfaceNames,
+        ..._curveNames,
+        ...occurrenceDisplayNames(
+          _occurrences,
+          patterns: _componentPatterns,
+          extraPaths: [for (final i in _assemblyMesh?.instances ?? const []) i.occurrencePath.join('/')],
+        ),
+      };
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
@@ -2684,7 +2693,19 @@ class _PartScreenState extends State<PartScreen> {
   /// [showSelectOtherSheet] call below, fed into
   /// [PartViewport.suppressHoverFallback] - see that field's own doc
   /// comment for the ambiguous stale-highlight bug this fixes.
-  bool _selectOtherSheetOpen = false;
+  bool get _selectOtherSheetOpen => _selectOtherCandidates != null;
+  List<HoverHit>? _selectOtherCandidates;
+  Offset _selectOtherAnchor = Offset.zero;
+
+  /// The single way Select Other closes (row pick, X, Esc, viewport tap, lens switch, tool open): also clears the
+  /// highlight preview.
+  void _closeSelectOther() {
+    if (_selectOtherCandidates == null && _selectOtherHighlight == null) return;
+    setState(() {
+      _selectOtherCandidates = null;
+      _selectOtherHighlight = null;
+    });
+  }
 
   /// Bug fix ("selecting a component shows no contextual toolbar"): true
   /// while `_onOccurrenceLongPress`'s `showComponentContextMenu` modal sheet,
@@ -2733,16 +2754,12 @@ class _PartScreenState extends State<PartScreen> {
   /// every tool-specific special-case in there (Fillet face->edges, Sweep
   /// path picking, etc.) still applies exactly as if the entity had been
   /// picked directly.
-  void _handleSelectOtherRequested(List<HoverHit> candidates) async {
-    setState(() => _selectOtherSheetOpen = true);
-    await showSelectOtherSheet(
-      context,
-      candidates: candidates,
-      bodyNames: _selectionBodyNames,
-      onSelect: _toggleSelectedEntity,
-      onHighlight: (entity) => setState(() => _selectOtherHighlight = entity),
-    );
-    if (mounted) setState(() => _selectOtherSheetOpen = false);
+  void _handleSelectOtherRequested(List<HoverHit> candidates, Offset anchor) {
+    setState(() {
+      _selectOtherCandidates = candidates;
+      _selectOtherAnchor = anchor;
+      _selectOtherHighlight = null;
+    });
   }
 
   /// Phase 6b (`docs/assembly-scope.md` §3): the one selected entity to
@@ -2811,6 +2828,11 @@ class _PartScreenState extends State<PartScreen> {
   /// the debounced live-preview re-solve while [_filletActive], same
   /// reasoning as the [_extrudeActive] case just above.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
+    // Select Other open: a viewport tap only closes it (it is not a pick). Its own row picks close first, then toggle.
+    if (_selectOtherSheetOpen) {
+      _closeSelectOther();
+      return;
+    }
     // New Sketch's "tap a reference plane": in Selection mode a tap arrives
     // here rather than at [_onPlaneTap], so it has to start the sketch from
     // here too - it must not just select the plane.
@@ -2855,6 +2877,17 @@ class _PartScreenState extends State<PartScreen> {
     // ahead of the generic toggle" precedence every branch below already
     // uses for its own kind-specific behaviour.
     if (entity.kind == SelectionEntityKind.component) {
+      if (_componentPatternPanelActive && _componentPatternPickingSources) {
+        final id = entity.occurrenceId;
+        if (id.contains('#pattern:')) {
+          setState(() => _componentPatternInlineNote = 'That is a pattern copy - pick its source component instead');
+        } else if (id.contains('/')) {
+          setState(() => _componentPatternInlineNote = 'Only top-level components can be patterned');
+        } else {
+          _toggleComponentPatternSource(id);
+        }
+        return;
+      }
       // §6 roadmap Phase 10 (`[11]`), appendix item 8's own suggested
       // smaller fix: a derived `ComponentPattern` instance's own synthetic
       // `occurrencePath` segment always contains `"#pattern:"`
@@ -3436,6 +3469,10 @@ class _PartScreenState extends State<PartScreen> {
   /// for why this also reschedules the preview during [_extrudeActive]/
   /// [_filletActive]/[_chamferActive].
   void _clearSelectedEntities() {
+    if (_selectOtherSheetOpen) {
+      _closeSelectOther();
+      return;
+    }
     setState(() {
       // Pattern/Mirror scoping Phase 2: unlike every other flow here,
       // Pattern's own picked directions live in [_patternDirection1]/
@@ -4971,26 +5008,39 @@ class _PartScreenState extends State<PartScreen> {
       );
 
   void _openMate() {
+    _clearTransientError();
     setState(() {
       _mateActive = true;
       _entitiesBeforeMate = _selectedEntities;
-      _selectedEntities = {};
       _mateType = kMateTypes.first;
-      _mateValue = null;
-      _mateLimitMin = null;
-      _mateLimitMax = null;
-      _resetWidth();
-      _resetMateBranchChoice();
       _mateAllowRotation = true;
-      _mateError = null;
-      _mateSaving = false;
-      _matePreviewMembers = const [];
-      _applyMateBranchPreview(null);
+      _mateAppliedCount = 0;
+      _resetMateForNext();
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_mateSelectionFilter);
     });
+  }
+
+  /// How many mates this Mate session has created with Next (cancel then reads "Close").
+  int _mateAppliedCount = 0;
+
+  /// The per-mate field reset shared by [_openMate] and Next: clears the picks, value, limits, Width picks, branch
+  /// choice, preview and error, and keeps the mate type, allow-rotation and movement settings and the selection-filter
+  /// override. Call inside `setState`.
+  void _resetMateForNext() {
+    _selectedEntities = {};
+    _mateValue = null;
+    _mateLimitMin = null;
+    _mateLimitMax = null;
+    _mateLimitCurrent = null;
+    _resetWidth();
+    _resetMateBranchChoice();
+    _mateError = null;
+    _mateSaving = false;
+    _matePreviewMembers = const [];
+    _applyMateBranchPreview(null);
   }
 
   void _closeMate() {
@@ -5138,7 +5188,7 @@ class _PartScreenState extends State<PartScreen> {
   /// (`_onComponentGizmoDragEnd`/`_undoLastAssemblyAction`), which
   /// already routed via `focusPartId = _focusStack?.current ?? _part?.id`
   /// since Phase 5/8. Now matches that same convention.
-  Future<void> _confirmMate() async {
+  Future<void> _confirmMate({bool keepOpen = false}) async {
     final part = _part;
     final focusPartId = _focusStack?.current ?? part?.id;
     if (part == null || focusPartId == null || !_matePicksComplete) return;
@@ -5175,16 +5225,23 @@ class _PartScreenState extends State<PartScreen> {
         limitMax: isLimitMateType(_mateType) ? _mateLimitMax : null,
       );
       if (!mounted) return;
-      setState(() {
-        _resetWidth();
-        _applyMateBranchPreview(null);
-        _mateActive = false;
-        _selectedEntities = {};
-        _entitiesBeforeMate = null;
-        _mateSaving = false;
-        _matePreviewMembers = const [];
-        _selectionFilterOverrides.pop();
-      });
+      if (keepOpen) {
+        setState(() {
+          _mateAppliedCount++;
+          _resetMateForNext();
+        });
+      } else {
+        setState(() {
+          _resetWidth();
+          _applyMateBranchPreview(null);
+          _mateActive = false;
+          _selectedEntities = {};
+          _entitiesBeforeMate = null;
+          _mateSaving = false;
+          _matePreviewMembers = const [];
+          _selectionFilterOverrides.pop();
+        });
+      }
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     } on ApiException catch (e) {
@@ -5225,6 +5282,76 @@ class _PartScreenState extends State<PartScreen> {
   /// mode - `_onOccurrenceTap` checks this before its ordinary select
   /// behavior (see that method's own doc comment).
   bool _componentPatternPickingSources = false;
+
+  /// B7: `true` from a fresh open until a direction is chosen (an edge pick
+  /// or an X/Y/Z preset) - Confirm stays disabled meanwhile and the panel
+  /// shows "Pick an edge for the direction".
+  bool _componentPatternDirectionUnset = false;
+
+  /// B6/B7: whether the Pattern Component tool currently owns a
+  /// [_selectionFilterOverrides] entry (edge-only during the Direction step,
+  /// component-only during the Components step) - kept symmetrical by
+  /// [_applyComponentPatternFilter].
+  bool _componentPatternFilterPushed = false;
+
+  /// Inline (non-banner) hint shown in the panel, e.g. when a pattern copy
+  /// is tapped while picking sources.
+  String? _componentPatternInlineNote;
+
+  static const _componentPatternEdgeFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: false,
+    body: false,
+    component: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  static const _componentPatternComponentFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: false,
+    body: false,
+    component: true,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    plane: false,
+  );
+
+  /// Re-syncs the selection-filter override with the tool's active step.
+  void _applyComponentPatternFilter() {
+    if (_componentPatternFilterPushed) {
+      _selectionFilterOverrides.pop();
+      _componentPatternFilterPushed = false;
+    }
+    if (!_componentPatternPanelActive) return;
+    if (_componentPatternPickingDirectionSlot != 0) {
+      _selectionFilterOverrides.push(_componentPatternEdgeFilter);
+      _componentPatternFilterPushed = true;
+    } else if (_componentPatternPickingSources) {
+      _selectionFilterOverrides.push(_componentPatternComponentFilter);
+      _componentPatternFilterPushed = true;
+    }
+  }
+
+  /// Top-level (non-copy, non-nested) component ids among the current
+  /// selection - what pre-populates the source list on open.
+  List<String> _preselectedPatternSources() {
+    final ids = <String>[];
+    void add(String? id) {
+      if (id == null || id.isEmpty || id.contains('#pattern:') || id.contains('/') || ids.contains(id)) return;
+      ids.add(id);
+    }
+    add(_selectedOccurrenceId);
+    for (final e in _selectedEntities) {
+      if (e.kind == SelectionEntityKind.component) add(e.occurrenceId);
+    }
+    return ids;
+  }
 
   ComponentPatternMode _componentPatternMode = ComponentPatternMode.linear;
   ComponentPatternAxisPreset _componentPatternDirection = ComponentPatternAxisPreset.x;
@@ -5356,6 +5483,13 @@ class _PartScreenState extends State<PartScreen> {
     ];
   }
 
+  /// Clears the global red error banner - called on every Assembly tool
+  /// entry point (the banner is otherwise only cleared by [_runGuarded]).
+  void _clearTransientError() {
+    _closeSelectOther();
+    if (_errorMessage != null && mounted) setState(() => _errorMessage = null);
+  }
+
   /// Opens [ComponentPatternPanel] targeting [_selectedOccurrenceId] as its
   /// sole initial source - both the Assembly Add menu's "Pattern Component"
   /// entry and the component long-press menu's "Pattern" entry call this
@@ -5365,18 +5499,17 @@ class _PartScreenState extends State<PartScreen> {
   /// already supports). More sources can be added from within the panel
   /// itself (Phase 11, `[7]`) once it's open.
   void _openComponentPattern() {
-    final sourceId = _selectedOccurrenceId;
-    if (sourceId == null) {
-      setState(() => _errorMessage = 'Select a component first to pattern it');
-      return;
-    }
+    _clearTransientError();
+    final sources = _preselectedPatternSources();
     setState(() {
       _componentPatternPanelActive = true;
       _componentPatternEditingId = null;
-      _componentPatternSourceOccurrenceIds = [sourceId];
+      _componentPatternSourceOccurrenceIds = sources;
       _componentPatternPickingSources = false;
+      _componentPatternDirectionUnset = true;
+      _componentPatternInlineNote = null;
       _componentPatternMode = ComponentPatternMode.linear;
-      _componentPatternDirection = ComponentPatternAxisPreset.x;
+      _componentPatternDirection = ComponentPatternAxisPreset.custom;
       _componentPatternCustomDirection = [1.0, 0.0, 0.0];
       _componentPatternCount = 3;
       _componentPatternSpacing = 10.0;
@@ -5395,9 +5528,10 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternReverseAngular = false;
       _componentPatternSaving = false;
       _componentPatternError = null;
-      _componentPatternPickingDirectionSlot = 0;
+      _componentPatternPickingDirectionSlot = 1;
       _toolbarOpen = false;
       _featureTreeVisible = false;
+      _applyComponentPatternFilter();
     });
   }
 
@@ -5410,12 +5544,15 @@ class _PartScreenState extends State<PartScreen> {
   /// than silently snapping to the nearest world axis) unless they match one
   /// exactly - see [presetForVector].
   void _openComponentPatternForEdit(ComponentPatternDto pattern) {
+    _clearTransientError();
     final axis = pattern.axis;
     setState(() {
       _componentPatternPanelActive = true;
       _componentPatternEditingId = pattern.id;
       _componentPatternSourceOccurrenceIds = List.of(pattern.sourceOccurrenceIds);
-      _componentPatternPickingSources = false;
+      _componentPatternPickingSources = true;
+      _componentPatternDirectionUnset = false;
+      _componentPatternInlineNote = null;
       _componentPatternMode = ComponentPatternMode.fromApiValue(pattern.patternType);
       _componentPatternDirection = presetForVector(pattern.direction);
       _componentPatternCustomDirection = List.of(pattern.direction);
@@ -5440,6 +5577,7 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternPickingDirectionSlot = 0;
       _toolbarOpen = false;
       _featureTreeVisible = false;
+      _applyComponentPatternFilter();
     });
   }
 
@@ -5452,6 +5590,8 @@ class _PartScreenState extends State<PartScreen> {
       _componentPatternError = null;
       _componentPatternSaving = false;
       _componentPatternPickingDirectionSlot = 0;
+      _componentPatternInlineNote = null;
+      _applyComponentPatternFilter();
     });
   }
 
@@ -5463,6 +5603,8 @@ class _PartScreenState extends State<PartScreen> {
   void _toggleComponentPatternDirectionPicking(int slot) {
     setState(() {
       _componentPatternPickingDirectionSlot = _componentPatternPickingDirectionSlot == slot ? 0 : slot;
+      if (_componentPatternPickingDirectionSlot != 0) _componentPatternPickingSources = false;
+      _applyComponentPatternFilter();
     });
   }
 
@@ -5479,7 +5621,10 @@ class _PartScreenState extends State<PartScreen> {
     final part = _part;
     final slot = _componentPatternPickingDirectionSlot;
     if (part == null || slot == 0) return;
-    setState(() => _componentPatternPickingDirectionSlot = 0);
+    setState(() {
+      _componentPatternPickingDirectionSlot = 0;
+      _applyComponentPatternFilter();
+    });
     try {
       final direction = await _api.componentPatternDirectionFromRef(
         part.id,
@@ -5494,13 +5639,19 @@ class _PartScreenState extends State<PartScreen> {
           case 1:
             _componentPatternDirection = ComponentPatternAxisPreset.custom;
             _componentPatternCustomDirection = direction;
+            _componentPatternDirectionUnset = false;
           case 2:
             _componentPatternDirection2 = ComponentPatternAxisPreset.custom;
             _componentPatternCustomDirection2 = direction;
           case 3:
             _componentPatternAxisDirection = ComponentPatternAxisPreset.custom;
             _componentPatternCustomAxisDirection = direction;
+            _componentPatternDirectionUnset = false;
         }
+        // Step 1 done: advance to the Components step.
+        _componentPatternPickingSources = true;
+        _componentPatternInlineNote = null;
+        _applyComponentPatternFilter();
       });
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -5626,6 +5777,9 @@ class _PartScreenState extends State<PartScreen> {
         _componentPatternEditingId = null;
         _componentPatternSourceOccurrenceIds = [];
         _componentPatternSaving = false;
+        _componentPatternPickingSources = false;
+        _componentPatternPickingDirectionSlot = 0;
+        _applyComponentPatternFilter();
       });
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
@@ -5661,7 +5815,8 @@ class _PartScreenState extends State<PartScreen> {
   /// tree's own delete flow)'s "ask first" precedent.
   Future<void> _confirmDeleteComponentPattern(ComponentPatternDto pattern) async {
     final part = _part;
-    if (part == null) return;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -5675,7 +5830,7 @@ class _PartScreenState extends State<PartScreen> {
     );
     if (confirmed != true || !mounted) return;
     try {
-      await _api.deleteComponentPattern(part.id, pattern.id);
+      await _api.deleteComponentPattern(focusPartId, pattern.id);
       if (!mounted) return;
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
@@ -14094,6 +14249,7 @@ class _PartScreenState extends State<PartScreen> {
   /// id across the reimport - `native_format.py`'s `_part_from_dict` never
   /// regenerates an id it's given).
   Future<void> _onInsertComponentPressed() async {
+    _clearTransientError();
     // Same "whichever Part is currently primary" lookup [_refreshAssemblyTree]
     // already uses - today this is always the root Part (nothing pushes
     // onto [_focusStack] yet, Phase 4's own job), but this stays correct
@@ -14405,6 +14561,7 @@ class _PartScreenState extends State<PartScreen> {
   /// afterward via the assembly tree's own Rename action, not by gating
   /// creation on a dialog.
   Future<void> _onCreateNewComponentPressed() async {
+    _clearTransientError();
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
 
@@ -16093,7 +16250,12 @@ class _PartScreenState extends State<PartScreen> {
     if (_sourceFeaturePickerTarget != null) _cancelSourceFeaturePicker();
     if (_profilePickerActive) _cancelProfilePicker();
     if (_pathPickerActive) _cancelPathPicker();
-    if (_componentPatternPickingSources) setState(() => _componentPatternPickingSources = false);
+    if (_componentPatternPickingSources) {
+      setState(() {
+        _componentPatternPickingSources = false;
+        _applyComponentPatternFilter();
+      });
+    }
   }
 
   /// Ends whichever tree multi-select session is active (a no-op if none
@@ -23539,10 +23701,13 @@ class _PartScreenState extends State<PartScreen> {
   /// Assembly mode (see [_refreshAssemblyTree]'s own doc comment for why
   /// this isn't instead kept always-fresh in the background).
   void _toggleAssemblyLens() {
+    _clearTransientError();
     // Feature 1 (tree multi-select): a session belongs to one tree, and
     // only the current lens's tree is ever mounted.
     _exitMultiSelect();
     setState(() {
+      _selectOtherCandidates = null;
+      _selectOtherHighlight = null;
       _lens = _lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part;
     });
     if (_lens == AssemblyLens.assembly) {
@@ -23588,17 +23753,18 @@ class _PartScreenState extends State<PartScreen> {
   /// behavior above - the panel-local multi-select mechanism that field's
   /// own doc comment describes, deliberately intercepted at this single
   /// existing call site rather than adding a second, viewport-wide one.
+  void _toggleComponentPatternSource(String occurrenceId) {
+    setState(() {
+      final ids = [..._componentPatternSourceOccurrenceIds];
+      if (!ids.remove(occurrenceId)) ids.add(occurrenceId);
+      _componentPatternSourceOccurrenceIds = ids;
+      _componentPatternInlineNote = null;
+    });
+  }
+
   void _onOccurrenceTap(OccurrenceDto occurrence) {
-    if (_componentPatternPickingSources) {
-      setState(() {
-        final ids = [..._componentPatternSourceOccurrenceIds];
-        if (ids.contains(occurrence.id)) {
-          if (ids.length > 1) ids.remove(occurrence.id);
-        } else {
-          ids.add(occurrence.id);
-        }
-        _componentPatternSourceOccurrenceIds = ids;
-      });
+    if (_componentPatternPanelActive && _componentPatternPickingSources) {
+      _toggleComponentPatternSource(occurrence.id);
       return;
     }
     // Bug fix ("selecting a component doesn't highlight it in 3D"):
@@ -23694,6 +23860,7 @@ class _PartScreenState extends State<PartScreen> {
     if (!mounted || action == null) return;
     switch (action) {
       case ComponentContextMenuAction.makeFocus:
+        _clearTransientError();
         if (resolvedPartId == null) {
           setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
           return;
@@ -23742,6 +23909,7 @@ class _PartScreenState extends State<PartScreen> {
         // [_moveRotateComponentActive]'s own doc comment) - without it,
         // [_gizmoTargetOccurrence] stays hidden even though `occurrence` was
         // just selected above.
+        _clearTransientError();
         setState(() {
           _selectionMode = false;
           _moveRotateComponentActive = true;
@@ -24176,6 +24344,7 @@ class _PartScreenState extends State<PartScreen> {
   /// empty state), which previously left no way back to Part lens or a
   /// shallower focus depth at all once drilled into a leaf component.
   Future<void> _exitAssemblyFocus() async {
+    _clearTransientError();
     setState(() => _focusStack?.pop());
     await _refreshFocusTargetContent();
   }
@@ -25277,7 +25446,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_shellActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive &&
-                    _activeMultiSelect == null;
+                    _activeMultiSelect == null &&
+                    !_selectOtherSheetOpen;
 
   Widget _buildSelectionDrawer() {
     return SelectionListDrawer(
@@ -25338,11 +25508,14 @@ class _PartScreenState extends State<PartScreen> {
                       return AssemblyComponentSelectionDrawer(
                         selectedComponent: occurrence,
                         displayName: occurrenceDisplayName(_occurrences, index),
-                        onMove: () => setState(() {
-                          _selectionMode = false;
-                          _moveRotateComponentActive = true;
-                          _moveRotateComponentMode = MoveRotateComponentMode.move;
-                        }),
+                        onMove: () {
+                          _clearTransientError();
+                          setState(() {
+                            _selectionMode = false;
+                            _moveRotateComponentActive = true;
+                            _moveRotateComponentMode = MoveRotateComponentMode.move;
+                          });
+                        },
                         onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
                         onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
                         onClose: _clearSelectionFromDrawer,
@@ -25704,7 +25877,18 @@ class _PartScreenState extends State<PartScreen> {
               width: double.infinity,
               color: Colors.red.shade100,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade900)),
+              child: Row(
+                children: [
+                  Expanded(child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade900))),
+                  IconButton(
+                    key: const ValueKey('error-banner-dismiss'),
+                    icon: Icon(Icons.close, size: 18, color: Colors.red.shade900),
+                    tooltip: 'Dismiss',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _clearTransientError,
+                  ),
+                ],
+              ),
             ),
           if (_desktopLayout) _buildDesktopRibbon(context),
           Expanded(
@@ -25910,6 +26094,7 @@ class _PartScreenState extends State<PartScreen> {
                   onSelectOtherRequested: _handleSelectOtherRequested,
                   highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,
                   suppressHoverFallback: _selectOtherSheetOpen,
+                  tapDismissesOverlay: _selectOtherSheetOpen,
                   selectionFilter: _selectionFilter,
                   isPerspective: _isPerspective,
                   farClip: _farClip,
@@ -25927,6 +26112,22 @@ class _PartScreenState extends State<PartScreen> {
                   // button in the viewport's corner.
                   showResetViewButton: _desktopLayout,
                 ),
+                if (_selectOtherCandidates != null)
+                  Positioned.fill(
+                    key: const ValueKey('select-other-slot'),
+                    child: SelectOtherPanel(
+                      candidates: _selectOtherCandidates!,
+                      bodyNames: _selectionBodyNames,
+                      anchor: _selectOtherAnchor,
+                      desktop: _desktopLayout,
+                      onSelect: (entity) {
+                        _closeSelectOther();
+                        _toggleSelectedEntity(entity);
+                      },
+                      onHighlight: (entity) => setState(() => _selectOtherHighlight = entity),
+                      onClose: _closeSelectOther,
+                    ),
+                  ),
                 // On-device feedback ("move the select/orbit fab to the top
                 // right group of fabs under 'centre view'"): a sibling of
                 // [PartViewport] here, not a widget passed into it - that
@@ -26339,6 +26540,12 @@ class _PartScreenState extends State<PartScreen> {
                               (!isLimitMateType(_mateType) || mateLimitValid(_mateType, _mateLimitMin, _mateLimitMax))
                           ? _confirmMate
                           : null,
+                      onNext: _matePicksComplete &&
+                              (!mateTypeNeedsValue(_mateType) || _mateValue != null) &&
+                              (!isLimitMateType(_mateType) || mateLimitValid(_mateType, _mateLimitMin, _mateLimitMax))
+                          ? () => _confirmMate(keepOpen: true)
+                          : null,
+                      addedCount: _mateAppliedCount,
                       onCancel: _closeMate,
                       onClearSelection: () {
                         setState(() {
@@ -26362,7 +26569,12 @@ class _PartScreenState extends State<PartScreen> {
                     key: const ValueKey('component-pattern-panel-slot'),
                     child: ComponentPatternPanel(
                       mode: _componentPatternMode,
-                      onModeChanged: (mode) => setState(() => _componentPatternMode = mode),
+                      onModeChanged: (mode) => setState(() {
+                        _componentPatternMode = mode;
+                        if (_componentPatternPickingDirectionSlot != 0) {
+                          _componentPatternPickingDirectionSlot = mode == ComponentPatternMode.linear ? 1 : 3;
+                        }
+                      }),
                       sourceOccurrenceNames: [
                         for (final id in _componentPatternSourceOccurrenceIds)
                           _occurrenceNameForId(id) ?? id,
@@ -26371,10 +26583,35 @@ class _PartScreenState extends State<PartScreen> {
                       pickingMoreSources: _componentPatternPickingSources,
                       onPickingMoreSourcesChanged: (picking) {
                         if (picking) _exitAllPickerAndSelectModes();
-                        setState(() => _componentPatternPickingSources = picking);
+                        setState(() {
+                          _componentPatternPickingSources = picking;
+                          if (picking) _componentPatternPickingDirectionSlot = 0;
+                          _applyComponentPatternFilter();
+                        });
                       },
+                      stepHint: _componentPatternPickingDirectionSlot != 0
+                          ? (_componentPatternMode == ComponentPatternMode.linear
+                              ? 'Step 1: pick an edge for the direction'
+                              : 'Step 1: pick an edge for the axis')
+                          : _componentPatternPickingSources
+                              ? 'Step 2: click components to add or remove them'
+                              : null,
+                      inlineNote: _componentPatternInlineNote,
+                      confirmDisabledReason: _componentPatternDirectionUnset
+                          ? 'Choose a direction first'
+                          : _componentPatternSourceOccurrenceIds.isEmpty
+                              ? 'Pick at least one component'
+                              : null,
                       direction: _componentPatternDirection,
-                      onDirectionChanged: (preset) => setState(() => _componentPatternDirection = preset),
+                      onDirectionChanged: (preset) => setState(() {
+                        _componentPatternDirection = preset;
+                        _componentPatternDirectionUnset = false;
+                        if (_componentPatternPickingDirectionSlot == 1) {
+                          _componentPatternPickingDirectionSlot = 0;
+                          _componentPatternPickingSources = true;
+                          _applyComponentPatternFilter();
+                        }
+                      }),
                       customDirection: _componentPatternCustomDirection,
                       onCustomDirectionChanged: (vector) =>
                           setState(() => _componentPatternCustomDirection = vector),
@@ -26400,7 +26637,15 @@ class _PartScreenState extends State<PartScreen> {
                       axisOrigin: _componentPatternAxisOrigin,
                       onAxisOriginChanged: (origin) => setState(() => _componentPatternAxisOrigin = origin),
                       axisDirection: _componentPatternAxisDirection,
-                      onAxisDirectionChanged: (preset) => setState(() => _componentPatternAxisDirection = preset),
+                      onAxisDirectionChanged: (preset) => setState(() {
+                        _componentPatternAxisDirection = preset;
+                        _componentPatternDirectionUnset = false;
+                        if (_componentPatternPickingDirectionSlot == 3) {
+                          _componentPatternPickingDirectionSlot = 0;
+                          _componentPatternPickingSources = true;
+                          _applyComponentPatternFilter();
+                        }
+                      }),
                       customAxisDirection: _componentPatternCustomAxisDirection,
                       onCustomAxisDirectionChanged: (vector) =>
                           setState(() => _componentPatternCustomAxisDirection = vector),

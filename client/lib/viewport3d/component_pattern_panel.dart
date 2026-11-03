@@ -180,6 +180,17 @@ class ComponentPatternPanel extends StatelessWidget {
   final VoidCallback? onConfirm;
   final VoidCallback onCancel;
 
+  /// B7: the active step's prompt ("Pick an edge for the direction", ...),
+  /// shown above the fields; `null` hides it.
+  final String? stepHint;
+
+  /// B7/B6: inline (non-banner) guidance, e.g. "pick the source component".
+  final String? inlineNote;
+
+  /// B7: why Confirm is disabled (no direction / no sources yet); `null`
+  /// when Confirm is allowed.
+  final String? confirmDisabledReason;
+
   const ComponentPatternPanel({
     super.key,
     required this.mode,
@@ -229,6 +240,9 @@ class ComponentPatternPanel extends StatelessWidget {
     required this.error,
     required this.onConfirm,
     required this.onCancel,
+    this.stepHint,
+    this.inlineNote,
+    this.confirmDisabledReason,
   });
 
   @override
@@ -239,6 +253,24 @@ class ComponentPatternPanel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (stepHint != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                stepHint!,
+                key: const ValueKey('component-pattern-step-hint'),
+                style: TextStyle(fontSize: 13, color: Theme.of(context).colorScheme.primary),
+              ),
+            ),
+          if (inlineNote != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                inlineNote!,
+                key: const ValueKey('component-pattern-inline-note'),
+                style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+            ),
           _sourceChips(context),
           const SizedBox(height: 12),
           SegmentedButton<ComponentPatternMode>(
@@ -257,15 +289,27 @@ class ComponentPatternPanel extends StatelessWidget {
               padding: const EdgeInsets.only(top: 8),
               child: Text(error!, style: TextStyle(color: Theme.of(context).colorScheme.error, fontSize: 13)),
             ),
+          if (confirmDisabledReason != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                confirmDisabledReason!,
+                key: const ValueKey('component-pattern-confirm-disabled-reason'),
+                style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+            ),
           const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              ToolPanelKeys(onConfirm: saving ? null : onConfirm, onCancel: saving ? null : onCancel),
+              ToolPanelKeys(
+                onConfirm: saving || confirmDisabledReason != null ? null : onConfirm,
+                onCancel: saving ? null : onCancel,
+              ),
               TextButton(onPressed: saving ? null : onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(
-                onPressed: saving ? null : onConfirm,
+                onPressed: saving || confirmDisabledReason != null ? null : onConfirm,
                 child: Text(editingPatternId == null ? 'Confirm' : 'Save'),
               ),
             ],
@@ -290,7 +334,7 @@ class ComponentPatternPanel extends StatelessWidget {
           Chip(
             label: Text(sourceOccurrenceNames[i], style: const TextStyle(fontSize: 12)),
             visualDensity: VisualDensity.compact,
-            onDeleted: sourceOccurrenceNames.length > 1 ? () => onRemoveSource(i) : null,
+            onDeleted: () => onRemoveSource(i),
           ),
         ChoiceChip(
           label: const Text('+ Add source', style: TextStyle(fontSize: 12)),
@@ -300,7 +344,7 @@ class ComponentPatternPanel extends StatelessWidget {
         ),
         if (pickingMoreSources)
           Text(
-            'Tap a component in the tree to add it',
+            'Tap a component in the viewport or tree to add or remove it',
             style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant),
           ),
       ],

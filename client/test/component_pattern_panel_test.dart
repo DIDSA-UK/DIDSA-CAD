@@ -373,10 +373,70 @@ void main() {
       expect(find.widgetWithText(Chip, 'Washer'), findsOneWidget);
     });
 
-    testWidgets('a lone source chip has no delete affordance', (tester) async {
+    testWidgets('a lone source chip can be removed (the list may be empty while the tool is open)', (tester) async {
       await tester.pumpWidget(wrap(buildPanel(sourceOccurrenceNames: const ['Bolt'])));
       final chip = tester.widget<Chip>(find.widgetWithText(Chip, 'Bolt'));
-      expect(chip.onDeleted, isNull);
+      expect(chip.onDeleted, isNotNull);
+    });
+
+    testWidgets('step hint, inline note and the confirm-disabled reason render; Confirm is disabled with a reason',
+        (tester) async {
+      var confirmed = false;
+      await tester.pumpWidget(wrap(ComponentPatternPanel(
+        mode: ComponentPatternMode.linear,
+        onModeChanged: (_) {},
+        sourceOccurrenceNames: const [],
+        onRemoveSource: (_) {},
+        pickingMoreSources: false,
+        onPickingMoreSourcesChanged: (_) {},
+        direction: ComponentPatternAxisPreset.custom,
+        onDirectionChanged: (_) {},
+        customDirection: const [1.0, 0.0, 0.0],
+        onCustomDirectionChanged: (_) {},
+        count: 3,
+        onCountChanged: (_) {},
+        spacing: 10,
+        onSpacingChanged: (_) {},
+        reverse: false,
+        onReverseChanged: (_) {},
+        hasSecondDirection: false,
+        onSecondDirectionToggled: (_) {},
+        direction2: ComponentPatternAxisPreset.y,
+        onDirection2Changed: (_) {},
+        customDirection2: const [0.0, 1.0, 0.0],
+        onCustomDirection2Changed: (_) {},
+        count2: 1,
+        onCount2Changed: (_) {},
+        spacing2: 0,
+        onSpacing2Changed: (_) {},
+        reverse2: false,
+        onReverse2Changed: (_) {},
+        axisOrigin: const [0.0, 0.0, 0.0],
+        onAxisOriginChanged: (_) {},
+        axisDirection: ComponentPatternAxisPreset.z,
+        onAxisDirectionChanged: (_) {},
+        customAxisDirection: const [0.0, 0.0, 1.0],
+        onCustomAxisDirectionChanged: (_) {},
+        countAngular: 4,
+        onCountAngularChanged: (_) {},
+        angleTotal: 360,
+        onAngleTotalChanged: (_) {},
+        reverseAngular: false,
+        onReverseAngularChanged: (_) {},
+        onToggleDirectionPicking: (_) {},
+        saving: false,
+        error: null,
+        onConfirm: () => confirmed = true,
+        onCancel: () {},
+        stepHint: 'Step 1: pick an edge for the direction',
+        inlineNote: 'pick the source component',
+        confirmDisabledReason: 'Choose a direction first',
+      )));
+      expect(find.text('Step 1: pick an edge for the direction'), findsOneWidget);
+      expect(find.text('pick the source component'), findsOneWidget);
+      expect(find.text('Choose a direction first'), findsOneWidget);
+      await tester.tap(find.text('Confirm'), warnIfMissed: false);
+      expect(confirmed, isFalse);
     });
 
     testWidgets('tapping a chip delete icon invokes onRemoveSource with its index', (tester) async {
@@ -496,7 +556,7 @@ void main() {
 
     testWidgets('shows a hint to tap a component in the tree while picking more sources', (tester) async {
       await tester.pumpWidget(wrap(buildPanel(pickingMoreSources: true)));
-      expect(find.text('Tap a component in the tree to add it'), findsOneWidget);
+      expect(find.text('Tap a component in the viewport or tree to add or remove it'), findsOneWidget);
     });
 
     testWidgets('title reads "Pattern Component" when creating, "Edit Pattern" when editing', (tester) async {

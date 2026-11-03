@@ -18,6 +18,7 @@ transform composition agree.
 
 import math
 
+from app.document.appearance import PATTERN_SEGMENT, base_segment
 from app.document.models import ComponentPattern, ComponentPatternAxis, ComponentPatternType, Document, Part, RigidTransform
 
 Vec3 = tuple[float, float, float]
@@ -70,28 +71,46 @@ def _mat3_to_axis_angle(m: Mat3) -> tuple[Vec3, float]:
     stored in `RigidTransform`'s own axis-angle wire format (see that
     class's own docstring for why axis-angle, not a matrix/quaternion, is
     this codebase's wire convention)."""
+    # Shepperd's method: pivot on the largest of trace / diagonal entries so
+    # the quaternion is numerically stable for every angle, incl. 180 degrees
+    # about any axis (the previous 180-degree branch took signs relative to
+    # the X component, which is pure noise when n_x ~ 0).
     trace = m[0][0] + m[1][1] + m[2][2]
-    cos_theta = max(-1.0, min(1.0, (trace - 1.0) / 2.0))
-    theta = math.acos(cos_theta)
+    pivot = max(trace, m[0][0], m[1][1], m[2][2])
+    if pivot == trace:
+        s = math.sqrt(max(0.0, trace + 1.0)) * 2.0
+        w = 0.25 * s
+        x = (m[2][1] - m[1][2]) / s
+        y = (m[0][2] - m[2][0]) / s
+        z = (m[1][0] - m[0][1]) / s
+    elif pivot == m[0][0]:
+        s = math.sqrt(max(0.0, 1.0 + m[0][0] - m[1][1] - m[2][2])) * 2.0
+        w = (m[2][1] - m[1][2]) / s
+        x = 0.25 * s
+        y = (m[0][1] + m[1][0]) / s
+        z = (m[0][2] + m[2][0]) / s
+    elif pivot == m[1][1]:
+        s = math.sqrt(max(0.0, 1.0 + m[1][1] - m[0][0] - m[2][2])) * 2.0
+        w = (m[0][2] - m[2][0]) / s
+        x = (m[0][1] + m[1][0]) / s
+        y = 0.25 * s
+        z = (m[1][2] + m[2][1]) / s
+    else:
+        s = math.sqrt(max(0.0, 1.0 + m[2][2] - m[0][0] - m[1][1])) * 2.0
+        w = (m[1][0] - m[0][1]) / s
+        x = (m[0][2] + m[2][0]) / s
+        y = (m[1][2] + m[2][1]) / s
+        z = 0.25 * s
+    vec_len = math.sqrt(x * x + y * y + z * z)
+    if vec_len < 1e-12:
+        return (0.0, 0.0, 1.0), 0.0
+    if w < 0.0:
+        # keep the angle in [0, 180]
+        w, x, y, z = -w, -x, -y, -z
+    theta = 2.0 * math.atan2(vec_len, w)
     if theta < 1e-9:
         return (0.0, 0.0, 1.0), 0.0
-    if abs(theta - math.pi) < 1e-6:
-        # 180-degree rotation: (m - m^T) vanishes, so the usual off-
-        # diagonal extraction below is degenerate - pull the axis from the
-        # symmetric part instead ((m + I) / 2's diagonal), then disambiguate
-        # signs from the off-diagonal terms.
-        axis = (
-            math.sqrt(max(0.0, (m[0][0] + 1.0) / 2.0)),
-            math.sqrt(max(0.0, (m[1][1] + 1.0) / 2.0)),
-            math.sqrt(max(0.0, (m[2][2] + 1.0) / 2.0)),
-        )
-        if m[0][1] < 0:
-            axis = (axis[0], -axis[1], axis[2])
-        if m[0][2] < 0:
-            axis = (axis[0], axis[1], -axis[2])
-        return _normalize(axis), math.degrees(theta)
-    axis = (m[2][1] - m[1][2], m[0][2] - m[2][0], m[1][0] - m[0][1])
-    return _normalize(axis), math.degrees(theta)
+    return (x / vec_len, y / vec_len, z / vec_len), math.degrees(theta)
 
 
 def compose(parent: RigidTransform, child: RigidTransform) -> RigidTransform:
@@ -174,6 +193,37 @@ def top_level_occurrence_id(occurrence_id: str) -> str:
     return occurrence_id.split("/", 1)[0]
 
 
+def parse_pattern_segment(segment: str) -> tuple[str, str, int] | None:
+    """`(source occurrence id, pattern id, index)` of a pattern-copy segment, or None for a plain occurrence id."""
+    if PATTERN_SEGMENT not in segment:
+        return None
+    source, rest = segment.split(PATTERN_SEGMENT, 1)
+    pattern_id, _, index = rest.rpartition(":")
+    if not pattern_id or not index.lstrip("-").isdigit():
+        return None
+    return source, pattern_id, int(index)
+
+
+def resolve_pattern_copy_transform(part: Part, segment: str) -> RigidTransform:
+    """The derived local transform of the pattern copy named by `segment` (`<src>#pattern:<pid>:<i>`) inside `part`.
+    Raises `KeyError(segment)` unless the copy is live (pattern exists and is not suppressed, the occurrence is one of
+    its sources and not suppressed, and the index is one the pattern currently derives)."""
+    copy = parse_pattern_segment(segment)
+    if copy is None:
+        raise KeyError(segment)
+    source_id, pattern_id, index = copy
+    occurrence = next((o for o in part.occurrences if o.id == source_id), None)
+    pattern = next((p for p in part.component_patterns if p.id == pattern_id), None)
+    if occurrence is None or occurrence.suppressed or pattern is None or pattern.suppressed:
+        raise KeyError(segment)
+    if occurrence.id not in pattern.source_occurrence_ids:
+        raise KeyError(segment)
+    derived = expand_component_pattern_instances(pattern, occurrence.transform)
+    if index not in derived:
+        raise KeyError(segment)
+    return derived[index]
+
+
 def resolve_occurrence_target(document: Document, part: Part, occurrence_id: str) -> tuple[Part, RigidTransform | None]:
     """The Part `occurrence_id` places, plus that Occurrence's own current
     `transform` - `None` for the special `""` ("this Part's own root
@@ -207,10 +257,16 @@ def resolve_occurrence_target(document: Document, part: Part, occurrence_id: str
     current = part
     chain: list[RigidTransform] = []
     for segment in occurrence_id.split("/"):
-        occurrence = next((o for o in current.occurrences if o.id == segment), None)
+        occurrence = next((o for o in current.occurrences if o.id == base_segment(segment)), None)
         if occurrence is None or occurrence.part_id is None or occurrence.part_id not in document.parts:
             raise KeyError(occurrence_id)
-        chain.append(occurrence.transform)
+        if PATTERN_SEGMENT in segment:
+            try:
+                chain.append(resolve_pattern_copy_transform(current, segment))
+            except KeyError:
+                raise KeyError(occurrence_id) from None
+        else:
+            chain.append(occurrence.transform)
         current = document.parts[occurrence.part_id]
     if len(chain) == 1:
         return current, chain[0]

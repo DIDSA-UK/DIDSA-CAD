@@ -27,12 +27,14 @@ import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
+import 'package:didsa_cad_client/viewport3d/mate_panel.dart';
 import 'package:didsa_cad_client/viewport3d/measurement_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_context_menu.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
+import 'package:didsa_cad_client/viewport3d/component_pattern_panel.dart';
 import 'package:didsa_cad_client/layout/layout_mode.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
@@ -72,6 +74,9 @@ class _FakeDocumentBackend {
   /// body, for tests that need to assert on a field (e.g. `source_feature_
   /// ids`) this fake doesn't otherwise expose any other way.
   Map<String, dynamic>? lastPatternPatchBody;
+
+  /// M1: makes `POST .../mates` answer 422.
+  bool failMateCreate = false;
 
   /// Bug fix regression coverage ("patterns have stopped showing in the
   /// feature tree... this was working before"): how many times `GET
@@ -744,6 +749,7 @@ class _FakeDocumentBackend {
       return _json(matesGetMatch.group(1) == 'part-1' ? mates : <dynamic>[], 200);
     }
     if (matesGetMatch != null && method == 'POST') {
+      if (failMateCreate) return _json({'detail': 'No placement satisfies these mates together.'}, 422);
       final mate = {
         'id': 'mate-${_nextMateId++}',
         'type': body['type'],
@@ -5275,6 +5281,11 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.textContaining('derived pattern instance'), findsOneWidget);
+
+      // B5: the banner is dismissible.
+      await tester.tap(find.byKey(const ValueKey('error-banner-dismiss')));
+      await tester.pump();
+      expect(find.textContaining('derived pattern instance'), findsNothing);
     });
   });
 
@@ -5356,6 +5367,201 @@ void main() {
         expect(panel.occurrences.single.id, 'occ-1');
       },
     );
+
+    SelectionEntityRef mateFace(String occ, int id) =>
+        SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'body-$occ', occurrenceId: occ, id: id);
+
+    Future<void> pickTwoFaces(WidgetTester tester) async {
+      final toggle = tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!;
+      toggle(mateFace('occ-1', 1));
+      await tester.pump();
+      toggle(mateFace('occ-2', 1));
+      await tester.pump(const Duration(milliseconds: 400));
+    }
+
+    testWidgets('M1: Next creates the mate and keeps the tool open (type kept, picks cleared); OK creates and closes',
+        (tester) async {
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      await tapStartCommand(tester, 'Mate');
+      expect(find.byType(MatePanel), findsOneWidget);
+      expect(find.text('Cancel'), findsWidgets);
+
+      tester.widget<MatePanel>(find.byType(MatePanel)).onMateTypeChanged('parallel');
+      await tester.pump();
+      await pickTwoFaces(tester);
+      final next = tester.widget<MatePanel>(find.byType(MatePanel)).onNext;
+      expect(next, isNotNull);
+      next!();
+      await _pumpUntil(tester, () => backend.mates.length == 1);
+      await tester.pump(const Duration(milliseconds: 400));
+
+      expect(find.byType(MatePanel), findsOneWidget, reason: 'Next keeps the tool open');
+      expect(find.byType(ModalBarrier).evaluate().length, lessThanOrEqualTo(1));
+      var panel = tester.widget<MatePanel>(find.byType(MatePanel));
+      expect(panel.mateType, 'parallel', reason: 'the type is kept');
+      expect(panel.selectedEntities, isEmpty, reason: 'the picks are cleared');
+      expect(panel.addedCount, 1);
+      expect(find.text('Close'), findsOneWidget);
+      expect(find.text('1 mate added'), findsOneWidget);
+
+      await pickTwoFaces(tester);
+      tester.widget<MatePanel>(find.byType(MatePanel)).onConfirm!();
+      await _pumpUntil(tester, () => backend.mates.length == 2);
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byType(MatePanel), findsNothing, reason: 'OK closes the tool');
+    });
+
+    Future<void> openSelectOther(WidgetTester tester) async {
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectOtherRequested!(
+        [
+          HoverHit(entity: mateFace('occ-1', 1), rayT: 1),
+          HoverHit(entity: mateFace('occ-2', 2), rayT: 2),
+        ],
+        const Offset(200, 200),
+      );
+      await tester.pump();
+    }
+
+    testWidgets('S1: Select Other is non-modal (no new barrier), a viewport tap closes it without selecting, Esc closes it',
+        (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      final barriersBefore = find.byType(ModalBarrier).evaluate().length;
+      await openSelectOther(tester);
+      expect(find.byKey(const ValueKey('select-other-panel')), findsOneWidget);
+      expect(find.byType(ModalBarrier).evaluate().length, barriersBefore, reason: 'no new barrier');
+      expect(find.byType(PartViewport).hitTestable(), findsOneWidget, reason: 'the viewport still receives pointers');
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).suppressHoverFallback, isTrue);
+
+      // A viewport tap (entity hit) closes it and is not a pick.
+      final before = tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities;
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(mateFace('occ-1', 9));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, before);
+
+      // An empty-space tap closes it too, leaving the selection alone.
+      await openSelectOther(tester);
+      tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+
+      // Esc closes it.
+      await openSelectOther(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).highlightOverride, isNull);
+    });
+
+    testWidgets('S1: a row pick selects and closes; a row preview feeds highlightOverride and close clears it', (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      await openSelectOther(tester);
+      final gesture = await tester.startGesture(tester.getCenter(find.text('Face #2')));
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).highlightOverride, mateFace('occ-2', 2));
+      await gesture.up();
+      await tester.pump();
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).highlightOverride, isNull);
+
+      await tester.tap(find.text('Face #1'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, contains(mateFace('occ-1', 1)));
+    });
+
+    testWidgets('S1: while Select Other is open the viewport is told a tap only dismisses it', (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).tapDismissesOverlay, isFalse);
+      await openSelectOther(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).tapDismissesOverlay, isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).tapDismissesOverlay, isFalse);
+    });
+
+    testWidgets('S1: a second Select Other gesture while open replaces the list and leaves the selection alone', (tester) async {
+      // With `tapDismissesOverlay` the viewport turns the gesture's first click into `onClearSelection` (no toggle to
+      // undo), then the hold requests the new list. Before the fix the click toggled, the screen swallowed that as a
+      // dismiss, and the hold's "undo" toggle then really selected the entity.
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      await openSelectOther(tester);
+      final before = tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities;
+      tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+      await tester.pump();
+      await openSelectOther(tester);
+      expect(find.byKey(const ValueKey('select-other-panel')), findsOneWidget, reason: 'the new list is open');
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, before);
+    });
+
+    testWidgets('S1: opening a tool closes Select Other', (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      await openSelectOther(tester);
+      await tapStartCommand(tester, 'Mate');
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+    });
+
+    testWidgets('M1: a Next whose create fails keeps the picks and shows the error', (tester) async {
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      backend.failMateCreate = true;
+      await tapStartCommand(tester, 'Mate');
+      await pickTwoFaces(tester);
+      tester.widget<MatePanel>(find.byType(MatePanel)).onNext!();
+      await _pumpUntil(tester, () => find.textContaining('No placement satisfies').evaluate().isNotEmpty);
+      final panel = tester.widget<MatePanel>(find.byType(MatePanel));
+      expect(panel.selectedEntities.length, 2, reason: 'the picks are kept');
+      expect(panel.addedCount, 0);
+      expect(backend.mates, isEmpty);
+    });
+
+    testWidgets('B7: Pattern Component opens with nothing selected, on the Direction step, without an error banner', (
+      tester,
+    ) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+      await tapStartCommand(tester, 'Pattern');
+
+      expect(find.byType(ComponentPatternPanel), findsOneWidget);
+      expect(find.text('Select a component first to pattern it'), findsNothing);
+      final panel = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+      expect(panel.sourceOccurrenceNames, isEmpty);
+      expect(panel.pickingDirectionSlot, 1);
+      expect(panel.confirmDisabledReason, 'Choose a direction first');
+      expect(find.textContaining('pick an edge'), findsOneWidget);
+
+      // Choosing a preset direction advances to the Components step.
+      panel.onDirectionChanged(ComponentPatternAxisPreset.z);
+      await tester.pump();
+      final after = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+      expect(after.pickingMoreSources, isTrue);
+      expect(after.confirmDisabledReason, 'Pick at least one component');
+    });
+
+    testWidgets('B6: in the Components step a viewport component tap toggles a source; a copy tap shows an inline hint',
+        (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
+      await tapStartCommand(tester, 'Pattern');
+      tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel)).onDirectionChanged(
+            ComponentPatternAxisPreset.z,
+          );
+      await tester.pump();
+
+      void tap(String id) => tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: id),
+          );
+      tap('occ-1');
+      await tester.pump();
+      var panel = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+      expect(panel.sourceOccurrenceNames.length, 1);
+      expect(panel.confirmDisabledReason, isNull);
+      tap('occ-1');
+      await tester.pump();
+      panel = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+      expect(panel.sourceOccurrenceNames, isEmpty);
+
+      tap('occ-1#pattern:pat-1:1');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('component-pattern-inline-note')), findsOneWidget);
+      expect(find.byKey(const ValueKey('error-banner-dismiss')), findsNothing, reason: 'not the global banner');
+    });
 
     testWidgets('item 7: the tree fetches constraint-status with the occurrence list and passes it to the panel', (
       tester,
@@ -7712,6 +7918,21 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.byKey(const ValueKey('ribbon-Add Component')), findsOneWidget);
       expect(find.text('Assembly Tree'), findsOneWidget);
+    });
+
+    testWidgets('B5: a latched error banner clears when the user switches lens (a new tool context)', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1#pattern:pat-1:2'),
+          );
+      await tester.pump();
+      expect(find.textContaining('derived pattern instance'), findsOneWidget);
+
+      await tester.tap(find.descendant(of: find.byKey(const ValueKey('ribbon-lens')), matching: find.text('Assembly')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('derived pattern instance'), findsNothing);
     });
 
     testWidgets('the New Sketch button starts the plane picker, as the Add menu does', (tester) async {
