@@ -67,6 +67,7 @@ case "${1:-}" in
       [ -f "$f" ] && "$CAD_PY" -I "$HERE/harness/inspect_step.py" "$f" "${f%.step}_geometry.json" > /dev/null 2>&1
     done
     [ -f "$D/assembly.step" ] && "$CAD_PY" -I "$HERE/harness/inspect_step.py" --solids "$D/assembly.step" "$D/assembly_geometry.json" > /dev/null 2>&1
+    [ -f "$D/assembly.step" ] && "$CAD_PY" -I "$HERE/harness/render_step.py" "$D/assembly.step" "$D/assembly.png" > /dev/null 2>&1
     python3 -I "$HERE/harness/expected_assembly.py" "$sketch" "$D" > "$D/score.json"
     cat "$D/score.json"; echo
     ls "$D"/*retry_request.txt 2>/dev/null | sed 's/^/retry needed: /'
