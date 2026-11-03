@@ -5275,6 +5275,11 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(find.textContaining('derived pattern instance'), findsOneWidget);
+
+      // B5: the banner is dismissible.
+      await tester.tap(find.byKey(const ValueKey('error-banner-dismiss')));
+      await tester.pump();
+      expect(find.textContaining('derived pattern instance'), findsNothing);
     });
   });
 

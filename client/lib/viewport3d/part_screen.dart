@@ -4971,6 +4971,7 @@ class _PartScreenState extends State<PartScreen> {
       );
 
   void _openMate() {
+    _clearTransientError();
     setState(() {
       _mateActive = true;
       _entitiesBeforeMate = _selectedEntities;
@@ -5364,7 +5365,14 @@ class _PartScreenState extends State<PartScreen> {
   /// component" beyond the ordinary default-browsing tap Assembly lens
   /// already supports). More sources can be added from within the panel
   /// itself (Phase 11, `[7]`) once it's open.
+  /// Clears the global red error banner - called on every Assembly tool
+  /// entry point (the banner is otherwise only cleared by [_runGuarded]).
+  void _clearTransientError() {
+    if (_errorMessage != null && mounted) setState(() => _errorMessage = null);
+  }
+
   void _openComponentPattern() {
+    _clearTransientError();
     final sourceId = _selectedOccurrenceId;
     if (sourceId == null) {
       setState(() => _errorMessage = 'Select a component first to pattern it');
@@ -5410,6 +5418,7 @@ class _PartScreenState extends State<PartScreen> {
   /// than silently snapping to the nearest world axis) unless they match one
   /// exactly - see [presetForVector].
   void _openComponentPatternForEdit(ComponentPatternDto pattern) {
+    _clearTransientError();
     final axis = pattern.axis;
     setState(() {
       _componentPatternPanelActive = true;
@@ -25704,7 +25713,18 @@ class _PartScreenState extends State<PartScreen> {
               width: double.infinity,
               color: Colors.red.shade100,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade900)),
+              child: Row(
+                children: [
+                  Expanded(child: Text(_errorMessage!, style: TextStyle(color: Colors.red.shade900))),
+                  IconButton(
+                    key: const ValueKey('error-banner-dismiss'),
+                    icon: Icon(Icons.close, size: 18, color: Colors.red.shade900),
+                    tooltip: 'Dismiss',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: _clearTransientError,
+                  ),
+                ],
+              ),
             ),
           if (_desktopLayout) _buildDesktopRibbon(context),
           Expanded(
