@@ -38,6 +38,7 @@ import numpy as np
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 
+from app.document.appearance import PATTERN_SEGMENT
 from app.document.assembly import mate_ref_tops, mate_tops, top_level_occurrence_id
 from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
@@ -141,6 +142,10 @@ def discover_component(
     New-Mate ghost preview."""
     by_id = {o.id: o for o in part.occurrences}
     frozen = {o.id for o in part.occurrences if o.fixed} | {""} | set(also_frozen)
+    # A pattern copy (`<src>#pattern:<pid>:<i>`) is rigidly derived from its source and never driven by a solve: it is a
+    # frozen side whose pose `resolve_occurrence_target` derives (the copy does not follow its source being re-solved).
+    for mate in [*_live_mates(part), *extra_mates]:
+        frozen.update(t for t in mate_tops(mate) if PATTERN_SEGMENT in t)
     if grabbed_id not in by_id:
         raise GroupError(f"unknown occurrence {grabbed_id!r}")
     if grabbed_id in frozen:

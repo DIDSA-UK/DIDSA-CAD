@@ -26,8 +26,11 @@ from app.document.appearance_routes import (
     set_legacy_colour,
 )
 from app.document.ai_plan_schemas import PlanValidateRequest, PlanValidateResponse
+from app.document.appearance import PATTERN_SEGMENT, base_segment
 from app.document.assembly import (
     compose_chain,
+    resolve_pattern_copy_transform,
+    resolve_occurrence_target,
     expand_component_pattern_instances,
     mate_ref_tops,
     mate_tops,
@@ -3860,7 +3863,7 @@ def delete_occurrence(part_id: str, occurrence_id: str) -> Response:
     walk is needed here either."""
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
-    part.mates = [m for m in part.mates if occurrence_id not in mate_tops(m)]
+    part.mates = [m for m in part.mates if occurrence_id not in {base_segment(t) for t in mate_tops(m)}]
     for pattern in part.component_patterns:
         if occurrence_id in pattern.source_occurrence_ids:
             drop_overrides_of_pattern(get_document(), part, pattern.id)
@@ -3868,6 +3871,7 @@ def delete_occurrence(part_id: str, occurrence_id: str) -> Response:
     part.component_patterns = [
         p for p in part.component_patterns if occurrence_id not in p.source_occurrence_ids
     ]
+    _drop_mates_with_dead_pattern_copies(part)
     # The Appearance tool: overrides whose path goes through the occurrence go with it (the Mate cascade's rule).
     drop_overrides_through_occurrence(get_document(), part, occurrence_id)
     drop_scene_overrides_through_occurrence(get_document(), part, occurrence_id)  # scenes D8: the same rule for scene overrides
@@ -3930,12 +3934,21 @@ def _check_mate_occurrence_path(part: Part, occurrence_id: str) -> None:
     current: Part | None = part
     segments = occurrence_id.split("/")
     for index, segment in enumerate(segments):
-        occurrence = next((o for o in current.occurrences if o.id == segment), None) if current else None
+        occurrence = next((o for o in current.occurrences if o.id == base_segment(segment)), None) if current else None
         if occurrence is None:
             raise HTTPException(
                 status_code=422,
                 detail={"type": "occurrence_not_found", "occurrence_id": occurrence_id},
             )
+        if PATTERN_SEGMENT in segment:
+            # A pattern copy (`<src>#pattern:<pid>:<i>`) must be live: its pattern exists, is not suppressed and still derives <i>.
+            try:
+                resolve_pattern_copy_transform(current, segment)
+            except KeyError:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"type": "occurrence_not_found", "occurrence_id": occurrence_id},
+                ) from None
         if index < len(segments) - 1:
             current = get_document().parts.get(occurrence.part_id) if occurrence.part_id else None
 
@@ -3943,6 +3956,47 @@ def _check_mate_occurrence_path(part: Part, occurrence_id: str) -> None:
 def _schema_ref_tops(ref: MateEntityRefResponse) -> tuple[str, ...]:
     """`mate_ref_tops` for a wire reference."""
     return mate_ref_tops(_mate_entity_ref_to_domain(ref))
+
+
+def _schema_ref_bases(ref: MateEntityRefResponse) -> set[str]:
+    """The top-level occurrences a wire reference involves with a pattern copy folded onto its source - a copy is rigidly
+    derived from its source, so for the 'different occurrences' check they are one body."""
+    return {base_segment(top) for top in _schema_ref_tops(ref)}
+
+
+_COPY_MATE_MESSAGE = (
+    "A pattern copy follows its source - mate the source, or move the other part. "
+    "A pattern copy can't be driven by a mate."
+)
+
+
+def _drop_mates_with_dead_pattern_copies(part: Part) -> list[str]:
+    """Removes (and returns the ids of) every Mate with a reference naming a pattern copy that no longer resolves - its
+    pattern was deleted/suppressed, its count/skip no longer derives that index, or its source was deleted."""
+    def dead(path: str) -> bool:
+        if PATTERN_SEGMENT not in path:
+            return False
+        try:
+            resolve_occurrence_target(get_document(), part, path)
+        except KeyError:
+            return True
+        return False
+
+    removed: list[str] = []
+    kept = []
+    for mate in part.mates:
+        paths = []
+        for ref in mate.references:
+            paths.append(ref.occurrence_id)
+            midplane = getattr(ref, "midplane", None)
+            if midplane is not None and midplane.b_occurrence_id is not None:
+                paths.append(midplane.b_occurrence_id)
+        if any(dead(p) for p in paths):
+            removed.append(mate.id)
+        else:
+            kept.append(mate)
+    part.mates = kept
+    return removed
 
 
 def _validate_midplane_plane_ref(ref: PlaneRefSchema) -> None:
@@ -3964,7 +4018,7 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     for ref in payload.references:
         _validate_mate_entity_ref(part, ref, payload.type)
-    if set(_schema_ref_tops(payload.references[0])) & set(_schema_ref_tops(payload.references[1])):
+    if _schema_ref_bases(payload.references[0]) & _schema_ref_bases(payload.references[1]):
         # Compares the top-level Occurrence each reference belongs to, not the
         # full path: two faces inside the same sub-assembly can never be
         # mated here (the whole sub-assembly moves as one rigid body).
@@ -4010,6 +4064,8 @@ def _mate_solve_target(part: Part, mate: Mate, occurrence_id: str | None) -> str
     (the mate is then stored without a solve, as before)."""
     tops = mate_tops(mate)
     if occurrence_id is not None:
+        if PATTERN_SEGMENT in occurrence_id:
+            raise HTTPException(status_code=422, detail=_COPY_MATE_MESSAGE)
         occurrence = _get_occurrence_or_404(part, occurrence_id)
         if occurrence_id not in tops:
             raise HTTPException(status_code=422, detail="occurrence_id must be one of the mate's own occurrences")
@@ -4020,7 +4076,7 @@ def _mate_solve_target(part: Part, mate: Mate, occurrence_id: str | None) -> str
     # the second reference's occurrences first (its first face's before its second face's), then the first reference's
     for ref in reversed(mate.references):
         for top in mate_ref_tops(ref):
-            if top and top not in fixed:
+            if top and top not in fixed and PATTERN_SEGMENT not in top:
                 return top
     return None
 
@@ -4509,6 +4565,8 @@ def update_component_pattern(
         count_2=pattern.count_2,
         direction_2=pattern.direction_2,
     )
+    # A smaller count / new skip list / suppression can take away copies a mate still names.
+    _drop_mates_with_dead_pattern_copies(part)
     return _component_pattern_response(pattern)
 
 
@@ -4519,6 +4577,7 @@ def delete_component_pattern(part_id: str, pattern_id: str) -> Response:
     drop_overrides_of_pattern(get_document(), part, pattern_id)
     drop_scene_overrides_of_pattern(get_document(), part, pattern_id)
     part.component_patterns.remove(pattern)
+    _drop_mates_with_dead_pattern_copies(part)
     return Response(status_code=204)
 
 
