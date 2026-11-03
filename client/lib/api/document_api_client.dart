@@ -2092,6 +2092,13 @@ class MateDto {
   /// A limit mate: the measured value at the stored poses.
   final double? limitValue;
 
+  /// `'ok'` or `'broken'` (computed by the backend at every listing, never stored): a broken mate's residual at the stored poses is
+  /// above tolerance (a pattern edit it could not follow, a part edited under it ...), its limit is outside its range, or a
+  /// reference no longer resolves. Older backends omit it: `'ok'`.
+  final String status;
+
+  bool get isBroken => status == 'broken';
+
   MateDto({
     required this.id,
     required this.type,
@@ -2105,6 +2112,7 @@ class MateDto {
     this.limitMin,
     this.limitMax,
     this.limitValue,
+    this.status = 'ok',
   });
 
   factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
@@ -2122,6 +2130,7 @@ class MateDto {
         limitMin: (json['limit_min'] as num?)?.toDouble(),
         limitMax: (json['limit_max'] as num?)?.toDouble(),
         limitValue: (json['limit_value'] as num?)?.toDouble(),
+        status: json['status'] as String? ?? 'ok',
       );
 }
 
@@ -2542,6 +2551,10 @@ class ComponentPatternDto {
   final bool orientWithRotation;
   final bool suppressed;
 
+  /// Only in the response of `PATCH .../component-patterns/{id}`: the mates the edit left unsatisfied (the edit is always stored;
+  /// a mate on one of the pattern's copies that its part could not follow is left broken). Empty everywhere else.
+  final List<String> brokenMateIds;
+
   const ComponentPatternDto({
     required this.id,
     required this.sourceOccurrenceIds,
@@ -2561,6 +2574,7 @@ class ComponentPatternDto {
     this.skipIndices = const [],
     this.orientWithRotation = true,
     this.suppressed = false,
+    this.brokenMateIds = const [],
   });
 
   factory ComponentPatternDto.fromJson(Map<String, dynamic> json) => ComponentPatternDto(
@@ -2586,6 +2600,7 @@ class ComponentPatternDto {
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
         orientWithRotation: json['orient_with_rotation'] as bool? ?? true,
         suppressed: json['suppressed'] as bool? ?? false,
+        brokenMateIds: (json['broken_mate_ids'] as List?)?.cast<String>() ?? const [],
       );
 }
 

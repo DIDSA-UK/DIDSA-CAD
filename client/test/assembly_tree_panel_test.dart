@@ -879,4 +879,80 @@ void main() {
       expect(find.byIcon(Icons.lock_open), findsOneWidget);
     });
   });
+
+  group('broken mates (pattern followers, F1)', () {
+    MateDto brokenMate(String id) => MateDto(id: id, type: 'coincident', references: const [], status: 'broken');
+
+    Widget panel({required List<MateDto> mates, Set<String> flash = const {}, int token = 0}) => _wrap(
+          AssemblyTreePanel(
+            visible: true,
+            occurrences: const [],
+            mates: mates,
+            selectedOccurrenceId: null,
+            onOccurrenceTap: (_) {},
+            onOccurrenceLongPress: (_) {},
+            onClose: () {},
+            flashMateIds: flash,
+            flashToken: token,
+          ),
+        );
+
+    testWidgets('a broken mate row uses the error colour, a warning icon and says why; an ok one is plain', (tester) async {
+      await tester.pumpWidget(panel(mates: [brokenMate('bad'), _mate('good')]));
+      final error = Theme.of(tester.element(find.text('Mates'))).colorScheme.error;
+      final bad = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
+      final good = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 2'));
+      expect((bad.leading as Icon).icon, Icons.warning_amber_rounded);
+      expect((bad.leading as Icon).color, error);
+      expect((bad.title as Text).style?.color, error);
+      expect(find.text(kBrokenMateText), findsOneWidget);
+      expect((good.leading as Icon).icon, Icons.link);
+      expect((good.title as Text).style?.color, isNull);
+    });
+
+    testWidgets('a suppressed mate is never drawn as broken', (tester) async {
+      final suppressed = MateDto(id: 's', type: 'coincident', references: const [], status: 'broken', suppressed: true);
+      await tester.pumpWidget(panel(mates: [suppressed]));
+      expect(find.text(kBrokenMateText), findsNothing);
+    });
+
+    testWidgets('a new flash token pulses the named rows (about three times over two seconds) and reopens a collapsed Mates section',
+        (tester) async {
+      final mates = [brokenMate('bad'), _mate('good')];
+      await tester.pumpWidget(panel(mates: mates));
+      await tester.tap(find.text('Mates')); // collapse it
+      await tester.pumpAndSettle();
+      expect(find.text(kBrokenMateText), findsNothing);
+
+      await tester.pumpWidget(panel(mates: mates, flash: {'bad'}, token: 1));
+      await tester.pump(); // post-frame: opens the section and starts the pulse
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.text(kBrokenMateText), findsOneWidget, reason: 'the Mates section was opened so the flash is visible');
+
+      var peaks = 0;
+      var wasPulsing = false;
+      var pulseSamples = 0;
+      Color? tileColour() => tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1')).tileColor;
+      var previous = 0.0;
+      var rising = false;
+      for (var ms = 0; ms < 2000; ms += 50) {
+        await tester.pump(const Duration(milliseconds: 50));
+        final alpha = tileColour()?.a ?? 0.0;
+        if (alpha > 0) {
+          wasPulsing = true;
+          pulseSamples++;
+        }
+        if (alpha < previous && rising) peaks++;
+        rising = alpha > previous;
+        previous = alpha;
+      }
+      expect(wasPulsing, isTrue);
+      expect(pulseSamples, greaterThan(5));
+      expect(peaks, inInclusiveRange(2, 3), reason: 'three pulses');
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(tileColour(), isNull, reason: 'the flash ends');
+      // the unnamed row never flashed
+      expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 2')).tileColor, isNull);
+    });
+  });
 }

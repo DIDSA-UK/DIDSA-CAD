@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
@@ -135,6 +137,9 @@ String componentPatternSummary(ComponentPatternDto pattern) {
   return '×${pattern.count}';
 }
 
+/// The subtitle of a broken mate's row (the Assembly tree).
+const String kBrokenMateText = "Broken - can't be satisfied";
+
 /// The display name for the Mate at [index] in [mates] - mirrors
 /// [occurrenceDisplayName]/`featureDisplayName`'s "Type N" convention
 /// (ordinal counts only same-type mates up to and including [index]), since a
@@ -247,6 +252,11 @@ class AssemblyTreePanel extends StatefulWidget {
   final void Function(MateDto mate, Offset position)? onMateContextMenu;
   final void Function(ComponentPatternDto pattern, Offset position)? onPatternContextMenu;
 
+  /// Mates a pattern edit just left broken (`PATCH .../component-patterns` -> `broken_mate_ids`): their rows pulse (about three
+  /// times over two seconds) each time [flashToken] changes, and the Mates section opens if it was collapsed so the pulse is seen.
+  final Set<String> flashMateIds;
+  final int flashToken;
+
   final VoidCallback onClose;
 
   /// Bug fix: previously this panel had no idea whether "Make Focus" had
@@ -343,6 +353,8 @@ class AssemblyTreePanel extends StatefulWidget {
     this.onOccurrenceContextMenu,
     this.onMateContextMenu,
     this.onPatternContextMenu,
+    this.flashMateIds = const {},
+    this.flashToken = 0,
     this.focusedLabel,
     this.onExitFocus,
     this.rootLabel = 'Assembly',
@@ -372,7 +384,7 @@ double assemblyTreeDefaultWidthFraction(Size screenSize) {
       : _AssemblyTreePanelState._defaultWidthFractionDesktop;
 }
 
-class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
+class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTickerProviderStateMixin {
   // Same width-fraction constants/behavior as `FeatureTreePanel` - a user who
   // has already learned to grab this panel's edge to resize it should find
   // the same affordance here, at the same default width.
@@ -389,6 +401,38 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
   /// follows the screen-size default (so rotating the device re-defaults it);
   /// after that the user's own choice always wins.
   double? _userWidthFraction;
+
+  /// The pulse of [AssemblyTreePanel.flashMateIds]: 0 -> 1 over two seconds, read as three pulses by [_flashPulse].
+  late final AnimationController _flash = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
+  final ExpansionTileController _matesTile = ExpansionTileController();
+
+  @override
+  void dispose() {
+    _flash.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(AssemblyTreePanel old) {
+    super.didUpdateWidget(old);
+    if (widget.flashToken != old.flashToken && widget.flashMateIds.isNotEmpty) {
+      // After this frame: the Mates tile may only just have been built (a refresh that brought the first broken mate).
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        try {
+          if (!_matesTile.isExpanded) _matesTile.expand();
+        } catch (_) {/* the section is not built (no mates): nothing to open */}
+        _flash.forward(from: 0);
+      });
+    }
+  }
+
+  /// 0..1: three pulses over the animation, fading out.
+  double get _flashPulse {
+    final t = _flash.value;
+    if (_flash.isDismissed || t >= 1.0) return 0.0;
+    return (0.5 - 0.5 * math.cos(2 * math.pi * 3 * t)) * (1.0 - t * 0.4);
+  }
 
   double _effectiveWidthFraction(BuildContext context) =>
       _userWidthFraction ?? assemblyTreeDefaultWidthFraction(MediaQuery.sizeOf(context));
@@ -883,19 +927,30 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
 
   Widget _buildMatesSection(BuildContext context) {
     return ExpansionTile(
+      controller: _matesTile,
       initiallyExpanded: true,
       dense: true,
       visualDensity: VisualDensity.compact,
       leading: const Icon(Icons.link, size: 26),
       title: const Text('Mates', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [
-        for (int i = 0; i < widget.mates.length; i++) _buildMateTile(context, i),
+        for (int i = 0; i < widget.mates.length; i++)
+          // Only a row that is flashing listens to the animation; every other row is built once.
+          widget.flashMateIds.contains(widget.mates[i].id)
+              ? AnimatedBuilder(animation: _flash, builder: (context, _) => _buildMateTile(context, i))
+              : _buildMateTile(context, i),
       ],
     );
   }
 
   Widget _buildMateTile(BuildContext context, int index) {
     final mate = widget.mates[index];
+    // A broken mate (the backend computes it, `MateDto.status`) draws in the error colour with a warning icon; a suppressed one
+    // is never broken (the backend says `ok`).
+    final broken = mate.isBroken && !mate.suppressed;
+    final errorColour = Theme.of(context).colorScheme.error;
+    final summary = mateValueSummary(mate);
+    final pulse = widget.flashMateIds.contains(mate.id) ? _flashPulse : 0.0;
     return Opacity(
       opacity: mate.suppressed ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
@@ -904,14 +959,22 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> {
           dense: true,
           visualDensity: VisualDensity.compact,
           selected: mate.id == widget.selectedMateId,
-          leading: const Icon(Icons.link, size: 24),
+          tileColor: pulse > 0 ? errorColour.withValues(alpha: 0.35 * pulse) : null,
+          leading: Icon(broken ? Icons.warning_amber_rounded : Icons.link, size: 24, color: broken ? errorColour : null),
           title: Text(
             mateDisplayName(widget.mates, index),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: _rowTitleStyle,
+            style: broken ? _rowTitleStyle.copyWith(color: errorColour) : _rowTitleStyle,
           ),
-          subtitle: mateValueSummary(mate) == null ? null : Text(mateValueSummary(mate)!, maxLines: 1, overflow: TextOverflow.ellipsis),
+          subtitle: !broken && summary == null
+              ? null
+              : Text(
+                  broken ? (summary == null ? kBrokenMateText : '$kBrokenMateText · $summary') : summary!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: broken ? TextStyle(color: errorColour) : null,
+                ),
           trailing: mate.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
           onTap: widget.onMateTap == null || widget.isMultiSelectMode ? null : () => widget.onMateTap!(mate),
           onLongPress:

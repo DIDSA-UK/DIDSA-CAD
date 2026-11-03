@@ -612,6 +612,10 @@ class _PartScreenState extends State<PartScreen> {
   List<OccurrenceDto> _occurrences = [];
   List<MateDto> _mates = [];
   List<ComponentPatternDto> _componentPatterns = [];
+
+  /// Mates a pattern edit left broken ([_announceBrokenMates]): the Assembly tree flashes these rows whenever [_flashMateToken] changes.
+  Set<String> _flashMateIds = const {};
+  int _flashMateToken = 0;
   String? _selectedOccurrenceId;
 
   /// Test report item 5: [AssemblyTreePanel.selectedMateId]'s own backing
@@ -5734,6 +5738,7 @@ class _PartScreenState extends State<PartScreen> {
         resolveComponentPatternVector(_componentPatternDirection2, _componentPatternCustomDirection2);
     try {
       final editingId = _componentPatternEditingId;
+      ComponentPatternDto? edited;
       if (editingId == null) {
         await _api.createComponentPattern(
           focusPartId,
@@ -5753,7 +5758,7 @@ class _PartScreenState extends State<PartScreen> {
           reverseAngular: _componentPatternReverseAngular,
         );
       } else {
-        await _api.updateComponentPattern(
+        edited = await _api.updateComponentPattern(
           focusPartId,
           editingId,
           sourceOccurrenceIds: sourceIds,
@@ -5783,6 +5788,7 @@ class _PartScreenState extends State<PartScreen> {
       });
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
+      if (edited != null) _announceBrokenMates(edited.brokenMateIds);
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -5790,6 +5796,18 @@ class _PartScreenState extends State<PartScreen> {
         _componentPatternError = e.message;
       });
     }
+  }
+
+  /// Mates a pattern edit left broken (the edit is always stored): their rows flash in the Assembly tree (which opens its Mates
+  /// section) and a SnackBar says how many could not be kept. Called after the tree refresh, so the rows already carry `status`.
+  void _announceBrokenMates(List<String> brokenMateIds) {
+    if (!mounted || brokenMateIds.isEmpty) return;
+    setState(() {
+      _flashMateIds = {...brokenMateIds};
+      _flashMateToken++;
+    });
+    final n = brokenMateIds.length;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('Pattern updated - $n mate${n == 1 ? '' : 's'} could not be kept')));
   }
 
   /// Desktop input D4: a right click on a Patterns-section row. Touch's
@@ -25811,6 +25829,8 @@ class _PartScreenState extends State<PartScreen> {
                     selectedMateId: _selectedMateId,
                     onPatternTap: _openComponentPatternForEdit,
                     onPatternLongPress: _confirmDeleteComponentPattern,
+                    flashMateIds: _flashMateIds,
+                    flashToken: _flashMateToken,
                     focusedLabel: _focusStack?.currentLabel,
                     onExitFocus: () => unawaited(_exitAssemblyFocus()),
                     // Test report item 1: the tree's own root row - whichever

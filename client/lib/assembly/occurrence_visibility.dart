@@ -242,3 +242,13 @@ String topLevelOccurrenceId(String occurrenceId) {
   final slash = occurrenceId.indexOf('/');
   return slash == -1 ? occurrenceId : occurrenceId.substring(0, slash);
 }
+
+/// The occurrence whose POSE a Mate reference depends on: [topLevelOccurrenceId] with a pattern-copy segment
+/// (`A#pattern:P:1`) folded to its source `A` - the client mirror of the backend's `mate_ref_drivers`. A copy is a fixed
+/// function of its source's pose, so a mate on a copy is, for "is this part mated" and for the solver's graph, a mate on its
+/// source (the mated part FOLLOWS the copy when the source moves or the pattern changes).
+String mateDrivingOccurrenceId(String occurrenceId) {
+  final top = topLevelOccurrenceId(occurrenceId);
+  final at = top.indexOf('#pattern:');
+  return at < 0 ? top : top.substring(0, at);
+}

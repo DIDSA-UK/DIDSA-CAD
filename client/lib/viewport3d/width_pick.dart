@@ -134,10 +134,12 @@ class WidthPick {
 }
 
 /// Every top-level occurrence [mate] involves: its references' own, and the second face's of a Width reference spanning two parts.
+/// A reference on a pattern copy (`A#pattern:P:1`) counts as its source `A` ([mateDrivingOccurrenceId], the mirror of the
+/// backend's `mate_ref_drivers`): the copy follows `A`, so `A` is mated and a move of `A` must go through the solver.
 Set<String> mateTopLevelOccurrences(MateDto mate) => {
       for (final r in mate.references) ...[
-        topLevelOccurrenceId(r.occurrenceId),
-        if (r.midplane?.bOccurrenceId != null) topLevelOccurrenceId(r.midplane!.bOccurrenceId!),
+        mateDrivingOccurrenceId(r.occurrenceId),
+        if (r.midplane?.bOccurrenceId != null) mateDrivingOccurrenceId(r.midplane!.bOccurrenceId!),
       ],
     };
 

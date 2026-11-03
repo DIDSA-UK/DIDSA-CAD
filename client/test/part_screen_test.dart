@@ -169,6 +169,10 @@ class _FakeDocumentBackend {
   final List<Map<String, dynamic>> mates;
   final List<Map<String, dynamic>> componentPatterns;
 
+  /// F1: every `PATCH .../component-patterns/{id}` body, and the mates its scripted answer reports as left broken.
+  final List<Map<String, dynamic>> patternPatches = [];
+  List<String> brokenMateIdsOnPatternEdit = [];
+
   /// The Appearance tool / scenes (V3 / S3): each Part's appearance overrides, every PUT body, `part-1`'s scenes and the
   /// scene POST / PATCH bodies.
   final Map<String, List<Map<String, dynamic>>> appearanceOverrides = {};
@@ -797,6 +801,20 @@ class _FakeDocumentBackend {
       };
       componentPatterns.add(pattern);
       return _json(pattern, 201);
+    }
+    // F1: `PATCH .../component-patterns/{id}` answers the stored pattern plus the mates the edit left broken (scripted); those mates
+    // list as `status: broken` from then on.
+    final componentPatternPatchMatch =
+        RegExp(r'^/document/parts/part-1/component-patterns/([^/]+)$').firstMatch(path);
+    if (componentPatternPatchMatch != null && method == 'PATCH') {
+      final index = componentPatterns.indexWhere((p) => p['id'] == componentPatternPatchMatch.group(1));
+      if (index == -1) return http.Response('not found: pattern', 404);
+      patternPatches.add(Map<String, dynamic>.from(body));
+      componentPatterns[index] = {...componentPatterns[index], ...body};
+      for (final mate in mates) {
+        if (brokenMateIdsOnPatternEdit.contains(mate['id'])) mate['status'] = 'broken';
+      }
+      return _json({...componentPatterns[index], 'broken_mate_ids': brokenMateIdsOnPatternEdit}, 200);
     }
     final patternDeleteMatch =
         RegExp(r'^/document/parts/part-1/component-patterns/([^/]+)$').firstMatch(path);
@@ -6255,6 +6273,29 @@ void main() {
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedOccurrenceTransform, isNotNull);
     });
 
+    testWidgets('a source whose only mates are on its COPIES counts as mated: its gizmo drag goes through mate-motion', (tester) async {
+      // occ-2 is mated to a face of a copy of occ-1 (`occ-1#pattern:pat-1:1`): the copy follows occ-1, so occ-1 is mated.
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 30)],
+        seedMates: [mateBetween('occ-2', 'occ-1#pattern:pat-1:1')],
+        target: 'occ-1',
+      );
+      backend.mateMotionHandler = flatGroup(backend);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragStart!();
+      await settle(tester);
+      expect(backend.mateMotionRequests.length, 1, reason: 'the grab anchor: the drag is a constrained one');
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragUpdate!(wish(4, 6, 0));
+      await tester.pump();
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragEnd!();
+      await settle(tester);
+      expect(backend.transformPatchCount, 0, reason: 'never a bare transform PATCH for a source with mated copies');
+      expect(backend.mateMotionRequests.where((r) => r['commit'] == true).length, 1);
+    });
+
     testWidgets('an unmated occurrence keeps the raw PATCH path: no mate-motion request at all', (tester) async {
       final backend = await openWithGizmo(
         tester,
@@ -6450,6 +6491,64 @@ void main() {
           'orient_with_rotation': true,
           'suppressed': false,
         };
+
+    testWidgets('a pattern edit that leaves mates broken flashes their rows and says so in a SnackBar', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')],
+        seedMates: [mateReferencing('mate-1', 'occ-2')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+      );
+      backend.brokenMateIdsOnPatternEdit = ['mate-1'];
+      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.mates.single.isBroken, isFalse);
+      expect(panel.flashMateIds, isEmpty);
+
+      panel.onPatternTap!(panel.patterns.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      tester
+          .widget<ButtonStyleButton>(find.ancestor(of: find.text('Save'), matching: find.byWidgetPredicate((w) => w is ButtonStyleButton)))
+          .onPressed!();
+      await tester.pump();
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+
+      expect(backend.patternPatches, hasLength(1));
+      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.mates.single.isBroken, isTrue, reason: 'the refreshed tree carries the mate\'s status');
+      expect(panel.flashMateIds, {'mate-1'});
+      expect(panel.flashToken, 1);
+      expect(find.text('Pattern updated - 1 mate could not be kept'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 600)); // mid-pulse: the row's background is tinted
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(find.textContaining("Broken - can't be satisfied"), findsOneWidget);
+      await tester.pump(const Duration(seconds: 3)); // let the pulse and the SnackBar finish
+    });
+
+    testWidgets('a pattern edit that breaks nothing shows no flash and no SnackBar', (tester) async {
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+      );
+      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onPatternTap!(panel.patterns.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      tester
+          .widget<ButtonStyleButton>(find.ancestor(of: find.text('Save'), matching: find.byWidgetPredicate((w) => w is ButtonStyleButton)))
+          .onPressed!();
+      await tester.pump();
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(backend.patternPatches, hasLength(1));
+      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(panel.flashMateIds, isEmpty);
+      expect(find.textContaining('could not be kept'), findsNothing);
+    });
 
     testWidgets('the warning dialog names every affected mate and pattern', (tester) async {
       final backend = await openInAssemblyLens(
