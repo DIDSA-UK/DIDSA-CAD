@@ -913,15 +913,22 @@ class PlanTranslator {
         return newOccurrenceId;
 
       case AiMoveComponentStep():
+        final moveId = _resolveOccurrenceId(step.occurrenceId, ids);
         final occurrence = await documentApi.updateOccurrenceTransform(
           partId,
-          _resolveOccurrenceId(step.occurrenceId, ids),
+          moveId,
           RigidTransformDto(
             translation: step.translation,
             rotationAxis: step.rotationAxis,
             rotationAngleDegrees: step.rotationAngleDegrees,
           ),
         );
+        // The PATCH only stores the pose: whatever is mated to this component (or to a copy of it) must follow, as it does for a drag
+        // (`PartScreen._endConstrainedDrag`) and a typed Move/Rotate. `/solve` with group movement does that; for an unmated occurrence it converges
+        // trivially and changes nothing, so no mate bookkeeping is needed here (the backend folds a copy mate to its source). A solve that cannot
+        // satisfy the mates is a 422 `mate_solve_did_not_converge`: it surfaces as this step's `ApiException`, the same failure path as any other
+        // step (the occurrence's stored pose is the one just PATCHed - the server leaves a failed solve's poses unchanged).
+        await documentApi.solveForOccurrence(partId, moveId);
         return occurrence.id;
 
       case AiHideComponentStep():
