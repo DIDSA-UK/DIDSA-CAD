@@ -21,7 +21,11 @@ from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.BRepBuilderAPI import (BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon,
                                      BRepBuilderAPI_Transform)
 from OCC.Core.BRepGProp import brepgprop
-from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakePrism
+from OCC.Core.BRepFilletAPI import BRepFilletAPI_MakeFillet
+from OCC.Core.BRepOffsetAPI import BRepOffsetAPI_ThruSections
+from OCC.Core.BRepPrimAPI import (BRepPrimAPI_MakeBox, BRepPrimAPI_MakeCylinder, BRepPrimAPI_MakeHalfSpace,
+                                  BRepPrimAPI_MakePrism)
+from OCC.Core.gp import gp_Pln
 from OCC.Core.BRepTools import BRepTools_WireExplorer
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.GCPnts import GCPnts_QuasiUniformDeflection
@@ -140,6 +144,112 @@ P["D1"] = ("BLOCK", cut(box(-80, -40, 0, 160, 80, 30),
                         *[cyl((sx * 60, sy * 20, -1), Z, 5, 32) for sx in (-1, 1) for sy in (-1, 1)]))
 P["D2"] = ("PIN", fuse(cyl((0, 0, 0), Z, 5, 30), cyl((0, 0, 30), Z, 15, 10)))
 
+# E: the owner's hand sketch "dovetail" (asm_dovetail.jpg), as the owner read it (2026-11-03): the base tapers on
+# all four sides, 170 x 90 at the bottom to 150 x 70 at the top, 50 high, with a full-length dovetail slot 20 wide
+# at the top, 50 at the floor, 25 deep; the plate is 150 x 20, 225 overall, on a dovetail foot whose ends taper to
+# match the base ("loosely": a square-ended foot, E2S, is accepted too).
+def loft(*rects):
+    """Ruled loft through axis-aligned rectangles (cx, cy, z, dx, dy)."""
+    t = BRepOffsetAPI_ThruSections(True, True)
+    for cx, cy, z, dx, dy in rects:
+        poly = BRepBuilderAPI_MakePolygon()
+        for px, py in ((-1, -1), (1, -1), (1, 1), (-1, 1)):
+            poly.Add(gp_Pnt(cx + px * dx / 2, cy + py * dy / 2, z))
+        poly.Close()
+        t.AddWire(poly.Wire())
+    t.Build()
+    return t.Shape()
+
+
+_slot = prism([(-100, -10, 50), (-100, 10, 50), (-100, 25, 25), (-100, -25, 25)], (200, 0, 0))
+P["E1"] = ("DOVETAIL BASE", cut(loft((0, 0, 0, 170, 90), (0, 0, 50, 150, 70)), _slot))
+_plate = box(-75, -10, 25, 150, 20, 200)
+P["E2"] = ("UPRIGHT PLATE", fuse(loft((0, 0, 0, 160, 50), (0, 0, 25, 150, 20)), _plate))
+P["E2S"] = ("UPRIGHT PLATE (square-ended foot)",
+            fuse(prism([(-75, -25, 0), (-75, 25, 0), (-75, 10, 25), (-75, -10, 25)], (150, 0, 0)), _plate))
+
+
+# F: the owner's hand sketch "frame" (asm_frame.jpg): 2400 x 1200 x 1200 outside, 50 x 50 x 4 SHS (R8 outside,
+# R4 inside corners), top and bottom rectangles of rails mitred at 45 degrees, square-cut posts 1100 long between
+# them; 8 thk gussets (100 x 100, 10 flats) three per corner (owner, 2026-11-03): one between the two rails and one
+# between each rail and the post, each in the inside corner, centred on the tube's width.
+def _fillet_along(shape, axis, r):
+    f = BRepFilletAPI_MakeFillet(shape)
+    for e in explore(shape, TopAbs_EDGE):
+        c = BRepAdaptor_Curve(topods.Edge(e))
+        a, b = c.Value(c.FirstParameter()), c.Value(c.LastParameter())
+        d = (b.X() - a.X(), b.Y() - a.Y(), b.Z() - a.Z())
+        if abs(d[axis]) > 1 and all(abs(d[i]) < 1e-6 for i in range(3) if i != axis):
+            f.Add(r, topods.Edge(e))
+    f.Build()
+    return f.Shape()
+
+
+def shs(axis, lo, hi, a, b):
+    """50 x 50 x 4 SHS along `axis` from lo to hi, the other two coordinates from a and b."""
+    def bx(o, size, l0, l1):
+        p, d = [0, 0, 0], [0, 0, 0]
+        others = [i for i in range(3) if i != axis]
+        p[axis], d[axis] = l0, l1 - l0
+        p[others[0]], p[others[1]] = a + o, b + o
+        d[others[0]] = d[others[1]] = size
+        return box(*p, *d)
+    return cut(_fillet_along(bx(0, 50, lo, hi), axis, 8), _fillet_along(bx(4, 42, lo - 1, hi + 1), axis, 4))
+
+
+def keep_side(shape, point, normal):
+    """Remove the part of `shape` on the `normal` side of the plane through `point`."""
+    face = BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(*point), gp_Dir(*normal)), -1e4, 1e4, -1e4, 1e4).Face()
+    ref = gp_Pnt(*(p + n for p, n in zip(point, normal)))
+    return cut(shape, BRepPrimAPI_MakeHalfSpace(face, ref).Solid())
+
+
+L, W, H = 2400.0, 1200.0, 1200.0
+FRAME = []
+# each rail end: (point on the outer corner, normal pointing at the material the 45 degree mitre removes)
+RAILS = [
+    ("F1", 0, 0.0, [((0, 0, 0), (-1, 1, 0)), ((L, 0, 0), (1, 1, 0))]),            # front long rail
+    ("F1", 0, W - 50, [((0, W, 0), (-1, -1, 0)), ((L, W, 0), (1, -1, 0))]),      # back long rail
+    ("F2", 1, 0.0, [((0, 0, 0), (1, -1, 0)), ((0, W, 0), (1, 1, 0))]),            # left short rail
+    ("F2", 1, L - 50, [((L, 0, 0), (-1, -1, 0)), ((L, W, 0), (-1, 1, 0))]),      # right short rail
+]
+for z0 in (0.0, H - 50):
+    for pid, axis, a, ends in RAILS:
+        r = shs(axis, 0, L if axis == 0 else W, a, z0)
+        for point, normal in ends:
+            r = keep_side(r, point, normal)
+        FRAME.append((pid, r))
+for x0 in (0.0, L - 50):
+    for y0 in (0.0, W - 50):
+        FRAME.append(("F3", shs(2, 50, H - 50, x0, y0)))
+GUSSET = [(0, 0), (100, 0), (100, 10), (10, 100), (0, 100)]
+
+
+def gusset(corner, u_axis, v_axis, su, sv, n_axis, n_mid):
+    pts = []
+    for gu, gv in GUSSET:
+        p = [0.0, 0.0, 0.0]
+        p[u_axis] = corner[u_axis] + su * gu
+        p[v_axis] = corner[v_axis] + sv * gv
+        p[n_axis] = n_mid - 4
+        pts.append(tuple(p))
+    vec = [0, 0, 0]
+    vec[n_axis] = 8
+    return prism(pts, vec)
+
+
+for cx, sx in ((50.0, 1), (L - 50, -1)):
+    for cy, sy in ((50.0, 1), (W - 50, -1)):
+        for cz, sz, zmid in ((50.0, 1, 25.0), (H - 50, -1, H - 25)):
+            xmid, ymid = cx - sx * 25, cy - sy * 25
+            FRAME.append(("F4", gusset((cx, cy, 0), 0, 1, sx, sy, 2, zmid)))  # between the rails
+            FRAME.append(("F4", gusset((cx, 0, cz), 0, 2, sx, sz, 1, ymid)))  # long rail and post
+            FRAME.append(("F4", gusset((0, cy, cz), 1, 2, sy, sz, 0, xmid)))  # short rail and post
+for pid, name in (("F1", "LONG RAIL"), ("F2", "SHORT RAIL"), ("F3", "POST"), ("F4", "GUSSET")):
+    P[pid] = (name, next(s for p, s in FRAME if p == pid))
+PRE = {"F": FRAME}
+
+
 def unify(shape):
     u = ShapeUpgrade_UnifySameDomain(shape, True, True, False)
     u.Build()
@@ -153,6 +263,7 @@ ASM = {
     "A": [("A1", (0, 0, 0)), ("A2", (0, 0, -20))],
     "B": [("B1", (0, 0, 0)), ("B2", (20, 0, 10)), ("B2", (-30, 0, 10)), ("B3", (0, 0, 70)), ("B4", (0, 0, 70))],
     "D": [("D1", (0, 0, 0))] + [("D2", (sx * 60, sy * 20, 0)) for sx in (-1, 1) for sy in (-1, 1)],
+    "E": [("E1", (0, 0, 0)), ("E2", (0, 0, 25))],
     "C_SUB": [("C5", (0, 0, 0)), ("C6", (0, 0, 0))],
     "C": [("C1", (0, 0, 0)), ("C2", (0, 0, -3)), ("C3", (0, 0, -10)), ("C4", (0, 0, -3)),
           ("C_SUB", (0, 0, -68)), ("C7", (21, 0, -68)), ("C8", (-29, 0, -68))],
@@ -161,6 +272,8 @@ ASM = {
 
 def placed(name, off=(0, 0, 0)):
     """[(part_id, shape)] for a part or a (sub-)assembly placed at `off`."""
+    if name in PRE:
+        return list(PRE[name])
     if name in P:
         return [(name, moved(P[name][1], *off))]
     out = []
@@ -304,7 +417,7 @@ def main(out):
         w = STEPControl_Writer()
         w.Transfer(s, STEPControl_AsIs)
         w.Write(os.path.join(out, "step", f"{pid}.step"))
-    for a in ASM:
+    for a in list(ASM) + list(PRE):
         pl = placed(a)
         comp = compound([s for _, s in pl])
         union = pl[0][1]

@@ -1042,3 +1042,24 @@ def test_update_loft_feature_explicit_null_thickness_turns_the_wall_off_and_omit
     cleared = client.patch(url, json={"thickness": None})
     assert cleared.status_code == 200, cleared.json()
     assert cleared.json()["thickness"] is None
+
+
+def test_loft_between_rectangles_of_different_proportions_does_not_twist():
+    """A 160x50 rectangle lofted 25mm up to a 150x20 one (a dovetail foot, from the AI-eval dovetail sketch).
+    Auto-alignment sampled each outline at equal arc-length fractions; the two outlines' corners sit at
+    different fractions, so it moved the top section's start off a corner, the loft paired corners with
+    mid-edge points, and the foot came out twisted and 19% too small. Two straight-edged outlines with as
+    many corners are now paired corner to corner: every cross-section is the interpolated rectangle."""
+    part = _create_part()
+    bottom = _create_sketch_feature(part["id"])
+    _add_polygon(bottom["sketch_id"], [(0, 0), (160, 0), (160, 50), (0, 50)])
+    plane = _move_sketch_feature_up(part["id"], bottom, 25.0)
+    top = client.post(f"/document/parts/{part['id']}/features/sketch", json={"plane_feature_id": plane["id"]}).json()
+    _add_polygon(top["sketch_id"], [(5, 15), (155, 15), (155, 35), (5, 35)])
+
+    response = _create_loft(part["id"], [_section(bottom), _section(top)])
+
+    assert response.status_code == 201, response.json()
+    # integral over 25mm of the interpolated rectangle's area
+    expected = 25 * (160 * 50 + 150 * 20 + 4 * 155 * 35) / 6
+    assert abs(_volume(part["id"]) - expected) < 1.0

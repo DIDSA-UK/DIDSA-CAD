@@ -33,6 +33,18 @@ SKETCHES = {
         "reading": "160x80x30 block, 4x d10 thru on 120x40 centres 20 in from each edge; 4 pins d30 x 10 head, "
         "d10 x 30 shank (40 overall), shank down in each hole, head on the top face",
     },
+    "asm_dovetail": {
+        "asm": "E", "images": ["asm_dovetail.jpg"], "confirmed": True, "alternates": {"E2": ["E2S"]},
+        "reading": "owner's reading: base tapers on all four sides, 170x90 at the bottom to 150x70 at the top, 50 "
+        "high, full-length dovetail slot 20 wide at the top, 50 at the floor, 25 deep; plate 150x20, 225 overall, "
+        "its dovetail foot's ends tapered to match the base (loosely: a square-ended foot is accepted too)",
+    },
+    "asm_frame": {
+        "asm": "F", "images": ["asm_frame.jpg"], "confirmed": True,
+        "reading": "2400x1200x1200 outside, 50x50x4 SHS R8/R4, rails mitred 45 deg in top and bottom rectangles, "
+        "square-cut posts 1100 between them; 24 gussets 8 thk, three per corner (owner): one between the two "
+        "rails, one between each rail and the post, in the inside corner, centred on the tube's width",
+    },
     "asm_wheel_bracket": {
         "asm": "B", "images": ["asm_wheel_bracket_1.png", "asm_wheel_bracket_2.png"], "confirmed": True,
         "reading": "drawn from the reference model: base plate, two uprights 40 apart, axle, wheel",
@@ -44,6 +56,7 @@ SKETCHES = {
 }
 
 VOL_TOL, LEN_TOL = 0.01, 1.0
+PLACE_TOL = 1.5  # mm; the dovetail's accepted square-ended foot moves its plate's centroid 0.7 mm
 
 
 def key(sketch):
@@ -51,7 +64,9 @@ def key(sketch):
     asm = KEYS["assemblies"][s["asm"]]
     ids = [c[0] for c in asm["components"]]
     distinct = sorted(set(ids), key=ids.index)
-    return s, asm, {pid: dict(KEYS["parts"][pid], qty=ids.count(pid)) for pid in distinct}
+    alts = s.get("alternates", {})
+    return s, asm, {pid: [dict(KEYS["parts"][k], qty=ids.count(pid)) for k in [pid, *alts.get(pid, [])]]
+                    for pid in distinct}
 
 
 def part_matches(want, got):
@@ -114,13 +129,13 @@ def score(sketch, run):
             built.append((os.path.basename(f)[:7], g))
     unused = list(built)
     matched, missing = [], []
-    for pid, want in parts.items():
-        hit = next((b for b in unused if part_matches(want, b[1])), None)
+    for pid, wants in parts.items():
+        hit = next((b for b in unused if any(part_matches(w, b[1]) for w in wants)), None)
         if hit:
             unused.remove(hit)
-            matched.append(want["name"])
+            matched.append(wants[0]["name"])
         else:
-            missing.append(want["name"])
+            missing.append(wants[0]["name"])
     out["parts_ok"] = f"{len(matched)}/{len(parts)}"
     if missing:
         out["parts_wrong"] = missing
@@ -146,7 +161,7 @@ def score(sketch, run):
             want = radial_profile([c[1] for c in comps], [c[2] for c in comps])
             have = radial_profile([p["centroid"] for p in g["per_solid"]], [p["volume_mm3"] for p in g["per_solid"]])
             out["placement_max_err"] = round(max(abs(x - y) for x, y in zip(want, have)), 2)
-            place_ok = out["placement_max_err"] <= LEN_TOL
+            place_ok = out["placement_max_err"] <= PLACE_TOL
         out["assembly_ok"] = bool(
             g.get("solids") == len(comps) and out["bbox_ok"] and out["union_err_pct"] is not None
             and abs(out["union_err_pct"]) <= 100 * VOL_TOL and place_ok)

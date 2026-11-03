@@ -94,6 +94,10 @@ Each key in `harness/expected.py` is one reading of its drawing, written while b
 | `notch_block` | 200 × 80 × 100 block; 40 × 40 × 50 deep notch at the top front right; R5 on the back right vertical edge only |
 | `z_noheight` | No height is given anywhere: the right answer is to ask for it (scored on the first reply) |
 
+The assembly keys are in `harness/expected_assembly.py`. The generated sheets' keys come from the models they are
+drawn from; `asm_dovetail` and `asm_frame` follow the owner's reading (2026-11-03); `asm_block_pins` is still
+unconfirmed.
+
 Add a new sketch by putting the image in `sketches/` and its key in `EXPECTED`. Best of all is a part you have already modelled, so the key comes from your model rather than a reading. Prompt changes written from these sketches' failures should also be judged on sketches they were not written from.
 
 ## Results so far
@@ -112,28 +116,42 @@ In the 2026-10-29 round no plan failed validation, so the automatic retry was no
 
 ### Assembly mode, 2026-11-03
 
-One run per sketch and model; sketches added one round at a time, simplest first.
+One run per sketch and model, added one round at a time, simplest first. Every run built (no validation failure,
+no retry); a fail is the wrong geometry. Each build also renders to `assembly.png`.
 
 | Sketch | Parts (components) | Haiku | Sonnet | Opus |
 |---|---|---|---|---|
 | `asm_pin_block` | 2 (2) | P | P | P |
-| `asm_block_pins` (owner's sketch, key unconfirmed) | 2 (5) | P | P | P |
+| `asm_block_pins` (owner's sketch; key unconfirmed) | 2 (5) | P | P | P |
 | `asm_wheel_bracket` (2 sheets, one part used twice) | 4 (5) | P | P | P |
+| `asm_dovetail` (owner's sketch, owner's reading) | 2 (2) | parts 0/2 | base 1/2 | P |
+| `asm_frame` (owner's sketch, owner's reading) | 4 (36) | parts 1/4 | parts 4/4, 8 gussets | parts 4/4, 16 gussets |
+| `asm_caster` (3 sheets, nested sub-assembly) | 8 (8) | P | P | P |
 
-Every model named the parts right first time, asked no questions and needed no retries.
-
+- **The drawn sheets are solved.** Every model gets the generated drawings right, including the 8-part caster
+  (each flattens its sub-assembly: Assembly mode can only build one level). The rough hand sketches separate
+  the models: Haiku stacks the dovetail plate on an unslotted block and frames with 1200 posts that overlap the
+  rails; Sonnet reads the dovetail base as a square block. The frame's gusset count ("@ every corner") is
+  ambiguous: Sonnet and Opus both asked before building, then guessed 8 and 16 when told to use their judgement;
+  the owner's reading is 24 (three per corner). Their members match the key exactly.
 - **Lug holes (fixed).** All three `asm_wheel_bracket` runs first failed the same way: the upright (a rectangle
   with an R40 arc top and a hole at the arc's centre) came out as two solids, the hole extruded as a plug. Profile
   detection treated an Arc edge as its chord, and the hole's centre sat on that chord, so it was not seen as
   inside the outline. `app/sketch/profile.py` now samples arcs for its containment, area and centroid tests
-  (`test_stage16_arc.py`). The same replies rebuilt after the fix all pass.
+  (`test_stage16_arc.py`).
+- **Twisted lofts (fixed).** Opus's dovetail plate first failed: its foot, a loft from a 160x50 to a 150x20
+  rectangle, came out twisted and 19% small. Loft auto-alignment matched the sections by equal arc-length samples,
+  which drift when the outlines' proportions differ, and moved the top section's start off a corner. Two
+  straight-edged outlines with as many corners are now paired corner to corner (`loft.py`,
+  `test_loft_feature.py`).
+- Both fixes were checked by rebuilding the same replies: no model tokens.
 - **No mates.** Every assembly plan placed components with `move_component` and no `mate`. The prompt leaves no
-  other way: a component added earlier in the same plan cannot take an `edge_selector`, and its real face ids are
-  not known when the plan is written, and Assembly mode always adds every component in that one plan. Placement
-  is right, but nothing constrains it. Open: resolve selectors on a same-plan `add_component` once it has run, or
-  send a second assembly turn listing the placed components' real ids.
-- Haiku twice tried to call a messaging tool the harness had not offered it (refused; nothing sent). Not an app
-  issue.
+  other way: a component added earlier in the same plan cannot take an `edge_selector`, its real face ids are not
+  known when the plan is written, and Assembly mode adds every component in that one plan. Placement is right, but
+  nothing constrains it. Open: resolve selectors on a same-plan `add_component` once it has run, or send a second
+  assembly turn listing the placed components' real ids.
+- Cost: about 80-110k tokens per run (Haiku the most), most of it reading the system prompt once; part and
+  assembly turns add little.
 
 ### Render-back check, 2026-10-29
 
