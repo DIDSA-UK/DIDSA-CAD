@@ -71,7 +71,29 @@ def radial_profile(points, vols):
     return sorted(math.dist(p, c) for p in points)
 
 
+def unscored(run):
+    """A sketch with no key yet: report what was built, so a run can be scored once the key exists."""
+    out = {"key": None, "pass": None}
+    res_path = os.path.join(run, "assembly_result.json")
+    res = json.load(open(res_path)) if os.path.exists(res_path) else {}
+    out["parts_built"] = [p.get("outcome") for p in res.get("parts", [])]
+    out["assembly_outcome"] = res.get("assembly", {}).get("outcome")
+    if res.get("stopped"):
+        out["stopped"] = res["stopped"]
+    gpath = os.path.join(run, "assembly_geometry.json")
+    if os.path.exists(gpath):
+        g = json.load(open(gpath))
+        out["solids"] = g.get("solids")
+        out["bbox"] = sorted(round(v, 1) for v in g["bbox_size"])
+        summed = sum(p["volume_mm3"] for p in g.get("per_solid", []))
+        u = g.get("union_volume_mm3")
+        out["overlap_pct"] = None if not u or not summed else round(100 * (summed - u) / summed, 2)
+    return out
+
+
 def score(sketch, run):
+    if sketch not in SKETCHES:
+        return unscored(run)
     s, asm, parts = key(sketch)
     out = {"confirmed": s["confirmed"]}
     res_path = os.path.join(run, "assembly_result.json")
