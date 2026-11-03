@@ -1184,7 +1184,16 @@ class _PartScreenState extends State<PartScreen> {
   /// `selection_list_drawer.dart`'s own `curveFeature` branch), for the
   /// identical "a shared id-to-name map, not a raw id truncation" reason.
   Map<String, String> get _selectionBodyNames =>
-      {..._bodyNames, ..._surfaceNames, ..._curveNames, ...occurrenceDisplayNames(_occurrences)};
+      {
+        ..._bodyNames,
+        ..._surfaceNames,
+        ..._curveNames,
+        ...occurrenceDisplayNames(
+          _occurrences,
+          patterns: _componentPatterns,
+          extraPaths: [for (final i in _assemblyMesh?.instances ?? const []) i.occurrencePath.join('/')],
+        ),
+      };
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s

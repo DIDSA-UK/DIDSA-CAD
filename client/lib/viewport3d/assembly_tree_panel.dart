@@ -35,10 +35,51 @@ String occurrenceDisplayName(List<OccurrenceDto> occurrences, int index) {
     final base = dot > 0 ? fileName.substring(0, dot) : fileName;
     // A generated file name (a UUID, `part-<hex>`...) is not a name a person chose: "Component N" instead, the same
     // way Bodies/Faces fall back to "Body N" rather than showing their ids.
-    if (!looksGeneratedName(base)) return base;
+    if (!looksGeneratedName(base)) return _withInstanceOrdinal(occurrences, index, base);
   }
   final ordinal = occurrences.take(index + 1).length;
   return 'Component $ordinal';
+}
+
+/// B4: `<base>:<n>` for a part placed more than once (n = 1-based ordinal among the occurrences placing the same part,
+/// in list order - display-time only, so it renumbers after a delete); a part placed once keeps the plain `<base>`.
+String _withInstanceOrdinal(List<OccurrenceDto> occurrences, int index, String base) {
+  final occurrence = occurrences[index];
+  String? key(OccurrenceDto o) => o.resolvedPartId ?? o.externalRef;
+  final mine = key(occurrence);
+  if (mine == null) return base;
+  var total = 0;
+  var ordinal = 0;
+  for (var i = 0; i < occurrences.length; i++) {
+    if (key(occurrences[i]) != mine) continue;
+    total++;
+    if (i <= index) ordinal++;
+  }
+  return total > 1 ? '$base:$ordinal' : base;
+}
+
+/// B4: the name of the instance at `path` (an occurrence id, a `/`-joined nested path, or a pattern copy
+/// `<src>#pattern:<pid>:<i>`): a copy reads `Source [Linear 1 #2]`, a nested path shows its last segment's name.
+/// Segments that cannot be resolved fall back to the raw segment.
+String occurrencePathDisplayName(
+  String path,
+  List<OccurrenceDto> occurrences, {
+  List<ComponentPatternDto> patterns = const [],
+}) {
+  final last = path.split('/').last;
+  final marker = last.indexOf('#pattern:');
+  final sourceId = marker < 0 ? last : last.substring(0, marker);
+  final index = occurrences.indexWhere((o) => o.id == sourceId);
+  final base = index < 0 ? sourceId : occurrenceDisplayName(occurrences, index);
+  if (marker < 0) return base;
+  final rest = last.substring(marker + '#pattern:'.length);
+  final colon = rest.lastIndexOf(':');
+  if (colon < 0) return base;
+  final patternId = rest.substring(0, colon);
+  final copyIndex = int.tryParse(rest.substring(colon + 1));
+  final patternPosition = patterns.indexWhere((p) => p.id == patternId);
+  final patternName = patternPosition < 0 ? 'Pattern' : componentPatternDisplayName(patterns, patternPosition);
+  return copyIndex == null ? '$base [$patternName]' : '$base [$patternName #${copyIndex + 1}]';
 }
 
 /// `true` for an identifier that is clearly machine-generated rather than a human-chosen name: a UUID (with or without
@@ -54,8 +95,16 @@ bool looksGeneratedName(String name) {
 
 /// Occurrence id -> [occurrenceDisplayName] for every occurrence: the map the selection drawers / "select other" sheet
 /// read, merged into the same `bodyNames` map the Bodies use, so a component is called the same thing everywhere.
-Map<String, String> occurrenceDisplayNames(List<OccurrenceDto> occurrences) => {
+Map<String, String> occurrenceDisplayNames(
+  List<OccurrenceDto> occurrences, {
+  List<ComponentPatternDto> patterns = const [],
+  Iterable<String> extraPaths = const [],
+}) =>
+    {
       for (var i = 0; i < occurrences.length; i++) occurrences[i].id: occurrenceDisplayName(occurrences, i),
+      // Every other instance path (pattern copies, nested occurrences) so no consumer falls back to "Body".
+      for (final path in extraPaths)
+        if (!occurrences.any((o) => o.id == path)) path: occurrencePathDisplayName(path, occurrences, patterns: patterns),
     };
 
 /// The display name for the ComponentPattern at [index] in [patterns] -

@@ -89,6 +89,27 @@ void main() {
       }
     });
 
+    test('B4: a part placed more than once is numbered <base>:<n>; overrides are verbatim; a lone part is plain', () {
+      final occurrences = [
+        _occurrence('o1', externalRef: 'parts/LONG_RAIL_001.didsa', resolvedPartId: 'rail'),
+        _occurrence('o2', externalRef: 'parts/LONG_RAIL_001.didsa', resolvedPartId: 'rail'),
+        _occurrence('o3', externalRef: 'parts/LONG_RAIL_001.didsa', resolvedPartId: 'rail', nameOverride: 'Rail Left'),
+        _occurrence('o4', externalRef: 'parts/GUSSET_001.didsa', resolvedPartId: 'gusset'),
+      ];
+      expect([for (var i = 0; i < 4; i++) occurrenceDisplayName(occurrences, i)],
+          ['LONG_RAIL_001:1', 'LONG_RAIL_001:2', 'Rail Left', 'GUSSET_001']);
+    });
+
+    test('B4: pattern copies read "Source [Linear 1 #2]" and nested paths show their last segment', () {
+      final occurrences = [_occurrence('o1', externalRef: 'parts/bolt.didsa', nameOverride: 'Short Rail BOT_RIGHT')];
+      final patterns = [_pattern('p1')];
+      expect(occurrencePathDisplayName('o1#pattern:p1:1', occurrences, patterns: patterns), 'Short Rail BOT_RIGHT [Linear 1 #2]');
+      expect(occurrencePathDisplayName('x/o1', occurrences, patterns: patterns), 'Short Rail BOT_RIGHT');
+      final names = occurrenceDisplayNames(occurrences, patterns: patterns, extraPaths: const ['o1#pattern:p1:1', 'o1']);
+      expect(names['o1#pattern:p1:1'], 'Short Rail BOT_RIGHT [Linear 1 #2]');
+      expect(names['o1'], 'Short Rail BOT_RIGHT');
+    });
+
     test('falls back to an ordinal "Component N" when neither is available', () {
       final occurrences = [_occurrence('o1'), _occurrence('o2')];
       expect(occurrenceDisplayName(occurrences, 0), 'Component 1');

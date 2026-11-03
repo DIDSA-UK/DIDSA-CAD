@@ -1,6 +1,6 @@
 # Pattern Component tool (Assembly lens) — bug investigation & fix plan
 
-Status: **investigated, not implemented** (hand-off document for a fresh session).
+Status: **implemented** (see `docs/assembly-scope.md` §2y; B2 step 4 deliberately skipped).
 Source: Flutter-client test report, 2026-11-03, with the frame assembly
 `FRAME_ASSY_AI_TEST.didsa` + `LONG_RAIL_001` / `SHORT_RAIL_001` / `CORNER_POST_001` /
 `GUSSET_001` part files.
