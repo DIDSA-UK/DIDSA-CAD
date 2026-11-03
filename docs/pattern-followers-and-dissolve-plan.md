@@ -260,6 +260,50 @@ Client:
 
 ---
 
+## VR client impact (`DIDSA-UK/didsa-vr`, investigated at 90c6d12)
+
+The VR client (Godot/GDScript) calls the same backend. It never creates, edits or dissolves component patterns, and it
+can't pick a pattern copy for a mate (`mates_tool.gd` `_validate_pick` rejects a copy's node because the GLB gives copies
+`occurrence_id = ""`, with the misleading message "Can't mate the assembly's own root content"). But it does read mates
+made in Flutter, and moves, solves and enforces them. What the changes mean there:
+
+### Additive, nothing breaks
+
+- `MateResponse.status` (new field): VR reads mates as dictionaries and ignores unknown keys.
+- `PATCH /component-patterns/{id}` → `broken_mate_ids`, and the new dissolve endpoint: VR calls neither.
+- Constraint model: F1 makes `export_constraint_model` return `None` for a group with a follower (no new version).
+  VR's `scripts/motion/local_retraction.gd` mirrors the Dart one and only reads the model for limit mates; with no model
+  it keeps server projection. **Don't** do the optional "version 7" without also porting it to
+  `local_retraction.gd` (it mirrors the Dart and Python ones line for line and shares golden vectors).
+- After a dissolve the former copies are ordinary occurrences; VR's `group_index.gd` replays them like any other part
+  once VR reloads the assembly. VR doesn't notice another client's edits until it reloads (existing behaviour for any
+  Flutter edit), and `appearance_tool.gd` caches the pattern list (`_patterns`) until then.
+
+### Gaps VR needs fixed (a separate VR task; not part of the CAD hand-off)
+
+1. **Already live on `main` (since mates on copies shipped):** `mates_tool.gd` `mate_ref_top()` only splits on `/`, so a
+   Flutter-made mate on a copy puts `A#pattern:P:i` into `_mated_ids`. "Enforce all" then calls
+   `POST /parts/<owner>/occurrences/A#pattern:P:i/solve`; the `#` starts a URL fragment, so the request is mangled
+   (best case 404, worst case it solves the wrong occurrence). Fix: fold a `#pattern:` segment to its source in
+   `mate_ref_top` (`group_index.gd` already has `base_segment`). This is also the VR side of F1's "a source whose copies
+   are mated counts as mated": `is_mated()` and the save gate (`~1853`, "mated") read the same set.
+2. **Copies don't move with their source in VR.** `_adopt_backend_poses` (`~2407`) re-reads `GET .../occurrences` and moves
+   nodes by occurrence id; copies have none, so they stay where they were until the GLB is reloaded. With F1, dragging
+   A in VR moves B on the server (VR adopts B's pose) while A's copy node stays put, so B looks detached. Fix: after a
+   solve/move, reposition copy nodes from their world transforms by `instance_path` — needs the backend item below.
+3. **Optional parity:** let VR mate to a copy (send `occurrence_id = <copy segment>` relative to the node's
+   `owner_part_id`, taken from `instance_path`), show broken mates in the tablet's mate list, and use the Flutter copy
+   names (`Source [Linear 1 #2]`; VR labels them `"<name> (copy <i>)"`). At minimum, replace the misleading rejection
+   with "Pattern copies can't be mated in VR yet".
+
+### One backend addition for VR (include in the CAD work)
+
+`GET /parts/{part_id}/assembly-mesh?geometry=false` (default `true`, unchanged): the same `instances` list (each with
+`occurrence_path` and world transform, copies included) but empty `geometry`, so VR (and Flutter, if useful) can
+refresh every instance's pose - copies and nested parts included - without downloading meshes. Implement by skipping
+`_geometry_for` in `get_assembly_mesh`'s walk. Test: same instance paths and transforms as the full response, no
+geometry; record it in `didsa-vr/docs/backend-api-notes.md` when the VR task picks it up.
+
 ## Product decisions (confirmed)
 
 1. A pattern edit that breaks a mate on one of its copies is **applied**; the mate is left **broken**, its row is shown
@@ -271,7 +315,7 @@ Client:
 
 ## Files (expected)
 
-Backend: `app/document/assembly.py`, `assembly_group.py`, `constraint_model.py` (None for followers), `router.py`
+Backend: `app/document/assembly.py`, `assembly_group.py`, `router.py` `get_assembly_mesh` (`geometry=false`), `constraint_model.py` (None for followers), `router.py`
 (pattern PATCH re-solve + rollback, dissolve route, mate validation for couplers/limits, cleanup across Parts),
 `occurrence_paths.py` (`rewrite_segment`), `appearance_routes.py` / `scenes_routes.py` (rewrite helpers), `schemas.py`
 (dissolve response), tests. Client: `assembly_tree_panel.dart`, `part_screen.dart` (`_isMated`), `viewport3d/width_pick.dart` (`mateTopLevelOccurrences`, 4 call sites), `api/document_api_client.dart`, a new
