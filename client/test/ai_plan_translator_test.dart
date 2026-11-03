@@ -1426,8 +1426,9 @@ void main() {
           'hidden': hidden,
         };
 
-    test('move_component PATCHes the whole transform to the resolved real occurrence id', () async {
+    test('move_component PATCHes the whole transform to the resolved real occurrence id, then solves it (S5)', () async {
       Map<String, dynamic>? patchBody;
+      final calls = <String>[];
       final mock = MockClient((request) async {
         if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
           return jsonResponse({
@@ -1437,7 +1438,13 @@ void main() {
           });
         }
         if (request.method == 'PATCH' && request.url.path == '/document/parts/part-1/occurrences/occ-a') {
+          calls.add('PATCH ${request.url.path}');
           patchBody = decodeBody(request);
+          return jsonResponse(occurrenceJson('occ-a', translation: [5.0, 0.0, 0.0]));
+        }
+        // S5: the pose is stored first, then the mates are solved so whatever is mated to it follows (group movement: no `movement` query)
+        if (request.method == 'POST' && request.url.path == '/document/parts/part-1/occurrences/occ-a/solve') {
+          calls.add('POST ${request.url.path}${request.url.hasQuery ? '?${request.url.query}' : ''}');
           return jsonResponse(occurrenceJson('occ-a', translation: [5.0, 0.0, 0.0]));
         }
         return http.Response('not found', 404);
@@ -1466,9 +1473,67 @@ void main() {
       expect(result.localIdToRealId['mv1'], 'occ-a');
       expect(patchBody!['transform']['translation'], [5.0, 0.0, 0.0]);
       expect(patchBody!['transform']['rotation_angle_degrees'], 90.0);
+      expect(calls, ['PATCH /document/parts/part-1/occurrences/occ-a', 'POST /document/parts/part-1/occurrences/occ-a/solve'],
+          reason: 'PATCH first, then /solve with group movement (an unmated occurrence converges trivially)');
       // A move_component step never counts as a created Feature - nothing
       // for "Undo this generation" to delete for it.
       expect(result.createdFeatureIds, isEmpty);
+    });
+
+    test('move_component: a solve the mates cannot satisfy (422) fails the step with the backend\'s message', () async {
+      final calls = <String>[];
+      final mock = MockClient((request) async {
+        if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+          return jsonResponse({
+            'results': [
+              {'local_id': 'mv1', 'ok': true, 'warnings': [], 'error': null},
+              {'local_id': 'mv2', 'ok': true, 'warnings': [], 'error': null},
+            ],
+          });
+        }
+        calls.add('${request.method} ${request.url.path}');
+        if (request.method == 'PATCH' && request.url.path == '/document/parts/part-1/occurrences/occ-a') {
+          return jsonResponse(occurrenceJson('occ-a', translation: [5.0, 0.0, 0.0]));
+        }
+        if (request.method == 'POST' && request.url.path == '/document/parts/part-1/occurrences/occ-a/solve') {
+          return http.Response(
+            jsonEncode({
+              'detail': {'type': 'mate_solve_did_not_converge', 'message': 'The mates on occ-a cannot all be satisfied at that pose.'},
+            }),
+            422,
+            headers: {'content-type': 'application/json'},
+          );
+        }
+        fail('a later step must never be attempted once the solve of an earlier one failed: ${request.method} ${request.url.path}');
+      });
+
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [
+          {'local_id': 'mv1', 'kind': 'move_component', 'occurrence_id': 'existing:occ-a', 'translation': [5.0, 0.0, 0.0]},
+          {'local_id': 'mv2', 'kind': 'move_component', 'occurrence_id': 'existing:occ-a', 'translation': [9.0, 0.0, 0.0]},
+        ],
+      });
+      final translator = PlanTranslator(
+        documentApi: DocumentApiClient(httpClient: mock),
+        sketchApi: SketchApiClient(httpClient: mock),
+      );
+      final statuses = <int, TranslationStepStatus>{};
+      final result = await translator.execute(
+        plan: plan,
+        partId: 'part-1',
+        onStepStatusChanged: (index, status) => statuses[index] = status,
+      );
+
+      expect(result.outcome, PlanTranslationOutcome.stepFailed);
+      expect(result.stoppedAtIndex, 0);
+      expect(result.stoppedAtLocalId, 'mv1');
+      expect(result.errorMessage, contains('mate_solve_did_not_converge'));
+      expect(result.errorMessage, contains('cannot all be satisfied'));
+      expect(statuses[0], TranslationStepStatus.failed);
+      expect(statuses.containsKey(1), isFalse, reason: 'the plan stops at the failed step');
+      expect(calls, ['PATCH /document/parts/part-1/occurrences/occ-a', 'POST /document/parts/part-1/occurrences/occ-a/solve']);
+      expect(result.localIdToRealId.containsKey('mv1'), isFalse);
     });
 
     test('hide_component PATCHes only hidden, via the resolved real occurrence id', () async {
@@ -1906,8 +1971,12 @@ void main() {
         if (request.method == 'POST' && request.url.path == '/document/import/native') {
           return jsonResponse({'document_id': 'doc-1', 'part_ids': ['part-1', 'part-2']});
         }
-        if (request.method == 'PATCH' && request.url.path.startsWith('/document/parts/part-1/occurrences/')) {
-          final patchedId = request.url.pathSegments.last;
+        // S5: move_component now also POSTs `.../occurrences/<id>/solve` after its PATCH (the same occurrence json answers it)
+        if ((request.method == 'PATCH' && request.url.path.startsWith('/document/parts/part-1/occurrences/')) ||
+            (request.method == 'POST' &&
+                request.url.path.startsWith('/document/parts/part-1/occurrences/') &&
+                request.url.path.endsWith('/solve'))) {
+          final patchedId = request.method == 'POST' ? request.url.pathSegments[request.url.pathSegments.length - 2] : request.url.pathSegments.last;
           return jsonResponse({
             'id': patchedId,
             'external_ref': 'parts/bracket.DIDSAprt',

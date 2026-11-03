@@ -1,0 +1,6063 @@
+{
+ "generator": "tools/motion_vectors/pattern_copy_pose_vectors.py (the backend's assembly.pattern_copy_pose is the reference)",
+ "tolerance": 1e-09,
+ "pose_in": "translation + rotation_axis (normalised on read) + rotation_angle_degrees",
+ "pose_out": "translation + rotation (3x3 row-major, 9 floats): compare matrices, never axis-angle",
+ "cases": [
+  {
+   "id": "linear-1d/identity",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 4,
+    "spacing": 300.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      300.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      600.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      900.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d/moved",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 4,
+    "spacing": 300.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      420.0,
+      -45.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      720.0,
+      -45.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      1020.0,
+      -45.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d/turned-z-30",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 4,
+    "spacing": 300.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      500.0,
+      10.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      800.0,
+      10.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      1100.0,
+      10.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d/tilted-65",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 4,
+    "spacing": 300.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      265.0,
+      80.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      565.0,
+      80.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      865.0,
+      80.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d/flipped-180",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 4,
+    "spacing": 300.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      310.0,
+      20.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      610.0,
+      20.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      910.0,
+      20.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d-reverse-skew-direction/identity",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     1.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 50.0,
+    "reverse": true,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -35.3553390593,
+      -35.3553390593,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -70.7106781187,
+      -70.7106781187,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d-reverse-skew-direction/moved",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     1.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 50.0,
+    "reverse": true,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      84.6446609407,
+      -80.3553390593,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      49.2893218813,
+      -115.7106781187,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d-reverse-skew-direction/turned-z-30",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     1.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 50.0,
+    "reverse": true,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    2
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      164.6446609407,
+      -25.3553390593,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      129.2893218813,
+      -60.7106781187,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d-reverse-skew-direction/tilted-65",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     1.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 50.0,
+    "reverse": true,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    2
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -70.3553390593,
+      44.6446609407,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -105.7106781187,
+      9.2893218813,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-1d-reverse-skew-direction/flipped-180",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     1.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 50.0,
+    "reverse": true,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    2
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -25.3553390593,
+      -15.3553390593,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -60.7106781187,
+      -50.7106781187,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-grid/identity",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      0.0,
+      70.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      100.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      100.0,
+      70.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      200.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      200.0,
+      70.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-grid/moved",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      120.0,
+      25.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      220.0,
+      -45.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      220.0,
+      25.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      320.0,
+      -45.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      320.0,
+      25.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-grid/turned-z-30",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      200.0,
+      80.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      300.0,
+      10.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      300.0,
+      80.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      400.0,
+      10.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      400.0,
+      80.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-grid/tilted-65",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -35.0,
+      150.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      65.0,
+      80.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      65.0,
+      150.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      165.0,
+      80.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      165.0,
+      150.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-grid/flipped-180",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      10.0,
+      90.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      110.0,
+      20.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      110.0,
+      90.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      210.0,
+      20.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      210.0,
+      90.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-both-reversed/identity",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "count": 2,
+    "spacing": 40.0,
+    "reverse": true,
+    "direction_2": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count_2": 3,
+    "spacing_2": 25.0,
+    "reverse_2": true,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -25.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -50.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      0.0,
+      0.0,
+      -40.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      -25.0,
+      0.0,
+      -40.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      -50.0,
+      0.0,
+      -40.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-both-reversed/moved",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "count": 2,
+    "spacing": 40.0,
+    "reverse": true,
+    "direction_2": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count_2": 3,
+    "spacing_2": 25.0,
+    "reverse_2": true,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      95.0,
+      -45.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      70.0,
+      -45.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      120.0,
+      -45.0,
+      -10.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      95.0,
+      -45.0,
+      -10.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      70.0,
+      -45.0,
+      -10.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-both-reversed/turned-z-30",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "count": 2,
+    "spacing": 40.0,
+    "reverse": true,
+    "direction_2": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count_2": 3,
+    "spacing_2": 25.0,
+    "reverse_2": true,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      175.0,
+      10.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      150.0,
+      10.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      200.0,
+      10.0,
+      -45.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      175.0,
+      10.0,
+      -45.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      150.0,
+      10.0,
+      -45.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-both-reversed/tilted-65",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "count": 2,
+    "spacing": 40.0,
+    "reverse": true,
+    "direction_2": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count_2": 3,
+    "spacing_2": 25.0,
+    "reverse_2": true,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -60.0,
+      80.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -85.0,
+      80.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -35.0,
+      80.0,
+      -27.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      -60.0,
+      80.0,
+      -27.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      -85.0,
+      80.0,
+      -27.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-both-reversed/flipped-180",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "count": 2,
+    "spacing": 40.0,
+    "reverse": true,
+    "direction_2": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count_2": 3,
+    "spacing_2": 25.0,
+    "reverse_2": true,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -15.0,
+      20.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -40.0,
+      20.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      10.0,
+      20.0,
+      -10.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      -15.0,
+      20.0,
+      -10.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      -40.0,
+      20.0,
+      -10.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-skip/identity",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     1,
+     4
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    2,
+    3,
+    5
+   ],
+   "expected": [
+    {
+     "index": 2,
+     "translation": [
+      100.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      100.0,
+      70.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      200.0,
+      70.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-skip/moved",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     1,
+     4
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    2,
+    3,
+    5
+   ],
+   "expected": [
+    {
+     "index": 2,
+     "translation": [
+      220.0,
+      -45.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      220.0,
+      25.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      320.0,
+      25.0,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-skip/turned-z-30",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     1,
+     4
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    2,
+    3,
+    5
+   ],
+   "expected": [
+    {
+     "index": 2,
+     "translation": [
+      300.0,
+      10.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      300.0,
+      80.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      400.0,
+      80.0,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-skip/tilted-65",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     1,
+     4
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    2,
+    3,
+    5
+   ],
+   "expected": [
+    {
+     "index": 2,
+     "translation": [
+      65.0,
+      80.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      65.0,
+      150.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      165.0,
+      150.0,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    }
+   ]
+  },
+  {
+   "id": "linear-2d-skip/flipped-180",
+   "pattern": {
+    "pattern_type": "linear",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 3,
+    "spacing": 100.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 2,
+    "spacing_2": 70.0,
+    "reverse_2": false,
+    "axis": null,
+    "count_angular": 1,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     1,
+     4
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    2,
+    3,
+    5
+   ],
+   "expected": [
+    {
+     "index": 2,
+     "translation": [
+      110.0,
+      20.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      110.0,
+      90.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      210.0,
+      90.0,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-orient/identity",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -12.1113002697,
+      -23.3302252755,
+      0.0
+     ],
+     "rotation": [
+      0.3090169944,
+      -0.9510565163,
+      0.0,
+      0.9510565163,
+      0.3090169944,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      6.3344648979,
+      -42.0581924104,
+      0.0
+     ],
+     "rotation": [
+      -0.8090169944,
+      -0.5877852523,
+      0.0,
+      0.5877852523,
+      -0.8090169944,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      29.8458749896,
+      -30.3024873646,
+      0.0
+     ],
+     "rotation": [
+      -0.8090169944,
+      0.5877852523,
+      0.0,
+      -0.5877852523,
+      -0.8090169944,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      25.9309603822,
+      -4.3090949495,
+      0.0
+     ],
+     "rotation": [
+      0.3090169944,
+      0.9510565163,
+      0.0,
+      -0.9510565163,
+      0.3090169944,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-orient/moved",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      67.7682822886,
+      76.8907919331,
+      30.0
+     ],
+     "rotation": [
+      0.3090169944,
+      -0.9510565163,
+      0.0,
+      0.9510565163,
+      0.3090169944,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -64.2972380739,
+      64.8818026115,
+      30.0
+     ],
+     "rotation": [
+      -0.8090169944,
+      -0.5877852523,
+      0.0,
+      0.5877852523,
+      -0.8090169944,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -93.6865006886,
+      -64.4309528928,
+      30.0
+     ],
+     "rotation": [
+      -0.8090169944,
+      0.5877852523,
+      0.0,
+      -0.5877852523,
+      -0.8090169944,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      20.2154564739,
+      -132.3416416518,
+      30.0
+     ],
+     "rotation": [
+      0.3090169944,
+      0.9510565163,
+      0.0,
+      -0.9510565163,
+      0.3090169944,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-orient/turned-z-30",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      40.1815334424,
+      169.9712479273,
+      -5.0
+     ],
+     "rotation": [
+      -0.2079116908,
+      -0.9781476007,
+      0.0,
+      0.9781476007,
+      -0.2079116908,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -161.3467865,
+      67.4086881043,
+      -5.0
+     ],
+     "rotation": [
+      -0.9945218954,
+      -0.1045284633,
+      0.0,
+      0.1045284633,
+      -0.9945218954,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -126.0796713625,
+      -155.9497077668,
+      -5.0
+     ],
+     "rotation": [
+      -0.4067366431,
+      0.9135454576,
+      0.0,
+      -0.9135454576,
+      -0.4067366431,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      97.2449244201,
+      -191.4302282648,
+      -5.0
+     ],
+     "rotation": [
+      0.7431448255,
+      0.6691306064,
+      0.0,
+      -0.6691306064,
+      0.7431448255,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-orient/tilted-65",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -99.0114163764,
+      -31.8958437958,
+      12.5
+     ],
+     "rotation": [
+      -0.5462397883,
+      -0.7930489817,
+      0.2696208567,
+      0.6893062132,
+      -0.2427116809,
+      0.6826038268,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -12.3727604824,
+      -127.3520357907,
+      12.5
+     ],
+     "rotation": [
+      -0.8243665434,
+      -0.014233087,
+      -0.5658773908,
+      -0.3064975759,
+      -0.8292364359,
+      0.4673608556,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      105.1842899761,
+      -74.4513630843,
+      12.5
+     ],
+     "rotation": [
+      0.0367532453,
+      0.7842524501,
+      -0.6193523177,
+      -0.8787321326,
+      -0.2697846212,
+      -0.393758933,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      91.1998868826,
+      53.6992426708,
+      12.5
+     ],
+     "rotation": [
+      0.8470812982,
+      0.498927757,
+      0.1830966075,
+      -0.2365887491,
+      0.6625003704,
+      -0.7107172596,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-orient/flipped-180",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -28.0422606518,
+      -7.639320225,
+      30.0
+     ],
+     "rotation": [
+      -0.3090169944,
+      -0.9510565163,
+      0.0,
+      -0.9510565163,
+      0.3090169944,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -13.5114100917,
+      -52.360679775,
+      30.0
+     ],
+     "rotation": [
+      0.8090169944,
+      -0.5877852523,
+      0.0,
+      -0.5877852523,
+      -0.8090169944,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      33.5114100917,
+      -52.360679775,
+      30.0
+     ],
+     "rotation": [
+      0.8090169944,
+      0.5877852523,
+      0.0,
+      0.5877852523,
+      -0.8090169944,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      48.0422606518,
+      -7.639320225,
+      30.0
+     ],
+     "rotation": [
+      -0.3090169944,
+      0.9510565163,
+      0.0,
+      0.9510565163,
+      0.3090169944,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-keep-rotation/identity",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -12.1113002697,
+      -23.3302252755,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      6.3344648979,
+      -42.0581924104,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      29.8458749896,
+      -30.3024873646,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      25.9309603822,
+      -4.3090949495,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-keep-rotation/moved",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      67.7682822886,
+      76.8907919331,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -64.2972380739,
+      64.8818026115,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -93.6865006886,
+      -64.4309528928,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      20.2154564739,
+      -132.3416416518,
+      30.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-keep-rotation/turned-z-30",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      40.1815334424,
+      169.9712479273,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -161.3467865,
+      67.4086881043,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -126.0796713625,
+      -155.9497077668,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      97.2449244201,
+      -191.4302282648,
+      -5.0
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-keep-rotation/tilted-65",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -99.0114163764,
+      -31.8958437958,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -12.3727604824,
+      -127.3520357907,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      105.1842899761,
+      -74.4513630843,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      91.1998868826,
+      53.6992426708,
+      12.5
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-keep-rotation/flipped-180",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      10.0,
+      -20.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    "count_angular": 5,
+    "angle_total": 360.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -28.0422606518,
+      -7.639320225,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -13.5114100917,
+      -52.360679775,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      33.5114100917,
+      -52.360679775,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      48.0422606518,
+      -7.639320225,
+      30.0
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-orient/identity",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      0.5884556216,
+      -0.3276299076,
+      0.739174286,
+      0.739174286,
+      0.5884556216,
+      -0.3276299076,
+      -0.3276299076,
+      0.739174286,
+      0.5884556216
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      -0.1380711875,
+      0.1607873033,
+      0.9772838842,
+      0.9772838842,
+      -0.1380711875,
+      0.1607873033,
+      0.1607873033,
+      0.9772838842,
+      -0.1380711875
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      -0.282586355,
+      0.8622355602,
+      0.4203507948,
+      0.4203507948,
+      -0.282586355,
+      0.8622355602,
+      0.8622355602,
+      0.4203507948,
+      -0.282586355
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-orient/moved",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      107.5332490106,
+      52.3915141223,
+      -54.9247631329
+     ],
+     "rotation": [
+      0.5884556216,
+      -0.3276299076,
+      0.739174286,
+      0.739174286,
+      0.5884556216,
+      -0.3276299076,
+      -0.3276299076,
+      0.739174286,
+      0.5884556216
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      5.5145453839,
+      128.3108886367,
+      -28.8254340206
+     ],
+     "rotation": [
+      -0.1380711875,
+      0.1607873033,
+      0.9772838842,
+      0.9772838842,
+      -0.1380711875,
+      0.1607873033,
+      0.1607873033,
+      0.9772838842,
+      -0.1380711875
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -60.1004389652,
+      89.0255481588,
+      76.0748908065
+     ],
+     "rotation": [
+      -0.282586355,
+      0.8622355602,
+      0.4203507948,
+      0.4203507948,
+      -0.282586355,
+      0.8622355602,
+      0.8622355602,
+      0.4203507948,
+      -0.282586355
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-orient/turned-z-30",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      110.7189538095,
+      155.3575629548,
+      -61.0765167643
+     ],
+     "rotation": [
+      0.3458025635,
+      -0.5779636338,
+      0.739174286,
+      0.9343715203,
+      0.1400303743,
+      -0.3276299076,
+      0.08585132,
+      0.8039586633,
+      0.5884556216
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -30.8927838799,
+      193.2721284476,
+      42.6206554322
+     ],
+     "rotation": [
+      -0.0391795042,
+      0.208281483,
+      0.9772838842,
+      0.7773170767,
+      -0.608215098,
+      0.1607873033,
+      0.6278878313,
+      0.7659590188,
+      -0.1380711875
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -49.9966693736,
+      76.9331176116,
+      178.063551762
+     ],
+     "rotation": [
+      0.1863908179,
+      0.8880110767,
+      0.4203507948,
+      0.2227412893,
+      -0.4549023596,
+      0.8622355602,
+      0.9568932966,
+      -0.0670833133,
+      -0.282586355
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-orient/tilted-65",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -37.5666607867,
+      17.1099758712,
+      77.9566849156
+     ],
+     "rotation": [
+      -0.3053209904,
+      -0.0895927537,
+      0.9480254381,
+      0.9467786001,
+      -0.1351258629,
+      0.2921494198,
+      0.1019282843,
+      0.9867695474,
+      0.1260812642
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      29.9115243746,
+      -43.2407896525,
+      70.8292652779
+     ],
+     "rotation": [
+      -0.4145180716,
+      0.72094459,
+      0.5553500395,
+      0.2980570102,
+      -0.469035449,
+      0.8313650018,
+      0.8598469555,
+      0.5101417898,
+      -0.0204589192
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      84.123752176,
+      -26.5412417166,
+      -0.0825104593
+     ],
+     "rotation": [
+      0.2939988792,
+      0.9549976309,
+      0.039296107,
+      -0.412719355,
+      0.0897594485,
+      0.9064248316,
+      0.8621063699,
+      -0.2827061485,
+      0.4205351835
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-orient/flipped-180",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": false,
+    "skip_indices": [],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      21.5071866443,
+      9.3319580641,
+      29.1608552916
+     ],
+     "rotation": [
+      -0.5884556216,
+      -0.3276299076,
+      -0.739174286,
+      -0.739174286,
+      0.5884556216,
+      0.3276299076,
+      0.3276299076,
+      0.739174286,
+      -0.5884556216
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      31.1535507165,
+      11.8350341907,
+      17.0114150928
+     ],
+     "rotation": [
+      0.1380711875,
+      0.1607873033,
+      -0.9772838842,
+      -0.9772838842,
+      -0.1380711875,
+      -0.1607873033,
+      -0.1607873033,
+      0.9772838842,
+      0.1380711875
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      27.0293714982,
+      24.4188476538,
+      8.551780848
+     ],
+     "rotation": [
+      0.282586355,
+      0.8622355602,
+      -0.4203507948,
+      -0.4203507948,
+      -0.282586355,
+      -0.8622355602,
+      -0.8622355602,
+      0.4203507948,
+      0.282586355
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-keep-reverse/identity",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": true,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-keep-reverse/moved",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": true,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      27.5229344915,
+      -43.6208633007,
+      121.0979288092
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -55.7226981856,
+      54.8261963532,
+      105.8965018325
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -26.9590815617,
+      128.795177043,
+      3.1639045186
+     ],
+     "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-keep-reverse/turned-z-30",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": true,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      126.7210167133,
+      -63.3372967308,
+      141.6162800175
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      -18.6453351659,
+      25.8903293575,
+      197.7550058085
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      -56.6249408543,
+      167.5194945147,
+      94.1054463397
+     ],
+     "rotation": [
+      0.8660254038,
+      -0.5,
+      0.0,
+      0.5,
+      0.8660254038,
+      0.0,
+      0.0,
+      0.0,
+      1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-keep-reverse/tilted-65",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": true,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      34.4426222805,
+      67.7831750666,
+      -44.7257973471
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      85.0250435872,
+      -4.4572020585,
+      -23.0678415288
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      54.2965305128,
+      -47.5307680722,
+      50.7342375595
+     ],
+     "rotation": [
+      0.4867717882,
+      -0.4758981384,
+      0.7325122443,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.4758981384,
+      0.5587167016,
+      0.6792323676
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-tilted-axis-keep-reverse/flipped-180",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      5.0,
+      5.0,
+      5.0
+     ],
+     "direction": [
+      1.0,
+      1.0,
+      1.0
+     ]
+    },
+    "count_angular": 4,
+    "angle_total": 270.0,
+    "reverse_angular": true,
+    "skip_indices": [],
+    "orient_with_rotation": false
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    2,
+    3
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      10.8391447084,
+      30.6680419359,
+      18.4928133557
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 2,
+     "translation": [
+      22.9885849072,
+      28.1649658093,
+      8.8464492835
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    },
+    {
+     "index": 3,
+     "translation": [
+      31.448219152,
+      15.5811523462,
+      12.9706285018
+     ],
+     "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      0.0,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      -1.0
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-skip/identity",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      1.0,
+      0.0
+     ]
+    },
+    "count_angular": 6,
+    "angle_total": 180.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     2,
+     3
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     0.0,
+     0.0,
+     0.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      0.8660254038,
+      0.0,
+      0.5,
+      0.0,
+      1.0,
+      0.0,
+      -0.5,
+      0.0,
+      0.8660254038
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      -0.5,
+      0.0,
+      0.8660254038,
+      0.0,
+      1.0,
+      0.0,
+      -0.8660254038,
+      0.0,
+      -0.5
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "rotation": [
+      -0.8660254038,
+      0.0,
+      0.5,
+      0.0,
+      1.0,
+      0.0,
+      -0.5,
+      0.0,
+      -0.8660254038
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-skip/moved",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      1.0,
+      0.0
+     ]
+    },
+    "count_angular": 6,
+    "angle_total": 180.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     2,
+     3
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     120.0,
+     -45.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 0.0
+   },
+   "live_indices": [
+    1,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      118.9230484541,
+      -45.0,
+      -34.0192378865
+     ],
+     "rotation": [
+      0.8660254038,
+      0.0,
+      0.5,
+      0.0,
+      1.0,
+      0.0,
+      -0.5,
+      0.0,
+      0.8660254038
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      -34.0192378865,
+      -45.0,
+      -118.9230484541
+     ],
+     "rotation": [
+      -0.5,
+      0.0,
+      0.8660254038,
+      0.0,
+      1.0,
+      0.0,
+      -0.8660254038,
+      0.0,
+      -0.5
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      -88.9230484541,
+      -45.0,
+      -85.9807621135
+     ],
+     "rotation": [
+      -0.8660254038,
+      0.0,
+      0.5,
+      0.0,
+      1.0,
+      0.0,
+      -0.5,
+      0.0,
+      -0.8660254038
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-skip/turned-z-30",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      1.0,
+      0.0
+     ]
+    },
+    "count_angular": 6,
+    "angle_total": 180.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     2,
+     3
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     200.0,
+     10.0,
+     -5.0
+    ],
+    "rotation_axis": [
+     0.0,
+     0.0,
+     1.0
+    ],
+    "rotation_angle_degrees": 30.0
+   },
+   "live_indices": [
+    1,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      170.7050807569,
+      10.0,
+      -104.3301270189
+     ],
+     "rotation": [
+      0.75,
+      -0.4330127019,
+      0.5,
+      0.5,
+      0.8660254038,
+      0.0,
+      -0.4330127019,
+      0.25,
+      0.8660254038
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      -104.3301270189,
+      10.0,
+      -170.7050807569
+     ],
+     "rotation": [
+      -0.4330127019,
+      0.25,
+      0.8660254038,
+      0.5,
+      0.8660254038,
+      0.0,
+      -0.75,
+      0.4330127019,
+      -0.5
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      -175.7050807569,
+      10.0,
+      -95.6698729811
+     ],
+     "rotation": [
+      -0.75,
+      0.4330127019,
+      0.5,
+      0.5,
+      0.8660254038,
+      0.0,
+      -0.4330127019,
+      0.25,
+      -0.8660254038
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-skip/tilted-65",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      1.0,
+      0.0
+     ]
+    },
+    "count_angular": 6,
+    "angle_total": 180.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     2,
+     3
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     -35.0,
+     80.0,
+     12.5
+    ],
+    "rotation_axis": [
+     1.0,
+     2.0,
+     2.0
+    ],
+    "rotation_angle_degrees": 65.0
+   },
+   "live_indices": [
+    1,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      -24.0608891325,
+      80.0,
+      28.3253175473
+     ],
+     "rotation": [
+      0.1836076652,
+      -0.1327815267,
+      0.973990396,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.6555257716,
+      0.7218119263,
+      0.2219763633
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      28.3253175473,
+      80.0,
+      24.0608891325
+     ],
+     "rotation": [
+      -0.6555257716,
+      0.7218119263,
+      0.2219763633,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      -0.1836076652,
+      0.1327815267,
+      -0.973990396
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      36.5608891325,
+      80.0,
+      6.6746824527
+     ],
+     "rotation": [
+      -0.6595058036,
+      0.6914982283,
+      -0.2947580283,
+      0.7325122443,
+      0.6792323676,
+      -0.0454884898,
+      0.1687539834,
+      -0.2459137879,
+      -0.9544886076
+     ]
+    }
+   ]
+  },
+  {
+   "id": "circular-skip/flipped-180",
+   "pattern": {
+    "pattern_type": "circular",
+    "direction": [
+     1.0,
+     0.0,
+     0.0
+    ],
+    "count": 1,
+    "spacing": 0.0,
+    "reverse": false,
+    "direction_2": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "count_2": 1,
+    "spacing_2": 0.0,
+    "reverse_2": false,
+    "axis": {
+     "origin": [
+      0.0,
+      0.0,
+      0.0
+     ],
+     "direction": [
+      0.0,
+      1.0,
+      0.0
+     ]
+    },
+    "count_angular": 6,
+    "angle_total": 180.0,
+    "reverse_angular": false,
+    "skip_indices": [
+     2,
+     3
+    ],
+    "orient_with_rotation": true
+   },
+   "source": {
+    "translation": [
+     10.0,
+     20.0,
+     30.0
+    ],
+    "rotation_axis": [
+     0.0,
+     1.0,
+     0.0
+    ],
+    "rotation_angle_degrees": 180.0
+   },
+   "live_indices": [
+    1,
+    4,
+    5
+   ],
+   "expected": [
+    {
+     "index": 1,
+     "translation": [
+      23.6602540378,
+      20.0,
+      20.9807621135
+     ],
+     "rotation": [
+      -0.8660254038,
+      0.0,
+      -0.5,
+      0.0,
+      1.0,
+      0.0,
+      0.5,
+      0.0,
+      -0.8660254038
+     ]
+    },
+    {
+     "index": 4,
+     "translation": [
+      20.9807621135,
+      20.0,
+      -23.6602540378
+     ],
+     "rotation": [
+      0.5,
+      0.0,
+      -0.8660254038,
+      0.0,
+      1.0,
+      0.0,
+      0.8660254038,
+      0.0,
+      0.5
+     ]
+    },
+    {
+     "index": 5,
+     "translation": [
+      6.3397459622,
+      20.0,
+      -30.9807621135
+     ],
+     "rotation": [
+      0.8660254038,
+      0.0,
+      -0.5,
+      0.0,
+      1.0,
+      0.0,
+      0.5,
+      0.0,
+      0.8660254038
+     ]
+    }
+   ]
+  }
+ ]
+}

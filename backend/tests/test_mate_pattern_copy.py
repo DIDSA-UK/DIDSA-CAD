@@ -166,7 +166,7 @@ import numpy as np
 import pytest
 
 from app.document.assembly_group import build_group_model, solve_group
-from app.document.constraint_model import export_constraint_model
+from app.document.constraint_model import FOLLOW_MODEL_VERSION, export_constraint_model
 
 
 def _poses(top_id):
@@ -245,19 +245,50 @@ def _follower_model(scene):
     return build_group_model(get_document(), top, "mover")
 
 
-def test_the_follower_group_has_no_client_constraint_model_but_mate_motion_still_works():
+def test_the_follower_group_carries_a_version_7_constraint_model_and_mate_motion_sends_it():
+    # S1 (docs/pattern-followers-smoothness-plan.md): this assertion flipped ON PURPOSE. It used to be `export_constraint_model(model) is None`
+    # and `body.get("constraint_model") is None` ("no constraint model for a follower"); a follower side now travels as wire version 7.
     scene = _scene()
     top_id = scene["top"]["id"]
     _mate_and_settle(scene)
     model = _follower_model(scene)
     assert sorted(model.member_ids) == ["mover", "src"]  # the copy joined its SOURCE to the group
     assert any(a.follow or b.follow for _m, a, b in model.sides)
-    assert export_constraint_model(model) is None
+    spec = export_constraint_model(model)
+    assert spec is not None and spec["version"] == FOLLOW_MODEL_VERSION == 7
+    follows = [s["follow"] for m in spec["mates"] for s in (m["a"], m["b"]) if "follow" in s]
+    assert len(follows) == 1
+    assert follows[0]["keep_rotation"] is False
+    assert np.allclose(follows[0]["r"], np.eye(3)) and np.allclose(follows[0]["t"], [300.0, 0.0, 0.0])  # Linear: the copy is 300 mm along X
     response = client.post(f"/document/parts/{top_id}/occurrences/mover/mate-motion", json={"transform": None})
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["converged"] is True and body.get("constraint_model") is None
+    assert body["converged"] is True and body["constraint_model"]["version"] == 7
     assert sorted(m["occurrence_id"] for m in body["members"]) == ["mover", "src"]
+
+
+_CIRCULAR = {"source_occurrence_ids": ["src"], "pattern_type": "circular", "count_angular": 4, "angle_total": 360.0, "axis": {"origin": [0, 0, 0], "direction": [0, 0, 1]}}
+
+
+@pytest.mark.parametrize(
+    "name,pattern,src_at",
+    [
+        ("linear", None, (0.0, 0.0, 0.0)),
+        ("linear-2d-reversed", {"source_occurrence_ids": ["src"], "pattern_type": "linear", "direction": [1, 0, 0], "count": 2, "spacing": 300.0, "reverse": True, "direction_2": [0, 1, 0], "count_2": 2, "spacing_2": 250.0}, (0.0, 0.0, 0.0)),
+        ("circular-orient", {**_CIRCULAR, "orient_with_rotation": True}, (200.0, 0.0, 0.0)),
+        ("circular-keep-rotation", {**_CIRCULAR, "orient_with_rotation": False}, (200.0, 0.0, 0.0)),
+    ],
+)
+def test_a_follower_model_reproduces_the_backend_residual_and_its_analytic_jacobian_matches_central_differences(name, pattern, src_at):
+    from tests.test_constraint_model import _assert_parity
+
+    scene = _scene(src_at=src_at, pattern=pattern)
+    _mate_and_settle(scene)
+    model = _follower_model(scene)
+    spec = export_constraint_model(model)
+    assert spec["version"] == 7 and any("follow" in s for m in spec["mates"] for s in (m["a"], m["b"])), name
+    assert spec["mates"][0]["a"].get("follow", spec["mates"][0]["b"].get("follow"))["keep_rotation"] is (name == "circular-keep-rotation")
+    _assert_parity(name, model, spec, np.random.default_rng(11))  # residual == GroupModel.residual; Jacobian == both central-difference ones
 
 
 def test_a_group_with_a_follower_never_uses_the_py_slvs_fallback(monkeypatch):

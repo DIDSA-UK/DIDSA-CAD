@@ -20,6 +20,7 @@ MODEL_VERSION = 3  # 3: an ANGLE about a hinge (`hinge_direction` on a side) als
 PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces on two members); emitted ONLY when some side has one, else 3
 COUPLER_MODEL_VERSION = 5  # 5: coupler mates (gear / rack_pinion / screw: rows on the MOVE of each side from its `anchor` pose); emitted ONLY when the model has one
 LIMIT_MODEL_VERSION = 6  # 6: limit mates (limit_distance / limit_angle: an inequality row with `min` / `max`, held only when violated); emitted ONLY when the model has one
+FOLLOW_MODEL_VERSION = 7  # 7: a side (and a `pair`) may carry `follow` (a pattern copy that follows its source member, see `assembly.pattern_step`); a superset of 6, emitted ONLY when some side has one
 COUPLER_TYPES = ("gear", "rack_pinion", "screw")
 LIMIT_TYPES = ("limit_distance", "limit_angle")
 SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance", *COUPLER_TYPES, *LIMIT_TYPES)
@@ -142,23 +143,35 @@ def pose_to_rigid(pose: Pose):
 
 def export_constraint_model(model) -> dict | None:
     """The wire form of a `GroupModel`'s mates; `None` when a mate type is not one the client can evaluate."""
-    if any(x is not None and (x.follow is not None) for _mate, a, b in model.sides for x in (a, b, a.partner, b.partner)):
-        # A pattern copy that follows its source (`_Side.follow`): the wire model has no follower side, so there is none (the
-        # Jacobian falls back to central differences and a client keeps server-side projection).
-        return None
     ids = list(model.member_ids)
     mates = []
     has_pair = False
     has_coupler = False
     has_limit = False
+    has_follow = False
     for mate, a, b in model.sides:
         if mate.type.value not in SUPPORTED_TYPES:
             return None
+
+        def follow_of(s) -> dict | None:
+            # a pattern copy that follows its source (`_Side.follow`): the copy's world pose is a constant step after the member's
+            nonlocal has_follow
+            if s.follow is None:
+                return None
+            from app.document.assembly import pattern_step
+
+            has_follow = True
+            step, keep_rotation = pattern_step(*s.follow)
+            r, t = rigid_to_pose(step)
+            return {"r": r.tolist(), "t": t.tolist(), "keep_rotation": bool(keep_rotation)}
 
         def side(s) -> dict:
             nonlocal has_pair
             g = s.geometry
             out: dict = {"member": ids.index(s.occurrence_id) if s.occurrence_id in ids else -1}
+            follow = follow_of(s)
+            if follow is not None:
+                out["follow"] = follow
             if s.frozen_transform is not None:
                 r, t = rigid_to_pose(s.frozen_transform)
                 out["frozen"] = {"r": r.tolist(), "t": t.tolist()}
@@ -181,6 +194,9 @@ def export_constraint_model(model) -> dict | None:
                 has_pair = True
                 p = s.partner
                 pair: dict = {"member": ids.index(p.occurrence_id) if p.occurrence_id in ids else -1}
+                follow = follow_of(p)
+                if follow is not None:
+                    pair["follow"] = follow
                 if p.frozen_transform is not None:
                     pr, pt = rigid_to_pose(p.frozen_transform)
                     pair["frozen"] = {"r": pr.tolist(), "t": pt.tolist()}
@@ -219,7 +235,11 @@ def export_constraint_model(model) -> dict | None:
                 "b": side(b),
             }
         )
-    version = LIMIT_MODEL_VERSION if has_limit else (COUPLER_MODEL_VERSION if has_coupler else (PAIR_MODEL_VERSION if has_pair else MODEL_VERSION))
+    version = (
+        FOLLOW_MODEL_VERSION
+        if has_follow
+        else LIMIT_MODEL_VERSION if has_limit else (COUPLER_MODEL_VERSION if has_coupler else (PAIR_MODEL_VERSION if has_pair else MODEL_VERSION))
+    )
     return {"version": version, "members": ids, "mates": mates}
 
 
@@ -315,15 +335,39 @@ class ConstraintModel:
         else:
             r, t = poses[m]
         w = r @ local
+        follow = side.get("follow")
+        if follow is None:
+            if kind == "point":
+                v = w + t
+                if m >= 0:
+                    d[:, 6 * m : 6 * m + 3] = np.eye(3)
+                    d[:, 6 * m + 3 : 6 * m + 6] = -skew(w)
+            else:
+                v = w
+                if m >= 0:
+                    d[:, 6 * m + 3 : 6 * m + 6] = -skew(w)
+            return _V(v, d)
+        # v7: a pattern copy follows its source: the copy's pose is `(Rs R, Rs t + ts)`, or `(R, Rs t + ts)` with `keep_rotation`
+        rs, ts, keep = np.array(follow["r"], float), np.array(follow["t"], float), bool(follow.get("keep_rotation"))
         if kind == "point":
-            v = w + t
-            if m >= 0:
-                d[:, 6 * m : 6 * m + 3] = np.eye(3)
-                d[:, 6 * m + 3 : 6 * m + 6] = -skew(w)
-        else:
+            if keep:
+                v = w + rs @ t + ts
+                if m >= 0:
+                    d[:, 6 * m : 6 * m + 3] = rs
+                    d[:, 6 * m + 3 : 6 * m + 6] = -skew(w)
+            else:
+                v = rs @ (w + t) + ts
+                if m >= 0:
+                    d[:, 6 * m : 6 * m + 3] = rs
+                    d[:, 6 * m + 3 : 6 * m + 6] = -rs @ skew(w)
+        elif keep:
             v = w
             if m >= 0:
                 d[:, 6 * m + 3 : 6 * m + 6] = -skew(w)
+        else:
+            v = rs @ w
+            if m >= 0:
+                d[:, 6 * m + 3 : 6 * m + 6] = -rs @ skew(w)
         return _V(v, d)
 
     def _geo(self, side: dict, poses) -> dict:
