@@ -8872,8 +8872,14 @@ def _assembly_body_mesh_responses(part: Part, mesh_quality: MeshQuality) -> list
 def get_assembly_mesh(
     part_id: str,
     quality: float | None = Query(default=None, ge=0.0, le=1.0),
+    geometry: bool = Query(default=True),
 ) -> AssemblyMeshResponse:
-    """Assembly support (`docs/assembly-scope.md` Phase 2): everything
+    """`geometry=false` (default `true`, unchanged) returns the same `instances` - every placed instance's `occurrence_path` and
+    world transform, pattern copies and nested parts included - with an EMPTY `geometry` list and only each instance's node-level
+    `appearance` (no tessellation, no per-face painting): a client that only needs to refresh poses (the VR client after a solve)
+    does not download or build any mesh.
+
+    Assembly support (`docs/assembly-scope.md` Phase 2): everything
     visible in `part_id`'s own assembly scene - its own local bodies (from
     `part.features`, exactly like `GET /mesh`) *and* every Occurrence's
     resolved geometry, recursively (an Occurrence's target Part can itself
@@ -8913,7 +8919,7 @@ def get_assembly_mesh(
     instances: list[AssemblyOccurrenceInstance] = []
 
     def _geometry_for(part: Part) -> None:
-        if part.id in geometry_by_part_id:
+        if not geometry or part.id in geometry_by_part_id:
             return
         geometry_by_part_id[part.id] = AssemblyBodyGeometry(
             part_id=part.id, bodies=_assembly_body_mesh_responses(part, mesh_quality)
@@ -8990,7 +8996,7 @@ def get_assembly_mesh(
                     )
 
     _walk(root_part, [], [], hidden=False, ancestors=frozenset())
-    _paint_json_instances(document, root_part, instances, geometry_by_part_id)
+    _paint_json_instances(document, root_part, instances, geometry_by_part_id)  # no geometry -> the node-level look only
 
     return AssemblyMeshResponse(geometry=list(geometry_by_part_id.values()), instances=instances)
 
