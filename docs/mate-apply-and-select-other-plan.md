@@ -1,18 +1,18 @@
-# Mate "Apply and continue" + non-modal Select Other — investigation & fix plan
+# Mate "Next" (apply and continue) + non-modal Select Other — investigation & fix plan
 
 Status: **investigated, not implemented** (hand-off document). Source: Flutter-client test report, 2026-11-03 (second batch,
 after `docs/pattern-component-bugfix-plan.md`).
 
 | # | Report | Root cause | Size |
 |---|--------|------------|------|
-| M1 | Mate tool should create the current mate and stay open for the next one | `MatePanel` only has Cancel / Confirm; `_confirmMate` always tears the tool down on success | S |
+| M1 | Mate tool should create the current mate and stay open for the next one (buttons: **Next** / **OK**) | `MatePanel` only has Cancel / Confirm; `_confirmMate` always tears the tool down on success | S |
 | S1 | Select Other darkens the screen, covers a lot of it and blocks panning, so you can't see what a row highlights | It is shown as a **modal** route: `showAdaptiveSheet` → `showModalBottomSheet` (phone) or a centred `Dialog` (desktop), both with a dark barrier that also swallows every viewport gesture | M |
 
 Recommended order: M1 first (small, self-contained), then S1.
 
 ---
 
-## M1. Mate: "Apply" (create and keep the tool open)
+## M1. Mate: "Next" (create and keep the tool open)
 
 ### Today
 
@@ -40,28 +40,28 @@ Recommended order: M1 first (small, self-contained), then S1.
      - keep the selection-filter override pushed (do **not** pop/push again) and keep `_entitiesBeforeMate` so Cancel
        still restores the pre-tool selection.
    - Factor `_openMate`'s field reset into `_resetMateForNext()` + the open-only bits so the two can't drift.
-2. **Panel buttons** (`MatePanel`): add `onApply` (nullable, so other hosts/tests are unaffected). Row becomes
-   `Cancel | Apply | OK` — Apply is a `FilledButton.tonal`, OK stays `FilledButton` (OK = create and close, as Confirm
-   does today; rename the label "Confirm" → "OK" only if product agrees, otherwise keep "Confirm"). Both disabled while
+2. **Panel buttons** (`MatePanel`): add `onNext` (nullable, so other hosts/tests are unaffected). Row becomes
+   `Cancel | Next | OK` — Next is a `FilledButton.tonal`, OK is the `FilledButton` that was labelled "Confirm" (create
+   and close, as today; confirmed rename). Both disabled while
    `saving` or while the picks are incomplete (same gate `_confirmMate` already uses: `_matePicksComplete`).
-3. **After at least one Apply** in this session the Cancel button reads **Close** (it no longer cancels anything that was
-   applied) — track `int _mateAppliedCount` (reset in `_openMate`) and pass `cancelLabel` / a `appliedCount` to the
-   panel. Show a small line "2 mates added" under the buttons so the user sees the Apply landed (the tree refresh is
+3. **After at least one Next** in this session the Cancel button reads **Close** (it no longer cancels anything that was
+   added) — track `int _mateAppliedCount` (reset in `_openMate`) and pass `cancelLabel` / a `addedCount` to the
+   panel. Show a small line "2 mates added" under the buttons so the user sees the Next landed (the tree refresh is
    otherwise the only feedback, and it may be hidden).
-4. **Keyboard**: keep Enter = OK (today's meaning). Add Shift+Enter = Apply via `ToolPanelKeys` (new optional
-   `onApply`, wired in `keyboard_shortcuts.dart`'s registry next to the existing Enter/Esc activators). Low priority — drop
+4. **Keyboard**: keep Enter = OK (today's meaning). Add Shift+Enter = Next via `ToolPanelKeys` (new optional
+   `onNext`, wired in `keyboard_shortcuts.dart`'s registry next to the existing Enter/Esc activators). Low priority — drop
    if it complicates the registry.
 5. **Failure while applying**: unchanged — the tool stays open with the error; the picks are kept so the user can fix the
-   type/flip and press Apply again.
+   type/flip and press Next again.
 6. Should the **Pattern Component** panel get the same? Not asked; leave it (patterns are rarely authored in runs).
 
 ### Tests
 
-- `mate_panel_test.dart`: Apply renders only when `onApply` is given; disabled while saving; Cancel label switches to
-  Close when `appliedCount > 0`; the "N mates added" line.
-- `part_screen_test.dart` (fake backend already supports `createMate`): pick two faces → Apply → one create call, the
+- `mate_panel_test.dart`: Next renders only when `onNext` is given; disabled while saving; Cancel label switches to
+  Close when `addedCount > 0`; the "N mates added" line.
+- `part_screen_test.dart` (fake backend already supports `createMate`): pick two faces → Next → one create call, the
   panel is still open, `selectedEntities` is empty, the mate type is kept; then pick two more → OK → second create call
-  and the panel closes. Also: an Apply whose create fails keeps the picks and shows the error.
+  and the panel closes. Also: a Next whose create fails keeps the picks and shows the error.
 
 ---
 
@@ -100,7 +100,7 @@ Recommended order: M1 first (small, self-contained), then S1.
      drawer gating.
 3. **Gestures**: with no barrier the viewport keeps receiving pan / orbit / pinch / wheel. Only the panel's own area
    absorbs pointers. While open:
-   - a plain **tap on the viewport closes** Select Other and is **not** treated as a pick (avoid an accidental
+   - a plain **tap on the viewport closes** Select Other and is **not** treated as a pick (confirmed: avoid an accidental
      selection change while the user was just dismissing) — add a guard at the top of the viewport tap path in
      `PartScreen` (`_toggleSelectedEntity` callers / `onEmptyTap`);
    - drags (pan/orbit) do not close it — the candidate list is camera-independent (entity refs), so the highlight stays
@@ -135,10 +135,11 @@ Recommended order: M1 first (small, self-contained), then S1.
 (→ panel widget), `client/lib/viewport3d/part_viewport.dart` (pass the anchor position with
 `onSelectOtherRequested`), tests as above. No backend changes.
 
-## Open product questions (defaults chosen above)
+## Product decisions (confirmed by the tester)
 
-1. Label "Confirm" → "OK" next to the new "Apply"? (default: keep "Confirm", add "Apply").
-2. Does a viewport tap while Select Other is open just close it (default) or also pick what was tapped?
+1. The Mate buttons are **Next** (create, stay open for the next mate) and **OK** (create and close) - "Confirm" is
+   renamed "OK". Wherever this plan says "Apply", read **Next**.
+2. A viewport tap while Select Other is open **only closes it** - it does not pick what was tapped.
 
 ## Verification
 
