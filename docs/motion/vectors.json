@@ -23,6 +23,7 @@
   "local_lam_abs": 1e-09,
   "local_accept_residual": 1e-06,
   "local_accept_distance": 0.5,
+  "local_follow_model_version": 7,
   "local_limit_model_version": 6,
   "local_limit_rounds": 3,
   "local_limit_tol": 1e-06,
@@ -24738,6 +24739,3118 @@
     "fallback_distance": 18.0006006863,
     "held_limits": [
      "swing"
+    ]
+   }
+  },
+  {
+   "id": "local-follow-linear-slide-and-spin",
+   "kind": "local_retract",
+   "description": "Follower model (linear): the plate is mated to a copy of the bolt; the bolt (the source) slides 4 mm along x and spins 10 deg, the plate rides along - the copy's mates are read through the constant step",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 7,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "follow": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          60.0,
+          0.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        },
+        "follow": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          60.0,
+          0.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       -26.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 10.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       -26.0002489973,
+       29.999841037,
+       9.9999999691
+      ],
+      "rotation": [
+       0.984807753,
+       -0.1736481777,
+       6.2153e-06,
+       0.1736481777,
+       0.984807753,
+       3.9785e-06,
+       -6.8117e-06,
+       -2.8388e-06,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       2.4899731356,
+       1.589630265,
+       0.0003088407
+      ],
+      "rotation": [
+       0.9986647784,
+       0.0516590788,
+       6.2153e-06,
+       -0.0516590788,
+       0.9986647784,
+       3.9785e-06,
+       -6.0015e-06,
+       -4.2943e-06,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       -26.0002489973,
+       29.999841037,
+       9.9999999691
+      ],
+      "rotation": [
+       0.984807753,
+       -0.1736481777,
+       6.2153e-06,
+       0.1736481777,
+       0.984807753,
+       3.9785e-06,
+       -6.8117e-06,
+       -2.8388e-06,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       2.4899731356,
+       1.589630265,
+       0.0003088407
+      ],
+      "rotation": [
+       0.9986647784,
+       0.0516590788,
+       6.2153e-06,
+       -0.0516590788,
+       0.9986647784,
+       3.9785e-06,
+       -6.0015e-06,
+       -4.2943e-06,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 5.3087385434
+   }
+  },
+  {
+   "id": "local-follow-linear-turn-3deg-x",
+   "kind": "local_retract",
+   "description": "Follower model (linear): a 3 deg turn of the source about x is off the manifold; both land on it",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 7,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "follow": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          60.0,
+          0.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        },
+        "follow": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          60.0,
+          0.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 3.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       -30.0000196322,
+       29.9999630708,
+       10.0001565537
+      ],
+      "rotation": [
+       0.9999999999,
+       -1.7e-09,
+       1.22777e-05,
+       6.441e-07,
+       0.9986304707,
+       -0.052318094,
+       -1.22608e-05,
+       0.052318094,
+       0.9986304706
+      ]
+     },
+     {
+      "translation": [
+       0.1963223374,
+       0.3692915835,
+       -1.5655373389
+      ],
+      "rotation": [
+       0.9999786954,
+       -0.0065275203,
+       1.22777e-05,
+       0.006519223,
+       0.9986091912,
+       -0.052318094,
+       0.0003292468,
+       0.0523170594,
+       0.9986304706
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       -30.0000196322,
+       29.9999630708,
+       10.0001565537
+      ],
+      "rotation": [
+       0.9999999999,
+       -1.7e-09,
+       1.22777e-05,
+       6.441e-07,
+       0.9986304707,
+       -0.052318094,
+       -1.22608e-05,
+       0.052318094,
+       0.9986304706
+      ]
+     },
+     {
+      "translation": [
+       0.1963223374,
+       0.3692915835,
+       -1.5655373389
+      ],
+      "rotation": [
+       0.9999786954,
+       -0.0065275203,
+       1.22777e-05,
+       0.006519223,
+       0.9986091912,
+       -0.052318094,
+       0.0003292468,
+       0.0523170594,
+       0.9986304706
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 1.0468398579
+   }
+  },
+  {
+   "id": "local-follow-circular-orient-slide-and-spin",
+   "kind": "local_retract",
+   "description": "Follower model (circular-orient): the plate is mated to a copy of the bolt; the bolt (the source) slides 4 mm along x and spins 10 deg, the plate rides along - the copy's mates are read through the constant step",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 7,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "follow": {
+         "r": [
+          [
+           0.0,
+           -1.0,
+           0.0
+          ],
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          -10.0,
+          -30.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        },
+        "follow": {
+         "r": [
+          [
+           0.0,
+           -1.0,
+           0.0
+          ],
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          -10.0,
+          -30.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "rotation_angle_degrees": 90.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       64.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "rotation_angle_degrees": 80.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "rotation_angle_degrees": 90.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       63.9997510027,
+       -39.999841037,
+       9.9999999691
+      ],
+      "rotation": [
+       0.1736481777,
+       0.984807753,
+       6.2153e-06,
+       -0.984807753,
+       0.1736481777,
+       -3.9785e-06,
+       -4.9973e-06,
+       -5.43e-06,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       1.589630265,
+       2.4899731356,
+       0.0003088407
+      ],
+      "rotation": [
+       0.9986647784,
+       -0.0516590788,
+       3.9785e-06,
+       0.0516590788,
+       0.9986647784,
+       6.2153e-06,
+       -4.2943e-06,
+       -6.0015e-06,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       63.9997510027,
+       -39.999841037,
+       9.9999999691
+      ],
+      "rotation": [
+       0.1736481777,
+       0.984807753,
+       6.2153e-06,
+       -0.984807753,
+       0.1736481777,
+       -3.9785e-06,
+       -4.9973e-06,
+       -5.43e-06,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       1.589630265,
+       2.4899731356,
+       0.0003088407
+      ],
+      "rotation": [
+       0.9986647784,
+       -0.0516590788,
+       3.9785e-06,
+       0.0516590788,
+       0.9986647784,
+       6.2153e-06,
+       -4.2943e-06,
+       -6.0015e-06,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 5.3087385434
+   }
+  },
+  {
+   "id": "local-follow-circular-orient-turn-3deg-x",
+   "kind": "local_retract",
+   "description": "Follower model (circular-orient): a 3 deg turn of the source about x is off the manifold; both land on it",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 7,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "follow": {
+         "r": [
+          [
+           0.0,
+           -1.0,
+           0.0
+          ],
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          -10.0,
+          -30.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        },
+        "follow": {
+         "r": [
+          [
+           0.0,
+           -1.0,
+           0.0
+          ],
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          -10.0,
+          -30.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "rotation_angle_degrees": 90.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0261679843,
+       0.0261679843,
+       -0.999315002
+      ],
+      "rotation_angle_degrees": 90.0392609403
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       -1.0
+      ],
+      "rotation_angle_degrees": 90.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       60.0000231489,
+       -40.0000248974,
+       9.9998429497
+      ],
+      "rotation": [
+       1.5e-09,
+       0.9999999999,
+       -1.23406e-05,
+       -0.9986304582,
+       -6.441e-07,
+       -0.052318333,
+       -0.052318333,
+       1.23238e-05,
+       0.9986304581
+      ]
+     },
+     {
+      "translation": [
+       -0.248973707,
+       -0.2314886683,
+       1.5705027217
+      ],
+      "rotation": [
+       0.9986004632,
+       -0.0077399541,
+       0.052318333,
+       0.0077512153,
+       0.9999699588,
+       -1.23406e-05,
+       -0.0523166658,
+       0.000417854,
+       0.9986304581
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       60.0000231489,
+       -40.0000248974,
+       9.9998429497
+      ],
+      "rotation": [
+       1.5e-09,
+       0.9999999999,
+       -1.23406e-05,
+       -0.9986304582,
+       -6.441e-07,
+       -0.052318333,
+       -0.052318333,
+       1.23238e-05,
+       0.9986304581
+      ]
+     },
+     {
+      "translation": [
+       -0.248973707,
+       -0.2314886683,
+       1.5705027217
+      ],
+      "rotation": [
+       0.9986004632,
+       -0.0077399541,
+       0.052318333,
+       0.0077512153,
+       0.9999699588,
+       -1.23406e-05,
+       -0.0523166658,
+       0.000417854,
+       0.9986304581
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 1.0468446444
+   }
+  },
+  {
+   "id": "local-follow-circular-keep-rotation-slide-and-spin",
+   "kind": "local_retract",
+   "description": "Follower model (circular-keep-rotation): the plate is mated to a copy of the bolt; the bolt (the source) slides 4 mm along x and spins 10 deg, the plate rides along - the copy's mates are read through the constant step",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 7,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "follow": {
+         "r": [
+          [
+           0.0,
+           -1.0,
+           0.0
+          ],
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          -10.0,
+          -30.0,
+          0.0
+         ],
+         "keep_rotation": true
+        }
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        },
+        "follow": {
+         "r": [
+          [
+           0.0,
+           -1.0,
+           0.0
+          ],
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          -10.0,
+          -30.0,
+          0.0
+         ],
+         "keep_rotation": true
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       64.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 10.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       63.9997510027,
+       -39.999841037,
+       9.9999999691
+      ],
+      "rotation": [
+       0.984807753,
+       -0.1736481777,
+       3.9785e-06,
+       0.1736481777,
+       0.984807753,
+       6.2153e-06,
+       -4.9973e-06,
+       -5.43e-06,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       1.589630265,
+       2.4899731356,
+       0.0003088407
+      ],
+      "rotation": [
+       0.9986647784,
+       -0.0516590788,
+       3.9785e-06,
+       0.0516590788,
+       0.9986647784,
+       6.2153e-06,
+       -4.2943e-06,
+       -6.0015e-06,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       63.9997510027,
+       -39.999841037,
+       9.9999999691
+      ],
+      "rotation": [
+       0.984807753,
+       -0.1736481777,
+       3.9785e-06,
+       0.1736481777,
+       0.984807753,
+       6.2153e-06,
+       -4.9973e-06,
+       -5.43e-06,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       1.589630265,
+       2.4899731356,
+       0.0003088407
+      ],
+      "rotation": [
+       0.9986647784,
+       -0.0516590788,
+       3.9785e-06,
+       0.0516590788,
+       0.9986647784,
+       6.2153e-06,
+       -4.2943e-06,
+       -6.0015e-06,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 5.3087385434
+   }
+  },
+  {
+   "id": "local-follow-circular-keep-rotation-turn-3deg-x",
+   "kind": "local_retract",
+   "description": "Follower model (circular-keep-rotation): a 3 deg turn of the source about x is off the manifold; both land on it",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 7,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "follow": {
+         "r": [
+          [
+           0.0,
+           -1.0,
+           0.0
+          ],
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          -10.0,
+          -30.0,
+          0.0
+         ],
+         "keep_rotation": true
+        }
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        },
+        "follow": {
+         "r": [
+          [
+           0.0,
+           -1.0,
+           0.0
+          ],
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          -10.0,
+          -30.0,
+          0.0
+         ],
+         "keep_rotation": true
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       1.0,
+       0.0,
+       0.0
+      ],
+      "rotation_angle_degrees": 3.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       60.0,
+       -40.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       59.9999630708,
+       -39.9999803678,
+       10.0001565537
+      ],
+      "rotation": [
+       0.9999999999,
+       -1.7e-09,
+       1.22777e-05,
+       6.441e-07,
+       0.9986304707,
+       -0.052318094,
+       -1.22608e-05,
+       0.052318094,
+       0.9986304706
+      ]
+     },
+     {
+      "translation": [
+       0.1963223374,
+       0.3692915835,
+       -1.5655373389
+      ],
+      "rotation": [
+       0.9999786954,
+       -0.0065275203,
+       1.22777e-05,
+       0.006519223,
+       0.9986091912,
+       -0.052318094,
+       0.0003292468,
+       0.0523170594,
+       0.9986304706
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       59.9999630708,
+       -39.9999803678,
+       10.0001565537
+      ],
+      "rotation": [
+       0.9999999999,
+       -1.7e-09,
+       1.22777e-05,
+       6.441e-07,
+       0.9986304707,
+       -0.052318094,
+       -1.22608e-05,
+       0.052318094,
+       0.9986304706
+      ]
+     },
+     {
+      "translation": [
+       0.1963223374,
+       0.3692915835,
+       -1.5655373389
+      ],
+      "rotation": [
+       0.9999786954,
+       -0.0065275203,
+       1.22777e-05,
+       0.006519223,
+       0.9986091912,
+       -0.052318094,
+       0.0003292468,
+       0.0523170594,
+       0.9986304706
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 1.0468398579
+   }
+  },
+  {
+   "id": "local-follow-limit-inside",
+   "kind": "local_retract",
+   "description": "Follower model with a [5, 30] gap limit on the plate (a slider on a table and a guide; gap 25): a 4 mm slide of the source stays inside the range - the limit is not held",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 7,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": false,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "follow": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          60.0,
+          0.0,
+          0.0
+         ],
+         "keep_rotation": false
+        },
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ]
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        },
+        "follow": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          60.0,
+          0.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        },
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 1,
+        "point": [
+         0,
+         10,
+         0
+        ],
+        "direction": [
+         0,
+         1,
+         0
+        ],
+        "plane": {
+         "origin": [
+          0,
+          10,
+          0
+         ],
+         "normal": [
+          0,
+          1,
+          0
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0,
+         10,
+         0
+        ],
+        "direction": [
+         0,
+         -1,
+         0
+        ],
+        "plane": {
+         "origin": [
+          0,
+          10,
+          0
+         ],
+         "normal": [
+          0,
+          -1,
+          0
+         ]
+        },
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "type": "limit_distance",
+       "id": "gap",
+       "min": 5.0,
+       "max": 30.0,
+       "a": {
+        "member": 1,
+        "point": [
+         10,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ],
+        "plane": {
+         "origin": [
+          10,
+          0,
+          0
+         ],
+         "normal": [
+          1,
+          0,
+          0
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         35,
+         0,
+         0
+        ],
+        "direction": [
+         -1,
+         0,
+         0
+        ],
+        "plane": {
+         "origin": [
+          35,
+          0,
+          0
+         ],
+         "normal": [
+          -1,
+          0,
+          0
+         ]
+        },
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       -26.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       -26.00039996,
+       30.0,
+       10.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       3.99960004,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       -26.00039996,
+       30.0,
+       10.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       3.99960004,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 3.99960004,
+    "held_limits": []
+   }
+  },
+  {
+   "id": "local-follow-limit-stops-at-min",
+   "kind": "local_retract",
+   "description": "The same model, the source pulled 28 mm towards the stop: the gap would be -3, below the minimum - held at 5, the plate (and the bolt it follows) stop 20 mm along",
+   "input": {
+    "lever_arm": 20.0,
+    "local_follower": 0.01,
+    "model": {
+     "version": 7,
+     "members": [
+      "bolt",
+      "plate"
+     ],
+     "mates": [
+      {
+       "type": "concentric",
+       "value": null,
+       "allow_rotation": false,
+       "alignment": 1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "axis_origin": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "follow": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          60.0,
+          0.0,
+          0.0
+         ],
+         "keep_rotation": false
+        },
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ]
+       },
+       "b": {
+        "member": 1,
+        "axis_origin": [
+         30,
+         30,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "perp": [
+         1.0,
+         0.0,
+         0.0
+        ]
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 0,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        },
+        "follow": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          60.0,
+          0.0,
+          0.0
+         ],
+         "keep_rotation": false
+        }
+       },
+       "b": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         10
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          10
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        }
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 1,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         -1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          -1
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0,
+         0,
+         0
+        ],
+        "direction": [
+         0,
+         0,
+         1
+        ],
+        "plane": {
+         "origin": [
+          0,
+          0,
+          0
+         ],
+         "normal": [
+          0,
+          0,
+          1
+         ]
+        },
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "type": "coincident",
+       "value": null,
+       "allow_rotation": true,
+       "alignment": -1,
+       "side": 1,
+       "perp": 1,
+       "a": {
+        "member": 1,
+        "point": [
+         0,
+         10,
+         0
+        ],
+        "direction": [
+         0,
+         1,
+         0
+        ],
+        "plane": {
+         "origin": [
+          0,
+          10,
+          0
+         ],
+         "normal": [
+          0,
+          1,
+          0
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         0,
+         10,
+         0
+        ],
+        "direction": [
+         0,
+         -1,
+         0
+        ],
+        "plane": {
+         "origin": [
+          0,
+          10,
+          0
+         ],
+         "normal": [
+          0,
+          -1,
+          0
+         ]
+        },
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      },
+      {
+       "type": "limit_distance",
+       "id": "gap",
+       "min": 5.0,
+       "max": 30.0,
+       "a": {
+        "member": 1,
+        "point": [
+         10,
+         0,
+         0
+        ],
+        "direction": [
+         1,
+         0,
+         0
+        ],
+        "plane": {
+         "origin": [
+          10,
+          0,
+          0
+         ],
+         "normal": [
+          1,
+          0,
+          0
+         ]
+        }
+       },
+       "b": {
+        "member": -1,
+        "point": [
+         35,
+         0,
+         0
+        ],
+        "direction": [
+         -1,
+         0,
+         0
+        ],
+        "plane": {
+         "origin": [
+          35,
+          0,
+          0
+         ],
+         "normal": [
+          -1,
+          0,
+          0
+         ]
+        },
+        "frozen": {
+         "r": [
+          [
+           1.0,
+           0.0,
+           0.0
+          ],
+          [
+           0.0,
+           1.0,
+           0.0
+          ],
+          [
+           0.0,
+           0.0,
+           1.0
+          ]
+         ],
+         "t": [
+          0.0,
+          0.0,
+          0.0
+         ]
+        }
+       }
+      }
+     ]
+    },
+    "poses": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "wishes": [
+     {
+      "translation": [
+       -2.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ],
+    "fallback_poses": [
+     {
+      "translation": [
+       -30.0,
+       30.0,
+       10.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     },
+     {
+      "translation": [
+       0.0,
+       0.0,
+       0.0
+      ],
+      "rotation_axis": [
+       0.0,
+       0.0,
+       1.0
+      ],
+      "rotation_angle_degrees": 0.0
+     }
+    ]
+   },
+   "expected": {
+    "accepted": true,
+    "poses": [
+     {
+      "translation": [
+       -10.0,
+       30.0,
+       10.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       20.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "local_poses": [
+     {
+      "translation": [
+       -10.0,
+       30.0,
+       10.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     },
+     {
+      "translation": [
+       20.0,
+       0.0,
+       0.0
+      ],
+      "rotation": [
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0,
+       0.0,
+       0.0,
+       0.0,
+       1.0
+      ]
+     }
+    ],
+    "residual_inf": 0.0,
+    "fallback_distance": 20.0,
+    "held_limits": [
+     "gap"
     ]
    }
   },

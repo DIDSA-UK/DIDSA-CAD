@@ -52,6 +52,11 @@ const int kLocalCouplerModelVersion = 5;
 /// (anchors) and pairs, so it is a superset of 3 to 5.
 const int kLocalLimitModelVersion = 6;
 
+/// Version 7 = a side (and a `pair`) may carry `follow`: it belongs to a pattern COPY of a member, whose world pose is a constant step after the
+/// member's: `(Rs R, Rs t + ts)`, or `(R, Rs t + ts)` with `keep_rotation` (a Circular pattern that does not orient). Emitted by the backend only
+/// when some side has one; a superset of 3 to 6 (limits, couplers, pairs may sit alongside).
+const int kLocalFollowModelVersion = 7;
+
 /// Active-set rounds of one retraction, and how far (mm / degrees) a value may sit outside its range before the limit counts as violated.
 const int kLocalLimitRounds = 3;
 const double kLocalLimitTol = 1e-6;
@@ -62,6 +67,15 @@ const double kLocalDistanceFloor = 1e-3;
 const Set<String> _types = <String>{'coincident', 'concentric', 'parallel', 'angle', 'distance'};
 const Set<String> _couplerTypes = <String>{'gear', 'rack_pinion', 'screw'};
 const Set<String> _limitTypes = <String>{'limit_distance', 'limit_angle'};
+
+/// A follower side's constant step (version 7): the copy's pose is `(Rs R, Rs t + ts)`, or `(R, Rs t + ts)` when [keepRotation].
+class _Follow {
+  final Mat3 rs;
+  final List<double> ts;
+  final bool keepRotation;
+
+  const _Follow(this.rs, this.ts, this.keepRotation);
+}
 
 class _Side {
   final int member;
@@ -80,7 +94,10 @@ class _Side {
   final Mat3? anchorR;
   final List<double>? anchorT;
 
-  const _Side(this.member, this.frozenR, this.frozenT, this.geometry, [this.pair, this.anchorR, this.anchorT]);
+  /// Version 7: this side belongs to a pattern copy that follows its member (see [_Follow]); null for every other side.
+  final _Follow? follow;
+
+  const _Side(this.member, this.frozenR, this.frozenT, this.geometry, [this.pair, this.anchorR, this.anchorT, this.follow]);
 }
 
 class _Mate {
@@ -127,6 +144,12 @@ class _S {
 
 List<double> _vec(Object? o) => <double>[for (final x in (o as List)) (x as num).toDouble()];
 
+_Follow? _parseFollow(Object? o) {
+  if (o == null) return null;
+  final j = o as Map<String, dynamic>;
+  return _Follow(Mat3(<double>[for (final row in j['r'] as List) ..._vec(row)]), _vec(j['t']), j['keep_rotation'] == true);
+}
+
 _Side _parseSide(Map<String, dynamic> j) {
   final geo = <String, List<double>>{};
   for (final name in const <String>['point', 'axis_origin', 'direction', 'perp', 'hinge_direction']) {
@@ -155,6 +178,10 @@ _Side _parseSide(Map<String, dynamic> j) {
       pm['frozen'] == null ? null : Mat3(<double>[for (final row in (pm['frozen'] as Map)['r'] as List) ..._vec(row)]),
       pm['frozen'] == null ? null : _vec((pm['frozen'] as Map)['t']),
       <String, List<double>>{'porigin': _vec(pp['origin']), 'pnormal': _vec(pp['normal'])},
+      null,
+      null,
+      null,
+      _parseFollow(pm['follow']),
     );
   }
   Mat3? ar;
@@ -164,7 +191,7 @@ _Side _parseSide(Map<String, dynamic> j) {
     ar = Mat3(<double>[for (final row in (anchor as Map)['r'] as List) ..._vec(row)]);
     at = _vec(anchor['t']);
   }
-  return _Side((j['member'] as num).toInt(), fr, ft, geo, pair, ar, at);
+  return _Side((j['member'] as num).toInt(), fr, ft, geo, pair, ar, at, _parseFollow(j['follow']));
 }
 
 class LocalFrameResult {
@@ -226,10 +253,11 @@ class LocalRetractor {
       if (version != kLocalModelVersion &&
           version != kLocalPairModelVersion &&
           version != kLocalCouplerModelVersion &&
-          version != kLocalLimitModelVersion) {
+          version != kLocalLimitModelVersion &&
+          version != kLocalFollowModelVersion) {
         return null;
       }
-      final v6 = version == kLocalLimitModelVersion;
+      final v6 = version == kLocalLimitModelVersion || version == kLocalFollowModelVersion; // 7 is a superset of 6 (limits, couplers, pairs)
       final ids = <String>[for (final m in json['members'] as List) m as String];
       if (ids.isEmpty || ids.length > maxMembers) return null;
       final mates = <_Mate>[];
@@ -260,6 +288,11 @@ class LocalRetractor {
         if ((side.a.pair?.member ?? -1) >= ids.length || (side.b.pair?.member ?? -1) >= ids.length) return null;
         // `pair` belongs to version 4 only: a version-3 model that carries one is malformed, not "version 3 plus extras".
         if (version == kLocalModelVersion && (side.a.pair != null || side.b.pair != null)) return null;
+        // `follow` belongs to version 7 only.
+        if (version != kLocalFollowModelVersion &&
+            (side.a.follow != null || side.b.follow != null || side.a.pair?.follow != null || side.b.pair?.follow != null)) {
+          return null;
+        }
         // `anchor` and the coupler types belong to version 5 only.
         if (version != kLocalCouplerModelVersion && !v6 && (side.a.anchorR != null || side.b.anchorR != null)) return null;
         mates.add(side);
@@ -447,6 +480,8 @@ class LocalRetractor {
       t = poses[m].t;
     }
     final w = r.mulVec(local);
+    final f = s.follow;
+    if (f != null) return _worldFollowed(f, m, w, t, point, d);
     final v = point ? <double>[w[0] + t[0], w[1] + t[1], w[2] + t[2]] : w;
     if (m >= 0) {
       final c0 = 6 * m;
@@ -462,6 +497,41 @@ class LocalRetractor {
       d[1 * n + c0 + 5] = w[0];
       d[2 * n + c0 + 3] = w[1];
       d[2 * n + c0 + 4] = -w[0];
+    }
+    return _V(v, d);
+  }
+
+  /// A follower side (version 7): the copy's pose is `(Rs R, Rs t + ts)`, or `(R, Rs t + ts)` with `keepRotation`. [w] is `R local`.
+  ///   orient:        point `Rs (w + t) + ts`, d/dv = Rs, d/dω = -Rs [w]×;  direction `Rs w`, d/dω = -Rs [w]×
+  ///   keep rotation: point `w + Rs t + ts`,   d/dv = Rs, d/dω = -[w]×;     direction `w`,    d/dω = -[w]×
+  _V _worldFollowed(_Follow f, int m, List<double> w, List<double> t, bool point, List<double> d) {
+    final rs = f.rs;
+    final List<double> v;
+    if (point) {
+      final rt = rs.mulVec(t);
+      final base = f.keepRotation ? w : rs.mulVec(w);
+      v = <double>[base[0] + rt[0] + f.ts[0], base[1] + rt[1] + f.ts[1], base[2] + rt[2] + f.ts[2]];
+    } else {
+      v = f.keepRotation ? w : rs.mulVec(w);
+    }
+    if (m >= 0) {
+      final c0 = 6 * m;
+      if (point) {
+        for (var i = 0; i < 3; i++) {
+          for (var j = 0; j < 3; j++) {
+            d[i * n + c0 + j] = rs.m[3 * i + j];
+          }
+        }
+      }
+      // column k of the rotation block is `e_k x w` (= -[w]× e_k), rotated by Rs unless the copy keeps the source's rotation
+      for (var k = 0; k < 3; k++) {
+        final e = <double>[k == 0 ? 1.0 : 0.0, k == 1 ? 1.0 : 0.0, k == 2 ? 1.0 : 0.0];
+        final c = <double>[e[1] * w[2] - e[2] * w[1], e[2] * w[0] - e[0] * w[2], e[0] * w[1] - e[1] * w[0]];
+        final col = f.keepRotation ? c : rs.mulVec(c);
+        for (var i = 0; i < 3; i++) {
+          d[i * n + c0 + 3 + k] = col[i];
+        }
+      }
     }
     return _V(v, d);
   }

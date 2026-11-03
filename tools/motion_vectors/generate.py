@@ -58,6 +58,7 @@ LOCAL_MODEL_VERSION = 3      # 3: an ANGLE about a hinge also fixes the swing se
 LOCAL_PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces on two members); a model without any pair stays at LOCAL_MODEL_VERSION
 LOCAL_COUPLER_MODEL_VERSION = 5  # 5: coupler mates (gear / rack_pinion / screw): rows on each side's MOVE from its `anchor` pose; emitted only when the model has one
 LOCAL_LIMIT_MODEL_VERSION = 6  # 6: limit mates (limit_distance / limit_angle): an inequality row with `min` / `max`, held at the nearest bound only when violated; emitted only when the model has one
+LOCAL_FOLLOW_MODEL_VERSION = 7  # 7: a side (and a pair) may carry `follow` (a pattern copy that follows its source member: pose `(Rs R, Rs t + ts)`, or `(R, Rs t + ts)` with keep_rotation); a superset of 6, emitted only when some side has one
 LOCAL_LIMIT_ROUNDS = 3       # active-set rounds of one retraction: each adds the violated limits as equalities and retracts again from the SAME start and wish
 LOCAL_LIMIT_TOL = 1e-6       # mm / degrees a value may sit outside its range before the limit counts as violated
 LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
@@ -463,15 +464,39 @@ class ConstraintModel:
         else:
             r, t = poses[m]
         w = r @ local
+        follow = side.get("follow")
+        if follow is None:
+            if kind == "point":
+                v = w + t
+                if m >= 0:
+                    d[:, 6 * m:6 * m + 3] = np.eye(3)
+                    d[:, 6 * m + 3:6 * m + 6] = -skew(w)
+            else:
+                v = w
+                if m >= 0:
+                    d[:, 6 * m + 3:6 * m + 6] = -skew(w)
+            return _V(v, d)
+        # v7: the copy's pose is `(Rs R, Rs t + ts)`, or `(R, Rs t + ts)` with keep_rotation
+        rs, ts, keep = np.array(follow["r"], float), np.array(follow["t"], float), bool(follow.get("keep_rotation"))
         if kind == "point":
-            v = w + t
-            if m >= 0:
-                d[:, 6 * m:6 * m + 3] = np.eye(3)
-                d[:, 6 * m + 3:6 * m + 6] = -skew(w)
-        else:
+            if keep:
+                v = w + rs @ t + ts
+                if m >= 0:
+                    d[:, 6 * m:6 * m + 3] = rs
+                    d[:, 6 * m + 3:6 * m + 6] = -skew(w)
+            else:
+                v = rs @ (w + t) + ts
+                if m >= 0:
+                    d[:, 6 * m:6 * m + 3] = rs
+                    d[:, 6 * m + 3:6 * m + 6] = -rs @ skew(w)
+        elif keep:
             v = w
             if m >= 0:
                 d[:, 6 * m + 3:6 * m + 6] = -skew(w)
+        else:
+            v = rs @ w
+            if m >= 0:
+                d[:, 6 * m + 3:6 * m + 6] = -rs @ skew(w)
         return _V(v, d)
 
     def _geo(self, side, poses):
@@ -1361,6 +1386,54 @@ def build():
     local_case("local-limit-angle-stops-at-max", "A -80 deg swing (value +80, above the maximum 50): held at 50, so the leaf stops at -50 deg",
                hinge_leaf, [leaf_at(0.0)], [leaf_at(-80.0)], 20.0, fallback=[leaf_at(-80.0)])
 
+    # ---- constraint model v7: follower sides (a pattern copy that follows its source member). The plate (member 1) is mated to a COPY of the bolt (member 0, the
+    # source): the copy's pose is a constant step `(Rs, ts)` after the source's, so the mates read it through `follow`. The bolt's start pose is chosen so the
+    # COPY sits at the pose the plain `float_model` has the bolt at (axis (30, 30), end face at z 10): every case starts on the manifold.
+    FOLLOW_VERSION = LOCAL_FOLLOW_MODEL_VERSION
+
+    def follow_of(rs, ts, keep):
+        return {"r": [[float(x) for x in row] for row in rs], "t": [float(x) for x in ts], "keep_rotation": keep}
+
+    def follow_model(follow, version=FOLLOW_VERSION, extra=(), locked=False):
+        # the same two mates as `float_model`, but the bolt side is the copy: `follow` is applied to the bolt member's pose; `locked`: the
+        # concentric mate also fixes the spin about the hole axis (allow_rotation = false), so the plate can only slide with the bolt
+        perp = {"perp": [1.0, 0.0, 0.0]} if locked else {}
+        return {"version": version, "members": ["bolt", "plate"], "mates": [
+            mate("concentric", axis_side(0, (0, 0, 0), (0, 0, 1), follow=follow, **perp), axis_side(1, (30, 30, 0), (0, 0, 1), **perp), allow_rotation=not locked),
+            mate("coincident", plane_side(0, (0, 0, 0), (0, 0, -1), follow=follow), plane_side(1, (0, 0, 10), (0, 0, 1)), alignment=-1),
+            *extra]}
+
+    def source_for(rs, ts, keep):
+        # the source pose whose copy is at `bolt_f` (identity rotation, (30, 30, 10)): orient `Rs R = I`, keep `R = I`; always `Rs t + ts = (30, 30, 10)`
+        r_src = np.eye(3) if keep else rs.T
+        return Pose(rs.T @ (bolt_f.t - np.array(ts, float)), r_src)
+
+    # Linear: a pure 60 mm step along +x
+    lin = (np.eye(3), (60.0, 0.0, 0.0), False)
+    # Circular: 90 deg about the vertical line through (10, -20), orient true (the copy turns with the step) / false (it keeps the source's rotation)
+    rs_circ = rot_from_rotvec(np.array([0.0, 0.0, D(90.0)]))
+    ts_circ = tuple(np.array([10.0, -20.0, 0.0]) - rs_circ @ np.array([10.0, -20.0, 0.0]))
+    orient, keep_rot = (rs_circ, ts_circ, False), (rs_circ, ts_circ, True)
+    for kind, spec_args in (("linear", lin), ("circular-orient", orient), ("circular-keep-rotation", keep_rot)):
+        model7 = follow_model(follow_of(*spec_args))
+        src = source_for(*spec_args)
+        local_case(f"local-follow-{kind}-slide-and-spin", f"Follower model ({kind}): the plate is mated to a copy of the bolt; the bolt (the source) slides 4 mm along x and spins 10 deg, "
+                   "the plate rides along - the copy's mates are read through the constant step",
+                   model7, [src, plate0], [turned(moved(src, (4, 0, 0)), 10), plate0], 20.0)
+        local_case(f"local-follow-{kind}-turn-3deg-x", f"Follower model ({kind}): a 3 deg turn of the source about x is off the manifold; both land on it",
+                   model7, [src, plate0], [turned(src, 3, (1, 0, 0)), plate0], 20.0)
+    # a limit mate in the same model (version 7 is a superset of 6): the plate rides on a fixed table (z 0) against a fixed guide (y 10), so it can only slide
+    # along x, and the bolt (the source) is carried with it by the copy mate; the plate's +x face against a fixed stop at x 35 (gap 25, limited to [5, 30])
+    limited = follow_model(follow_of(*lin), locked=True, extra=(
+        mate("coincident", plane_side(1, (0, 0, 0), (0, 0, -1)), plane_side(-1, (0, 0, 0), (0, 0, 1), frozen=FROZEN0), alignment=-1),
+        mate("coincident", plane_side(1, (0, 10, 0), (0, 1, 0)), plane_side(-1, (0, 10, 0), (0, -1, 0), frozen=FROZEN0), alignment=-1),
+        limit("limit_distance", plane_side(1, (10, 0, 0), (1, 0, 0)), plane_side(-1, (35, 0, 0), (-1, 0, 0), frozen=FROZEN0), 5.0, 30.0, "gap")))
+    src_lin = source_for(*lin)
+    local_case("local-follow-limit-inside", "Follower model with a [5, 30] gap limit on the plate (a slider on a table and a guide; gap 25): a 4 mm slide of the source stays inside the range - the limit is not held",
+               limited, [src_lin, plate0], [moved(src_lin, (4, 0, 0)), plate0], 20.0)
+    local_case("local-follow-limit-stops-at-min", "The same model, the source pulled 28 mm towards the stop: the gap would be -3, below the minimum - held at 5, the plate (and the bolt it follows) stop 20 mm along",
+               limited, [src_lin, plate0], [moved(src_lin, (28, 0, 0)), plate0], 20.0)
+
     rack0 = P((0.0, 20.0, 0.0))
     FROZEN_RAIL = {"r": I3, "t": [0.0, 20.0, 0.0]}
     PITCH_TRAVEL = 2.0 * math.pi * 10.0  # a 10 mm radius pinion: 62.832 mm of rack per turn
@@ -1619,7 +1692,7 @@ def main():
             "local_follower": LOCAL_FOLLOWER, "local_iters": LOCAL_ITERS, "local_iters_max": LOCAL_ITERS_MAX, "local_polish": LOCAL_POLISH, "local_trust": LOCAL_TRUST,
             "local_rot_cap": LOCAL_ROT_CAP, "local_lam_abs": LOCAL_LAM_ABS, "local_accept_residual": LOCAL_ACCEPT_RESIDUAL,
             "local_accept_distance": LOCAL_ACCEPT_DISTANCE,
-            "local_limit_model_version": LOCAL_LIMIT_MODEL_VERSION, "local_limit_rounds": LOCAL_LIMIT_ROUNDS, "local_limit_tol": LOCAL_LIMIT_TOL,
+            "local_follow_model_version": LOCAL_FOLLOW_MODEL_VERSION, "local_limit_model_version": LOCAL_LIMIT_MODEL_VERSION, "local_limit_rounds": LOCAL_LIMIT_ROUNDS, "local_limit_tol": LOCAL_LIMIT_TOL,
             "local_distance_floor": LOCAL_DISTANCE_FLOOR, "local_model_version": LOCAL_MODEL_VERSION, "local_pair_model_version": LOCAL_PAIR_MODEL_VERSION,
         },
         "conventions": {

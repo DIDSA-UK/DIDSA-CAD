@@ -63,6 +63,7 @@ void main() {
     expect((constants['local_pair_model_version'] as num).toInt(), kLocalPairModelVersion);
     expect((constants['local_coupler_model_version'] as num?)?.toInt() ?? kLocalCouplerModelVersion, kLocalCouplerModelVersion);
     expect((constants['local_limit_model_version'] as num).toInt(), kLocalLimitModelVersion);
+    expect((constants['local_follow_model_version'] as num).toInt(), kLocalFollowModelVersion);
     expect((constants['local_limit_rounds'] as num).toInt(), kLocalLimitRounds);
     expect((constants['local_limit_tol'] as num).toDouble(), kLocalLimitTol);
     expect(cases.length, greaterThanOrEqualTo(12));
@@ -141,7 +142,7 @@ void main() {
     test('a valid model parses', () => expect(LocalRetractor.tryParse(base()), isNotNull));
     test('null, another version, an unknown mate type, a missing side field or an out-of-range member -> projection only', () {
       expect(LocalRetractor.tryParse(null), isNull);
-      expect(LocalRetractor.tryParse(base()..['version'] = kLocalLimitModelVersion + 1), isNull);
+      expect(LocalRetractor.tryParse(base()..['version'] = kLocalFollowModelVersion + 1), isNull); // (was kLocalLimitModelVersion + 1 before version 7 existed)
       expect(LocalRetractor.tryParse(base()..['version'] = 1), isNull, reason: 'the pre-branch model (sign-agnostic residuals) is not evaluated');
       expect(LocalRetractor.tryParse(base()..['version'] = 2), isNull, reason: 'a version-2 model has no swing sense for an ANGLE about a hinge');
       final unknown = base();
@@ -154,13 +155,14 @@ void main() {
       (((badMember['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>)['member'] = 5;
       expect(LocalRetractor.tryParse(badMember), isNull);
     });
-    test('every golden model carries the current version (5 when a coupler mate is in it, else 4 exactly when a side has a pair) and a branch on each mate', () {
+    test('every golden model carries the current version (7 when a side follows, 6 when a limit is in it, 5 when a coupler mate is in it, else 4 exactly when a side has a pair) and a branch on each mate', () {
       for (final c in cases) {
         final model = (c['input'] as Map<String, dynamic>)['model'] as Map<String, dynamic>;
         final hasPair = (model['mates'] as List).any((m) => ((m as Map)['a'] as Map).containsKey('pair') || (m['b'] as Map).containsKey('pair'));
         final hasCoupler = (model['mates'] as List).any((m) => const ['gear', 'rack_pinion', 'screw'].contains((m as Map)['type']));
         final hasLimit = (model['mates'] as List).any((m) => const ['limit_distance', 'limit_angle'].contains((m as Map)['type']));
-        expect(model['version'], hasLimit ? kLocalLimitModelVersion : hasCoupler ? kLocalCouplerModelVersion : hasPair ? kLocalPairModelVersion : kLocalModelVersion,
+        final hasFollow = (model['mates'] as List).any((m) => ((m as Map)['a'] as Map).containsKey('follow') || (m['b'] as Map).containsKey('follow'));
+        expect(model['version'], hasFollow ? kLocalFollowModelVersion : hasLimit ? kLocalLimitModelVersion : hasCoupler ? kLocalCouplerModelVersion : hasPair ? kLocalPairModelVersion : kLocalModelVersion,
             reason: c['id'] as String);
         for (final m in model['mates'] as List) {
           final mate = m as Map<String, dynamic>;
@@ -214,6 +216,38 @@ void main() {
         final freed = model.retract(stopped, [back], w);
         expect(model.heldLimits, isEmpty);
         expect(freed.first.t[0], closeTo(stopped.first.t[0] - 4.0, 1e-6));
+      });
+    });
+    group('version 7 (follower sides: a pattern copy that follows its source)', () {
+      Map<String, dynamic> followModel(String id) =>
+          jsonDecode(jsonEncode((cases.firstWhere((c) => c['id'] == id)['input'] as Map<String, dynamic>)['model'])) as Map<String, dynamic>;
+      const followIds = <String>[
+        'local-follow-linear-slide-and-spin',
+        'local-follow-circular-orient-slide-and-spin',
+        'local-follow-circular-keep-rotation-slide-and-spin',
+        'local-follow-limit-stops-at-min',
+      ];
+      test('a version-7 model parses (including one that also holds a limit mate); version 7 is accepted, not only 3 to 6', () {
+        for (final id in followIds) {
+          expect(followModel(id)['version'], kLocalFollowModelVersion, reason: id);
+          expect(LocalRetractor.tryParse(followModel(id)), isNotNull, reason: id);
+        }
+      });
+      test('`follow` belongs to version 7: a follower side in an older version is malformed, as is a follower without its step', () {
+        for (final v in <int>[kLocalModelVersion, kLocalPairModelVersion, kLocalCouplerModelVersion, kLocalLimitModelVersion]) {
+          expect(LocalRetractor.tryParse(followModel(followIds.first)..['version'] = v), isNull, reason: 'follow in version $v');
+        }
+        final noStep = followModel(followIds.first);
+        (((noStep['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>)['follow'] = <String, dynamic>{'keep_rotation': false};
+        expect(LocalRetractor.tryParse(noStep), isNull);
+      });
+      test('the limit of a model that holds a follower still stops the drag (the held limit is not lost to a version it cannot read)', () {
+        final inp = cases.firstWhere((c) => c['id'] == 'local-follow-limit-stops-at-min')['input'] as Map<String, dynamic>;
+        final model = LocalRetractor.tryParse(inp['model'] as Map<String, dynamic>)!;
+        final start = [for (final p in inp['poses'] as List) _poseIn(p)];
+        final wishes = [for (final p in inp['wishes'] as List) _poseIn(p)];
+        model.retract(start, wishes, localScale(2, (inp['lever_arm'] as num).toDouble()), iterations: kLocalIterationsMax); // a 40 mm wish is a hitch: the frame gets the extra iterations
+        expect(model.heldLimits.keys, ['gap']);
       });
     });
     group('version 4 (a side with a pair)', () {

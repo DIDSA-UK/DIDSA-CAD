@@ -367,11 +367,13 @@ def _circular_pattern_step(axis: ComponentPatternAxis, angle_degrees: float) -> 
     return RigidTransform(translation=translation, rotation_axis=axis.direction, rotation_angle_degrees=angle_degrees)
 
 
-def pattern_copy_pose(pattern: ComponentPattern, source_pose: RigidTransform, index: int) -> RigidTransform:
-    """The pose of copy `index` of `pattern` for a source at `source_pose` (one index of `expand_component_pattern_instances`,
-    the same maths: that function calls this, so the two cannot drift). Linear `index = i * count_2 + j`; Circular is the
-    1-based angular step, and with `orient_with_rotation = false` it keeps the source's rotation. Does not check that the
-    index is live (in range, not skipped): `expand_component_pattern_instances` decides that."""
+def pattern_step(pattern: ComponentPattern, index: int) -> tuple[RigidTransform, bool]:
+    """The constant world-frame step of copy `index` of `pattern`, and whether the copy keeps its source's rotation: `(step,
+    keep_rotation)`. A copy's pose is `compose(step, source_pose)` (a pure translation for Linear; a rotation about `axis` for
+    Circular), except that with `keep_rotation` (Circular, `orient_with_rotation = false`) only the translation of that composition is
+    kept and the source's own rotation is restored. With `step = (Rs, ts)` a source at `(R, t)` therefore has its copy at
+    `(Rs R, Rs t + ts)`, or `(R, Rs t + ts)` when `keep_rotation`: the form a constraint model's follower side carries
+    (`constraint_model.export_constraint_model`, wire version 7). Does not check that the index is live."""
     if pattern.pattern_type == ComponentPatternType.LINEAR:
         count_2 = max(pattern.count_2, 1)
         i, j = divmod(index, count_2)
@@ -387,14 +389,22 @@ def pattern_copy_pose(pattern: ComponentPattern, source_pose: RigidTransform, in
                     step.translation[2] + step_2.translation[2],
                 )
             )
-        return compose(step, source_pose)
+        return step, False
     count = max(pattern.count_angular, 1)
     axis = pattern.axis if pattern.axis is not None else ComponentPatternAxis()
     step_angle = pattern.angle_total / count
     sign = -1.0 if pattern.reverse_angular else 1.0
-    step = _circular_pattern_step(axis, step_angle * index * sign)
+    return _circular_pattern_step(axis, step_angle * index * sign), not pattern.orient_with_rotation
+
+
+def pattern_copy_pose(pattern: ComponentPattern, source_pose: RigidTransform, index: int) -> RigidTransform:
+    """The pose of copy `index` of `pattern` for a source at `source_pose` (one index of `expand_component_pattern_instances`,
+    the same maths: that function calls this, so the two cannot drift). Linear `index = i * count_2 + j`; Circular is the
+    1-based angular step, and with `orient_with_rotation = false` it keeps the source's rotation. Does not check that the
+    index is live (in range, not skipped): `expand_component_pattern_instances` decides that. The step itself is `pattern_step`."""
+    step, keep_rotation = pattern_step(pattern, index)
     composed = compose(step, source_pose)
-    if not pattern.orient_with_rotation:
+    if keep_rotation:
         # `[10]`: reposition around the circle (keep `composed`'s own translation, the fully rotation-aware displacement
         # `compose` already derived) without also rotating the instance's own local orientation around `axis` - restore
         # `source_pose`'s own rotation term in place of `composed`'s.

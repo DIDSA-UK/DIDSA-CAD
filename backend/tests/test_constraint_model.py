@@ -407,6 +407,7 @@ def test_backend_retraction_reproduces_the_golden_vectors():
     c = doc["constants"]
     cases = [x for x in doc["cases"] if x["kind"] == "local_retract"]
     assert len(cases) >= 12
+    assert sum(1 for x in cases if x["input"]["model"]["version"] == 7) >= 8  # the follower-side cases (constraint model v7) are in the file
     for case in cases:
         inp, exp = case["input"], case["expected"]
         cm = ConstraintModel(inp["model"])
