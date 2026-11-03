@@ -4382,3 +4382,20 @@ Implemented in the plan's recommended order, one commit per item.
   is placed more than once; overrides are verbatim. New `occurrencePathDisplayName`: pattern copies read
   `Source [Linear 1 #2]`, nested paths show the last segment. `_selectionBodyNames` now includes every instance path, so the
   drawer / Select Other / Mate / Measure panels no longer fall back to "Body". No persisted instance number was added.
+
+## 2z. Mate "Next" and non-modal Select Other (`docs/mate-apply-and-select-other-plan.md`)
+
+- **M1 - Mate Next.** The Mate panel buttons are **Cancel | Next | OK** ("Confirm" renamed OK). `_confirmMate({keepOpen})`:
+  Next creates the mate (same atomic create+solve), refreshes the tree/mesh and calls the new `_resetMateForNext()`
+  (shared with `_openMate`), which clears the picks, value, limits, Width picks, branch choice, preview and error but keeps
+  the mate type, allow-rotation and Minimal-movement settings, the pushed selection-filter override and `_entitiesBeforeMate`.
+  After a Next the Cancel button reads "Close" and "N mates added" shows. A failing Next keeps the picks and shows the error.
+  The branch-notice strings now say "OK or Next applies it". *Skipped:* Shift+Enter for Next (the optional item - it would
+  have meant a second activator in the `ToolPanelKeys` registry); Enter still means OK.
+- **S1 - non-modal Select Other.** `showSelectOtherSheet` (a modal route with a dark barrier) is replaced by `SelectOtherPanel`,
+  drawn in `PartScreen`'s viewport Stack with no barrier: a compact (280 x <= 320) popup anchored at the click point and
+  clamped inside the viewport on desktop, a short bottom panel on phone. `PartViewport.onSelectOtherRequested` now also
+  passes the viewport-local anchor. Everything closes through `_closeSelectOther()` (clears the candidates and the highlight):
+  row pick, X, Esc (via `ToolPanelKeys`), a viewport tap (consumed - it does not change the selection), a lens switch or a
+  tool opening (`_clearTransientError`). Pan/orbit/zoom keep working; the body dimming and hover preview are unchanged, the
+  preview also clears when the mouse leaves the panel, and the selection drawer is hidden while it is open.

@@ -1,6 +1,6 @@
 # Mate "Next" (apply and continue) + non-modal Select Other — investigation & fix plan
 
-Status: **investigated, not implemented** (hand-off document). Source: Flutter-client test report, 2026-11-03 (second batch,
+Status: **implemented** (see `docs/assembly-scope.md` §2z) (hand-off document). Source: Flutter-client test report, 2026-11-03 (second batch,
 after `docs/pattern-component-bugfix-plan.md`).
 
 | # | Report | Root cause | Size |

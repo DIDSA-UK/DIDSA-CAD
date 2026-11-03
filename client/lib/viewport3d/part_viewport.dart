@@ -875,7 +875,8 @@ class PartViewport extends StatefulWidget {
   /// position, nearest first - the caller ([PartScreen]) owns showing the
   /// disambiguation list and feeding a chosen entity back through
   /// [onSelectionToggle], the same callback every other pick already uses.
-  final void Function(List<HoverHit> candidates)? onSelectOtherRequested;
+  /// Fired with the candidates and the viewport-local point of the gesture (where a popup is anchored).
+  final void Function(List<HoverHit> candidates, Offset anchor)? onSelectOtherRequested;
 
   /// Bug report follow-up: lets [PartScreen]'s Select Other list force a
   /// live 3D highlight on whichever candidate the user is currently
@@ -5973,7 +5974,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       widget.onSelectClick?.call(SelectClick.toggle);
       widget.onSelectionToggle?.call(toUndo);
     }
-    widget.onSelectOtherRequested?.call(candidates);
+    widget.onSelectOtherRequested?.call(candidates, cursor);
   }
 
   /// Every selectable candidate under [screenPosition], nearest first - the
@@ -6028,9 +6029,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   bool selectOtherAtGlobal(Offset global) {
     final box = context.findRenderObject();
     if (box is! RenderBox || _viewportSize.isEmpty) return false;
-    final candidates = _selectOtherCandidatesAt(box.globalToLocal(global));
+    final local = box.globalToLocal(global);
+    final candidates = _selectOtherCandidatesAt(local);
     if (candidates.isEmpty) return false;
-    widget.onSelectOtherRequested?.call(candidates);
+    widget.onSelectOtherRequested?.call(candidates, local);
     return true;
   }
 

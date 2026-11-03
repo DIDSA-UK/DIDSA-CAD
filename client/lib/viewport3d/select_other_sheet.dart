@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'selection_hit_test.dart';
 import 'svg_icon.dart';
-import '../layout/adaptive_sheet.dart';
+import 'keyboard_shortcuts.dart';
 
 /// Bug report ("if one body is entirely inside another body, it cannot be
 /// selected" - user-requested SOLIDWORKS-style "Select Other"): shown when
@@ -19,56 +19,35 @@ import '../layout/adaptive_sheet.dart';
 /// feed it straight into `PartViewport.highlightOverride` so the
 /// corresponding entity lights up live in the 3D view before the user
 /// commits to it, mirroring SOLIDWORKS' own "Select Other" popup.
-Future<void> showSelectOtherSheet(
-  BuildContext context, {
-  required List<HoverHit> candidates,
-  required Map<String, String> bodyNames,
-  required void Function(SelectionEntityRef entity) onSelect,
-  required void Function(SelectionEntityRef? entity) onHighlight,
-}) async {
-  await showAdaptiveSheet<void>(
-    context: context,
-    // Bug fix (assembly testing): `isScrollControlled: true` lets the sheet
-    // be sized by its own `DraggableScrollableSheet` below instead of
-    // Flutter's default `isScrollControlled: false` cap (9/16 of the screen
-    // height, with no smaller size the user could drag down to) - a long
-    // candidate list used to always balloon straight up against that cap.
-    // `enableDrag: false` turns off the *sheet's own* swipe-to-dismiss
-    // gesture, which otherwise sat as an ancestor `GestureDetector` around
-    // every row and could win the gesture arena against a row's own
-    // long-press-to-preview handlers on any incidental finger movement -
-    // see the per-row `GestureDetector` below. Dismissal still works via tap
-    // outside the sheet or the system back gesture.
-    isScrollControlled: true,
-    enableDrag: false,
-    builder: (context) => _SelectOtherSheet(
-      candidates: candidates,
-      bodyNames: bodyNames,
-      onSelect: onSelect,
-      onHighlight: onHighlight,
-    ),
-  );
-  onHighlight(null);
-}
-
-class _SelectOtherSheet extends StatefulWidget {
+/// Non-modal Select Other (S1): drawn inside `PartScreen`'s own viewport Stack with no barrier, so pan / orbit / zoom keep
+/// working while it is open. [anchor] is the viewport-local point of the gesture; on [desktop] the panel is a compact popup
+/// next to it (clamped inside the viewport), otherwise a short bottom panel. It closes through [onClose] (row pick, X, Esc);
+/// the screen also closes it on a viewport tap, a lens switch or a tool opening.
+class SelectOtherPanel extends StatefulWidget {
   final List<HoverHit> candidates;
   final Map<String, String> bodyNames;
   final void Function(SelectionEntityRef entity) onSelect;
   final void Function(SelectionEntityRef? entity) onHighlight;
+  final VoidCallback onClose;
+  final Offset anchor;
+  final bool desktop;
 
-  const _SelectOtherSheet({
+  const SelectOtherPanel({
+    super.key,
     required this.candidates,
     required this.bodyNames,
     required this.onSelect,
     required this.onHighlight,
+    required this.onClose,
+    this.anchor = Offset.zero,
+    this.desktop = false,
   });
 
   @override
-  State<_SelectOtherSheet> createState() => _SelectOtherSheetState();
+  State<SelectOtherPanel> createState() => _SelectOtherPanelState();
 }
 
-class _SelectOtherSheetState extends State<_SelectOtherSheet> {
+class _SelectOtherPanelState extends State<SelectOtherPanel> {
   // On-device feedback ("when the list is open, press and hold on the list
   // item should highlight the object, single tap should select it and
   // close the list"): tracked locally (as well as fed up through
@@ -83,73 +62,93 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
     widget.onHighlight(entity);
   }
 
+  /// Popup width / max height on desktop.
+  static const double kPopupWidth = 280;
+  static const double kPopupMaxHeight = 320;
+
   @override
   Widget build(BuildContext context) {
-    // Bug fix (assembly testing): mirrors `SelectionListDrawer`'s own
-    // `DraggableScrollableSheet` convention - starts small enough to leave
-    // most of the 3D view visible, and a long candidate list scrolls within
-    // a bounded, user-resizable region instead of the whole sheet growing
-    // to cover the screen.
-    return DraggableScrollableSheet(
-      initialChildSize: 0.3,
-      minChildSize: 0.15,
-      maxChildSize: 0.5,
-      expand: false,
-      builder: (context, scrollController) {
-        return SafeArea(
-          child: Column(
-            children: [
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 6),
-                child: _DragHandle(),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text('Select Other', style: Theme.of(context).textTheme.titleMedium),
-                ),
-              ),
-              Expanded(
-                child: ListView.builder(
-                  controller: scrollController,
-                  itemCount: widget.candidates.length,
-                  itemBuilder: (context, index) {
-                    final entity = widget.candidates[index].entity;
-                    // On-device feedback: single tap selects and closes the
-                    // sheet immediately - a long-press (touch) or hover
-                    // (mouse) only *previews* the highlight, never selects on
-                    // its own, so browsing the list can never accidentally
-                    // commit a choice.
-                    return GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onLongPressStart: (_) => _setPreview(entity),
-                      onLongPressMoveUpdate: (_) => _setPreview(entity),
-                      onLongPressEnd: (_) => _setPreview(null),
-                      onLongPressCancel: () => _setPreview(null),
-                      onTap: () {
-                        widget.onSelect(entity);
-                        Navigator.of(context).pop();
-                      },
-                      child: MouseRegion(
-                        onEnter: (_) => _setPreview(entity),
-                        onExit: (_) => _setPreview(null),
-                        child: ListTile(
-                          dense: true,
-                          tileColor:
-                              _previewedEntity == entity ? Theme.of(context).colorScheme.primaryContainer : null,
-                          leading: _iconFor(entity.kind),
-                          title: Text(_titleFor(entity)),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final size = constraints.biggest;
+        final body = _body(context, size);
+        if (widget.desktop) {
+          final height = (size.height - 8).clamp(0.0, kPopupMaxHeight).toDouble();
+          final width = (size.width - 8).clamp(0.0, kPopupWidth).toDouble();
+          final left = (widget.anchor.dx + 12).clamp(4.0, (size.width - width - 4).clamp(4.0, double.infinity)).toDouble();
+          final top = (widget.anchor.dy + 12).clamp(4.0, (size.height - height - 4).clamp(4.0, double.infinity)).toDouble();
+          return Stack(children: [
+            Positioned(left: left, top: top, width: width, height: height, child: body),
+          ]);
+        }
+        final height = (size.height * 0.3).clamp(120.0, size.height * 0.4).toDouble();
+        return Stack(children: [
+          Positioned(left: 0, right: 0, bottom: 0, height: height, child: body),
+        ]);
       },
+    );
+  }
+
+  Widget _body(BuildContext context, Size size) {
+    return MouseRegion(
+      // Moving the mouse back to the viewport clears the preview.
+      onExit: (_) => _setPreview(null),
+      child: Material(
+        key: const ValueKey('select-other-panel'),
+        elevation: 6,
+        borderRadius: BorderRadius.circular(8),
+        color: Theme.of(context).colorScheme.surface,
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            ToolPanelKeys(onCancel: widget.onClose),
+            Padding(
+              padding: const EdgeInsets.only(left: 12, right: 4),
+              child: Row(
+                children: [
+                  Expanded(child: Text('Select Other', style: Theme.of(context).textTheme.titleSmall)),
+                  IconButton(
+                    key: const ValueKey('select-other-close'),
+                    icon: const Icon(Icons.close, size: 18),
+                    tooltip: 'Close',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: widget.onClose,
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: widget.candidates.length,
+                itemBuilder: (context, index) {
+                  final entity = widget.candidates[index].entity;
+                  // Single tap selects and closes; a long-press (touch) or hover (mouse) only previews.
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onLongPressStart: (_) => _setPreview(entity),
+                    onLongPressMoveUpdate: (_) => _setPreview(entity),
+                    onLongPressEnd: (_) => _setPreview(null),
+                    onLongPressCancel: () => _setPreview(null),
+                    onTap: () {
+                      widget.onSelect(entity);
+                      widget.onClose();
+                    },
+                    child: MouseRegion(
+                      onEnter: (_) => _setPreview(entity),
+                      child: ListTile(
+                        dense: true,
+                        tileColor: _previewedEntity == entity ? Theme.of(context).colorScheme.primaryContainer : null,
+                        leading: _iconFor(entity.kind),
+                        title: Text(_titleFor(entity)),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -268,24 +267,5 @@ class _SelectOtherSheetState extends State<_SelectOtherSheet> {
       return widget.bodyNames[id] ?? 'Curve ${id.length > 8 ? id.substring(0, 8) : id}';
     }
     return '${_labelFor(entity.kind)} #${entity.id}';
-  }
-}
-
-/// A small grab-handle bar hinting that the sheet above is draggable-away -
-/// mirrors `SelectionListDrawer`'s own private `_DragHandle` (purely
-/// decorative, no gesture handling of its own).
-class _DragHandle extends StatelessWidget {
-  const _DragHandle();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 32,
-      height: 4,
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.outlineVariant,
-        borderRadius: BorderRadius.circular(2),
-      ),
-    );
   }
 }

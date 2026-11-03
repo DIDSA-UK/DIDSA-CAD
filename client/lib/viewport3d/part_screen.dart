@@ -2693,7 +2693,19 @@ class _PartScreenState extends State<PartScreen> {
   /// [showSelectOtherSheet] call below, fed into
   /// [PartViewport.suppressHoverFallback] - see that field's own doc
   /// comment for the ambiguous stale-highlight bug this fixes.
-  bool _selectOtherSheetOpen = false;
+  bool get _selectOtherSheetOpen => _selectOtherCandidates != null;
+  List<HoverHit>? _selectOtherCandidates;
+  Offset _selectOtherAnchor = Offset.zero;
+
+  /// The single way Select Other closes (row pick, X, Esc, viewport tap, lens switch, tool open): also clears the
+  /// highlight preview.
+  void _closeSelectOther() {
+    if (_selectOtherCandidates == null && _selectOtherHighlight == null) return;
+    setState(() {
+      _selectOtherCandidates = null;
+      _selectOtherHighlight = null;
+    });
+  }
 
   /// Bug fix ("selecting a component shows no contextual toolbar"): true
   /// while `_onOccurrenceLongPress`'s `showComponentContextMenu` modal sheet,
@@ -2742,16 +2754,12 @@ class _PartScreenState extends State<PartScreen> {
   /// every tool-specific special-case in there (Fillet face->edges, Sweep
   /// path picking, etc.) still applies exactly as if the entity had been
   /// picked directly.
-  void _handleSelectOtherRequested(List<HoverHit> candidates) async {
-    setState(() => _selectOtherSheetOpen = true);
-    await showSelectOtherSheet(
-      context,
-      candidates: candidates,
-      bodyNames: _selectionBodyNames,
-      onSelect: _toggleSelectedEntity,
-      onHighlight: (entity) => setState(() => _selectOtherHighlight = entity),
-    );
-    if (mounted) setState(() => _selectOtherSheetOpen = false);
+  void _handleSelectOtherRequested(List<HoverHit> candidates, Offset anchor) {
+    setState(() {
+      _selectOtherCandidates = candidates;
+      _selectOtherAnchor = anchor;
+      _selectOtherHighlight = null;
+    });
   }
 
   /// Phase 6b (`docs/assembly-scope.md` §3): the one selected entity to
@@ -2820,6 +2828,11 @@ class _PartScreenState extends State<PartScreen> {
   /// the debounced live-preview re-solve while [_filletActive], same
   /// reasoning as the [_extrudeActive] case just above.
   void _toggleSelectedEntity(SelectionEntityRef entity) {
+    // Select Other open: a viewport tap only closes it (it is not a pick). Its own row picks close first, then toggle.
+    if (_selectOtherSheetOpen) {
+      _closeSelectOther();
+      return;
+    }
     // New Sketch's "tap a reference plane": in Selection mode a tap arrives
     // here rather than at [_onPlaneTap], so it has to start the sketch from
     // here too - it must not just select the plane.
@@ -3456,6 +3469,10 @@ class _PartScreenState extends State<PartScreen> {
   /// for why this also reschedules the preview during [_extrudeActive]/
   /// [_filletActive]/[_chamferActive].
   void _clearSelectedEntities() {
+    if (_selectOtherSheetOpen) {
+      _closeSelectOther();
+      return;
+    }
     setState(() {
       // Pattern/Mirror scoping Phase 2: unlike every other flow here,
       // Pattern's own picked directions live in [_patternDirection1]/
@@ -5469,6 +5486,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Clears the global red error banner - called on every Assembly tool
   /// entry point (the banner is otherwise only cleared by [_runGuarded]).
   void _clearTransientError() {
+    _closeSelectOther();
     if (_errorMessage != null && mounted) setState(() => _errorMessage = null);
   }
 
@@ -23688,6 +23706,8 @@ class _PartScreenState extends State<PartScreen> {
     // only the current lens's tree is ever mounted.
     _exitMultiSelect();
     setState(() {
+      _selectOtherCandidates = null;
+      _selectOtherHighlight = null;
       _lens = _lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part;
     });
     if (_lens == AssemblyLens.assembly) {
@@ -25426,7 +25446,8 @@ class _PartScreenState extends State<PartScreen> {
                     !_shellActive &&
                     !_profilePickerActive &&
                     !_pathPickerActive &&
-                    _activeMultiSelect == null;
+                    _activeMultiSelect == null &&
+                    !_selectOtherSheetOpen;
 
   Widget _buildSelectionDrawer() {
     return SelectionListDrawer(
@@ -26090,6 +26111,22 @@ class _PartScreenState extends State<PartScreen> {
                   // button in the viewport's corner.
                   showResetViewButton: _desktopLayout,
                 ),
+                if (_selectOtherCandidates != null)
+                  Positioned.fill(
+                    key: const ValueKey('select-other-slot'),
+                    child: SelectOtherPanel(
+                      candidates: _selectOtherCandidates!,
+                      bodyNames: _selectionBodyNames,
+                      anchor: _selectOtherAnchor,
+                      desktop: _desktopLayout,
+                      onSelect: (entity) {
+                        _closeSelectOther();
+                        _toggleSelectedEntity(entity);
+                      },
+                      onHighlight: (entity) => setState(() => _selectOtherHighlight = entity),
+                      onClose: _closeSelectOther,
+                    ),
+                  ),
                 // On-device feedback ("move the select/orbit fab to the top
                 // right group of fabs under 'centre view'"): a sibling of
                 // [PartViewport] here, not a widget passed into it - that

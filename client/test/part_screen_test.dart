@@ -5411,6 +5411,71 @@ void main() {
       expect(find.byType(MatePanel), findsNothing, reason: 'OK closes the tool');
     });
 
+    Future<void> openSelectOther(WidgetTester tester) async {
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectOtherRequested!(
+        [
+          HoverHit(entity: mateFace('occ-1', 1), rayT: 1),
+          HoverHit(entity: mateFace('occ-2', 2), rayT: 2),
+        ],
+        const Offset(200, 200),
+      );
+      await tester.pump();
+    }
+
+    testWidgets('S1: Select Other is non-modal (no new barrier), a viewport tap closes it without selecting, Esc closes it',
+        (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      final barriersBefore = find.byType(ModalBarrier).evaluate().length;
+      await openSelectOther(tester);
+      expect(find.byKey(const ValueKey('select-other-panel')), findsOneWidget);
+      expect(find.byType(ModalBarrier).evaluate().length, barriersBefore, reason: 'no new barrier');
+      expect(find.byType(PartViewport).hitTestable(), findsOneWidget, reason: 'the viewport still receives pointers');
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).suppressHoverFallback, isTrue);
+
+      // A viewport tap (entity hit) closes it and is not a pick.
+      final before = tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities;
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(mateFace('occ-1', 9));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, before);
+
+      // An empty-space tap closes it too, leaving the selection alone.
+      await openSelectOther(tester);
+      tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+
+      // Esc closes it.
+      await openSelectOther(tester);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).highlightOverride, isNull);
+    });
+
+    testWidgets('S1: a row pick selects and closes; a row preview feeds highlightOverride and close clears it', (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      await openSelectOther(tester);
+      final gesture = await tester.startGesture(tester.getCenter(find.text('Face #2')));
+      await tester.pump(const Duration(milliseconds: 700));
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).highlightOverride, mateFace('occ-2', 2));
+      await gesture.up();
+      await tester.pump();
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).highlightOverride, isNull);
+
+      await tester.tap(find.text('Face #1'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, contains(mateFace('occ-1', 1)));
+    });
+
+    testWidgets('S1: opening a tool closes Select Other', (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      await openSelectOther(tester);
+      await tapStartCommand(tester, 'Mate');
+      expect(find.byKey(const ValueKey('select-other-panel')), findsNothing);
+    });
+
     testWidgets('M1: a Next whose create fails keeps the picks and shows the error', (tester) async {
       final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
       backend.failMateCreate = true;
