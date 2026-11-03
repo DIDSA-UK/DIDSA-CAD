@@ -404,7 +404,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
 
   /// The pulse of [AssemblyTreePanel.flashMateIds]: 0 -> 1 over two seconds, read as three pulses by [_flashPulse].
   late final AnimationController _flash = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
-  final ExpansionTileController _matesTile = ExpansionTileController();
+  final ExpansibleController _matesTile = ExpansibleController();
 
   @override
   void dispose() {
