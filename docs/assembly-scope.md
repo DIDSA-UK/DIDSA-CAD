@@ -4353,13 +4353,19 @@ Implemented in the plan's recommended order, one commit per item.
   pivot on the largest of trace/diagonal) instead of the old 180-degree branch that took the y/z signs relative to X (noise
   when n_x ~ 0). A flipped rail (axis `(0, .707, -.707)`, 180 deg) survives repeated `compose`/`compose_chain` round trips.
   Tests: `test_assembly_axis_angle_roundtrip.py` (property test over axes in the coordinate planes + random axes, angles
-  0 / 180 +- 1e-10 / 179.9999 ...; BOT_RIGHT regression). *Not done:* the frame-file fixture
-  (`backend/tests/data/frame_ai_test/`) - the `.didsa` files were not in the repo; the BOT_RIGHT transform is covered directly.
+  0 / 180 +- 1e-10 / 179.9999 ...; BOT_RIGHT regression). Follow-up: the tester's frame files are now a fixture
+  (`backend/tests/data/frame_ai_test/`, `test_frame_ai_pattern_regression.py`): every copy's world rotation *and*
+  translation in `assembly-mesh` is checked against an independent expectation (4 of its 5 tests fail on the pre-fix code).
+  `CORNER_GUSSET_001.DIDSAprt` is the tester's `GUSSET_001.didsa`, whose part id differs from the assembly's `ref_part_id`;
+  the gussets are not patterned, so it only needs to load.
 - **B5 - latched error banner.** The red banner in `part_screen.dart` has a dismiss (x) button and
-  `_clearTransientError()` runs on Pattern Component / Mate open (and edit). Not yet wired into move/rotate, insert, focus.
+  `_clearTransientError()` runs on Pattern Component / Mate open (and edit), and (follow-up) on Move/Rotate (context menu and
+  component drawer), Add Component, Create Component, Make Focus / Exit Focus and the Part/Assembly lens switch.
 - **B2 step 1 (fixes B3).** `resolve_occurrence_target` understands `<src>#pattern:<pid>:<i>` segments (new
   `assembly.parse_pattern_segment` / `resolve_pattern_copy_transform`; `occurrence_paths` re-uses the parser, which
-  resolves the import cycle). So `direction-from-ref`, Measure and Section accept copy edges/faces.
+  resolves the import cycle). So `direction-from-ref`, Measure and Section accept copy edges/faces. Endpoint tests
+  (follow-up, in `test_frame_ai_pattern_regression.py`): a linear copy edge gives the seed's line, a circular copy edge is
+  rotated by the pattern, a non-derived copy index is a `missing_reference` 422.
 - **B7 + B6 - tool flow.** Pattern Component opens without a selection; pre-selected top-level components pre-fill the
   sources. Step 1 is the direction (edge-only selection filter; fresh open has no direction, Confirm disabled "Choose a
   direction first"), an edge pick or X/Y/Z preset advances to step 2 (component-only filter; a viewport click toggles a

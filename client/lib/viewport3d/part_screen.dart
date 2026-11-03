@@ -5447,6 +5447,12 @@ class _PartScreenState extends State<PartScreen> {
     ];
   }
 
+  /// Clears the global red error banner - called on every Assembly tool
+  /// entry point (the banner is otherwise only cleared by [_runGuarded]).
+  void _clearTransientError() {
+    if (_errorMessage != null && mounted) setState(() => _errorMessage = null);
+  }
+
   /// Opens [ComponentPatternPanel] targeting [_selectedOccurrenceId] as its
   /// sole initial source - both the Assembly Add menu's "Pattern Component"
   /// entry and the component long-press menu's "Pattern" entry call this
@@ -5455,12 +5461,6 @@ class _PartScreenState extends State<PartScreen> {
   /// component" beyond the ordinary default-browsing tap Assembly lens
   /// already supports). More sources can be added from within the panel
   /// itself (Phase 11, `[7]`) once it's open.
-  /// Clears the global red error banner - called on every Assembly tool
-  /// entry point (the banner is otherwise only cleared by [_runGuarded]).
-  void _clearTransientError() {
-    if (_errorMessage != null && mounted) setState(() => _errorMessage = null);
-  }
-
   void _openComponentPattern() {
     _clearTransientError();
     final sources = _preselectedPatternSources();
@@ -14212,6 +14212,7 @@ class _PartScreenState extends State<PartScreen> {
   /// id across the reimport - `native_format.py`'s `_part_from_dict` never
   /// regenerates an id it's given).
   Future<void> _onInsertComponentPressed() async {
+    _clearTransientError();
     // Same "whichever Part is currently primary" lookup [_refreshAssemblyTree]
     // already uses - today this is always the root Part (nothing pushes
     // onto [_focusStack] yet, Phase 4's own job), but this stays correct
@@ -14523,6 +14524,7 @@ class _PartScreenState extends State<PartScreen> {
   /// afterward via the assembly tree's own Rename action, not by gating
   /// creation on a dialog.
   Future<void> _onCreateNewComponentPressed() async {
+    _clearTransientError();
     final rootPartId = _focusStack?.current ?? _part?.id;
     if (rootPartId == null) return;
 
@@ -23662,6 +23664,7 @@ class _PartScreenState extends State<PartScreen> {
   /// Assembly mode (see [_refreshAssemblyTree]'s own doc comment for why
   /// this isn't instead kept always-fresh in the background).
   void _toggleAssemblyLens() {
+    _clearTransientError();
     // Feature 1 (tree multi-select): a session belongs to one tree, and
     // only the current lens's tree is ever mounted.
     _exitMultiSelect();
@@ -23818,6 +23821,7 @@ class _PartScreenState extends State<PartScreen> {
     if (!mounted || action == null) return;
     switch (action) {
       case ComponentContextMenuAction.makeFocus:
+        _clearTransientError();
         if (resolvedPartId == null) {
           setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
           return;
@@ -23866,6 +23870,7 @@ class _PartScreenState extends State<PartScreen> {
         // [_moveRotateComponentActive]'s own doc comment) - without it,
         // [_gizmoTargetOccurrence] stays hidden even though `occurrence` was
         // just selected above.
+        _clearTransientError();
         setState(() {
           _selectionMode = false;
           _moveRotateComponentActive = true;
@@ -24300,6 +24305,7 @@ class _PartScreenState extends State<PartScreen> {
   /// empty state), which previously left no way back to Part lens or a
   /// shallower focus depth at all once drilled into a leaf component.
   Future<void> _exitAssemblyFocus() async {
+    _clearTransientError();
     setState(() => _focusStack?.pop());
     await _refreshFocusTargetContent();
   }
@@ -25462,11 +25468,14 @@ class _PartScreenState extends State<PartScreen> {
                       return AssemblyComponentSelectionDrawer(
                         selectedComponent: occurrence,
                         displayName: occurrenceDisplayName(_occurrences, index),
-                        onMove: () => setState(() {
-                          _selectionMode = false;
-                          _moveRotateComponentActive = true;
-                          _moveRotateComponentMode = MoveRotateComponentMode.move;
-                        }),
+                        onMove: () {
+                          _clearTransientError();
+                          setState(() {
+                            _selectionMode = false;
+                            _moveRotateComponentActive = true;
+                            _moveRotateComponentMode = MoveRotateComponentMode.move;
+                          });
+                        },
                         onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
                         onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
                         onClose: _clearSelectionFromDrawer,

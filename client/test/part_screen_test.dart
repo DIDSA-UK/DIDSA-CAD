@@ -7770,6 +7770,21 @@ void main() {
       expect(find.text('Assembly Tree'), findsOneWidget);
     });
 
+    testWidgets('B5: a latched error banner clears when the user switches lens (a new tool context)', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1#pattern:pat-1:2'),
+          );
+      await tester.pump();
+      expect(find.textContaining('derived pattern instance'), findsOneWidget);
+
+      await tester.tap(find.descendant(of: find.byKey(const ValueKey('ribbon-lens')), matching: find.text('Assembly')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('derived pattern instance'), findsNothing);
+    });
+
     testWidgets('the New Sketch button starts the plane picker, as the Add menu does', (tester) async {
       bigWindow(tester);
       await pumpScreen(tester, layout: desktop());
