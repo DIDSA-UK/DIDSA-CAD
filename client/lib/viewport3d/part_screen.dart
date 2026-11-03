@@ -33,6 +33,7 @@ import '../api/sketch_api_client.dart'
 import '../assembly/add_component.dart';
 import '../assembly/assembly_document_client.dart';
 import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException, ComposedAssemblyGraph;
+import '../assembly/pattern_copy_pose.dart';
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
@@ -1039,7 +1040,15 @@ class _PartScreenState extends State<PartScreen> {
         transform: entry.value,
       );
     }
-    return out;
+    // Pattern copies of every occurrence being moved (the target and the followers) follow their source live, and so does anything nested
+    // under a copy; a part mated to a copy is a follower and moves with it (`followPatternCopies`). The backend decides the final poses.
+    return followPatternCopies(
+      out,
+      focusPath: focusedPath,
+      patterns: _componentPatterns,
+      liveWorld: {targetOccurrence.id: liveTransform, ..._followerLiveWorld},
+      parentWorld: _gizmoParentInstance?.worldTransform,
+    );
   }
 
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's
@@ -5400,8 +5409,7 @@ class _PartScreenState extends State<PartScreen> {
   /// [PartViewport.componentPatternPreviewInstances]' own value, computed
   /// entirely client-side (no network round-trip, unlike the New Mate ghost
   /// preview's own server-solved [_matePreviewMembers]) from this panel's
-  /// live, unsaved parameter state, via [linearPatternPreviewStep]/
-  /// [circularPatternPreviewStep] - the same pure vector math
+  /// live, unsaved parameter state, via [patternCopyPose] - the same pure math
   /// `assembly.py`'s own `_linear_pattern_step`/`_circular_pattern_step`
   /// already compute server-side for the real, confirmed pattern, mirrored
   /// here so the preview updates live as the user drags a slider with no
@@ -5411,25 +5419,54 @@ class _PartScreenState extends State<PartScreen> {
   /// tree/mesh fetch it depends on has resolved).
   List<ComponentPatternPreviewInstance> get _componentPatternPreviewInstances {
     if (!_componentPatternPanelActive) return const [];
-    final direction = resolveComponentPatternVector(_componentPatternDirection, _componentPatternCustomDirection);
-    final direction2 =
-        resolveComponentPatternVector(_componentPatternDirection2, _componentPatternCustomDirection2);
-    final axisDirection =
-        resolveComponentPatternVector(_componentPatternAxisDirection, _componentPatternCustomAxisDirection);
-    final steps = _componentPatternMode == ComponentPatternMode.linear
-        ? _linearComponentPatternPreviewSteps(direction, direction2)
-        : _circularComponentPatternPreviewSteps(axisDirection);
-    if (steps.isEmpty) return const [];
+    final draft = _componentPatternDraft();
+    final indices = livePatternIndices(draft);
+    if (indices.isEmpty) return const [];
     final previews = <ComponentPatternPreviewInstance>[];
     for (final sourceId in _componentPatternSourceOccurrenceIds) {
       final instance = _instanceForOccurrenceId(sourceId);
       if (instance == null) continue;
-      final sourceMatrix = matrix4FromRigidTransform(instance.worldTransform);
-      for (final step in steps) {
-        previews.add(ComponentPatternPreviewInstance(partId: instance.partId, worldTransform: step * sourceMatrix));
+      // The pattern lives in the focused Part's frame (a source's LOCAL transform); the instance's world pose is mapped in and out of it.
+      final sourceLocal = _localOfWorld(instance.worldTransform);
+      for (final index in indices) {
+        final world = _worldOfLocal(patternCopyPose(draft, sourceLocal, index));
+        previews.add(ComponentPatternPreviewInstance(partId: instance.partId, worldTransform: matrix4FromRigidTransform(world)));
       }
     }
     return previews;
+  }
+
+  /// The panel's live, unsaved parameters as a [ComponentPatternDto] (id `''`), for [patternCopyPose]. The panel has no control for
+  /// `orient_with_rotation` or the skipped copies, so a new pattern previews with the backend's defaults (oriented, none skipped) and one
+  /// being edited with the stored pattern's own values.
+  ComponentPatternDto _componentPatternDraft() {
+    final direction = resolveComponentPatternVector(_componentPatternDirection, _componentPatternCustomDirection);
+    final direction2 = resolveComponentPatternVector(_componentPatternDirection2, _componentPatternCustomDirection2);
+    final axisDirection =
+        resolveComponentPatternVector(_componentPatternAxisDirection, _componentPatternCustomAxisDirection);
+    ComponentPatternDto? stored;
+    for (final p in _componentPatterns) {
+      if (p.id == _componentPatternEditingId) stored = p;
+    }
+    return ComponentPatternDto(
+      id: _componentPatternEditingId ?? '',
+      sourceOccurrenceIds: _componentPatternSourceOccurrenceIds,
+      patternType: _componentPatternMode.apiValue,
+      direction: direction,
+      count: _componentPatternCount,
+      spacing: _componentPatternSpacing,
+      reverse: _componentPatternReverse,
+      direction2: direction2,
+      count2: _componentPatternHasSecondDirection ? _componentPatternCount2 : 1,
+      spacing2: _componentPatternSpacing2,
+      reverse2: _componentPatternReverse2,
+      axis: ComponentPatternAxisDto(origin: _componentPatternAxisOrigin, direction: axisDirection),
+      countAngular: _componentPatternCountAngular,
+      angleTotal: _componentPatternAngleTotal,
+      reverseAngular: _componentPatternReverseAngular,
+      skipIndices: stored?.skipIndices ?? const [],
+      orientWithRotation: stored?.orientWithRotation ?? true,
+    );
   }
 
   /// [occurrenceId]'s own currently-placed instance, looked up in
@@ -5443,49 +5480,6 @@ class _PartScreenState extends State<PartScreen> {
     final basePath = _focusStack?.currentOccurrencePath ?? const <String>[];
     final instances = _assemblyMesh?.instances ?? const <AssemblyOccurrenceInstanceDto>[];
     return findInstanceAtPath(instances, [...basePath, occurrenceId]);
-  }
-
-  /// Every derived (non-seed) instance step for the Linear mode panel's own
-  /// current, unsaved parameter state - mirrors `assembly.py`'s own
-  /// `expand_component_pattern_instances`' Linear branch (index 0, the seed
-  /// itself, is never included - it's already rendered as the real,
-  /// unpatterned Occurrence). Skip-index support isn't needed here: unlike
-  /// the Part-lens body Pattern feature, a `ComponentPattern` has no
-  /// per-instance skip UI of its own yet for this preview to honor.
-  List<vm.Matrix4> _linearComponentPatternPreviewSteps(List<double> direction, List<double> direction2) {
-    final count1 = math.max(_componentPatternCount, 1);
-    final count2 = _componentPatternHasSecondDirection ? math.max(_componentPatternCount2, 1) : 1;
-    final sign1 = _componentPatternReverse ? -1.0 : 1.0;
-    final sign2 = _componentPatternReverse2 ? -1.0 : 1.0;
-    final steps = <vm.Matrix4>[];
-    for (var i = 0; i < count1; i++) {
-      for (var j = 0; j < count2; j++) {
-        if (i * count2 + j == 0) continue;
-        var step = linearPatternPreviewStep(direction, _componentPatternSpacing * i * sign1);
-        if (count2 > 1) {
-          step = linearPatternPreviewStep(direction2, _componentPatternSpacing2 * j * sign2) * step;
-        }
-        steps.add(step);
-      }
-    }
-    return steps;
-  }
-
-  /// [_linearComponentPatternPreviewSteps]' Circular-mode counterpart -
-  /// mirrors `expand_component_pattern_instances`' Circular branch. Does not
-  /// attempt [ComponentPattern.orientWithRotation]'s "keep the source's own
-  /// orientation" adjustment - out of scope for a forecast preview, whose
-  /// job is showing *where* each instance will land, not exactly how it will
-  /// be oriented once confirmed.
-  List<vm.Matrix4> _circularComponentPatternPreviewSteps(List<double> axisDirection) {
-    final count = math.max(_componentPatternCountAngular, 1);
-    if (count <= 1) return const [];
-    final stepAngle = _componentPatternAngleTotal / count;
-    final sign = _componentPatternReverseAngular ? -1.0 : 1.0;
-    return [
-      for (var index = 1; index < count; index++)
-        circularPatternPreviewStep(_componentPatternAxisOrigin, axisDirection, stepAngle * index * sign),
-    ];
   }
 
   /// Clears the global red error banner - called on every Assembly tool

@@ -95,6 +95,10 @@ class _FakeDocumentBackend {
   /// The most recent `POST .../import/native` body (what the Open flows send the backend).
   Map<String, dynamic>? lastImportBody;
 
+  /// Extra placed instances the fake's `assembly-mesh` answers for `part-1` beside one per occurrence (a pattern's copies and what is
+  /// nested under them): `occurrence_path` / `part_id` / `world_transform` maps.
+  List<Map<String, dynamic>> extraAssemblyInstances = const [];
+
   /// Part ids the fake's `assembly-mesh` carries (empty) geometry for, so a test can have several Parts in the scene.
   List<String> assemblyGeometryPartIds = const [];
 
@@ -905,6 +909,7 @@ class _FakeDocumentBackend {
                 'hidden': occurrence['hidden'],
                 'color': occurrence['color'],
               },
+          if (forRoot) ...extraAssemblyInstances,
         ],
       }, 200);
     }
@@ -5952,8 +5957,15 @@ void main() {
       required List<Map<String, dynamic>> seedMates,
       required String target,
       http.Response Function(Map<String, dynamic>, String)? handler,
+      List<Map<String, dynamic>>? seedPatterns,
+      List<Map<String, dynamic>> extraInstances = const [],
     }) async {
-      final backend = _FakeDocumentBackend(seedOccurrences: seedOccurrences, seedMates: seedMates)
+      final backend = _FakeDocumentBackend(
+        seedOccurrences: seedOccurrences,
+        seedMates: seedMates,
+        seedComponentPatterns: seedPatterns,
+      )
+        ..extraAssemblyInstances = extraInstances
         ..mateMotionHandler = handler;
       final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
       final sketchBackend = _FakeSketchBackend();
@@ -6037,6 +6049,139 @@ void main() {
       expect((backend.occurrences[1]['transform'] as Map)['translation'], [30.0, 0.0, 0.0]);
       expect(backend.transformPatchCount, 2);
       expect(find.byTooltip('Undo move'), findsNothing, reason: 'exactly one entry was pushed');
+    });
+
+    // S2 (docs/pattern-followers-smoothness-plan.md): a dragged source's copies (and what is nested under them) move live with it.
+    Map<String, dynamic> linearPattern({bool suppressed = false, List<int> skip = const []}) => {
+          'id': 'pat-1',
+          'source_occurrence_ids': ['occ-1'],
+          'pattern_type': 'linear',
+          'direction': [1.0, 0.0, 0.0],
+          'count': 3,
+          'spacing': 300.0,
+          'reverse': false,
+          'direction_2': [0.0, 1.0, 0.0],
+          'count_2': 1,
+          'spacing_2': 0.0,
+          'reverse_2': false,
+          'axis': null,
+          'count_angular': 1,
+          'angle_total': 360.0,
+          'reverse_angular': false,
+          'skip_indices': skip,
+          'orient_with_rotation': true,
+          'suppressed': suppressed,
+        };
+
+    Map<String, dynamic> instanceAt(List<String> path, double x, double y, double z) =>
+        {'occurrence_path': path, 'part_id': 'occ-1-part', 'world_transform': tf(x, y, z), 'hidden': false};
+
+    Future<Map<String, List<double>>> dragSourceAndRead(WidgetTester tester, {required bool suppressed, List<int> skip = const []}) async {
+      final backend = await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 0), occ('occ-2', 330)],
+        // occ-2 is mated to the FIRST COPY of occ-1: that is a mate on occ-1 (the source), so the drag goes through mate-motion
+        seedMates: [
+          {
+            ...mateBetween('occ-2', 'occ-1#pattern:pat-1:1'),
+          },
+        ],
+        seedPatterns: [linearPattern(suppressed: suppressed, skip: skip)],
+        extraInstances: [
+          instanceAt(['occ-1#pattern:pat-1:1'], 300, 0, 0),
+          instanceAt(['occ-1#pattern:pat-1:1', 'inner'], 305, 2, 0),
+          instanceAt(['occ-1#pattern:pat-1:2'], 600, 0, 0),
+        ],
+        target: 'occ-1',
+      );
+      backend.mateMotionHandler = flatGroup(backend);
+      var viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragStart!();
+      await settle(tester);
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      viewport.onComponentGizmoDragUpdate!(wish(4, 6, 9)); // 9 off-plane is blocked by the scripted group
+      await tester.pump();
+      viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      return {for (final i in viewport.assemblyInstances) i.occurrencePath.join('/'): i.worldTransform.translation};
+    }
+
+    testWidgets('S2: dragging a source moves its copies and what is nested under them live, and the part mated to a copy with them', (
+      tester,
+    ) async {
+      final live = await dragSourceAndRead(tester, suppressed: false);
+      expect(live['occ-1']![0], closeTo(4, 1e-3));
+      expect(live['occ-1']![1], closeTo(6, 1e-3));
+      expect(live['occ-1']![2], closeTo(0, 1e-6), reason: 'off-plane motion blocked');
+      // copy i = step (300 i along x) after the source's live pose (4, 6, 0)
+      expect(live['occ-1#pattern:pat-1:1']![0], closeTo(304, 1e-3));
+      expect(live['occ-1#pattern:pat-1:1']![1], closeTo(6, 1e-3));
+      expect(live['occ-1#pattern:pat-1:2']![0], closeTo(604, 1e-3));
+      expect(live['occ-1#pattern:pat-1:2']![1], closeTo(6, 1e-3));
+      // an instance nested under a copy moves by the same delta (4, 6, 0)
+      expect(live['occ-1#pattern:pat-1:1/inner']![0], closeTo(309, 1e-3));
+      expect(live['occ-1#pattern:pat-1:1/inner']![1], closeTo(8, 1e-3));
+      // the part mated to the copy rides with the group (the scripted group slides it along x with the grabbed one)
+      expect(live['occ-2']![0], closeTo(334, 1e-3), reason: 'the follower moved with the group, next to the live copy');
+    });
+
+    testWidgets('S2: a suppressed pattern\'s copies stay where the server drew them', (tester) async {
+      final suppressed = await dragSourceAndRead(tester, suppressed: true);
+      expect(suppressed['occ-1']![0], closeTo(4, 1e-3));
+      expect(suppressed['occ-1#pattern:pat-1:1'], [300.0, 0.0, 0.0]);
+      expect(suppressed['occ-1#pattern:pat-1:1/inner'], [305.0, 2.0, 0.0]);
+      expect(suppressed['occ-1#pattern:pat-1:2'], [600.0, 0.0, 0.0]);
+    });
+
+    Future<List<RigidTransformDto>> circularPreview(WidgetTester tester, {required bool orient}) async {
+      await openWithGizmo(
+        tester,
+        seedOccurrences: [occ('occ-1', 200)],
+        seedMates: const [],
+        seedPatterns: [
+          {
+            ...linearPattern(),
+            'pattern_type': 'circular',
+            'axis': {'origin': [0.0, 0.0, 0.0], 'direction': [0.0, 0.0, 1.0]},
+            'count_angular': 4,
+            'angle_total': 360.0,
+            'orient_with_rotation': orient,
+          },
+        ],
+        target: 'occ-1',
+      );
+      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel.onPatternTap!(panel.patterns.single); // opens the Pattern panel on the stored pattern: its orient_with_rotation is the preview's
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
+      return [
+        for (final p in viewport.componentPatternPreviewInstances)
+          RigidTransformDto(
+            translation: [p.worldTransform.storage[12], p.worldTransform.storage[13], p.worldTransform.storage[14]],
+            rotationAxis: const [0, 0, 1],
+            // the yaw of the copy: atan2 of the rotated x axis
+            rotationAngleDegrees: math.atan2(p.worldTransform.storage[1], p.worldTransform.storage[0]) * 180 / math.pi,
+          ),
+      ];
+    }
+
+    testWidgets('S2: the Pattern panel\'s ghost preview turns each copy with the step when the pattern orients', (tester) async {
+      final oriented = await circularPreview(tester, orient: true);
+      expect(oriented, hasLength(3));
+      expect(oriented[0].translation[0], closeTo(0, 1e-3)); // 200 mm out, a quarter turn about z: (0, 200)
+      expect(oriented[0].translation[1], closeTo(200, 1e-3));
+      expect(oriented[0].rotationAngleDegrees, closeTo(90, 1e-3), reason: 'turned with the step');
+      expect(oriented[1].rotationAngleDegrees.abs(), closeTo(180, 1e-3));
+    });
+
+    testWidgets('S2: ... and keeps the source\'s rotation when orient_with_rotation is false (the old preview always turned it)', (tester) async {
+      final kept = await circularPreview(tester, orient: false);
+      expect(kept, hasLength(3));
+      expect(kept[0].translation[0], closeTo(0, 1e-3), reason: 'repositioned around the circle the same way');
+      expect(kept[0].translation[1], closeTo(200, 1e-3));
+      for (final copy in kept) {
+        expect(copy.rotationAngleDegrees, closeTo(0, 1e-3));
+      }
     });
 
     testWidgets('desktop input D3: Ctrl+Z undoes the move as the Undo button does; Esc deselects the component', (
