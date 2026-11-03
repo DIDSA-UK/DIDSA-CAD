@@ -301,7 +301,8 @@ made in Flutter, and moves, solves and enforces them. What the changes mean ther
 `GET /parts/{part_id}/assembly-mesh?geometry=false` (default `true`, unchanged): the same `instances` list (each with
 `occurrence_path` and world transform, copies included) but empty `geometry`, so VR (and Flutter, if useful) can
 refresh every instance's pose - copies and nested parts included - without downloading meshes. Implement by skipping
-`_geometry_for` in `get_assembly_mesh`'s walk. Test: same instance paths and transforms as the full response, no
+`_geometry_for` in `get_assembly_mesh`'s walk, and skip `_paint_json_instances` too (its per-face painting reads that
+geometry) or limit it to the node-level appearance. Test: same instance paths and transforms as the full response, no
 geometry; record it in `didsa-vr/docs/backend-api-notes.md` when the VR task picks it up.
 
 ## Product decisions (confirmed)
