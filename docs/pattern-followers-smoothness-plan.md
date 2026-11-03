@@ -1,7 +1,7 @@
 # Pattern followers: smooth dragging and the remaining gaps — investigation & plan
 
-Status: **investigated, not implemented** (hand-off for one session working in `DIDSA-UK/DIDSA-CAD` and
-`DIDSA-UK/didsa-vr`). Follows `docs/pattern-followers-and-dissolve-plan.md` (implemented, §2aa) after a review of that
+Status: **implemented** on branch `ccr-8db48425-oxdljy` in both repos (S1-S5; see `docs/assembly-scope.md` §2bb and DIDSA-VR `CHANGELOG.md`). Originally a hand-off for one session working in `DIDSA-UK/DIDSA-CAD` and
+`DIDSA-UK/didsa-vr`. Follows `docs/pattern-followers-and-dissolve-plan.md` (implemented, §2aa) after a review of that
 rollout on 2026-11-03.
 
 ## Review of the rollout (for the record)

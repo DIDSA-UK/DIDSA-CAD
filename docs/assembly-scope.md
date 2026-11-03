@@ -4406,7 +4406,7 @@ Implemented in the plan's recommended order, one commit per item.
   `assembly_group.discover_component` uses them for the graph, so a mate B - copy-of-A joins A and B in one component (a fixed source stays frozen).
   `_Side.follow = (pattern, index)` makes the copy side's world pose `assembly.pattern_copy_pose(pattern, the source's pose being evaluated, index)`
   (`expand_component_pattern_instances` now calls it, so the two cannot drift); with the source fixed or outside the group the side is the old frozen one.
-  `export_constraint_model` returns `None` for a model with a follower (the Jacobian falls back to central differences, clients keep server projection), the
+  `export_constraint_model` returned `None` for a model with a follower (the Jacobian fell back to central differences, clients kept server projection: *superseded by §2bb, constraint model version 7*), the
   py-slvs single-member fallback is skipped, `_seed_poses` maps its rotations / slides into the source's frame, and gear / rack-pinion / screw / limit mates on a
   copy are refused (422) and keep the old frozen rule. *Behaviour change:* a new mate B - copy-of-A solves a group that contains A, so with group movement A may move
   (as for a direct mate); minimal movement still moves only B; `occurrence_id=<copy>` stays a 422.
@@ -4417,8 +4417,8 @@ Implemented in the plan's recommended order, one commit per item.
   reference does not resolve in the composed document, e.g. face 4 of body 77cd0f36). Cost on the frame fixture (16 mates): a warm listing about 12 ms with status against about 4.4 ms without; the
   first call tessellates the parts (about 220 ms). Client: `MateDto.status`, broken rows in the error colour with a warning icon, the rows in `broken_mate_ids` pulse after a
   pattern edit and a SnackBar says how many could not be kept; `mateTopLevelOccurrences` folds copies to their source so a source whose copies are mated counts as mated
-  (its gizmo drag / numeric Move go through the solver). Undo restores the dragged source and every follower the constrained commit recorded. *Not changed:* the AI plan's
-  `move_component` only PATCHes the pose and never solves, for a direct mate as much as for a copy mate.
+  (its gizmo drag / numeric Move go through the solver). Undo restores the dragged source and every follower the constrained commit recorded. *Not changed here (done in §2bb, S5):* the AI plan's
+  `move_component` only PATCHed the pose and never solved, for a direct mate as much as for a copy mate.
 - **F2 - Dissolve pattern.** `POST /parts/{id}/component-patterns/{pid}/dissolve` replaces every live copy by a floating occurrence at the copy's pose (named `<override> (n)` or left
   to the tree), re-points mates, appearance overrides and scene overrides of EVERY Part (`occurrence_paths.rewrite_segment(s)`), splits `scope: "pattern"` paint onto the source and each
   new occurrence (merged field by field into a copy's own override) and deletes the pattern, all or nothing. The Patterns row's long-press and right click both offer Edit / Dissolve /
@@ -4427,3 +4427,31 @@ Implemented in the plan's recommended order, one commit per item.
 - Tests: `test_mate_pattern_copy.py` (follower solve, Circular both orientation flags, fixed source, pattern edits, broken / ok status, limit status, cross-Part cleanup, coupler / limit 422,
   no constraint model, no py-slvs fallback), `test_component_pattern_dissolve.py`, `test_assembly_mesh_geometry_flag.py`; client `pattern_followers_test.dart` and additions to the tree-panel,
   part-screen and API-client tests. VR: DIDSA-VR `CHANGELOG.md` (V1-V3).
+
+## 2bb. Pattern followers: smooth dragging and the remaining gaps (`docs/pattern-followers-smoothness-plan.md`, S1-S5)
+
+- **S1 - constraint model version 7 (follower sides).** A group that holds a pattern-copy mate now sends a constraint model: `export_constraint_model` no longer returns `None` for a follower
+  but emits `MODEL_VERSION_FOLLOW = 7` (`FOLLOW_MODEL_VERSION`), a superset of 6 (limits, couplers and pairs may sit alongside), only when some side has one; every other group keeps versions 3-6. A side
+  (and a `pair`) carries `follow: {"r": Rs, "t": ts, "keep_rotation": bool}`, the constant step of the copy after its source member: the copy of a source at `(R, t)` is at `(Rs R, Rs t + ts)`, or
+  `(R, Rs t + ts)` for a Circular pattern with `orient_with_rotation = false`. `assembly.pattern_step(pattern, index) -> (step, keep_rotation)` is shared by `pattern_copy_pose` (which now calls it)
+  and the exporter. `ConstraintModel._world` applies it with the analytic Jacobian (orient: `d/dv = Rs`, `d/dw = -Rs [w]x`; keep rotation: `d/dv = Rs`, `d/dw = -[w]x`). Three evaluators, one golden set:
+  the numpy reference in `tools/motion_vectors/generate.py` (8 new `local-follow-*` `local_retract` cases: Linear, Circular orient, Circular keep rotation, and one with a limit mate and a table and guide in
+  the same model; `docs/motion/vectors.json` 155 cases, `backend/tests/data/local_retract_vectors.json`), `client/lib/motion/local_retraction.dart` (`kLocalFollowModelVersion`), and DIDSA-VR's
+  `scripts/motion/local_retraction.gd` (VR must accept 7 or its limit stops switch off for any group that holds a copy mate). All three reproduce the vectors to 1e-9 and check the Jacobian against central differences.
+  *Measured* (`backend/tests/bench_pattern_follower_drag.py`, 15 `mate-motion` steps x 3 repeats, three coincident mates between a source and a second part, in-process `TestClient`, this container): a direct
+  mate 12.0 ms median per step and a copy mate 22.0 ms (1.84x, no model sent) before; 11.1 ms and 14.0 ms (1.26x, `constraint_model` version 7 sent) after. (The plan's 44 ms / 13 ms came from a
+  different scene and machine load.) Changed on purpose: `test_mate_pattern_copy.py` "no constraint model for a follower" now asserts version 7 and the `follow` step.
+- **S2 - Flutter: copies move with their source during a drag.** `assembly/pattern_copy_pose.dart`: `patternCopyPose` (plain doubles, mirrors the backend exactly), `livePatternIndices` and
+  `followPatternCopies`, which `PartScreen._displayAssemblyInstances` applies after the target / follower overrides: every live copy of a non-suppressed pattern whose source is being moved is drawn at
+  `parentWorld . patternCopyPose(P, local(source), i)` and what is nested under a copy moves by the same delta. The Pattern panel's ghost preview uses the same function (the old
+  `linear/circularPatternPreviewStep` helpers are gone), so it honours `orient_with_rotation` and the skipped copies of a pattern being edited (the panel has no control for either: a new pattern previews with the
+  defaults) and applies the step in the focused Part's frame. The fixture is generated from the backend (`tools/motion_vectors/pattern_copy_pose_vectors.py` ->
+  `backend/tests/data/pattern_copy_pose_vectors.json` = `client/test/fixtures/...`, 50 cases); `test_pattern_copy_pose_vectors.py` recomputes it from the backend, `pattern_copy_pose_test.dart` checks the port
+  (2100 checks, worst diff 5e-11), `part_screen_test.dart` the live drag (copy, nested part, a part mated to the copy; a suppressed pattern unchanged) and the preview.
+- **S3 / S4 - VR.** See DIDSA-VR `CHANGELOG.md`: copy nodes follow their source per frame during a drag (`scripts/motion/pattern_copy_pose.gd`, the same fixture), and after a solve inside a sub-assembly the copies of
+  every loaded root whose scope contains that Part are refreshed.
+- **S5 - the AI plan's `move_component` solves.** After its PATCH the translator calls `solveForOccurrence` (group movement; an unmated occurrence converges trivially). A 422 from the solve fails the
+  step with the backend's message through the existing `stepFailed` path. Tests in `ai_plan_translator_test.dart` (PATCH then `/solve`; a 422 fails the step and stops the plan); the two older
+  `move_component` mocks now answer `/solve` too.
+- **Not shown by tests:** how a drag feels (smoothness between server answers, the copies at the hand's frame rate) needs a person, in the flat app and on the headset; nothing here claims it was tried.
+
