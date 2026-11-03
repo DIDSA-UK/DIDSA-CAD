@@ -3604,6 +3604,10 @@ class MateResponse(BaseModel):
     limit_max: float | None = None
     # Limit mates only: the measured value at the stored poses (mm / degrees), so a range can be typed against where the parts are now.
     limit_value: float | None = None
+    # COMPUTED at every listing, never stored (`app.document.mate_status`): `broken` when the mate's residual at the stored poses is
+    # above tolerance (a pattern edit it could not follow, a part file edited under it, an over-constrained import), a limit mate's
+    # value is outside its range, or a reference no longer resolves. Suppressed mates and couplers are `ok`.
+    status: Literal["ok", "broken"] = "ok"
 
 
 class MateCreate(BaseModel):
@@ -3845,6 +3849,13 @@ class ComponentPatternResponse(BaseModel):
     skip_indices: list[int] = []
     orient_with_rotation: bool = True
     suppressed: bool = False
+
+
+class ComponentPatternUpdateResponse(ComponentPatternResponse):
+    """`PATCH .../component-patterns/{id}`'s response: the stored pattern plus the mates this edit left unsatisfied (the edit is
+    always stored; a mate on one of the pattern's copies that the mated part could not follow is left `broken`)."""
+
+    broken_mate_ids: list[str] = []
 
 
 class ComponentPatternCreate(BaseModel):

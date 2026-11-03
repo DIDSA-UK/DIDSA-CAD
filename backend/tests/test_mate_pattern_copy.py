@@ -286,3 +286,90 @@ def test_coupler_and_limit_mates_on_a_copy_are_refused(mate_type):
     assert response.status_code == 422
     assert "pattern copy" in str(response.json()["detail"]).lower()
     assert _mate_ids(top_id) == []
+
+
+# ---- F1 (pattern edits re-solve what is mated to their copies; broken mates) ---------------------------------------------
+
+def test_a_pattern_spacing_edit_moves_the_mated_part_with_the_copy_not_the_source():
+    scene = _scene()
+    top_id = scene["top"]["id"]
+    payload, _ = _mate_and_settle(scene, normal=(1.0, 0.0, 0.0))
+    before = _poses(top_id)
+    edited = client.patch(f"/document/parts/{top_id}/component-patterns/{scene['pid']}", json={"spacing": 450.0})
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["spacing"] == 450.0 and edited.json()["broken_mate_ids"] == []
+    after = _poses(top_id)
+    assert after["src"] == before["src"]
+    assert np.allclose(_t(after["mover"]) - _t(before["mover"]), [150.0, 0, 0], atol=0.05)
+    _assert_still_mated(scene, payload)
+
+
+
+def _mate_status(top_id, mate_id):
+    return next(m for m in client.get(f"/document/parts/{top_id}/mates").json() if m["id"] == mate_id)["status"]
+
+
+def test_a_satisfied_mate_is_ok_and_one_never_solved_is_broken():
+    scene = _scene()
+    top_id = scene["top"]["id"]
+    payload = _payload(scene, COPY.format(pid=scene["pid"]))
+    mate_id = client.post(f"/document/parts/{top_id}/mates", json=payload).json()["id"]
+    assert _mate_status(top_id, mate_id) == "broken"  # `mover` sits 500 mm away: the stored poses do not satisfy it
+    assert client.post(f"/document/parts/{top_id}/occurrences/mover/solve", json={}).status_code == 200
+    assert _mate_status(top_id, mate_id) == "ok"
+    assert client.patch(f"/document/parts/{top_id}/mates/{mate_id}", json={"suppressed": True}).status_code == 200
+    assert _mate_status(top_id, mate_id) == "ok"  # a suppressed mate is never broken
+
+
+def test_a_pattern_edit_the_mated_part_cannot_follow_is_stored_and_leaves_the_mate_broken_until_it_is_undone():
+    scene = _scene()
+    top_id = scene["top"]["id"]
+    _payload_, mate_id = _mate_and_settle(scene, normal=(1.0, 0.0, 0.0))
+    assert client.patch(f"/document/parts/{top_id}/occurrences/mover", json={"fixed": True}).status_code == 200
+    before = _poses(top_id)
+    edited = client.patch(f"/document/parts/{top_id}/component-patterns/{scene['pid']}", json={"spacing": 450.0})
+    assert edited.status_code == 200, edited.text  # the edit is never refused because of a mate
+    assert edited.json()["spacing"] == 450.0 and edited.json()["broken_mate_ids"] == [mate_id]
+    assert client.get(f"/document/parts/{top_id}/component-patterns").json()[0]["spacing"] == 450.0  # stored
+    assert _poses(top_id) == before  # the fixed part and the source stay put
+    assert _mate_status(top_id, mate_id) == "broken"
+    back = client.patch(f"/document/parts/{top_id}/component-patterns/{scene['pid']}", json={"spacing": 300.0})
+    assert back.status_code == 200 and back.json()["broken_mate_ids"] == []
+    assert _mate_status(top_id, mate_id) == "ok"
+
+
+def test_a_limit_mate_outside_its_range_is_broken_inside_it_ok():
+    from tests.test_limit_mates import _limit, slider_scene
+
+    root, block, stop = slider_scene()  # the gap starts at 20 mm
+    inside = _limit(root, block, stop, limit_min=0.0, limit_max=50.0)
+    assert inside.status_code == 201, inside.text
+    outside = _limit(root, block, stop, limit_max=10.0)
+    assert outside.status_code == 201, outside.text
+    assert _mate_status(root, inside.json()["id"]) == "ok"
+    assert _mate_status(root, outside.json()["id"]) == "broken"
+
+
+def test_a_dead_copy_in_a_parent_assembly_mate_is_cleaned_up_across_parts():
+    from tests.test_assembly_nested_mate import _mate_payload
+
+    scene = _nested_scene_with_pattern()
+    top_id, sub_id, pid = scene["top"]["id"], scene["sub"]["id"], scene["pid"]
+    payload = _mate_payload(scene, "mover", "outer/inner")
+    payload["references"][1]["occurrence_id"] = f"outer/inner#pattern:{pid}:1"
+    created = client.post(f"/document/parts/{top_id}/mates", json=payload)
+    assert created.status_code == 201, created.text
+    assert client.patch(f"/document/parts/{sub_id}/component-patterns/{pid}", json={"skip_indices": [1]}).status_code == 200
+    assert _mate_ids(top_id) == [], "the parent assembly's mate on the now-dead copy is dropped"
+
+
+def _nested_scene_with_pattern():
+    from tests.test_assembly_nested_mate import _build_scene
+
+    scene = _build_scene()
+    response = client.post(
+        f"/document/parts/{scene['sub']['id']}/component-patterns",
+        json={"source_occurrence_ids": ["inner"], "pattern_type": "linear", "direction": [0, 1, 0], "count": 3, "spacing": 200.0},
+    )
+    assert response.status_code == 201, response.text
+    return {**scene, "pid": response.json()["id"]}
