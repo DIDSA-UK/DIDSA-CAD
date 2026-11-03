@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from app.sketch.constraints import CoincidentConstraint
-from app.sketch.models import Circle, Ellipse, Sketch, TextEntity
+from app.sketch.models import Arc, Circle, Ellipse, Sketch, TextEntity
 from app.sketch.text_geometry import place_local_point, text_to_polygons
 
 
@@ -376,7 +376,41 @@ def _profile_vertices(sketch: Sketch, profile: Profile) -> list[tuple[float, flo
     never a Circle/Ellipse, so it always resolves here."""
     if _is_text_profile(profile):
         return profile.text_vertices
-    return [(sketch.points[point_id].x, sketch.points[point_id].y) for point_id in profile.point_ids]
+    vertices: list[tuple[float, float]] = []
+    count = len(profile.point_ids)
+    for i, point_id in enumerate(profile.point_ids):
+        point = sketch.points[point_id]
+        vertices.append((point.x, point.y))
+        entity = sketch.entities.get(profile.line_ids[i]) if i < len(profile.line_ids) else None
+        if isinstance(entity, Arc):
+            vertices.extend(_arc_interior_points(sketch, entity, point_id, profile.point_ids[(i + 1) % count]))
+    return vertices
+
+
+_ARC_SAMPLES_PER_RADIAN = 8
+
+
+def _arc_interior_points(sketch: Sketch, arc: Arc, from_id: str, to_id: str) -> list[tuple[float, float]]:
+    """Points along `arc`'s real curve, strictly between its two ends, in the order the loop walks it
+    (`from_id` -> `to_id`). Without them an Arc edge counts as its straight chord in every containment,
+    area and centroid test here - a hole drawn at a lug's arc centre then sits *on* the chord, is not seen
+    as inside the outline, and is extruded as a separate solid instead of cut (found by the AI-eval
+    assembly sketches). The arc runs counter-clockwise from start to end (see `Arc`'s docstring)."""
+    center = sketch.points[arc.center_point_id]
+    start = sketch.points[arc.start_point_id]
+    end = sketch.points[arc.end_point_id]
+    radius = math.hypot(start.x - center.x, start.y - center.y)
+    a0 = math.atan2(start.y - center.y, start.x - center.x)
+    sweep = (math.atan2(end.y - center.y, end.x - center.x) - a0) % (2 * math.pi)
+    if sweep == 0:
+        sweep = 2 * math.pi
+    n = max(2, math.ceil(sweep * _ARC_SAMPLES_PER_RADIAN))
+    points = [
+        (center.x + radius * math.cos(a0 + sweep * k / n), center.y + radius * math.sin(a0 + sweep * k / n))
+        for k in range(1, n)
+    ]
+    walked_backwards = from_id == arc.end_point_id and to_id == arc.start_point_id
+    return points[::-1] if walked_backwards else points
 
 
 def _loop_centroid(sketch: Sketch, profile: Profile) -> tuple[float, float]:

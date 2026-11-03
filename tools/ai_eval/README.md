@@ -110,6 +110,31 @@ Claude models, two runs per cell unless noted, scored against the unconfirmed ke
 
 In the 2026-10-29 round no plan failed validation, so the automatic retry was not exercised. Sonnet now reads `rect_round` right, citing the hidden-line convention.
 
+### Assembly mode, 2026-11-03
+
+One run per sketch and model; sketches added one round at a time, simplest first.
+
+| Sketch | Parts (components) | Haiku | Sonnet | Opus |
+|---|---|---|---|---|
+| `asm_pin_block` | 2 (2) | P | P | P |
+| `asm_block_pins` (owner's sketch, key unconfirmed) | 2 (5) | P | P | P |
+| `asm_wheel_bracket` (2 sheets, one part used twice) | 4 (5) | P | P | P |
+
+Every model named the parts right first time, asked no questions and needed no retries.
+
+- **Lug holes (fixed).** All three `asm_wheel_bracket` runs first failed the same way: the upright (a rectangle
+  with an R40 arc top and a hole at the arc's centre) came out as two solids, the hole extruded as a plug. Profile
+  detection treated an Arc edge as its chord, and the hole's centre sat on that chord, so it was not seen as
+  inside the outline. `app/sketch/profile.py` now samples arcs for its containment, area and centroid tests
+  (`test_stage16_arc.py`). The same replies rebuilt after the fix all pass.
+- **No mates.** Every assembly plan placed components with `move_component` and no `mate`. The prompt leaves no
+  other way: a component added earlier in the same plan cannot take an `edge_selector`, and its real face ids are
+  not known when the plan is written, and Assembly mode always adds every component in that one plan. Placement
+  is right, but nothing constrains it. Open: resolve selectors on a same-plan `add_component` once it has run, or
+  send a second assembly turn listing the placed components' real ids.
+- Haiku twice tried to call a messaging tool the harness had not offered it (refused; nothing sent). Not an app
+  issue.
+
 ### Render-back check, 2026-10-29
 
 Each build was checked by the same model that built it (`docs/ai-modelling/14-render-back-check.md`), and every mismatch was sent back as the fix turn.
