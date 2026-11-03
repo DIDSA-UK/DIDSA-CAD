@@ -39,7 +39,14 @@ from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 
 from app.document.appearance import PATTERN_SEGMENT
-from app.document.assembly import mate_ref_tops, mate_tops, top_level_occurrence_id
+from app.document.assembly import (
+    mate_drivers,
+    mate_ref_drivers,
+    mate_tops,
+    parse_pattern_segment,
+    pattern_copy_pose,
+    top_level_occurrence_id,
+)
 from app.document.assembly_solver import (
     _axis_angle_from_quaternion,
     _angle_hinge,
@@ -86,7 +93,7 @@ from app.document.constraint_model import (
     wish_cost,
 )
 from app.document.extrude import compute_part_bodies
-from app.document.models import BRANCH_AUTO, BRANCH_USER, MATE_ALIGNED, MATE_ANTI_ALIGNED, Document, Mate, MateEntityRef, MateType, Part, ResolvedPlane, RigidTransform
+from app.document.models import BRANCH_AUTO, BRANCH_USER, MATE_ALIGNED, MATE_ANTI_ALIGNED, ComponentPattern, Document, Mate, MateEntityRef, MateType, Part, ResolvedPlane, RigidTransform
 
 _JACOBIAN_STEP = 1e-6  # same step as `assembly_solver._DOF_JACOBIAN_STEP`
 _DEFAULT_RANK_RTOL = 1e-6  # singular values <= rtol * sigma_max count as zero
@@ -132,6 +139,15 @@ def _live_mates(part: Part) -> list[Mate]:
     return [m for m in part.mates if not m.suppressed and len(m.references) == 2]
 
 
+def _copies_frozen(mate: Mate) -> bool:
+    return is_coupler(mate) or is_limit(mate)
+
+
+def _graph_ids(mate: Mate) -> tuple[str, ...]:
+    """The occurrences a mate joins in the graph: its drivers (copies folded to their source), except for a coupler / limit mate."""
+    return mate_tops(mate) if _copies_frozen(mate) else mate_drivers(mate)
+
+
 def discover_component(
     part: Part, grabbed_id: str, also_frozen: frozenset[str] = frozenset(), extra_mates: tuple[Mate, ...] = ()
 ) -> GroupComponent:
@@ -142,10 +158,13 @@ def discover_component(
     New-Mate ghost preview."""
     by_id = {o.id: o for o in part.occurrences}
     frozen = {o.id for o in part.occurrences if o.fixed} | {""} | set(also_frozen)
-    # A pattern copy (`<src>#pattern:<pid>:<i>`) is rigidly derived from its source and never driven by a solve: it is a
-    # frozen side whose pose `resolve_occurrence_target` derives (the copy does not follow its source being re-solved).
+    # A pattern copy (`<src>#pattern:<pid>:<i>`) is rigidly derived from its source: for the graph a mate on a copy is a mate on its
+    # SOURCE (`mate_drivers`), and the copy follows the source's pose inside a solve (`_Side.follow`). Only a coupler or a limit mate
+    # (which measure motion of the side's own body: not expressible through a follower) keeps the older rule: its copy side is
+    # frozen at the source's STORED pose and takes no part in the graph.
     for mate in [*_live_mates(part), *extra_mates]:
-        frozen.update(t for t in mate_tops(mate) if PATTERN_SEGMENT in t)
+        if _copies_frozen(mate):
+            frozen.update(t for t in mate_tops(mate) if PATTERN_SEGMENT in t)
     if grabbed_id not in by_id:
         raise GroupError(f"unknown occurrence {grabbed_id!r}")
     if grabbed_id in frozen:
@@ -155,7 +174,7 @@ def discover_component(
     adjacency: dict[str, set[str]] = {}
     for mate in mates:
         # A mate joins every movable occurrence it involves (a Width mate over two parts involves up to four).
-        movable = [t for t in mate_tops(mate) if t not in frozen]
+        movable = [t for t in _graph_ids(mate) if t not in frozen]
         for a in movable:
             for b in movable:
                 if a != b:
@@ -175,7 +194,7 @@ def discover_component(
     used: list[Mate] = []
     touched_frozen: set[str] = set()
     for mate in mates:
-        ids = mate_tops(mate)
+        ids = _graph_ids(mate)
         if len(ids) < 2 or not any(i in seen for i in ids):
             continue
         used.append(mate)
@@ -205,6 +224,9 @@ class _Side:
     # second face's. The side's world geometry is the plane midway between the two at the pose being evaluated, and the mate
     # also keeps the two faces parallel (`GroupModel.residual`). None for every other side.
     partner: "_Side | None" = None
+    # A reference on a pattern copy whose SOURCE is a member of the group: `occurrence_id` is the source, and the side's world pose
+    # is the copy's pose at the source's pose being evaluated (`assembly.pattern_copy_pose`): the copy follows the source.
+    follow: tuple[ComponentPattern, int] | None = None
 
 
 @dataclass
@@ -305,6 +327,8 @@ class GroupModel:
     @staticmethod
     def _world_one(side: _Side, placed: dict[str, RigidTransform]) -> _ResolvedGeometry:
         transform = placed.get(side.occurrence_id, side.frozen_transform)
+        if transform is not None and side.follow is not None:
+            transform = pattern_copy_pose(side.follow[0], transform, side.follow[1])
         return side.geometry if transform is None else _place_in_world(side.geometry, transform)
 
     @staticmethod
@@ -364,7 +388,7 @@ def build_group_model(
     members = set(component.member_ids)
     bodies_cache: dict[str, dict] = {}
 
-    def single_side(ref) -> _Side:
+    def single_side(ref, mate: Mate) -> _Side:
         # A reference into a sub-assembly (`outer/inner`) is carried by its
         # top-level Occurrence `outer`: the geometry is lifted into `outer`'s
         # own local frame so it moves with `outer` (a member) or sits at
@@ -377,17 +401,22 @@ def build_group_model(
         geometry = _resolve_local_geometry(target, bodies_cache[target.id], ref, document, part)
         if inner is not None:
             geometry = _place_in_world(geometry, inner)
+        copy = parse_pattern_segment(top_id)
+        if copy is not None and copy[0] in members and not _copies_frozen(mate):
+            # A pattern copy of a member: it follows its source (`follow`); the geometry is already local to the copy's own part.
+            pattern = next(p for p in part.component_patterns if p.id == copy[1])
+            return _Side(copy[0], geometry, None, follow=(pattern, copy[2]))
         return _Side(top_id, geometry, None if top_id in members else top_transform)
 
-    def side(ref) -> _Side:
+    def side(ref, mate: Mate) -> _Side:
         if not midplane_spans_tops(ref):
-            return single_side(ref)
+            return single_side(ref, mate)
         # A Width reference over two top-level occurrences: each face is its own side. With neither occurrence a member the
         # mid-plane never moves, so it collapses to one fixed world plane (the model stays a plain plane-plane one); otherwise
         # the first side carries the second as its `partner` and the plane is recomputed at every evaluated pose.
         mp = ref.midplane
-        first = single_side(MateEntityRef(occurrence_id=ref.occurrence_id, plane_ref=mp.a))
-        second = single_side(MateEntityRef(occurrence_id=mp.b_occurrence_id, plane_ref=mp.b))
+        first = single_side(MateEntityRef(occurrence_id=ref.occurrence_id, plane_ref=mp.a), mate)
+        second = single_side(MateEntityRef(occurrence_id=mp.b_occurrence_id, plane_ref=mp.b), mate)
         if first.occurrence_id not in members and second.occurrence_id not in members:
             plane = cross_midplane_geometry(document, part, ref).plane
             return _Side("", _ResolvedGeometry(point=plane.origin, plane=plane, direction=plane.normal), None)
@@ -402,14 +431,14 @@ def build_group_model(
         swapped = (
             not is_coupler(mate)  # a coupler is never swapped: its rows are in the references' order
             and not is_limit(mate)  # nor is a limit: its value is measured in the references' order
-            and not any(t in members for t in mate_ref_tops(first))
-            and any(t in members for t in mate_ref_tops(second))
+            and not any(t in members for t in mate_ref_drivers(first))
+            and any(t in members for t in mate_ref_drivers(second))
         )
         if swapped:
             first, second = second, first
-        a_side, b_side = side(first), side(second)
+        a_side, b_side = side(first, mate), side(second, mate)
         if mate.type in (MateType.ANGLE, MateType.LIMIT_ANGLE):
-            a_side, b_side = _with_hinge(mate, component.mates, side, a_side, b_side)
+            a_side, b_side = _with_hinge(mate, component.mates, lambda r: side(r, mate), a_side, b_side)
         sides.append((mate, a_side, b_side))
         swaps.append(swapped)
 
@@ -466,13 +495,13 @@ def _with_hinge(mate: Mate, mates: Iterable[Mate], side, a_side: "_Side", b_side
     """An ANGLE mate's two sides, the one carrying the mate's SECOND reference given the HINGE: the axis of a CONCENTRIC (or
     edge-on-edge COINCIDENT) mate between the same two occurrences, on that same occurrence (so the hinge direction does not
     depend on which side a solve calls "driven"). Unchanged when the pair has no hinge."""
-    ids = [top_level_occurrence_id(r.occurrence_id) for r in mate.references]
+    ids = [mate_ref_drivers(r)[0] for r in mate.references]  # a pattern copy is its source (what a follower side carries)
     if ids[0] == ids[1]:
         return a_side, b_side
     for other in mates:
         if other is mate or other.type not in (MateType.CONCENTRIC, MateType.COINCIDENT) or len(other.references) != 2:
             continue
-        if {top_level_occurrence_id(r.occurrence_id) for r in other.references} != set(ids):
+        if {mate_ref_drivers(r)[0] for r in other.references} != set(ids):
             continue
         s0, s1 = side(other.references[0]), side(other.references[1])
         if _effective_mate(other, s0.geometry, s1.geometry).type != MateType.CONCENTRIC:
@@ -487,9 +516,12 @@ def _with_hinge(mate: Mate, mates: Iterable[Mate], side, a_side: "_Side", b_side
     return a_side, b_side
 
 
-def mate_world_geometries(document: Document, part: Part, mate: Mate) -> tuple[_ResolvedGeometry, _ResolvedGeometry]:
-    """`mate`'s two references resolved into world space at the STORED poses (the first reference is returned first)."""
-    cache: dict[str, dict] = {}
+def mate_world_geometries(
+    document: Document, part: Part, mate: Mate, cache: dict[str, dict] | None = None
+) -> tuple[_ResolvedGeometry, _ResolvedGeometry]:
+    """`mate`'s two references resolved into world space at the STORED poses (the first reference is returned first). `cache`
+    (target Part id -> `compute_part_bodies`) lets a caller that resolves many mates share the tessellation work."""
+    cache = {} if cache is None else cache
     worlds = []
     for ref in mate.references:
         if midplane_spans_tops(ref):
@@ -753,6 +785,15 @@ def _minimal_rotvec(source, target) -> np.ndarray:
     return axis / norm * angle
 
 
+def _follow_rotation(side: _Side) -> np.ndarray:
+    """The rotation a follower side's copy has relative to its source (identity for every other side, and for a Linear
+    pattern): a seed computed in the copy's world frame is mapped back to the SOURCE's frame by its inverse (the source is
+    the member that moves; turning it by `R_s^-1 dR R_s` turns the copy by `dR`)."""
+    if side.follow is None:
+        return np.eye(3)
+    return rigid_to_pose(pattern_copy_pose(side.follow[0], RigidTransform.identity(), side.follow[1]))[0]
+
+
 def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
     """Move members off the states plain Gauss-Newton on `_mate_residual_vector`
     cannot leave: an alignment residual `d - s f` has a zero-gradient dead point
@@ -791,6 +832,9 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
         for mate, first, second in entries:
             d, f = model._world(first, placed), model._world(second, placed)
             mate_pairs = alignment_pairs(mate, d, f)
+            if first.follow is not None:
+                back = _follow_rotation(first).T  # the mover is the source: its pairs in the source's frame
+                mate_pairs = [(tuple(back @ np.array(a)), tuple(back @ np.array(b))) for a, b in mate_pairs]
             pairs.extend(mate_pairs)
             if any(_dot(source, target) < 0.0 for source, target in mate_pairs):
                 trigger = True
@@ -806,7 +850,8 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
         placed = {oid: poses[oid] for oid in model.member_ids}
         d, f = model._world(first, placed), model._world(second, placed)
         mover = first.occurrence_id
-        swing = hinge_swing_state(mate, d, f) if mate.type == MateType.ANGLE and mate.alignment is not None else None
+        back = _follow_rotation(first).T if first.follow is not None else None
+        swing = hinge_swing_state(mate, d, f) if mate.type == MateType.ANGLE and mate.alignment is not None and first.follow is None else None
         if swing is not None:
             # An ANGLE about a hinge, the lid on the wrong side (or exactly flat): swing it about the hinge to the named root
             # (+theta or -theta); Gauss-Newton then only polishes. On the right side nothing is touched.
@@ -822,13 +867,15 @@ def _seed_poses(model: GroupModel, poses: dict[str, RigidTransform]) -> None:
                 t = abs(mate.value) % 360.0
                 t = math.radians(min(t, 360.0 - t))
                 axis = np.array(_axis_perpendicular(nf))
-                _rotate_member(poses, mover, axis * (t if dot > 0 else math.pi - t))
+                rotvec = axis * (t if dot > 0 else math.pi - t)
+                _rotate_member(poses, mover, rotvec if back is None else back @ rotvec)
         elif mate.type == MateType.DISTANCE and mate.value:
             target = abs(mate.value)
             state = _distance_state(d, f)
             if state is not None and state[2] == "unsigned" and abs(state[0]) < 0.25 * target:
                 current, direction, _kind = state
-                _translate_member(poses, mover, np.array(direction) * (target - current))
+                shift = np.array(direction) * (target - current)
+                _translate_member(poses, mover, shift if back is None else back @ shift)
 
 
 def _distance_state(d: _ResolvedGeometry, f: _ResolvedGeometry):
@@ -1033,8 +1080,8 @@ def _solve_model(
                 poses, residual_inf, seeded_by = retry_poses, retry_residual, "gauss-newton-reweighted"
                 break
 
-    # (The py-slvs single-occurrence fallback cannot express a Width mid-plane that depends on another part's pose: skip it for those.)
-    if residual_inf > _NOISE_TOL and len(model.member_ids) == 1 and not any(a.partner or b.partner for _m, a, b in model.sides):
+    # (The py-slvs single-occurrence fallback cannot express a Width mid-plane that depends on another part's pose, nor a pattern copy that follows its source - its `_applicable_mates` matches references by raw top and would silently ignore the mate: skip it for those.)
+    if residual_inf > _NOISE_TOL and len(model.member_ids) == 1 and not any(a.partner or b.partner or a.follow or b.follow for _m, a, b in model.sides):
         guess = wanted_pose if wanted_pose is not None else stored[grabbed_id]
         fallback = solve_occurrence_from_guess(document, part, grabbed_id, guess, extra_mates)
         if fallback.converged:

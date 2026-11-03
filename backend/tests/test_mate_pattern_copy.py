@@ -16,7 +16,7 @@ client.headers.update({"X-API-Key": TEST_API_KEY})
 COPY = "src#pattern:{pid}:1"
 
 
-def _scene():
+def _scene(src_at=(0.0, 0.0, 0.0), pattern=None, src_fixed=False, mover_fixed=False):
     leaf = _make_box_part("Leaf")
     mover = _make_box_part("Mover")
     top = _make_box_part("Top")
@@ -24,8 +24,8 @@ def _scene():
     parts = {k: e["document"]["parts"][0] for k, e in exports.items()}
     parts["top"]["features"] = []
     parts["top"]["occurrences"] = [
-        _occurrence("src", leaf["id"], (0.0, 0.0, 0.0)),
-        _occurrence("mover", mover["id"], (500.0, 500.0, 500.0)),
+        _occurrence("src", leaf["id"], src_at, fixed=src_fixed),
+        _occurrence("mover", mover["id"], (500.0, 500.0, 500.0), fixed=mover_fixed),
     ]
     parts["top"]["mates"] = []
     payload = {
@@ -37,15 +37,15 @@ def _scene():
     top_id = top["id"]
     response = client.post(
         f"/document/parts/{top_id}/component-patterns",
-        json={"source_occurrence_ids": ["src"], "pattern_type": "linear", "direction": [1, 0, 0], "count": 3, "spacing": 300.0},
+        json=pattern or {"source_occurrence_ids": ["src"], "pattern_type": "linear", "direction": [1, 0, 0], "count": 3, "spacing": 300.0},
     )
     assert response.status_code == 201, response.text
     return {"top": top, "leaf": leaf, "mover": mover, "pid": response.json()["id"]}
 
 
-def _payload(scene, copy_id, mover_first=True):
-    leaf_face = _find_planar_face(scene["leaf"]["id"], scene["leaf"]["body_id"], (0.0, 0.0, 1.0))
-    mover_face = _find_planar_face(scene["mover"]["id"], scene["mover"]["body_id"], (0.0, 0.0, -1.0))
+def _payload(scene, copy_id, mover_first=True, normal=(0.0, 0.0, 1.0)):
+    leaf_face = _find_planar_face(scene["leaf"]["id"], scene["leaf"]["body_id"], normal)
+    mover_face = _find_planar_face(scene["mover"]["id"], scene["mover"]["body_id"], tuple(-c for c in normal))
     mover_ref = {"occurrence_id": "mover", "subshape_ref": {"body_id": scene["mover"]["body_id"], "shape_type": "face", "index": mover_face}}
     copy_ref = {"occurrence_id": copy_id, "subshape_ref": {"body_id": scene["leaf"]["body_id"], "shape_type": "face", "index": leaf_face}}
     return {"type": "coincident", "references": [mover_ref, copy_ref] if mover_first else [copy_ref, mover_ref]}
@@ -154,3 +154,135 @@ def test_native_round_trip_keeps_a_copy_mate():
     mates = client.get(f"/document/parts/{top_id}/mates").json()
     assert len(mates) == 1
     assert mates[0]["references"][1]["occurrence_id"] == COPY.format(pid=scene["pid"])
+
+
+# ---- F1: a part mated to a copy FOLLOWS the copy's source (docs/pattern-followers-and-dissolve-plan.md) -------------------
+
+import numpy as np
+import pytest
+
+from app.document.assembly_group import build_group_model, solve_group
+from app.document.constraint_model import export_constraint_model
+
+
+def _poses(top_id):
+    return {o["id"]: o["transform"] for o in client.get(f"/document/parts/{top_id}/occurrences").json()}
+
+
+def _t(transform):
+    return np.array(transform["translation"], float)
+
+
+def _move_source(top_id, **translation_delta):
+    stored = _poses(top_id)["src"]
+    t = list(stored["translation"])
+    for axis, delta in translation_delta.items():
+        t["xyz".index(axis)] += delta
+    moved = client.patch(f"/document/parts/{top_id}/occurrences/src", json={"transform": {**stored, "translation": t}})
+    assert moved.status_code == 200, moved.text
+
+
+def _mate_and_settle(scene, normal=(0.0, 0.0, 1.0), copy_index=1):
+    top_id = scene["top"]["id"]
+    payload = _payload(scene, f"src#pattern:{scene['pid']}:{copy_index}", normal=normal)
+    created = client.post(f"/document/parts/{top_id}/mates", json=payload)
+    assert created.status_code == 201, created.text
+    assert client.post(f"/document/parts/{top_id}/occurrences/mover/solve", json={}).status_code == 200
+    return payload, created.json()["id"]
+
+
+def _assert_still_mated(scene, payload, copy_index=1):
+    _assert_coincident_opposed(_world(scene, payload["references"][0]), _world(scene, payload["references"][1]))
+
+
+def test_a_part_mated_to_a_copy_follows_when_the_source_moves():
+    scene = _scene()
+    top_id = scene["top"]["id"]
+    payload, _ = _mate_and_settle(scene)
+    before = _poses(top_id)
+    _move_source(top_id, z=100.0)
+    solved = client.post(f"/document/parts/{top_id}/occurrences/src/solve", json={})
+    assert solved.status_code == 200, solved.text
+    after = _poses(top_id)
+    assert np.allclose(_t(after["src"]) - _t(before["src"]), [0, 0, 100.0], atol=1e-6)  # the source stays where it was put
+    assert np.allclose(_t(after["mover"]) - _t(before["mover"]), [0, 0, 100.0], atol=0.05)  # ... and the mated part follows
+    _assert_still_mated(scene, payload)
+
+
+@pytest.mark.parametrize("orient", [True, False])
+def test_a_part_mated_to_a_circular_copy_follows_when_the_source_moves(orient):
+    pattern = {
+        "source_occurrence_ids": ["src"], "pattern_type": "circular", "count_angular": 4, "angle_total": 360.0,
+        "axis": {"origin": [0, 0, 0], "direction": [0, 0, 1]}, "orient_with_rotation": orient,
+    }
+    scene = _scene(src_at=(200.0, 0.0, 0.0), pattern=pattern)
+    top_id = scene["top"]["id"]
+    payload, _ = _mate_and_settle(scene)
+    before = _poses(top_id)
+    _move_source(top_id, z=70.0)
+    assert client.post(f"/document/parts/{top_id}/occurrences/src/solve", json={}).status_code == 200
+    after = _poses(top_id)
+    assert np.allclose(_t(after["mover"])[2] - _t(before["mover"])[2], 70.0, atol=0.05)
+    _assert_still_mated(scene, payload)
+
+
+def test_a_fixed_source_stays_put_and_the_part_mates_onto_its_copy():
+    scene = _scene(src_fixed=True)
+    top_id = scene["top"]["id"]
+    before = _poses(top_id)
+    payload, _ = _mate_and_settle(scene)
+    after = _poses(top_id)
+    assert after["src"] == before["src"]
+    _assert_still_mated(scene, payload)
+
+
+def _follower_model(scene):
+    top = get_document().parts[scene["top"]["id"]]
+    return build_group_model(get_document(), top, "mover")
+
+
+def test_the_follower_group_has_no_client_constraint_model_but_mate_motion_still_works():
+    scene = _scene()
+    top_id = scene["top"]["id"]
+    _mate_and_settle(scene)
+    model = _follower_model(scene)
+    assert sorted(model.member_ids) == ["mover", "src"]  # the copy joined its SOURCE to the group
+    assert any(a.follow or b.follow for _m, a, b in model.sides)
+    assert export_constraint_model(model) is None
+    response = client.post(f"/document/parts/{top_id}/occurrences/mover/mate-motion", json={"transform": None})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["converged"] is True and body.get("constraint_model") is None
+    assert sorted(m["occurrence_id"] for m in body["members"]) == ["mover", "src"]
+
+
+def test_a_group_with_a_follower_never_uses_the_py_slvs_fallback(monkeypatch):
+    # B (fixed) is mated to the source AND to its copy on the same plane: no placement of the single member A can satisfy both.
+    scene = _scene(mover_fixed=True)
+    top_id = scene["top"]["id"]
+    face_normal = (1.0, 0.0, 0.0)
+    for occurrence in ("src", f"src#pattern:{scene['pid']}:1"):
+        assert client.post(f"/document/parts/{top_id}/mates", json=_payload(scene, occurrence, normal=face_normal)).status_code == 201
+
+    def boom(*args, **kwargs):
+        raise AssertionError("py-slvs fallback ran for a group with a follower side")
+
+    import app.document.assembly_group as group_module
+
+    monkeypatch.setattr(group_module, "solve_occurrence_from_guess", boom)
+    result = solve_group(get_document(), get_document().parts[top_id], "src")
+    assert result.converged is False  # and, above all, no false "converged" from a fallback that ignores the follower mate
+
+
+@pytest.mark.parametrize("mate_type", ["limit_distance", "gear"])
+def test_coupler_and_limit_mates_on_a_copy_are_refused(mate_type):
+    scene = _scene()
+    top_id = scene["top"]["id"]
+    payload = _payload(scene, COPY.format(pid=scene["pid"]))
+    payload["type"] = mate_type
+    if mate_type == "limit_distance":
+        payload["limit_min"] = 0.0
+    response = client.post(f"/document/parts/{top_id}/mates", json=payload)
+    assert response.status_code == 422
+    assert "pattern copy" in str(response.json()["detail"]).lower()
+    assert _mate_ids(top_id) == []

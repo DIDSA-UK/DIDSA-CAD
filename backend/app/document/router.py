@@ -3958,6 +3958,21 @@ def _schema_ref_tops(ref: MateEntityRefResponse) -> tuple[str, ...]:
     return mate_ref_tops(_mate_entity_ref_to_domain(ref))
 
 
+def _schema_ref_paths(ref: MateEntityRefResponse) -> list[str]:
+    """Every occurrence path a wire reference names (its own, and a Width mid-plane's second face's)."""
+    paths = [ref.occurrence_id]
+    if ref.midplane is not None and ref.midplane.b_occurrence_id is not None:
+        paths.append(ref.midplane.b_occurrence_id)
+    return paths
+
+
+COUPLER_TYPE_NAMES = tuple(t.value for t in COUPLER_TYPES)
+LIMIT_TYPE_NAMES = tuple(t.value for t in LIMIT_TYPES)
+_COPY_COUPLER_MESSAGE = (
+    "A gear, rack-and-pinion, screw or limit mate can't reference a pattern copy - mate the pattern's source occurrence instead."
+)
+
+
 def _schema_ref_bases(ref: MateEntityRefResponse) -> set[str]:
     """The top-level occurrences a wire reference involves with a pattern copy folded onto its source - a copy is rigidly
     derived from its source, so for the 'different occurrences' check they are one body."""
@@ -4018,6 +4033,11 @@ def _validate_mate_create(part: Part, payload: MateCreate) -> None:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     for ref in payload.references:
         _validate_mate_entity_ref(part, ref, payload.type)
+    if payload.type in COUPLER_TYPE_NAMES or payload.type in LIMIT_TYPE_NAMES:
+        # A copy follows its source in a solve (`_Side.follow`), but a coupler / limit measures its own body's motion from the
+        # solve's start - not expressible through a follower. v1: refuse them on a copy (mate the source instead).
+        if any(PATTERN_SEGMENT in path for ref in payload.references for path in _schema_ref_paths(ref)):
+            raise HTTPException(status_code=422, detail=_COPY_COUPLER_MESSAGE)
     if _schema_ref_bases(payload.references[0]) & _schema_ref_bases(payload.references[1]):
         # Compares the top-level Occurrence each reference belongs to, not the
         # full path: two faces inside the same sub-assembly can never be
