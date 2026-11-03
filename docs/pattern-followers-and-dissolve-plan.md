@@ -1,15 +1,17 @@
 # Component patterns: mated parts follow pattern copies, and "Dissolve pattern" — investigation & plan
 
-Status: **investigated, not implemented; product decisions confirmed** (hand-off document, intended for a Sonnet 5.5 session). Builds on
+Status: **investigated, not implemented; product decisions confirmed** (hand-off document for one Sonnet 5.5 session working in both `DIDSA-UK/DIDSA-CAD` and `DIDSA-UK/didsa-vr`). Builds on
 `docs/pattern-component-bugfix-plan.md` (B2 step 4 was deferred there) and `docs/assembly-scope.md` §2y/§2z.
 
 | # | Request | Size |
 |---|---------|------|
 | F1 | A part mated to a pattern copy follows when the copy moves (its source is moved/solved, or the pattern is edited); mates that can't follow are shown as broken | M–L, backend + client |
 | F2 | "Dissolve pattern" from the long-press menu of a pattern row: turn every copy into a real component | M, backend + client |
+| V1-V3 | VR client (`DIDSA-UK/didsa-vr`): copy mates fold to their source (V1, a live bug), copies move with their source (V2), parity (V3) | S–M, VR |
 
-Recommended order: **F1 then F2** — they're independent, but F2's tests are simpler to write once copy mates behave
-like ordinary mates.
+Recommended order: **V1 first** (a small VR fix for a bug already live on `main`), then **F1**, **F2**, the
+`geometry=false` backend addition, then **V2** (needs it) and **V3**. F1 and F2 are independent, but F2's tests are
+simpler to write once copy mates behave like ordinary mates.
 
 **Assumption to confirm:** "pattern feature in the feature tree" means a row in the **Assembly tree's Patterns
 section** (Assembly lens, `ComponentPattern`). Dissolving a Part-lens body Pattern feature (`PatternFeature`) is a
@@ -279,22 +281,61 @@ made in Flutter, and moves, solves and enforces them. What the changes mean ther
   once VR reloads the assembly. VR doesn't notice another client's edits until it reloads (existing behaviour for any
   Flutter edit), and `appearance_tool.gd` caches the pattern list (`_patterns`) until then.
 
-### Gaps VR needs fixed (a separate VR task; not part of the CAD hand-off)
+### VR work (in `didsa-vr`, same session; items V1-V3)
 
-1. **Already live on `main` (since mates on copies shipped):** `mates_tool.gd` `mate_ref_top()` only splits on `/`, so a
-   Flutter-made mate on a copy puts `A#pattern:P:i` into `_mated_ids`. "Enforce all" then calls
-   `POST /parts/<owner>/occurrences/A#pattern:P:i/solve`; the `#` starts a URL fragment, so the request is mangled
-   (best case 404, worst case it solves the wrong occurrence). Fix: fold a `#pattern:` segment to its source in
-   `mate_ref_top` (`group_index.gd` already has `base_segment`). This is also the VR side of F1's "a source whose copies
-   are mated counts as mated": `is_mated()` and the save gate (`~1853`, "mated") read the same set.
-2. **Copies don't move with their source in VR.** `_adopt_backend_poses` (`~2407`) re-reads `GET .../occurrences` and moves
-   nodes by occurrence id; copies have none, so they stay where they were until the GLB is reloaded. With F1, dragging
-   A in VR moves B on the server (VR adopts B's pose) while A's copy node stays put, so B looks detached. Fix: after a
-   solve/move, reposition copy nodes from their world transforms by `instance_path` — needs the backend item below.
-3. **Optional parity:** let VR mate to a copy (send `occurrence_id = <copy segment>` relative to the node's
-   `owner_part_id`, taken from `instance_path`), show broken mates in the tablet's mate list, and use the Flutter copy
-   names (`Source [Linear 1 #2]`; VR labels them `"<name> (copy <i>)"`). At minimum, replace the misleading rejection
-   with "Pattern copies can't be mated in VR yet".
+Follow `didsa-vr/CLAUDE.md`: read `docs/status.md`, `docs/backend-api-notes.md` and `tests/README.md` first; GDScript only;
+a new test file goes in `tests/run_all.sh` and gets a row in `tests/README.md` (live-backend ones also in
+`tests/e2e_ci_list.txt`); update `docs/status.md` and `docs/backend-api-notes.md`; say what headless tests could not
+verify, and never claim "works on the headset".
+
+**V1 - copy mates fold to their source (fix now; already broken on CAD `main`).** `scripts/mates_tool.gd`
+`mate_ref_top()` (~1574) only splits on `/`, so a Flutter-made mate on a copy puts `A#pattern:P:i` into `_mated_ids`.
+"Enforce all" (`enforce_all`, ~1123) then calls `POST /parts/<owner>/occurrences/A#pattern:P:i/solve`; the `#` starts a
+URL fragment, so the request is mangled (best case 404, worst case it solves the wrong occurrence). The same set drives
+`is_mated()` (~1677) and the save gate (~1853), so a source whose only mates are on its copies is treated as unmated
+and moved without a solve.
+- Fix: in `mate_ref_top`, after taking the first `/` segment, strip a `#pattern:` suffix (reuse
+  `GroupIndex.base_segment`, `scripts/group_index.gd`) - the VR mirror of the backend's `mate_ref_drivers` and the
+  Flutter fold. Both `mated_tops` callers (the active root, nested states ~1551, other roots ~1662) then see `A`.
+- Defensive: any URL built from an occurrence id should never contain `#`; assert it in `solve_occurrence` (push an
+  error and skip) rather than send a mangled request.
+- This works against the backend as it is today (the copy side is frozen there) and is what F1 needs, so it can land
+  before or after the backend work.
+- Tests (`tests/nested_mates.gd`, SMOKE lines): a mate on `A#pattern:P:1` marks `A` mated and not the copy id; a nested
+  `S/A#pattern:P:1` marks `S`; a Width mate whose `midplane.b_occurrence_id` is a copy marks its source;
+  `enforce_all` with such a mate solves `A` (stub `_api_request` and check no requested path contains `#`).
+
+**V2 - copies move with their source.** `_adopt_backend_poses` (~2407) re-reads `GET .../occurrences` and moves nodes
+by occurrence id; a copy's node has `occurrence_id = ""`, so it never moves until the GLB is reloaded. With F1, dragging
+A in VR moves B on the server (VR adopts B's pose) while A's copy stays put, so B looks detached.
+- Fix: after the existing occurrence pass, if the scope has any node whose `instance_path` contains `#pattern:`, call
+  the new `GET /parts/<root>/assembly-mesh?geometry=false` (below) - `<root>` is the node's `group_root` meta
+  (`group_index.gd`: the world's loaded root, or a room's Part for a room's nodes), since `instance_path` is relative
+  to the Part that GLB was loaded for - and set each copy node's world transform from the
+  instance whose `occurrence_path` joined by `/` equals the node's `instance_path` (mm -> m via `spawn_scale`, the same
+  conversion the GLB load uses). Include the copy moves in the same undo entry (`_push_group_move`). Skip the request
+  when there are no copy nodes. If the backend is older (the query parameter ignored, geometry returned), still use the
+  instances - only slower.
+- Also call it after `enforce_all` and after a relaxed-sandbox return, where poses are adopted the same way.
+- Live drag: copies still only catch up when the drag's pose is committed (no per-frame update). Record that in
+  `docs/status.md` as a known limitation.
+- Tests: a pure helper `copy_poses_from_instances(instances: Array, spawn_scale: float) -> Dictionary`
+  (`instance_path -> Transform3D`) with SMOKE cases (a top-level copy, a nested copy, a non-copy ignored, unit
+  conversion); an e2e test (`tests/e2e_pattern_follow.gd`, add to `e2e_ci_list.txt`) on a running backend: import a
+  part, place two occurrences A and B, create a Linear pattern of A, mate B to a copy face, move A, solve, assert B
+  moved by the same offset and A's copy node is at A's pose plus the pattern step.
+
+**V3 - parity (smaller, same session).**
+- Mate to a copy in VR: in `mates_tool.gd` `try_pick`, when `occ_ref.occurrence_id == ""` and the node's
+  `instance_path` contains `#pattern:`, use the copy's segment (the last path segment read in the node's
+  `owner_part_id`) as `occurrence_id`. Keep refusing true root content. Make the rejection text for root content
+  unchanged and add a test that a copy pick is accepted and builds the right `MateEntityRef`.
+- Broken mates: show `status == "broken"` in the tablet's mate list (`scripts/ui/tablet_pages.gd`) in the theme's
+  error colour with "Broken" after the name; a tablet test with a fake list.
+- Copy names: label copies like Flutter (`<source name> [<pattern name> #<index + 1>]`, pattern name as Flutter's
+  `componentPatternDisplayName`: "Linear N"/"Circular N" by position in the Part's pattern list) in
+  `group_index.gd` `_tag_pattern_copy` instead of `"<name> (copy <i>)"`; the pattern list is already fetched by
+  `appearance_tool.gd` - if it is not available at tagging time keep the old label rather than adding a request.
 
 ### One backend addition for VR (include in the CAD work)
 
@@ -317,14 +358,23 @@ geometry; record it in `didsa-vr/docs/backend-api-notes.md` when the VR task pic
 ## Files (expected)
 
 Backend: `app/document/assembly.py`, `assembly_group.py`, `router.py` `get_assembly_mesh` (`geometry=false`), `constraint_model.py` (None for followers), `router.py`
-(pattern PATCH re-solve + rollback, dissolve route, mate validation for couplers/limits, cleanup across Parts),
+(pattern PATCH re-solve + `broken_mate_ids`, mate `status`, dissolve route, mate validation for couplers/limits, cleanup across Parts),
 `occurrence_paths.py` (`rewrite_segment`), `appearance_routes.py` / `scenes_routes.py` (rewrite helpers), `schemas.py`
 (dissolve response), tests. Client: `assembly_tree_panel.dart`, `part_screen.dart` (`_isMated`), `viewport3d/width_pick.dart` (`mateTopLevelOccurrences`, 4 call sites), `api/document_api_client.dart`, a new
 `pattern_context_menu.dart` (or extend `mate_context_menu.dart`), tests. Docs: a §2aa entry in `docs/assembly-scope.md`.
+
+VR (`didsa-vr`): `scripts/mates_tool.gd` (`mate_ref_top`, `solve_occurrence` guard, `_adopt_backend_poses`,
+`try_pick`), `scripts/group_index.gd` (copy labels), `scripts/ui/tablet_pages.gd` (broken mates), tests
+(`tests/nested_mates.gd`, new pure-helper SMOKE cases, `tests/e2e_pattern_follow.gd`), `tests/run_all.sh`,
+`tests/README.md`, `tests/e2e_ci_list.txt`, `docs/status.md`, `docs/backend-api-notes.md` (`geometry=false`, mate
+`status`, `broken_mate_ids`, dissolve), `CHANGELOG.md`.
 
 ## Verification
 
 ```
 /opt/sdks/micromamba run -n didsa-backend python -m pytest backend/tests/ -q -n 4
 cd client && flutter analyze && flutter test
+# VR (from the didsa-vr root; tools/setup_test_env.sh installs Godot 4.7.2 and the rest if missing)
+GODOT=/path/to/godot tests/ci.sh
+GODOT=/path/to/godot tests/ci_e2e.sh   # with a local backend from this CAD branch: tools/start_backend.sh
 ```
