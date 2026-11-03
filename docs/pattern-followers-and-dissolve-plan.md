@@ -1,11 +1,11 @@
 # Component patterns: mated parts follow pattern copies, and "Dissolve pattern" — investigation & plan
 
-Status: **investigated, not implemented** (hand-off document, intended for a Sonnet 5.5 session). Builds on
+Status: **investigated, not implemented; product decisions confirmed** (hand-off document, intended for a Sonnet 5.5 session). Builds on
 `docs/pattern-component-bugfix-plan.md` (B2 step 4 was deferred there) and `docs/assembly-scope.md` §2y/§2z.
 
 | # | Request | Size |
 |---|---------|------|
-| F1 | A part mated to a pattern copy follows when the copy moves (its source is moved/solved, or the pattern is edited) | M–L, backend |
+| F1 | A part mated to a pattern copy follows when the copy moves (its source is moved/solved, or the pattern is edited); mates that can't follow are shown as broken | M–L, backend + client |
 | F2 | "Dissolve pattern" from the long-press menu of a pattern row: turn every copy into a real component | M, backend + client |
 
 Recommended order: **F1 then F2** — they're independent, but F2's tests are simpler to write once copy mates behave
@@ -97,14 +97,45 @@ In `router.update_component_pattern`, after applying and validating the new valu
 2. For each distinct non-copy, non-source occurrence those mates drive (B), run a group solve with `grabbed_id = B`,
    **`also_frozen = set(pattern.source_occurrence_ids)`** (the sources must not move because the pattern changed) and
    `group` movement. Copies of the frozen sources resolve to their new poses through the frozen-side path.
-3. All converge → commit each (`_commit_group`) and store the pattern. Any fails → **422
-   `mate_solve_did_not_converge` naming the mate, and roll the pattern back** (snapshot its fields before applying —
-   the same "nothing stored" rule mate create follows). A B that is `fixed` counts as a failure.
+3. **The pattern edit is always stored** (confirmed: never refused because of a mate). Each group that converges is
+   committed (`_commit_group`). A group that does not converge (or whose B is `fixed`) is left where it was, and its
+   mates on copies are now **broken** (see "Broken mates" below). The PATCH response gains
+   `broken_mate_ids: list[str]` - the mates this edit left unsatisfied - so the client can flash them.
 4. Mates naming copies that no longer exist are still dropped first (`_drop_mates_with_dead_pattern_copies`), as today.
 5. Also check `_drop_mates_with_dead_pattern_copies` and the re-solve only look at the pattern's own Part: a mate in a
    *parent* assembly naming `sub/src#pattern:…` is carried by `sub` (moves rigidly with it), so it needs no re-solve —
    but a dead copy there is not cleaned up today either. Fix the cleanup to walk every Part (use
    `occurrence_paths.path_uses_pattern`).
+
+### Broken mates (new, confirmed)
+
+Nothing in the app marks a mate as unsatisfied today (`MateResponse` has no such field; the tree draws every mate the
+same). Add it as a **computed** state, not a stored flag, so it can never go stale:
+
+- Backend: `MateResponse.status: Literal["ok", "broken"]`, computed whenever mates are listed or returned. A mate is
+  `broken` when its residual at the **stored** poses is above tolerance (reuse `assembly_solver._mate_residual_vector`
+  with each side resolved through `_target_part_and_transform` + local geometry; tolerance in line with the solver's
+  `_NOISE_TOL`, mm/rad scaled like the residual rows). Limit mates: `broken` when the measured value is outside
+  `[limit_min, limit_max]`. Couplers (gear/rack/screw) measure relative motion and are always `ok`. Suppressed mates
+  are `ok`. A reference that no longer resolves is `broken` too. Cache `compute_part_bodies` per Part for the whole
+  listing - this runs on every tree refresh, so measure it on the frame fixture (`backend/tests/data/frame_ai_test/`)
+  and keep it cheap.
+- This also surfaces mates broken for other reasons (geometry edited in a part file, an over-constrained import), which
+  is the intent - say so in the report rather than special-casing pattern edits.
+- Client `MateDto.status`; `assembly_tree_panel.dart` mate rows: a broken mate draws in the theme's error colour with
+  a warning icon and the tooltip/subtitle "Broken - can't be satisfied". Rows named in a PATCH's `broken_mate_ids`
+  additionally **flash** (a short pulse of the row background, ~3 pulses over ~2 s) after the tree refresh, and the
+  Mates section expands if collapsed so the flash is visible. A `SnackBar` says "Pattern updated - N mate(s) could not
+  be kept".
+- A broken mate stays a normal mate: a later solve of its group tries to satisfy it; editing, suppressing or deleting
+  it is how the user resolves it. Note in the report: while it stays broken, a drag/solve of that group may fail with
+  the usual "No placement satisfies these mates together" until the user fixes it - existing behaviour for
+  conflicting mates.
+
+Tests: backend - a pattern spacing edit that B (fixed) can't follow → 200, pattern stored, B unmoved,
+`broken_mate_ids == [mate]`, `GET .../mates` reports `status: "broken"`; moving the pattern back → `ok` again; a
+satisfied mate is `ok`; limit mate outside its range → `broken`. Client - a broken mate row uses the error colour and
+icon; a PATCH returning `broken_mate_ids` triggers the flash (pump the animation) and the SnackBar.
 
 ### Client: a source whose copies are mated counts as mated (verified gap)
 
@@ -134,8 +165,8 @@ always frozen — say which in the report):
 - B mated to copy-of-A; solve with A grabbed and moved → B follows (copy face and B face still coincide).
 - Same with a Circular pattern, both `orient_with_rotation` values.
 - A fixed → B mate to A's copy still solves B onto it; A never moves.
-- PATCH pattern spacing → B moves with the copy, A doesn't; pattern stored.
-- PATCH that makes the mate unsatisfiable (B fixed) → 422, pattern unchanged, B unchanged.
+- PATCH pattern spacing → B moves with the copy, A doesn't; pattern stored; `broken_mate_ids` empty.
+- PATCH that makes the mate unsatisfiable (B fixed) → 200, pattern stored, B unchanged, mate reported broken.
 - `export_constraint_model` returns `None` for a model with a follower side; `mate-motion` still works.
 - The py-slvs fallback is not used for a follower group (no false "converged").
 - Coupler/limit mate on a copy → 422.
@@ -159,7 +190,7 @@ Atomic: build everything on copies of the lists, assign at the end.
 2. For each source S (in `source_occurrence_ids` order) and each index `i` in
    `expand_component_pattern_instances(P, S.transform)`:
    - new `Occurrence(id=uuid4, external_ref=S.external_ref, part_id=S.part_id, placed_part_id/ref_part_id as S,
-     transform=<the copy's pose>, hidden=S.hidden, fixed=S.fixed, suppressed=False, color=S.color,
+     transform=<the copy's pose>, hidden=S.hidden, fixed=False (confirmed: never inherited), suppressed=False, color=S.color,
      name_override=<see naming>)`;
    - insert the new occurrences **right after S** in `part.occurrences`, in index order (instance numbering in the tree
      then reads naturally, `S:1`, `S:2`, …).
@@ -201,9 +232,9 @@ pattern index + 1, so they stay recognisable.
 
 ### Interplay with F1
 
-After a dissolve, a part that was mated to a copy is mated to an ordinary, **free** occurrence (unless the source was
-fixed): the former copy no longer follows the source and can itself be moved by later solves. This is the point of
-dissolving, but the dialog text says so.
+After a dissolve, a part that was mated to a copy is mated to an ordinary, **floating** occurrence - always floating,
+even when the source was fixed (confirmed). The former copy no longer follows the source and can itself be moved by
+later solves. The dialog text says so.
 
 ### Tests
 
@@ -229,14 +260,14 @@ Client:
 
 ---
 
-## Product questions (defaults chosen above)
+## Product decisions (confirmed)
 
-1. A pattern edit that would break a mate on one of its copies: **reject the edit** (default, matches mate create), or
-   apply it and leave the mate unsatisfied?
-2. Dissolved instances: **inherit the source's Fix/Float** (default), or always come out fixed in place?
-3. Dissolved instance names: as above (none → `<file>:<n>`, override → `"<override> (n)"`)?
-4. The pattern row's long-press changes from "delete straight away" to an Edit / Dissolve / Delete menu — OK?
-5. Is the Assembly tree's Patterns row the right place (see the assumption at the top)?
+1. A pattern edit that breaks a mate on one of its copies is **applied**; the mate is left **broken**, its row is shown
+   in the error colour in the Assembly tree, and it flashes after the edit (see "Broken mates").
+2. Dissolved instances are **always floating** - Fix/Float is not inherited from the source.
+3. Dissolved instance names: no source override → `<file>:<n>`; source override → `"<override> (n)"`.
+4. The Patterns row in the **Assembly tree** is the place (not Part-lens body patterns), and its long-press becomes the
+   Edit / Dissolve / Delete menu.
 
 ## Files (expected)
 
