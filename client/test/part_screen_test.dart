@@ -5469,6 +5469,30 @@ void main() {
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, contains(mateFace('occ-1', 1)));
     });
 
+    testWidgets('S1: while Select Other is open the viewport is told a tap only dismisses it', (tester) async {
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).tapDismissesOverlay, isFalse);
+      await openSelectOther(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).tapDismissesOverlay, isTrue);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).tapDismissesOverlay, isFalse);
+    });
+
+    testWidgets('S1: a second Select Other gesture while open replaces the list and leaves the selection alone', (tester) async {
+      // With `tapDismissesOverlay` the viewport turns the gesture's first click into `onClearSelection` (no toggle to
+      // undo), then the hold requests the new list. Before the fix the click toggled, the screen swallowed that as a
+      // dismiss, and the hold's "undo" toggle then really selected the entity.
+      await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      await openSelectOther(tester);
+      final before = tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities;
+      tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+      await tester.pump();
+      await openSelectOther(tester);
+      expect(find.byKey(const ValueKey('select-other-panel')), findsOneWidget, reason: 'the new list is open');
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, before);
+    });
+
     testWidgets('S1: opening a tool closes Select Other', (tester) async {
       await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
       await openSelectOther(tester);

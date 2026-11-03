@@ -26094,6 +26094,7 @@ class _PartScreenState extends State<PartScreen> {
                   onSelectOtherRequested: _handleSelectOtherRequested,
                   highlightOverride: _selectOtherHighlight ?? _breadcrumbPreviewHighlight,
                   suppressHoverFallback: _selectOtherSheetOpen,
+                  tapDismissesOverlay: _selectOtherSheetOpen,
                   selectionFilter: _selectionFilter,
                   isPerspective: _isPerspective,
                   farClip: _farClip,

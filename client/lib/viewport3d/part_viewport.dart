@@ -899,6 +899,13 @@ class PartViewport extends StatefulWidget {
   /// up, so nothing is highlighted except an explicit [highlightOverride].
   final bool suppressHoverFallback;
 
+  /// True while a non-modal overlay that a viewport tap should only dismiss is open ([PartScreen]'s Select Other panel).
+  /// A tap then calls [onClearSelection] (the screen closes the overlay) instead of toggling the hovered entity, and is
+  /// not remembered as a "first click" toggle - so a click-then-hold over the viewport while the panel is open opens a new
+  /// Select Other list without its hold "undoing" a toggle that never happened (which used to add the entity to the
+  /// selection).
+  final bool tapDismissesOverlay;
+
   /// Prompt A2: which entity kinds [_recomputeHover] considers - [PartScreen]
   /// owns this (its View submenu toggles write it, plus any future
   /// push/pop override - see `OverrideStack`), same controlled-widget
@@ -1103,6 +1110,7 @@ class PartViewport extends StatefulWidget {
     this.onSelectOtherRequested,
     this.highlightOverride,
     this.suppressHoverFallback = false,
+    this.tapDismissesOverlay = false,
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.showResetViewButton = true,
@@ -5110,7 +5118,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // Bug report ("Select Other"): remembers what this tap toggled (if
         // anything) so a click-then-hold that grows out of it can undo the
         // toggle instead - see [_lastTapToggledEntity]'s own doc comment.
-        _lastTapToggledEntity = _commitSelection();
+        if (widget.tapDismissesOverlay) {
+          widget.onClearSelection?.call();
+          _lastTapToggledEntity = null;
+        } else {
+          _lastTapToggledEntity = _commitSelection();
+        }
         // Bug report ("Select Other"): records this tap's own release time
         // as a candidate "first click" for the *next* gesture's
         // click-then-hold check - see
