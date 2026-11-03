@@ -13,7 +13,10 @@
 #   tools/ai_eval/eval.sh prompts-assembly <dir> write the Assembly-mode system prompt and the image-analysis prompt
 #   tools/ai_eval/eval.sh manifest <run_dir>     read the part_manifest from reply.txt; write the part and assembly
 #                                               request turns into <run_dir>/requests/
-#   tools/ai_eval/eval.sh assemble <run_dir>     build every part and the assembly; score against the sketch's key
+#   tools/ai_eval/eval.sh corrections <run_dir> <file>   the user's corrections to the manifest's assumptions, as the
+#                                               chat turn the app sends (<run_dir>/requests/corrections.txt)
+#   tools/ai_eval/eval.sh assemble <run_dir>     build every part and the assembly (and, once mates_reply.txt exists,
+#                                               the mates); score against the sketch's key
 #
 # Needs the backend running (DIDSA-VR tools/start_backend.sh), Flutter on PATH, and CAD_PY = the backend's
 # conda python (DIDSA-VR tools/setup_test_env.sh sets both up; `source /opt/tools/env.sh`).
@@ -58,6 +61,11 @@ case "${1:-}" in
     run_harness "AI_EVAL_MANIFEST=$D/reply.txt" "AI_EVAL_OUT=$D" 'manifest' > "$D/harness.log" 2>&1 || true
     cat "$D/manifest.json"; echo
     ;;
+  corrections)
+    D="$(realpath "$2")"
+    run_harness "AI_EVAL_CORRECTIONS=$(realpath "$3")" "AI_EVAL_OUT=$D" 'corrections' > "$D/harness.log" 2>&1 || true
+    cat "$D/requests/corrections.txt"; echo
+    ;;
   assemble)
     D="$(realpath "$2")"
     sketch="$(basename "$(dirname "$D")")"
@@ -70,7 +78,8 @@ case "${1:-}" in
     [ -f "$D/assembly.step" ] && "$CAD_PY" -I "$HERE/harness/render_step.py" "$D/assembly.step" "$D/assembly.png" > /dev/null 2>&1
     python3 -I "$HERE/harness/expected_assembly.py" "$sketch" "$D" > "$D/score.json"
     cat "$D/score.json"; echo
-    ls "$D"/*retry_request.txt 2>/dev/null | sed 's/^/retry needed: /'
+    ls "$D"/*retry_request.txt "$D"/requests/mates_retry.txt 2>/dev/null | sed 's/^/retry needed: /'
+    [ -f "$D/requests/mates.txt" ] && [ ! -f "$D/mates_reply.txt" ] && echo "mates turn: send requests/mates.txt, reply to mates_reply.txt"
     ;;
   verdict)
     D="$(realpath "$2")"

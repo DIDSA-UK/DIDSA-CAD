@@ -693,6 +693,19 @@ that is none of these three.
   when you expect (or don't care which of) the matches to be geometrically
   equivalent for the mate you're making; otherwise fall back to a raw
   subshape_ref index instead.
+  FACE BY GEOMETRY (the usual way to name a mating face): a reference may be
+  {"occurrence_id": "existing:<id>", "face_selector": {...}} INSTEAD of a
+  subshape_ref. {"direction": "+z"} is a planar face whose outward normal
+  is +z; {"cylinder_radius": 5} is a cylindrical face of that radius (a
+  bore, a shaft or pin). Both are in that component's OWN part coordinates -
+  the frame its part plan was written in, before any move_component - not
+  world space. Of several matches a planar selector takes the outermost
+  along its direction; add "near": [x, y, z] (same part coordinates) to
+  pick the one nearest that point instead - needed to tell apart, say, a
+  pin's shoulder from its tip (both face -z), or one of several equal
+  holes. Add "body_id" only when the component has more than one Body.
+  Only on an "existing:<id>" occurrence, resolved against its real
+  geometry when the plan is checked.
   WIDTH (centre one part between two parallel faces): a reference may be
   {"occurrence_id": ..., "midplane": {"a": {"face_ref": {"body_id","shape_type":"face","index"}},
   "b": {"face_ref": {...}}, "b_occurrence_id"?: ...}} INSTEAD of a subshape_ref - the plane
@@ -865,10 +878,21 @@ const String assemblyModeVocabularyText = '''
 
 This conversation has "Assembly" mode active - the user wants several
 distinct parts, each saved as its own file, then inserted and mated
-together into one assembly. Ask clarifying questions first if the number
-of parts or the boundary between them is unclear (the same "ask before
-guessing" discipline you always use for a missing dimension) - do not
-guess a part count.
+together into one assembly. Ask a clarifying question first only if you
+cannot tell how many distinct parts there are or where one ends and the
+next begins - do not guess a part count.
+
+Anything else the drawing leaves open or hard to read - a number you
+cannot read for certain, a quantity ("holes equally spaced": how many),
+a position or size that is not dimensioned, how two parts fit
+- do not ask about it and do not guess silently: make your best reading
+and list it under "assumptions" in the manifest, one short, specific
+sentence each, giving the value you used (e.g. "Flange thickness read as
+12 (the figure is unclear)", "Six bolts, equally spaced on the PCD"). This
+assumptions list replaces the clarifying questions you would otherwise
+ask: the user confirms or corrects every item before anything is built. A
+correction comes back as a chat message; reply with the whole revised
+manifest. Leave out readings the drawing states plainly.
 
 Once you are confident which distinct parts are involved, reply with a
 single fenced JSON object identifying them - nothing else in that message,
@@ -878,14 +902,15 @@ no sketch/feature steps yet - in exactly this shape:
 {"kind": "part_manifest", "parts": [
   {"name": "Mounting Plate", "type_prefix": "PLATE", "summary": "60x40x10mm plate with two M6 mounting holes"},
   {"name": "Support Tube", "type_prefix": "TUBE", "summary": "40mm OD x 30mm ID x 120mm tube"}
-]}
+],
+ "assumptions": ["Tube length read as 120 (the figure is unclear)", "The tube is centred on the plate"]}
 ```
 
 "name" is a short human-readable name. "type_prefix" is a short, all-caps,
 underscore-only identifier you choose for this part's *type* (used to build
 its saved file name, e.g. "PLATE" -> a file named PLATE_001) - you choose
 this freely per part, it is never a fixed list. "summary" is one sentence
-describing the part's own shape/size/features. Nothing is created yet - the
+describing the part's own shape/size/features, with every key dimension. Nothing is created yet - the
 user reviews and confirms this breakdown before you are ever asked for a
 real plan.
 
@@ -897,14 +922,23 @@ part's own local_ids, Bodies, or Sketches - each part is built as its own
 completely independent, freshly-created Part.
 
 Once asked for the assembly plan (after every part above has already been
-created and saved to a real file), reply with an ordinary plan whose steps
-place and mate the parts already saved: an add_component step per part
-(see "Assembly editing" above for its exact shape) using the exact
-relative_path you are given for each one, followed by mate steps
-expressing the fit/attachment already described earlier in this
-conversation. Do not repeat any part's own sketch/feature steps here - by
-this point every part already exists as its own real file; this plan only
-places and mates them.''';
+created and saved to a real file), reply with an ordinary plan that places
+the parts already saved: an add_component step per component (see
+"Assembly editing" above for its exact shape) using the exact
+relative_path you are given for each one, then a move_component step for
+every component but the first, putting it where the drawing has it. No
+mate steps yet - a component added in this plan has no real faces until
+it has run. Do not repeat any part's own sketch/feature steps here - by
+this point every part already exists as its own real file.
+
+Once every component is placed, you are asked for the mates, with each
+component listed by its real "existing:<id>". Reply with a plan of mate
+steps only, naming faces with face_selector, that expresses how the parts
+fit (a pin concentric with its hole, its shoulder coincident with the
+face it sits on; a shaft concentric with its bores; a part seated flat on
+another). The mates must agree with where the components already are -
+they hold them there, they must not move them. Mate each part to the one
+it actually touches, and do not add a mate the drawing does not imply.''';
 
 /// Multi-part/assembly overhaul gap-closure (`13-...md`'s own D-4): the
 /// per-part/per-assembly synthetic request turns `_runPartCycle`/
@@ -925,8 +959,24 @@ String assemblyModePartRetryRequestText({required String name}) =>
     'Please propose a revised plan for "$name" that addresses the failure above.';
 
 String assemblyModeAssemblyRequestText(String partsListing) =>
-    'Every part has been saved. Please provide the assembly plan now, placing and mating '
-    'these parts:\n$partsListing';
+    'Every part has been saved. Please provide the assembly plan now, placing '
+    'these parts (the mates come next):\n$partsListing';
+
+/// The assembly cycle's mate turn (`AiModellingScreen._runMateTurn`): every component is now placed, so it has real
+/// faces a mate can name. [placedComponents] is `summarizeExistingOccurrencesForPrompt`'s listing.
+String assemblyModeMatesRequestText(String placedComponents) =>
+    'Every component is placed. Please provide the mates now: a plan of mate steps only, using these '
+    'components and naming faces with face_selector, as described in the Assembly mode instructions.\n\n'
+    'Placed Components:\n$placedComponents';
+
+/// The user's answer to a manifest's stated assumptions (`AiModellingScreen._sendManifestCorrections`), sent as an
+/// ordinary chat turn; the assistant replies with the revised manifest.
+String assemblyModeCorrectionsText(String corrections) =>
+    'Corrections to your assumptions:\n$corrections\n\nPlease reply with the revised part_manifest.';
+
+/// Same as [assemblyModeMatesRequestText], after a mates plan failed validation.
+String assemblyModeMatesRetryRequestText() =>
+    'Please propose a revised mates plan that addresses the failure above.';
 
 /// Gap-closure (`13-...md`'s own E-1): the variant of
 /// [assemblyModeAssemblyRequestText] used when the user picked "insert into
@@ -943,8 +993,8 @@ String assemblyModeAssemblyIntoExistingRequestText({
       ? 'It currently has no components placed in it.'
       : 'It already has these components placed in it - do not add another add_component step for '
           'any of them, only mate against them if relevant:\n$existingComponentsListing';
-  return 'Every part has been saved. Please provide the assembly plan now, placing and mating these '
-      'new parts into the existing assembly "$existingAssemblyPath":\n$partsListing\n\n$existingSection';
+  return 'Every part has been saved. Please provide the assembly plan now, placing these '
+      'new parts into the existing assembly "$existingAssemblyPath" (the mates come next):\n$partsListing\n\n$existingSection';
 }
 
 /// Same as [assemblyModeAssemblyRequestText], for a retry after a stopped

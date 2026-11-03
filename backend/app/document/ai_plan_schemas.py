@@ -24,7 +24,7 @@ needs a matching manual update in both, or they silently drift.
 from enum import Enum
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.document.models import (
     BooleanOperation,
@@ -542,6 +542,24 @@ class MidplaneRefStep(BaseModel):
     b_occurrence_id: str | None = None
 
 
+class MateFaceSelector(BaseModel):
+    """A mate reference's face named by geometry, in that component's own (Part-local) frame - the frame its part
+    plan was written in: a planar face whose outward normal is `direction`, or a cylindrical face (a bore, a shaft)
+    of `cylinder_radius`. `near` (a point in the same frame) picks among several; without it a planar selector takes
+    the outermost face along `direction`. `body_id` may be left out when the component has only one Body."""
+
+    body_id: str | None = None
+    direction: CardinalDirection | None = None
+    cylinder_radius: float | None = Field(default=None, gt=0)
+    near: list[float] | None = Field(default=None, min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def _one_kind(self) -> "MateFaceSelector":
+        if (self.direction is None) == (self.cylinder_radius is None):
+            raise ValueError("face_selector needs exactly one of direction or cylinder_radius")
+        return self
+
+
 class MateEntityRefStep(BaseModel):
     """Mirrors `MateEntityRefResponse` (`app.document.schemas`) - one side of
     a `MateStep`. `occurrence_id` is either `""` (this Part's own root
@@ -584,6 +602,7 @@ class MateEntityRefStep(BaseModel):
     point_ref: PointRefSchema | None = None
     midplane: MidplaneRefStep | None = None
     edge_selector: EdgeSelector | None = None
+    face_selector: MateFaceSelector | None = None
 
 
 class MateStep(BaseModel):

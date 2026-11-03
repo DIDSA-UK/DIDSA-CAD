@@ -139,10 +139,11 @@ P["C6"] = ("BUSHING", cut(cyl((-17, 0, 0), X, 8, 34), cyl((-18, 0, 0), X, 5, 36)
 P["C7"] = ("AXLE BOLT", fuse(hex_x(16, 0, 7), cyl((-55, 0, 0), X, 5, 55)))
 P["C8"] = ("HEX NUT", hex_x(16, 0, 8, r_hole=5))
 
-# D: the owner's hand sketch "block with four pins" (asm_block_pins.jpg), as read for its answer key
+# D: the owner's hand sketch "block with four pins" (asm_block_pins.jpg), as the owner read it (2026-11-03): pin shank
+# 40 long (head 10, 50 overall), so it stands 10 proud of the block's 30 thickness
 P["D1"] = ("BLOCK", cut(box(-80, -40, 0, 160, 80, 30),
                         *[cyl((sx * 60, sy * 20, -1), Z, 5, 32) for sx in (-1, 1) for sy in (-1, 1)]))
-P["D2"] = ("PIN", fuse(cyl((0, 0, 0), Z, 5, 30), cyl((0, 0, 30), Z, 15, 10)))
+P["D2"] = ("PIN", fuse(cyl((0, 0, 0), Z, 5, 40), cyl((0, 0, 40), Z, 15, 10)))
 
 # E: the owner's hand sketch "dovetail" (asm_dovetail.jpg), as the owner read it (2026-11-03): the base tapers on
 # all four sides, 170 x 90 at the bottom to 150 x 70 at the top, 50 high, with a full-length dovetail slot 20 wide
@@ -262,7 +263,7 @@ P = {k: (n, unify(s)) for k, (n, s) in P.items()}
 ASM = {
     "A": [("A1", (0, 0, 0)), ("A2", (0, 0, -20))],
     "B": [("B1", (0, 0, 0)), ("B2", (20, 0, 10)), ("B2", (-30, 0, 10)), ("B3", (0, 0, 70)), ("B4", (0, 0, 70))],
-    "D": [("D1", (0, 0, 0))] + [("D2", (sx * 60, sy * 20, 0)) for sx in (-1, 1) for sy in (-1, 1)],
+    "D": [("D1", (0, 0, 0))] + [("D2", (sx * 60, sy * 20, -10)) for sx in (-1, 1) for sy in (-1, 1)],
     "E": [("E1", (0, 0, 0)), ("E2", (0, 0, 25))],
     "C_SUB": [("C5", (0, 0, 0)), ("C6", (0, 0, 0))],
     "C": [("C1", (0, 0, 0)), ("C2", (0, 0, -3)), ("C3", (0, 0, -10)), ("C4", (0, 0, -3)),

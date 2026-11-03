@@ -29,9 +29,9 @@ SKETCHES = {
         "d32 x 6 head) through it, head on the top face",
     },
     "asm_block_pins": {
-        "asm": "D", "images": ["asm_block_pins.jpg"], "confirmed": False,
-        "reading": "160x80x30 block, 4x d10 thru on 120x40 centres 20 in from each edge; 4 pins d30 x 10 head, "
-        "d10 x 30 shank (40 overall), shank down in each hole, head on the top face",
+        "asm": "D", "images": ["asm_block_pins.jpg"], "confirmed": True,
+        "reading": "owner's reading: 160x80x30 block, 4x d10 thru on 120x40 centres 20 in from each edge; 4 pins "
+        "d30 x 10 head, d10 x 40 shank (50 overall), shank down in each hole standing 10 proud, head on the top face",
     },
     "asm_dovetail": {
         "asm": "E", "images": ["asm_dovetail.jpg"], "confirmed": True, "alternates": {"E2": ["E2S"]},
@@ -144,6 +144,12 @@ def score(sketch, run):
 
     a = res.get("assembly", {})
     out["assembly_outcome"] = a.get("outcome")
+    m = res.get("mates") or {}
+    out["mates"] = m.get("count", 0) if m.get("outcome") == "success" else m.get("outcome") or "none"
+    if m.get("outcome") not in (None, "success", "awaiting reply"):
+        out["mates_error"] = m.get("error") or m.get("preflight")
+    if man.get("assumptions"):
+        out["assumptions"] = len(man["assumptions"])
     gpath = os.path.join(run, "assembly_geometry.json")
     if os.path.exists(gpath):
         g = json.load(open(gpath))

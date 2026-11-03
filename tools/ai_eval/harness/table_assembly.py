@@ -10,8 +10,8 @@ for f in sorted(glob.glob(os.path.join(sys.argv[1], "asm_*", "*", "score.json"))
     run = os.path.dirname(f)
     s = json.load(open(f))
     rows.append((os.path.basename(os.path.dirname(run)), os.path.basename(run), s))
-print("| Sketch | Run | Parts | Assembly | Retries | Pass | Notes |")
-print("|---|---|---|---|---|---|---|")
+print("| Sketch | Run | Parts | Assembly | Mates | Retries | Pass | Notes |")
+print("|---|---|---|---|---|---|---|---|")
 for sketch, run, s in rows:
     notes = []
     if s.get("stopped"):
@@ -27,4 +27,4 @@ for sketch, run, s in rows:
     if not s.get("confirmed"):
         notes.append("key unconfirmed")
     print(f"| {sketch} | {run} | {s.get('parts_ok')} | {'ok' if s.get('assembly_ok') else s.get('assembly_outcome') or '-'} "
-          f"| {s.get('retries', 0)} | {'P' if s.get('pass') else '-'} | {'; '.join(notes)} |")
+          f"| {s.get('mates', '-')} | {s.get('retries', 0)} | {'P' if s.get('pass') else '-'} | {'; '.join(notes)} |")

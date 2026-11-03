@@ -58,7 +58,7 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 
-from app.document.ai_plan_edges import resolve_edge_selector, resolve_face_selector
+from app.document.ai_plan_edges import resolve_edge_selector, resolve_face_selector, resolve_mate_face_selector
 from app.document.ai_plan_schemas import (
     AddComponentStep,
     BooleanStep,
@@ -75,6 +75,7 @@ from app.document.ai_plan_schemas import (
     LoftSectionStep,
     LoftStep,
     MateEntityRefStep,
+    MateFaceSelector,
     MidplaneRefStep,
     MateStep,
     MergeStep,
@@ -1053,6 +1054,42 @@ _MATE_EDGE_SELECTOR_UNSUPPORTED_KINDS = frozenset(
 )
 
 
+def _resolve_mate_face_selector(target_part: Part, selector: MateFaceSelector, field: str) -> SubShapeRefSchema:
+    """A mate reference's `face_selector` (see `MateFaceSelector`) resolved to a real FACE ref on `target_part` - the
+    same "resolve in the dry run, the translator substitutes the result" path `edge_selector` takes."""
+    bodies = compute_part_bodies(target_part, frozenset())
+    body_id = selector.body_id
+    if body_id is None:
+        if len(bodies) != 1:
+            raise _StepError(
+                {
+                    "type": "invalid_step_payload",
+                    "message": f"{field}.face_selector needs body_id: that component has {len(bodies)} Bodies "
+                    f"({', '.join(bodies)})",
+                }
+            )
+        (body_id,) = bodies
+    if body_id not in bodies:
+        # "Placed Components" lists every body-producing Feature, including one joined onto an earlier Body, so a
+        # body_id from that list may name no separate Body: with only one Body there is no doubt which is meant.
+        if len(bodies) != 1:
+            raise _StepError(
+                {"type": "invalid_step_payload", "message": f"{field}.face_selector.body_id not found: {body_id}"}
+            )
+        (body_id,) = bodies
+    try:
+        ref = resolve_mate_face_selector(
+            bodies[body_id],
+            body_id,
+            direction=selector.direction,
+            cylinder_radius=selector.cylinder_radius,
+            near=tuple(selector.near) if selector.near else None,
+        )
+    except HTTPException as error:
+        raise _StepError(error.detail if isinstance(error.detail, dict) else {"type": "invalid_step_payload", "message": str(error.detail)}) from None
+    return SubShapeRefSchema(body_id=body_id, shape_type=SubShapeType.FACE, index=ref.index)
+
+
 def _resolve_mate_edge_selector(
     target_part: Part, subshape_ref: SubShapeRefSchema, selector: EdgeSelector, field: str
 ) -> SubShapeRefSchema:
@@ -1124,12 +1161,14 @@ def _mate_entity_ref_from_step(
     references actually used a selector."""
     from app.document.router import _plane_ref_to_domain, _point_ref_to_domain, _subshape_ref_to_domain
 
-    set_count = sum(x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref, ref.midplane))
+    set_count = sum(
+        x is not None for x in (ref.subshape_ref, ref.plane_ref, ref.point_ref, ref.midplane, ref.face_selector)
+    )
     if set_count != 1:
         raise _StepError(
             {
                 "type": "invalid_step_payload",
-                "message": f"{field} requires exactly one of subshape_ref, plane_ref, point_ref, or midplane",
+                "message": f"{field} requires exactly one of subshape_ref, plane_ref, point_ref, midplane or face_selector",
             }
         )
     occurrence_id = ""
@@ -1153,6 +1192,10 @@ def _mate_entity_ref_from_step(
         # comment for exactly when that's possible.
         target_part = v.part if occurrence is None else v._resolve_occurrence_target_part(occurrence, field)
         subshape_ref = _resolve_mate_edge_selector(target_part, subshape_ref, ref.edge_selector, field)
+        resolved_subshape_ref = subshape_ref
+    if ref.face_selector is not None:
+        target_part = v.part if occurrence is None else v._resolve_occurrence_target_part(occurrence, field)
+        subshape_ref = _resolve_mate_face_selector(target_part, ref.face_selector, field)
         resolved_subshape_ref = subshape_ref
 
     entity_ref = MateEntityRef(
