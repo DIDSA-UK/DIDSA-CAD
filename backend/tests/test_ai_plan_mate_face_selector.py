@@ -177,3 +177,22 @@ def test_the_mate_solver_reads_a_revolved_faces_normal_the_same_way():
     topexp.MapShapes(pin, TopAbs_FACE, faces)
     normal = _outward_normal(topods.Face(faces.FindKey(shoulder.index + 1)))
     assert round(normal.Z(), 6) == -1.0
+
+
+def test_a_normal_names_a_sloped_face():
+    """A dovetail flank faces neither axis: `normal` names it by its own outward direction."""
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakePrism
+    from OCC.Core.gp import gp_Vec
+
+    # a dovetail tenon's section in YZ (20 wide at the top z=25, 50 at the bottom z=0), extruded 100 along x
+    section = BRepBuilderAPI_MakePolygon()
+    for y, z in ((-25, 0), (25, 0), (10, 25), (-10, 25)):
+        section.Add(gp_Pnt(0, y, z))
+    section.Close()
+    tenon = BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(section.Wire()).Face(), gp_Vec(100, 0, 0)).Shape()
+    # the +y flank runs from (25, 0) to (10, 25): its outward normal is (0, 25, 15) normalised
+    flank = resolve_mate_face_selector(tenon, "b", normal=(0.0, 25.0, 15.0))
+    assert _face_centre(tenon, flank.index)[1] == pytest.approx(17.5)
+    with pytest.raises(HTTPException):
+        resolve_mate_face_selector(tenon, "b", normal=(0.0, 1.0, 0.0))

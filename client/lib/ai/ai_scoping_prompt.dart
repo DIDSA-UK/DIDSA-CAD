@@ -696,14 +696,17 @@ that is none of these three.
   FACE BY GEOMETRY (the usual way to name a mating face): a reference may be
   {"occurrence_id": "existing:<id>", "face_selector": {...}} INSTEAD of a
   subshape_ref. {"direction": "+z"} is a planar face whose outward normal
-  is +z; {"cylinder_radius": 5} is a cylindrical face of that radius (a
-  bore, a shaft or pin). Both are in that component's OWN part coordinates -
+  is +z; {"normal": [0, 0.86, 0.51]} is a planar face whose outward normal
+  is that vector (for a sloped face, e.g. a tapered or chamfered side - work it out
+  from your own part plan); {"cylinder_radius": 5} is a cylindrical face of
+  that radius (a bore, a shaft or pin). All are in that component's OWN part coordinates -
   the frame its part plan was written in, before any move_component - not
   world space. Of several matches a planar selector takes the outermost
   along its direction; add "near": [x, y, z] (same part coordinates) to
   pick the one nearest that point instead - needed to tell apart, say, a
   pin's shoulder from its tip (both face -z), or one of several equal
-  holes. Add "body_id" only when the component has more than one Body.
+  holes. Leave out "body_id": it is only needed for a component with more
+  than one Body, and the check then tells you which ids it has.
   Only on an "existing:<id>" occurrence, resolved against its real
   geometry when the plan is checked.
   WIDTH (centre one part between two parallel faces): a reference may be

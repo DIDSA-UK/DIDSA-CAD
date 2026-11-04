@@ -1084,6 +1084,7 @@ def _resolve_mate_face_selector(target_part: Part, selector: MateFaceSelector, f
             direction=selector.direction,
             cylinder_radius=selector.cylinder_radius,
             near=tuple(selector.near) if selector.near else None,
+            normal=tuple(selector.normal) if selector.normal else None,
         )
     except HTTPException as error:
         raise _StepError(error.detail if isinstance(error.detail, dict) else {"type": "invalid_step_payload", "message": str(error.detail)}) from None

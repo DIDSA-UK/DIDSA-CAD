@@ -153,6 +153,40 @@ no retry); a fail is the wrong geometry. Each build also renders to `assembly.pn
 - Cost: about 80-110k tokens per run (Haiku the most), most of it reading the system prompt once; part and
   assembly turns add little.
 
+### Assembly mode with mates and stated assumptions, 2026-11-04
+
+After the mates turn, `face_selector` and stated assumptions (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`,
+"Mates turn and stated assumptions"). The owner's three hand sketches, one run per model. The harness played the
+owner: it corrected only the assumptions a model stated that contradict the owner's reading, and confirmed the rest.
+
+| Sketch | Haiku | Sonnet | Opus |
+|---|---|---|---|
+| `asm_block_pins` | P, 8 mates | P, 8 mates | P, 8 mates |
+| `asm_dovetail` | plate wrong (stem 25 too tall), 1 mate | P, 1 mate | P, 1 mate (no correction needed) |
+| `asm_frame` (36 components) | rails wrong, 14 mates | P, 72 mates | P, 96 mates |
+
+7 of 9, against 1 of 9 on the same sketches before (the 2026-11-03 table, re-scored with the corrected pin key).
+
+- **Stated assumptions caught the misreadings.** Every model that had misread a sketch before now listed that reading
+  as an assumption: the pin shank "read as 30" (Sonnet, Opus), the dovetail base read as a plain block or the
+  wrong height (Haiku, Sonnet), the gusset count (all three), Haiku's 1200 posts. One correction each and the
+  revised manifest built right. Opus read the dovetail exactly as the owner did, with no correction.
+- **Mates.** Every run now mates its parts, and in every passing run the mates hold the parts where they were
+  placed (a wrong mate moves a part and fails the score). Pins get a concentric and a shoulder mate each; the
+  frames seat posts and gussets.
+- **Found and fixed while running** (each rebuilt from the same replies, no model tokens):
+  - Flat faces made by a Revolve read as facing +z (their plane axis has no fixed sign), so a selector could not
+    find a revolved pin's shoulder and the solver could not seat it. The sign now comes from the face's surface
+    derivatives (`face_normal.py`), in the selectors, the mate solver, Move Face and sketch-on-face planes.
+  - A mate whose second side is the grounded first component failed (`occurrence_is_fixed`): the translator now
+    solves the other side.
+  - The mates listing gave every body-producing Feature as a body id, and the models guessed which was "the" Body;
+    it now lists components only, and a one-Body component's Body is found by the selector.
+  - A selector could only name the six axis directions, so sloped faces (dovetail flanks, mitres) could not be
+    mated: `face_selector.normal` names any planar face. These batch-1 runs predate it, which is why the dovetails
+    have only a seat mate.
+- Haiku still misreads the rough sketches after correction (dovetail stem, frame rails); Sonnet and Opus do not.
+
 ### Render-back check, 2026-10-29
 
 Each build was checked by the same model that built it (`docs/ai-modelling/14-render-back-check.md`), and every mismatch was sent back as the fix turn.

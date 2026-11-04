@@ -1842,7 +1842,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
   /// The assembly cycle's second turn. The place plan put every component where the drawing has it but could not
   /// mate them: a component added in a plan has no real faces until that plan has run. Now they are placed, list
-  /// them with their real ids (the same "Placed Components" summary "Continue with AI" uses) and ask for the mates,
+  /// them with their real ids (`summarizePlacedComponentsForMates`) and ask for the mates,
   /// whose `face_selector`s the dry run resolves against each component's real geometry. The app retries a plan that
   /// fails validation once, as it does every other turn. Never stops the run: on any failure the placed, unmated
   /// assembly is still saved, and [_mateNote] says why it has no mates.
@@ -1855,7 +1855,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     setState(() => _orchestrationStatus = 'Requesting the mates...');
     final String placed;
     try {
-      placed = await summarizeExistingOccurrencesForPrompt(_documentApi, await _documentApi.listOccurrences(assemblyPartId));
+      placed = summarizePlacedComponentsForMates(await _documentApi.listOccurrences(assemblyPartId));
     } on ApiException catch (e) {
       setState(() => _mateNote = 'Saved without mates: could not list the placed components (${e.message}).');
       return;

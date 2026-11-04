@@ -218,3 +218,14 @@ Future<String> summarizeExistingOccurrencesForPrompt(
 /// profile that produced them, rather than only knowing "a sketch was
 /// extruded" with no link to which one or what shape it was.
 String _fromSketch(FeatureDto f) => f.sketchFeatureId != null ? ', from existing:${f.sketchFeatureId}' : '';
+
+/// The mates turn's "Placed Components" listing (`AiModellingScreen._runMateTurn`): each placed component's real
+/// `existing:<id>` and name, nothing else. Body ids are left out on purpose: a mate names its faces with
+/// `face_selector`, which finds a one-Body component's Body by itself, and listing every body-producing Feature (as
+/// [summarizeExistingOccurrencesForPrompt] does, a Feature joined onto an earlier Body included) left the models
+/// guessing which id was "the" Body. A component with several Bodies gets a dry-run error naming them.
+String summarizePlacedComponentsForMates(List<OccurrenceDto> occurrences) => [
+      for (var i = 0; i < occurrences.length; i++)
+        '${i + 1}. existing:${occurrences[i].id} - '
+            '${occurrences[i].nameOverride ?? occurrences[i].externalRef ?? occurrences[i].id}',
+    ].join('\n');

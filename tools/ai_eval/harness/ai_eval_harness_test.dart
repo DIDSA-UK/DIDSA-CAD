@@ -333,7 +333,7 @@ Future<Map<String, dynamic>> _mateTurn(String runDir, DocumentApiClient docApi, 
     Directory('$runDir/requests').createSync(recursive: true);
     idsFile.writeAsStringSync(jsonEncode(ids));
     File('$runDir/requests/mates.txt')
-        .writeAsStringSync(assemblyModeMatesRequestText(await summarizeExistingOccurrencesForPrompt(docApi, occurrences)));
+        .writeAsStringSync(assemblyModeMatesRequestText(summarizePlacedComponentsForMates(occurrences)));
     return {'outcome': 'awaiting reply'};
   }
   final listed = (jsonDecode(idsFile.readAsStringSync()) as List).cast<String>();

@@ -263,6 +263,7 @@ def resolve_mate_face_selector(
     direction: CardinalDirection | None = None,
     cylinder_radius: float | None = None,
     near: tuple[float, float, float] | None = None,
+    normal: tuple[float, float, float] | None = None,
 ) -> SubShapeRef:
     """The one FACE a mate reference's `face_selector` names on `body`, in that Body's own (Part-local) frame:
     a planar face whose outward normal is `direction`, or a cylindrical face of `cylinder_radius`. Of several
@@ -275,20 +276,30 @@ def resolve_mate_face_selector(
     from OCC.Core.GProp import GProp_GProps
     from OCC.Core.gp import gp_Pnt
 
+    target = None
+    if direction is not None:
+        target = _DIRECTION_VECTORS[direction.value]
+    elif normal is not None:
+        length = sum(c * c for c in normal) ** 0.5
+        target = tuple(c / length for c in normal)
     face_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(body, TopAbs_FACE, face_map)
     candidates = []
     for i in range(1, face_map.Size() + 1):
         face = topods.Face(face_map.FindKey(i))
-        if direction is not None:
-            normal = _face_outward_normal(face)
-            if normal is not None and _dot(normal, _DIRECTION_VECTORS[direction.value]) > _ALIGNMENT_COS_TOLERANCE:
+        if target is not None:
+            face_normal = _face_outward_normal(face)
+            if face_normal is not None and _dot(face_normal, target) > _ALIGNMENT_COS_TOLERANCE:
                 candidates.append((i, face))
         else:
             surface = BRepAdaptor_Surface(face, True)
             if surface.GetType() == GeomAbs_Cylinder and abs(surface.Cylinder().Radius() - cylinder_radius) < 1e-3:
                 candidates.append((i, face))
-    wanted = f"direction {direction.value}" if direction is not None else f"cylinder radius {cylinder_radius}"
+    wanted = (
+        f"direction {direction.value}" if direction is not None
+        else f"normal {list(normal)}" if normal is not None
+        else f"cylinder radius {cylinder_radius}"
+    )
     if not candidates:
         raise HTTPException(
             status_code=422,
@@ -304,8 +315,8 @@ def resolve_mate_face_selector(
     if near is not None:
         vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*near)).Vertex()
         index, _ = min(candidates, key=lambda c: BRepExtrema_DistShapeShape(vertex, c[1]).Value())
-    elif direction is not None:
-        index, _ = max(candidates, key=lambda c: _dot(centre(c[1]), _DIRECTION_VECTORS[direction.value]))
+    elif target is not None:
+        index, _ = max(candidates, key=lambda c: _dot(centre(c[1]), target))
     else:
         axes = set()
         for _, face in candidates:
