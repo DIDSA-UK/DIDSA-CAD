@@ -244,6 +244,7 @@ void main() {
   importedMatesTests();
   completenessTests();
   matesRepairTests();
+  importedSubAssemblyTests();
 
   testWidgets('a part_manifest reply shows the confirm panel with one editable row per part', (tester) async {
     final provider = _FakeAiProvider((_, __) async => const AiTurnResult(assistantText: _manifestText));
@@ -1622,5 +1623,136 @@ void matesRepairTests() {
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
     expect(find.textContaining('1 mate added.'), findsOneWidget);
+  });
+}
+
+/// A zip with a sub-assembly (`sub_assemblies` in the manifest, `90_TUBE_ASM.json`): the parts, then the sub-assembly
+/// built and saved on its own, then the top level placing it, with a mate into it by path.
+void importedSubAssemblyTests() {
+  testWidgets('an imported zip with a sub-assembly builds and saves it before the top level, which mates into it by path',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    Map<String, Object> plan(String id) => {
+          'version': 1,
+          'steps': [
+            {'local_id': id, 'kind': 'sketch', 'plane': 'XY'},
+          ],
+        };
+    final files = <String, Object>{
+      '00_manifest.json': {
+        'kind': 'part_manifest',
+        'parts': [
+          {'name': 'Mounting Plate', 'type_prefix': 'PLATE', 'summary': 'a plate'},
+          {'name': 'Support Tube', 'type_prefix': 'TUBE', 'summary': 'a tube'},
+        ],
+        'sub_assemblies': [
+          {'name': 'Tube unit', 'type_prefix': 'TUBE_ASM', 'summary': 'the tube on its own'},
+        ],
+      },
+      '01_PLATE.json': plan('s1'),
+      '02_TUBE.json': plan('s2'),
+      '90_TUBE_ASM.json': {
+        'version': 1,
+        'steps': [
+          {'local_id': 'tube', 'kind': 'add_component', 'relative_path': 'TUBE_001.didsa'},
+        ],
+      },
+      '99_assembly.json': {
+        'version': 1,
+        'steps': [
+          {'local_id': 'plate', 'kind': 'add_component', 'relative_path': 'PLATE_001.didsa'},
+          {'local_id': 'unit', 'kind': 'add_component', 'relative_path': 'TUBE_ASM_001.didsa'},
+          {
+            'local_id': 'm1',
+            'kind': 'mate',
+            'type': 'coincident',
+            'references': [
+              {'occurrence_id': 'plate', 'face_selector': {'direction': '+z'}},
+              {'occurrence_id': 'unit/tube', 'face_selector': {'direction': '-z'}},
+            ],
+          },
+        ],
+      },
+    };
+    final archive = Archive();
+    for (final entry in files.entries) {
+      final bytes = utf8.encode(jsonEncode(entry.value));
+      archive.addFile(ArchiveFile(entry.key, bytes.length, bytes));
+    }
+    final zip = Uint8List.fromList(ZipEncoder().encode(archive));
+
+    final base = _fullOrchestrationHandler();
+    final validateBodies = <String, List<Map<String, dynamic>>>{};
+    final imports = <String>[];
+    final requests = <String>[];
+    Future<http.Response> handler(http.Request request) async {
+      final path = request.url.path;
+      requests.add('${request.method} $path');
+      if (path.endsWith('/ai-plan/validate')) {
+        validateBodies.putIfAbsent(path, () => []).add(jsonDecode(request.body) as Map<String, dynamic>);
+      }
+      if (path == '/document/import/native') imports.add(request.body);
+      if (path.endsWith('/mates') && request.method == 'POST') {
+        return http.Response(
+          jsonEncode({'id': 'mate-1', 'type': 'coincident', 'references': [], 'value': null, 'flipped': false}),
+          201,
+        );
+      }
+      if (path.contains('/occurrences/') && path.endsWith('/solve')) {
+        return http.Response(
+          jsonEncode({
+            'id': 'occ',
+            'transform': {'translation': [0, 0, 0], 'rotation_axis': [0, 0, 1], 'rotation_angle_degrees': 0},
+          }),
+          200,
+        );
+      }
+      return base(request);
+    }
+
+    final storage = _FakeStorageService();
+    await tester.pumpWidget(MaterialApp(
+      home: AiModellingScreen(
+        provider: _FakeAiProvider((_, __) async => fail('an imported zip must not ask the in-app provider anything')),
+        documentApi: DocumentApiClient(httpClient: MockClient(handler)),
+        sketchApi: SketchApiClient(httpClient: MockClient(handler)),
+        storageService: storage,
+        projectRoot: const DesktopProjectRoot('/tmp/project'),
+        pickImportZip: () async => zip,
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assembly'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byTooltip('Import plan from file (.json or .zip)'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('aiModellingManifestSubAssemblies')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 2; i++) {
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+    }
+
+    // The parts are part-1 and part-2; the sub-assembly is part-3, saved under its own prefix before the top level.
+    expect(find.text('Save sub-assembly "Tube unit" as…'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(storage.writtenFiles.keys, contains('TUBE_ASM_001.didsa'));
+    expect(find.byKey(const Key('aiModellingSubAssemblyRow0')), findsOneWidget);
+
+    // The top level (part-4) places the plate and the saved sub-assembly file, then mates into the sub-assembly's tube.
+    final top = validateBodies['/document/parts/part-4/ai-plan/validate']!;
+    expect([for (final s in top[0]['steps'] as List) (s as Map)['relative_path']], ['PLATE_001.didsa', 'TUBE_ASM_001.didsa']);
+    final mate = (top[1]['steps'] as List).single as Map<String, dynamic>;
+    final refs = [for (final r in mate['references'] as List) (r as Map)['occurrence_id'] as String];
+    expect(refs[0], startsWith('existing:'));
+    expect(refs[1], matches(RegExp(r'^existing:[^/]+/[^/]+$')));
+    final segments = refs[1].substring('existing:'.length).split('/');
+    // The outer id is the top level's placement of the sub-assembly; the inner one the sub-assembly's own tube.
+    expect(imports.any((body) => body.contains(segments[0])), isTrue);
+    expect(imports.any((body) => body.contains(segments[1])), isTrue, reason: 'the inner id comes from the sub-assembly build');
+    expect(requests, contains('POST /document/parts/part-4/mates'));
+    expect(find.text('Save assembly as…'), findsOneWidget);
   });
 }

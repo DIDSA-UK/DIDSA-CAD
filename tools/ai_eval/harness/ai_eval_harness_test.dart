@@ -64,8 +64,10 @@ import 'package:didsa_cad_client/ai/ai_validation_feedback.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_document_client.dart';
+import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
 import 'package:didsa_cad_client/assembly/relative_path.dart';
 import 'package:didsa_cad_client/storage/desktop_storage_service.dart';
+import 'package:didsa_cad_client/storage/file_cache.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 
 class _LiveClient extends http.BaseClient {
@@ -289,9 +291,47 @@ void main() {
     if (!await _buildParts(env_, parts, (i) async => (plan: bundle.partPlans[i], retried: false, why: 'no plan'), retryTurns: false)) {
       return;
     }
-    final plan = bundle.assemblyPlanFor(paths);
+    // The zip's sub-assemblies, in manifest order, as `AiModellingScreen._runImportedSubAssemblyCycle` builds them:
+    // placements, their own mates (a path through an earlier sub-assembly rewritten), saved as `<TYPE_PREFIX>_NNN`.
+    final subPaths = <String>[];
+    final placedByPath = <String, PlacedComponentIds>{};
+    for (var i = 0; i < bundle.manifest.subAssemblies.length; i++) {
+      final sub = bundle.manifest.subAssemblies[i];
+      final path = withDefaultExtension(nextAvailablePartName(saved, typePrefix: sub.typePrefix));
+      saved.add(path);
+      final entry = <String, dynamic>{'name': sub.name, 'path': path};
+      ((env_.report['sub_assemblies'] ??= <Map<String, dynamic>>[]) as List).add(entry);
+      final plan = bundle.subAssemblyPlanFor(i, paths, savedSubAssemblyPaths: subPaths);
+      File('$runDir/sub_assembly_${_nn(i + 1)}_plan.json').writeAsStringSync(_json.convert(plan.toJson(includeIntendedMotion: true)));
+      final part = await env_.docApi.createPart(sub.name);
+      final split = splitPlacementAndMates(plan);
+      final placement = split.placement ?? plan;
+      final result = await PlanTranslator(documentApi: env_.docApi, sketchApi: env_.sketchApi, storageService: env_.storage, projectRoot: env_.root, composer: env_.composer)
+          .execute(plan: placement, partId: part.id);
+      entry['outcome'] = result.outcome.name;
+      entry['error'] = result.errorMessage;
+      if (result.outcome != PlanTranslationOutcome.success) {
+        entry['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+        env_.report['stopped'] = 'sub-assembly ${_nn(i + 1)}: ${result.outcome.name}';
+        return env_.save();
+      }
+      final componentIds = addComponentLocalIds(placement);
+      final placed = PlacedComponentIds(
+        {for (final e in result.localIdToRealId.entries) if (componentIds.contains(e.key)) e.key: e.value},
+        nested: _nestedFor(placement, placedByPath),
+      );
+      entry['mates'] = await _carriedMates(
+        env_,
+        rewriteMateOccurrenceIds(split.mates, placed.realIdByLocalId, nested: placed.nested),
+        part.id,
+      );
+      await AssemblyDocumentClient(storageService: env_.storage, documentApiClient: env_.docApi).savePart(env_.root, part.id, path);
+      subPaths.add(path);
+      placedByPath[path] = placed;
+    }
+    final plan = bundle.assemblyPlanFor(paths, savedSubAssemblyPaths: subPaths);
     env_.report['assembly'] = <String, dynamic>{'retried': false};
-    await _runAssemblyPlan(env_, plan, imported: true);
+    await _runAssemblyPlan(env_, plan, imported: true, placedByPath: placedByPath);
   }, timeout: const Timeout(Duration(minutes: 10)));
 }
 
@@ -306,6 +346,13 @@ class _Env {
   final DesktopProjectRoot root;
   final DesktopStorageService storage;
   final Map<String, dynamic> report = {'parts': <Map<String, dynamic>>[]};
+
+  /// What add_component composes a sub-assembly file with; its file cache in a temp dir (the app's default one needs
+  /// `path_provider`, which a test run has no platform for).
+  late final AssemblyGraphComposer composer = AssemblyGraphComposer(
+    storageService: storage,
+    fileCache: FileCache(cacheDirectory: Directory.systemTemp.createTempSync('ai_eval_file_cache_')),
+  );
 
   static _Env open(String runDir, Map<String, String> env) {
     final client = _LiveClient(Uri.parse(env['AI_EVAL_BACKEND'] ?? 'http://127.0.0.1:8000'), env['CAD_API_KEY'] ?? 'local-test-key');
@@ -353,7 +400,7 @@ Future<bool> _buildParts(
     }
     File('$runDir/part_${n}_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
     final part = await e.docApi.createPart(parts[i]['name'] as String);
-    final result = await PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root)
+    final result = await PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root, composer: e.composer)
         .execute(plan: plan, partId: part.id);
     entry['outcome'] = result.outcome.name;
     entry['error'] = result.errorMessage;
@@ -391,14 +438,21 @@ Future<bool> _buildParts(
 /// `AiModellingScreen._runAssemblyCycle` from the plan on, for the harness: the placements (a plan that carries its own
 /// mates is split, `ai_plan_split.dart`), then the mates - the plan's own with their local ids rewritten, or for an
 /// in-app plan without any the app's second turn (`_mateTurn`) - then the completeness check, then the STEP export.
-Future<void> _runAssemblyPlan(_Env e, AiGenerationPlan plan, {required bool imported}) async {
+/// For each `add_component` of [plan] that placed a saved sub-assembly, what that sub-assembly placed.
+Map<String, PlacedComponentIds> _nestedFor(AiGenerationPlan plan, Map<String, PlacedComponentIds> placedByPath) => {
+      for (final step in plan.steps.whereType<AiAddComponentStep>())
+        if (placedByPath[step.relativePath] != null) step.localId: placedByPath[step.relativePath]!,
+    };
+
+Future<void> _runAssemblyPlan(_Env e, AiGenerationPlan plan,
+    {required bool imported, Map<String, PlacedComponentIds> placedByPath = const {}}) async {
   final runDir = e.runDir;
   final asm = e.report['assembly'] as Map<String, dynamic>;
   File('$runDir/assembly_plan.json').writeAsStringSync(_json.convert(plan.toJson(includeIntendedMotion: true)));
   final asmPart = await e.docApi.createPart('Assembly');
   final split = splitPlacementAndMates(plan);
   final placement = split.placement ?? plan;
-  final translator = PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root);
+  final translator = PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root, composer: e.composer);
   final result = await translator.execute(plan: placement, partId: asmPart.id);
   asm['outcome'] = result.outcome.name;
   asm['error'] = result.errorMessage;
@@ -421,7 +475,8 @@ Future<void> _runAssemblyPlan(_Env e, AiGenerationPlan plan, {required bool impo
     if (split.mates.isNotEmpty || imported) {
       final componentIds = addComponentLocalIds(placement);
       final placed = {for (final entry in result.localIdToRealId.entries) if (componentIds.contains(entry.key)) entry.key: entry.value};
-      final rewritten = rewriteMateOccurrenceIds(split.mates, placed, intendedMotion: split.intendedMotion);
+      final rewritten = rewriteMateOccurrenceIds(split.mates, placed,
+          intendedMotion: split.intendedMotion, nested: _nestedFor(placement, placedByPath));
       intended = rewritten.intendedMotion;
       e.report['mates'] = await _carriedMates(e, rewritten, asmPart.id);
     } else if (plan.steps.any((s) => s is AiAddComponentStep)) {
@@ -446,7 +501,7 @@ Future<Map<String, dynamic>> _carriedMates(_Env e, AiGenerationPlan plan, String
   File('${e.runDir}/mates_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
   final PlanTranslationResult result;
   try {
-    result = await PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root)
+    result = await PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root, composer: e.composer)
         .execute(plan: plan, partId: assemblyPartId);
   } on ApiException catch (ex) {
     // The validate call refused the plan outright (HTTP 422, a field the schema does not accept): the app records it

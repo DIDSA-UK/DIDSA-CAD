@@ -1,0 +1,23 @@
+{"version": 1, "steps": [
+  {"local_id": "bracket", "kind": "add_component", "relative_path": "BRACKET_001.didsa"},
+  {"local_id": "castor", "kind": "add_component", "relative_path": "WHEEL_ASM_001.didsa"},
+  {"local_id": "axle", "kind": "add_component", "relative_path": "AXLE_001.didsa"},
+  {"local_id": "mv_castor", "kind": "move_component", "occurrence_id": "castor", "translation": [0, 0, -30]},
+  {"local_id": "mv_axle", "kind": "move_component", "occurrence_id": "axle", "translation": [0, 0, -30]},
+  {"local_id": "m_axle_axis", "kind": "mate", "type": "concentric", "references": [
+    {"occurrence_id": "bracket", "face_selector": {"cylinder_radius": 6}},
+    {"occurrence_id": "axle", "face_selector": {"cylinder_radius": 6}}]},
+  {"local_id": "m_axle_seat", "kind": "mate", "type": "coincident", "references": [
+    {"occurrence_id": "bracket", "face_selector": {"direction": "+z"}},
+    {"occurrence_id": "axle", "face_selector": {"direction": "-z", "near": [8, 0, 50]}}]},
+  {"local_id": "m_bush_axis", "kind": "mate", "type": "concentric", "references": [
+    {"occurrence_id": "axle", "face_selector": {"cylinder_radius": 6}},
+    {"occurrence_id": "castor/bush", "face_selector": {"cylinder_radius": 6}}]},
+  {"local_id": "m_bush_top", "kind": "mate", "type": "coincident", "references": [
+    {"occurrence_id": "bracket", "face_selector": {"direction": "-z"}},
+    {"occurrence_id": "castor/bush", "face_selector": {"direction": "+z"}}]}
+],
+"intended_motion": [
+  {"component": "axle", "motion": "spins in the bracket"},
+  {"component": "castor", "motion": "spins about the axle"}
+]}

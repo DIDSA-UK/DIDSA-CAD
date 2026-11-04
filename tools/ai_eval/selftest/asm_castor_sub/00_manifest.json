@@ -1,0 +1,9 @@
+{"kind": "part_manifest", "parts": [
+  {"name": "Bracket", "type_prefix": "BRACKET", "summary": "80x50x20 block with a d12 through hole at its centre"},
+  {"name": "Axle", "type_prefix": "AXLE", "summary": "d12 x 50 shank with a d20 x 4 head"},
+  {"name": "Bush", "type_prefix": "BUSH", "summary": "tube, d20 outside, d12 bore, 30 long"},
+  {"name": "Wheel", "type_prefix": "WHEEL", "summary": "d80 disc, d20 bore, 30 thick"}
+],
+"sub_assemblies": [
+  {"name": "Wheel and bush", "type_prefix": "WHEEL_ASM", "summary": "the wheel on its bush"}
+]}

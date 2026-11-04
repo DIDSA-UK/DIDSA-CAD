@@ -120,9 +120,32 @@ only these JSON files, each containing only JSON:
   such component - {"component": "<its local_id>", "motion": "spins about
   its axle"} - so the app does not report it as under-constrained.
 
+SUB-ASSEMBLIES: if the user wants some parts grouped as a sub-assembly (a
+wheel and its bush, say), keep it in this ONE zip - do not split it into
+several zips:
+- In `00_manifest.json`, next to "parts", add "sub_assemblies": [{"name":
+  "Wheel and bush", "type_prefix": "WHEEL_ASM", "summary": "..."}], one
+  entry per sub-assembly, in the order they are to be built. Its parts are
+  still listed in "parts" and still get their own part plans. Every
+  type_prefix, part or sub-assembly, is different.
+- Add one assembly plan per sub-assembly, `90_<TYPE_PREFIX>.json`,
+  `91_<TYPE_PREFIX>.json`, ... in the manifest's sub_assemblies order (the
+  app matches them by that order). Each is written exactly like
+  `99_assembly.json` - add_component, move_component, then mates - for that
+  sub-assembly alone, in its own frame, with its own first component
+  unmoved.
+- In `99_assembly.json` (and in a later sub-assembly), place a
+  sub-assembly with ONE add_component whose "relative_path" is
+  "<ITS TYPE_PREFIX>_001.didsa"; do not add its parts again. It moves as one
+  piece. To mate to a part inside it, write that part's path of local_ids
+  as the occurrence_id: "<sub-assembly's local_id here>/<the part's
+  local_id in the sub-assembly's plan>" (e.g. "castor/wheel"), with
+  face_selector in that part's own coordinates as usual.
+
 Bring the zip back into DIDSA-CAD's AI Modelling screen, in Assembly mode,
 and use "Import plan" to load it: the app shows the parts for you to
-confirm, then builds and saves each one, the assembly and its mates.
+confirm, then builds and saves each one, each sub-assembly, the assembly
+and its mates.
 
 Everything below this line is the same schema/instructions DIDSA-CAD's own
 in-app assistant is given - follow it exactly so every plan you produce is

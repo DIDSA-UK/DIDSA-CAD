@@ -34,7 +34,13 @@ class AiPartManifest {
   /// panel before anything is built. Empty when there were none.
   final List<String> assumptions;
 
-  const AiPartManifest({required this.parts, this.assumptions = const []});
+  /// Sub-assemblies an imported zip builds between its parts and the top-level assembly (`ai_plan_bundle.dart`), in
+  /// build order: each is saved as its own assembly file, and a later one (or the top level) places it by its
+  /// `type_prefix` like a part. Empty for a flat assembly, and always empty for the in-app flow, which does not ask
+  /// for them.
+  final List<AiPartManifestEntry> subAssemblies;
+
+  const AiPartManifest({required this.parts, this.assumptions = const [], this.subAssemblies = const []});
 
   factory AiPartManifest.fromJson(Map<String, dynamic> json) {
     final raw = json['parts'];
@@ -42,9 +48,13 @@ class AiPartManifest {
       throw const FormatException('Part manifest has no parts');
     }
     final assumptions = json['assumptions'];
+    final subAssemblies = json['sub_assemblies'];
     return AiPartManifest(
       parts: raw.map((p) => AiPartManifestEntry.fromJson(p as Map<String, dynamic>)).toList(),
       assumptions: assumptions is List ? [for (final a in assumptions) if (a is String && a.trim().isNotEmpty) a.trim()] : const [],
+      subAssemblies: subAssemblies is List
+          ? [for (final s in subAssemblies) AiPartManifestEntry.fromJson(s as Map<String, dynamic>)]
+          : const [],
     );
   }
 }

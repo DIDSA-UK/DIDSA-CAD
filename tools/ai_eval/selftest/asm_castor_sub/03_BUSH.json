@@ -1,0 +1,7 @@
+{"version": 1, "steps": [
+  {"local_id": "sk1", "kind": "sketch", "plane": "XY"},
+  {"local_id": "c1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 0},
+  {"local_id": "outer", "kind": "sketch_circle", "sketch_feature_id": "sk1", "center_point_id": "c1", "radius": 10},
+  {"local_id": "bore", "kind": "sketch_circle", "sketch_feature_id": "sk1", "center_point_id": "c1", "radius": 6},
+  {"local_id": "e1", "kind": "extrude", "sketch_feature_id": "sk1", "extrude_type": "boss", "start_distance": 0, "end_distance": 30}
+]}

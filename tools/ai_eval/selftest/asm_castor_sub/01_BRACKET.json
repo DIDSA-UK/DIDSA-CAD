@@ -1,0 +1,11 @@
+{"version": 1, "steps": [
+  {"local_id": "sk1", "kind": "sketch", "plane": "XY"},
+  {"local_id": "p1", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": -40, "y": -25},
+  {"local_id": "p2", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 40, "y": -25},
+  {"local_id": "p3", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 40, "y": 25},
+  {"local_id": "p4", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": -40, "y": 25},
+  {"local_id": "r1", "kind": "sketch_rectangle", "sketch_feature_id": "sk1", "corner_point_ids": ["p1", "p2", "p3", "p4"], "width": 80, "height": 50},
+  {"local_id": "hc", "kind": "sketch_point", "sketch_feature_id": "sk1", "x": 0, "y": 0},
+  {"local_id": "hole", "kind": "sketch_circle", "sketch_feature_id": "sk1", "center_point_id": "hc", "radius": 6},
+  {"local_id": "e1", "kind": "extrude", "sketch_feature_id": "sk1", "extrude_type": "boss", "start_distance": 0, "end_distance": 20}
+]}

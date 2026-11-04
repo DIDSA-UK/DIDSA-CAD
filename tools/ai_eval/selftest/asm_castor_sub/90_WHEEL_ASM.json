@@ -1,0 +1,11 @@
+{"version": 1, "steps": [
+  {"local_id": "bush", "kind": "add_component", "relative_path": "BUSH_001.didsa"},
+  {"local_id": "wheel", "kind": "add_component", "relative_path": "WHEEL_001.didsa"},
+  {"local_id": "m_axis", "kind": "mate", "type": "concentric", "references": [
+    {"occurrence_id": "bush", "face_selector": {"cylinder_radius": 10}},
+    {"occurrence_id": "wheel", "face_selector": {"cylinder_radius": 10}}]},
+  {"local_id": "m_flush", "kind": "mate", "type": "coincident", "references": [
+    {"occurrence_id": "bush", "face_selector": {"direction": "-z"}},
+    {"occurrence_id": "wheel", "face_selector": {"direction": "-z"}}]}
+],
+"intended_motion": [{"component": "wheel", "motion": "spins on the bush"}]}
