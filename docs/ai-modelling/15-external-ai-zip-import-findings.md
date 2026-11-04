@@ -56,6 +56,17 @@ JSON files.
    `LONG_RAIL_001.DIDSAprt`. Test:
    `test_move_component_on_the_grounded_first_component_is_rejected_in_the_dry_run`.
 
+## Update 2026-11-04: the hand-off now asks for the zip
+
+The importer existed, but the instructions an external AI was given (`ai_plan_export.dart`) still asked for one
+`plan.json`, so a zip only arrived when an external AI invented one. In Assembly mode the hand-off now has its own
+preamble describing exactly what `AiPlanBundle.fromZipBytes` reads: `00_manifest.json` (the part_manifest, every
+`type_prefix` different), `01_<TYPE_PREFIX>.json`... one plan per part in manifest order, and `99_assembly.json`
+with `add_component` paths `<TYPE_PREFIX>_001.didsa`, the first component unmoved, and placements only - no mates,
+since an imported assembly gets no mates turn (`13-multi-part-assembly-overhaul.md`, "Mates turn and stated
+assumptions"); they are added in the app. `ai_plan_export_test.dart` builds a zip to that layout and checks the
+importer reads it. Not tested with a real external chat.
+
 ## Open / not done
 
 - **The zip importer does not repair finding 3.** An imported assembly that

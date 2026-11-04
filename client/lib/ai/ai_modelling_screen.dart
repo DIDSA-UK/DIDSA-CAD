@@ -2187,7 +2187,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// app, AirDrop it, or save it to Files.
   Future<void> _shareExternalHandoff() async {
     final systemPrompt = _buildSystemPrompt();
-    final package = buildExternalHandoffPackage(systemPrompt: systemPrompt, transcript: _transcript);
+    final package = buildExternalHandoffPackage(
+      systemPrompt: systemPrompt,
+      transcript: _transcript,
+      assemblyMode: _mode == AiGenerationMode.assembly,
+    );
     if (!mounted) return;
 
     final choice = await showDialog<String>(

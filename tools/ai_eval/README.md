@@ -187,6 +187,30 @@ owner: it corrected only the assumptions a model stated that contradict the owne
     have only a seat mate.
 - Haiku still misreads the rough sketches after correction (dovetail stem, frame rails); Sonnet and Opus do not.
 
+### Assembly mode with mates, the generated sheets, 2026-11-04
+
+The same build as above plus `face_selector.normal`, Closest mate branches and the components-only mates listing.
+One run per model; every model's assumptions on these fully dimensioned sheets were right and confirmed unchanged.
+
+| Sketch | Haiku | Sonnet | Opus |
+|---|---|---|---|
+| `asm_pin_block` | P, 2 mates | P, 2 mates | P, 2 mates |
+| `asm_wheel_bracket` | P, 7 mates | P, 7 mates | P, 11 mates |
+| `asm_caster` (8 parts) | fork wrong | P, 14 mates | P, 14 mates |
+
+Across both 2026-11-04 tables Sonnet and Opus pass all 12 runs, with mates that hold every part where it was
+placed; Haiku fails 3 of 6, each on a part it built wrong. Opus's wheel bracket first failed: its flush mates
+(upright side level with the plate edge, faces pointing the same way) were created with the deprecated
+`flipped: false`, read as anti-aligned, and turned the uprights over. Plan mates now take the branch nearest the
+current pose; the same reply passes, and every other run rebuilds the same. Haiku's caster fork came out as three
+Bodies, so its mates needed `body_id`s (the dry run named them); the run was stopped there.
+
+**Where this leaves the evaluation.** The owner dropped Haiku after these runs. Not done (token cost): a second
+run per sketch and model, so the 2026-11-04 tables are one run each - read them as direction, not rates; the
+external-AI hand-off (now asking for the zip) has not been tried with a real external chat. Open in the app: an
+imported zip gets no mates turn; nothing yet measures whether the mates fully constrain a part (the dovetails'
+seat mate leaves the plate free to slide) - `face_selector.normal` arrived after those runs.
+
 ### Render-back check, 2026-10-29
 
 Each build was checked by the same model that built it (`docs/ai-modelling/14-render-back-check.md`), and every mismatch was sent back as the fix turn.

@@ -645,6 +645,15 @@ parts with `move_component`, and Phase E's "insert + mate" was in practice "inse
 Tests: `test_ai_plan_mate_face_selector.py`; `ai_modelling_screen_orchestration_test.dart` (the mate turn lists
 the placed components and builds the mates before the save; assumptions and a correction round trip).
 
+Follow-ups found by the same evaluation, all fixed: `face_selector.normal` names a sloped planar face (a dovetail
+flank, a mitre); the mates listing gives components only (`summarizePlacedComponentsForMates`) - listing every
+body-producing Feature had the models guessing which id was the Body; a flat face made by a Revolve now reads its
+true outward normal (`face_normal.py`, also used by the mate solver, Move Face and sketch-on-face planes); a mate
+whose solved side is the grounded component solves the other side; and an unflipped plan mate takes the branch
+nearest the current pose (`closestBranch`) instead of the deprecated `flipped: false` = anti-aligned, which turned
+a flush mate's part over. The external-AI hand-off in Assembly mode now asks for the import zip
+(`15-external-ai-zip-import-findings.md`).
+
 ## Appendix: gaps & emergent work tracker
 
 Started alongside this workstream's own implementation, mirroring
