@@ -11,7 +11,7 @@ void main() {
       addTearDown(tester.platformDispatcher.clearAllTestValues);
 
       await tester.pumpWidget(const MaterialApp(home: AiProviderSettingsScreen()));
-      await tester.pumpAndSettle();
+      await tester.pump(const Duration(milliseconds: 100));
 
       final context = tester.element(find.byType(Scaffold));
       expect(Theme.of(context).brightness, brightness);
