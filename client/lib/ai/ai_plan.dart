@@ -1734,24 +1734,57 @@ class AiGearRequestStep extends AiPlanStep {
 /// `PlanValidateRequest`/the wire shape's top-level `{"version": 1, "steps":
 /// [...]}` object (`ai_plan_schemas.py`) - the finished structured plan
 /// `AiTurnResult.plan` holds once the scoping conversation is complete.
+/// One entry of a plan's optional top-level `intended_motion`: a component that is meant to move (a wheel on its
+/// axle, a swivel), so the completeness check (`ai_assembly_report.dart`) does not push the model to lock it.
+/// [component] is an `add_component` `local_id`, `existing:<id>`, or the component's name; [motion] is free text. For
+/// the report and the model only, never the solver: it is not sent to the backend.
+class AiIntendedMotion {
+  final String component;
+  final String motion;
+
+  const AiIntendedMotion({required this.component, required this.motion});
+
+  Map<String, dynamic> toJson() => {'component': component, 'motion': motion};
+}
+
 class AiGenerationPlan {
   final int version;
   final List<AiPlanStep> steps;
 
-  const AiGenerationPlan({this.version = 1, required this.steps});
+  /// Optional top-level `intended_motion` (see [AiIntendedMotion]); empty when the plan has none.
+  final List<AiIntendedMotion> intendedMotion;
 
+  const AiGenerationPlan({this.version = 1, required this.steps, this.intendedMotion = const []});
+
+  /// Unknown top-level fields are ignored, as before; `intended_motion` is read when it is a list of
+  /// `{component, motion}` objects (malformed entries are skipped, not an error: it is advice, not a step). A plan
+  /// may have no steps only when it declares an intended motion (a follow-up mates turn that adds nothing).
   factory AiGenerationPlan.fromJson(Map<String, dynamic> json) {
+    final intended = <AiIntendedMotion>[
+      for (final entry in (json['intended_motion'] is List ? json['intended_motion'] as List : const []))
+        if (entry is Map && entry['component'] is String && entry['motion'] is String)
+          AiIntendedMotion(component: entry['component'] as String, motion: entry['motion'] as String),
+    ];
     final rawSteps = json['steps'];
-    if (rawSteps is! List || rawSteps.isEmpty) {
+    if (rawSteps is! List || (rawSteps.isEmpty && intended.isEmpty)) {
       throw const FormatException('Plan has no steps');
     }
     return AiGenerationPlan(
       version: json['version'] == null ? 1 : _asInt(json['version']),
       steps: rawSteps.map((s) => AiPlanStep.fromJson(s as Map<String, dynamic>)).toList(),
+      intendedMotion: intended,
     );
   }
 
-  Map<String, dynamic> toJson() => {'version': version, 'steps': steps.map((s) => s.toJson()).toList()};
+  /// The wire shape sent to the backend's validate/execute path. `intended_motion` is left out unless
+  /// [includeIntendedMotion] (the backend ignores unknown top-level fields, `test_validate_ignores_an_unknown_top_level_field`,
+  /// but it is not for the solver, so it does not travel).
+  Map<String, dynamic> toJson({bool includeIntendedMotion = false}) => {
+        'version': version,
+        'steps': steps.map((s) => s.toJson()).toList(),
+        if (includeIntendedMotion && intendedMotion.isNotEmpty)
+          'intended_motion': intendedMotion.map((m) => m.toJson()).toList(),
+      };
 
   AiPlanStep? stepById(String localId) {
     for (final step in steps) {

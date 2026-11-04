@@ -113,9 +113,11 @@ only these JSON files, each containing only JSON:
   where it differs from the "Assembly editing" section, follow Assembly
   mode. The app places the components first, then checks and builds the
   mates, so the faces do exist by then. Write enough mates that every
-  component which should not move is held where you placed it, and say in
-  your reply which components are meant to move, and how (a wheel spinning
-  on its axle, say), so you do not lock them.
+  component which should not move is held where you placed it. A component
+  that is meant to move (a wheel spinning on its axle, say) stays free: add
+  a top-level "intended_motion" to this file, next to "steps", one entry per
+  such component - {"component": "<its local_id>", "motion": "spins about
+  its axle"} - so the app does not report it as under-constrained.
 
 Bring the zip back into DIDSA-CAD's AI Modelling screen, in Assembly mode,
 and use "Import plan" to load it: the app shows the parts for you to

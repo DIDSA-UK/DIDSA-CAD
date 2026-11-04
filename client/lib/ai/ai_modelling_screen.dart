@@ -29,6 +29,7 @@ import 'ai_model_check.dart';
 import 'ai_part_manifest.dart';
 import 'ai_part_naming.dart';
 import 'ai_plan.dart';
+import 'ai_assembly_report.dart';
 import 'ai_plan_bundle.dart';
 import 'ai_plan_detection.dart';
 import 'ai_plan_export.dart';
@@ -355,6 +356,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // The mate turn's outcome (`_runMateTurn`), shown under the Assembly row: how many mates were made, or why
   // the assembly was saved placed but unmated. Null before that turn runs, or when it was skipped.
   String? _mateNote;
+
+  // The mate-completeness check (`ai_assembly_report.dart`, `16-assembly-mates-gaps-plan.md` Phase 2): what the mates
+  // leave free, shown under [_mateNote], and the motion the AI declared intended (components named by real id, once
+  // the mates are built), which the check does not count as a gap.
+  AssemblyCompletenessReport? _completenessReport;
+  List<AiIntendedMotion> _intendedMotion = [];
   String? _assemblyPartId;
   String? _assemblyRelativePath;
 
@@ -1689,6 +1696,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _buildingAssembly = true;
       _orchestrationStatus = retryPartId == null ? 'Requesting the assembly plan...' : 'Requesting a revised assembly plan...';
       _orchestrationError = null;
+      _completenessReport = null;
+      _intendedMotion = [];
     });
     _scrollToBottom();
     final partsListing = [
@@ -1848,9 +1857,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         // The plan brought its own mates (or, for an imported zip, none): no provider turn. Only components this plan
         // added can be named by a bare local_id; a move_component's id is not a component.
         final componentIds = addComponentLocalIds(placementPlan);
-        await _runCarriedMates(
+        final carriedBuilt = await _runCarriedMates(
           assemblyPartId: assemblyPartId,
           mates: split.mates,
+          intendedMotion: split.intendedMotion,
           placedIds: {
             for (final entry in translation.localIdToRealId.entries)
               if (componentIds.contains(entry.key)) entry.key: entry.value,
@@ -1859,9 +1869,25 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           root: root,
         );
         if (!mounted) return;
+        await _checkAssemblyCompleteness(
+          assemblyPartId: assemblyPartId,
+          systemPrompt: systemPrompt,
+          storage: storage,
+          root: root,
+          // An imported zip has no provider to ask (the report feeds "Fix mates with external AI"); an in-app plan
+          // that carried its own mates does.
+          allowFollowUp: bundle == null && carriedBuilt,
+        );
       } else if (plan.steps.any((step) => step is AiAddComponentStep)) {
-        await _runMateTurn(assemblyPartId: assemblyPartId, systemPrompt: systemPrompt, storage: storage, root: root);
+        final built = await _runMateTurn(assemblyPartId: assemblyPartId, systemPrompt: systemPrompt, storage: storage, root: root);
         if (!mounted) return;
+        await _checkAssemblyCompleteness(
+          assemblyPartId: assemblyPartId,
+          systemPrompt: systemPrompt,
+          storage: storage,
+          root: root,
+          allowFollowUp: built,
+        );
       }
 
       await _saveAssemblyAfterExecution(assemblyPartId: assemblyPartId, root: root, storage: storage, fixedRelativePath: _assemblyTargetRelativePath);
@@ -1888,7 +1914,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// whose `face_selector`s the dry run resolves against each component's real geometry. The app retries a plan that
   /// fails validation once, as it does every other turn. Never stops the run: on any failure the placed, unmated
   /// assembly is still saved, and [_mateNote] says why it has no mates.
-  Future<void> _runMateTurn({
+  Future<bool> _runMateTurn({
     required String assemblyPartId,
     required String systemPrompt,
     required StorageService storage,
@@ -1900,9 +1926,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       placed = summarizePlacedComponentsForMates(await _documentApi.listOccurrences(assemblyPartId));
     } on ApiException catch (e) {
       setState(() => _mateNote = 'Saved without mates: could not list the placed components (${e.message}).');
-      return;
+      return false;
     }
-    if (placed.isEmpty) return;
+    if (placed.isEmpty) return false;
     final provider = widget.provider ?? AiProviderPreferences.active;
     String? retryFor;
     for (var attempt = 0; attempt < 2; attempt++) {
@@ -1917,25 +1943,27 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
       } on AiProviderException catch (e) {
         setState(() => _mateNote = 'Saved without mates: provider error (${e.message}).');
-        return;
+        return false;
       }
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() => _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText)]);
       _scrollToBottom();
       final plan = detectPlanInAssistantText(result.assistantText);
       if (plan == null || plan.steps.isEmpty) {
         setState(() => _mateNote = 'Saved without mates: the assistant did not reply with any.');
-        return;
+        return false;
       }
       final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: plan, storage: storage, root: root);
-      if (!mounted) return;
+      if (!mounted) return false;
+      _intendedMotion = [..._intendedMotion, ...plan.intendedMotion];
       if (run.outcome != _MatesOutcome.validationFailed) {
         setState(() => _mateNote = run.note);
-        return;
+        return run.outcome == _MatesOutcome.built;
       }
       retryFor = run.validationFailureText;
     }
     setState(() => _mateNote = 'Saved without mates: the mates plan failed validation twice.');
+    return false;
   }
 
   /// Validates and builds a plan of mate steps (every reference already `existing:<id>` or a real face) in the assembly
@@ -1989,21 +2017,119 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// returned. The local ids are rewritten to `existing:<id>` and the plan runs like the in-app mates turn's, with no
   /// provider and no retry (there is no one to ask). Sets [_mateNote]; never stops the run.
   /// An imported zip with no mates at all ends here too, with a note saying so.
-  Future<void> _runCarriedMates({
+  Future<bool> _runCarriedMates({
     required String assemblyPartId,
     required List<AiMateStep> mates,
+    required List<AiIntendedMotion> intendedMotion,
     required Map<String, String> placedIds,
     required StorageService storage,
     required ProjectRoot root,
   }) async {
+    final plan = rewriteMateOccurrenceIds(mates, placedIds, intendedMotion: intendedMotion);
+    _intendedMotion = [..._intendedMotion, ...plan.intendedMotion];
     if (mates.isEmpty) {
       setState(() => _mateNote = 'Saved without mates: the imported assembly plan has none.');
-      return;
+      return false;
     }
-    final plan = rewriteMateOccurrenceIds(mates, placedIds);
     final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: plan, storage: storage, root: root);
-    if (!mounted) return;
+    if (!mounted) return false;
     setState(() => _mateNote = run.note);
+    return run.outcome == _MatesOutcome.built;
+  }
+
+  /// The completeness check (`16-assembly-mates-gaps-plan.md`, Phase 2): fetches each component's constraint status
+  /// (with its free motions) and sets [_completenessReport]. In-app, when a component is free and nobody said it
+  /// should move, sends ONE follow-up mates turn ([_runMatesFollowUp]) and checks again; an imported zip only reports.
+  /// Never stops the run: a failed check just leaves no report.
+  Future<void> _checkAssemblyCompleteness({
+    required String assemblyPartId,
+    required String systemPrompt,
+    required StorageService storage,
+    required ProjectRoot root,
+    required bool allowFollowUp,
+  }) async {
+    setState(() => _orchestrationStatus = 'Checking that the mates hold every component...');
+    var report = await _fetchCompletenessReport(assemblyPartId);
+    if (!mounted) return;
+    if (report != null && allowFollowUp && report.needsFollowUp) {
+      await _runMatesFollowUp(
+        assemblyPartId: assemblyPartId,
+        report: report,
+        systemPrompt: systemPrompt,
+        storage: storage,
+        root: root,
+      );
+      if (!mounted) return;
+      // Checked again whatever the turn did: new mates change the status, a declared intent changes the report.
+      report = await _fetchCompletenessReport(assemblyPartId) ?? report;
+    }
+    if (!mounted) return;
+    setState(() {
+      _completenessReport = report;
+      _orchestrationStatus = null;
+    });
+  }
+
+  Future<AssemblyCompletenessReport?> _fetchCompletenessReport(String assemblyPartId) async {
+    try {
+      final occurrences = await _documentApi.listOccurrences(assemblyPartId);
+      final status = await _documentApi.getConstraintStatus(assemblyPartId);
+      return buildCompletenessReport(occurrences: occurrences, status: status, intended: _intendedMotion);
+    } on ApiException {
+      return null;
+    }
+  }
+
+  /// The one follow-up mates turn: lists the components that can still move (and any over-constrained ones), asks for
+  /// the missing mates, and builds them. Returns whether any were built. At most once per assembly (the caller sends it
+  /// once); a failure of any kind is noted and never stops the run.
+  Future<bool> _runMatesFollowUp({
+    required String assemblyPartId,
+    required AssemblyCompletenessReport report,
+    required String systemPrompt,
+    required StorageService storage,
+    required ProjectRoot root,
+  }) async {
+    setState(() => _orchestrationStatus = 'Asking for the missing mates...');
+    final request = AiChatMessage(
+      role: AiMessageRole.user,
+      text: assemblyModeMatesFollowUpRequestText(
+        freeComponents: formatFreeComponentsForPrompt(report.unintendedlyFree),
+        overConstrained: formatFreeComponentsForPrompt(report.overConstrained),
+      ),
+    );
+    setState(() => _transcript = [..._transcript, request]);
+    _scrollToBottom();
+    final provider = widget.provider ?? AiProviderPreferences.active;
+    final AiTurnResult result;
+    try {
+      result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
+    } on AiProviderException catch (e) {
+      setState(() => _mateNote = '$_mateNote\nThe follow-up for the free components failed: provider error (${e.message}).');
+      return false;
+    }
+    if (!mounted) return false;
+    setState(() => _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText)]);
+    _scrollToBottom();
+    final plan = detectPlanInAssistantText(result.assistantText);
+    if (plan == null) {
+      setState(() => _mateNote = '$_mateNote\nThe follow-up for the free components got no plan back.');
+      return false;
+    }
+    _intendedMotion = [..._intendedMotion, ...plan.intendedMotion];
+    if (plan.steps.isEmpty) {
+      setState(() => _mateNote = '$_mateNote\nThe assistant added no mates: it declared the free motion intended.');
+      return false;
+    }
+    final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: plan, storage: storage, root: root);
+    if (!mounted) return false;
+    final followUp = switch (run.outcome) {
+      _MatesOutcome.built => 'The follow-up added ${run.note}',
+      _MatesOutcome.partial => 'The follow-up: ${run.note}',
+      _MatesOutcome.validationFailed => 'The follow-up mates failed validation and were not built.',
+    };
+    setState(() => _mateNote = '$_mateNote\n$followUp');
+    return run.outcome != _MatesOutcome.validationFailed;
   }
 
   /// "Open Assembly" - navigates into `PartScreen` for the just-saved
@@ -2957,6 +3083,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                       key: const Key('aiModellingMateNote'),
                       padding: const EdgeInsets.only(left: 72, bottom: 8),
                       child: Text(_mateNote!),
+                    ),
+                  if (_completenessReport != null && _completenessReport!.rows.isNotEmpty)
+                    Padding(
+                      key: const Key('aiModellingCompletenessReport'),
+                      padding: const EdgeInsets.only(left: 72, bottom: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Mate check', style: Theme.of(context).textTheme.labelLarge),
+                          Text(formatCompletenessReport(_completenessReport!)),
+                        ],
+                      ),
                     ),
                 ],
               ],

@@ -242,6 +242,7 @@ void main() {
   });
   mateTurnTests();
   importedMatesTests();
+  completenessTests();
 
   testWidgets('a part_manifest reply shows the confirm panel with one editable row per part', (tester) async {
     final provider = _FakeAiProvider((_, __) async => const AiTurnResult(assistantText: _manifestText));
@@ -998,7 +999,7 @@ void mateTurnTests() {
   });
 }
 
-Uint8List _importZip({required List<Map<String, dynamic>> mates}) {
+Uint8List _importZip({required List<Map<String, dynamic>> mates, List<Map<String, String>> intended = const []}) {
   Map<String, Object> plan(String id) => {
         'version': 1,
         'steps': [
@@ -1022,6 +1023,7 @@ Uint8List _importZip({required List<Map<String, dynamic>> mates}) {
         {'local_id': 'tube', 'kind': 'add_component', 'relative_path': 'TUBE_001.didsa'},
         ...mates,
       ],
+      if (intended.isNotEmpty) 'intended_motion': intended,
     },
   };
   final archive = Archive();
@@ -1030,6 +1032,31 @@ Uint8List _importZip({required List<Map<String, dynamic>> mates}) {
     archive.addFile(ArchiveFile(entry.key, bytes.length, bytes));
   }
   return Uint8List.fromList(ZipEncoder().encode(archive));
+}
+
+/// The occurrences the placement run has put into the assembly so far, read back from the `import/native` bodies (the
+/// fake backend's export never carries the earlier ones, so each body holds only its own component).
+List<Map<String, dynamic>> _occurrencesImported(List<String> bodies) {
+  final seen = <String>{};
+  return [
+    for (final body in bodies)
+      for (final o in _occurrencesInImport(body))
+        if (seen.add(o['id'] as String)) o,
+  ];
+}
+
+List<Map<String, dynamic>> _occurrencesInImport(String body) {
+  final document = (jsonDecode(body) as Map<String, dynamic>)['document'] as Map<String, dynamic>;
+  final root = (document['parts'] as List).cast<Map<String, dynamic>>().firstWhere((p) => p['id'] == document['root_part_id']);
+  return [
+    for (final o in (root['occurrences'] as List).cast<Map<String, dynamic>>())
+      {
+        'id': o['id'],
+        'external_ref': o['external_ref'],
+        'resolved_part_id': o['resolved_part_id'],
+        'transform': o['transform'] ?? {'translation': [0, 0, 0], 'rotation_axis': [0, 0, 1], 'rotation_angle_degrees': 0},
+      },
+  ];
 }
 
 const _importedMate = {
@@ -1048,6 +1075,7 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
   WidgetTester tester,
   Uint8List zip, {
   bool failMateValidation = false,
+  Map<String, dynamic> Function(List<String> occurrenceIds)? statusFor,
 }) async {
   SharedPreferences.setMockInitialValues({});
   final base = _fullOrchestrationHandler();
@@ -1079,6 +1107,13 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
       }
     }
     if (path == '/document/import/native') imports.add(request.body);
+    if (path == '/document/parts/part-3/occurrences' && request.method == 'GET' && imports.isNotEmpty) {
+      return http.Response(jsonEncode(_occurrencesImported(imports)), 200);
+    }
+    if (path == '/document/parts/part-3/constraint-status' && request.method == 'GET' && statusFor != null) {
+      final ids = [for (final o in _occurrencesImported(imports)) o['id'] as String];
+      return http.Response(jsonEncode(statusFor(ids)), 200);
+    }
     if (path == '/document/parts/part-3/mates' && request.method == 'POST') {
       return http.Response(
         jsonEncode({'id': 'mate-1', 'type': 'coincident', 'references': [], 'value': null, 'flipped': false}),
@@ -1171,5 +1206,232 @@ void importedMatesTests() {
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
     expect(find.textContaining('the imported assembly plan has none'), findsOneWidget);
+  });
+}
+
+Map<String, dynamic> _freeStatus() => {
+      'occ-plate': {'status': 'fixed', 'dof': 0, 'free_motions': []},
+      'occ-tube': {
+        'status': 'under_constrained',
+        'dof': 3,
+        'free_motions': [
+          {'kind': 'slide', 'direction': [1.0, 0.0, 0.0]},
+          {'kind': 'slide', 'direction': [0.0, 1.0, 0.0]},
+          {'kind': 'spin', 'axis': [0.0, 0.0, 1.0], 'through': [0.0, 0.0, 0.0]},
+        ],
+      },
+    };
+
+Map<String, dynamic> _heldStatus() => {
+      'occ-plate': {'status': 'fixed', 'dof': 0, 'free_motions': []},
+      'occ-tube': {'status': 'fully_constrained', 'dof': 0, 'free_motions': []},
+    };
+
+const _followUpMatesText = '''
+```json
+{"version": 1, "steps": [
+  {"local_id": "m2", "kind": "mate", "type": "coincident", "references": [
+    {"occurrence_id": "existing:occ-plate", "face_selector": {"direction": "+x"}},
+    {"occurrence_id": "existing:occ-tube", "face_selector": {"direction": "-x"}}
+  ]}
+]}
+```''';
+
+const _intendedMatesText = '''
+```json
+{"version": 1, "steps": [
+  {"local_id": "m1", "kind": "mate", "type": "coincident", "references": [
+    {"occurrence_id": "existing:occ-plate", "face_selector": {"direction": "+z"}},
+    {"occurrence_id": "existing:occ-tube", "face_selector": {"direction": "-z"}}
+  ]}
+], "intended_motion": [{"component": "existing:occ-tube", "motion": "spins about its axle"}]}
+```''';
+
+/// An in-app Assembly run up to its save dialog: the provider replies in order (manifest, two parts, the assembly,
+/// then [laterReplies]: the mates turn, and a follow-up if one is sent); the constraint status is [status] by call
+/// number (0 = the first check). Returns what the provider was sent and how many mates were created.
+Future<({List<List<AiChatMessage>> sent, int matesCreated, int statusCalls})> _runInAppAssemblyWithCheck(
+  WidgetTester tester, {
+  required List<String> laterReplies,
+  required Map<String, dynamic> Function(int call) status,
+}) async {
+  SharedPreferences.setMockInitialValues({});
+  final base = _fullOrchestrationHandler();
+  var matesCreated = 0;
+  var statusCalls = 0;
+  Future<http.Response> handler(http.Request request) async {
+    final path = request.url.path;
+    if (path == '/document/parts/part-3/occurrences' && request.method == 'GET') {
+      Map<String, dynamic> occ(String id, String ref, String part) => {
+            'id': id,
+            'external_ref': ref,
+            'resolved_part_id': part,
+            'transform': {'translation': [0, 0, 0], 'rotation_axis': [0, 0, 1], 'rotation_angle_degrees': 0},
+          };
+      return http.Response(
+        jsonEncode([occ('occ-plate', 'PLATE_001.didsa', 'part-1'), occ('occ-tube', 'TUBE_001.didsa', 'part-2')]),
+        200,
+      );
+    }
+    if (path == '/document/parts/part-3/constraint-status' && request.method == 'GET') {
+      return http.Response(jsonEncode(status(statusCalls++)), 200);
+    }
+    if (path == '/document/parts/part-3/mates' && request.method == 'POST') {
+      matesCreated++;
+      return http.Response(
+        jsonEncode({'id': 'mate-$matesCreated', 'type': 'coincident', 'references': [], 'value': null, 'flipped': false}),
+        201,
+      );
+    }
+    if (path.startsWith('/document/parts/part-3/occurrences/') && path.endsWith('/solve')) {
+      return http.Response(
+        jsonEncode({
+          'id': 'occ-tube',
+          'transform': {'translation': [0, 0, 0], 'rotation_axis': [0, 0, 1], 'rotation_angle_degrees': 0},
+        }),
+        200,
+      );
+    }
+    return base(request);
+  }
+
+  final sent = <List<AiChatMessage>>[];
+  final provider = _FakeAiProvider((transcript, _) async {
+    sent.add(List.of(transcript));
+    final n = sent.length;
+    if (n == 1) return AiTurnResult(assistantText: _manifestText);
+    if (n <= 3) return AiTurnResult(assistantText: _onePartPlanText);
+    if (n == 4) return AiTurnResult(assistantText: _assemblyPlanText);
+    return AiTurnResult(assistantText: laterReplies[n - 5]);
+  });
+  await tester.pumpWidget(MaterialApp(
+    home: AiModellingScreen(
+      provider: provider,
+      documentApi: DocumentApiClient(httpClient: MockClient(handler)),
+      sketchApi: SketchApiClient(httpClient: MockClient(handler)),
+      storageService: _FakeStorageService(),
+      projectRoot: const DesktopProjectRoot('/tmp/project'),
+    ),
+  ));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Assembly'));
+  await tester.pumpAndSettle();
+  await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A plate and a tube');
+  await tester.tap(find.byKey(const Key('aiModellingSend')));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
+  await tester.pumpAndSettle();
+  for (var i = 0; i < 2; i++) {
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+  }
+  // The assembly's own save dialog.
+  await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+  await tester.pumpAndSettle();
+  return (sent: sent, matesCreated: matesCreated, statusCalls: statusCalls);
+}
+
+void completenessTests() {
+  testWidgets('a component left free gets one follow-up mates turn naming its free motions, then the check runs again',
+      (tester) async {
+    final run = await _runInAppAssemblyWithCheck(
+      tester,
+      laterReplies: [_matesPlanText, _followUpMatesText],
+      status: (call) => call == 0 ? _freeStatus() : _heldStatus(),
+    );
+
+    expect(run.sent, hasLength(6));
+    final followUp = run.sent.last.last.text;
+    expect(followUp, contains('can still move'));
+    expect(followUp, contains('existing:occ-tube'));
+    expect(followUp, contains('slide along x, slide along y, spin about z'));
+    expect(followUp, contains('intended_motion'));
+    expect(followUp, isNot(contains('existing:occ-plate'))); // the fixed one is not listed
+    expect(run.matesCreated, 2);
+    expect(run.statusCalls, 2);
+    expect(find.byKey(const Key('aiModellingCompletenessReport')), findsOneWidget);
+    expect(find.textContaining('TUBE_001.didsa: fully constrained'), findsOneWidget);
+    expect(find.textContaining('The follow-up added 1 mate added.'), findsOneWidget);
+  });
+
+  testWidgets('a component declared meant to move is reported with its intent and gets no follow-up', (tester) async {
+    final run = await _runInAppAssemblyWithCheck(
+      tester,
+      laterReplies: [_intendedMatesText],
+      status: (_) => _freeStatus(),
+    );
+
+    expect(run.sent, hasLength(5)); // manifest, two parts, assembly, mates: nothing more
+    expect(run.statusCalls, 1);
+    expect(find.textContaining('meant to move: "spins about its axle"'), findsOneWidget);
+  });
+
+  testWidgets('the follow-up is sent at most once, even when the component is still free afterwards', (tester) async {
+    final run = await _runInAppAssemblyWithCheck(
+      tester,
+      laterReplies: [_matesPlanText, _followUpMatesText, _followUpMatesText],
+      status: (_) => _freeStatus(),
+    );
+
+    expect(run.sent, hasLength(6)); // never a seventh turn
+    expect(run.statusCalls, 2);
+    expect(find.textContaining('TUBE_001.didsa: free to move: slide along x'), findsOneWidget);
+  });
+
+  testWidgets('a follow-up that only declares the free motion intended adds no mates and shows the intent',
+      (tester) async {
+    final run = await _runInAppAssemblyWithCheck(
+      tester,
+      laterReplies: [
+        _matesPlanText,
+        '{"version": 1, "steps": [], "intended_motion": [{"component": "existing:occ-tube", "motion": "swivels"}]}',
+      ],
+      status: (_) => _freeStatus(),
+    );
+
+    expect(run.sent, hasLength(6));
+    expect(run.matesCreated, 1);
+    expect(find.textContaining('meant to move: "swivels"'), findsOneWidget);
+    expect(find.textContaining('declared the free motion intended'), findsOneWidget);
+  });
+
+  testWidgets('fully held components need no follow-up and the report says so', (tester) async {
+    final run = await _runInAppAssemblyWithCheck(tester, laterReplies: [_matesPlanText], status: (_) => _heldStatus());
+
+    expect(run.sent, hasLength(5));
+    expect(find.textContaining('TUBE_001.didsa: fully constrained'), findsOneWidget);
+    expect(find.textContaining('PLATE_001.didsa: fixed'), findsOneWidget);
+  });
+
+  testWidgets("an imported zip gets the report (with the zip's own intended_motion) but never a provider turn",
+      (tester) async {
+    final zip = _importZip(
+      mates: [_importedMate],
+      intended: [
+        {'component': 'tube', 'motion': 'swivels'},
+      ],
+    );
+    // `_runImportedZip` fails the test if the provider is asked anything; its handler gives constraint status for
+    // whatever occurrence ids the placement run created.
+    await _runImportedZip(
+      tester,
+      zip,
+      statusFor: (ids) => {
+        for (final entry in ids.asMap().entries)
+          entry.value: entry.key == 0
+              ? {'status': 'fixed', 'dof': 0, 'free_motions': []}
+              : {
+                  'status': 'under_constrained',
+                  'dof': 1,
+                  'free_motions': [
+                    {'kind': 'spin', 'axis': [0.0, 1.0, 0.0], 'through': [3.0, 0.0, 0.0]},
+                  ],
+                },
+      },
+    );
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('aiModellingCompletenessReport')), findsOneWidget);
+    expect(find.textContaining('free to spin about y (through (3, 0, 0)) (meant to move: "swivels")'), findsOneWidget);
   });
 }

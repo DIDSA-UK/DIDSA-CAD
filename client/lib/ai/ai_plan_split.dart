@@ -17,7 +17,11 @@ class AiPlanSplit {
   final AiGenerationPlan? placement;
   final List<AiMateStep> mates;
 
-  const AiPlanSplit({required this.placement, required this.mates});
+  /// The plan's `intended_motion` (components meant to move), passed through untouched: ids are rewritten with the
+  /// mates' by [rewriteMateOccurrenceIds].
+  final List<AiIntendedMotion> intendedMotion;
+
+  const AiPlanSplit({required this.placement, required this.mates, this.intendedMotion = const []});
 }
 
 /// Separates [plan]'s `mate` steps from everything else. A mate can reference only an `add_component` (or an
@@ -27,14 +31,21 @@ AiPlanSplit splitPlacementAndMates(AiGenerationPlan plan) {
   return AiPlanSplit(
     placement: placementSteps.isEmpty ? null : AiGenerationPlan(version: plan.version, steps: placementSteps),
     mates: plan.steps.whereType<AiMateStep>().toList(),
+    intendedMotion: plan.intendedMotion,
   );
 }
 
 /// A plan of [mates] in which every reference that names an `add_component` `local_id` found in [localToReal] now
 /// reads `existing:<real occurrence id>`. A reference that is `""`, already `existing:...`, or names anything else
 /// (an unknown id, or a `local_id` whose component was never placed) is left as written: validation reports it.
-/// Covers each reference's `occurrence_id` and a Width mate's `midplane.b_occurrence_id`.
-AiGenerationPlan rewriteMateOccurrenceIds(List<AiMateStep> mates, Map<String, String> localToReal, {int version = 1}) {
+/// Covers each reference's `occurrence_id` and a Width mate's `midplane.b_occurrence_id`, and the `component` of each
+/// [intendedMotion] entry (a name that is not a local id stays as written).
+AiGenerationPlan rewriteMateOccurrenceIds(
+  List<AiMateStep> mates,
+  Map<String, String> localToReal, {
+  int version = 1,
+  List<AiIntendedMotion> intendedMotion = const [],
+}) {
   String? rewrite(String? id) {
     if (id == null || id.isEmpty || id.startsWith('existing:')) return id;
     final real = localToReal[id];
@@ -58,6 +69,9 @@ AiGenerationPlan rewriteMateOccurrenceIds(List<AiMateStep> mates, Map<String, St
 
   return AiGenerationPlan(
     version: version,
+    intendedMotion: [
+      for (final m in intendedMotion) AiIntendedMotion(component: rewrite(m.component)!, motion: m.motion),
+    ],
     steps: [
       for (final mate in mates)
         AiMateStep(

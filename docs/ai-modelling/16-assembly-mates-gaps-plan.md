@@ -1,7 +1,7 @@
 # Workstream 16: Assembly mates gaps (plan)
 
 Written 2026-11-04 from the open items at the end of `tools/ai_eval/README.md` ("Where this leaves the evaluation").
-Implementation status is in "What was built" at the end of this file (Phase 1 built; the rest as marked there).
+Implementation status is in "What was built" at the end of this file (Phases 1 and 2 built; the rest as marked there).
 Written to be implemented by a new session; read this file, `13-multi-part-assembly-overhaul.md` ("Mates turn and
 stated assumptions") and `15-external-ai-zip-import-findings.md` first.
 
@@ -237,3 +237,68 @@ Client only, as planned.
 
 Not verified: the split against a real backend's `face_selector` resolution (the widget tests use a fake backend). The
 Phase 4 harness `import` command is where that is exercised.
+
+### Phase 2: the completeness check (built)
+
+Backend (`assembly_group.py`, `schemas.py`, `router.py`):
+- `constraint_report(document, part)` = `constraint_status` plus, per `under_constrained` occurrence, its free motions
+  (`constraint_status` is now a thin wrapper, unchanged for its callers). `GET /parts/{id}/constraint-status` entries
+  gain `free_motions: [FreeMotion]` (empty for every other status, so the tree badge's payload only grows for free
+  components). Note the route is `constraint-status`, with a hyphen (the plan wrote `constraint_status`).
+- `free_motions_for_member` describes them **in the component's own part frame** (the frame `face_selector` uses), as
+  `slide {direction}`, `spin {axis, through}` or `screw {axis, through, pitch_per_turn}`. It takes the member's block
+  of the nullspace basis, splits pure translations from rotations (SVD of the rotation part), rotates both into the
+  part frame, and prefers the coordinate axes inside each subspace, so a seated plate reads as "slide along x, slide
+  along y, spin about z". `through` is the point on the spin axis nearest the part origin. With mobility above 1 the
+  list is a basis: any mix is free (the client says "any mix").
+- **Changed from the plan: the weighting is not undone again.** `GroupAnalysis.basis` is already `null_y / weights`,
+  i.e. in plain `[v, w]` (mm, radians) coordinates, although its comment says "orthonormal in metric diag(1,1,1,L,L,L)"
+  (which is true of its rows' *norm*, not its entries). Dividing by the weights again scales the spin points wrongly;
+  `test_a_pin_in_a_bore_slides_and_spins_about_its_own_axis_even_when_that_axis_is_off_the_origin` fails if it is
+  (checked by doing it once). The code multiplies the member's block by the weights only to take a well-scaled SVD.
+- The twist convention checked: `v` is the origin's translation and `w` the rotation vector composed on the left (world
+  axes), so a free point `q` of the part moves by `v + w x (R q)`; the spin axis in the part frame passes through
+  `w_p x v_p / |w_p|^2`.
+- Tests (`test_constraint_free_motions.py`): one coincident seat mate = two slides + a spin about its normal; the three
+  flank mates = none (`fully_constrained`); an unmated component = three slides and three spins; a box turned 90 degrees
+  about x reports its motions in its own frame, not the world's; a pin in a bore = a slide and a spin about an axis off
+  the origin; the endpoint's JSON. `test_validate_ignores_an_unknown_top_level_field` (see below).
+
+Unknown top-level plan field (the "check first" item):
+- Client: `AiGenerationPlan.fromJson` read only `version` and `steps` and ignored the rest, and `toJson` dropped it.
+- Backend: `PlanValidateRequest` is a plain Pydantic model (default `extra="ignore"`); the new test confirms a validate
+  request with `intended_motion` returns 200.
+- So a plan carrying `intended_motion` was already harmless. It is now parsed (`AiGenerationPlan.intendedMotion`,
+  entries `{component, motion}`, malformed entries skipped) and `toJson()` still leaves it out of the validate payload
+  (`toJson(includeIntendedMotion: true)` has it). A plan may have **no steps** if it declares an intended motion (a
+  follow-up that adds nothing); without one the "Plan has no steps" error is unchanged.
+
+Client (`ai_assembly_report.dart`, `ai_modelling_screen.dart`, `ai_scoping_prompt.dart`):
+- `buildCompletenessReport` joins `listOccurrences`, `getConstraintStatus` and the declared intent (a component named by
+  real id, `existing:<id>`, name or file name, case-insensitively; an unknown name is ignored). The text per component:
+  fixed / fully constrained / "free to move: slide along x, slide along y, spin about z (any mix)" / over-constrained /
+  not checked (its mates could not be resolved), plus `(meant to move: "...")` when declared. An assembly of more than
+  12 components lists only those that need attention and counts the rest.
+- Shown in the progress panel under `_mateNote` ("Mate check") after every AI-built assembly, in-app or imported, once
+  the mates are built and before the save.
+- In-app follow-up: when a component is free and no `intended_motion` names it, `_runMatesFollowUp` sends ONE more
+  mates turn (`assemblyModeMatesFollowUpRequestText`: the free components with their motions, "add only the mates that
+  are missing", and the `intended_motion` format), builds what comes back, and checks again. Never a second one (a
+  test asserts a seventh provider turn is never sent). Sent only after the first mates turn built something; any
+  failure is noted and never stops the run. A reply with `"steps": []` and an `intended_motion` is accepted.
+- **Changed from the plan:** an over-constrained component is reported but does not trigger the follow-up and is not
+  sent "as a contradiction to remove": the plan schema has no step that deletes a mate, so the model cannot remove one.
+  The follow-up only tells it to add no mates to such a component.
+- **Changed from the plan:** the in-app system prompt (pinned by the 2026-11-04 runs) does not mention
+  `intended_motion`, so the in-app first mates turn cannot declare an intent; the follow-up request text describes the
+  field instead. A deliberately free component (a wheel) therefore costs the in-app route one follow-up turn.
+- The external route does declare it up front: the external paragraphs and the hand-off preamble ask for a top-level
+  `intended_motion` in `99_assembly.json`; the importer carries it through the split (component ids rewritten like the
+  mates') into the report. Imported: no automatic turn; the report feeds Phase 3.
+- Tests: `ai_assembly_report_test.dart`; `ai_plan_test.dart` (the unknown field, `intended_motion`, empty steps);
+  `ai_modelling_screen_orchestration_test.dart` (follow-up sent for a free undeclared component with its motions
+  listed, then re-checked; declared intent = no follow-up; at most one follow-up; a follow-up that only declares
+  intent; held components = none; an imported zip gets the report with the zip's intent and never a provider turn).
+
+Not verified: the free-motion description on a real AI-built assembly (the backend tests use hand-built scenes); how a
+model reacts to the follow-up request (no model was run, see Phase 4).

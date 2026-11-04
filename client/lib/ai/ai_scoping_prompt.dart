@@ -986,7 +986,10 @@ leave "flipped" out. Write enough mates that each part is held where it is, unle
 rarely does it (a part seated flat on another face can still slide along it and spin on it; a pin needs its
 concentric mate and a mate that stops it sliding along the bore). Mate a part to the part or parts it actually
 touches; add the mates against its other faces (sides, flanks, a second bore) that stop it sliding and turning. A
-part that is meant to move (a wheel on its axle, a swivel) keeps that freedom: do not lock it.''';
+part that is meant to move (a wheel on its axle, a swivel) keeps that freedom: do not lock it, and say so in a
+top-level "intended_motion" of this same plan (next to "version" and "steps"), one entry per such component:
+{"component": "<its add_component local_id>", "motion": "spins about its axle"}. The app reports each component as
+held or free after it builds the mates, and shows your intended_motion next to what it finds free.''';
 
 /// [assemblyModeVocabularyText] for the external hand-off: the same intro, then [_assemblyModeExternalAssembly].
 const String assemblyModeExternalVocabularyText = '$_assemblyModeIntro\n\n$_assemblyModeExternalAssembly';
@@ -1026,6 +1029,25 @@ String assemblyModeMatesRequestText(String placedComponents) =>
 /// ordinary chat turn; the assistant replies with the revised manifest.
 String assemblyModeCorrectionsText(String corrections) =>
     'Corrections to your assumptions:\n$corrections\n\nPlease reply with the revised part_manifest.';
+
+/// The one follow-up mates turn (`16-assembly-mates-gaps-plan.md`, Phase 2): the mates are built but the completeness
+/// check found components that can still move. [freeComponents] lists them, one `existing:<id>` per line with
+/// its name and free motions, in each component's own part coordinates; [overConstrained] lists components whose mates already
+/// contradict each other (adding mates to them cannot help), or is empty. The in-app system prompt does not describe
+/// `intended_motion`, so this request does.
+String assemblyModeMatesFollowUpRequestText({required String freeComponents, String overConstrained = ''}) {
+  final over = overConstrained.isEmpty
+      ? ''
+      : '\n\nThese components already have mates that contradict each other; add no mate to them:\n$overConstrained';
+  return 'The mates are built, and checking them against the placed components shows these can still move '
+      '(slides and spins are along and about that component\'s own part axes):\n$freeComponents$over\n\n'
+      'Reply with a plan of mate steps only, naming faces with face_selector as before, that holds each of them '
+      'where it is: add only the mates that are missing, the existing ones stay. A component that is meant to '
+      'move (a wheel turning on its axle, a swivel) must stay free: do not lock it, and list it in a top-level '
+      '"intended_motion" of the same plan instead, {"version": 1, "steps": [...], "intended_motion": '
+      '[{"component": "existing:<id>", "motion": "spins about its axle"}]}. If every component listed is meant '
+      'to move, reply with "steps": [] and the intended_motion alone.';
+}
 
 /// Same as [assemblyModeMatesRequestText], after a mates plan failed validation.
 String assemblyModeMatesRetryRequestText() =>
