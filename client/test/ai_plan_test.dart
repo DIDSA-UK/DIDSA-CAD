@@ -515,4 +515,56 @@ void main() {
     expect(step.nameOverride, isNull);
     expect(step.toJson().containsKey('name_override'), isFalse);
   });
+
+  group('intended_motion (16-assembly-mates-gaps-plan.md, Phase 2)', () {
+    final mate = {
+      'local_id': 'm1',
+      'kind': 'mate',
+      'type': 'coincident',
+      'references': [
+        {'occurrence_id': 'a', 'face_selector': {'direction': '+z'}},
+        {'occurrence_id': 'b', 'face_selector': {'direction': '-z'}},
+      ],
+    };
+
+    test('an unknown top-level field is ignored; intended_motion is read, with malformed entries skipped', () {
+      final plan = AiGenerationPlan.fromJson({
+        'version': 1,
+        'steps': [mate],
+        'something_else': 7,
+        'intended_motion': [
+          {'component': 'wheel', 'motion': 'spins about its axle'},
+          {'component': 'oops'},
+          'not an object',
+        ],
+      });
+      expect(plan.steps, hasLength(1));
+      expect(plan.intendedMotion.map((m) => '${m.component}: ${m.motion}'), ['wheel: spins about its axle']);
+    });
+
+    test('intended_motion does not travel to the backend unless asked', () {
+      final plan = AiGenerationPlan.fromJson({
+        'steps': [mate],
+        'intended_motion': [
+          {'component': 'wheel', 'motion': 'spins'},
+        ],
+      });
+      expect(plan.toJson().containsKey('intended_motion'), isFalse);
+      expect(plan.toJson(includeIntendedMotion: true)['intended_motion'], [
+        {'component': 'wheel', 'motion': 'spins'},
+      ]);
+    });
+
+    test('a plan may have no steps only when it declares an intended motion', () {
+      expect(() => AiGenerationPlan.fromJson({'steps': []}), throwsFormatException);
+      final plan = AiGenerationPlan.fromJson({
+        'steps': [],
+        'intended_motion': [
+          {'component': 'wheel', 'motion': 'spins'},
+        ],
+      });
+      expect(plan.steps, isEmpty);
+      expect(plan.intendedMotion, hasLength(1));
+    });
+  });
 }

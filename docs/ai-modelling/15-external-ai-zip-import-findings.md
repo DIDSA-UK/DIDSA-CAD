@@ -67,6 +67,11 @@ since an imported assembly gets no mates turn (`13-multi-part-assembly-overhaul.
 assumptions"); they are added in the app. `ai_plan_export_test.dart` builds a zip to that layout and checks the
 importer reads it. Not tested with a real external chat.
 
+**Superseded 2026-11-04 (`16-assembly-mates-gaps-plan.md`, Phase 1):** the hand-off now asks for the mates too, at the
+end of `99_assembly.json`, naming components by their `add_component` `local_id`; the app places the components, then
+rewrites those ids and builds the mates (`ai_plan_split.dart`). The "no mate steps" wording above is what was true
+for the first version only.
+
 ## Open / not done
 
 - **The zip importer does not repair finding 3.** An imported assembly that
@@ -74,6 +79,9 @@ importer reads it. Not tested with a real external chat.
   to re-express the whole assembly in the first component's frame: apply the
   inverse of its placement to every other component's placement. Left for the
   planned assembly testing.
+- *Update 2026-11-04:* one imported zip (hand-written, for `asm_pin_block`, with mates) has now been built end to end
+  against a live backend through the eval harness (`tools/ai_eval`, `eval.sh import`); that is not a real external
+  chat. The remaining point below stands for the app screen itself.
 - Real end-to-end verification of an imported multi-part zip (Generate All
   through the assembly) has not been done; this session had no Flutter SDK
   that ran, no OpenCascade, and no display. Client behaviour was verified only

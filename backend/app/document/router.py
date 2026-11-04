@@ -46,7 +46,7 @@ from app.document.assembly_group import (
     branch_alternatives,
     branch_options,
     mate_branch_controls,
-    constraint_status,
+    constraint_report,
     part_with_branch_changes,
     search_branch_changes,
     mate_with_flipped_alias,
@@ -245,6 +245,7 @@ from app.document.schemas import (
     MateMotionQuality,
     MateMotionRequest,
     ConstraintStatusEntry,
+    FreeMotion,
     MateMotionResponse,
     BranchChangeResponse,
     MateSolvePreviewMember,
@@ -3695,7 +3696,8 @@ def list_occurrences(part_id: str) -> list[OccurrenceResponse]:
 @router.get("/parts/{part_id}/constraint-status", response_model=dict[str, ConstraintStatusEntry])
 def get_constraint_status(part_id: str) -> dict[str, ConstraintStatusEntry]:
     """Bug report 2026-10-14, item 7: a per-occurrence constraint state for the
-    Assembly tree's badge - `{occurrence_id: {status, dof}}` with `status` one
+    Assembly tree's badge - `{occurrence_id: {status, dof, free_motions}}` (`free_motions`: what an under-constrained
+    occurrence can still do, in its own part frame) with `status` one
     of `fixed | fully_constrained | under_constrained | over_constrained` (see
     `assembly_group.constraint_status` for the exact rules). Read-only; one
     group analysis per mate-graph component, so it is meant to be fetched on a
@@ -3703,8 +3705,8 @@ def get_constraint_status(part_id: str) -> dict[str, ConstraintStatusEntry]:
     is simply absent."""
     part = get_part_or_404(part_id)
     return {
-        occurrence_id: ConstraintStatusEntry(status=status, dof=dof)
-        for occurrence_id, (status, dof) in constraint_status(get_document(), part).items()
+        occurrence_id: ConstraintStatusEntry(status=status, dof=dof, free_motions=[FreeMotion(**m) for m in motions])
+        for occurrence_id, (status, dof, motions) in constraint_report(get_document(), part).items()
     }
 
 

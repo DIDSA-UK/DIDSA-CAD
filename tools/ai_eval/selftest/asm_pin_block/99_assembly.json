@@ -1,0 +1,11 @@
+{"version": 1, "steps": [
+  {"local_id": "block", "kind": "add_component", "relative_path": "BLOCK_001.didsa"},
+  {"local_id": "pin", "kind": "add_component", "relative_path": "PIN_001.didsa"},
+  {"local_id": "mv_pin", "kind": "move_component", "occurrence_id": "pin", "translation": [0, 0, -20]},
+  {"local_id": "m_axis", "kind": "mate", "type": "concentric", "references": [
+    {"occurrence_id": "block", "face_selector": {"cylinder_radius": 10}},
+    {"occurrence_id": "pin", "face_selector": {"cylinder_radius": 10}}]},
+  {"local_id": "m_seat", "kind": "mate", "type": "coincident", "references": [
+    {"occurrence_id": "block", "face_selector": {"direction": "+z"}},
+    {"occurrence_id": "pin", "face_selector": {"direction": "-z", "near": [12, 0, 40]}}]}
+]}

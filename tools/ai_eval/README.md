@@ -22,12 +22,13 @@ So a run tests what ships, not a copy of it.
 | `sketches/` | The test drawings, downscaled to 1568 px on the long edge as the app does. `asm_*` are multi-part assemblies (see "Assembly mode"). |
 | `sketches/source/` | The reference models the generated assembly sheets are drawn from, and the answer keys come from. |
 | `harness/expected.py` | The answer key for each sketch, and the scorer. |
-| `harness/expected_assembly.py`, `harness/assembly_keys.json` | The same for the assembly sketches. |
+| `harness/expected_assembly.py`, `harness/assembly_keys.json` | The same for the assembly sketches, plus the completeness (`constrained`) comparison against each key's `expected_motion`. |
 | `harness/ai_eval_harness_test.dart` | The app-code side, run through `eval.sh`. |
 | `harness/inspect_step.py` | Geometry report for a STEP file: volume, bounding box, faces, cylinder radii. |
 | `harness/table.py` | Pass table, plus how the render-back check's verdicts compare with the scores. |
-| `agent_prompts/` | Instructions for the model standing in for the provider. `model.md` covers the image analysis and the chat; `check.md` covers the render-back check; `model_assembly.md` is `model.md` for Assembly mode. |
-| `eval.sh` | `prompts`, `build`, `verdict` and `table`; for assemblies `prompts-assembly`, `manifest` and `assemble`. |
+| `agent_prompts/` | Instructions for the model standing in for the provider. `model.md` covers the image analysis and the chat; `check.md` covers the render-back check; `model_assembly.md` is `model.md` for Assembly mode; `model_external.md` plays an external chat app for the external route. |
+| `eval.sh` | `prompts`, `build`, `verdict` and `table`; for assemblies `prompts-assembly`, `manifest` and `assemble`; for the external route `handoff` and `import`. |
+| `selftest/` | A hand-written zip that exercises the external route's code without a model. |
 | `runs/`, `prompts/`, `prompts_asm/` | Output (git-ignored). |
 
 ## Setup
@@ -79,6 +80,87 @@ distance from the assembly's centroid). A nested sub-assembly is scored flattene
 build one level.
 
 Assembly mode has no render-back check in the app (only the single-part flow has one), so these runs have none.
+
+## External route (the hand-off and the zip)
+
+Assembly mode's "Share with external AI" gives a user a package to paste into another chat app, and the app's
+"Import plan" reads back the zip that app produces (`docs/ai-modelling/15-external-ai-zip-import-findings.md`, and
+`16-assembly-mates-gaps-plan.md` for the mates in it). The harness plays that route with the app's own code, with a
+model standing in for the chat app. **It is a stand-in: nothing here has been run against claude.ai, ChatGPT or
+Gemini** (see "A real external chat" below).
+
+1. `tools/ai_eval/eval.sh handoff tools/ai_eval/prompts_ext` writes `handoff.md`: the Assembly-mode hand-off package
+   exactly as the app builds it with nothing said yet. That plus the sketch image(s) is all a user has to paste.
+2. Make `runs/<sketch>/<model>-ext-r<n>/`. Run a fresh model on `agent_prompts/model_external.md` with `{HANDOFF}`,
+   `{IMAGES}` and `{RUN}` filled in. It treats the package as a pasted user message (no system prompt, no image-analysis
+   step), writes `reply1.txt` (and `reply2.txt` after the scripted "use your best reading"), and delivers the zip's files:
+   the JSON files in `<run>/files/`, or, for a chat app that cannot create files, fenced blocks in `final_reply.txt`
+   (the harness extracts them, as the user would save them). Its assumptions are answered by the harness as the owner
+   in the in-app rounds: correct only what contradicts the owner's reading, confirm the rest.
+3. `eval.sh import <run>` zips `files/*.json`, reads the zip with `AiPlanBundle.fromZipBytes`, builds every part into one
+   backend document and project folder, then the assembly the way the app does (`AiModellingScreen._runAssemblyCycle`):
+   the placements, then the zip's own mates with their `add_component` `local_id`s rewritten to the real occurrence ids,
+   then the completeness check. Same outputs and score as `assemble`; a failure is recorded, not retried (an imported
+   plan is fixed). `eval.sh table` lists `-ext-` runs with the others.
+
+`eval.sh assemble` now takes the same path for an in-app assembly plan that carries its own mates: placements, then the
+mates, as the app does.
+
+### Completeness (the `constrained` column)
+
+After the mates, the harness reads the app's per-component mate check (`GET .../constraint-status`, with each free
+component's free motions in its own part frame) into `completeness.json` and `completeness.txt`. `expected_assembly.py`
+compares each component with its part's `expected_motion` in `assembly_keys.json` and reports `constrained`, e.g.
+`11/12`, with the `under` / `over` / `differs` ones in `score.json`. **It never changes pass/fail**: placement decides
+that, completeness is read beside it.
+
+- Vocabulary: `held` (fixed or fully constrained), `spin` / `2spin` (free to spin about one / two axes and nothing else:
+  motion is absolute, so a wheel on a swivelling fork also swivels and is `2spin`), `slide+spin`, `2slide+spin`, `free`.
+  Alternatives with `|`: a round pin, bolt, washer or nut in a hole is `held|spin`.
+- `under`: the component can move more than any alternative allows (the gap this check was built for: the dovetail
+  plate's one seat mate leaves it `2slide+spin` where `held` is expected). `over`: held more than expected, or its
+  mates contradict each other. `differs`: as much freedom, a different motion.
+- **The expected motions are my reading, not the owner's** (they live in `sketches/source/models.py`
+  `EXPECTED_MOTION`, copied into `assembly_keys.json`): please check them with the answer keys above, above all the
+  caster (fork `spin`, wheel `2spin`) and whether a round pin should count as `held` or `spin`.
+- The harness measures the first mates turn. It does not play the app's one follow-up turn for a free component (the app
+  sends it in-app only), so in-app runs show what the model left free *before* that turn.
+- Harness self-test (2026-11-04; the zip is kept in `selftest/`, see its README): a hand-written zip for `asm_pin_block` (written by hand, **not** a model run) built
+  through `import` against a live backend: parts and assembly built, placement passed, both mates built, the pin reported
+  `free to spin about z` and scored `2/2`; the same zip with its seat mate removed reported `slide along z, spin about z`
+  and scored `under`; one with an invalid face direction was refused by the server with HTTP 422 and recorded, with the
+  placed assembly still built. That 422 case exposed a gap in the app (a schema-invalid mates plan threw instead of being
+  recorded as a failed plan), fixed in `_executeMatesPlan`.
+
+### A real external chat: the owner's checklist
+
+A session cannot drive a chat app, and the external route has not been tried with one. To do it by hand, once per chat
+app (at least two, to cover file creation against fenced blocks), for `asm_dovetail` and `asm_wheel_bracket`:
+
+1. In DIDSA-CAD, open AI Modelling, switch to **Assembly**, and use **Share with external AI** (the toolbar share
+   button): **Copy text**, or **Share / Save file**. Nothing has to be said in the conversation first.
+2. In a fresh chat of the app under test, attach the sketch(es) (`sketches/asm_dovetail.jpg`, or both
+   `asm_wheel_bracket_*.png`) and paste the package as the message. Note which model and plan the chat was using.
+3. Answer its assumptions as you would: correct what is wrong, confirm the rest.
+4. Take its final reply. If the chat app offers a **.zip** or the JSON files for download, download them; otherwise save
+   each fenced block under the file name it gave, and zip the files yourself (flat, no folder).
+5. In DIDSA-CAD, AI Modelling, Assembly mode: **Import plan**, pick the zip, confirm the parts, **Confirm & Generate
+   All**, save each file when asked.
+6. Read the progress panel: the mates note (how many were built, or why not) and the **Mate check** (each component
+   fixed, fully constrained, or what it can still do). If mates failed or components are free, try **Fix mates with
+   external AI**, paste its package into the same chat, bring back the `mates.json` with **Import mates** (same session
+   only: do not dismiss the screen between), and note whether the file arrived usable.
+7. Record for each chat app, and send back: which app and model; **file route or fenced blocks**; whether the zip
+   imported and which error if not; whether `99_assembly.json` had mates at the end, named components by `local_id`
+   and faces by `face_selector` (a screenshot of the progress panel is enough); whether it declared
+   `intended_motion` for the wheel; the Mate check text; whether the fix round trip worked; and anything the chat
+   app did to the JSON (truncation, a changed quote, an added comment, a renamed file).
+
+What to look for first, since the app has never seen real external output: JSON the importer cannot read (the chat
+app's own commentary inside a file, trailing commas, smart quotes), an assembly plan whose mates come before its
+placements, `local_id`s reused or missing, a `face_selector` direction that is not one of the six axes (the server
+refuses the whole mates plan with HTTP 422: the placed assembly is still saved, the note shows the server's message),
+and whether the model follows the "Assembly mode" paragraphs over the "Assembly editing" ones about naming components.
 
 ## Answer keys: please confirm
 
@@ -206,10 +288,56 @@ current pose; the same reply passes, and every other run rebuilds the same. Haik
 Bodies, so its mates needed `body_id`s (the dry run named them); the run was stopped there.
 
 **Where this leaves the evaluation.** The owner dropped Haiku after these runs. Not done (token cost): a second
-run per sketch and model, so the 2026-11-04 tables are one run each - read them as direction, not rates; the
-external-AI hand-off (now asking for the zip) has not been tried with a real external chat. Open in the app: an
-imported zip gets no mates turn; nothing yet measures whether the mates fully constrain a part (the dovetails'
-seat mate leaves the plate free to slide) - `face_selector.normal` arrived after those runs. The plan to close these: `docs/ai-modelling/16-assembly-mates-gaps-plan.md`.
+run per sketch and model, so the 2026-11-04 tables are one run each - read them as direction, not rates.
+
+Since then (`docs/ai-modelling/16-assembly-mates-gaps-plan.md`, built; model rounds not run):
+- An imported zip now carries its own mates (the hand-off asks for them at the end of `99_assembly.json`) and the app
+  builds them after the placements; a completeness check shows what each component can still do; `eval.sh handoff` and
+  `import` play that route; the `constrained` column scores completeness (see "External route").
+- **Not done, and why:** (1) *Most model rounds.* Only the Sonnet external route on three sketches was run (see the
+  table above, about 0.6M tokens). Not run: Opus, the three hand sketches, a second in-app run of the same six
+  (together about 2M more tokens), which wait for the owner's go-ahead. (2) *Re-scoring the 2026-11-04 in-app runs for completeness: not possible from this repository.*
+  `runs/` is git-ignored and was not kept, so the saved replies are not available to rebuild. The harness can do it as
+  soon as they are: copy each run folder back under `runs/`, run `eval.sh assemble <run>` (it rebuilds from the saved
+  `*_reply.txt` files with no model call and now writes `completeness.json`, `completeness.txt` and the `constrained`
+  field), then `eval.sh table`. Note it measures the first mates turn only, as before the app's follow-up. (3) *A real
+  external chat* is the owner's step: see "A real external chat: the owner's checklist". Until it is done the external
+  route is tested only by unit and widget tests, one hand-written zip through the harness (see the self-test above),
+  and a model standing in for the chat app once rounds are run.
+- Still open in the app: the zip importer's repair of a moved first component (finding 3 in `15-...md`); rebuilding the
+  `local_id` map for an imported assembly reopened in a later session.
+
+### External route, Sonnet, 2026-11-04 (first model rounds of the external route)
+
+Sonnet standing in for an external chat app (`agent_prompts/model_external.md`, the hand-off package as a pasted message),
+two runs per sketch, three sketches chosen to save tokens: easy (`asm_pin_block`, 2 parts), medium (`asm_wheel_bracket`,
+4 parts, one used twice) and most complex (`asm_caster`, 8 parts). Every run took the file route (a zip's JSON files);
+the fenced-block route was not exercised. About 0.6M tokens in all (85-120k a run). The scripted owner only said "go
+with your best reading": these are the fully dimensioned generated sheets, whose assumptions need no correction.
+
+| Sketch | Run 1 | Run 2 |
+|---|---|---|
+| `asm_pin_block` | P, 2 mates, constrained 2/2 | P, 2 mates, constrained 2/2 |
+| `asm_wheel_bracket` | P, 11 mates, constrained 5/5 | P, 10 mates, constrained 5/5 |
+| `asm_caster` | P, 18 mates, constrained 4/8 | P, 17 mates, constrained 4/8 |
+
+- **Placement and import: 6 of 6.** Every zip was read by the importer, every part built first time (no validation
+  failure, no retry), every mates plan built (no `face_selector` or local-id error), and every assembly passed the
+  placement score. Mates named components by their `add_component` `local_id`, as the external paragraphs ask.
+- **Completeness: matches on the easy and medium sketches, not on the caster.** Both caster runs locked the swivel:
+  the fork came out `fully constrained` where the key expects `spin` about the kingpin. That one choice cascades: the
+  wheel is then free only about its own axle (`spin`, key `2spin`), and the bolt and nut are held (`held`, key
+  `spin|2spin`), so the 4 `over` verdicts are one decision counted four times. Both runs left the wheel, bushing, washer
+  and kingpin free and declared them in `intended_motion`; the swivel itself was never declared or left free. Whether
+  a locked swivel is a modelling error or a fair reading of the drawing is for the owner (and the key is my unconfirmed
+  reading, see above).
+- Every run declared `intended_motion` for its wheel as asked, and also for round pins and axles ("nothing stops it
+  turning"), which the key allows.
+- **Read as direction, not rates**: two runs per cell, a model standing in for a chat app, no run against claude.ai,
+  ChatGPT or Gemini. Each sub-agent also ran one `mkdir` through a shell tool despite being told to use file tools only
+  (it changed no file content). The app's one follow-up turn was not played, so a locked swivel is what the first
+  mates turn left, before any follow-up. Not run: Opus, the hand sketches (`asm_dovetail`, `asm_frame`, `asm_block_pins`),
+  the in-app second runs.
 
 ### Render-back check, 2026-10-29
 

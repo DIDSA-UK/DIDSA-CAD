@@ -3707,11 +3707,25 @@ class MateMotionChart(BaseModel):
     lever_arm: float
 
 
+class FreeMotion(BaseModel):
+    """One motion an under-constrained occurrence can still make, in the occurrence's OWN part frame (the frame its
+    `face_selector`s use). A list of these is a basis of the free space: any mix of them is free too. See
+    `assembly_group.free_motions_for_member`."""
+
+    kind: Literal["slide", "spin", "screw"]
+    direction: list[float] | None = None  # slide: unit direction
+    axis: list[float] | None = None  # spin / screw: unit axis
+    through: list[float] | None = None  # spin / screw: the point on the axis nearest the part origin (mm)
+    pitch_per_turn: float | None = None  # screw: mm advanced along the axis per full turn
+
+
 class ConstraintStatusEntry(BaseModel):
     """One occurrence's row of `GET /parts/{id}/constraint-status`."""
 
     status: Literal["fixed", "fully_constrained", "under_constrained", "over_constrained"]
     dof: int  # the occurrence's own mobility (0 for fixed / fully constrained)
+    # Only for `under_constrained`: what it can still do (empty for every other status).
+    free_motions: list[FreeMotion] = []
 
 
 class MateMotionQuality(BaseModel):

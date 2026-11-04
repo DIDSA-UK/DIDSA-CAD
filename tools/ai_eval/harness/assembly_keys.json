@@ -570,7 +570,11 @@
     -40.0,
     -25.0,
     -20.0
-   ]
+   ],
+   "expected_motion": {
+    "A1": "held",
+    "A2": "held|spin"
+   }
   },
   "B": {
    "union_volume": 374567.24,
@@ -631,7 +635,13 @@
     -70.0,
     -40.0,
     0.0
-   ]
+   ],
+   "expected_motion": {
+    "B1": "held",
+    "B2": "held",
+    "B3": "held|spin",
+    "B4": "spin"
+   }
   },
   "D": {
    "union_volume": 415415.93,
@@ -692,7 +702,11 @@
     -80.0,
     -40.0,
     -10.0
-   ]
+   ],
+   "expected_motion": {
+    "D1": "held",
+    "D2": "held|spin"
+   }
   },
   "E": {
    "union_volume": 1241666.67,
@@ -726,7 +740,11 @@
     -85.0,
     -45.0,
     -0.0
-   ]
+   ],
+   "expected_motion": {
+    "E1": "held",
+    "E2": "held"
+   }
   },
   "C_SUB": {
    "union_volume": 212742.37,
@@ -848,7 +866,17 @@
     -50.0,
     -50.0,
     -118.0
-   ]
+   ],
+   "expected_motion": {
+    "C1": "held",
+    "C2": "held|spin",
+    "C3": "held|spin",
+    "C4": "spin",
+    "C5": "2spin",
+    "C6": "spin|2spin",
+    "C7": "spin|2spin",
+    "C8": "spin|2spin"
+   }
   },
   "F": {
    "union_volume": 13926654.63,
@@ -1188,7 +1216,13 @@
     -0.0,
     -0.0,
     -0.0
-   ]
+   ],
+   "expected_motion": {
+    "F1": "held",
+    "F2": "held",
+    "F3": "held",
+    "F4": "held"
+   }
   }
  }
 }

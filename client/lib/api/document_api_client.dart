@@ -1806,13 +1806,39 @@ bool _doubleListEquals(List<double> a, List<double> b) {
 /// One occurrence's row of `GET /parts/{id}/constraint-status`.
 enum ConstraintState { fixed, fullyConstrained, underConstrained, overConstrained }
 
+/// One motion an under-constrained occurrence can still make (`FreeMotion` in `schemas.py`), in the occurrence's own
+/// part frame. [kind] is `slide` ([direction]), `spin` ([axis], [through]) or `screw` (also [pitchPerTurn]). A list of
+/// them is a basis of the free space: any mix is free too.
+class FreeMotionDto {
+  final String kind;
+  final List<double>? direction;
+  final List<double>? axis;
+  final List<double>? through;
+  final double? pitchPerTurn;
+
+  const FreeMotionDto({required this.kind, this.direction, this.axis, this.through, this.pitchPerTurn});
+
+  static List<double>? _vector(Object? raw) => raw is List ? [for (final c in raw) (c as num).toDouble()] : null;
+
+  factory FreeMotionDto.fromJson(Map<String, dynamic> json) => FreeMotionDto(
+        kind: json['kind'] as String,
+        direction: _vector(json['direction']),
+        axis: _vector(json['axis']),
+        through: _vector(json['through']),
+        pitchPerTurn: (json['pitch_per_turn'] as num?)?.toDouble(),
+      );
+}
+
 class ConstraintStatusDto {
   final ConstraintState state;
 
   /// The occurrence's own mobility (0 for fixed / fully constrained).
   final int dof;
 
-  const ConstraintStatusDto({required this.state, required this.dof});
+  /// What an under-constrained occurrence can still do; empty for every other state.
+  final List<FreeMotionDto> freeMotions;
+
+  const ConstraintStatusDto({required this.state, required this.dof, this.freeMotions = const []});
 
   factory ConstraintStatusDto.fromJson(Map<String, dynamic> json) => ConstraintStatusDto(
         state: switch (json['status'] as String) {
@@ -1822,6 +1848,9 @@ class ConstraintStatusDto {
           _ => ConstraintState.underConstrained,
         },
         dof: (json['dof'] as num?)?.toInt() ?? 0,
+        freeMotions: [
+          for (final m in (json['free_motions'] as List? ?? const [])) FreeMotionDto.fromJson(m as Map<String, dynamic>),
+        ],
       );
 }
 

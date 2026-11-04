@@ -876,7 +876,7 @@ writes anything to disk on its own.''';
 /// reply - it first emits a `part_manifest` identifying the distinct parts,
 /// then is asked for each part's own ordinary plan one at a time, by the
 /// app itself (not by the end user typing each request by hand).
-const String assemblyModeVocabularyText = '''
+const String _assemblyModeIntro = '''
 ## Assembly mode
 
 This conversation has "Assembly" mode active - the user wants several
@@ -922,9 +922,9 @@ ordinary plan (the {"version": 1, "steps": [...]} shape described above)
 for **that one part only** - never re-emit a part_manifest, never include
 another part's steps in the same message, and never reference another
 part's own local_ids, Bodies, or Sketches - each part is built as its own
-completely independent, freshly-created Part.
+completely independent, freshly-created Part.''';
 
-Once asked for the assembly plan (after every part above has already been
+const String _assemblyModeInAppAssembly = '''Once asked for the assembly plan (after every part above has already been
 created and saved to a real file), reply with an ordinary plan that places
 the parts already saved: an add_component step per component (see
 "Assembly editing" above for its exact shape) using the exact
@@ -944,6 +944,61 @@ they hold them there, they must not move them. Which way two faces meet
 (facing each other, or flush and facing the same way) is taken from where
 the parts already are, so leave "flipped" out. Mate each part to the one
 it actually touches, and do not add a mate the drawing does not imply.''';
+
+const String assemblyModeVocabularyText = '$_assemblyModeIntro\n\n$_assemblyModeInAppAssembly';
+/// The Assembly-mode assembly paragraphs for the external-AI hand-off (`buildAiScopingSystemPrompt(externalHandoff:
+/// true)`, from `AiModellingScreen._shareExternalHandoff` only). Swapped in for [_assemblyModeInAppAssembly], whose
+/// two paragraphs do not fit an external chat: it says a plan has "no mate steps yet", and that mates name components
+/// by `existing:<id>`, ids only the app knows. Here the external AI wrote every part plan itself, so it can name
+/// each face by geometry (`face_selector`, in that part's own coordinates) and each component by the `local_id` of
+/// its `add_component` step; the app places the components, then rewrites those local ids to the real ones and
+/// checks the mates (`ai_plan_split.dart`). Same face_selector rules as the in-app text, one source of truth for
+/// both would be better, but the in-app text is pinned by the 2026-11-04 evaluation and is left as it was.
+const String _assemblyModeExternalPlanOrder = '''
+The assembly plan is the last file, 99_assembly.json (the app saves every part to its own file first; see the
+instructions at the top of this message). It is an ordinary plan, in this order:
+
+1. An add_component step per component (see "Assembly editing" above for its exact shape), with the relative_path
+   you were told to use for that part. Give every add_component a short, distinct local_id (e.g. "plate",
+   "pin_left"): that local_id is the name of the component everywhere else in this plan.
+2. A move_component step for every component but the first, putting it where the drawing has it. The first
+   component is never moved: it is the assembly's reference frame and is held fixed.
+3. At the END of the plan, after every add_component and move_component, the mate steps, which hold the components
+   where you placed them.''';
+
+/// How to write the mates of an external-hand-off assembly plan: the part of [assemblyModeExternalVocabularyText] that
+/// the repair package (`buildExternalMatesFixPackage`) repeats, so a fix chat gets the same rules without the whole prompt.
+const String assemblyModeExternalMatesGuidance = '''The app places the components first and only then checks the mates against the placed geometry. So in this plan - in
+place of the rule under "Assembly editing" that "existing:<id>" is the only way to name a placed component in a
+mate, and that face_selector needs it - a mate's "occurrence_id" is the local_id of an add_component step (bare, no
+"existing:" prefix), and a reference may use face_selector on it. Use no other way of naming a face: no
+subshape_ref, edge_selector or plane_ref, since no face index exists until the plan has run.
+
+Name each face with face_selector, in that component's OWN part coordinates (the frame its part plan was written
+in, before any move_component), which you know because you wrote every part plan: work out the face's outward
+normal, or a cylinder's radius, from that plan. {"direction": "+z"} is a planar face whose outward normal is +z;
+{"normal": [0, 0.86, 0.51]} is a sloped planar face (a dovetail flank, a mitre); {"cylinder_radius": 5} is a
+cylindrical face (a bore, a pin). Of several matches a planar selector takes the outermost along its direction; add
+"near": [x, y, z] (that part's coordinates) to pick the one nearest a point instead (a pin's shoulder from its tip,
+one of several equal holes). Leave out "body_id".
+
+The mates must agree with where you placed the components: they hold them there and must not move them. Which way
+two faces meet (facing each other, or flush and facing the same way) is taken from where the parts already are, so
+leave "flipped" out. Write enough mates that each part is held where it is, unless it is meant to move: one mate
+rarely does it (a part seated flat on another face can still slide along it and spin on it; a pin needs its
+concentric mate and a mate that stops it sliding along the bore). Mate a part to the part or parts it actually
+touches; add the mates against its other faces (sides, flanks, a second bore) that stop it sliding and turning. A
+part that is meant to move (a wheel on its axle, a swivel) keeps that freedom: do not lock it, and say so in a
+top-level "intended_motion" of this same plan (next to "version" and "steps"), one entry per such component:
+{"component": "<its add_component local_id>", "motion": "spins about its axle"}. The app reports each component as
+held or free after it builds the mates, and shows your intended_motion next to what it finds free.''';
+
+const String _assemblyModeExternalAssembly = '$_assemblyModeExternalPlanOrder\n\n$assemblyModeExternalMatesGuidance';
+
+/// [assemblyModeVocabularyText] for the external hand-off: the same intro, then [_assemblyModeExternalAssembly].
+const String assemblyModeExternalVocabularyText = '$_assemblyModeIntro\n\n$_assemblyModeExternalAssembly';
+
+
 
 /// Multi-part/assembly overhaul gap-closure (`13-...md`'s own D-4): the
 /// per-part/per-assembly synthetic request turns `_runPartCycle`/
@@ -978,6 +1033,25 @@ String assemblyModeMatesRequestText(String placedComponents) =>
 /// ordinary chat turn; the assistant replies with the revised manifest.
 String assemblyModeCorrectionsText(String corrections) =>
     'Corrections to your assumptions:\n$corrections\n\nPlease reply with the revised part_manifest.';
+
+/// The one follow-up mates turn (`16-assembly-mates-gaps-plan.md`, Phase 2): the mates are built but the completeness
+/// check found components that can still move. [freeComponents] lists them, one `existing:<id>` per line with
+/// its name and free motions, in each component's own part coordinates; [overConstrained] lists components whose mates already
+/// contradict each other (adding mates to them cannot help), or is empty. The in-app system prompt does not describe
+/// `intended_motion`, so this request does.
+String assemblyModeMatesFollowUpRequestText({required String freeComponents, String overConstrained = ''}) {
+  final over = overConstrained.isEmpty
+      ? ''
+      : '\n\nThese components already have mates that contradict each other; add no mate to them:\n$overConstrained';
+  return 'The mates are built, and checking them against the placed components shows these can still move '
+      '(slides and spins are along and about that component\'s own part axes):\n$freeComponents$over\n\n'
+      'Reply with a plan of mate steps only, naming faces with face_selector as before, that holds each of them '
+      'where it is: add only the mates that are missing, the existing ones stay. A component that is meant to '
+      'move (a wheel turning on its axle, a swivel) must stay free: do not lock it, and list it in a top-level '
+      '"intended_motion" of the same plan instead, {"version": 1, "steps": [...], "intended_motion": '
+      '[{"component": "existing:<id>", "motion": "spins about its axle"}]}. If every component listed is meant '
+      'to move, reply with "steps": [] and the intended_motion alone.';
+}
 
 /// Same as [assemblyModeMatesRequestText], after a mates plan failed validation.
 String assemblyModeMatesRetryRequestText() =>
@@ -1371,6 +1445,10 @@ String buildAiScopingSystemPrompt({
   // Multi-part/assembly overhaul, Phase D: same "opt-in, no effect on any
   // pre-existing caller" shape as `multiBodyPartMode` above.
   bool assemblyMode = false,
+  // Assembly mode, external hand-off only (`AiModellingScreen._shareExternalHandoff`): swaps the in-app assembly and
+  // mates paragraphs for the version an external chat can follow (mates inside 99_assembly.json, components named by
+  // their add_component local_id). Never set for the in-app assistant's own turns.
+  bool externalHandoff = false,
 }) {
   final hasExistingPart = existingPartSummary != null && existingPartSummary.trim().isNotEmpty;
   final assistantInstructions =
@@ -1386,7 +1464,7 @@ String buildAiScopingSystemPrompt({
     _fewShotExamples,
     ...addOnBlocks,
     if (multiBodyPartMode) multiBodyPartVocabularyText,
-    if (assemblyMode) assemblyModeVocabularyText,
+    if (assemblyMode) externalHandoff ? assemblyModeExternalVocabularyText : assemblyModeVocabularyText,
     if (hasExistingPart) _existingPartEditingBlock(existingPartSummary, existingOccurrencesSummary),
     if (availableComponentFilesSummary.isNotEmpty) _availableComponentFilesBlock(availableComponentFilesSummary),
     _planTerminationFooter,

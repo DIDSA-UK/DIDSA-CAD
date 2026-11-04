@@ -29,9 +29,11 @@ import 'ai_model_check.dart';
 import 'ai_part_manifest.dart';
 import 'ai_part_naming.dart';
 import 'ai_plan.dart';
+import 'ai_assembly_report.dart';
 import 'ai_plan_bundle.dart';
 import 'ai_plan_detection.dart';
 import 'ai_plan_export.dart';
+import 'ai_plan_split.dart';
 import 'ai_plan_summary.dart';
 import 'ai_plan_translator.dart';
 import 'ai_provider.dart';
@@ -112,6 +114,28 @@ const int aiImageMaxEdgePx = 1568;
 /// [_generate] targets it exactly like [existingPartId] itself - see that
 /// field's own doc comment for the full lifecycle (set on a stop, cleared
 /// on Undo or once a retry finally succeeds).
+/// How an imported zip's mates stand (`_AiModellingScreenState._importedMates`): none in the zip, failed validation (none
+/// built), the first mates built then one failed, or all built.
+enum _ImportedMates { none, failedValidation, partlyBuilt, built }
+
+/// What [_AiModellingScreenState._executeMatesPlan] did with a plan of mates.
+enum _MatesOutcome { built, partial, validationFailed }
+
+class _MatesRun {
+  final _MatesOutcome outcome;
+
+  /// The text for `_mateNote`.
+  final String note;
+
+  /// For a retry turn: the validation failure, worded as the in-app provider is told it.
+  final String? validationFailureText;
+
+  /// What went wrong, for the mates-fix package: the failing steps (validation) or the step error (partial).
+  final String problems;
+
+  const _MatesRun(this.outcome, this.note, {this.validationFailureText, this.problems = ''});
+}
+
 class AiModellingScreen extends StatefulWidget {
   /// Overridable for tests, so a real call never hits the network.
   final AiProvider? provider;
@@ -142,6 +166,13 @@ class AiModellingScreen extends StatefulWidget {
   final StorageService? storageService;
   final ProjectRoot? projectRoot;
 
+  /// Overridable for tests: stands in for the file picker of "Import plan" and returns a zip's bytes (see
+  /// [_importBundleFromBytes]), so a widget test never needs real file I/O.
+  final Future<Uint8List?> Function()? pickImportZip;
+
+  /// Overridable for tests: stands in for the file picker of "Import mates" and returns the text of `mates.json`.
+  final Future<String?> Function()? pickMatesText;
+
   const AiModellingScreen({
     super.key,
     this.provider,
@@ -150,6 +181,8 @@ class AiModellingScreen extends StatefulWidget {
     this.existingPartId,
     this.storageService,
     this.projectRoot,
+    this.pickImportZip,
+    this.pickMatesText,
   });
 
   @override
@@ -334,6 +367,26 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // The mate turn's outcome (`_runMateTurn`), shown under the Assembly row: how many mates were made, or why
   // the assembly was saved placed but unmated. Null before that turn runs, or when it was skipped.
   String? _mateNote;
+
+  // The mate-completeness check (`ai_assembly_report.dart`, `16-assembly-mates-gaps-plan.md` Phase 2): what the mates
+  // leave free, shown under [_mateNote], and the motion the AI declared intended (components named by real id, once
+  // the mates are built), which the check does not count as a gap.
+  AssemblyCompletenessReport? _completenessReport;
+  List<AiIntendedMotion> _intendedMotion = [];
+
+  // Components already in an existing assembly file this run inserted into: the check reports on what the run
+  // added, not on the user's own earlier work.
+  Set<String> _preexistingOccurrenceIds = {};
+
+  // Mates repair for an imported zip (`16-assembly-mates-gaps-plan.md`, Phase 3). The `add_component` `local_id` ->
+  // real occurrence id map the placement run returned, kept so a `mates.json` written against the zip's local ids can
+  // be read back; it lives only in this screen, so the repair works in the same session as the import and no
+  // longer (rebuilding it for an assembly reopened later is open). Null for an in-app-built assembly.
+  Map<String, String>? _importedLocalIdToRealId;
+  List<ExternalMatesComponent> _importedComponents = [];
+  _ImportedMates _importedMates = _ImportedMates.none;
+  String _importedMatesProblems = '';
+  bool _repairingMates = false;
   String? _assemblyPartId;
   String? _assemblyRelativePath;
 
@@ -625,7 +678,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// way, so it should never drift between call sites (a real risk before
   /// this was factored out: `_shareExternalHandoff` never threaded
   /// `multiBodyPartMode`/`assemblyMode` through at all until this refactor).
-  String _buildSystemPrompt() => buildAiScopingSystemPrompt(
+  String _buildSystemPrompt({bool externalHandoff = false}) => buildAiScopingSystemPrompt(
         assistantInstructionsOverride: AiSystemPromptPreferences.override,
         enabledAddOns: AiSystemPromptPreferences.enabledAddOns,
         disabledToolGroups: AiSystemPromptPreferences.disabledToolGroups,
@@ -634,6 +687,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         availableComponentFilesSummary: _availableComponentFilesSummary,
         multiBodyPartMode: _mode == AiGenerationMode.multiBodyPart,
         assemblyMode: _mode == AiGenerationMode.assembly,
+        externalHandoff: externalHandoff,
       );
 
   Future<void> _send() async {
@@ -1667,6 +1721,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _buildingAssembly = true;
       _orchestrationStatus = retryPartId == null ? 'Requesting the assembly plan...' : 'Requesting a revised assembly plan...';
       _orchestrationError = null;
+      _completenessReport = null;
+      _intendedMotion = [];
+      _preexistingOccurrenceIds = {};
+      _importedLocalIdToRealId = null;
+      _importedMates = _ImportedMates.none;
+      _importedMatesProblems = '';
     });
     _scrollToBottom();
     final partsListing = [
@@ -1689,6 +1749,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         final assemblyClient = AssemblyDocumentClient(storageService: storage, documentApiClient: _documentApi);
         final opened = await assemblyClient.openAssembly(root, targetPath);
         assemblyPartId = opened.rootPartId;
+        try {
+          _preexistingOccurrenceIds = {for (final o in await _documentApi.listOccurrences(opened.rootPartId)) o.id};
+        } on ApiException {
+          // No list, no filter: the check then also reports on those components.
+        }
         existingComponentsListing = opened.relativePathByPartId.entries
             .where((e) => e.key != opened.rootPartId)
             .map((e) => e.value)
@@ -1766,10 +1831,16 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         assemblyPartId = assemblyPart.id;
       }
 
+      // A plan that carries its own mates (an imported zip's 99_assembly.json, or an in-app plan that included some)
+      // cannot be validated as one plan: a mate's face_selector needs the placed component's real geometry. Run the
+      // placements first, then the mates with their add_component local ids rewritten to the real occurrence ids
+      // (`ai_plan_split.dart`, `16-assembly-mates-gaps-plan.md` Phase 1).
+      final split = splitPlacementAndMates(plan);
+      final placementPlan = split.placement ?? plan;
       if (!mounted) return;
       setState(() {
         _orchestrationStatus = 'Validating and building the assembly...';
-        _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
+        _orchestrationStepStatuses = List.filled(placementPlan.steps.length, TranslationStepStatus.pending);
       });
       final translator = PlanTranslator(
         documentApi: _documentApi,
@@ -1778,7 +1849,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         projectRoot: root,
       );
       final translation = await translator.execute(
-        plan: plan,
+        plan: placementPlan,
         partId: assemblyPartId,
         existingFeatures: retryPartId != null ? (_existingFeatures ?? const []) : const [],
         disabledKinds: AiSystemPromptPreferences.disabledKinds,
@@ -1802,10 +1873,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         await _prepareOrchestrationRetry(partId: assemblyPartId, saveOnly: false, isAssembly: true);
         if (translation.outcome == PlanTranslationOutcome.stepFailed ||
             translation.outcome == PlanTranslationOutcome.gearRequestEncountered) {
-          _appendStoppedRunToTranscript(plan, translation);
+          _appendStoppedRunToTranscript(placementPlan, translation);
         } else {
           _appendOrchestrationFailureToTranscript(
-            'For the assembly plan: ${describeAiPlanValidationFailure(plan, translation.preflightResults)}',
+            'For the assembly plan: ${describeAiPlanValidationFailure(placementPlan, translation.preflightResults)}',
           );
           if (bundle == null && _autoRetriedValidation.add(-1)) {
             await _runAssemblyCycle();
@@ -1816,11 +1887,47 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         return;
       }
 
-      if (bundle == null &&
-          plan.steps.any((step) => step is AiAddComponentStep) &&
-          !plan.steps.any((step) => step is AiMateStep)) {
-        await _runMateTurn(assemblyPartId: assemblyPartId, systemPrompt: systemPrompt, storage: storage, root: root);
+      if (split.mates.isNotEmpty || bundle != null) {
+        // The plan brought its own mates (or, for an imported zip, none): no provider turn. Only components this plan
+        // added can be named by a bare local_id; a move_component's id is not a component.
+        final componentIds = addComponentLocalIds(placementPlan);
+        if (bundle != null) {
+          _importedComponents = [
+            for (final c in bundle.assemblyComponents)
+              ExternalMatesComponent(localId: c.localId, partName: c.partName, relativePath: c.relativePath),
+          ];
+        }
+        final carriedBuilt = await _runCarriedMates(
+          assemblyPartId: assemblyPartId,
+          mates: split.mates,
+          intendedMotion: split.intendedMotion,
+          placedIds: {
+            for (final entry in translation.localIdToRealId.entries)
+              if (componentIds.contains(entry.key)) entry.key: entry.value,
+          },
+          storage: storage,
+          root: root,
+        );
         if (!mounted) return;
+        await _checkAssemblyCompleteness(
+          assemblyPartId: assemblyPartId,
+          systemPrompt: systemPrompt,
+          storage: storage,
+          root: root,
+          // An imported zip has no provider to ask (the report feeds "Fix mates with external AI"); an in-app plan
+          // that carried its own mates does.
+          allowFollowUp: bundle == null && carriedBuilt,
+        );
+      } else if (plan.steps.any((step) => step is AiAddComponentStep)) {
+        final built = await _runMateTurn(assemblyPartId: assemblyPartId, systemPrompt: systemPrompt, storage: storage, root: root);
+        if (!mounted) return;
+        await _checkAssemblyCompleteness(
+          assemblyPartId: assemblyPartId,
+          systemPrompt: systemPrompt,
+          storage: storage,
+          root: root,
+          allowFollowUp: built,
+        );
       }
 
       await _saveAssemblyAfterExecution(assemblyPartId: assemblyPartId, root: root, storage: storage, fixedRelativePath: _assemblyTargetRelativePath);
@@ -1847,7 +1954,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// whose `face_selector`s the dry run resolves against each component's real geometry. The app retries a plan that
   /// fails validation once, as it does every other turn. Never stops the run: on any failure the placed, unmated
   /// assembly is still saved, and [_mateNote] says why it has no mates.
-  Future<void> _runMateTurn({
+  Future<bool> _runMateTurn({
     required String assemblyPartId,
     required String systemPrompt,
     required StorageService storage,
@@ -1859,9 +1966,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       placed = summarizePlacedComponentsForMates(await _documentApi.listOccurrences(assemblyPartId));
     } on ApiException catch (e) {
       setState(() => _mateNote = 'Saved without mates: could not list the placed components (${e.message}).');
-      return;
+      return false;
     }
-    if (placed.isEmpty) return;
+    if (placed.isEmpty) return false;
     final provider = widget.provider ?? AiProviderPreferences.active;
     String? retryFor;
     for (var attempt = 0; attempt < 2; attempt++) {
@@ -1876,21 +1983,46 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
       } on AiProviderException catch (e) {
         setState(() => _mateNote = 'Saved without mates: provider error (${e.message}).');
-        return;
+        return false;
       }
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() => _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText)]);
       _scrollToBottom();
       final plan = detectPlanInAssistantText(result.assistantText);
       if (plan == null || plan.steps.isEmpty) {
         setState(() => _mateNote = 'Saved without mates: the assistant did not reply with any.');
-        return;
+        return false;
       }
-      setState(() {
-        _orchestrationStatus = 'Validating and building the mates...';
-        _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
-      });
-      final translation = await PlanTranslator(
+      final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: plan, storage: storage, root: root);
+      if (!mounted) return false;
+      _intendedMotion = [..._intendedMotion, ...plan.intendedMotion];
+      if (run.outcome != _MatesOutcome.validationFailed) {
+        setState(() => _mateNote = run.note);
+        return run.outcome == _MatesOutcome.built;
+      }
+      retryFor = run.validationFailureText;
+    }
+    setState(() => _mateNote = 'Saved without mates: the mates plan failed validation twice.');
+    return false;
+  }
+
+  /// Validates and builds a plan of mate steps (every reference already `existing:<id>` or a real face) in the assembly
+  /// [assemblyPartId]: the part of the mates turn that does not depend on where the plan came from. Shared by the
+  /// in-app provider turn ([_runMateTurn], which adds the retry) and an imported zip's mates
+  /// ([_runCarriedMates]). Never throws on a bad plan; the outcome says what happened.
+  Future<_MatesRun> _executeMatesPlan({
+    required String assemblyPartId,
+    required AiGenerationPlan plan,
+    required StorageService storage,
+    required ProjectRoot root,
+  }) async {
+    setState(() {
+      _orchestrationStatus = 'Validating and building the mates...';
+      _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
+    });
+    final PlanTranslationResult translation;
+    try {
+      translation = await PlanTranslator(
         documentApi: _documentApi,
         sketchApi: _sketchApi,
         storageService: storage,
@@ -1904,23 +2036,174 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           setState(() => _orchestrationStepStatuses![stepIndex] = status);
         },
       );
-      if (!mounted) return;
-      final mates = plan.steps.whereType<AiMateStep>().length;
-      switch (translation.outcome) {
-        case PlanTranslationOutcome.success:
-          setState(() => _mateNote = '$mates mate${mates == 1 ? '' : 's'} added.');
-          return;
-        case PlanTranslationOutcome.validationFailed:
-          retryFor = 'For the mates plan: ${describeAiPlanValidationFailure(plan, translation.preflightResults)}';
-          continue;
-        case PlanTranslationOutcome.stepFailed:
-        case PlanTranslationOutcome.gearRequestEncountered:
-          _appendStoppedRunToTranscript(plan, translation);
-          setState(() => _mateNote = 'Saved with only some mates: ${translation.errorMessage}.');
-          return;
-      }
+    } on ApiException catch (e) {
+      // The validate call itself refused the plan (HTTP 422: a field the schema does not accept, say a face direction
+      // that is not one of the six axes), so there is no per-step result, only the server's message. Nothing was
+      // built. Like any other bad mates plan it must not stop the run: the placed assembly still gets saved.
+      return _MatesRun(
+        _MatesOutcome.validationFailed,
+        'Saved without mates: the mates plan was rejected.\n${e.message}',
+        validationFailureText: 'For the mates plan: the plan was rejected, so nothing was built: ${e.message}',
+        problems: e.message,
+      );
     }
-    setState(() => _mateNote = 'Saved without mates: the mates plan failed validation twice.');
+    final mates = plan.steps.whereType<AiMateStep>().length;
+    switch (translation.outcome) {
+      case PlanTranslationOutcome.success:
+        return _MatesRun(_MatesOutcome.built, '$mates mate${mates == 1 ? '' : 's'} added.');
+      case PlanTranslationOutcome.validationFailed:
+        final problems = listAiPlanValidationProblems(plan, translation.preflightResults);
+        return _MatesRun(
+          _MatesOutcome.validationFailed,
+          'Saved without mates: the mates plan failed validation.\n$problems',
+          validationFailureText: 'For the mates plan: ${describeAiPlanValidationFailure(plan, translation.preflightResults)}',
+          problems: problems,
+        );
+      case PlanTranslationOutcome.stepFailed:
+      case PlanTranslationOutcome.gearRequestEncountered:
+        if (mounted) _appendStoppedRunToTranscript(plan, translation);
+        return _MatesRun(
+          _MatesOutcome.partial,
+          'Saved with only some mates: ${translation.errorMessage}.',
+          problems: '${translation.errorMessage}',
+        );
+    }
+  }
+
+  /// The mates an assembly plan carried itself (Phase 1 of `16-assembly-mates-gaps-plan.md`; an imported zip's, or an
+  /// in-app plan that included some): [mates] are the `mate` steps split off that plan, [placedIds] the `add_component` local id -> real occurrence id map the placement run
+  /// returned. The local ids are rewritten to `existing:<id>` and the plan runs like the in-app mates turn's, with no
+  /// provider and no retry (there is no one to ask). Sets [_mateNote]; never stops the run.
+  /// An imported zip with no mates at all ends here too, with a note saying so.
+  Future<bool> _runCarriedMates({
+    required String assemblyPartId,
+    required List<AiMateStep> mates,
+    required List<AiIntendedMotion> intendedMotion,
+    required Map<String, String> placedIds,
+    required StorageService storage,
+    required ProjectRoot root,
+  }) async {
+    final plan = rewriteMateOccurrenceIds(mates, placedIds, intendedMotion: intendedMotion);
+    _intendedMotion = [..._intendedMotion, ...plan.intendedMotion];
+    if (_importedBundle != null) _importedLocalIdToRealId = placedIds;
+    if (mates.isEmpty) {
+      setState(() {
+        _mateNote = 'Saved without mates: the imported assembly plan has none.';
+        _importedMates = _ImportedMates.none;
+      });
+      return false;
+    }
+    final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: plan, storage: storage, root: root);
+    if (!mounted) return false;
+    setState(() {
+      _mateNote = run.note;
+      _importedMates = switch (run.outcome) {
+        _MatesOutcome.built => _ImportedMates.built,
+        _MatesOutcome.partial => _ImportedMates.partlyBuilt,
+        _MatesOutcome.validationFailed => _ImportedMates.failedValidation,
+      };
+      _importedMatesProblems = run.problems;
+    });
+    return run.outcome == _MatesOutcome.built;
+  }
+
+  /// The completeness check (`16-assembly-mates-gaps-plan.md`, Phase 2): fetches each component's constraint status
+  /// (with its free motions) and sets [_completenessReport]. In-app, when a component is free and nobody said it
+  /// should move, sends ONE follow-up mates turn ([_runMatesFollowUp]) and checks again; an imported zip only reports.
+  /// Never stops the run: a failed check just leaves no report.
+  Future<void> _checkAssemblyCompleteness({
+    required String assemblyPartId,
+    required String systemPrompt,
+    required StorageService storage,
+    required ProjectRoot root,
+    required bool allowFollowUp,
+  }) async {
+    setState(() => _orchestrationStatus = 'Checking that the mates hold every component...');
+    var report = await _fetchCompletenessReport(assemblyPartId);
+    if (!mounted) return;
+    if (report != null && allowFollowUp && report.needsFollowUp) {
+      await _runMatesFollowUp(
+        assemblyPartId: assemblyPartId,
+        report: report,
+        systemPrompt: systemPrompt,
+        storage: storage,
+        root: root,
+      );
+      if (!mounted) return;
+      // Checked again whatever the turn did: new mates change the status, a declared intent changes the report.
+      report = await _fetchCompletenessReport(assemblyPartId) ?? report;
+    }
+    if (!mounted) return;
+    setState(() {
+      _completenessReport = report;
+      _orchestrationStatus = null;
+    });
+  }
+
+  Future<AssemblyCompletenessReport?> _fetchCompletenessReport(String assemblyPartId) async {
+    try {
+      final occurrences = await _documentApi.listOccurrences(assemblyPartId);
+      final status = await _documentApi.getConstraintStatus(assemblyPartId);
+      return buildCompletenessReport(
+        occurrences: [for (final o in occurrences) if (!_preexistingOccurrenceIds.contains(o.id)) o],
+        status: status,
+        intended: _intendedMotion,
+      );
+    } on ApiException {
+      return null;
+    }
+  }
+
+  /// The one follow-up mates turn: lists the components that can still move (and any over-constrained ones), asks for
+  /// the missing mates, and builds them. Returns whether any were built. At most once per assembly (the caller sends it
+  /// once); a failure of any kind is noted and never stops the run.
+  Future<bool> _runMatesFollowUp({
+    required String assemblyPartId,
+    required AssemblyCompletenessReport report,
+    required String systemPrompt,
+    required StorageService storage,
+    required ProjectRoot root,
+  }) async {
+    setState(() => _orchestrationStatus = 'Asking for the missing mates...');
+    final request = AiChatMessage(
+      role: AiMessageRole.user,
+      text: assemblyModeMatesFollowUpRequestText(
+        freeComponents: formatFreeComponentsForPrompt(report.unintendedlyFree),
+        overConstrained: formatFreeComponentsForPrompt(report.overConstrained),
+      ),
+    );
+    setState(() => _transcript = [..._transcript, request]);
+    _scrollToBottom();
+    final provider = widget.provider ?? AiProviderPreferences.active;
+    final AiTurnResult result;
+    try {
+      result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
+    } on AiProviderException catch (e) {
+      setState(() => _mateNote = '${_mateNote ?? ''}\nThe follow-up for the free components failed: provider error (${e.message}).');
+      return false;
+    }
+    if (!mounted) return false;
+    setState(() => _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText)]);
+    _scrollToBottom();
+    final plan = detectPlanInAssistantText(result.assistantText);
+    if (plan == null) {
+      setState(() => _mateNote = '${_mateNote ?? ''}\nThe follow-up for the free components got no plan back.');
+      return false;
+    }
+    _intendedMotion = [..._intendedMotion, ...plan.intendedMotion];
+    if (plan.steps.isEmpty) {
+      setState(() => _mateNote = '${_mateNote ?? ''}\nThe assistant added no mates: it declared the free motion intended.');
+      return false;
+    }
+    final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: plan, storage: storage, root: root);
+    if (!mounted) return false;
+    final followUp = switch (run.outcome) {
+      _MatesOutcome.built => 'The follow-up added ${run.note}',
+      _MatesOutcome.partial => 'The follow-up: ${run.note}',
+      _MatesOutcome.validationFailed => 'The follow-up mates failed validation and were not built.',
+    };
+    setState(() => _mateNote = '${_mateNote ?? ''}\n$followUp');
+    return run.outcome != _MatesOutcome.validationFailed;
   }
 
   /// "Open Assembly" - navigates into `PartScreen` for the just-saved
@@ -2036,6 +2319,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _assemblyPartId = null;
       _assemblyRelativePath = null;
       _mateNote = null;
+      _completenessReport = null;
+      _intendedMotion = [];
+      _importedLocalIdToRealId = null;
+      _importedComponents = [];
+      _importedMates = _ImportedMates.none;
+      _importedMatesProblems = '';
+      _repairingMates = false;
     });
   }
 
@@ -2187,23 +2477,31 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// established, so the user can send it straight to an installed chat
   /// app, AirDrop it, or save it to Files.
   Future<void> _shareExternalHandoff() async {
-    final systemPrompt = _buildSystemPrompt();
+    final systemPrompt = _buildSystemPrompt(externalHandoff: true);
     final package = buildExternalHandoffPackage(
       systemPrompt: systemPrompt,
       transcript: _transcript,
       assemblyMode: _mode == AiGenerationMode.assembly,
     );
-    if (!mounted) return;
+    await _offerPackage(
+      package,
+      dialogText: 'Send this conversation to another AI chat app (Claude, ChatGPT, Gemini, '
+          'etc.) to use its own usage limits, then bring the finished plan back with '
+          '"Import plan".',
+      fileName: 'didsa-cad-ai-handoff.md',
+      subject: 'DIDSA-CAD AI Modelling hand-off',
+    );
+  }
 
+  /// The copy / share sheet both external hand-offs use ([_shareExternalHandoff], [_shareMatesFix]): "Copy text" puts
+  /// [package] on the clipboard, "Share / Save file" writes it to a temp file and opens the OS share sheet.
+  Future<void> _offerPackage(String package, {required String dialogText, required String fileName, required String subject}) async {
+    if (!mounted) return;
     final choice = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Share with external AI'),
-        content: const Text(
-          'Send this conversation to another AI chat app (Claude, ChatGPT, Gemini, '
-          'etc.) to use its own usage limits, then bring the finished plan back with '
-          '"Import plan".',
-        ),
+        content: Text(dialogText),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
           TextButton(onPressed: () => Navigator.of(context).pop('copy'), child: const Text('Copy text')),
@@ -2222,13 +2520,199 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
     try {
       final tempDir = await getTemporaryDirectory();
-      final path = '${tempDir.path}/didsa-cad-ai-handoff.md';
+      final path = '${tempDir.path}/$fileName';
       await File(path).writeAsString(package);
       if (!mounted) return;
-      await Share.shareXFiles([XFile(path)], subject: 'DIDSA-CAD AI Modelling hand-off');
+      await Share.shareXFiles([XFile(path)], subject: subject);
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not share: $error')));
+    }
+  }
+
+  /// Why an imported assembly's mates need another go, or null when they do not (or this assembly was not imported
+  /// from a zip in this session, so there is no `local_id` map to read a reply against).
+  ExternalMatesFixReason? get _matesFixReason {
+    if (_importedLocalIdToRealId == null || _repairingMates) return null;
+    switch (_importedMates) {
+      case _ImportedMates.none:
+        return ExternalMatesFixReason.noMates;
+      case _ImportedMates.failedValidation:
+        return ExternalMatesFixReason.failedValidation;
+      case _ImportedMates.partlyBuilt:
+        return ExternalMatesFixReason.partlyBuilt;
+      case _ImportedMates.built:
+        return _completenessReport?.needsFollowUp == true ? ExternalMatesFixReason.componentsFree : null;
+    }
+  }
+
+  /// "Fix mates with external AI": the short package (`buildExternalMatesFixPackage`) for [_matesFixReason].
+  String _buildMatesFixPackage(ExternalMatesFixReason reason) {
+    final realToLocal = {for (final e in (_importedLocalIdToRealId ?? const <String, String>{}).entries) e.value: e.key};
+    final problems = switch (reason) {
+      ExternalMatesFixReason.failedValidation || ExternalMatesFixReason.partlyBuilt => _importedMatesProblems,
+      ExternalMatesFixReason.componentsFree =>
+        formatFreeComponentsByLocalId(_completenessReport?.unintendedlyFree ?? const [], realToLocal),
+      ExternalMatesFixReason.noMates => '',
+    };
+    return buildExternalMatesFixPackage(components: _importedComponents, reason: reason, problems: problems);
+  }
+
+  Future<void> _shareMatesFix() async {
+    final reason = _matesFixReason;
+    if (reason == null) return;
+    await _offerPackage(
+      _buildMatesFixPackage(reason),
+      dialogText: 'Send this to an AI chat app (Claude, ChatGPT, Gemini, etc.): it replies with a mates.json, '
+          'which you bring back with "Import mates" while this assembly is still open here.',
+      fileName: 'didsa-cad-mates-fix.md',
+      subject: 'DIDSA-CAD: mates for an imported assembly',
+    );
+  }
+
+  /// "Import mates": reads a `mates.json` (a plan of `mate` steps by the zip's own `local_id`s, with an optional
+  /// `intended_motion`) written for an imported assembly that is still open in this screen, adds those mates to it,
+  /// checks again and saves over the same file. It adds to the mates already built; it never replaces them.
+  Future<void> _importMates() async {
+    final map = _importedLocalIdToRealId;
+    final assemblyPartId = _assemblyPartId;
+    final root = widget.projectRoot;
+    final storage = widget.storageService;
+    if (map == null || assemblyPartId == null || root == null || storage == null || _repairingMates) return;
+
+    final String? text;
+    final hook = widget.pickMatesText;
+    if (hook != null) {
+      text = await hook();
+    } else {
+      final picked = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt']);
+      final path = picked?.files.single.path;
+      text = path == null ? null : await File(path).readAsString();
+    }
+    if (text == null || !mounted) return;
+
+    AiGenerationPlan? plan;
+    try {
+      final decoded = jsonDecode(text.trim());
+      if (decoded is Map<String, dynamic> && decoded['steps'] is List) plan = AiGenerationPlan.fromJson(decoded);
+    } catch (_) {
+      // Not a bare JSON file: an export that wraps it in a fenced block or prose, read below.
+    }
+    plan ??= detectPlanInAssistantText(text);
+    final problem = plan == null
+        ? 'No plan found in that file: it should be the mates.json the external AI wrote.'
+        : plan.steps.any((step) => step is! AiMateStep)
+            ? 'mates.json must hold mate steps only (no add_component or move_component): the components are already placed.'
+            : null;
+    if (plan == null || problem != null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(problem!)));
+      return;
+    }
+
+    setState(() => _repairingMates = true);
+    try {
+      final rewritten = rewriteMateOccurrenceIds(plan.steps.cast<AiMateStep>(), map, intendedMotion: plan.intendedMotion);
+      _intendedMotion = [..._intendedMotion, ...rewritten.intendedMotion];
+      var built = false;
+      if (rewritten.steps.isNotEmpty) {
+        final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: rewritten, storage: storage, root: root);
+        if (!mounted) return;
+        built = run.outcome != _MatesOutcome.validationFailed;
+        setState(() {
+          _mateNote = switch (run.outcome) {
+            _MatesOutcome.built => 'Imported ${run.note}',
+            _MatesOutcome.partial => 'Imported some of the mates: ${run.note}',
+            _MatesOutcome.validationFailed => 'The imported mates failed validation and were not built.\n${run.problems}',
+          };
+          if (run.outcome == _MatesOutcome.validationFailed) {
+            // Nothing from this reply was built: what the fix package says stays as it was, with the new failure.
+            if (_importedMates != _ImportedMates.built) _importedMatesProblems = run.problems;
+          } else {
+            _importedMates = run.outcome == _MatesOutcome.built ? _ImportedMates.built : _ImportedMates.partlyBuilt;
+            _importedMatesProblems = run.outcome == _MatesOutcome.partial ? run.problems : '';
+          }
+        });
+      }
+      if (!mounted) return;
+      await _checkAssemblyCompleteness(
+        assemblyPartId: assemblyPartId,
+        systemPrompt: '',
+        storage: storage,
+        root: root,
+        allowFollowUp: false,
+      );
+      if (!mounted) return;
+      if (built) {
+        await _saveAssemblyAfterExecution(
+          assemblyPartId: assemblyPartId,
+          root: root,
+          storage: storage,
+          fixedRelativePath: _assemblyRelativePath,
+        );
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _mateNote = 'Could not import the mates: ${e.message}');
+    } on StorageException catch (e) {
+      if (mounted) setState(() => _mateNote = 'Could not save the assembly: ${e.message}');
+    } finally {
+      if (mounted) setState(() => _repairingMates = false);
+    }
+  }
+
+  /// "Add mates with the in-app AI" (offered when a provider is configured): the in-app mates turn
+  /// ([_runMateTurn]) for an imported assembly that has no mates, then the check (with its one follow-up) and a save
+  /// over the same file.
+  Future<void> _addMatesWithInAppAi() async {
+    final assemblyPartId = _assemblyPartId;
+    final root = widget.projectRoot;
+    final storage = widget.storageService;
+    if (assemblyPartId == null || root == null || storage == null || _repairingMates) return;
+    setState(() => _repairingMates = true);
+    try {
+      final systemPrompt = _buildSystemPrompt();
+      final bundle = _importedBundle;
+      if (bundle != null) {
+        // The in-app model never saw these parts (an external AI wrote them), and a mate names faces by the part's
+        // own geometry: give it the part plans the way the in-app flow's transcript would have held them.
+        final context = StringBuffer(
+          'This assembly was imported from a zip. Each part was built from the plan below, in that part\'s own '
+          'coordinates (the frame a face_selector uses).\n',
+        );
+        for (var i = 0; i < bundle.manifest.parts.length; i++) {
+          context
+            ..writeln()
+            ..writeln('Part "${bundle.manifest.parts[i].name}" (${bundle.manifest.parts[i].typePrefix}):')
+            ..writeln('```json')
+            ..writeln(jsonEncode(bundle.partPlans[i].toJson()))
+            ..writeln('```');
+        }
+        setState(() => _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.user, text: context.toString())]);
+      }
+      final built = await _runMateTurn(assemblyPartId: assemblyPartId, systemPrompt: systemPrompt, storage: storage, root: root);
+      if (!mounted) return;
+      if (built) setState(() => _importedMates = _ImportedMates.built);
+      await _checkAssemblyCompleteness(
+        assemblyPartId: assemblyPartId,
+        systemPrompt: systemPrompt,
+        storage: storage,
+        root: root,
+        allowFollowUp: built,
+      );
+      if (!mounted) return;
+      if (built) {
+        await _saveAssemblyAfterExecution(
+          assemblyPartId: assemblyPartId,
+          root: root,
+          storage: storage,
+          fixedRelativePath: _assemblyRelativePath,
+        );
+      }
+    } on ApiException catch (e) {
+      if (mounted) setState(() => _mateNote = 'Could not add the mates: ${e.message}');
+    } on StorageException catch (e) {
+      if (mounted) setState(() => _mateNote = 'Could not save the assembly: ${e.message}');
+    } finally {
+      if (mounted) setState(() => _repairingMates = false);
     }
   }
 
@@ -2237,10 +2721,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// confirm-parts panel an in-app manifest does; "Confirm & Generate All"
   /// then builds and saves each part from its imported plan, then the
   /// assembly, with no provider calls.
-  Future<void> _importBundleFromFile(String path) async {
+  Future<void> _importBundleFromFile(String path) async => _importBundleFromBytes(await File(path).readAsBytes());
+
+  Future<void> _importBundleFromBytes(Uint8List bytes) async {
     AiPlanBundle bundle;
     try {
-      bundle = AiPlanBundle.fromZipBytes(await File(path).readAsBytes());
+      bundle = AiPlanBundle.fromZipBytes(bytes);
     } on AiPlanBundleException catch (e) {
       if (!mounted) return;
       await showDialog<void>(
@@ -2274,6 +2760,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// failed import shows the real parse error - the file_picker call itself
   /// mirrors `_attachImage`'s pattern.
   Future<void> _importPlanFromFile() async {
+    final testZip = widget.pickImportZip;
+    if (testZip != null) {
+      final bytes = await testZip();
+      if (bytes != null) await _importBundleFromBytes(bytes);
+      return;
+    }
     final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt', 'zip']);
     if (result == null) return;
     final path = result.files.single.path;
@@ -2867,6 +3359,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                       padding: const EdgeInsets.only(left: 72, bottom: 8),
                       child: Text(_mateNote!),
                     ),
+                  if (_completenessReport != null && _completenessReport!.rows.isNotEmpty)
+                    Padding(
+                      key: const Key('aiModellingCompletenessReport'),
+                      padding: const EdgeInsets.only(left: 72, bottom: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Mate check', style: Theme.of(context).textTheme.labelLarge),
+                          Text(formatCompletenessReport(_completenessReport!)),
+                        ],
+                      ),
+                    ),
                 ],
               ],
             ),
@@ -2887,6 +3391,37 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                   icon: const Icon(Icons.open_in_new),
                   label: const Text('Open Assembly'),
                 ),
+              ),
+            ),
+          if (assemblySaved && _matesFixReason != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    key: const Key('aiModellingFixMatesExternal'),
+                    onPressed: _shareMatesFix,
+                    icon: const Icon(Icons.ios_share),
+                    label: const Text('Fix mates with external AI'),
+                  ),
+                  OutlinedButton.icon(
+                    key: const Key('aiModellingImportMates'),
+                    onPressed: _importMates,
+                    icon: const Icon(Icons.file_open),
+                    label: const Text('Import mates'),
+                  ),
+                  if (!_providerUnconfigured &&
+                      (_importedMates == _ImportedMates.none || _importedMates == _ImportedMates.failedValidation))
+                    OutlinedButton.icon(
+                      key: const Key('aiModellingAddMatesInApp'),
+                      onPressed: _addMatesWithInAppAi,
+                      icon: const Icon(Icons.auto_fix_high),
+                      label: const Text('Add mates with the in-app AI'),
+                    ),
+                ],
               ),
             ),
           if (_canRetryOrchestration)

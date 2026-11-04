@@ -1,0 +1,4 @@
+{"kind": "part_manifest", "parts": [
+  {"name": "Base Block", "type_prefix": "BLOCK", "summary": "80x50x20 block with a d20 through hole at its centre"},
+  {"name": "Locating Pin", "type_prefix": "PIN", "summary": "d20 x 40 shank with a d32 x 6 head"}
+]}

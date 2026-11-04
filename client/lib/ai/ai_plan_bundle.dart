@@ -103,6 +103,22 @@ class AiPlanBundle {
     return AiPlanBundle(manifest: manifest, partPlans: partPlans, assemblyJson: assemblyJson);
   }
 
+  /// The assembly's components as the zip names them: each `add_component` step's `local_id`, its path as written
+  /// and the manifest part it belongs to (matched by `<TYPE_PREFIX>_NNN` like [assemblyPlanFor]; the path itself when
+  /// no part matches). What an external AI needs to be told when its mates have to be redone.
+  List<({String localId, String relativePath, String partName})> get assemblyComponents {
+    final nameByPrefix = {for (final part in manifest.parts) sanitizePartTypePrefix(part.typePrefix): part.name};
+    return [
+      for (final step in (assemblyJson['steps'] as List).whereType<Map>())
+        if (step['kind'] == 'add_component' && step['local_id'] is String && step['relative_path'] is String)
+          (
+            localId: step['local_id'] as String,
+            relativePath: step['relative_path'] as String,
+            partName: nameByPrefix[_prefixOfReference(step['relative_path'] as String)] ?? step['relative_path'] as String,
+          ),
+    ];
+  }
+
   /// The assembly plan with every `add_component` `relative_path` that
   /// referred to one of the manifest's parts replaced by the path that part
   /// was really saved under. [savedPathByIndex] is index-aligned with

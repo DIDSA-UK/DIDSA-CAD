@@ -36,14 +36,19 @@ final _uuid = RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 /// because they depend on one of those are counted, not listed, since they
 /// carry no information of their own.
 String describeAiPlanValidationFailure(AiGenerationPlan plan, List<AiPlanStepResultDto> results) {
+  return 'The plan failed validation, so nothing was built. Fix these problems and reply with a '
+      'complete corrected plan (every step, not only the changed ones):\n'
+      '${listAiPlanValidationProblems(plan, results)}';
+}
+
+/// Just the problem lines of [describeAiPlanValidationFailure], without its instruction to the model: for a person
+/// reading why a plan was not built (the progress panel's mates note).
+String listAiPlanValidationProblems(AiGenerationPlan plan, List<AiPlanStepResultDto> results) {
   final kindByLocalId = {for (final step in plan.steps) step.localId: step.kind};
   final failed = results.where((r) => !r.ok).toList();
   final dependents = failed.where((r) => r.error?['type'] == 'depends_on_failed_step').length;
   final causes = failed.where((r) => r.error?['type'] != 'depends_on_failed_step').toList();
-  final buffer = StringBuffer(
-    'The plan failed validation, so nothing was built. Fix these problems and reply with a '
-    'complete corrected plan (every step, not only the changed ones):\n',
-  );
+  final buffer = StringBuffer();
   for (final r in causes) {
     final kind = kindByLocalId[r.localId];
     buffer.writeln('- step "${r.localId}"${kind == null ? '' : ' ($kind)'}: ${formatAiStepError(r.error)}');

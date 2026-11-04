@@ -1564,14 +1564,22 @@ def constraint_status(document: Document, part: Part) -> dict[str, tuple[str, in
     unsupported face pairing) is left out of the result: the client then shows
     no badge for it, rather than a status that would be a guess.
     """
+    return {oid: (status, dof) for oid, (status, dof, _m) in constraint_report(document, part).items()}
+
+
+def constraint_report(document: Document, part: Part) -> dict[str, tuple[str, int, list[dict]]]:
+    """[constraint_status] plus, for an `under_constrained` occurrence, its free motions
+    (`free_motions_for_member`): `{occurrence_id: (status, dof, free_motions)}`. Every other status has no motions
+    listed (`fixed` and `fully_constrained` have none; `over_constrained` motions would be a guess)."""
     from fastapi import HTTPException  # local: this module is otherwise HTTP-free
 
-    result: dict[str, tuple[str, int]] = {}
+    result: dict[str, tuple[str, int, list[dict]]] = {}
     visited: set[str] = set()
     for occurrence in part.occurrences:
         if occurrence.fixed:
-            result[occurrence.id] = (STATUS_FIXED, 0)
+            result[occurrence.id] = (STATUS_FIXED, 0, [])
             visited.add(occurrence.id)
+    transforms = {o.id: o.transform for o in part.occurrences}
     for occurrence in part.occurrences:
         if occurrence.id in visited:
             continue
@@ -1586,9 +1594,116 @@ def constraint_status(document: Document, part: Part) -> dict[str, tuple[str, in
         for member_id in analysis.member_ids:
             mobility = analysis.mobility[member_id]
             if contradictory:
-                result[member_id] = (STATUS_OVER_CONSTRAINED, mobility)
+                result[member_id] = (STATUS_OVER_CONSTRAINED, mobility, [])
             elif mobility == 0 and analysis.grounded:
-                result[member_id] = (STATUS_FULLY_CONSTRAINED, 0)
+                result[member_id] = (STATUS_FULLY_CONSTRAINED, 0, [])
             else:
-                result[member_id] = (STATUS_UNDER_CONSTRAINED, mobility)
+                motions = free_motions_for_member(analysis, member_id, transforms[member_id]) if mobility else []
+                result[member_id] = (STATUS_UNDER_CONSTRAINED, mobility, motions)
     return result
+
+
+# ---- describing the free motion (completeness check, `docs/ai-modelling/16-assembly-mates-gaps-plan.md`) ----------
+
+_MOTION_ROUND = 6  # decimals kept in a reported direction / point
+_PITCH_FLOOR = 1e-5  # |pitch| / lever arm below this is a pure spin
+
+
+def _unit_rows(rows: np.ndarray) -> np.ndarray:
+    """`rows` orthonormalised (Gram-Schmidt in row order), dropping any row that is already spanned."""
+    out: list[np.ndarray] = []
+    for row in rows:
+        v = np.array(row, float)
+        for u in out:
+            v = v - float(v @ u) * u
+        n = float(np.linalg.norm(v))
+        if n > 1e-9:
+            out.append(v / n)
+    return np.array(out).reshape(-1, 3)
+
+
+def _signed(direction: np.ndarray) -> np.ndarray:
+    """`direction` with its largest component positive: the same direction always reads the same."""
+    d = np.array(direction, float)
+    if d[int(np.argmax(np.abs(d)))] < 0:
+        d = -d
+    return d
+
+
+def _canonical_directions(basis: np.ndarray) -> np.ndarray:
+    """A readable orthonormal basis of the subspace spanned by the unit rows `basis` (m x 3): the coordinate axes that
+    lie inside it when there are any, completed with the remaining directions. Three rows are always the axes."""
+    m = basis.shape[0]
+    if m == 0:
+        return np.zeros((0, 3))
+    if m == 3:
+        return np.eye(3)
+    chosen = [e for e in np.eye(3) if float(np.linalg.norm((e @ basis.T) @ basis)) > 1.0 - 1e-6]
+    rest = _unit_rows(np.array(chosen).reshape(-1, 3).tolist() + basis.tolist())
+    return np.array([_signed(d) for d in rest[:m]]).reshape(-1, 3)
+
+
+def _clean(vector: np.ndarray) -> list[float]:
+    return [round(float(c), _MOTION_ROUND) + 0.0 for c in vector]
+
+
+def free_motions_for_member(analysis: GroupAnalysis, member_id: str, transform: RigidTransform) -> list[dict]:
+    """The motions `member_id` is still free to make, in its OWN part frame (the frame its face selectors use).
+
+    `analysis.basis` rows are twists `[v, w]` per member (`v` the origin's translation, `w` the rotation vector, both in
+    world axes, in mm and radians): they are already divided by the `diag(1,1,1,L,L,L)` weights, so the weighting is
+    NOT undone again here. The member's own block of those rows spans its motions (the rows themselves are an
+    arbitrary mix, so they are re-expressed): pure translations first, then rotations, rotated into the part frame.
+    Each is one of
+
+    * `{"kind": "slide", "direction": [x, y, z]}`;
+    * `{"kind": "spin", "axis": [x, y, z], "through": [x, y, z]}` (the point on the axis nearest the part origin);
+    * `{"kind": "screw", "axis", "through", "pitch_per_turn"}` when the rotation also advances along its axis.
+
+    When there are several (mobility above 1) the list is a basis of the free space, not a set of independent single
+    motions: any mix of them is free too. The coordinate axes inside each subspace are preferred as its basis, so a
+    plate that can slide in its plane reads as slides along x and y.
+    """
+    i = analysis.member_ids.index(member_id)
+    lever = analysis.lever_arm
+    weights = np.array([1.0, 1.0, 1.0, lever, lever, lever])
+    block = analysis.basis[:, 6 * i : 6 * i + 6] * weights  # the member's columns of the orthonormal nullspace
+    if block.size == 0:
+        return []
+    _u, svals, vt = np.linalg.svd(block, full_matrices=False)
+    twists_w = vt[svals > _MOBILITY_TOL]  # weighted twists, orthonormal
+    if not len(twists_w):
+        return []
+    # World -> part frame (the occurrence's rotation), and out of the weighted metric.
+    from app.document.constraint_model import _rotation_matrix
+
+    r_part = _rotation_matrix(transform).T
+    twists = twists_w / weights
+    v_all = twists[:, :3] @ r_part.T
+    w_all = twists[:, 3:] @ r_part.T
+    # Rotational rank: how many independent rotation directions the motions have.
+    uw, sw, _vwt = np.linalg.svd(w_all * lever, full_matrices=True)
+    n_rot = int(np.sum(sw > _MOBILITY_TOL))
+    mixed_v = uw.T @ v_all
+    mixed_w = uw.T @ w_all
+    slides = _unit_rows(mixed_v[n_rot:]) if len(mixed_v) > n_rot else np.zeros((0, 3))
+    motions: list[dict] = [{"kind": "slide", "direction": _clean(d)} for d in _canonical_directions(slides)]
+    if n_rot:
+        rot_w = mixed_w[:n_rot]
+        rot_v = mixed_v[:n_rot].copy()
+        for u in slides:  # a rotation's own translation, with the slides taken out
+            rot_v -= np.outer(rot_v @ u, u)
+        span = _unit_rows(rot_w)
+        for d in _canonical_directions(span):
+            # The twist with rotation exactly `d`: a combination of the rows (their rotations are orthogonal).
+            coeff = np.array([float(d @ w) / float(w @ w) for w in rot_w])
+            v = coeff @ rot_v
+            axis = d / float(np.linalg.norm(d))
+            through = np.cross(axis, v)
+            pitch = float(v @ axis)  # mm per radian along the axis
+            entry = {"axis": _clean(axis), "through": _clean(through)}
+            if abs(pitch) / max(lever, 1e-9) < _PITCH_FLOOR:
+                motions.append({"kind": "spin", **entry})
+            else:
+                motions.append({"kind": "screw", **entry, "pitch_per_turn": round(2.0 * math.pi * pitch, _MOTION_ROUND) + 0.0})
+    return motions

@@ -1484,3 +1484,20 @@ def test_loft_step_reports_a_guide_that_misses_a_section_far_away() -> None:
     results = _results_by_local_id(_validate(part["id"], steps))
     assert results["lf"]["ok"] is False
     assert results["lf"]["error"]["type"] == "invalid_guide_curve_ref"
+
+
+def test_validate_ignores_an_unknown_top_level_field():
+    """Workstream 16 (`16-assembly-mates-gaps-plan.md`): a mates plan may carry `intended_motion`, which is for the
+    client's report and the model, not the solver. The validate request must not reject it (nor any other extra
+    top-level field), so the client may send the plan as written; it is also free to strip it."""
+    part = _create_part()
+    response = client.post(
+        f"/document/parts/{part['id']}/ai-plan/validate",
+        json={
+            "version": 1,
+            "steps": [{"local_id": "s1", "kind": "sketch", "plane": "XY"}],
+            "intended_motion": [{"component": "wheel", "motion": "spin about its axle"}],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["results"][0]["ok"] is True

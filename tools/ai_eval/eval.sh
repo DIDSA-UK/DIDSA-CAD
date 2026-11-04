@@ -18,6 +18,13 @@
 #   tools/ai_eval/eval.sh assemble <run_dir>     build every part and the assembly (and, once mates_reply.txt exists,
 #                                               the mates); score against the sketch's key
 #
+# External route (the hand-off the app gives an external chat, answered with a zip; README "External route"):
+#   tools/ai_eval/eval.sh handoff <dir>          write <dir>/handoff.md: the Assembly-mode hand-off package, as the app
+#                                               builds it - all an external chat is given besides the sketch images
+#   tools/ai_eval/eval.sh import <run_dir>       zip <run_dir>/files/*.json into external.zip, read it with the app's
+#                                               importer, build the parts and the assembly (placements, then the zip's
+#                                               own mates), check completeness, score
+#
 # Needs the backend running (DIDSA-VR tools/start_backend.sh), Flutter on PATH, and CAD_PY = the backend's
 # conda python (DIDSA-VR tools/setup_test_env.sh sets both up; `source /opt/tools/env.sh`).
 set -euo pipefail
@@ -31,6 +38,21 @@ run_harness() { # env assignments... then the test name
   cp "$HERE/harness/ai_eval_harness_test.dart" "$HARNESS_IN_CLIENT"
   trap 'rm -f "$HARNESS_IN_CLIENT"' RETURN
   (cd "$CLIENT" && env "${@:1:$#-1}" flutter test test/_ai_eval_harness_test.dart --plain-name "$name")
+}
+
+# The shared tail of `assemble` and `import`: geometry reports, a render, the score. The score's sketch name is the
+# run folder's parent (runs/<sketch>/<run>/).
+finish_assembly() {
+  local D="$1" sketch f
+  sketch="$(basename "$(dirname "$D")")"
+  for f in "$D"/part_*.step; do
+    [ -f "$f" ] && "$CAD_PY" -I "$HERE/harness/inspect_step.py" "$f" "${f%.step}_geometry.json" > /dev/null 2>&1
+  done
+  [ -f "$D/assembly.step" ] && "$CAD_PY" -I "$HERE/harness/inspect_step.py" --solids "$D/assembly.step" "$D/assembly_geometry.json" > /dev/null 2>&1
+  [ -f "$D/assembly.step" ] && "$CAD_PY" -I "$HERE/harness/render_step.py" "$D/assembly.step" "$D/assembly.png" > /dev/null 2>&1
+  python3 -I "$HERE/harness/expected_assembly.py" "$sketch" "$D" > "$D/score.json"
+  cat "$D/score.json"; echo
+  return 0
 }
 
 case "${1:-}" in
@@ -68,18 +90,49 @@ case "${1:-}" in
     ;;
   assemble)
     D="$(realpath "$2")"
-    sketch="$(basename "$(dirname "$D")")"
-    rm -f "$D"/part_*.step "$D"/assembly.step "$D"/*geometry.json
+    rm -f "$D"/part_*.step "$D"/assembly.step "$D"/*geometry.json "$D"/completeness.*
     run_harness "AI_EVAL_ASSEMBLY=$D" 'run assembly' > "$D/harness.log" 2>&1 || true
-    for f in "$D"/part_*.step; do
-      [ -f "$f" ] && "$CAD_PY" -I "$HERE/harness/inspect_step.py" "$f" "${f%.step}_geometry.json" > /dev/null 2>&1
-    done
-    [ -f "$D/assembly.step" ] && "$CAD_PY" -I "$HERE/harness/inspect_step.py" --solids "$D/assembly.step" "$D/assembly_geometry.json" > /dev/null 2>&1
-    [ -f "$D/assembly.step" ] && "$CAD_PY" -I "$HERE/harness/render_step.py" "$D/assembly.step" "$D/assembly.png" > /dev/null 2>&1
-    python3 -I "$HERE/harness/expected_assembly.py" "$sketch" "$D" > "$D/score.json"
-    cat "$D/score.json"; echo
+    finish_assembly "$D"
     ls "$D"/*retry_request.txt "$D"/requests/mates_retry.txt 2>/dev/null | sed 's/^/retry needed: /'
     [ -f "$D/requests/mates.txt" ] && [ ! -f "$D/mates_reply.txt" ] && echo "mates turn: send requests/mates.txt, reply to mates_reply.txt"
+    ;;
+  handoff)
+    run_harness "AI_EVAL_DUMP_HANDOFF=$(realpath -m "$2")" 'dump handoff' > /dev/null
+    echo "wrote $2/handoff.md (the Assembly-mode hand-off package)"
+    ;;
+  import)
+    D="$(realpath "$2")"
+    if [ ! -d "$D/files" ] && [ -f "$D/final_reply.txt" ]; then
+      # The chat app could not create files: the model gave each file in a fenced block headed by its name, and the user
+      # saves them (README "External route"). Do the same.
+      python3 -I - "$D" <<'PY'
+import os, re, sys
+d = sys.argv[1]
+text = open(os.path.join(d, "final_reply.txt")).read()
+os.makedirs(os.path.join(d, "files"), exist_ok=True)
+name = re.compile(r"(\d\d_[A-Za-z0-9_]+\.json)")
+pos, count = 0, 0
+for m in re.finditer(r"```(?:json)?[ \t]*\n(.*?)```", text, re.S):
+    heads = name.findall(text[pos:m.start()])
+    pos = m.end()
+    if heads:
+        open(os.path.join(d, "files", heads[-1]), "w").write(m.group(1))
+        count += 1
+print(f"extracted {count} file(s) from final_reply.txt")
+PY
+    fi
+    [ -d "$D/files" ] || { echo "no $D/files: the model writes the zip's JSON files there"; exit 1; }
+    rm -f "$D"/part_*.step "$D"/assembly.step "$D"/*geometry.json "$D"/completeness.* "$D/external.zip"
+    # What the user would do with the files an external chat gave them: zip them, flat.
+    python3 -I - "$D" <<'PY'
+import glob, os, sys, zipfile
+d = sys.argv[1]
+with zipfile.ZipFile(os.path.join(d, "external.zip"), "w", zipfile.ZIP_DEFLATED) as z:
+    for f in sorted(glob.glob(os.path.join(d, "files", "*.json"))):
+        z.write(f, os.path.basename(f))
+PY
+    run_harness "AI_EVAL_IMPORT=$D" 'run import' > "$D/harness.log" 2>&1 || true
+    finish_assembly "$D"
     ;;
   verdict)
     D="$(realpath "$2")"
@@ -90,6 +143,6 @@ case "${1:-}" in
     python3 -I "$HERE/harness/table.py" "$(realpath "$2")"
     ;;
   *)
-    sed -n '2,13p' "$0"; exit 1
+    sed -n '2,24p' "$0"; exit 1
     ;;
 esac

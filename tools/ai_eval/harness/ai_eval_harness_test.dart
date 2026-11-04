@@ -29,6 +29,12 @@
 //                                    with add_component reading those files;
 //                                    write assembly_result.json, part_NN.step
 //                                    and assembly.step
+//   AI_EVAL_DUMP_HANDOFF=<dir>      the Assembly-mode hand-off package exactly as "Share with
+//                                    external AI" builds it (handoff.md): all an external chat is given
+//   AI_EVAL_IMPORT=<run dir>         the external route: read <run dir>/external.zip with AiPlanBundle (the
+//                                    app's importer), build every part from it, then the assembly the way the app
+//                                    does (placements, then the zip's own mates with their local ids rewritten),
+//                                    and the completeness check; the same outputs as AI_EVAL_ASSEMBLY
 //   AI_EVAL_VERDICT=<file> AI_EVAL_OUT=<dir>
 //                                    parse a render-back check reply; write
 //                                    verdict.json and, unless it matched,
@@ -41,10 +47,14 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
+import 'package:didsa_cad_client/ai/ai_assembly_report.dart';
 import 'package:didsa_cad_client/ai/ai_existing_part_summary.dart';
 import 'package:didsa_cad_client/ai/ai_model_check.dart';
 import 'package:didsa_cad_client/ai/ai_part_naming.dart';
 import 'package:didsa_cad_client/ai/ai_plan.dart';
+import 'package:didsa_cad_client/ai/ai_plan_bundle.dart';
+import 'package:didsa_cad_client/ai/ai_plan_export.dart';
+import 'package:didsa_cad_client/ai/ai_plan_split.dart';
 import 'package:didsa_cad_client/ai/ai_plan_summary.dart';
 import 'package:didsa_cad_client/ai/ai_plan_detection.dart';
 import 'package:didsa_cad_client/ai/ai_plan_translator.dart';
@@ -93,6 +103,19 @@ void main() {
       buildAiScopingSystemPrompt(multiBodyPartMode: !assembly, assemblyMode: assembly),
     );
     File('$out/extraction_prompt.txt').writeAsStringSync(aiImageExtractionPrompt);
+  });
+
+  test('dump handoff', () {
+    final out = env['AI_EVAL_DUMP_HANDOFF'];
+    if (out == null) return;
+    Directory(out).createSync(recursive: true);
+    // `AiModellingScreen._shareExternalHandoff` in Assembly mode with nothing said yet: the images are attached in
+    // the external chat by hand, so the package is all there is.
+    File('$out/handoff.md').writeAsStringSync(buildExternalHandoffPackage(
+      systemPrompt: buildAiScopingSystemPrompt(assemblyMode: true, externalHandoff: true),
+      transcript: const [],
+      assemblyMode: true,
+    ));
   });
 
   test('parse verdict', () {
@@ -200,114 +223,284 @@ void main() {
     if (runDir == null) return;
     final manifest = jsonDecode(File('$runDir/manifest.json').readAsStringSync()) as Map<String, dynamic>;
     final parts = (manifest['parts'] as List).cast<Map<String, dynamic>>();
-    final client = _LiveClient(Uri.parse(env['AI_EVAL_BACKEND'] ?? 'http://127.0.0.1:8000'), env['CAD_API_KEY'] ?? 'local-test-key');
-    final docApi = DocumentApiClient(httpClient: client);
-    final sketchApi = SketchApiClient(httpClient: client);
-    final projectDir = Directory('$runDir/project');
-    if (projectDir.existsSync()) projectDir.deleteSync(recursive: true);
-    projectDir.createSync(recursive: true);
-    final root = DesktopProjectRoot(projectDir.absolute.path);
-    final storage = DesktopStorageService();
-    final assemblyClient = AssemblyDocumentClient(storageService: storage, documentApiClient: docApi);
-    final report = <String, dynamic>{'parts': <Map<String, dynamic>>[]};
-    void save() => File('$runDir/assembly_result.json').writeAsStringSync(_json.convert(report));
+    final env_ = _Env.open(runDir, env);
     for (final f in Directory(runDir).listSync().whereType<File>()) {
       if (f.path.endsWith('retry_request.txt') && !f.path.contains('/requests/')) f.deleteSync();
     }
-
-    await docApi.startNewDocument();
-    for (var i = 0; i < parts.length; i++) {
+    if (!await _buildParts(env_, parts, (i) async {
       final n = _nn(i + 1);
       final retry = File('$runDir/part_${n}_retry_reply.txt');
       final replyFile = retry.existsSync() ? retry : File('$runDir/part_${n}_reply.txt');
-      final entry = <String, dynamic>{'name': parts[i]['name'], 'path': parts[i]['path'], 'retried': retry.existsSync()};
-      (report['parts'] as List).add(entry);
-      if (!replyFile.existsSync()) {
-        entry['outcome'] = 'no reply';
-        report['stopped'] = 'part $n: no reply';
-        return save();
-      }
-      final plan = detectPlanInAssistantText(replyFile.readAsStringSync());
-      if (plan == null) {
-        entry['outcome'] = 'no plan';
-        report['stopped'] = 'part $n: no plan';
+      if (!replyFile.existsSync()) return (plan: null, retried: false, why: 'no reply');
+      return (plan: detectPlanInAssistantText(replyFile.readAsStringSync()), retried: retry.existsSync(), why: 'no plan');
+    }, retryTurns: true)) return;
+
+    final asmReply = File('$runDir/assembly_retry_reply.txt').existsSync()
+        ? File('$runDir/assembly_retry_reply.txt')
+        : File('$runDir/assembly_reply.txt');
+    env_.report['assembly'] = <String, dynamic>{'retried': asmReply.path.endsWith('retry_reply.txt')};
+    final asm = env_.report['assembly'] as Map<String, dynamic>;
+    if (!asmReply.existsSync()) {
+      asm['outcome'] = 'no reply';
+      return env_.save();
+    }
+    final plan = detectPlanInAssistantText(asmReply.readAsStringSync());
+    if (plan == null) {
+      asm['outcome'] = 'no plan';
+      return env_.save();
+    }
+    await _runAssemblyPlan(env_, plan, imported: false);
+  }, timeout: const Timeout(Duration(minutes: 10)));
+
+  // The external route: the zip an external chat produced, through the app's own importer and assembly cycle.
+  test('run import', () async {
+    final runDir = env['AI_EVAL_IMPORT'];
+    if (runDir == null) return;
+    final env_ = _Env.open(runDir, env);
+    final AiPlanBundle bundle;
+    try {
+      bundle = AiPlanBundle.fromZipBytes(File('$runDir/external.zip').readAsBytesSync());
+    } on AiPlanBundleException catch (e) {
+      env_.report['stopped'] = 'zip: ${e.message}';
+      return env_.save();
+    }
+    // The names the save dialog proposes in an empty project folder, as `manifest` computes them.
+    final saved = <String>[];
+    final paths = <String>[];
+    for (final part in bundle.manifest.parts) {
+      final path = withDefaultExtension(nextAvailablePartName(saved, typePrefix: part.typePrefix));
+      saved.add(path);
+      paths.add(path);
+    }
+    File('$runDir/manifest.json').writeAsStringSync(_json.convert({
+      'detected': true,
+      'assumptions': bundle.manifest.assumptions,
+      'parts': [
+        for (var i = 0; i < paths.length; i++)
+          {
+            'name': bundle.manifest.parts[i].name,
+            'type_prefix': bundle.manifest.parts[i].typePrefix,
+            'summary': bundle.manifest.parts[i].summary,
+            'path': paths[i],
+          },
+      ],
+    }));
+    final parts = (jsonDecode(File('$runDir/manifest.json').readAsStringSync())['parts'] as List).cast<Map<String, dynamic>>();
+    if (!await _buildParts(env_, parts, (i) async => (plan: bundle.partPlans[i], retried: false, why: 'no plan'), retryTurns: false)) {
+      return;
+    }
+    final plan = bundle.assemblyPlanFor(paths);
+    env_.report['assembly'] = <String, dynamic>{'retried': false};
+    await _runAssemblyPlan(env_, plan, imported: true);
+  }, timeout: const Timeout(Duration(minutes: 10)));
+}
+
+/// What one assembly build shares: the live backend, a fresh real project folder, the report written as
+/// assembly_result.json.
+class _Env {
+  _Env._(this.runDir, this.client, this.docApi, this.sketchApi, this.root, this.storage);
+  final String runDir;
+  final http.Client client;
+  final DocumentApiClient docApi;
+  final SketchApiClient sketchApi;
+  final DesktopProjectRoot root;
+  final DesktopStorageService storage;
+  final Map<String, dynamic> report = {'parts': <Map<String, dynamic>>[]};
+
+  static _Env open(String runDir, Map<String, String> env) {
+    final client = _LiveClient(Uri.parse(env['AI_EVAL_BACKEND'] ?? 'http://127.0.0.1:8000'), env['CAD_API_KEY'] ?? 'local-test-key');
+    final projectDir = Directory('$runDir/project');
+    if (projectDir.existsSync()) projectDir.deleteSync(recursive: true);
+    projectDir.createSync(recursive: true);
+    return _Env._(runDir, client, DocumentApiClient(httpClient: client), SketchApiClient(httpClient: client),
+        DesktopProjectRoot(projectDir.absolute.path), DesktopStorageService());
+  }
+
+  void save() => File('$runDir/assembly_result.json').writeAsStringSync(_json.convert(report));
+}
+
+typedef _PartPlan = ({AiGenerationPlan? plan, bool retried, String why});
+
+/// Builds every manifest part into one document and saves each to the project folder, as `_runPartCycle` does.
+/// [planFor] gives each part's plan (null: [_PartPlan.why] says why not). [retryTurns]: write the retry request the
+/// app would send on a failure (an imported plan is fixed, so there is none). False when it stopped.
+Future<bool> _buildParts(
+  _Env e,
+  List<Map<String, dynamic>> parts,
+  Future<_PartPlan> Function(int index) planFor, {
+  required bool retryTurns,
+}) async {
+  final runDir = e.runDir;
+  final assemblyClient = AssemblyDocumentClient(storageService: e.storage, documentApiClient: e.docApi);
+  await e.docApi.startNewDocument();
+  for (var i = 0; i < parts.length; i++) {
+    final n = _nn(i + 1);
+    final got = await planFor(i);
+    final entry = <String, dynamic>{'name': parts[i]['name'], 'path': parts[i]['path'], 'retried': got.retried};
+    (e.report['parts'] as List).add(entry);
+    final plan = got.plan;
+    if (plan == null) {
+      entry['outcome'] = got.why;
+      e.report['stopped'] = 'part $n: ${got.why}';
+      if (retryTurns && got.why == 'no plan') {
         File('$runDir/part_${n}_retry_request.txt').writeAsStringSync(
           'That reply was not a plan for "${parts[i]['name']}" - please reply with an ordinary plan for this '
           'part only, as described in the Assembly mode instructions.\n\n${assemblyModePartRetryRequestText(name: parts[i]['name'] as String)}',
         );
-        return save();
       }
-      File('$runDir/part_${n}_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
-      final part = await docApi.createPart(parts[i]['name'] as String);
-      final result = await PlanTranslator(documentApi: docApi, sketchApi: sketchApi, storageService: storage, projectRoot: root)
-          .execute(plan: plan, partId: part.id);
-      entry['outcome'] = result.outcome.name;
-      entry['error'] = result.errorMessage;
-      entry['stopped_at'] = result.stoppedAtLocalId;
-      if (result.outcome == PlanTranslationOutcome.validationFailed) {
-        entry['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+      e.save();
+      return false;
+    }
+    File('$runDir/part_${n}_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
+    final part = await e.docApi.createPart(parts[i]['name'] as String);
+    final result = await PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root)
+        .execute(plan: plan, partId: part.id);
+    entry['outcome'] = result.outcome.name;
+    entry['error'] = result.errorMessage;
+    entry['stopped_at'] = result.stoppedAtLocalId;
+    if (result.outcome == PlanTranslationOutcome.validationFailed) {
+      entry['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+      if (retryTurns) {
         // The app appends the failure and retries automatically, once.
         File('$runDir/part_${n}_retry_request.txt').writeAsStringSync(
           'For "${parts[i]['name']}": ${describeAiPlanValidationFailure(plan, result.preflightResults)}\n\n'
           '${assemblyModePartRequestText(index: i, total: parts.length, name: parts[i]['name'] as String, summary: '')}',
         );
-        report['stopped'] = 'part $n: validation failed';
-        return save();
       }
-      if (result.outcome != PlanTranslationOutcome.success) {
+      e.report['stopped'] = 'part $n: validation failed';
+      e.save();
+      return false;
+    }
+    if (result.outcome != PlanTranslationOutcome.success) {
+      if (retryTurns) {
         File('$runDir/part_${n}_retry_request.txt').writeAsStringSync(
           '${_stoppedRunText(plan, result)}\n\n${assemblyModePartRetryRequestText(name: parts[i]['name'] as String)}',
         );
-        report['stopped'] = 'part $n: ${result.outcome.name}';
-        return save();
       }
-      final step = await client.get(Uri.parse('/document/parts/${part.id}/export/step'));
-      if (step.statusCode == 200) File('$runDir/part_$n.step').writeAsBytesSync(step.bodyBytes);
-      await assemblyClient.savePart(root, part.id, parts[i]['path'] as String);
+      e.report['stopped'] = 'part $n: ${result.outcome.name}';
+      e.save();
+      return false;
     }
+    final step = await e.client.get(Uri.parse('/document/parts/${part.id}/export/step'));
+    if (step.statusCode == 200) File('$runDir/part_$n.step').writeAsBytesSync(step.bodyBytes);
+    await assemblyClient.savePart(e.root, part.id, parts[i]['path'] as String);
+  }
+  return true;
+}
 
-    final asmReply = File('$runDir/assembly_retry_reply.txt').existsSync()
-        ? File('$runDir/assembly_retry_reply.txt')
-        : File('$runDir/assembly_reply.txt');
-    report['assembly'] = <String, dynamic>{'retried': asmReply.path.endsWith('retry_reply.txt')};
-    final asm = report['assembly'] as Map<String, dynamic>;
-    if (!asmReply.existsSync()) {
-      asm['outcome'] = 'no reply';
-      return save();
-    }
-    final plan = detectPlanInAssistantText(asmReply.readAsStringSync());
-    if (plan == null) {
-      asm['outcome'] = 'no plan';
-      return save();
-    }
-    File('$runDir/assembly_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
-    final asmPart = await docApi.createPart('Assembly');
-    final result = await PlanTranslator(documentApi: docApi, sketchApi: sketchApi, storageService: storage, projectRoot: root)
-        .execute(plan: plan, partId: asmPart.id);
-    asm['outcome'] = result.outcome.name;
-    asm['error'] = result.errorMessage;
-    asm['stopped_at'] = result.stoppedAtLocalId;
-    if (result.outcome == PlanTranslationOutcome.validationFailed) {
-      asm['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+/// `AiModellingScreen._runAssemblyCycle` from the plan on, for the harness: the placements (a plan that carries its own
+/// mates is split, `ai_plan_split.dart`), then the mates - the plan's own with their local ids rewritten, or for an
+/// in-app plan without any the app's second turn (`_mateTurn`) - then the completeness check, then the STEP export.
+Future<void> _runAssemblyPlan(_Env e, AiGenerationPlan plan, {required bool imported}) async {
+  final runDir = e.runDir;
+  final asm = e.report['assembly'] as Map<String, dynamic>;
+  File('$runDir/assembly_plan.json').writeAsStringSync(_json.convert(plan.toJson(includeIntendedMotion: true)));
+  final asmPart = await e.docApi.createPart('Assembly');
+  final split = splitPlacementAndMates(plan);
+  final placement = split.placement ?? plan;
+  final translator = PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root);
+  final result = await translator.execute(plan: placement, partId: asmPart.id);
+  asm['outcome'] = result.outcome.name;
+  asm['error'] = result.errorMessage;
+  asm['stopped_at'] = result.stoppedAtLocalId;
+  if (result.outcome == PlanTranslationOutcome.validationFailed) {
+    asm['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+    if (!imported) {
       File('$runDir/assembly_retry_request.txt').writeAsStringSync(
-        'For the assembly plan: ${describeAiPlanValidationFailure(plan, result.preflightResults)}\n\n'
+        'For the assembly plan: ${describeAiPlanValidationFailure(placement, result.preflightResults)}\n\n'
         '${assemblyModeAssemblyRetryRequestText()}',
       );
-    } else if (result.outcome != PlanTranslationOutcome.success) {
-      File('$runDir/assembly_retry_request.txt').writeAsStringSync(
-        '${_stoppedRunText(plan, result)}\n\n${assemblyModeAssemblyRetryRequestText()}',
-      );
     }
-    if (result.outcome == PlanTranslationOutcome.success &&
-        plan.steps.any((s) => s is AiAddComponentStep) &&
-        !plan.steps.any((s) => s is AiMateStep)) {
-      report['mates'] = await _mateTurn(runDir, docApi, sketchApi, storage, root, asmPart.id);
+  } else if (result.outcome != PlanTranslationOutcome.success && !imported) {
+    File('$runDir/assembly_retry_request.txt').writeAsStringSync(
+      '${_stoppedRunText(placement, result)}\n\n${assemblyModeAssemblyRetryRequestText()}',
+    );
+  }
+  var intended = <AiIntendedMotion>[];
+  if (result.outcome == PlanTranslationOutcome.success) {
+    if (split.mates.isNotEmpty || imported) {
+      final componentIds = addComponentLocalIds(placement);
+      final placed = {for (final entry in result.localIdToRealId.entries) if (componentIds.contains(entry.key)) entry.key: entry.value};
+      final rewritten = rewriteMateOccurrenceIds(split.mates, placed, intendedMotion: split.intendedMotion);
+      intended = rewritten.intendedMotion;
+      e.report['mates'] = await _carriedMates(e, rewritten, asmPart.id);
+    } else if (plan.steps.any((s) => s is AiAddComponentStep)) {
+      e.report['mates'] = await _mateTurn(runDir, e.docApi, e.sketchApi, e.storage, e.root, asmPart.id);
     }
-    final step = await client.get(Uri.parse('/document/parts/${asmPart.id}/export/assembly-step'));
-    asm['step_status'] = step.statusCode;
-    if (step.statusCode == 200) File('$runDir/assembly.step').writeAsBytesSync(step.bodyBytes);
-    save();
-  }, timeout: const Timeout(Duration(minutes: 10)));
+    final mates = e.report['mates'] as Map<String, dynamic>?;
+    if (mates != null && mates['outcome'] != 'awaiting reply') {
+      e.report['completeness'] = await _completeness(e, asmPart.id, intended);
+    }
+  }
+  final step = await e.client.get(Uri.parse('/document/parts/${asmPart.id}/export/assembly-step'));
+  asm['step_status'] = step.statusCode;
+  if (step.statusCode == 200) File('$runDir/assembly.step').writeAsBytesSync(step.bodyBytes);
+  e.save();
+}
+
+/// The mates an assembly plan carried (an imported zip's), run as `AiModellingScreen._runCarriedMates` does: one plan,
+/// validated and built once; a failure is recorded, there is no retry (nobody to ask).
+Future<Map<String, dynamic>> _carriedMates(_Env e, AiGenerationPlan plan, String assemblyPartId) async {
+  if (plan.steps.isEmpty) return {'outcome': 'none in the plan', 'count': 0};
+  final out = <String, dynamic>{'carried': true, 'count': plan.steps.whereType<AiMateStep>().length};
+  File('${e.runDir}/mates_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
+  final PlanTranslationResult result;
+  try {
+    result = await PlanTranslator(documentApi: e.docApi, sketchApi: e.sketchApi, storageService: e.storage, projectRoot: e.root)
+        .execute(plan: plan, partId: assemblyPartId);
+  } on ApiException catch (ex) {
+    // The validate call refused the plan outright (HTTP 422, a field the schema does not accept): the app records it
+    // like a validation failure and saves the placed assembly without mates.
+    out['outcome'] = 'validationFailed';
+    out['error'] = ex.message;
+    File('${e.runDir}/mates_failure.txt').writeAsStringSync(ex.message);
+    return out;
+  }
+  out['outcome'] = result.outcome.name;
+  out['error'] = result.errorMessage;
+  out['stopped_at'] = result.stoppedAtLocalId;
+  if (result.outcome == PlanTranslationOutcome.validationFailed) {
+    out['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+    File('${e.runDir}/mates_failure.txt').writeAsStringSync(listAiPlanValidationProblems(plan, result.preflightResults));
+  }
+  return out;
+}
+
+/// The completeness check (`ai_assembly_report.dart`) on the built assembly: completeness.json, one entry per
+/// component with its saved path (`external_ref`, how the scorer finds which part it is), its constraint status and
+/// free motions, and the intent the plan declared; completeness.txt is the report as the app shows it.
+Future<Map<String, dynamic>> _completeness(_Env e, String assemblyPartId, List<AiIntendedMotion> intended) async {
+  final occurrences = await e.docApi.listOccurrences(assemblyPartId);
+  final status = await e.docApi.getConstraintStatus(assemblyPartId);
+  final report = buildCompletenessReport(occurrences: occurrences, status: status, intended: intended);
+  Map<String, dynamic> motion(FreeMotionDto m) => {
+        'kind': m.kind,
+        if (m.direction != null) 'direction': m.direction,
+        if (m.axis != null) 'axis': m.axis,
+        if (m.through != null) 'through': m.through,
+        if (m.pitchPerTurn != null) 'pitch_per_turn': m.pitchPerTurn,
+      };
+  final components = [
+    for (final row in report.rows)
+      {
+        'occurrence_id': row.occurrenceId,
+        'external_ref': [for (final o in occurrences) if (o.id == row.occurrenceId) o.externalRef].first,
+        'name': row.name,
+        'status': row.state == null ? 'unchecked' : const {
+              ConstraintState.fixed: 'fixed',
+              ConstraintState.fullyConstrained: 'fully_constrained',
+              ConstraintState.underConstrained: 'under_constrained',
+              ConstraintState.overConstrained: 'over_constrained',
+            }[row.state],
+        'dof': row.dof,
+        'free_motions': [for (final m in row.freeMotions) motion(m)],
+        if (row.intendedMotion != null) 'intended': row.intendedMotion,
+      },
+  ];
+  final out = {'components': components, 'needs_follow_up': report.needsFollowUp};
+  File('${e.runDir}/completeness.json').writeAsStringSync(_json.convert(out));
+  File('${e.runDir}/completeness.txt').writeAsStringSync(formatCompletenessReport(report, maxRows: 1000));
+  return {'components': components.length, 'unintended_free': report.unintendedlyFree.length, 'over': report.overConstrained.length};
 }
 
 String _nn(int i) => i.toString().padLeft(2, '0');
@@ -350,8 +543,22 @@ Future<Map<String, dynamic>> _mateTurn(String runDir, DocumentApiClient docApi, 
   if (plan == null || plan.steps.isEmpty) return {...out, 'outcome': 'no plan'};
   File('$runDir/mates_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
   out['count'] = plan.steps.whereType<AiMateStep>().length;
-  final result = await PlanTranslator(documentApi: docApi, sketchApi: sketchApi, storageService: storage, projectRoot: root)
-      .execute(plan: plan, partId: assemblyPartId);
+  final PlanTranslationResult result;
+  try {
+    result = await PlanTranslator(documentApi: docApi, sketchApi: sketchApi, storageService: storage, projectRoot: root)
+        .execute(plan: plan, partId: assemblyPartId);
+  } on ApiException catch (e) {
+    // HTTP 422 from the validate call (a field the schema does not accept): the app treats it as a failed validation.
+    out['outcome'] = 'validationFailed';
+    out['error'] = e.message;
+    if (!retry.existsSync()) {
+      File('$runDir/requests/mates_retry.txt').writeAsStringSync(
+        'For the mates plan: the plan was rejected, so nothing was built: ${e.message}\n\n'
+        '${assemblyModeMatesRetryRequestText()}',
+      );
+    }
+    return out;
+  }
   out['outcome'] = result.outcome.name;
   out['error'] = result.errorMessage;
   out['stopped_at'] = result.stoppedAtLocalId;

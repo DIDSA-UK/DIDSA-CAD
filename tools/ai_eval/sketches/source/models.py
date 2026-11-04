@@ -410,6 +410,22 @@ def iso_points(points):
     return [[round(gp_Vec(*p).Dot(gp_Vec(xv)), 3), round(gp_Vec(*p).Dot(gp_Vec(yv)), 3)] for p in points]
 
 
+# Each distinct part's expected motion in the assembly (the completeness check, `docs/ai-modelling/16-...`), by part id.
+# Not part of the geometry: the author's reading of how the parts should be held, UNCONFIRMED until the owner checks
+# it. Alternatives with "|". "held" = fixed or fully constrained; "spin" / "2spin" = free to spin about one / two
+# axes and nothing else (absolute motion: a wheel on a swivelling fork can also swivel, so it is "2spin"); anything
+# else is free motion that is not listed, which the scorer reports as under-constrained (or over-constrained when
+# the part is held more than expected). A round pin, bolt, washer or nut in a hole may spin or be held: "held|spin".
+EXPECTED_MOTION = {
+    "A": {"A1": "held", "A2": "held|spin"},
+    "B": {"B1": "held", "B2": "held", "B3": "held|spin", "B4": "spin"},
+    "D": {"D1": "held", "D2": "held|spin"},
+    "E": {"E1": "held", "E2": "held"},
+    "C": {"C1": "held", "C2": "held|spin", "C3": "held|spin", "C4": "spin", "C5": "2spin", "C6": "spin|2spin", "C7": "spin|2spin", "C8": "spin|2spin"},
+    "F": {"F1": "held", "F2": "held", "F3": "held", "F4": "held"},
+}
+
+
 def main(out):
     os.makedirs(os.path.join(out, "step"), exist_ok=True)
     keys = {"parts": {}, "assemblies": {}}
@@ -428,6 +444,7 @@ def main(out):
             "union_volume": geometry(union)["volume"],
             "components": [[pid, geometry(s)["centroid"], geometry(s)["volume"]] for pid, s in pl],
             **{k: v for k, v in geometry(comp).items() if k in ("bbox", "bbox_min", "volume")},
+            **({"expected_motion": EXPECTED_MOTION[a]} if a in EXPECTED_MOTION else {}),
         }
         w = STEPControl_Writer()
         w.Transfer(comp, STEPControl_AsIs)
