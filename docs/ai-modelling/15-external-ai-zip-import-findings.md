@@ -67,6 +67,11 @@ since an imported assembly gets no mates turn (`13-multi-part-assembly-overhaul.
 assumptions"); they are added in the app. `ai_plan_export_test.dart` builds a zip to that layout and checks the
 importer reads it. Not tested with a real external chat.
 
+**Superseded 2026-11-04 (`16-assembly-mates-gaps-plan.md`, Phase 1):** the hand-off now asks for the mates too, at the
+end of `99_assembly.json`, naming components by their `add_component` `local_id`; the app places the components, then
+rewrites those ids and builds the mates (`ai_plan_split.dart`). The "no mate steps" wording above is what was true
+for the first version only.
+
 ## Open / not done
 
 - **The zip importer does not repair finding 3.** An imported assembly that

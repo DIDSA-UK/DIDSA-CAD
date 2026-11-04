@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart' show Archive, ArchiveFile, ZipEncoder;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -240,6 +241,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
   mateTurnTests();
+  importedMatesTests();
 
   testWidgets('a part_manifest reply shows the confirm panel with one editable row per part', (tester) async {
     final provider = _FakeAiProvider((_, __) async => const AiTurnResult(assistantText: _manifestText));
@@ -993,5 +995,181 @@ void mateTurnTests() {
     // The revised manifest is back on the confirm panel, with nothing built yet.
     expect(find.text('Found 2 part(s)'), findsOneWidget);
     expect(find.byKey(const Key('aiModellingManifestAssumptions')), findsNothing);
+  });
+}
+
+Uint8List _importZip({required List<Map<String, dynamic>> mates}) {
+  Map<String, Object> plan(String id) => {
+        'version': 1,
+        'steps': [
+          {'local_id': id, 'kind': 'sketch', 'plane': 'XY'},
+        ],
+      };
+  final files = <String, Object>{
+    '00_manifest.json': {
+      'kind': 'part_manifest',
+      'parts': [
+        {'name': 'Mounting Plate', 'type_prefix': 'PLATE', 'summary': 'a plate'},
+        {'name': 'Support Tube', 'type_prefix': 'TUBE', 'summary': 'a tube'},
+      ],
+    },
+    '01_PLATE.json': plan('s1'),
+    '02_TUBE.json': plan('s2'),
+    '99_assembly.json': {
+      'version': 1,
+      'steps': [
+        {'local_id': 'plate', 'kind': 'add_component', 'relative_path': 'PLATE_001.didsa'},
+        {'local_id': 'tube', 'kind': 'add_component', 'relative_path': 'TUBE_001.didsa'},
+        ...mates,
+      ],
+    },
+  };
+  final archive = Archive();
+  for (final entry in files.entries) {
+    final bytes = utf8.encode(jsonEncode(entry.value));
+    archive.addFile(ArchiveFile(entry.key, bytes.length, bytes));
+  }
+  return Uint8List.fromList(ZipEncoder().encode(archive));
+}
+
+const _importedMate = {
+  'local_id': 'm1',
+  'kind': 'mate',
+  'type': 'coincident',
+  'references': [
+    {'occurrence_id': 'plate', 'face_selector': {'direction': '+z'}},
+    {'occurrence_id': 'tube', 'face_selector': {'direction': '-z'}},
+  ],
+};
+
+/// Runs the import-zip flow up to the assembly's save dialog (a fake provider that fails the test if it is ever
+/// asked anything) and returns what the fake backend saw.
+Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<String> imports})> _runImportedZip(
+  WidgetTester tester,
+  Uint8List zip, {
+  bool failMateValidation = false,
+}) async {
+  SharedPreferences.setMockInitialValues({});
+  final base = _fullOrchestrationHandler();
+  final requests = <String>[];
+  final validateBodies = <Map<String, dynamic>>[];
+  final imports = <String>[];
+  Future<http.Response> handler(http.Request request) async {
+    final path = request.url.path;
+    requests.add('${request.method} $path');
+    if (path.endsWith('/ai-plan/validate') && path.contains('part-3')) {
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      validateBodies.add(body);
+      final steps = (body['steps'] as List).cast<Map<String, dynamic>>();
+      if (failMateValidation && steps.any((step) => step['kind'] == 'mate')) {
+        return http.Response(
+          jsonEncode({
+            'results': [
+              for (final step in steps)
+                {
+                  'local_id': step['local_id'],
+                  'ok': false,
+                  'warnings': [],
+                  'error': {'type': 'invalid_step_payload', 'message': 'no such face'},
+                },
+            ],
+          }),
+          200,
+        );
+      }
+    }
+    if (path == '/document/import/native') imports.add(request.body);
+    if (path == '/document/parts/part-3/mates' && request.method == 'POST') {
+      return http.Response(
+        jsonEncode({'id': 'mate-1', 'type': 'coincident', 'references': [], 'value': null, 'flipped': false}),
+        201,
+      );
+    }
+    if (path.startsWith('/document/parts/part-3/occurrences/') && path.endsWith('/solve')) {
+      return http.Response(
+        jsonEncode({
+          'id': 'occ',
+          'transform': {'translation': [0, 0, 0], 'rotation_axis': [0, 0, 1], 'rotation_angle_degrees': 0},
+        }),
+        200,
+      );
+    }
+    return base(request);
+  }
+
+  final provider = _FakeAiProvider((_, __) async => fail('an imported zip must not ask the in-app provider anything'));
+  await tester.pumpWidget(MaterialApp(
+    home: AiModellingScreen(
+      provider: provider,
+      documentApi: DocumentApiClient(httpClient: MockClient(handler)),
+      sketchApi: SketchApiClient(httpClient: MockClient(handler)),
+      storageService: _FakeStorageService(),
+      projectRoot: const DesktopProjectRoot('/tmp/project'),
+      pickImportZip: () async => zip,
+    ),
+  ));
+  await tester.pumpAndSettle();
+  await tester.tap(find.text('Assembly'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byTooltip('Import plan from file (.json or .zip)'));
+  await tester.pumpAndSettle();
+  await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
+  await tester.pumpAndSettle();
+  for (var i = 0; i < 2; i++) {
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+  }
+  return (validateBodies: validateBodies, requests: requests, imports: imports);
+}
+
+void importedMatesTests() {
+  testWidgets('an imported zip with mates: placements first, then the mates with real occurrence ids, before the save',
+      (tester) async {
+    final run = await _runImportedZip(tester, _importZip(mates: [_importedMate]));
+
+    // The assembly's two validations: placements alone, then the mates alone.
+    expect(run.validateBodies, hasLength(2));
+    final placementKinds = [for (final s in run.validateBodies[0]['steps'] as List) s['kind']];
+    expect(placementKinds, ['add_component', 'add_component']);
+    final mateStep = (run.validateBodies[1]['steps'] as List).single as Map<String, dynamic>;
+    expect(mateStep['kind'], 'mate');
+    final refIds = [for (final r in mateStep['references'] as List) (r as Map)['occurrence_id'] as String];
+    // The plan's own local ids ("plate", "tube") are gone, replaced by the ids the placement run really created.
+    expect(refIds, everyElement(startsWith('existing:')));
+    expect(refIds[0], isNot(refIds[1]));
+    for (final id in refIds) {
+      final occurrenceId = id.substring('existing:'.length);
+      expect(run.imports.any((body) => body.contains(occurrenceId)), isTrue, reason: '$id was never created');
+    }
+    // Both placements were built (two imports) before the mate was created, and the save dialog comes after.
+    expect(run.imports, hasLength(2));
+    expect(run.requests, contains('POST /document/parts/part-3/mates'));
+    expect(run.requests.lastIndexOf('POST /document/import/native'),
+        lessThan(run.requests.indexOf('POST /document/parts/part-3/mates')));
+    expect(find.text('Save assembly as…'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 mate added.'), findsOneWidget);
+  });
+
+  testWidgets('an imported zip whose mates fail validation still saves the placed assembly, with the reason', (tester) async {
+    final run = await _runImportedZip(tester, _importZip(mates: [_importedMate]), failMateValidation: true);
+
+    expect(run.requests, isNot(contains('POST /document/parts/part-3/mates')));
+    expect(find.text('Save assembly as…'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Saved without mates: the mates plan failed validation.'), findsOneWidget);
+    expect(find.textContaining('no such face'), findsOneWidget);
+    expect(find.byKey(const Key('aiModellingOpenAssembly')), findsOneWidget);
+  });
+
+  testWidgets('an imported zip with no mates says so and saves the placed assembly', (tester) async {
+    final run = await _runImportedZip(tester, _importZip(mates: const []));
+
+    expect(run.validateBodies, hasLength(1));
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('the imported assembly plan has none'), findsOneWidget);
   });
 }

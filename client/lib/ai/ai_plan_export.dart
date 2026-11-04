@@ -102,16 +102,24 @@ only these JSON files, each containing only JSON:
   order as the manifest's parts: the app matches them to the manifest by
   that order. Each builds its part alone, in its own coordinates.
 - `99_assembly.json` - the assembly plan: one add_component step per
-  component, with "relative_path" set to "<TYPE_PREFIX>_001.didsa" for
-  that part (the app points it at the file it really saves), then a
-  move_component step for every component but the first, which stays where
-  it is as the assembly's reference frame. Place parts only: no mate steps
-  (their faces do not exist until the plan has run - add mates in the app
-  afterwards).
+  component, each with its own short local_id (the name you use for that
+  component everywhere else in this file) and "relative_path" set to
+  "<TYPE_PREFIX>_001.didsa" for that part (the app points it at the file it
+  really saves); then a move_component step for every component but the
+  first, which stays where it is as the assembly's reference frame; then,
+  at the END, the mate steps. A mate names a component by its add_component
+  local_id and each face with face_selector, in that part's own
+  coordinates - the "Assembly mode" section below says exactly how, and
+  where it differs from the "Assembly editing" section, follow Assembly
+  mode. The app places the components first, then checks and builds the
+  mates, so the faces do exist by then. Write enough mates that every
+  component which should not move is held where you placed it, and say in
+  your reply which components are meant to move, and how (a wheel spinning
+  on its axle, say), so you do not lock them.
 
 Bring the zip back into DIDSA-CAD's AI Modelling screen, in Assembly mode,
 and use "Import plan" to load it: the app shows the parts for you to
-confirm, then builds and saves each one and the assembly.
+confirm, then builds and saves each one, the assembly and its mates.
 
 Everything below this line is the same schema/instructions DIDSA-CAD's own
 in-app assistant is given - follow it exactly so every plan you produce is

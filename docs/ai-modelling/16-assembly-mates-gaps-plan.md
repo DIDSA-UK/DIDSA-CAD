@@ -1,7 +1,8 @@
 # Workstream 16: Assembly mates gaps (plan)
 
 Written 2026-11-04 from the open items at the end of `tools/ai_eval/README.md` ("Where this leaves the evaluation").
-Not built. To be implemented by a new session; read this file, `13-multi-part-assembly-overhaul.md` ("Mates turn and
+Implementation status is in "What was built" at the end of this file (Phase 1 built; the rest as marked there).
+Written to be implemented by a new session; read this file, `13-multi-part-assembly-overhaul.md` ("Mates turn and
 stated assumptions") and `15-external-ai-zip-import-findings.md` first.
 
 ## The gaps
@@ -192,3 +193,47 @@ model rounds need the owner's go-ahead.
 - Rebuilding the `local_id` map for an imported assembly reopened in a later session.
 - A real external chat run is the owner's to do; until then the external route is tested only by a model standing in
   for one.
+
+
+## What was built
+
+Written as each phase landed, with what changed from the plan above. Nothing here has been tried with a real external
+chat app: the external route is covered by unit and widget tests with a fake backend, and (Phase 4) by a model standing
+in for the chat, not by claude.ai / ChatGPT / Gemini.
+
+### Phase 1: mates in the imported zip (built)
+
+Client only, as planned.
+- `ai_plan_split.dart`: `splitPlacementAndMates`, `rewriteMateOccurrenceIds` (rewrites `occurrence_id` and a Width
+  mate's `midplane.b_occurrence_id`), `addComponentLocalIds`. Pure; `test/ai_plan_split_test.dart`.
+- `_runAssemblyCycle` splits any assembly plan that carries `mate` steps (an imported zip's, **and** an in-app plan
+  that included some, which used to fail the dry run). The placements run as the plan, then the mates run through the
+  new `_executeMatesPlan`, which `_runMateTurn` also uses now (the provider turn and its one retry stay in-app only).
+  `_runCarriedMates` rewrites the ids and calls it. Only `add_component` local ids are rewritten (the translator's
+  `localIdToRealId` also holds a `move_component`'s id, which is not a component). The in-app flow with no mates in its
+  plan is unchanged: still the second provider turn.
+- A failed mates plan never stops the run: the placed assembly is saved and `_mateNote` says why. For an imported
+  zip the note lists the failing steps (`listAiPlanValidationProblems`, a new helper split out of
+  `describeAiPlanValidationFailure`: the problem lines without the instruction to a model). An imported zip with no
+  mates gets "Saved without mates: the imported assembly plan has none."
+- Prompt: `buildAiScopingSystemPrompt(externalHandoff: true)`, set only by `_shareExternalHandoff`, swaps the in-app
+  assembly and mates paragraphs for `assemblyModeExternalVocabularyText` (mates at the end of `99_assembly.json`,
+  components by `add_component` `local_id`, `face_selector` rules as in-app, "enough mates that each part is held
+  where it is, unless it is meant to move"). The in-app text is byte-identical to before (checked).
+  - **Changed from the plan:** the "Assembly editing" section of the same prompt also says a `face_selector` is
+    "only on an `existing:<id>` occurrence" and that a bare `local_id` cannot take a selector. That contradicts the
+    external text, and it is a third place, not one of the two paragraphs the plan named. The external paragraphs say
+    plainly that in this plan they replace that rule, rather than editing the shared section (the in-app prompt is
+    pinned by the 2026-11-04 runs). Whether an external model reads that override correctly is untested.
+- Hand-off preamble: "Place parts only: no mate steps" replaced by the mates instruction. It asks the AI to say which
+  components are meant to move; Phase 2 turns that into a field in the JSON, since the importer cannot read a chat
+  reply.
+- Test hook: `AiModellingScreen(pickImportZip: ...)` replaces the file picker so a widget test can import a zip
+  without file I/O.
+- Tests: split/rewrite units; `ai_plan_export_test.dart` (the preamble, the embedded paragraphs, a zip with mates
+  read and split); `ai_modelling_screen_orchestration_test.dart` (an imported zip builds placements, then mates with
+  real occurrence ids, before the save; invalid mates still save with a note; no mates says so; the provider is never
+  asked).
+
+Not verified: the split against a real backend's `face_selector` resolution (the widget tests use a fake backend). The
+Phase 4 harness `import` command is where that is exercised.

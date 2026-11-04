@@ -628,7 +628,10 @@ parts with `move_component`, and Phase E's "insert + mate" was in practice "inse
   `summarizeExistingOccurrencesForPrompt` "Placed Components" listing "Continue with AI" uses) and asks for a plan of
   mate steps only (`assemblyModeMatesRequestText`). A plan that fails validation is retried once. The turn never
   stops the run: on any failure the placed, unmated assembly is still saved, and the progress panel says why
-  (`_mateNote`). Skipped for an imported zip and when the assembly plan already has mates.
+  (`_mateNote`). Skipped for an imported zip and when the assembly plan already has mates. *Since 2026-11-04
+  (`16-assembly-mates-gaps-plan.md`): an assembly plan that carries its own mates, an imported zip's included, is
+  split in the client into placements and then mates (`ai_plan_split.dart`) instead of being skipped or failing the
+  dry run; the in-app provider's second turn is unchanged.*
 - **`face_selector`** (`MateFaceSelector`, `ai_plan_schemas.py`): a mate reference may name a face by geometry
   instead of a raw `subshape_ref` - a planar face by outward normal (`direction`) or a cylindrical face by
   `cylinder_radius`, in the component's own part coordinates, with `near` to pick among several (a pin's shoulder
