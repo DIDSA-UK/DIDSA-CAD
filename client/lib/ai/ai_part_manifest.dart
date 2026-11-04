@@ -29,15 +29,22 @@ class AiPartManifestEntry {
 class AiPartManifest {
   final List<AiPartManifestEntry> parts;
 
-  const AiPartManifest({required this.parts});
+  /// The readings the assistant had to make that the drawing does not settle (a hard-to-read number, a quantity,
+  /// a position, how two parts fit), one short sentence each, for the user to confirm or correct on the confirm
+  /// panel before anything is built. Empty when there were none.
+  final List<String> assumptions;
+
+  const AiPartManifest({required this.parts, this.assumptions = const []});
 
   factory AiPartManifest.fromJson(Map<String, dynamic> json) {
     final raw = json['parts'];
     if (raw is! List || raw.isEmpty) {
       throw const FormatException('Part manifest has no parts');
     }
+    final assumptions = json['assumptions'];
     return AiPartManifest(
       parts: raw.map((p) => AiPartManifestEntry.fromJson(p as Map<String, dynamic>)).toList(),
+      assumptions: assumptions is List ? [for (final a in assumptions) if (a is String && a.trim().isNotEmpty) a.trim()] : const [],
     );
   }
 }

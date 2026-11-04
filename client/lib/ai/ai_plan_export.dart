@@ -14,9 +14,13 @@ import 'ai_provider.dart';
 /// (`AiModellingScreen._send()`), so the external LLM is held to the
 /// identical schema contract `detectPlanInAssistantText`/`AiGenerationPlan.
 /// fromJson` already parse against - never a second, drifting copy.
-String buildExternalHandoffPackage({required String systemPrompt, required List<AiChatMessage> transcript}) {
+String buildExternalHandoffPackage({
+  required String systemPrompt,
+  required List<AiChatMessage> transcript,
+  bool assemblyMode = false,
+}) {
   final buffer = StringBuffer()
-    ..writeln(_handoffPreamble)
+    ..writeln(assemblyMode ? _assemblyHandoffPreamble : _handoffPreamble)
     ..writeln()
     ..writeln('=' * 72)
     ..writeln(systemPrompt);
@@ -68,4 +72,47 @@ use "Import plan" to load it.
 
 Everything below this line is the same schema/instructions DIDSA-CAD's own
 in-app assistant is given - follow it exactly so the plan you produce is
+valid.''';
+
+/// The Assembly-mode hand-off's own preamble: an external chat has no app to ask for each part in turn, so instead
+/// of one `plan.json` the external AI is asked for the whole multi-part result as one zip, in exactly the shape
+/// `AiPlanBundle.fromZipBytes` (`ai_plan_bundle.dart`) reads - which the plain preamble never described, so a zip
+/// only ever arrived when an external AI happened to invent one.
+const String _assemblyHandoffPreamble = '''
+# DIDSA-CAD AI Modelling hand-off (Assembly mode)
+
+Paste everything below into your AI chat of choice (Claude, ChatGPT, Gemini,
+etc.) and continue the conversation there. If you have photos or drawings
+of the parts, attach them directly in that chat - they do not travel with
+this hand-off.
+
+The instructions below describe a conversation in which the app asks for
+each part's plan in turn. Here there is no app to ask, so work through the
+same stages yourself: settle the parts and your assumptions with the user,
+then write every plan. For your FINAL reply, deliver ONE .zip file (if your
+chat app cannot create files, give each file's content in its own fenced
+```json block, headed by its file name, and the user will zip them) holding
+only these JSON files, each containing only JSON:
+
+- `00_manifest.json` - the part_manifest exactly as described below
+  ("kind": "part_manifest"), one entry per distinct part. Give every part a
+  different "type_prefix".
+- `01_<TYPE_PREFIX>.json`, `02_<TYPE_PREFIX>.json`, ... - one ordinary
+  plan ({"version": 1, "steps": [...]}) per part, numbered in the same
+  order as the manifest's parts: the app matches them to the manifest by
+  that order. Each builds its part alone, in its own coordinates.
+- `99_assembly.json` - the assembly plan: one add_component step per
+  component, with "relative_path" set to "<TYPE_PREFIX>_001.didsa" for
+  that part (the app points it at the file it really saves), then a
+  move_component step for every component but the first, which stays where
+  it is as the assembly's reference frame. Place parts only: no mate steps
+  (their faces do not exist until the plan has run - add mates in the app
+  afterwards).
+
+Bring the zip back into DIDSA-CAD's AI Modelling screen, in Assembly mode,
+and use "Import plan" to load it: the app shows the parts for you to
+confirm, then builds and saves each one and the assembly.
+
+Everything below this line is the same schema/instructions DIDSA-CAD's own
+in-app assistant is given - follow it exactly so every plan you produce is
 valid.''';

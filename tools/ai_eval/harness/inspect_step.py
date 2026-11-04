@@ -1,11 +1,15 @@
 """Geometry report for a STEP file: solids, volume, bbox, face types, cylinder radii.
-Run with the backend's conda python. Usage: inspect_step.py model.step [out.json]"""
+Run with the backend's conda python. Usage: inspect_step.py [--solids] model.step [out.json]
+--solids adds a report per solid and the volume of their union (an assembly: overlapping parts make the union
+smaller than the sum)."""
 import json
 import sys
 from collections import Counter
 
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.BRepAlgoAPI import BRepAlgoAPI_Fuse
+from OCC.Core.TopTools import TopTools_ListOfShape
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.GeomAbs import GeomAbs_Cylinder, GeomAbs_Plane
@@ -23,12 +27,44 @@ def shapes(shape, kind):
         exp.Next()
 
 
-def report(path):
+def report(path, per_solid=False):
     reader = STEPControl_Reader()
     if reader.ReadFile(path) != 1:
         return {"error": "STEP read failed"}
     reader.TransferRoots()
     shape = reader.OneShape()
+    out = report_shape(shape)
+    if per_solid:
+        solids = list(shapes(shape, TopAbs_SOLID))
+        out["per_solid"] = [report_shape(s) for s in solids]
+        out["union_volume_mm3"] = union_volume(solids)
+    return out
+
+
+def union_volume(solids):
+    if not solids:
+        return 0.0
+    if len(solids) == 1:
+        return volume(solids[0])
+    args, tools = TopTools_ListOfShape(), TopTools_ListOfShape()
+    args.Append(solids[0])
+    for s in solids[1:]:
+        tools.Append(s)
+    fuse = BRepAlgoAPI_Fuse()
+    fuse.SetArguments(args)
+    fuse.SetTools(tools)
+    fuse.SetFuzzyValue(1e-4)
+    fuse.Build()
+    return round(volume(fuse.Shape()), 2) if fuse.IsDone() else None
+
+
+def volume(shape):
+    props = GProp_GProps()
+    brepgprop.VolumeProperties(shape, props)
+    return props.Mass()
+
+
+def report_shape(shape):
     props = GProp_GProps()
     brepgprop.VolumeProperties(shape, props)
     box = Bnd_Box()
@@ -59,8 +95,9 @@ def report(path):
 
 
 if __name__ == "__main__":
-    r = report(sys.argv[1])
+    args = [a for a in sys.argv[1:] if a != "--solids"]
+    r = report(args[0], per_solid="--solids" in sys.argv)
     out = json.dumps(r, indent=2)
-    if len(sys.argv) > 2:
-        open(sys.argv[2], "w").write(out)
+    if len(args) > 1:
+        open(args[1], "w").write(out)
     print(out)

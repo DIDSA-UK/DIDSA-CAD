@@ -475,3 +475,52 @@ def test_extruding_a_stadium_profile_produces_a_non_empty_computed_mesh():
     assert len(bodies) == 1
     assert len(bodies[0]["mesh"]["vertices"]) > 0
     assert len(bodies[0]["mesh"]["triangle_indices"]) > 0
+
+
+def test_hole_at_a_lug_arcs_centre_is_a_hole_not_a_second_profile():
+    """A lug: a rectangle whose top edge is a semicircular arc, with a hole circle at the arc's centre. The
+    hole's centre sits exactly on the arc's chord, so when containment treated an Arc edge as its chord the
+    hole was not seen as inside the outline: the sketch came out as two disjoint profiles and extruded as
+    two solids (the hole a plug, not a hole). Found by the AI-eval assembly sketches (`asm_wheel_bracket`).
+    The arc is walked both ways round, since a loop can trace an Arc end to start."""
+    for reverse in (False, True):
+        sketch = Sketch(id="s", plane=Plane.XY)
+        a = sketch.add_point(0.0, 0.0)
+        b = sketch.add_point(80.0, 0.0)
+        c = sketch.add_point(80.0, 60.0)
+        d = sketch.add_point(0.0, 60.0)
+        centre = sketch.add_point(40.0, 60.0)
+        sketch.add_line(a.id, b.id)
+        sketch.add_line(b.id, c.id)
+        sketch.add_arc(centre.id, c.id, d.id)
+        sketch.add_line(d.id, a.id)
+        if reverse:
+            sketch.add_circle(centre.id, radius=6.0)
+        else:
+            sketch.add_circle(sketch.add_point(40.0, 60.0).id, radius=6.0)
+
+        result = detect_profile(sketch)
+
+        assert result.status == ProfileStatus.CLOSED_LOOP, result.detail
+        assert len(result.profile.inner_loops) == 1
+
+
+def test_hole_outside_an_arcs_bulge_but_inside_its_chord_is_not_a_hole():
+    """The other side of the same fix: a concave arc edge (bulging into the outline) - a circle inside the
+    chord polygon but in the part the arc cuts away is not inside the outline."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    a = sketch.add_point(0.0, 0.0)
+    b = sketch.add_point(100.0, 0.0)
+    c = sketch.add_point(100.0, 60.0)
+    d = sketch.add_point(0.0, 60.0)
+    centre = sketch.add_point(50.0, 60.0)
+    sketch.add_line(a.id, b.id)
+    sketch.add_line(b.id, c.id)
+    # clockwise from c to d about (50, 60) is the lower half: as an Arc it runs counter-clockwise from d to c
+    sketch.add_arc(centre.id, d.id, c.id)
+    sketch.add_line(d.id, a.id)
+    sketch.add_circle(sketch.add_point(50.0, 50.0).id, radius=4.0)
+
+    result = detect_profile(sketch)
+
+    assert result.status != ProfileStatus.CLOSED_LOOP or not result.profile.inner_loops

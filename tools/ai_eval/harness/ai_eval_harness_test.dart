@@ -13,6 +13,22 @@
 //                                    (the app's automatic-retry turn); on
 //                                    success drawing.png and check_prompt.txt
 //                                    (the app's render-back check inputs)
+//   AI_EVAL_MANIFEST=<file> AI_EVAL_OUT=<dir>
+//                                    Assembly mode: find the part_manifest in a
+//                                    reply; write manifest.json, the part
+//                                    request turns the app sends
+//                                    (requests/part_NN.txt), the file names the
+//                                    app proposes for each part, and the
+//                                    assembly request turn and its extra
+//                                    system-prompt section
+//   AI_EVAL_ASSEMBLY=<run dir>       Assembly mode: build every part from
+//                                    part_NN_reply.txt (or a later
+//                                    part_NN_retry_reply.txt) into one
+//                                    document, save each to a real project
+//                                    folder, then build assembly_reply.txt
+//                                    with add_component reading those files;
+//                                    write assembly_result.json, part_NN.step
+//                                    and assembly.step
 //   AI_EVAL_VERDICT=<file> AI_EVAL_OUT=<dir>
 //                                    parse a render-back check reply; write
 //                                    verdict.json and, unless it matched,
@@ -25,7 +41,11 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
+import 'package:didsa_cad_client/ai/ai_existing_part_summary.dart';
 import 'package:didsa_cad_client/ai/ai_model_check.dart';
+import 'package:didsa_cad_client/ai/ai_part_naming.dart';
+import 'package:didsa_cad_client/ai/ai_plan.dart';
+import 'package:didsa_cad_client/ai/ai_plan_summary.dart';
 import 'package:didsa_cad_client/ai/ai_plan_detection.dart';
 import 'package:didsa_cad_client/ai/ai_plan_translator.dart';
 import 'package:didsa_cad_client/ai/ai_provider.dart';
@@ -33,6 +53,10 @@ import 'package:didsa_cad_client/ai/ai_scoping_prompt.dart';
 import 'package:didsa_cad_client/ai/ai_validation_feedback.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:didsa_cad_client/assembly/assembly_document_client.dart';
+import 'package:didsa_cad_client/assembly/relative_path.dart';
+import 'package:didsa_cad_client/storage/desktop_storage_service.dart';
+import 'package:didsa_cad_client/storage/project_root.dart';
 
 class _LiveClient extends http.BaseClient {
   _LiveClient(this.base, this.key);
@@ -62,7 +86,12 @@ void main() {
     Directory(out).createSync(recursive: true);
     // AiModellingScreen's defaults: no override, no add-ons, no disabled
     // tool groups, Multi-body Part mode (AiGenerationModePreferences).
-    File('$out/system_prompt.txt').writeAsStringSync(buildAiScopingSystemPrompt(multiBodyPartMode: true));
+    // AI_EVAL_MODE=assembly: the Assembly toggle instead, in a fresh, empty project folder (no
+    // "Available Component Files" section until the assembly turn).
+    final assembly = env['AI_EVAL_MODE'] == 'assembly';
+    File('$out/system_prompt.txt').writeAsStringSync(
+      buildAiScopingSystemPrompt(multiBodyPartMode: !assembly, assemblyMode: assembly),
+    );
     File('$out/extraction_prompt.txt').writeAsStringSync(aiImageExtractionPrompt);
   });
 
@@ -120,4 +149,247 @@ void main() {
       );
     }
   }, timeout: const Timeout(Duration(minutes: 5)));
+  test('manifest', () {
+    final replyPath = env['AI_EVAL_MANIFEST'];
+    if (replyPath == null) return;
+    final out = env['AI_EVAL_OUT']!;
+    final manifest = detectPartManifestInAssistantText(File(replyPath).readAsStringSync());
+    if (manifest == null) {
+      File('$out/manifest.json').writeAsStringSync(_json.convert({'detected': false}));
+      return;
+    }
+    Directory('$out/requests').createSync(recursive: true);
+    // The names the save dialog proposes, part by part, in an empty project folder.
+    final saved = <String>[];
+    final paths = <String>[];
+    for (var i = 0; i < manifest.parts.length; i++) {
+      final e = manifest.parts[i];
+      final path = withDefaultExtension(nextAvailablePartName(saved, typePrefix: e.typePrefix));
+      saved.add(path);
+      paths.add(path);
+      File('$out/requests/part_${_nn(i + 1)}.txt').writeAsStringSync(
+        assemblyModePartRequestText(index: i, total: manifest.parts.length, name: e.name, summary: e.summary),
+      );
+    }
+    final listing = [for (var i = 0; i < paths.length; i++) '${i + 1}. ${paths[i]} - "${manifest.parts[i].name}"'].join('\n');
+    File('$out/requests/assembly.txt').writeAsStringSync(assemblyModeAssemblyRequestText(listing));
+    // The assembly turn's system prompt is the same one plus an "Available Component Files" section.
+    final base = buildAiScopingSystemPrompt(assemblyMode: true);
+    final withFiles = buildAiScopingSystemPrompt(assemblyMode: true, availableComponentFilesSummary: listing);
+    File('$out/requests/assembly_system_section.txt').writeAsStringSync(_insertedText(base, withFiles));
+    File('$out/manifest.json').writeAsStringSync(_json.convert({
+      'detected': true,
+      'assumptions': manifest.assumptions,
+      'parts': [
+        for (var i = 0; i < manifest.parts.length; i++)
+          {'name': manifest.parts[i].name, 'type_prefix': manifest.parts[i].typePrefix, 'summary': manifest.parts[i].summary, 'path': paths[i]},
+      ],
+    }));
+  });
+
+  test('corrections', () {
+    final corrections = env['AI_EVAL_CORRECTIONS'];
+    if (corrections == null) return;
+    final out = env['AI_EVAL_OUT']!;
+    Directory('$out/requests').createSync(recursive: true);
+    File('$out/requests/corrections.txt').writeAsStringSync(assemblyModeCorrectionsText(File(corrections).readAsStringSync().trim()));
+  });
+
+  test('run assembly', () async {
+    final runDir = env['AI_EVAL_ASSEMBLY'];
+    if (runDir == null) return;
+    final manifest = jsonDecode(File('$runDir/manifest.json').readAsStringSync()) as Map<String, dynamic>;
+    final parts = (manifest['parts'] as List).cast<Map<String, dynamic>>();
+    final client = _LiveClient(Uri.parse(env['AI_EVAL_BACKEND'] ?? 'http://127.0.0.1:8000'), env['CAD_API_KEY'] ?? 'local-test-key');
+    final docApi = DocumentApiClient(httpClient: client);
+    final sketchApi = SketchApiClient(httpClient: client);
+    final projectDir = Directory('$runDir/project');
+    if (projectDir.existsSync()) projectDir.deleteSync(recursive: true);
+    projectDir.createSync(recursive: true);
+    final root = DesktopProjectRoot(projectDir.absolute.path);
+    final storage = DesktopStorageService();
+    final assemblyClient = AssemblyDocumentClient(storageService: storage, documentApiClient: docApi);
+    final report = <String, dynamic>{'parts': <Map<String, dynamic>>[]};
+    void save() => File('$runDir/assembly_result.json').writeAsStringSync(_json.convert(report));
+    for (final f in Directory(runDir).listSync().whereType<File>()) {
+      if (f.path.endsWith('retry_request.txt') && !f.path.contains('/requests/')) f.deleteSync();
+    }
+
+    await docApi.startNewDocument();
+    for (var i = 0; i < parts.length; i++) {
+      final n = _nn(i + 1);
+      final retry = File('$runDir/part_${n}_retry_reply.txt');
+      final replyFile = retry.existsSync() ? retry : File('$runDir/part_${n}_reply.txt');
+      final entry = <String, dynamic>{'name': parts[i]['name'], 'path': parts[i]['path'], 'retried': retry.existsSync()};
+      (report['parts'] as List).add(entry);
+      if (!replyFile.existsSync()) {
+        entry['outcome'] = 'no reply';
+        report['stopped'] = 'part $n: no reply';
+        return save();
+      }
+      final plan = detectPlanInAssistantText(replyFile.readAsStringSync());
+      if (plan == null) {
+        entry['outcome'] = 'no plan';
+        report['stopped'] = 'part $n: no plan';
+        File('$runDir/part_${n}_retry_request.txt').writeAsStringSync(
+          'That reply was not a plan for "${parts[i]['name']}" - please reply with an ordinary plan for this '
+          'part only, as described in the Assembly mode instructions.\n\n${assemblyModePartRetryRequestText(name: parts[i]['name'] as String)}',
+        );
+        return save();
+      }
+      File('$runDir/part_${n}_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
+      final part = await docApi.createPart(parts[i]['name'] as String);
+      final result = await PlanTranslator(documentApi: docApi, sketchApi: sketchApi, storageService: storage, projectRoot: root)
+          .execute(plan: plan, partId: part.id);
+      entry['outcome'] = result.outcome.name;
+      entry['error'] = result.errorMessage;
+      entry['stopped_at'] = result.stoppedAtLocalId;
+      if (result.outcome == PlanTranslationOutcome.validationFailed) {
+        entry['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+        // The app appends the failure and retries automatically, once.
+        File('$runDir/part_${n}_retry_request.txt').writeAsStringSync(
+          'For "${parts[i]['name']}": ${describeAiPlanValidationFailure(plan, result.preflightResults)}\n\n'
+          '${assemblyModePartRequestText(index: i, total: parts.length, name: parts[i]['name'] as String, summary: '')}',
+        );
+        report['stopped'] = 'part $n: validation failed';
+        return save();
+      }
+      if (result.outcome != PlanTranslationOutcome.success) {
+        File('$runDir/part_${n}_retry_request.txt').writeAsStringSync(
+          '${_stoppedRunText(plan, result)}\n\n${assemblyModePartRetryRequestText(name: parts[i]['name'] as String)}',
+        );
+        report['stopped'] = 'part $n: ${result.outcome.name}';
+        return save();
+      }
+      final step = await client.get(Uri.parse('/document/parts/${part.id}/export/step'));
+      if (step.statusCode == 200) File('$runDir/part_$n.step').writeAsBytesSync(step.bodyBytes);
+      await assemblyClient.savePart(root, part.id, parts[i]['path'] as String);
+    }
+
+    final asmReply = File('$runDir/assembly_retry_reply.txt').existsSync()
+        ? File('$runDir/assembly_retry_reply.txt')
+        : File('$runDir/assembly_reply.txt');
+    report['assembly'] = <String, dynamic>{'retried': asmReply.path.endsWith('retry_reply.txt')};
+    final asm = report['assembly'] as Map<String, dynamic>;
+    if (!asmReply.existsSync()) {
+      asm['outcome'] = 'no reply';
+      return save();
+    }
+    final plan = detectPlanInAssistantText(asmReply.readAsStringSync());
+    if (plan == null) {
+      asm['outcome'] = 'no plan';
+      return save();
+    }
+    File('$runDir/assembly_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
+    final asmPart = await docApi.createPart('Assembly');
+    final result = await PlanTranslator(documentApi: docApi, sketchApi: sketchApi, storageService: storage, projectRoot: root)
+        .execute(plan: plan, partId: asmPart.id);
+    asm['outcome'] = result.outcome.name;
+    asm['error'] = result.errorMessage;
+    asm['stopped_at'] = result.stoppedAtLocalId;
+    if (result.outcome == PlanTranslationOutcome.validationFailed) {
+      asm['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+      File('$runDir/assembly_retry_request.txt').writeAsStringSync(
+        'For the assembly plan: ${describeAiPlanValidationFailure(plan, result.preflightResults)}\n\n'
+        '${assemblyModeAssemblyRetryRequestText()}',
+      );
+    } else if (result.outcome != PlanTranslationOutcome.success) {
+      File('$runDir/assembly_retry_request.txt').writeAsStringSync(
+        '${_stoppedRunText(plan, result)}\n\n${assemblyModeAssemblyRetryRequestText()}',
+      );
+    }
+    if (result.outcome == PlanTranslationOutcome.success &&
+        plan.steps.any((s) => s is AiAddComponentStep) &&
+        !plan.steps.any((s) => s is AiMateStep)) {
+      report['mates'] = await _mateTurn(runDir, docApi, sketchApi, storage, root, asmPart.id);
+    }
+    final step = await client.get(Uri.parse('/document/parts/${asmPart.id}/export/assembly-step'));
+    asm['step_status'] = step.statusCode;
+    if (step.statusCode == 200) File('$runDir/assembly.step').writeAsBytesSync(step.bodyBytes);
+    save();
+  }, timeout: const Timeout(Duration(minutes: 10)));
+}
+
+String _nn(int i) => i.toString().padLeft(2, '0');
+
+/// `AiModellingScreen._runMateTurn` for the harness. The first build writes requests/mates.txt (the app's turn, with
+/// the placed components' real ids) and the ids it listed; a later build, once mates_reply.txt exists, maps those ids
+/// onto this build's (by order - the same plans place the same components in the same order) and builds the mates.
+/// mates_retry_reply.txt, if present, is the reply to requests/mates_retry.txt (the app retries a failed validation
+/// once).
+Future<Map<String, dynamic>> _mateTurn(String runDir, DocumentApiClient docApi, SketchApiClient sketchApi,
+    DesktopStorageService storage, DesktopProjectRoot root, String assemblyPartId) async {
+  final occurrences = await docApi.listOccurrences(assemblyPartId);
+  final ids = <String>[];
+  for (final o in occurrences) {
+    ids.add(o.id);
+    if (o.resolvedPartId != null) {
+      ids.addAll([for (final f in await docApi.listFeatures(o.resolvedPartId!)) if (f.produces == 'body') f.id]);
+    }
+  }
+  final idsFile = File('$runDir/requests/mates_ids.json');
+  final reply = File('$runDir/mates_reply.txt');
+  if (!reply.existsSync() || !idsFile.existsSync()) {
+    Directory('$runDir/requests').createSync(recursive: true);
+    idsFile.writeAsStringSync(jsonEncode(ids));
+    File('$runDir/requests/mates.txt')
+        .writeAsStringSync(assemblyModeMatesRequestText(summarizePlacedComponentsForMates(occurrences)));
+    return {'outcome': 'awaiting reply'};
+  }
+  final listed = (jsonDecode(idsFile.readAsStringSync()) as List).cast<String>();
+  String remap(String text) {
+    for (var i = 0; i < listed.length && i < ids.length; i++) {
+      text = text.replaceAll(listed[i], ids[i]);
+    }
+    return text;
+  }
+
+  final retry = File('$runDir/mates_retry_reply.txt');
+  final out = <String, dynamic>{'retried': retry.existsSync()};
+  final plan = detectPlanInAssistantText(remap((retry.existsSync() ? retry : reply).readAsStringSync()));
+  if (plan == null || plan.steps.isEmpty) return {...out, 'outcome': 'no plan'};
+  File('$runDir/mates_plan.json').writeAsStringSync(_json.convert(plan.toJson()));
+  out['count'] = plan.steps.whereType<AiMateStep>().length;
+  final result = await PlanTranslator(documentApi: docApi, sketchApi: sketchApi, storageService: storage, projectRoot: root)
+      .execute(plan: plan, partId: assemblyPartId);
+  out['outcome'] = result.outcome.name;
+  out['error'] = result.errorMessage;
+  out['stopped_at'] = result.stoppedAtLocalId;
+  if (result.outcome == PlanTranslationOutcome.validationFailed) {
+    out['preflight'] = [for (final r in result.preflightResults) if (!r.ok) {'local_id': r.localId, 'error': r.error}];
+    if (!retry.existsSync()) {
+      File('$runDir/requests/mates_retry.txt').writeAsStringSync(
+        'For the mates plan: ${describeAiPlanValidationFailure(plan, result.preflightResults)}\n\n'
+        '${assemblyModeMatesRetryRequestText()}',
+      );
+    }
+  }
+  return out;
+}
+
+/// The text `buildAiScopingSystemPrompt` inserts for an "Available Component Files" section.
+String _insertedText(String base, String withExtra) {
+  var a = 0;
+  while (a < base.length && base[a] == withExtra[a]) {
+    a++;
+  }
+  var b = 0;
+  while (b < base.length - a && base[base.length - 1 - b] == withExtra[withExtra.length - 1 - b]) {
+    b++;
+  }
+  return withExtra.substring(a, withExtra.length - b).trim();
+}
+
+/// `AiModellingScreen._appendStoppedRunToTranscript`'s text for a step failure.
+String _stoppedRunText(AiGenerationPlan plan, PlanTranslationResult result) {
+  final summary = summarizeAiPlan(plan);
+  final nonPointSteps = plan.steps.where((s) => s is! AiSketchPointStep).toList();
+  final stepPosition = nonPointSteps.indexWhere((s) => s.localId == result.stoppedAtLocalId);
+  final description = stepPosition >= 0 && stepPosition < summary.length
+      ? '${stepPosition + 1}. ${summary[stepPosition]}'
+      : '${result.stoppedAtLocalId}';
+  return 'Execution stopped at step $description: ${result.errorMessage}\n\n'
+      'Every step before this one was created successfully and is still in the Part '
+      '(no automatic rollback - use "Undo this generation" to remove them, or continue '
+      'manually). Please propose a revised plan for the remaining steps.';
 }

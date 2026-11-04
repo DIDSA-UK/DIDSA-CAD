@@ -19,14 +19,16 @@ So a run tests what ships, not a copy of it.
 
 | Path | What |
 |---|---|
-| `sketches/` | The test drawings, downscaled to 1568 px on the long edge as the app does. |
+| `sketches/` | The test drawings, downscaled to 1568 px on the long edge as the app does. `asm_*` are multi-part assemblies (see "Assembly mode"). |
+| `sketches/source/` | The reference models the generated assembly sheets are drawn from, and the answer keys come from. |
 | `harness/expected.py` | The answer key for each sketch, and the scorer. |
+| `harness/expected_assembly.py`, `harness/assembly_keys.json` | The same for the assembly sketches. |
 | `harness/ai_eval_harness_test.dart` | The app-code side, run through `eval.sh`. |
 | `harness/inspect_step.py` | Geometry report for a STEP file: volume, bounding box, faces, cylinder radii. |
 | `harness/table.py` | Pass table, plus how the render-back check's verdicts compare with the scores. |
-| `agent_prompts/` | Instructions for the model standing in for the provider. `model.md` covers the image analysis and the chat; `check.md` covers the render-back check. |
-| `eval.sh` | `prompts`, `build`, `verdict` and `table`. |
-| `runs/`, `prompts/` | Output (git-ignored). |
+| `agent_prompts/` | Instructions for the model standing in for the provider. `model.md` covers the image analysis and the chat; `check.md` covers the render-back check; `model_assembly.md` is `model.md` for Assembly mode. |
+| `eval.sh` | `prompts`, `build`, `verdict` and `table`; for assemblies `prompts-assembly`, `manifest` and `assemble`. |
+| `runs/`, `prompts/`, `prompts_asm/` | Output (git-ignored). |
 
 ## Setup
 
@@ -51,6 +53,33 @@ Two runs per sketch and model shows consistent errors, not small differences. Us
 
 **Cost:** about 80-100k tokens per run per model, mostly reading the system prompt. A render-back check adds a few thousand.
 
+## Assembly mode
+
+The `asm_*` sketches test Assembly mode (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`): the model names
+the parts in a `part_manifest`, the app asks for each part's plan in turn and saves each one to its own file, then
+asks for one assembly plan of `add_component` and `mate` steps against those files. The harness does the same with
+the app's code: the same request turns, the same file names the save dialog proposes, a real project folder, and
+every part and the assembly built in one backend document.
+
+1. `tools/ai_eval/eval.sh prompts-assembly tools/ai_eval/prompts_asm`.
+2. Run a fresh model on `agent_prompts/model_assembly.md` with `{PROMPTS}`, `{IMAGES}` (every sheet of the sketch)
+   and `{RUN}` filled in. It writes `extraction.txt`, `reply1.txt` and maybe `reply2.txt`.
+3. Copy the reply with the manifest to `reply.txt` and run `eval.sh manifest <run>`. That writes `requests/`: one
+   turn per part, the assembly turn, and the section the assembly turn's system prompt gains.
+4. Send the same model conversation the part turns in order, then the assembly turn, with the system-prompt
+   section; it writes `part_NN_reply.txt` and `assembly_reply.txt`. The app sends each part turn after the
+   previous part is built; nothing in a reply depends on that build unless it fails, so they can go together.
+5. `eval.sh assemble <run>` builds and scores. A failure writes `part_NN_retry_request.txt` or
+   `assembly_retry_request.txt` (the turn the app would send); the reply goes to `..._retry_reply.txt` and
+   `assemble` is run again.
+
+Scoring (`expected_assembly.py`): each distinct part is matched by volume, bounding box and radii; the assembly by
+solid count, bounding box, union volume (parts that overlap make it smaller) and placement (each component's
+distance from the assembly's centroid). A nested sub-assembly is scored flattened, since Assembly mode can only
+build one level.
+
+Assembly mode has no render-back check in the app (only the single-part flow has one), so these runs have none.
+
 ## Answer keys: please confirm
 
 Each key in `harness/expected.py` is one reading of its drawing, written while building this tool. **None has been confirmed by the drawings' author yet** (`"confirmed": False`). Until one is, "pass" means "matches that reading", and a wrong key would mark correct models wrong. The readings:
@@ -64,6 +93,10 @@ Each key in `harness/expected.py` is one reading of its drawing, written while b
 | `rect_round` | Solid, 200 long, from an 80 wide × 100 high rectangle to a Ø40 round end on the same axis |
 | `notch_block` | 200 × 80 × 100 block; 40 × 40 × 50 deep notch at the top front right; R5 on the back right vertical edge only |
 | `z_noheight` | No height is given anywhere: the right answer is to ask for it (scored on the first reply) |
+
+The assembly keys are in `harness/expected_assembly.py`. The generated sheets' keys come from the models they are
+drawn from; `asm_dovetail` and `asm_frame` follow the owner's reading (2026-11-03); `asm_block_pins` is still
+unconfirmed.
 
 Add a new sketch by putting the image in `sketches/` and its key in `EXPECTED`. Best of all is a part you have already modelled, so the key comes from your model rather than a reading. Prompt changes written from these sketches' failures should also be judged on sketches they were not written from.
 
@@ -80,6 +113,103 @@ Claude models, two runs per cell unless noted, scored against the unconfirmed ke
 | 2026-10-29 | The same runs after the render-back check and "Ask the AI to fix it" on every mismatch | 4/10 | 8/10 | 10/10 |
 
 In the 2026-10-29 round no plan failed validation, so the automatic retry was not exercised. Sonnet now reads `rect_round` right, citing the hidden-line convention.
+
+### Assembly mode, 2026-11-03
+
+One run per sketch and model, added one round at a time, simplest first. Every run built (no validation failure,
+no retry); a fail is the wrong geometry. Each build also renders to `assembly.png`.
+
+| Sketch | Parts (components) | Haiku | Sonnet | Opus |
+|---|---|---|---|---|
+| `asm_pin_block` | 2 (2) | P | P | P |
+| `asm_block_pins` (owner's sketch; key unconfirmed) | 2 (5) | P | P | P |
+| `asm_wheel_bracket` (2 sheets, one part used twice) | 4 (5) | P | P | P |
+| `asm_dovetail` (owner's sketch, owner's reading) | 2 (2) | parts 0/2 | base 1/2 | P |
+| `asm_frame` (owner's sketch, owner's reading) | 4 (36) | parts 1/4 | parts 4/4, 8 gussets | parts 4/4, 16 gussets |
+| `asm_caster` (3 sheets, nested sub-assembly) | 8 (8) | P | P | P |
+
+- **The drawn sheets are solved.** Every model gets the generated drawings right, including the 8-part caster
+  (each flattens its sub-assembly: Assembly mode can only build one level). The rough hand sketches separate
+  the models: Haiku stacks the dovetail plate on an unslotted block and frames with 1200 posts that overlap the
+  rails; Sonnet reads the dovetail base as a square block. The frame's gusset count ("@ every corner") is
+  ambiguous: Sonnet and Opus both asked before building, then guessed 8 and 16 when told to use their judgement;
+  the owner's reading is 24 (three per corner). Their members match the key exactly.
+- **Lug holes (fixed).** All three `asm_wheel_bracket` runs first failed the same way: the upright (a rectangle
+  with an R40 arc top and a hole at the arc's centre) came out as two solids, the hole extruded as a plug. Profile
+  detection treated an Arc edge as its chord, and the hole's centre sat on that chord, so it was not seen as
+  inside the outline. `app/sketch/profile.py` now samples arcs for its containment, area and centroid tests
+  (`test_stage16_arc.py`).
+- **Twisted lofts (fixed).** Opus's dovetail plate first failed: its foot, a loft from a 160x50 to a 150x20
+  rectangle, came out twisted and 19% small. Loft auto-alignment matched the sections by equal arc-length samples,
+  which drift when the outlines' proportions differ, and moved the top section's start off a corner. Two
+  straight-edged outlines with as many corners are now paired corner to corner (`loft.py`,
+  `test_loft_feature.py`).
+- Both fixes were checked by rebuilding the same replies: no model tokens.
+- **No mates.** Every assembly plan placed components with `move_component` and no `mate`. The prompt leaves no
+  other way: a component added earlier in the same plan cannot take an `edge_selector`, its real face ids are not
+  known when the plan is written, and Assembly mode adds every component in that one plan. Placement is right, but
+  nothing constrains it. Open: resolve selectors on a same-plan `add_component` once it has run, or send a second
+  assembly turn listing the placed components' real ids.
+- Cost: about 80-110k tokens per run (Haiku the most), most of it reading the system prompt once; part and
+  assembly turns add little.
+
+### Assembly mode with mates and stated assumptions, 2026-11-04
+
+After the mates turn, `face_selector` and stated assumptions (`docs/ai-modelling/13-multi-part-assembly-overhaul.md`,
+"Mates turn and stated assumptions"). The owner's three hand sketches, one run per model. The harness played the
+owner: it corrected only the assumptions a model stated that contradict the owner's reading, and confirmed the rest.
+
+| Sketch | Haiku | Sonnet | Opus |
+|---|---|---|---|
+| `asm_block_pins` | P, 8 mates | P, 8 mates | P, 8 mates |
+| `asm_dovetail` | plate wrong (stem 25 too tall), 1 mate | P, 1 mate | P, 1 mate (no correction needed) |
+| `asm_frame` (36 components) | rails wrong, 14 mates | P, 72 mates | P, 96 mates |
+
+7 of 9, against 1 of 9 on the same sketches before (the 2026-11-03 table, re-scored with the corrected pin key).
+
+- **Stated assumptions caught the misreadings.** Every model that had misread a sketch before now listed that reading
+  as an assumption: the pin shank "read as 30" (Sonnet, Opus), the dovetail base read as a plain block or the
+  wrong height (Haiku, Sonnet), the gusset count (all three), Haiku's 1200 posts. One correction each and the
+  revised manifest built right. Opus read the dovetail exactly as the owner did, with no correction.
+- **Mates.** Every run now mates its parts, and in every passing run the mates hold the parts where they were
+  placed (a wrong mate moves a part and fails the score). Pins get a concentric and a shoulder mate each; the
+  frames seat posts and gussets.
+- **Found and fixed while running** (each rebuilt from the same replies, no model tokens):
+  - Flat faces made by a Revolve read as facing +z (their plane axis has no fixed sign), so a selector could not
+    find a revolved pin's shoulder and the solver could not seat it. The sign now comes from the face's surface
+    derivatives (`face_normal.py`), in the selectors, the mate solver, Move Face and sketch-on-face planes.
+  - A mate whose second side is the grounded first component failed (`occurrence_is_fixed`): the translator now
+    solves the other side.
+  - The mates listing gave every body-producing Feature as a body id, and the models guessed which was "the" Body;
+    it now lists components only, and a one-Body component's Body is found by the selector.
+  - A selector could only name the six axis directions, so sloped faces (dovetail flanks, mitres) could not be
+    mated: `face_selector.normal` names any planar face. These batch-1 runs predate it, which is why the dovetails
+    have only a seat mate.
+- Haiku still misreads the rough sketches after correction (dovetail stem, frame rails); Sonnet and Opus do not.
+
+### Assembly mode with mates, the generated sheets, 2026-11-04
+
+The same build as above plus `face_selector.normal`, Closest mate branches and the components-only mates listing.
+One run per model; every model's assumptions on these fully dimensioned sheets were right and confirmed unchanged.
+
+| Sketch | Haiku | Sonnet | Opus |
+|---|---|---|---|
+| `asm_pin_block` | P, 2 mates | P, 2 mates | P, 2 mates |
+| `asm_wheel_bracket` | P, 7 mates | P, 7 mates | P, 11 mates |
+| `asm_caster` (8 parts) | fork wrong | P, 14 mates | P, 14 mates |
+
+Across both 2026-11-04 tables Sonnet and Opus pass all 12 runs, with mates that hold every part where it was
+placed; Haiku fails 3 of 6, each on a part it built wrong. Opus's wheel bracket first failed: its flush mates
+(upright side level with the plate edge, faces pointing the same way) were created with the deprecated
+`flipped: false`, read as anti-aligned, and turned the uprights over. Plan mates now take the branch nearest the
+current pose; the same reply passes, and every other run rebuilds the same. Haiku's caster fork came out as three
+Bodies, so its mates needed `body_id`s (the dry run named them); the run was stopped there.
+
+**Where this leaves the evaluation.** The owner dropped Haiku after these runs. Not done (token cost): a second
+run per sketch and model, so the 2026-11-04 tables are one run each - read them as direction, not rates; the
+external-AI hand-off (now asking for the zip) has not been tried with a real external chat. Open in the app: an
+imported zip gets no mates turn; nothing yet measures whether the mates fully constrain a part (the dovetails'
+seat mate leaves the plate free to slide) - `face_selector.normal` arrived after those runs.
 
 ### Render-back check, 2026-10-29
 

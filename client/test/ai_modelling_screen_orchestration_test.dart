@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/ai/ai_modelling_screen.dart';
 import 'package:didsa_cad_client/ai/ai_provider.dart';
+import 'package:didsa_cad_client/ai/ai_scoping_prompt.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
@@ -238,6 +239,7 @@ void main() {
   setUp(() {
     SharedPreferences.setMockInitialValues({});
   });
+  mateTurnTests();
 
   testWidgets('a part_manifest reply shows the confirm panel with one editable row per part', (tester) async {
     final provider = _FakeAiProvider((_, __) async => const AiTurnResult(assistantText: _manifestText));
@@ -843,5 +845,153 @@ I found one distinct part.
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('aiModellingManifestAssemblyTarget')), findsNothing);
+  });
+}
+
+const _matesPlanText = '''
+Here are the mates.
+```json
+{"version": 1, "steps": [
+  {"local_id": "m1", "kind": "mate", "type": "coincident", "references": [
+    {"occurrence_id": "existing:occ-plate", "face_selector": {"direction": "+z"}},
+    {"occurrence_id": "existing:occ-tube", "face_selector": {"direction": "-z"}}
+  ]}
+]}
+```''';
+
+void mateTurnTests() {
+  testWidgets('after the place plan, a mate turn lists the placed components and builds the mates before saving',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final base = _fullOrchestrationHandler();
+    final requests = <String>[];
+    Future<http.Response> handler(http.Request request) async {
+      final path = request.url.path;
+      requests.add('${request.method} $path');
+      if (path == '/document/parts/part-3/occurrences' && request.method == 'GET') {
+        Map<String, dynamic> occ(String id, String ref, String part) => {
+              'id': id,
+              'external_ref': ref,
+              'resolved_part_id': part,
+              'transform': {'translation': [0, 0, 0], 'rotation_axis': [0, 0, 1], 'rotation_angle_degrees': 0},
+            };
+        return http.Response(
+          jsonEncode([occ('occ-plate', 'PLATE_001.didsa', 'part-1'), occ('occ-tube', 'TUBE_001.didsa', 'part-2')]),
+          200,
+        );
+      }
+      if (path == '/document/parts/part-3/mates' && request.method == 'POST') {
+        return http.Response(
+          jsonEncode({'id': 'mate-1', 'type': 'coincident', 'references': [], 'value': null, 'flipped': false}),
+          201,
+        );
+      }
+      if (path.startsWith('/document/parts/part-3/occurrences/') && path.endsWith('/solve')) {
+        return http.Response(
+          jsonEncode({
+            'id': 'occ-tube',
+            'transform': {'translation': [0, 0, 0], 'rotation_axis': [0, 0, 1], 'rotation_angle_degrees': 0},
+          }),
+          200,
+        );
+      }
+      return base(request);
+    }
+
+    final client = DocumentApiClient(httpClient: MockClient(handler));
+    final sketchClient = SketchApiClient(httpClient: MockClient(handler));
+    final storage = _FakeStorageService();
+    final sent = <List<AiChatMessage>>[];
+    final provider = _FakeAiProvider((transcript, _) async {
+      sent.add(List.of(transcript));
+      return AiTurnResult(
+        assistantText: switch (sent.length) {
+          1 => _manifestText,
+          2 || 3 => _onePartPlanText,
+          4 => _assemblyPlanText,
+          _ => _matesPlanText,
+        },
+      );
+    });
+    await tester.pumpWidget(MaterialApp(
+      home: AiModellingScreen(
+        provider: provider,
+        documentApi: client,
+        sketchApi: sketchClient,
+        storageService: storage,
+        projectRoot: const DesktopProjectRoot('/tmp/project'),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assembly'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A plate and a tube');
+    await tester.tap(find.byKey(const Key('aiModellingSend')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
+    await tester.pumpAndSettle();
+    for (var i = 0; i < 2; i++) {
+      await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+      await tester.pumpAndSettle();
+    }
+
+    // The mate turn ran before the assembly's save dialog: it listed both placed components by their real ids.
+    expect(sent, hasLength(5));
+    final mateRequest = sent.last.last.text;
+    expect(mateRequest, contains('Placed Components:'));
+    expect(mateRequest, contains('existing:occ-plate'));
+    expect(mateRequest, contains('existing:occ-tube'));
+    expect(requests, contains('POST /document/parts/part-3/mates'));
+    expect(find.text('Save assembly as…'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 mate added.'), findsOneWidget);
+  });
+
+  testWidgets('stated assumptions show on the confirm panel; a correction goes back as a chat turn for a new manifest',
+      (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    final sent = <List<AiChatMessage>>[];
+    final provider = _FakeAiProvider((transcript, _) async {
+      sent.add(List.of(transcript));
+      return AiTurnResult(
+        assistantText: sent.length == 1
+            ? '```json\n{"kind": "part_manifest", "parts": [{"name": "Block", "type_prefix": "BLOCK", "summary": "a block"}], '
+                '"assumptions": ["Block height read as 30 (unclear)"]}\n```'
+            : _manifestText,
+      );
+    });
+    final client = DocumentApiClient(httpClient: MockClient(_fullOrchestrationHandler()));
+    await tester.pumpWidget(MaterialApp(
+      home: AiModellingScreen(
+        provider: provider,
+        documentApi: client,
+        sketchApi: SketchApiClient(httpClient: MockClient(_fullOrchestrationHandler())),
+        storageService: _FakeStorageService(),
+        projectRoot: const DesktopProjectRoot('/tmp/project'),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Assembly'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('aiModellingInput')), 'A block');
+    await tester.tap(find.byKey(const Key('aiModellingSend')));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('aiModellingManifestAssumptions')), findsOneWidget);
+    expect(find.text('- Block height read as 30 (unclear)'), findsOneWidget);
+    expect(find.byKey(const Key('aiModellingManifestConfirm')), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('aiModellingManifestCorrections')), 'The height is 40.');
+    await tester.pump();
+    expect(find.byKey(const Key('aiModellingManifestConfirm')), findsNothing);
+    await tester.tap(find.byKey(const Key('aiModellingManifestSendCorrections')));
+    await tester.pumpAndSettle();
+
+    expect(sent, hasLength(2));
+    expect(sent.last.last.text, assemblyModeCorrectionsText('The height is 40.'));
+    // The revised manifest is back on the confirm panel, with nothing built yet.
+    expect(find.text('Found 2 part(s)'), findsOneWidget);
+    expect(find.byKey(const Key('aiModellingManifestAssumptions')), findsNothing);
   });
 }

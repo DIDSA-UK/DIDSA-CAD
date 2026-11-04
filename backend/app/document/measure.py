@@ -29,6 +29,7 @@ from OCC.Core.GProp import GProp_GProps
 from OCC.Core.TopAbs import TopAbs_REVERSED
 from OCC.Core.TopoDS import TopoDS_Face, TopoDS_Shape, topods
 
+from app.document.face_normal import plane_axis_points_inward
 from app.document.assembly import resolve_occurrence_target
 from app.document.extrude import apply_rigid_transform_to_shape, compute_part_bodies, resolve_subshape_from_bodies
 from app.document.models import Document, MeasureEntityRef, Part, SubShapeRef, SubShapeType
@@ -133,7 +134,7 @@ def _outward_normal(face: TopoDS_Face) -> gp_Vec:
     plane = BRepAdaptor_Surface(face, True).Plane()
     direction = plane.Axis().Direction()
     normal = gp_Vec(direction.X(), direction.Y(), direction.Z())
-    if face.Orientation() == TopAbs_REVERSED:
+    if plane_axis_points_inward(face):
         normal = normal.Reversed()
     return normal
 

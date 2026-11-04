@@ -60,6 +60,7 @@ from OCC.Core.BRepTools import BRepTools_WireExplorer
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 from OCC.Core.Geom import Geom_BezierCurve
+from OCC.Core.GeomAbs import GeomAbs_Line
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.gp import gp_Ax1, gp_Circ, gp_Dir, gp_Elips, gp_Pln, gp_Pnt, gp_Trsf, gp_Vec
 from OCC.Core.TColgp import TColgp_Array1OfPnt
@@ -769,15 +770,40 @@ def _auto_align_entry(entry: _ResolvedClosedSection, wire: TopoDS_Wire, previous
     `_reseam_wire` applies them. Best effort: any failure leaves the section on the loft's
     default correspondence."""
     try:
-        shift, reverse = best_alignment(
-            _sample_wire(previous_wire, _AUTO_ALIGN_SAMPLES), _sample_wire(wire, _AUTO_ALIGN_SAMPLES)
-        )
+        corners = _polygon_corners(previous_wire), _polygon_corners(wire)
+        if corners[0] is not None and corners[1] is not None and len(corners[0]) == len(corners[1]):
+            # Two straight-edged polygons with as many corners: pair corner with corner. Equal arc-length
+            # samples drift apart when the two outlines' proportions differ (a 160x50 rectangle lofted
+            # to 150x20), and a seam moved off a corner splits an edge, so the loft then joined corners
+            # to mid-edge points and twisted (found by the AI-eval dovetail sketch).
+            shift, reverse = best_alignment(corners[0], corners[1])
+            lengths = [_edge_length(edge) for edge in _wire_edges_in_order(wire)]
+            seam_param = sum(lengths[:shift]) / sum(lengths) if shift else None
+        else:
+            shift, reverse = best_alignment(
+                _sample_wire(previous_wire, _AUTO_ALIGN_SAMPLES), _sample_wire(wire, _AUTO_ALIGN_SAMPLES)
+            )
+            seam_param = shift / _AUTO_ALIGN_SAMPLES if shift else None
     except Exception:  # noqa: BLE001 - alignment is an improvement, never a reason to fail the loft
         logger.warning("Loft auto-alignment failed - using the default correspondence", exc_info=True)
         return
     if shift or reverse:
-        entry.seam_param = shift / _AUTO_ALIGN_SAMPLES if shift else None
+        entry.seam_param = seam_param
         entry.reverse = reverse
+
+
+def _polygon_corners(wire: TopoDS_Wire) -> list[tuple[float, float, float]] | None:
+    """The start point of each edge, in traversal order, if every edge of `wire` is a straight line;
+    otherwise None."""
+    corners: list[tuple[float, float, float]] = []
+    for edge in _wire_edges_in_order(wire):
+        adaptor = BRepAdaptor_Curve(edge)
+        if adaptor.GetType() != GeomAbs_Line:
+            return None
+        parameter = adaptor.LastParameter() if edge.Orientation() == TopAbs_REVERSED else adaptor.FirstParameter()
+        point = adaptor.Value(parameter)
+        corners.append((point.X(), point.Y(), point.Z()))
+    return corners or None
 
 
 def _is_reseamed(entry) -> bool:

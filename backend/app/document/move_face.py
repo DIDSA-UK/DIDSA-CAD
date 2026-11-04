@@ -211,6 +211,7 @@ from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Face, TopoDS_Shape, topods
 from OCC.Core.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 
+from app.document.face_normal import plane_axis_points_inward
 from app.document.reference_history import note_operation
 from app.document.reference_signature import measurer_for
 from app.sketch.reference_signature import fingerprint_matches, shape_distance
@@ -371,7 +372,7 @@ def _outward_normal(face: TopoDS_Face) -> gp_Vec:
     plane = BRepAdaptor_Surface(face, True).Plane()
     direction = plane.Axis().Direction()
     normal = gp_Vec(direction.X(), direction.Y(), direction.Z())
-    if face.Orientation() == TopAbs_REVERSED:
+    if plane_axis_points_inward(face):
         normal = normal.Reversed()
     return normal
 

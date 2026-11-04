@@ -616,6 +616,44 @@ with no manual toggle tap needed.
 
 ---
 
+## Mates turn and stated assumptions (2026-11-03)
+
+Found by the Assembly-mode evaluation (`tools/ai_eval/README.md`): no assembly plan ever contained a mate. A
+component added in a plan has no real faces until that plan has run, `edge_selector` is refused on a same-plan
+`add_component`, and the assembly cycle added every component in that one plan - so the LLM could only place
+parts with `move_component`, and Phase E's "insert + mate" was in practice "insert + move".
+
+- **Two assembly turns.** The assembly plan now only places (`add_component` + `move_component`). Once it has run,
+  `_runMateTurn` lists the placed components with their real `existing:<id>` and Body ids (the same
+  `summarizeExistingOccurrencesForPrompt` "Placed Components" listing "Continue with AI" uses) and asks for a plan of
+  mate steps only (`assemblyModeMatesRequestText`). A plan that fails validation is retried once. The turn never
+  stops the run: on any failure the placed, unmated assembly is still saved, and the progress panel says why
+  (`_mateNote`). Skipped for an imported zip and when the assembly plan already has mates.
+- **`face_selector`** (`MateFaceSelector`, `ai_plan_schemas.py`): a mate reference may name a face by geometry
+  instead of a raw `subshape_ref` - a planar face by outward normal (`direction`) or a cylindrical face by
+  `cylinder_radius`, in the component's own part coordinates, with `near` to pick among several (a pin's shoulder
+  from its tip). Resolved in the dry run against the placed occurrence's real geometry
+  (`resolve_mate_face_selector`); the translator substitutes the result, as for `edge_selector`. Only on
+  `existing:<id>` references, which is all the mates turn has.
+- **Stated assumptions.** The manifest may carry `"assumptions": [...]`: every reading the drawing does not settle
+  (a hard-to-read number, a quantity, an undimensioned position, a fit), one sentence each with the value used.
+  Assembly mode now states these instead of asking clarifying questions (a question is still asked when the part
+  count itself is unclear). The confirm panel lists them with a Corrections box; "Send corrections" sends
+  `assemblyModeCorrectionsText` as a chat turn and the revised manifest returns to the same panel. Nothing is built
+  until a manifest is confirmed.
+
+Tests: `test_ai_plan_mate_face_selector.py`; `ai_modelling_screen_orchestration_test.dart` (the mate turn lists
+the placed components and builds the mates before the save; assumptions and a correction round trip).
+
+Follow-ups found by the same evaluation, all fixed: `face_selector.normal` names a sloped planar face (a dovetail
+flank, a mitre); the mates listing gives components only (`summarizePlacedComponentsForMates`) - listing every
+body-producing Feature had the models guessing which id was the Body; a flat face made by a Revolve now reads its
+true outward normal (`face_normal.py`, also used by the mate solver, Move Face and sketch-on-face planes); a mate
+whose solved side is the grounded component solves the other side; and an unflipped plan mate takes the branch
+nearest the current pose (`closestBranch`) instead of the deprecated `flipped: false` = anti-aligned, which turned
+a flush mate's part over. The external-AI hand-off in Assembly mode now asks for the import zip
+(`15-external-ai-zip-import-findings.md`).
+
 ## Appendix: gaps & emergent work tracker
 
 Started alongside this workstream's own implementation, mirroring

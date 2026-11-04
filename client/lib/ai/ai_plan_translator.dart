@@ -851,6 +851,11 @@ class PlanTranslator {
           ],
           value: step.value,
           flipped: step.flipped,
+          // A plan's mate that does not flip takes the branch nearest the parts' current pose (Closest), not the
+          // deprecated `flipped: false` = anti-aligned: Assembly mode places every part before its mates turn, and a
+          // flush mate between two faces pointing the same way was otherwise turned to face each other, moving the
+          // part (found by the AI-eval mates turn).
+          closestBranch: !step.flipped,
           solve: isWidth && widthTarget.isNotEmpty ? 'auto' : null,
           solveOccurrenceId: isWidth && widthTarget.isNotEmpty ? topLevelOccurrenceId(_resolveOccurrenceId(widthTarget, ids)) : null,
         );
@@ -868,7 +873,15 @@ class PlanTranslator {
             ? step.references[1].occurrenceId
             : step.references[0].occurrenceId;
         if (solveTarget.isNotEmpty && !isWidth) {
-          await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget, ids));
+          try {
+            await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget, ids));
+          } on ApiException catch (e) {
+            // The second reference is the grounded first component (`occurrence_is_fixed`): a plan may name the
+            // mate's two sides in either order, so solve the other side instead (found by the AI-eval mates turn).
+            final other = step.references[0].occurrenceId;
+            if (!e.message.contains('occurrence_is_fixed') || other.isEmpty || other == solveTarget) rethrow;
+            await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(other, ids));
+          }
         }
         return mate.id;
 

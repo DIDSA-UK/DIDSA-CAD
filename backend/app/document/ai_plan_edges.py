@@ -44,6 +44,7 @@ from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Vertex, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.ai_plan_schemas import CardinalDirection, EdgeSelectorKind
+from app.document.face_normal import plane_axis_points_inward
 from app.document.extrude import cached_feature_edge_provenance, edge_vertex_key_set
 from app.document.models import Part, SubShapeRef, SubShapeType
 
@@ -99,13 +100,14 @@ def _no_matching_edges(body_id: str, selector: EdgeSelectorKind) -> HTTPExceptio
 def _face_outward_normal(face) -> tuple[float, float, float] | None:
     """The face's real outward unit normal, or None if it isn't planar (a
     curved face has no single normal - not a candidate for any of v1's
-    face-position selectors)."""
+    face-position selectors). Its sign comes from `face_normal`, not from the
+    face's orientation flag alone (see that module)."""
     surface = BRepAdaptor_Surface(face, True)
     if surface.GetType() != GeomAbs_Plane:
         return None
     axis = surface.Plane().Axis().Direction()
     normal = (axis.X(), axis.Y(), axis.Z())
-    if face.Orientation() == TopAbs_REVERSED:
+    if plane_axis_points_inward(face):
         normal = (-normal[0], -normal[1], -normal[2])
     return normal
 
@@ -251,6 +253,91 @@ def resolve_face_selector(body: TopoDS_Shape, body_id: str, direction: CardinalD
     face_map = TopTools_IndexedMapOfShape()
     topexp.MapShapes(body, TopAbs_FACE, face_map)
     index = face_map.FindIndex(face)
+    return SubShapeRef(body_id=body_id, shape_type=SubShapeType.FACE, index=index - 1)
+
+
+def resolve_mate_face_selector(
+    body: TopoDS_Shape,
+    body_id: str,
+    *,
+    direction: CardinalDirection | None = None,
+    cylinder_radius: float | None = None,
+    near: tuple[float, float, float] | None = None,
+    normal: tuple[float, float, float] | None = None,
+) -> SubShapeRef:
+    """The one FACE a mate reference's `face_selector` names on `body`, in that Body's own (Part-local) frame:
+    a planar face whose outward normal is `direction`, or a cylindrical face of `cylinder_radius`. Of several
+    candidates, the one nearest `near`, or without `near` the outermost along `direction` (for a cylinder
+    without `near`, several distinct candidates are ambiguous: 422). Indexed like `resolve_face_selector`."""
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeVertex
+    from OCC.Core.BRepExtrema import BRepExtrema_DistShapeShape
+    from OCC.Core.BRepGProp import brepgprop
+    from OCC.Core.GeomAbs import GeomAbs_Cylinder
+    from OCC.Core.GProp import GProp_GProps
+    from OCC.Core.gp import gp_Pnt
+
+    target = None
+    if direction is not None:
+        target = _DIRECTION_VECTORS[direction.value]
+    elif normal is not None:
+        length = sum(c * c for c in normal) ** 0.5
+        target = tuple(c / length for c in normal)
+    face_map = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(body, TopAbs_FACE, face_map)
+    candidates = []
+    for i in range(1, face_map.Size() + 1):
+        face = topods.Face(face_map.FindKey(i))
+        if target is not None:
+            face_normal = _face_outward_normal(face)
+            if face_normal is not None and _dot(face_normal, target) > _ALIGNMENT_COS_TOLERANCE:
+                candidates.append((i, face))
+        else:
+            surface = BRepAdaptor_Surface(face, True)
+            if surface.GetType() == GeomAbs_Cylinder and abs(surface.Cylinder().Radius() - cylinder_radius) < 1e-3:
+                candidates.append((i, face))
+    wanted = (
+        f"direction {direction.value}" if direction is not None
+        else f"normal {list(normal)}" if normal is not None
+        else f"cylinder radius {cylinder_radius}"
+    )
+    if not candidates:
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "face_selector_no_matching_face", "body_id": body_id, "selector": wanted},
+        )
+
+    def centre(face) -> tuple[float, float, float]:
+        props = GProp_GProps()
+        brepgprop.SurfaceProperties(face, props)
+        c = props.CentreOfMass()
+        return (c.X(), c.Y(), c.Z())
+
+    if near is not None:
+        vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*near)).Vertex()
+        index, _ = min(candidates, key=lambda c: BRepExtrema_DistShapeShape(vertex, c[1]).Value())
+    elif target is not None:
+        index, _ = max(candidates, key=lambda c: _dot(centre(c[1]), target))
+    else:
+        axes = set()
+        for _, face in candidates:
+            axis = BRepAdaptor_Surface(face, True).Cylinder().Axis()
+            loc, d = axis.Location(), axis.Direction()
+            # one cylinder split into several faces shares its axis line: key it by direction and the point on it
+            # nearest the origin
+            t = loc.X() * d.X() + loc.Y() * d.Y() + loc.Z() * d.Z()
+            p = (loc.X() - t * d.X(), loc.Y() - t * d.Y(), loc.Z() - t * d.Z())
+            axes.add(tuple(round(v, 3) for v in (*p, abs(d.X()), abs(d.Y()), abs(d.Z()))))
+        if len(axes) > 1:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "type": "face_selector_ambiguous",
+                    "body_id": body_id,
+                    "selector": wanted,
+                    "message": f"{len(axes)} separate faces match {wanted}; add 'near' to say which",
+                },
+            )
+        index = candidates[0][0]
     return SubShapeRef(body_id=body_id, shape_type=SubShapeType.FACE, index=index - 1)
 
 

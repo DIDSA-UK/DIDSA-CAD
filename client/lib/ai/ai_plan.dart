@@ -499,6 +499,11 @@ class AiMateEntityRefStep {
   /// itself resolved client-side (no OCCT topology available here).
   final AiEdgeSelector? edgeSelector;
 
+  /// A face named by geometry on that component (`MateFaceSelector` in `ai_plan_schemas.py`: `direction` or
+  /// `cylinder_radius`, optional `near` and `body_id`), set instead of [subshapeRef]. Like [edgeSelector] it is only
+  /// round-tripped here; the dry run resolves it and `PlanTranslator` uses that result.
+  final Map<String, dynamic>? faceSelector;
+
   const AiMateEntityRefStep({
     required this.occurrenceId,
     this.subshapeRef,
@@ -506,6 +511,7 @@ class AiMateEntityRefStep {
     this.pointRef,
     this.midplane,
     this.edgeSelector,
+    this.faceSelector,
   });
 
   factory AiMateEntityRefStep.fromJson(Map<String, dynamic> json) => AiMateEntityRefStep(
@@ -517,6 +523,7 @@ class AiMateEntityRefStep {
         midplane: json['midplane'] == null ? null : AiMidplaneRef.fromJson(json['midplane'] as Map<String, dynamic>),
         edgeSelector:
             json['edge_selector'] == null ? null : AiEdgeSelector.fromJson(json['edge_selector'] as Map<String, dynamic>),
+        faceSelector: json['face_selector'] == null ? null : Map<String, dynamic>.from(json['face_selector'] as Map),
       );
 
   Map<String, dynamic> toJson() => {
@@ -526,6 +533,7 @@ class AiMateEntityRefStep {
         if (pointRef != null) 'point_ref': pointRef!.toJson(),
         if (midplane != null) 'midplane': midplane!.toJson(),
         if (edgeSelector != null) 'edge_selector': edgeSelector!.toJson(),
+        if (faceSelector != null) 'face_selector': faceSelector,
       };
 }
 

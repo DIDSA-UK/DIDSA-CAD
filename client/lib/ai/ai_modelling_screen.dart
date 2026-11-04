@@ -182,6 +182,7 @@ class _SavedAssemblyPart {
 
 class _AiModellingScreenState extends State<AiModellingScreen> {
   final TextEditingController _inputController = TextEditingController();
+  final TextEditingController _manifestCorrectionsController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
   List<AiChatMessage> _transcript = [];
@@ -328,6 +329,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // what `_buildOrchestrationProgress`/`_openAssembly` treat as "the
   // assembly is ready to open".
   bool _buildingAssembly = false;
+
+  // The mate turn's outcome (`_runMateTurn`), shown under the Assembly row: how many mates were made, or why
+  // the assembly was saved placed but unmated. Null before that turn runs, or when it was skipped.
+  String? _mateNote;
   String? _assemblyPartId;
   String? _assemblyRelativePath;
 
@@ -591,6 +596,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     // Linux implementation to call into at all).
     if (_listening) _speechToText.cancel();
     _inputController.dispose();
+    _manifestCorrectionsController.dispose();
     _scrollController.dispose();
     for (final controller in _manifestNameControllers) {
       controller.dispose();
@@ -1227,6 +1233,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// name/type-prefix fields back into the manifest, then starts the N
   /// sequential single-Part cycles (this workstream's own Locked
   /// architecture decision) at part 0.
+  /// "Send corrections" on the confirm-parts panel: the user's answer to the assistant's stated assumptions goes
+  /// back as an ordinary chat turn, and the assistant's revised manifest comes back to this same panel (`_send`
+  /// detects it as it did the first one). Nothing is built until a manifest is confirmed.
+  Future<void> _sendManifestCorrections() async {
+    final corrections = _manifestCorrectionsController.text.trim();
+    if (corrections.isEmpty || _orchestrating) return;
+    _cancelPartManifest();
+    _manifestCorrectionsController.clear();
+    _inputController.text = assemblyModeCorrectionsText(corrections);
+    await _send();
+  }
+
   Future<void> _confirmManifestAndGenerateAll() async {
     final manifest = _partManifest;
     if (manifest == null || _orchestrating) return;
@@ -1243,6 +1261,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             summary: manifest.parts[i].summary,
           ),
       ],
+      assumptions: manifest.assumptions,
     );
     setState(() {
       _partManifest = edited;
@@ -1729,7 +1748,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       final plan = detectedPlan;
       if (plan == null) {
         _appendOrchestrationFailureToTranscript(
-          'That reply was not an assembly plan - please reply with an ordinary plan placing and mating '
+          'That reply was not an assembly plan - please reply with an ordinary plan placing '
           'the saved parts, as described in the Assembly mode instructions.',
         );
         _stopOrchestrationWithError(
@@ -1796,6 +1815,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         return;
       }
 
+      if (bundle == null &&
+          plan.steps.any((step) => step is AiAddComponentStep) &&
+          !plan.steps.any((step) => step is AiMateStep)) {
+        await _runMateTurn(assemblyPartId: assemblyPartId, systemPrompt: systemPrompt, storage: storage, root: root);
+        if (!mounted) return;
+      }
+
       await _saveAssemblyAfterExecution(assemblyPartId: assemblyPartId, root: root, storage: storage, fixedRelativePath: _assemblyTargetRelativePath);
     } on ApiException catch (e) {
       if (assemblyPartId != null) await _prepareOrchestrationRetry(partId: assemblyPartId, saveOnly: false, isAssembly: true);
@@ -1812,6 +1838,88 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       );
       _stopOrchestrationWithError('Could not save the assembly: ${e.message}');
     }
+  }
+
+  /// The assembly cycle's second turn. The place plan put every component where the drawing has it but could not
+  /// mate them: a component added in a plan has no real faces until that plan has run. Now they are placed, list
+  /// them with their real ids (`summarizePlacedComponentsForMates`) and ask for the mates,
+  /// whose `face_selector`s the dry run resolves against each component's real geometry. The app retries a plan that
+  /// fails validation once, as it does every other turn. Never stops the run: on any failure the placed, unmated
+  /// assembly is still saved, and [_mateNote] says why it has no mates.
+  Future<void> _runMateTurn({
+    required String assemblyPartId,
+    required String systemPrompt,
+    required StorageService storage,
+    required ProjectRoot root,
+  }) async {
+    setState(() => _orchestrationStatus = 'Requesting the mates...');
+    final String placed;
+    try {
+      placed = summarizePlacedComponentsForMates(await _documentApi.listOccurrences(assemblyPartId));
+    } on ApiException catch (e) {
+      setState(() => _mateNote = 'Saved without mates: could not list the placed components (${e.message}).');
+      return;
+    }
+    if (placed.isEmpty) return;
+    final provider = widget.provider ?? AiProviderPreferences.active;
+    String? retryFor;
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final request = AiChatMessage(
+        role: AiMessageRole.user,
+        text: retryFor == null ? assemblyModeMatesRequestText(placed) : '$retryFor\n\n${assemblyModeMatesRetryRequestText()}',
+      );
+      setState(() => _transcript = [..._transcript, request]);
+      _scrollToBottom();
+      final AiTurnResult result;
+      try {
+        result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
+      } on AiProviderException catch (e) {
+        setState(() => _mateNote = 'Saved without mates: provider error (${e.message}).');
+        return;
+      }
+      if (!mounted) return;
+      setState(() => _transcript = [..._transcript, AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText)]);
+      _scrollToBottom();
+      final plan = detectPlanInAssistantText(result.assistantText);
+      if (plan == null || plan.steps.isEmpty) {
+        setState(() => _mateNote = 'Saved without mates: the assistant did not reply with any.');
+        return;
+      }
+      setState(() {
+        _orchestrationStatus = 'Validating and building the mates...';
+        _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
+      });
+      final translation = await PlanTranslator(
+        documentApi: _documentApi,
+        sketchApi: _sketchApi,
+        storageService: storage,
+        projectRoot: root,
+      ).execute(
+        plan: plan,
+        partId: assemblyPartId,
+        disabledKinds: AiSystemPromptPreferences.disabledKinds,
+        onStepStatusChanged: (stepIndex, status) {
+          if (!mounted) return;
+          setState(() => _orchestrationStepStatuses![stepIndex] = status);
+        },
+      );
+      if (!mounted) return;
+      final mates = plan.steps.whereType<AiMateStep>().length;
+      switch (translation.outcome) {
+        case PlanTranslationOutcome.success:
+          setState(() => _mateNote = '$mates mate${mates == 1 ? '' : 's'} added.');
+          return;
+        case PlanTranslationOutcome.validationFailed:
+          retryFor = 'For the mates plan: ${describeAiPlanValidationFailure(plan, translation.preflightResults)}';
+          continue;
+        case PlanTranslationOutcome.stepFailed:
+        case PlanTranslationOutcome.gearRequestEncountered:
+          _appendStoppedRunToTranscript(plan, translation);
+          setState(() => _mateNote = 'Saved with only some mates: ${translation.errorMessage}.');
+          return;
+      }
+    }
+    setState(() => _mateNote = 'Saved without mates: the mates plan failed validation twice.');
   }
 
   /// "Open Assembly" - navigates into `PartScreen` for the just-saved
@@ -1926,6 +2034,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _buildingAssembly = false;
       _assemblyPartId = null;
       _assemblyRelativePath = null;
+      _mateNote = null;
     });
   }
 
@@ -2078,7 +2187,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// app, AirDrop it, or save it to Files.
   Future<void> _shareExternalHandoff() async {
     final systemPrompt = _buildSystemPrompt();
-    final package = buildExternalHandoffPackage(systemPrompt: systemPrompt, transcript: _transcript);
+    final package = buildExternalHandoffPackage(
+      systemPrompt: systemPrompt,
+      transcript: _transcript,
+      assemblyMode: _mode == AiGenerationMode.assembly,
+    );
     if (!mounted) return;
 
     final choice = await showDialog<String>(
@@ -2528,6 +2641,28 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             style: TextStyle(color: Colors.white54),
           ),
           const SizedBox(height: 12),
+          if (manifest.assumptions.isNotEmpty) ...[
+            Text('Assumptions', key: const Key('aiModellingManifestAssumptions'), style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
+            for (final assumption in manifest.assumptions)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Text('- $assumption'),
+              ),
+            const SizedBox(height: 8),
+            TextField(
+              key: const Key('aiModellingManifestCorrections'),
+              controller: _manifestCorrectionsController,
+              minLines: 1,
+              maxLines: 4,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                labelText: 'Corrections (leave empty if these are right)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
           // Gap-closure (`13-...md`'s own E-1): only shown once there's
           // actually an existing file to offer - the dropdown's absence
           // itself communicates "a new assembly will be created", no extra
@@ -2595,11 +2730,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                 child: const Text('Back to chat'),
               ),
               const SizedBox(width: 8),
-              FilledButton(
-                key: const Key('aiModellingManifestConfirm'),
-                onPressed: _confirmManifestAndGenerateAll,
-                child: const Text('Confirm & Generate All'),
-              ),
+              if (_manifestCorrectionsController.text.trim().isNotEmpty)
+                FilledButton(
+                  key: const Key('aiModellingManifestSendCorrections'),
+                  onPressed: _sendManifestCorrections,
+                  child: const Text('Send corrections'),
+                )
+              else
+                FilledButton(
+                  key: const Key('aiModellingManifestConfirm'),
+                  onPressed: _confirmManifestAndGenerateAll,
+                  child: const Text('Confirm & Generate All'),
+                ),
             ],
           ),
         ],
@@ -2709,6 +2851,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                             : null,
                   ),
                   if (_buildingAssembly && !assemblySaved) _buildOrchestrationStepStatuses(),
+                  if (_mateNote != null)
+                    Padding(
+                      key: const Key('aiModellingMateNote'),
+                      padding: const EdgeInsets.only(left: 72, bottom: 8),
+                      child: Text(_mateNote!),
+                    ),
                 ],
               ],
             ),
