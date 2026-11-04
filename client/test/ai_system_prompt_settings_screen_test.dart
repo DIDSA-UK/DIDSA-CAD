@@ -41,6 +41,10 @@ void main() {
       300,
       scrollable: find.byType(Scrollable).first,
     );
+    // scrollUntilVisible stops as soon as the button is mounted, which can
+    // leave it only partly on-screen - bring it fully into view before tapping.
+    await tester.ensureVisible(find.byKey(const Key('aiSystemPromptSave')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('aiSystemPromptSave')));
     await tester.pumpAndSettle();
 

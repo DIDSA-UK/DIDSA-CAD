@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'ai_theme.dart';
 import 'ai_prompt_addons.dart';
 import 'ai_scoping_prompt.dart';
 import 'ai_system_prompt_preferences.dart';
@@ -106,7 +107,9 @@ class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScr
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AiTheme.wrap(context, _buildScreen);
+
+  Widget _buildScreen(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('AI System Prompt')),
       body: DesktopMaxWidth(maxWidth: 720, child: !_loaded
@@ -129,7 +132,7 @@ class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScr
                   minLines: 6,
                   maxLines: 16,
                   onChanged: (_) => setState(() => _saved = false),
-                  decoration: const InputDecoration(border: OutlineInputBorder()),
+                  decoration: const InputDecoration(),
                 ),
                 const SizedBox(height: 8),
                 Row(
@@ -147,7 +150,7 @@ class _AiSystemPromptSettingsScreenState extends State<AiSystemPromptSettingsScr
                     ),
                     if (_saved) ...[
                       const SizedBox(width: 12),
-                      const Icon(Icons.check_circle_outline, size: 18, color: Colors.green),
+                      Icon(Icons.check_circle_outline, size: 18, color: AiPalette.of(context).success),
                     ],
                   ],
                 ),

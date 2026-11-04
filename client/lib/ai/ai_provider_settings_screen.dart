@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'ai_theme.dart';
 import 'ai_provider.dart';
 import 'ai_provider_preferences.dart';
 import 'ai_system_prompt_settings_screen.dart';
@@ -259,7 +260,9 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AiTheme.wrap(context, _buildScreen);
+
+  Widget _buildScreen(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('AI Provider Settings')),
       body: DesktopMaxWidth(maxWidth: 720, child: !_loaded
@@ -303,7 +306,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
                 ),
                 const SizedBox(height: 12),
                 if (_testError != null) ...[
-                  Text(_testError!, style: const TextStyle(color: Colors.redAccent)),
+                  Text(_testError!, style: TextStyle(color: AiPalette.of(context).danger)),
                   const SizedBox(height: 12),
                 ],
                 FilledButton(
@@ -336,7 +339,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
       TextField(
         controller: _localBaseUrlController,
         keyboardType: TextInputType.url,
-        decoration: const InputDecoration(labelText: 'Base URL', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'Base URL'),
       ),
       const SizedBox(height: 8),
       Wrap(
@@ -352,7 +355,7 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
       TextField(
         controller: _localApiKeyController,
         obscureText: true,
-        decoration: const InputDecoration(labelText: 'API Key (optional)', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'API Key (optional)'),
       ),
       const SizedBox(height: 12),
       _buildModelField(controller: _localModelController, options: _ollamaModels),
@@ -389,12 +392,12 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
       TextField(
         controller: _openAiApiKeyController,
         obscureText: true,
-        decoration: const InputDecoration(labelText: 'API Key', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'API Key'),
       ),
       const SizedBox(height: 12),
       TextField(
         controller: _openAiModelController,
-        decoration: const InputDecoration(labelText: 'Model', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'Model'),
       ),
     ];
   }
@@ -404,12 +407,12 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
       TextField(
         controller: _anthropicApiKeyController,
         obscureText: true,
-        decoration: const InputDecoration(labelText: 'API Key', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'API Key'),
       ),
       const SizedBox(height: 12),
       TextField(
         controller: _anthropicModelController,
-        decoration: const InputDecoration(labelText: 'Model', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'Model'),
       ),
     ];
   }
@@ -421,13 +424,13 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
     if (options == null || options.isEmpty) {
       return TextField(
         controller: controller,
-        decoration: const InputDecoration(labelText: 'Model', border: OutlineInputBorder()),
+        decoration: const InputDecoration(labelText: 'Model'),
       );
     }
     final currentValue = options.contains(controller.text) ? controller.text : null;
     return DropdownButtonFormField<String>(
       initialValue: currentValue,
-      decoration: const InputDecoration(labelText: 'Model', border: OutlineInputBorder()),
+      decoration: const InputDecoration(labelText: 'Model'),
       items: [for (final option in options) DropdownMenuItem(value: option, child: Text(option))],
       onChanged: (value) {
         if (value != null) setState(() => controller.text = value);

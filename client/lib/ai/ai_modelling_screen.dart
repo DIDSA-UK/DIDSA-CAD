@@ -35,6 +35,7 @@ import 'ai_plan_export.dart';
 import 'ai_plan_summary.dart';
 import 'ai_plan_translator.dart';
 import 'ai_provider.dart';
+import 'ai_theme.dart';
 import 'ai_provider_preferences.dart';
 import 'ai_provider_settings_screen.dart';
 import 'ai_scoping_prompt.dart';
@@ -2338,7 +2339,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => AiTheme.wrap(context, _buildScreen);
+
+  Widget _buildScreen(BuildContext context) {
     final isFreshConversation = _transcript.isEmpty && _proposedPlan == null;
     // Multi-part/assembly overhaul, Phase D: neither the manifest-confirm
     // panel nor the orchestration-progress panel is "plain chat" - the
@@ -2402,7 +2405,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: _Banner(
               key: const Key('aiModellingAssemblyModeBanner'),
-              color: Colors.amber,
+              color: AiPalette.of(context).warning,
+              icon: Icons.account_tree_outlined,
               text: 'Assembly mode generates and saves each recognized part as its own file, then '
                   'automatically builds, saves, and opens a new, real, mated assembly from them - no '
                   'manual insert/mate step needed.',
@@ -2417,7 +2421,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                       'Features and can build on top of them - it never starts a new Part in this mode.'
                   : 'Describe the part you want to build. This always starts a brand-new '
                       'Part - it never modifies one that already exists.',
-              style: const TextStyle(color: Colors.white54),
+              style: TextStyle(color: AiPalette.of(context).muted),
               textAlign: TextAlign.center,
             ),
           ),
@@ -2430,11 +2434,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(
               'Could not load this Part\'s current Features: $_existingFeaturesError',
-              style: const TextStyle(color: Colors.redAccent),
+              style: TextStyle(color: AiPalette.of(context).danger),
               textAlign: TextAlign.center,
             ),
           ),
-        if (_lastRunCreatedFeatureIds != null) _buildUndoBanner(),
+        if (_lastRunCreatedFeatureIds != null) _buildUndoBanner(context),
         Expanded(
           child: ListView.builder(
             controller: _scrollController,
@@ -2447,26 +2451,26 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         if (_sendError != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Text(_sendError!, style: const TextStyle(color: Colors.redAccent)),
+            child: Text(_sendError!, style: TextStyle(color: AiPalette.of(context).danger)),
           ),
         if (_providerConfigDialogDismissed && _providerUnconfigured)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(
               'No AI provider configured - open AI Provider Settings before sending a message.',
-              style: TextStyle(color: Colors.white54),
+              style: TextStyle(color: AiPalette.of(context).muted),
             ),
           ),
         if (_pendingImages.isNotEmpty) _buildPendingImagePreview(),
         if (_imageError != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Text(_imageError!, style: const TextStyle(color: Colors.redAccent)),
+            child: Text(_imageError!, style: TextStyle(color: AiPalette.of(context).danger)),
           ),
         if (_speechError != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-            child: Text(_speechError!, style: const TextStyle(color: Colors.redAccent)),
+            child: Text(_speechError!, style: TextStyle(color: AiPalette.of(context).danger)),
           ),
         Padding(
           padding: const EdgeInsets.all(12),
@@ -2494,7 +2498,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                   minLines: 1,
                   maxLines: 4,
                   enabled: !_sending,
-                  decoration: const InputDecoration(hintText: 'Describe the part...', border: OutlineInputBorder()),
+                  decoration: const InputDecoration(hintText: 'Describe the part...'),
                   onSubmitted: (_) => _send(),
                 ),
               ),
@@ -2516,11 +2520,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                       : _toggleListening,
                   icon: _initializingSpeech
                       ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                      : Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? Colors.redAccent : null),
+                      : Icon(_listening ? Icons.mic : Icons.mic_none, color: _listening ? AiPalette.of(context).danger : null),
                 ),
               const SizedBox(width: 8),
               IconButton.filled(
                 key: const Key('aiModellingSend'),
+                style: IconButton.styleFrom(minimumSize: const Size(48, 48)),
                 onPressed: (_sending || (_providerConfigDialogDismissed && _providerUnconfigured)) ? null : _send,
                 icon: const Icon(Icons.send),
               ),
@@ -2528,13 +2533,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           ),
         ),
         if (!visionSupported)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
             child: Text(
               'Image upload needs a vision-capable provider - not available for the active provider. '
               'Enable it in AI Provider Settings (OpenAI/Anthropic, or the "This model supports vision" '
               'checkbox for Local).',
-              style: TextStyle(color: Colors.white54, fontSize: 12),
+              style: TextStyle(color: AiPalette.of(context).muted, fontSize: 12),
             ),
           ),
       ],
@@ -2633,12 +2638,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Everything except the action buttons scrolls together, so a long
+          // assumptions list can't push the part list/buttons off-screen.
+          Expanded(
+            child: ListView(
+              children: [
           Text('Found ${manifest.parts.length} part(s)', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 4),
-          const Text(
+          Text(
             'Review and edit the name/type prefix for each part below, then confirm to generate and '
             'save every part in sequence.',
-            style: TextStyle(color: Colors.white54),
+            style: TextStyle(color: AiPalette.of(context).muted),
           ),
           const SizedBox(height: 12),
           if (manifest.assumptions.isNotEmpty) ...[
@@ -2658,7 +2668,6 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
               onChanged: (_) => setState(() {}),
               decoration: const InputDecoration(
                 labelText: 'Corrections (leave empty if these are right)',
-                border: OutlineInputBorder(),
               ),
             ),
             const SizedBox(height: 12),
@@ -2681,43 +2690,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             ),
             const SizedBox(height: 12),
           ],
-          Expanded(
-            child: ListView.separated(
-              itemCount: manifest.parts.length,
-              separatorBuilder: (_, __) => const Divider(),
-              itemBuilder: (context, index) {
-                final entry = manifest.parts[index];
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              key: Key('aiModellingManifestName_$index'),
-                              controller: _manifestNameControllers[index],
-                              decoration: const InputDecoration(labelText: 'Name'),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          SizedBox(
-                            width: 130,
-                            child: TextFormField(
-                              key: Key('aiModellingManifestPrefix_$index'),
-                              controller: _manifestPrefixControllers[index],
-                              decoration: const InputDecoration(labelText: 'Type prefix'),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(entry.summary, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                    ],
-                  ),
-                );
-              },
+          for (var index = 0; index < manifest.parts.length; index++) ...[
+            if (index > 0) const Divider(),
+            _buildManifestPartRow(manifest.parts[index], index),
+          ],
+              ],
             ),
           ),
           const SizedBox(height: 12),
@@ -2749,6 +2726,39 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     );
   }
 
+  Widget _buildManifestPartRow(AiPartManifestEntry entry, int index) {
+    return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              key: Key('aiModellingManifestName_$index'),
+                              controller: _manifestNameControllers[index],
+                              decoration: const InputDecoration(labelText: 'Name'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          SizedBox(
+                            width: 130,
+                            child: TextFormField(
+                              key: Key('aiModellingManifestPrefix_$index'),
+                              controller: _manifestPrefixControllers[index],
+                              decoration: const InputDecoration(labelText: 'Type prefix'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(entry.summary, style: TextStyle(color: AiPalette.of(context).muted, fontSize: 12)),
+                    ],
+                  ),
+                );
+  }
+
   /// Multi-part/assembly overhaul, Phases D+E: the per-part progress list
   /// shown once orchestration has started - one row per manifest entry
   /// (done/in-progress/pending/failed), plus a coarse status line for
@@ -2768,7 +2778,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// execute`), render its own per-step dots via `_stepStatusIcon` -
   /// `_buildReviewAndGenerate`'s own single-Part progress, reused rather
   /// than reduced to the coarse `_orchestrationStatus` text alone.
-  Widget _buildOrchestrationStepStatuses() {
+  Widget _buildOrchestrationStepStatuses(BuildContext context) {
     final statuses = _orchestrationStepStatuses;
     if (statuses == null || statuses.isEmpty) return const SizedBox.shrink();
     return Padding(
@@ -2776,7 +2786,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       child: Wrap(
         spacing: 4,
         runSpacing: 4,
-        children: [for (final status in statuses) _stepStatusIcon(status)],
+        children: [for (final status in statuses) _stepStatusIcon(context, status)],
       ),
     );
   }
@@ -2814,9 +2824,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                                   ? Icons.hourglass_top
                                   : Icons.circle_outlined,
                       color: i < _savedAssemblyParts.length
-                          ? Colors.green
+                          ? AiPalette.of(context).success
                           : (i == _currentPartIndex && _orchestrationError != null)
-                              ? Colors.redAccent
+                              ? AiPalette.of(context).danger
                               : null,
                     ),
                     title: Text(manifest.parts[i].name),
@@ -2826,7 +2836,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                             ? Text(_orchestrationStatus!)
                             : null,
                   ),
-                  if (i == _currentPartIndex && !_buildingAssembly) _buildOrchestrationStepStatuses(),
+                  if (i == _currentPartIndex && !_buildingAssembly) _buildOrchestrationStepStatuses(context),
                 ],
                 if (_buildingAssembly || assemblySaved) ...[
                   ListTile(
@@ -2838,9 +2848,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                               ? Icons.error
                               : Icons.hourglass_top,
                       color: assemblySaved
-                          ? Colors.green
+                          ? AiPalette.of(context).success
                           : _orchestrationError != null
-                              ? Colors.redAccent
+                              ? AiPalette.of(context).danger
                               : null,
                     ),
                     title: const Text('Assembly'),
@@ -2850,7 +2860,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                             ? Text(_orchestrationStatus!)
                             : null,
                   ),
-                  if (_buildingAssembly && !assemblySaved) _buildOrchestrationStepStatuses(),
+                  if (_buildingAssembly && !assemblySaved) _buildOrchestrationStepStatuses(context),
                   if (_mateNote != null)
                     Padding(
                       key: const Key('aiModellingMateNote'),
@@ -2864,7 +2874,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           if (_orchestrationError != null)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(_orchestrationError!, style: const TextStyle(color: Colors.redAccent)),
+              child: Text(_orchestrationError!, style: TextStyle(color: AiPalette.of(context).danger)),
             ),
           if (assemblySaved)
             Padding(
@@ -2935,7 +2945,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         if (statuses != null) ...[
-                          _stepStatusIcon(statuses[nonPointStepIndices[i]]),
+                          _stepStatusIcon(context, statuses[nonPointStepIndices[i]]),
                           const SizedBox(width: 6),
                         ],
                         Expanded(child: Text('${i + 1}. ${summary[i]}')),
@@ -2952,7 +2962,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Icon(r.ok ? Icons.check_circle_outline : Icons.error_outline, color: r.ok ? Colors.green : Colors.redAccent, size: 18),
+                          Icon(r.ok ? Icons.check_circle_outline : Icons.error_outline, color: r.ok ? AiPalette.of(context).success : AiPalette.of(context).danger, size: 18),
                           const SizedBox(width: 6),
                           Expanded(child: Text('${r.localId}: ${_validationResultText(r)}')),
                         ],
@@ -2961,11 +2971,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                 ],
                 if (_finishedOutcome != null) ...[
                   const SizedBox(height: 12),
-                  _buildOutcomeBanner(_finishedOutcome!, _preflightResults),
+                  _buildOutcomeBanner(context, _finishedOutcome!, _preflightResults),
                 ],
                 if (_modelCheckRunning || _modelCheck != null || _modelCheckError != null) ...[
                   const SizedBox(height: 8),
-                  _buildModelCheck(),
+                  _buildModelCheck(context),
                 ],
                 // Fix 5 from the `02` doc's own real end-to-end exercise:
                 // `push` (not `pushReplacement`, unlike `GearDesignScreen`'s
@@ -2987,12 +2997,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                 ],
                 if (_lastRunCreatedFeatureIds != null) ...[
                   const SizedBox(height: 12),
-                  _buildUndoBanner(),
+                  _buildUndoBanner(context),
                 ],
                 if (_generateError != null)
                   Padding(
                     padding: const EdgeInsets.only(top: 12),
-                    child: Text(_generateError!, style: const TextStyle(color: Colors.redAccent)),
+                    child: Text(_generateError!, style: TextStyle(color: AiPalette.of(context).danger)),
                   ),
               ],
             ),
@@ -3059,20 +3069,20 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   String _formatStepError(Map<String, dynamic>? error) => formatAiStepError(error);
 
 
-  Widget _stepStatusIcon(TranslationStepStatus status) => switch (status) {
-        TranslationStepStatus.pending => const SizedBox(
+  Widget _stepStatusIcon(BuildContext context, TranslationStepStatus status) => switch (status) {
+        TranslationStepStatus.pending => SizedBox(
             width: 18,
             height: 18,
-            child: Icon(Icons.circle_outlined, size: 14, color: Colors.white38),
+            child: Icon(Icons.circle_outlined, size: 14, color: AiPalette.of(context).muted),
           ),
         TranslationStepStatus.inProgress =>
           const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
-        TranslationStepStatus.done => const Icon(Icons.check_circle, size: 18, color: Colors.green),
-        TranslationStepStatus.failed => const Icon(Icons.error, size: 18, color: Colors.redAccent),
+        TranslationStepStatus.done => Icon(Icons.check_circle, size: 18, color: AiPalette.of(context).success),
+        TranslationStepStatus.failed => Icon(Icons.error, size: 18, color: AiPalette.of(context).danger),
       };
 
   /// The render-back check's result (`14-render-back-check.md`).
-  Widget _buildModelCheck() {
+  Widget _buildModelCheck(BuildContext context) {
     if (_modelCheckRunning) {
       return const Row(
         children: [
@@ -3083,17 +3093,18 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       );
     }
     if (_modelCheckError != null) {
-      return _Banner(color: Colors.white24, text: 'Could not check the model against your drawing: $_modelCheckError');
+      return _Banner(color: Theme.of(context).colorScheme.outline, text: 'Could not check the model against your drawing: $_modelCheckError');
     }
     final check = _modelCheck!;
     if (check.matches == true) {
-      return const _Banner(color: Colors.green, text: 'AI check: the model matches your drawing.');
+      return _Banner(color: AiPalette.of(context).success, icon: Icons.verified_outlined, text: 'AI check: the model matches your drawing.');
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _Banner(
-          color: Colors.orange,
+          color: AiPalette.of(context).warning,
+          icon: Icons.warning_amber_rounded,
           text: check.matches == false
               ? 'AI check: the model may not match your drawing.\n${check.details}'
               : 'AI check was inconclusive:\n${check.details}',
@@ -3108,15 +3119,16 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     );
   }
 
-  Widget _buildOutcomeBanner(PlanTranslationOutcome outcome, List<AiPlanStepResultDto>? preflightResults) {
+  Widget _buildOutcomeBanner(BuildContext context, PlanTranslationOutcome outcome, List<AiPlanStepResultDto>? preflightResults) {
     switch (outcome) {
       case PlanTranslationOutcome.success:
-        return const _Banner(color: Colors.green, text: 'Generated - every step created successfully.');
+        return _Banner(color: AiPalette.of(context).success, icon: Icons.check_circle_outline, text: 'Generated - every step created successfully.');
       case PlanTranslationOutcome.validationFailed:
         final failed = preflightResults?.where((r) => !r.ok).length ?? 0;
         final total = preflightResults?.length ?? 0;
         return _Banner(
-          color: Colors.redAccent,
+          color: AiPalette.of(context).danger,
+          icon: Icons.error_outline,
           text: '$failed of $total step(s) failed validation - nothing was created. See above.',
         );
       case PlanTranslationOutcome.stepFailed:
@@ -3130,7 +3142,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     }
   }
 
-  Widget _buildUndoBanner() {
+  Widget _buildUndoBanner(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -3138,7 +3150,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           Expanded(
             child: Text(
               _undoError ?? 'Undo removes every Feature this generation created.',
-              style: TextStyle(color: _undoError != null ? Colors.redAccent : Colors.white54),
+              style: TextStyle(color: _undoError != null ? AiPalette.of(context).danger : AiPalette.of(context).muted),
             ),
           ),
           const SizedBox(width: 8),
@@ -3157,15 +3169,28 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 class _Banner extends StatelessWidget {
   final Color color;
   final String text;
+  final IconData icon;
 
-  const _Banner({super.key, required this.color, required this.text});
+  const _Banner({super.key, required this.color, required this.text, this.icon = Icons.info_outline});
 
   @override
   Widget build(BuildContext context) {
+    final onSurface = Theme.of(context).colorScheme.onSurface;
     return Container(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)),
-      child: Text(text, style: TextStyle(color: color)),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 20, color: color),
+          const SizedBox(width: 10),
+          Expanded(child: Text(text, style: TextStyle(color: onSurface, height: 1.35))),
+        ],
+      ),
     );
   }
 }
@@ -3185,15 +3210,22 @@ class _ChatBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final isUser = message.role == AiMessageRole.user;
     final images = message.images;
+    final scheme = Theme.of(context).colorScheme;
+    final foreground = isUser ? scheme.onPrimary : scheme.onSurface;
     return Align(
       alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
         constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.8),
         margin: const EdgeInsets.symmetric(vertical: 4),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        padding: const EdgeInsets.fromLTRB(14, 10, 10, 6),
         decoration: BoxDecoration(
-          color: isUser ? Theme.of(context).colorScheme.primaryContainer : Theme.of(context).colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(12),
+          color: isUser ? scheme.primary : scheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(18),
+            topRight: const Radius.circular(18),
+            bottomLeft: Radius.circular(isUser ? 18 : 4),
+            bottomRight: Radius.circular(isUser ? 4 : 18),
+          ),
         ),
         // Workstream 10 (`10-image-input.md`): an image-aware variant - a
         // thumbnail strip above the text when this turn carries any.
@@ -3230,11 +3262,11 @@ class _ChatBubble extends StatelessWidget {
             // Selectable (rather than a plain Text) so the raw text - JSON
             // plans especially - can be selected and copied manually too,
             // not just via the button below.
-            SelectableText(message.text),
+            SelectableText(message.text, style: TextStyle(color: foreground, height: 1.4)),
             Align(
               alignment: Alignment.centerRight,
               child: IconButton(
-                icon: const Icon(Icons.copy, size: 16),
+                icon: Icon(Icons.copy_rounded, size: 16, color: foreground.withValues(alpha: 0.6)),
                 tooltip: 'Copy to clipboard',
                 visualDensity: VisualDensity.compact,
                 constraints: const BoxConstraints(),
