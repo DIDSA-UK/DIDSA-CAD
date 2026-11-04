@@ -294,9 +294,9 @@ Since then (`docs/ai-modelling/16-assembly-mates-gaps-plan.md`, built; model rou
 - An imported zip now carries its own mates (the hand-off asks for them at the end of `99_assembly.json`) and the app
   builds them after the placements; a completeness check shows what each component can still do; `eval.sh handoff` and
   `import` play that route; the `constrained` column scores completeness (see "External route").
-- **Not done, and why:** (1) *No new model rounds* (external route, the three hand sketches and the three generated
-  sheets, one run each on Sonnet and Opus; a second in-app run of the same six): about 2-2.5M tokens, so they wait for
-  the owner's go-ahead. (2) *Re-scoring the 2026-11-04 in-app runs for completeness: not possible from this repository.*
+- **Not done, and why:** (1) *Most model rounds.* Only the Sonnet external route on three sketches was run (see the
+  table above, about 0.6M tokens). Not run: Opus, the three hand sketches, a second in-app run of the same six
+  (together about 2M more tokens), which wait for the owner's go-ahead. (2) *Re-scoring the 2026-11-04 in-app runs for completeness: not possible from this repository.*
   `runs/` is git-ignored and was not kept, so the saved replies are not available to rebuild. The harness can do it as
   soon as they are: copy each run folder back under `runs/`, run `eval.sh assemble <run>` (it rebuilds from the saved
   `*_reply.txt` files with no model call and now writes `completeness.json`, `completeness.txt` and the `constrained`
@@ -306,6 +306,38 @@ Since then (`docs/ai-modelling/16-assembly-mates-gaps-plan.md`, built; model rou
   and a model standing in for the chat app once rounds are run.
 - Still open in the app: the zip importer's repair of a moved first component (finding 3 in `15-...md`); rebuilding the
   `local_id` map for an imported assembly reopened in a later session.
+
+### External route, Sonnet, 2026-11-04 (first model rounds of the external route)
+
+Sonnet standing in for an external chat app (`agent_prompts/model_external.md`, the hand-off package as a pasted message),
+two runs per sketch, three sketches chosen to save tokens: easy (`asm_pin_block`, 2 parts), medium (`asm_wheel_bracket`,
+4 parts, one used twice) and most complex (`asm_caster`, 8 parts). Every run took the file route (a zip's JSON files);
+the fenced-block route was not exercised. About 0.6M tokens in all (85-120k a run). The scripted owner only said "go
+with your best reading": these are the fully dimensioned generated sheets, whose assumptions need no correction.
+
+| Sketch | Run 1 | Run 2 |
+|---|---|---|
+| `asm_pin_block` | P, 2 mates, constrained 2/2 | P, 2 mates, constrained 2/2 |
+| `asm_wheel_bracket` | P, 11 mates, constrained 5/5 | P, 10 mates, constrained 5/5 |
+| `asm_caster` | P, 18 mates, constrained 4/8 | P, 17 mates, constrained 4/8 |
+
+- **Placement and import: 6 of 6.** Every zip was read by the importer, every part built first time (no validation
+  failure, no retry), every mates plan built (no `face_selector` or local-id error), and every assembly passed the
+  placement score. Mates named components by their `add_component` `local_id`, as the external paragraphs ask.
+- **Completeness: matches on the easy and medium sketches, not on the caster.** Both caster runs locked the swivel:
+  the fork came out `fully constrained` where the key expects `spin` about the kingpin. That one choice cascades: the
+  wheel is then free only about its own axle (`spin`, key `2spin`), and the bolt and nut are held (`held`, key
+  `spin|2spin`), so the 4 `over` verdicts are one decision counted four times. Both runs left the wheel, bushing, washer
+  and kingpin free and declared them in `intended_motion`; the swivel itself was never declared or left free. Whether
+  a locked swivel is a modelling error or a fair reading of the drawing is for the owner (and the key is my unconfirmed
+  reading, see above).
+- Every run declared `intended_motion` for its wheel as asked, and also for round pins and axles ("nothing stops it
+  turning"), which the key allows.
+- **Read as direction, not rates**: two runs per cell, a model standing in for a chat app, no run against claude.ai,
+  ChatGPT or Gemini. Each sub-agent also ran one `mkdir` through a shell tool despite being told to use file tools only
+  (it changed no file content). The app's one follow-up turn was not played, so a locked swivel is what the first
+  mates turn left, before any follow-up. Not run: Opus, the hand sketches (`asm_dovetail`, `asm_frame`, `asm_block_pins`),
+  the in-app second runs.
 
 ### Render-back check, 2026-10-29
 

@@ -379,9 +379,17 @@ failed mates plan never stops the run". `_executeMatesPlan` now catches it and t
   recorded. That is the only run of the external route against a real backend, and it is not evidence about how a model
   or a chat app behaves.
 
+### Model rounds run so far (owner's go-ahead, reduced scope)
+
+Sonnet only, external route, two runs each on `asm_pin_block`, `asm_wheel_bracket` and `asm_caster` (about 0.6M tokens):
+6/6 imported, built and passed placement with mates in the zip and no retries; completeness matched on the easy and
+medium sketches (2/2, 5/5) and was 4/8 on both caster runs because the swivel was locked (one choice, four `over`
+verdicts). Tables and caveats: `tools/ai_eval/README.md`, "External route, Sonnet, 2026-11-04". A model standing in for a
+chat app, not a real one.
+
 ## What is still open
 
-- The model rounds (external route, a second in-app run), about 2-2.5M tokens: waiting for the owner's go-ahead.
+- The remaining model rounds (Opus, the three hand sketches, a second in-app run), about 2M tokens: waiting for the owner's go-ahead.
 - The owner's real-chat run (README checklist). Until it exists, nothing here shows the external route works with a real
   chat app; the importer, prompt and package are exercised only by tests and a stand-in.
 - Re-scoring the 2026-11-04 in-app runs for completeness: needs the saved run folders.
