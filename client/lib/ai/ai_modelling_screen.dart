@@ -374,6 +374,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   AssemblyCompletenessReport? _completenessReport;
   List<AiIntendedMotion> _intendedMotion = [];
 
+  // Components already in an existing assembly file this run inserted into: the check reports on what the run
+  // added, not on the user's own earlier work.
+  Set<String> _preexistingOccurrenceIds = {};
+
   // Mates repair for an imported zip (`16-assembly-mates-gaps-plan.md`, Phase 3). The `add_component` `local_id` ->
   // real occurrence id map the placement run returned, kept so a `mates.json` written against the zip's local ids can
   // be read back; it lives only in this screen, so the repair works in the same session as the import and no
@@ -1719,6 +1723,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _orchestrationError = null;
       _completenessReport = null;
       _intendedMotion = [];
+      _preexistingOccurrenceIds = {};
       _importedLocalIdToRealId = null;
       _importedMates = _ImportedMates.none;
       _importedMatesProblems = '';
@@ -1744,6 +1749,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         final assemblyClient = AssemblyDocumentClient(storageService: storage, documentApiClient: _documentApi);
         final opened = await assemblyClient.openAssembly(root, targetPath);
         assemblyPartId = opened.rootPartId;
+        try {
+          _preexistingOccurrenceIds = {for (final o in await _documentApi.listOccurrences(opened.rootPartId)) o.id};
+        } on ApiException {
+          // No list, no filter: the check then also reports on those components.
+        }
         existingComponentsListing = opened.relativePathByPartId.entries
             .where((e) => e.key != opened.rootPartId)
             .map((e) => e.value)
@@ -2010,20 +2020,33 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _orchestrationStatus = 'Validating and building the mates...';
       _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
     });
-    final translation = await PlanTranslator(
-      documentApi: _documentApi,
-      sketchApi: _sketchApi,
-      storageService: storage,
-      projectRoot: root,
-    ).execute(
-      plan: plan,
-      partId: assemblyPartId,
-      disabledKinds: AiSystemPromptPreferences.disabledKinds,
-      onStepStatusChanged: (stepIndex, status) {
-        if (!mounted) return;
-        setState(() => _orchestrationStepStatuses![stepIndex] = status);
-      },
-    );
+    final PlanTranslationResult translation;
+    try {
+      translation = await PlanTranslator(
+        documentApi: _documentApi,
+        sketchApi: _sketchApi,
+        storageService: storage,
+        projectRoot: root,
+      ).execute(
+        plan: plan,
+        partId: assemblyPartId,
+        disabledKinds: AiSystemPromptPreferences.disabledKinds,
+        onStepStatusChanged: (stepIndex, status) {
+          if (!mounted) return;
+          setState(() => _orchestrationStepStatuses![stepIndex] = status);
+        },
+      );
+    } on ApiException catch (e) {
+      // The validate call itself refused the plan (HTTP 422: a field the schema does not accept, say a face direction
+      // that is not one of the six axes), so there is no per-step result, only the server's message. Nothing was
+      // built. Like any other bad mates plan it must not stop the run: the placed assembly still gets saved.
+      return _MatesRun(
+        _MatesOutcome.validationFailed,
+        'Saved without mates: the mates plan was rejected.\n${e.message}',
+        validationFailureText: 'For the mates plan: the plan was rejected, so nothing was built: ${e.message}',
+        problems: e.message,
+      );
+    }
     final mates = plan.steps.whereType<AiMateStep>().length;
     switch (translation.outcome) {
       case PlanTranslationOutcome.success:
@@ -2121,7 +2144,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     try {
       final occurrences = await _documentApi.listOccurrences(assemblyPartId);
       final status = await _documentApi.getConstraintStatus(assemblyPartId);
-      return buildCompletenessReport(occurrences: occurrences, status: status, intended: _intendedMotion);
+      return buildCompletenessReport(
+        occurrences: [for (final o in occurrences) if (!_preexistingOccurrenceIds.contains(o.id)) o],
+        status: status,
+        intended: _intendedMotion,
+      );
     } on ApiException {
       return null;
     }
@@ -2152,7 +2179,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     try {
       result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
     } on AiProviderException catch (e) {
-      setState(() => _mateNote = '$_mateNote\nThe follow-up for the free components failed: provider error (${e.message}).');
+      setState(() => _mateNote = '${_mateNote ?? ''}\nThe follow-up for the free components failed: provider error (${e.message}).');
       return false;
     }
     if (!mounted) return false;
@@ -2160,12 +2187,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     _scrollToBottom();
     final plan = detectPlanInAssistantText(result.assistantText);
     if (plan == null) {
-      setState(() => _mateNote = '$_mateNote\nThe follow-up for the free components got no plan back.');
+      setState(() => _mateNote = '${_mateNote ?? ''}\nThe follow-up for the free components got no plan back.');
       return false;
     }
     _intendedMotion = [..._intendedMotion, ...plan.intendedMotion];
     if (plan.steps.isEmpty) {
-      setState(() => _mateNote = '$_mateNote\nThe assistant added no mates: it declared the free motion intended.');
+      setState(() => _mateNote = '${_mateNote ?? ''}\nThe assistant added no mates: it declared the free motion intended.');
       return false;
     }
     final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: plan, storage: storage, root: root);
@@ -2175,7 +2202,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _MatesOutcome.partial => 'The follow-up: ${run.note}',
       _MatesOutcome.validationFailed => 'The follow-up mates failed validation and were not built.',
     };
-    setState(() => _mateNote = '$_mateNote\n$followUp');
+    setState(() => _mateNote = '${_mateNote ?? ''}\n$followUp');
     return run.outcome != _MatesOutcome.validationFailed;
   }
 

@@ -11,6 +11,11 @@ A run scores per part and for the assembly, orientation-free:
   smaller than the sum), and placement: each component's distance from the assembly's centroid, sorted, within
   1 mm of the key's. A nested sub-assembly is scored flattened.
 
+Completeness (`docs/ai-modelling/16-assembly-mates-gaps-plan.md`, Phase 2): when a run has completeness.json (the
+app's per-component mate check, written by the harness after the mates), the `constrained` field compares each
+component's free motion with the key's `expected_motion` for its part. It is reported next to pass/fail and never
+changes it: placement decides pass/fail. See `constrained()`.
+
 Usage: expected_assembly.py <sketch> <run_dir>
 """
 import glob
@@ -106,6 +111,80 @@ def unscored(run):
     return out
 
 
+def signature(c):
+    """What one component can still do, as one word: held (fixed / fully constrained), `spin`, `2slide+spin`, `free`...,
+    or `over` / `floating` (mobility 0 but nothing grounds the group) / `unchecked`."""
+    status = c.get("status")
+    if status in ("fixed", "fully_constrained"):
+        return "held"
+    if status == "over_constrained":
+        return "over"
+    if status != "under_constrained":
+        return "unchecked"
+    motions = c.get("free_motions") or []
+    if not motions:
+        return "floating"
+    slides = sum(1 for m in motions if m["kind"] == "slide")
+    spins = len(motions) - slides
+    if slides == 3 and spins == 3:
+        return "free"
+    parts = [(f"{n}" if n > 1 else "") + kind for kind, n in (("slide", slides), ("spin", spins)) if n]
+    return "+".join(parts)
+
+
+def _freedom(sig):
+    """How many motions a signature leaves free (a rough order for under / over): held 0, `2slide+spin` 3, `free` 6."""
+    if sig == "held":
+        return 0
+    if sig == "free":
+        return 6
+    total = 0
+    for word in sig.split("+"):
+        digits = "".join(ch for ch in word if ch.isdigit())
+        total += int(digits) if digits else 1
+    return total
+
+
+def constrained(run, asm, matched_pids):
+    """Each component's observed motion against the key's expected one, from completeness.json.
+
+    `matched_pids` maps a manifest part's saved path to the key's part id (found by geometry, as the part score is). A
+    component whose part was not matched, or that has no expected motion, is left out (`unscored`). Per component:
+    `match` (observed is one of the alternatives), `under` (it can move more than any alternative: a gap),
+    `over` (it is held more than any alternative, or its mates contradict each other) or `differs` (the same amount of
+    freedom, a different motion). The caller reports counts, never a pass/fail."""
+    path = os.path.join(run, "completeness.json")
+    expected = asm.get("expected_motion")
+    if not os.path.exists(path) or not expected:
+        return None
+    comps = json.load(open(path)).get("components", [])
+    counts = {"match": 0, "under": 0, "over": 0, "differs": 0, "unscored": 0}
+    detail = []
+    for c in comps:
+        pid = matched_pids.get(os.path.basename(c.get("external_ref") or ""))
+        want = expected.get(pid) if pid else None
+        if want is None:
+            counts["unscored"] += 1
+            continue
+        got = signature(c)
+        alts = want.split("|")
+        if got in alts:
+            verdict = "match"
+        elif got == "over":
+            verdict = "over"
+        elif got in ("unchecked", "floating") or _freedom(got) > max(_freedom(a) for a in alts):
+            verdict = "under"
+        elif _freedom(got) < min(_freedom(a) for a in alts):
+            verdict = "over"
+        else:
+            verdict = "differs"
+        counts[verdict] += 1
+        if verdict != "match":
+            detail.append({"part": pid, "component": c.get("name"), "expected": want, "observed": got, "verdict": verdict})
+    scored = sum(v for k, v in counts.items() if k != "unscored")
+    return {"match": f"{counts['match']}/{scored}", **{k: v for k, v in counts.items() if k != "match" and v}, "detail": detail}
+
+
 def score(sketch, run):
     if sketch not in SKETCHES:
         return unscored(run)
@@ -129,11 +208,16 @@ def score(sketch, run):
             built.append((os.path.basename(f)[:7], g))
     unused = list(built)
     matched, missing = [], []
+    pid_by_path = {}  # the saved file name -> the key's part id, for the completeness comparison
+    saved_paths = [os.path.basename(p.get("path") or "") for p in man.get("parts", [])]
     for pid, wants in parts.items():
         hit = next((b for b in unused if any(part_matches(w, b[1]) for w in wants)), None)
         if hit:
             unused.remove(hit)
             matched.append(wants[0]["name"])
+            index = int(hit[0].split("_")[1]) - 1  # "part_01" -> manifest part 0
+            if 0 <= index < len(saved_paths):
+                pid_by_path[saved_paths[index]] = pid
         else:
             missing.append(wants[0]["name"])
     out["parts_ok"] = f"{len(matched)}/{len(parts)}"
@@ -174,6 +258,9 @@ def score(sketch, run):
     else:
         out["assembly_ok"] = False
     out["pass"] = not missing and not unused and out["assembly_ok"]
+    done = constrained(run, asm, pid_by_path)
+    if done is not None:
+        out["constrained"] = done
     return out
 
 

@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:archive/archive.dart' show Archive, ArchiveFile, ZipEncoder;
 import 'package:flutter/material.dart';
@@ -1077,6 +1076,7 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
   WidgetTester tester,
   Uint8List zip, {
   bool failMateValidation = false,
+  bool rejectMates422 = false,
   int failMateValidations = 0,
   Map<String, dynamic> Function(List<String> occurrenceIds)? statusFor,
   Future<String?> Function()? pickMatesText,
@@ -1097,6 +1097,16 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
       validateBodies.add(body);
       final steps = (body['steps'] as List).cast<Map<String, dynamic>>();
       final isMates = steps.any((step) => step['kind'] == 'mate');
+      if (isMates && rejectMates422) {
+        return http.Response(
+          jsonEncode({
+            'detail': [
+              {'type': 'enum', 'loc': ['body', 'steps', 0, 'mate', 'references', 0, 'face_selector', 'direction'], 'msg': "Input should be '+x', '-x', '+y', '-y', '+z' or '-z'"},
+            ],
+          }),
+          422,
+        );
+      }
       if (isMates && (failMateValidation || mateValidationsFailed++ < failMateValidations)) {
         return http.Response(
           jsonEncode({
@@ -1212,6 +1222,20 @@ void importedMatesTests() {
     expect(find.textContaining('Saved without mates: the mates plan failed validation.'), findsOneWidget);
     expect(find.textContaining('no such face'), findsOneWidget);
     expect(find.byKey(const Key('aiModellingOpenAssembly')), findsOneWidget);
+  });
+
+  testWidgets('an imported zip whose mates plan the server rejects outright (HTTP 422) still saves the placed assembly',
+      (tester) async {
+    final run = await _runImportedZip(tester, _importZip(mates: [_importedMate]), rejectMates422: true);
+
+    expect(run.requests, isNot(contains('POST /document/parts/part-3/mates')));
+    expect(find.text('Save assembly as…'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Saved without mates: the mates plan was rejected.'), findsOneWidget);
+    expect(find.textContaining('Input should be'), findsOneWidget);
+    expect(find.byKey(const Key('aiModellingOpenAssembly')), findsOneWidget);
+    expect(find.byKey(const Key('aiModellingOrchestrationRetry')), findsNothing); // not stopped
   });
 
   testWidgets('an imported zip with no mates says so and saves the placed assembly', (tester) async {

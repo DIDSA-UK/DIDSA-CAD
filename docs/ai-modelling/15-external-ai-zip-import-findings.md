@@ -79,6 +79,9 @@ for the first version only.
   to re-express the whole assembly in the first component's frame: apply the
   inverse of its placement to every other component's placement. Left for the
   planned assembly testing.
+- *Update 2026-11-04:* one imported zip (hand-written, for `asm_pin_block`, with mates) has now been built end to end
+  against a live backend through the eval harness (`tools/ai_eval`, `eval.sh import`); that is not a real external
+  chat. The remaining point below stands for the app screen itself.
 - Real end-to-end verification of an imported multi-part zip (Generate All
   through the assembly) has not been done; this session had no Flutter SDK
   that ran, no OpenCascade, and no display. Client behaviour was verified only

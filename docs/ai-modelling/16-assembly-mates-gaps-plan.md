@@ -1,7 +1,7 @@
 # Workstream 16: Assembly mates gaps (plan)
 
 Written 2026-11-04 from the open items at the end of `tools/ai_eval/README.md` ("Where this leaves the evaluation").
-Implementation status is in "What was built" at the end of this file (Phases 1-3 built; Phase 4 as marked there).
+Implementation status is in "What was built" at the end of this file (Phases 1-3 built; Phase 4 harness work built, its model rounds not run).
 Written to be implemented by a new session; read this file, `13-multi-part-assembly-overhaul.md` ("Mates turn and
 stated assumptions") and `15-external-ai-zip-import-findings.md` first.
 
@@ -300,7 +300,12 @@ Client (`ai_assembly_report.dart`, `ai_modelling_screen.dart`, `ai_scoping_promp
   listed, then re-checked; declared intent = no follow-up; at most one follow-up; a follow-up that only declares
   intent; held components = none; an imported zip gets the report with the zip's intent and never a provider turn).
 
-Not verified: the free-motion description on a real AI-built assembly (the backend tests use hand-built scenes); how a
+- When the run inserted into an existing assembly file, the check ignores the components that were already in it
+  (`_preexistingOccurrenceIds`, taken when the file is opened), so it never asks for mates for the user's own earlier
+  work. Not covered by a test of its own.
+
+Not verified: the free-motion description on a real AI-built assembly beyond one hand-written two-part zip through the
+eval harness (the backend tests use hand-built scenes); how a
 model reacts to the follow-up request (no model was run, see Phase 4).
 
 ### Phase 3: "Fix mates with external AI", "Import mates" (built)
@@ -340,3 +345,48 @@ validation; stopped part-way; or built but components free and not declared inte
 
 Not verified: with a real external chat. The package is text; whether a real model answers it with a usable
 `mates.json`, and in which of the chat apps' file formats, is exactly what the owner's checklist (Phase 4) is for.
+
+### Found while building Phase 4: a schema-invalid mates plan stopped the run (fixed)
+
+Running a hand-written zip with a bad face direction (`"+q"`) through the real backend: `POST .../ai-plan/validate`
+answers a request the schema rejects with HTTP 422, not with per-step results, so `DocumentApiClient.validateAiPlan`
+throws an `ApiException`. In the app that exception left `_executeMatesPlan` (and, before Phase 1, `_runMateTurn`),
+reached `_runAssemblyCycle`'s catch, and stopped the run with the assembly built but not saved: the opposite of "a
+failed mates plan never stops the run". `_executeMatesPlan` now catches it and treats the plan as failed validation
+(nothing built; the note carries the server's message; the in-app retry turn is told it too). Widget test:
+`an imported zip whose mates plan the server rejects outright (HTTP 422) still saves the placed assembly`. A schema-invalid
+*placement* plan still stops the run as before (it is in `_runAssemblyCycle`'s own `on ApiException`, with Retry).
+
+### Phase 4: the harness (built; model rounds not run)
+
+`tools/ai_eval/` (details and the owner's checklist in its README, "External route"):
+- `eval.sh handoff <dir>` writes the Assembly-mode hand-off package as the app builds it; `eval.sh import <run>` zips a
+  run's `files/*.json` (or extracts fenced blocks from `final_reply.txt`), reads the zip with `AiPlanBundle`, builds the
+  parts and the assembly with the app's own cycle (placements, the zip's mates with their local ids rewritten, the
+  completeness check) and scores it like `assemble`. The harness's assembly build is now shared between the two.
+- `agent_prompts/model_external.md`: the model sees the package as a pasted user message, not a system prompt.
+- `harness/assembly_keys.json` / `models.py`: `expected_motion` per assembly and part (**my reading, unconfirmed**);
+  `expected_assembly.py` reports `constrained` (match / under / over / differs) beside pass/fail without changing it;
+  `table_assembly.py` shows the column.
+- **Changed from the plan:** the harness does not play the app's one follow-up mates turn, so in-app runs measure the
+  completeness of the first mates turn. The plan did not ask for it; noted in the README.
+- **Re-scoring the saved 2026-11-04 runs was not possible:** they were never in the repository (`runs/` is
+  git-ignored) and this session started from a fresh checkout, so there was nothing to rebuild. The harness can rebuild
+  them once the folders are back (README). No model tokens were spent and none are needed for it.
+- Verified against a live backend with a hand-written (not model-written) zip for `asm_pin_block`: the full path
+  (importer, parts, placements, rewritten face-selector mates, completeness, score) works; the pin is reported free to
+  spin about z; the same zip with its seat mate removed is scored `under`; an invalid direction is refused and
+  recorded. That is the only run of the external route against a real backend, and it is not evidence about how a model
+  or a chat app behaves.
+
+## What is still open
+
+- The model rounds (external route, a second in-app run), about 2-2.5M tokens: waiting for the owner's go-ahead.
+- The owner's real-chat run (README checklist). Until it exists, nothing here shows the external route works with a real
+  chat app; the importer, prompt and package are exercised only by tests and a stand-in.
+- Re-scoring the 2026-11-04 in-app runs for completeness: needs the saved run folders.
+- The expected motions in the keys: to be confirmed by the owner.
+- Rebuilding the `local_id` map for an imported assembly reopened later; the importer's repair of a moved first
+  component (`15-...md` finding 3); after a cancelled save during "Import mates", Retry proposes a new file name.
+- Not tried: whether an external model follows the "Assembly mode" paragraphs rather than the "Assembly editing" ones
+  where they differ (the external text says plainly that it overrides them).
