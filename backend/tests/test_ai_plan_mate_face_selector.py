@@ -132,3 +132,48 @@ def client_validate_raw(part_id, ref):
         f"/document/parts/{part_id}/ai-plan/validate",
         json={"version": 1, "steps": [{"local_id": "m", "kind": "mate", "type": "coincident", "references": [ref, _face_ref("")]}]},
     )
+
+
+def test_a_revolved_pins_flat_faces_read_their_true_outward_direction():
+    """A pin revolved from a half-profile (shank r5 x 40, head r15 x 10, axis along z): its flat faces lie on surfaces
+    of revolution, whose plane axis has no reliable sign. Reading the normal from that axis made every flat face
+    face +z, so `direction: -z` could not find the shoulder (found by the AI-eval assembly runs)."""
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    from OCC.Core.gp import gp_Ax1
+
+    profile = BRepBuilderAPI_MakePolygon()
+    for x, z in ((0, 0), (5, 0), (5, 40), (15, 40), (15, 50), (0, 50)):
+        profile.Add(gp_Pnt(x, 0, z))
+    profile.Close()
+    face = BRepBuilderAPI_MakeFace(profile.Wire()).Face()
+    pin = BRepPrimAPI_MakeRevol(face, gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))).Shape()
+
+    tip = resolve_mate_face_selector(pin, "b", direction=CardinalDirection.MINUS_Z)
+    assert _face_centre(pin, tip.index)[2] == 0.0
+    shoulder = resolve_mate_face_selector(pin, "b", direction=CardinalDirection.MINUS_Z, near=(10.0, 0.0, 40.0))
+    assert _face_centre(pin, shoulder.index)[2] == 40.0
+    top = resolve_mate_face_selector(pin, "b", direction=CardinalDirection.PLUS_Z)
+    assert _face_centre(pin, top.index)[2] == 50.0
+
+
+def test_the_mate_solver_reads_a_revolved_faces_normal_the_same_way():
+    """`measure._outward_normal`, which the assembly solver's face geometry uses: a revolved pin's shoulder faces
+    -z. With the old orientation-flag rule it read +z, and a mate seating that shoulder on a block could not be
+    solved ("No placement satisfies these mates together")."""
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace, BRepBuilderAPI_MakePolygon
+    from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeRevol
+    from OCC.Core.gp import gp_Ax1
+
+    from app.document.measure import _outward_normal
+
+    profile = BRepBuilderAPI_MakePolygon()
+    for x, z in ((0, 0), (5, 0), (5, 40), (15, 40), (15, 50), (0, 50)):
+        profile.Add(gp_Pnt(x, 0, z))
+    profile.Close()
+    pin = BRepPrimAPI_MakeRevol(BRepBuilderAPI_MakeFace(profile.Wire()).Face(), gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1))).Shape()
+    shoulder = resolve_mate_face_selector(pin, "b", direction=CardinalDirection.MINUS_Z, near=(10.0, 0.0, 40.0))
+    faces = TopTools_IndexedMapOfShape()
+    topexp.MapShapes(pin, TopAbs_FACE, faces)
+    normal = _outward_normal(topods.Face(faces.FindKey(shoulder.index + 1)))
+    assert round(normal.Z(), 6) == -1.0

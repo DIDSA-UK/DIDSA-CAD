@@ -50,6 +50,7 @@ from OCC.Core.gp import gp_Pnt
 from OCC.Core.TopAbs import TopAbs_REVERSED
 from OCC.Core.TopoDS import TopoDS_Shape, topods
 
+from app.document.face_normal import plane_axis_points_inward
 from app.document.extrude import compute_part_bodies, resolve_subshape_from_bodies
 from app.document.graph import sketch_feature_id_for_sketch
 from app.document.models import (
@@ -197,7 +198,7 @@ def _resolve_planar_face(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> R
     normal = position.Direction()
     x_axis = position.XDirection()
     y_axis = position.YDirection()
-    if face.Orientation() == TopAbs_REVERSED:
+    if plane_axis_points_inward(face):
         normal = normal.Reversed()
         y_axis = y_axis.Reversed()
     return ResolvedPlane(

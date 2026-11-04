@@ -868,7 +868,15 @@ class PlanTranslator {
             ? step.references[1].occurrenceId
             : step.references[0].occurrenceId;
         if (solveTarget.isNotEmpty && !isWidth) {
-          await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget, ids));
+          try {
+            await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget, ids));
+          } on ApiException catch (e) {
+            // The second reference is the grounded first component (`occurrence_is_fixed`): a plan may name the
+            // mate's two sides in either order, so solve the other side instead (found by the AI-eval mates turn).
+            final other = step.references[0].occurrenceId;
+            if (!e.message.contains('occurrence_is_fixed') || other.isEmpty || other == solveTarget) rethrow;
+            await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(other, ids));
+          }
         }
         return mate.id;
 

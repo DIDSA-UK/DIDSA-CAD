@@ -44,6 +44,7 @@ from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Vertex, topods
 from OCC.Core.TopTools import TopTools_IndexedMapOfShape
 
 from app.document.ai_plan_schemas import CardinalDirection, EdgeSelectorKind
+from app.document.face_normal import plane_axis_points_inward
 from app.document.extrude import cached_feature_edge_provenance, edge_vertex_key_set
 from app.document.models import Part, SubShapeRef, SubShapeType
 
@@ -99,13 +100,14 @@ def _no_matching_edges(body_id: str, selector: EdgeSelectorKind) -> HTTPExceptio
 def _face_outward_normal(face) -> tuple[float, float, float] | None:
     """The face's real outward unit normal, or None if it isn't planar (a
     curved face has no single normal - not a candidate for any of v1's
-    face-position selectors)."""
+    face-position selectors). Its sign comes from `face_normal`, not from the
+    face's orientation flag alone (see that module)."""
     surface = BRepAdaptor_Surface(face, True)
     if surface.GetType() != GeomAbs_Plane:
         return None
     axis = surface.Plane().Axis().Direction()
     normal = (axis.X(), axis.Y(), axis.Z())
-    if face.Orientation() == TopAbs_REVERSED:
+    if plane_axis_points_inward(face):
         normal = (-normal[0], -normal[1], -normal[2])
     return normal
 

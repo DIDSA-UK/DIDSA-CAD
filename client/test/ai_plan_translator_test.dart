@@ -2257,4 +2257,59 @@ void main() {
   test('sanity: math.radians(90) does not equal 90 (confirms the degrees test above is a real regression guard)', () {
     expect(math.pi / 2, isNot(closeTo(90.0, 0.01)));
   });
+
+  test('a mate whose second reference is the grounded component solves the other side instead', () async {
+    final calls = <String>[];
+    final mock = MockClient((request) async {
+      if (request.url.path == '/document/parts/part-1/ai-plan/validate') {
+        return jsonResponse({
+          'results': [
+            {'local_id': 'm1', 'ok': true, 'warnings': [], 'error': null},
+          ],
+        });
+      }
+      calls.add('${request.method} ${request.url.path}');
+      if (request.method == 'POST' && request.url.path == '/document/parts/part-1/mates') {
+        return http.Response(
+          jsonEncode({'id': 'mate-1', 'type': 'concentric', 'references': [], 'value': null, 'flipped': false}),
+          201,
+        );
+      }
+      if (request.url.path == '/document/parts/part-1/occurrences/occ-block/solve') {
+        return http.Response(jsonEncode({'detail': {'type': 'occurrence_is_fixed', 'occurrence_id': 'occ-block'}}), 422);
+      }
+      if (request.url.path == '/document/parts/part-1/occurrences/occ-pin/solve') {
+        return jsonResponse({
+          'id': 'occ-pin',
+          'transform': {'translation': [0.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+        });
+      }
+      return http.Response('not found', 404);
+    });
+    final plan = AiGenerationPlan.fromJson({
+      'version': 1,
+      'steps': [
+        {
+          'local_id': 'm1',
+          'kind': 'mate',
+          'type': 'concentric',
+          'references': [
+            {'occurrence_id': 'existing:occ-pin', 'face_selector': {'cylinder_radius': 5}},
+            {'occurrence_id': 'existing:occ-block', 'face_selector': {'cylinder_radius': 5}},
+          ],
+        },
+      ],
+    });
+    final result = await PlanTranslator(
+      documentApi: DocumentApiClient(httpClient: mock),
+      sketchApi: SketchApiClient(httpClient: mock),
+    ).execute(plan: plan, partId: 'part-1');
+
+    expect(result.outcome, PlanTranslationOutcome.success, reason: result.errorMessage);
+    expect(calls, [
+      'POST /document/parts/part-1/mates',
+      'POST /document/parts/part-1/occurrences/occ-block/solve',
+      'POST /document/parts/part-1/occurrences/occ-pin/solve',
+    ]);
+  });
 }
