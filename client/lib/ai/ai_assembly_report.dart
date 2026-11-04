@@ -176,3 +176,12 @@ String formatCompletenessReport(AssemblyCompletenessReport report, {int maxRows 
 String formatFreeComponentsForPrompt(Iterable<ComponentCompleteness> rows) => [
       for (final r in rows) 'existing:${r.occurrenceId} - ${r.name}: ${describeComponentCompleteness(r)}',
     ].join('\n');
+
+/// Like [formatFreeComponentsForPrompt] for an external chat, which knows the components by the `add_component`
+/// `local_id`s it chose, not by occurrence ids: [localIdByOccurrenceId] maps each real id back to its local id (a
+/// component with none is listed by its name only).
+String formatFreeComponentsByLocalId(Iterable<ComponentCompleteness> rows, Map<String, String> localIdByOccurrenceId) => [
+      for (final r in rows)
+        '- ${localIdByOccurrenceId[r.occurrenceId] == null ? '' : '`${localIdByOccurrenceId[r.occurrenceId]}` '}'
+            '(${r.name}): ${describeComponentCompleteness(r)}',
+    ].join('\n');

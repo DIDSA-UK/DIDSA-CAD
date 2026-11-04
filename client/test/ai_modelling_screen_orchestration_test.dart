@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:archive/archive.dart' show Archive, ArchiveFile, ZipEncoder;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -243,6 +244,7 @@ void main() {
   mateTurnTests();
   importedMatesTests();
   completenessTests();
+  matesRepairTests();
 
   testWidgets('a part_manifest reply shows the confirm panel with one editable row per part', (tester) async {
     final provider = _FakeAiProvider((_, __) async => const AiTurnResult(assistantText: _manifestText));
@@ -1075,8 +1077,13 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
   WidgetTester tester,
   Uint8List zip, {
   bool failMateValidation = false,
+  int failMateValidations = 0,
   Map<String, dynamic> Function(List<String> occurrenceIds)? statusFor,
+  Future<String?> Function()? pickMatesText,
+  Future<AiTurnResult> Function(List<AiChatMessage> transcript, String? systemPrompt)? providerHandler,
+  bool saveAssembly = false,
 }) async {
+  var mateValidationsFailed = 0;
   SharedPreferences.setMockInitialValues({});
   final base = _fullOrchestrationHandler();
   final requests = <String>[];
@@ -1089,7 +1096,8 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
       final body = jsonDecode(request.body) as Map<String, dynamic>;
       validateBodies.add(body);
       final steps = (body['steps'] as List).cast<Map<String, dynamic>>();
-      if (failMateValidation && steps.any((step) => step['kind'] == 'mate')) {
+      final isMates = steps.any((step) => step['kind'] == 'mate');
+      if (isMates && (failMateValidation || mateValidationsFailed++ < failMateValidations)) {
         return http.Response(
           jsonEncode({
             'results': [
@@ -1132,7 +1140,9 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
     return base(request);
   }
 
-  final provider = _FakeAiProvider((_, __) async => fail('an imported zip must not ask the in-app provider anything'));
+  final provider = _FakeAiProvider(
+    providerHandler ?? (_, __) async => fail('an imported zip must not ask the in-app provider anything'),
+  );
   await tester.pumpWidget(MaterialApp(
     home: AiModellingScreen(
       provider: provider,
@@ -1141,6 +1151,7 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
       storageService: _FakeStorageService(),
       projectRoot: const DesktopProjectRoot('/tmp/project'),
       pickImportZip: () async => zip,
+      pickMatesText: pickMatesText,
     ),
   ));
   await tester.pumpAndSettle();
@@ -1151,6 +1162,10 @@ Future<({List<Map<String, dynamic>> validateBodies, List<String> requests, List<
   await tester.tap(find.byKey(const Key('aiModellingManifestConfirm')));
   await tester.pumpAndSettle();
   for (var i = 0; i < 2; i++) {
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+  }
+  if (saveAssembly) {
     await tester.tap(find.widgetWithText(FilledButton, 'Save'));
     await tester.pumpAndSettle();
   }
@@ -1433,5 +1448,155 @@ void completenessTests() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('aiModellingCompletenessReport')), findsOneWidget);
     expect(find.textContaining('free to spin about y (through (3, 0, 0)) (meant to move: "swivels")'), findsOneWidget);
+  });
+}
+
+const _fixedMatesJson = '''
+{"version": 1, "steps": [
+  {"local_id": "m1", "kind": "mate", "type": "coincident", "references": [
+    {"occurrence_id": "plate", "face_selector": {"direction": "+z"}},
+    {"occurrence_id": "tube", "face_selector": {"direction": "-z"}}
+  ]}
+], "intended_motion": [{"component": "tube", "motion": "swivels"}]}''';
+
+void matesRepairTests() {
+  testWidgets('an imported zip whose mates failed offers the fix package and the import; the package names the zip\'s ids',
+      (tester) async {
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    await _runImportedZip(tester, _importZip(mates: [_importedMate]), failMateValidation: true, saveAssembly: true);
+
+    expect(find.byKey(const Key('aiModellingFixMatesExternal')), findsOneWidget);
+    expect(find.byKey(const Key('aiModellingImportMates')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('aiModellingFixMatesExternal')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy text'));
+    await tester.pumpAndSettle();
+
+    expect(copied, isNotNull);
+    expect(copied, contains('NONE of them were built'));
+    expect(copied, contains('no such face'));
+    expect(copied, contains('- `plate`: Mounting Plate (PLATE_001.didsa)'));
+    expect(copied, contains('- `tube`: Support Tube (TUBE_001.didsa)'));
+    expect(copied, contains('mates.json'));
+  });
+
+  testWidgets('"Import mates" rewrites the zip\'s local ids, builds the mates, checks again and saves over the same file',
+      (tester) async {
+    final run = await _runImportedZip(
+      tester,
+      _importZip(mates: [_importedMate]),
+      failMateValidations: 1, // the zip's own mates fail once, the reply's do not
+      pickMatesText: () async => _fixedMatesJson,
+      statusFor: (ids) => {for (final id in ids) id: {'status': 'fully_constrained', 'dof': 0, 'free_motions': []}},
+      saveAssembly: true,
+    );
+    expect(run.requests, isNot(contains('POST /document/parts/part-3/mates')));
+
+    await tester.tap(find.byKey(const Key('aiModellingImportMates')));
+    await tester.pumpAndSettle();
+
+    // The reply was validated with the real occurrence ids, not "plate" / "tube".
+    final mateBody = run.validateBodies.last;
+    final refIds = [for (final r in ((mateBody['steps'] as List).single as Map)['references'] as List) (r as Map)['occurrence_id'] as String];
+    expect(refIds, everyElement(startsWith('existing:')));
+    expect(run.requests, contains('POST /document/parts/part-3/mates'));
+    // The assembly's save dialog comes up pre-filled with the file it already has, and saving it shows the result.
+    expect(find.text('Save assembly as…'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Imported 1 mate added.'), findsOneWidget);
+    expect(find.textContaining('meant to move: "swivels"'), findsNothing); // fully constrained: nothing free to annotate
+    // Repaired: nothing left to fix.
+    expect(find.byKey(const Key('aiModellingFixMatesExternal')), findsNothing);
+  });
+
+  testWidgets('"Import mates" refuses a file that is not mate steps only, and builds nothing', (tester) async {
+    final run = await _runImportedZip(
+      tester,
+      _importZip(mates: [_importedMate]),
+      failMateValidation: true,
+      pickMatesText: () async =>
+          '{"version": 1, "steps": [{"local_id": "a", "kind": "add_component", "relative_path": "PLATE_001.didsa"}]}',
+      saveAssembly: true,
+    );
+    await tester.tap(find.byKey(const Key('aiModellingImportMates')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('mate steps only'), findsOneWidget);
+    expect(run.requests, isNot(contains('POST /document/parts/part-3/mates')));
+  });
+
+  testWidgets('a zip with free components after its mates offers the fix package listing them by local id',
+      (tester) async {
+    String? copied;
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+      if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String;
+      return null;
+    });
+    addTearDown(() => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, null));
+    await _runImportedZip(
+      tester,
+      _importZip(mates: [_importedMate]),
+      saveAssembly: true,
+      statusFor: (ids) => {
+        for (final entry in ids.asMap().entries)
+          entry.value: entry.key == 0
+              ? {'status': 'fixed', 'dof': 0, 'free_motions': []}
+              : {
+                  'status': 'under_constrained',
+                  'dof': 1,
+                  'free_motions': [
+                    {'kind': 'slide', 'direction': [1.0, 0.0, 0.0]},
+                  ],
+                },
+      },
+    );
+    await tester.tap(find.byKey(const Key('aiModellingFixMatesExternal')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Copy text'));
+    await tester.pumpAndSettle();
+
+    expect(copied, contains('The mates are built and stay'));
+    expect(copied, contains('`tube` (TUBE_001.didsa): free to slide along x'));
+    expect(copied, contains('ONLY the mates that are missing'));
+    // Built and fully held: no repair is offered at all.
+  });
+
+  testWidgets('a zip with no mates also offers the in-app AI, which gets the part plans and builds the mates',
+      (tester) async {
+    final sent = <List<AiChatMessage>>[];
+    final run = await _runImportedZip(
+      tester,
+      _importZip(mates: const []),
+      saveAssembly: true,
+      statusFor: (ids) => {for (final id in ids) id: {'status': 'fully_constrained', 'dof': 0, 'free_motions': []}},
+      providerHandler: (transcript, _) async {
+        sent.add(List.of(transcript));
+        final ids = RegExp(r'existing:([0-9a-f-]{36})').allMatches(transcript.last.text).map((m) => m.group(1)!).toList();
+        return AiTurnResult(
+          assistantText: '```json\n{"version": 1, "steps": [{"local_id": "m1", "kind": "mate", "type": "coincident", '
+              '"references": [{"occurrence_id": "existing:${ids[0]}", "face_selector": {"direction": "+z"}}, '
+              '{"occurrence_id": "existing:${ids[1]}", "face_selector": {"direction": "-z"}}]}]}\n```',
+        );
+      },
+    );
+    expect(find.byKey(const Key('aiModellingAddMatesInApp')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('aiModellingAddMatesInApp')));
+    await tester.pumpAndSettle();
+
+    expect(sent, hasLength(1));
+    final texts = sent.single.map((m) => m.text).toList();
+    expect(texts.any((t) => t.contains('imported from a zip') && t.contains('"kind":"sketch"')), isTrue,
+        reason: 'the model is given the part plans, since it did not write them');
+    expect(texts.last, contains('Placed Components:'));
+    expect(run.requests, contains('POST /document/parts/part-3/mates'));
+    expect(find.text('Save assembly as…'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('1 mate added.'), findsOneWidget);
   });
 }

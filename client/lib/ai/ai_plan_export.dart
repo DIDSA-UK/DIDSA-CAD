@@ -1,4 +1,5 @@
 import 'ai_provider.dart';
+import 'ai_scoping_prompt.dart' show assemblyModeExternalMatesGuidance;
 
 /// External-LLM hand-off (the "Share" bolt-on): packages everything a web
 /// LLM client (Claude.ai, ChatGPT, Gemini, etc.) needs to pick up an AI
@@ -126,3 +127,115 @@ confirm, then builds and saves each one, the assembly and its mates.
 Everything below this line is the same schema/instructions DIDSA-CAD's own
 in-app assistant is given - follow it exactly so every plan you produce is
 valid.''';
+
+/// One component of an imported assembly, as the mates-fix package names it: the zip's own `add_component` `local_id`
+/// (what `mates.json` must use), the part it is and the file it was saved from.
+class ExternalMatesComponent {
+  final String localId;
+  final String partName;
+  final String relativePath;
+
+  const ExternalMatesComponent({required this.localId, required this.partName, required this.relativePath});
+}
+
+/// Why the app is asking for mates again (`16-assembly-mates-gaps-plan.md`, Phase 3).
+enum ExternalMatesFixReason {
+  /// The zip had no mate steps at all.
+  noMates,
+
+  /// The mates failed validation: none were built.
+  failedValidation,
+
+  /// Some mates were built, then one failed.
+  partlyBuilt,
+
+  /// The mates are built but components can still move.
+  componentsFree,
+}
+
+/// The short "fix the mates" package for an assembly that was imported from an external AI's zip. It is pasted into the
+/// same chat (or a new one) and answered with `mates.json`: a plan of `mate` steps only, by the zip's own `local_id`s,
+/// which "Import mates" reads back (`AiModellingScreen._importMates`). It does not repeat the whole system prompt, only
+/// the mates rules ([assemblyModeExternalMatesGuidance]) and the facts of this assembly: the components, why the
+/// app is asking, and what already holds (so the reply adds, and does not repeat).
+///
+/// [problems] is the validation failure text or the mate-check report, whichever [reason] is about.
+String buildExternalMatesFixPackage({
+  required List<ExternalMatesComponent> components,
+  required ExternalMatesFixReason reason,
+  String problems = '',
+}) {
+  final buffer = StringBuffer()
+    ..writeln('# DIDSA-CAD: mates for an imported assembly')
+    ..writeln()
+    ..writeln('You (or another chat) wrote the zip for a multi-part assembly: part plans and `99_assembly.json`.')
+    ..writeln('DIDSA-CAD imported it, built every part and placed every component. This message is about the mates.')
+    ..writeln('Use the part plans you wrote in that chat; if you do not have them, ask the user to paste the')
+    ..writeln('zip\'s JSON files first, because every face has to be named from its part plan.')
+    ..writeln()
+    ..writeln('## The components')
+    ..writeln()
+    ..writeln('Name a component in "occurrence_id" by its local_id:');
+  for (final c in components) {
+    buffer.writeln('- `${c.localId}`: ${c.partName} (${c.relativePath})');
+  }
+  buffer
+    ..writeln()
+    ..writeln('## What the app found')
+    ..writeln();
+  switch (reason) {
+    case ExternalMatesFixReason.noMates:
+      buffer
+        ..writeln('The assembly had no mate steps, so nothing holds the components where they were placed.')
+        ..writeln('Reply with ALL the mates the assembly needs.');
+    case ExternalMatesFixReason.failedValidation:
+      buffer
+        ..writeln('The mates did not validate, so NONE of them were built. Reply with ALL the mates, corrected:')
+        ..writeln()
+        ..writeln(problems);
+    case ExternalMatesFixReason.partlyBuilt:
+      buffer
+        ..writeln('Some mates were built, then the app stopped at one that failed:')
+        ..writeln()
+        ..writeln(problems)
+        ..writeln()
+        ..writeln('The mates before it are built and stay. Reply with the failed mate, corrected, and every mate')
+        ..writeln('after it; do not repeat the earlier ones.');
+    case ExternalMatesFixReason.componentsFree:
+      buffer
+        ..writeln('The mates are built and stay. Checking them, these components can still move (slides and spins')
+        ..writeln('are along and about that component\'s own part axes):')
+        ..writeln()
+        ..writeln(problems)
+        ..writeln()
+        ..writeln('Reply with ONLY the mates that are missing, so each one is held where it is; do not repeat the')
+        ..writeln('mates that already hold. A component that is meant to move stays free: leave it out of the mates')
+        ..writeln('and name it in intended_motion (below).');
+  }
+  buffer
+    ..writeln()
+    ..writeln('## How to write them')
+    ..writeln()
+    ..writeln(assemblyModeExternalMatesGuidance)
+    ..writeln()
+    ..writeln('A mate step looks like this (type is one of coincident, concentric, parallel, distance, angle; a')
+    ..writeln('distance or angle mate also has "value", in mm or degrees):')
+    ..writeln()
+    ..writeln('```json')
+    ..writeln('{"version": 1, "steps": [')
+    ..writeln('  {"local_id": "m1", "kind": "mate", "type": "coincident", "references": [')
+    ..writeln('    {"occurrence_id": "plate", "face_selector": {"direction": "+z"}},')
+    ..writeln('    {"occurrence_id": "pin", "face_selector": {"direction": "-z", "near": [0, 0, 10]}}')
+    ..writeln('  ]}')
+    ..writeln('], "intended_motion": [{"component": "wheel", "motion": "spins about its axle"}]}')
+    ..writeln('```')
+    ..writeln()
+    ..writeln('## Your reply')
+    ..writeln()
+    ..writeln('Reply with ONE file named `mates.json` (or, if your chat cannot create files, one fenced ```json')
+    ..writeln('block) holding only that plan: mate steps only, no add_component or move_component, local_ids as')
+    ..writeln('above, and `intended_motion` if any component is meant to move. In DIDSA-CAD, in the AI Modelling')
+    ..writeln('screen where the assembly was built, press "Import mates" and pick the file. It only works in the')
+    ..writeln('same session as the import.');
+  return buffer.toString();
+}

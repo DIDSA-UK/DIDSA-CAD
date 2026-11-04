@@ -138,4 +138,65 @@ void main() {
     final rewritten = rewriteMateOccurrenceIds(split.mates, {'block': 'occ-b', 'pin': 'occ-p'});
     expect((rewritten.steps.last as AiMateStep).references.map((r) => r.occurrenceId), ['existing:occ-b', 'existing:occ-p']);
   });
+
+  group('buildExternalMatesFixPackage', () {
+    const components = [
+      ExternalMatesComponent(localId: 'plate', partName: 'Mounting Plate', relativePath: 'PLATE_001.didsa'),
+      ExternalMatesComponent(localId: 'pin', partName: 'Pin', relativePath: 'PIN_001.didsa'),
+    ];
+
+    test('every reason names the components by the zip\'s local ids and asks for mates.json', () {
+      for (final reason in ExternalMatesFixReason.values) {
+        final text = buildExternalMatesFixPackage(components: components, reason: reason, problems: 'PROBLEM TEXT');
+        expect(text, contains('- `plate`: Mounting Plate (PLATE_001.didsa)'), reason: '$reason');
+        expect(text, contains('- `pin`: Pin (PIN_001.didsa)'), reason: '$reason');
+        expect(text, contains('`mates.json`'), reason: '$reason');
+        expect(text, contains('Import mates'), reason: '$reason');
+        expect(text, contains('face_selector'), reason: '$reason'); // the mates rules travel with it
+        expect(text, contains('intended_motion'), reason: '$reason');
+        // The whole system prompt does not: the fix chat already has it.
+        expect(text, isNot(contains('## Final reply format')), reason: '$reason');
+      }
+    });
+
+    test('no mates: asks for all of them', () {
+      final text = buildExternalMatesFixPackage(components: components, reason: ExternalMatesFixReason.noMates);
+      expect(text, contains('no mate steps'));
+      expect(text, contains('ALL the mates'));
+    });
+
+    test('failed validation: none were built, so all of them are asked for again, with the failure text', () {
+      final text = buildExternalMatesFixPackage(
+        components: components,
+        reason: ExternalMatesFixReason.failedValidation,
+        problems: '- step "m1" (mate): no such face',
+      );
+      expect(text, contains('NONE of them were built'));
+      expect(text, contains('Reply with ALL the mates, corrected'));
+      expect(text, contains('- step "m1" (mate): no such face'));
+    });
+
+    test('partly built: the built ones stay and are not to be repeated', () {
+      final text = buildExternalMatesFixPackage(
+        components: components,
+        reason: ExternalMatesFixReason.partlyBuilt,
+        problems: 'mate m3 failed',
+      );
+      expect(text, contains('built and stay'));
+      expect(text, contains('do not repeat the earlier ones'));
+      expect(text, contains('mate m3 failed'));
+    });
+
+    test('components free: only the missing mates, with the free motions listed', () {
+      final text = buildExternalMatesFixPackage(
+        components: components,
+        reason: ExternalMatesFixReason.componentsFree,
+        problems: '- `pin` (Pin): free to slide along z',
+      );
+      expect(text, contains('The mates are built and stay'));
+      expect(text, contains('ONLY the mates that are missing'));
+      expect(text, contains('do not repeat the\nmates that already hold'));
+      expect(text, contains('- `pin` (Pin): free to slide along z'));
+    });
+  });
 }

@@ -1,7 +1,7 @@
 # Workstream 16: Assembly mates gaps (plan)
 
 Written 2026-11-04 from the open items at the end of `tools/ai_eval/README.md` ("Where this leaves the evaluation").
-Implementation status is in "What was built" at the end of this file (Phases 1 and 2 built; the rest as marked there).
+Implementation status is in "What was built" at the end of this file (Phases 1-3 built; Phase 4 as marked there).
 Written to be implemented by a new session; read this file, `13-multi-part-assembly-overhaul.md` ("Mates turn and
 stated assumptions") and `15-external-ai-zip-import-findings.md` first.
 
@@ -302,3 +302,41 @@ Client (`ai_assembly_report.dart`, `ai_modelling_screen.dart`, `ai_scoping_promp
 
 Not verified: the free-motion description on a real AI-built assembly (the backend tests use hand-built scenes); how a
 model reacts to the follow-up request (no model was run, see Phase 4).
+
+### Phase 3: "Fix mates with external AI", "Import mates" (built)
+
+Client only. In the progress panel of an assembly that was imported from a zip, once it is saved and while this screen
+still holds the import, up to three buttons appear when the mates need another go (none in the zip; failed
+validation; stopped part-way; or built but components free and not declared intended):
+- **Fix mates with external AI** (`_shareMatesFix`): the same copy / share sheet as the hand-off (`_offerPackage`, now
+  shared), with `buildExternalMatesFixPackage` (`ai_plan_export.dart`): the components by the zip's `local_id`s with
+  part name and file (`AiPlanBundle.assemblyComponents`), why the app is asking (`ExternalMatesFixReason`), the mates
+  rules (`assemblyModeExternalMatesGuidance`, split out of the external prompt paragraph, not the whole system prompt),
+  a sample mate step, and the reply format: one `mates.json`, mate steps only, plus `intended_motion`. It says plainly
+  what already holds so the reply adds and does not repeat: after a failed validation **none** were built (so it asks
+  for all of them); when some were built and one failed, the earlier ones stay; when only components are free, send
+  only the missing ones. The free components are listed by local id (`formatFreeComponentsByLocalId`).
+- **Import mates** (`_importMates`): reads the file (bare JSON, or fenced in prose as `detectPlanInAssistantText`
+  reads), refuses anything but mate steps, rewrites the `local_id`s through the map kept from Phase 1
+  (`_importedLocalIdToRealId`), builds them with `_executeMatesPlan`, re-runs the Phase 2 check, and saves over the
+  same assembly file (the save dialog pre-filled with its path, the existing overwrite gate). It **adds** to the built
+  mates; it never replaces them. A reply that fails validation builds nothing and says why.
+- **Add mates with the in-app AI** (`_addMatesWithInAppAi`), only when a provider is configured and the zip's mates
+  are missing or failed: runs the existing `_runMateTurn`, then the check with its one follow-up, then the save.
+  **Changed from the plan:** it first adds a transcript message holding the part plans from the zip, because the
+  in-app model never wrote them and a mate names faces by the part's own geometry; without that it would be naming
+  faces blind. Whether that is enough for a model to write good mates is untested.
+- Same session only, as planned: the `local_id` map lives in the screen state, so reopening the assembly later (or the
+  screen being dismissed) loses the buttons. Rebuilding it from each occurrence's `name_override` / `external_ref` is
+  still open.
+- If the user cancels the save dialog after an import of mates, the screen shows its usual "Save cancelled" error; the
+  Retry that follows proposes a fresh name rather than the existing file's path (the save-only retry reads the
+  "insert into existing assembly" target, which an imported zip has not set). Not fixed.
+- Test hooks: `AiModellingScreen(pickMatesText: ...)`, with `pickImportZip` from Phase 1.
+- Tests: `ai_plan_export_test.dart` (the package text for each reason); `ai_modelling_screen_orchestration_test.dart`
+  (failed mates offer the package, which names the zip's ids; import rewrites ids, builds, re-checks and saves over
+  the same file; a file with a non-mate step is refused; free components give the "only the missing mates" package;
+  no mates also offers the in-app AI, which is given the part plans and builds its mates).
+
+Not verified: with a real external chat. The package is text; whether a real model answers it with a usable
+`mates.json`, and in which of the chat apps' file formats, is exactly what the owner's checklist (Phase 4) is for.

@@ -954,7 +954,7 @@ const String assemblyModeVocabularyText = '$_assemblyModeIntro\n\n$_assemblyMode
 /// its `add_component` step; the app places the components, then rewrites those local ids to the real ones and
 /// checks the mates (`ai_plan_split.dart`). Same face_selector rules as the in-app text, one source of truth for
 /// both would be better, but the in-app text is pinned by the 2026-11-04 evaluation and is left as it was.
-const String _assemblyModeExternalAssembly = '''
+const String _assemblyModeExternalPlanOrder = '''
 The assembly plan is the last file, 99_assembly.json (the app saves every part to its own file first; see the
 instructions at the top of this message). It is an ordinary plan, in this order:
 
@@ -964,9 +964,11 @@ instructions at the top of this message). It is an ordinary plan, in this order:
 2. A move_component step for every component but the first, putting it where the drawing has it. The first
    component is never moved: it is the assembly's reference frame and is held fixed.
 3. At the END of the plan, after every add_component and move_component, the mate steps, which hold the components
-   where you placed them.
+   where you placed them.''';
 
-The app places the components first and only then checks the mates against the placed geometry. So in this plan - in
+/// How to write the mates of an external-hand-off assembly plan: the part of [assemblyModeExternalVocabularyText] that
+/// the repair package (`buildExternalMatesFixPackage`) repeats, so a fix chat gets the same rules without the whole prompt.
+const String assemblyModeExternalMatesGuidance = '''The app places the components first and only then checks the mates against the placed geometry. So in this plan - in
 place of the rule under "Assembly editing" that "existing:<id>" is the only way to name a placed component in a
 mate, and that face_selector needs it - a mate's "occurrence_id" is the local_id of an add_component step (bare, no
 "existing:" prefix), and a reference may use face_selector on it. Use no other way of naming a face: no
@@ -990,6 +992,8 @@ part that is meant to move (a wheel on its axle, a swivel) keeps that freedom: d
 top-level "intended_motion" of this same plan (next to "version" and "steps"), one entry per such component:
 {"component": "<its add_component local_id>", "motion": "spins about its axle"}. The app reports each component as
 held or free after it builds the mates, and shows your intended_motion next to what it finds free.''';
+
+const String _assemblyModeExternalAssembly = '$_assemblyModeExternalPlanOrder\n\n$assemblyModeExternalMatesGuidance';
 
 /// [assemblyModeVocabularyText] for the external hand-off: the same intro, then [_assemblyModeExternalAssembly].
 const String assemblyModeExternalVocabularyText = '$_assemblyModeIntro\n\n$_assemblyModeExternalAssembly';
