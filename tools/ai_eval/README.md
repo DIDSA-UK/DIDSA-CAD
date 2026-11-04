@@ -209,7 +209,7 @@ Bodies, so its mates needed `body_id`s (the dry run named them); the run was sto
 run per sketch and model, so the 2026-11-04 tables are one run each - read them as direction, not rates; the
 external-AI hand-off (now asking for the zip) has not been tried with a real external chat. Open in the app: an
 imported zip gets no mates turn; nothing yet measures whether the mates fully constrain a part (the dovetails'
-seat mate leaves the plate free to slide) - `face_selector.normal` arrived after those runs.
+seat mate leaves the plate free to slide) - `face_selector.normal` arrived after those runs. The plan to close these: `docs/ai-modelling/16-assembly-mates-gaps-plan.md`.
 
 ### Render-back check, 2026-10-29
 
