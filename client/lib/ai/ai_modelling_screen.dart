@@ -2633,6 +2633,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Everything except the action buttons scrolls together, so a long
+          // assumptions list can't push the part list/buttons off-screen.
+          Expanded(
+            child: ListView(
+              children: [
           Text('Found ${manifest.parts.length} part(s)', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 4),
           const Text(
@@ -2681,43 +2686,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             ),
             const SizedBox(height: 12),
           ],
-          Expanded(
-            child: ListView.separated(
-              itemCount: manifest.parts.length,
-              separatorBuilder: (_, __) => const Divider(),
-              itemBuilder: (context, index) {
-                final entry = manifest.parts[index];
-                return Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextFormField(
-                              key: Key('aiModellingManifestName_$index'),
-                              controller: _manifestNameControllers[index],
-                              decoration: const InputDecoration(labelText: 'Name'),
-                            ),
-                          ),
-                          const SizedBox(width: 12),
-                          SizedBox(
-                            width: 130,
-                            child: TextFormField(
-                              key: Key('aiModellingManifestPrefix_$index'),
-                              controller: _manifestPrefixControllers[index],
-                              decoration: const InputDecoration(labelText: 'Type prefix'),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(entry.summary, style: const TextStyle(color: Colors.white54, fontSize: 12)),
-                    ],
-                  ),
-                );
-              },
+          for (var index = 0; index < manifest.parts.length; index++) ...[
+            if (index > 0) const Divider(),
+            _buildManifestPartRow(manifest.parts[index], index),
+          ],
+              ],
             ),
           ),
           const SizedBox(height: 12),
@@ -2747,6 +2720,39 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildManifestPartRow(AiPartManifestEntry entry, int index) {
+    return Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              key: Key('aiModellingManifestName_$index'),
+                              controller: _manifestNameControllers[index],
+                              decoration: const InputDecoration(labelText: 'Name'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          SizedBox(
+                            width: 130,
+                            child: TextFormField(
+                              key: Key('aiModellingManifestPrefix_$index'),
+                              controller: _manifestPrefixControllers[index],
+                              decoration: const InputDecoration(labelText: 'Type prefix'),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(entry.summary, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                    ],
+                  ),
+                );
   }
 
   /// Multi-part/assembly overhaul, Phases D+E: the per-part progress list
