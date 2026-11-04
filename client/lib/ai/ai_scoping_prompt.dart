@@ -982,6 +982,10 @@ cylindrical face (a bore, a pin). Of several matches a planar selector takes the
 "near": [x, y, z] (that part's coordinates) to pick the one nearest a point instead (a pin's shoulder from its tip,
 one of several equal holes). Leave out "body_id".
 
+A component that is a sub-assembly has no faces of its own: to mate to one of its parts, write the path of
+local_ids, "<the sub-assembly's add_component local_id>/<the part's local_id in the sub-assembly's own plan>"
+(e.g. "castor/wheel"), as the occurrence_id, with face_selector in that part's own coordinates.
+
 The mates must agree with where you placed the components: they hold them there and must not move them. Which way
 two faces meet (facing each other, or flush and facing the same way) is taken from where the parts already are, so
 leave "flipped" out. Write enough mates that each part is held where it is, unless it is meant to move: one mate

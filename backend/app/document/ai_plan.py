@@ -515,6 +515,34 @@ class _PlanValidator:
             )
         raise _StepError({"type": "occurrence_requires_existing_prefix", "field": field, "local_id": local_id})
 
+    def _lookup_mate_occurrence(self, reference: str, field: str) -> tuple[str, Occurrence]:
+        """A mate reference's occurrence: what `_lookup_occurrence` accepts, or a component nested inside a placed
+        sub-assembly, `existing:<top id>/<inner id>/...` - the same `/`-joined path a real Mate stores
+        (`router._check_mate_occurrence_path`), with the `existing:` prefix once, on the whole path. Returns the path
+        the Mate is stored with (real ids, no prefix) and the innermost Occurrence, whose target Part a face_selector
+        or edge_selector resolves against. Each inner segment is looked up in the Part the previous one resolves to,
+        so the session's Document must hold it; a bare plan-local id cannot start a path (its scratch Occurrence has
+        no target Part yet)."""
+        if "/" not in reference:
+            occurrence = self._lookup_occurrence(reference, field)
+            return occurrence.id, occurrence
+        if not reference.startswith(_EXISTING_ID_PREFIX):
+            raise _StepError(
+                {
+                    "type": "invalid_step_payload",
+                    "message": f"{field}: a path into a sub-assembly must start with existing: ({reference})",
+                }
+            )
+        segments = reference[len(_EXISTING_ID_PREFIX) :].split("/")
+        occurrence = self._lookup_occurrence(_EXISTING_ID_PREFIX + segments[0], field)
+        for segment in segments[1:]:
+            parent = self.document.parts.get(occurrence.part_id) if self.document and occurrence.part_id else None
+            inner = next((o for o in parent.occurrences if o.id == segment), None) if parent else None
+            if inner is None:
+                raise _StepError({"type": "unknown_existing_id", "field": field, "local_id": reference})
+            occurrence = inner
+        return "/".join(segments), occurrence
+
     def _resolve_occurrence_target_part(self, occurrence: Occurrence, field: str) -> Part:
         """Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-
         multi-part-assembly-overhaul.md): resolves a placed Occurrence's
@@ -1175,8 +1203,7 @@ def _mate_entity_ref_from_step(
     occurrence_id = ""
     occurrence: Occurrence | None = None
     if ref.occurrence_id != "":
-        occurrence = v._lookup_occurrence(ref.occurrence_id, f"{field}.occurrence_id")
-        occurrence_id = occurrence.id
+        occurrence_id, occurrence = v._lookup_mate_occurrence(ref.occurrence_id, f"{field}.occurrence_id")
 
     subshape_ref = ref.subshape_ref
     resolved_subshape_ref: SubShapeRefSchema | None = None
@@ -1215,7 +1242,7 @@ def _midplane_from_step(v: _PlanValidator, midplane: MidplaneRefStep, field: str
 
     b_occurrence_id = None
     if midplane.b_occurrence_id is not None:
-        b_occurrence_id = "" if midplane.b_occurrence_id == "" else v._lookup_occurrence(midplane.b_occurrence_id, f"{field}.b_occurrence_id").id
+        b_occurrence_id = "" if midplane.b_occurrence_id == "" else v._lookup_mate_occurrence(midplane.b_occurrence_id, f"{field}.b_occurrence_id")[0]
     return MidplaneRef(a=_plane_ref_to_domain(midplane.a), b=_plane_ref_to_domain(midplane.b), b_occurrence_id=b_occurrence_id)
 
 

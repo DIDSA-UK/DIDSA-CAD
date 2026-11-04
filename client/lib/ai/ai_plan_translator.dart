@@ -46,6 +46,7 @@ import 'package:uuid/uuid.dart';
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException, SketchApiClient;
 import '../assembly/add_component.dart';
+import '../assembly/assembly_graph_composer.dart' show AssemblyGraphComposer, AssemblyGraphCycleException;
 import '../assembly/occurrence_visibility.dart' show topLevelOccurrenceId;
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
@@ -210,6 +211,12 @@ const Set<String> _featureProducingKinds = {
 /// Features/sketch entities. `_run_step`'s own `reserved_local_id_prefix`
 /// check (backend) guarantees a step's own `local_id` never itself starts
 /// with `existing:`, so the two branches below can never be ambiguous.
+/// True when a native file's payload places any components (an assembly), not just a Part's own geometry.
+bool _hasOccurrences(Map<String, dynamic> payload) {
+  final parts = (payload['document'] as Map?)?['parts'];
+  return parts is List && parts.any((p) => p is Map && p['occurrences'] is List && (p['occurrences'] as List).isNotEmpty);
+}
+
 String _resolveOccurrenceId(String occurrenceId, Map<String, String> ids) {
   if (occurrenceId.isEmpty) return '';
   if (occurrenceId.startsWith('existing:')) return occurrenceId.substring('existing:'.length);
@@ -258,11 +265,16 @@ class PlanTranslator {
   final StorageService? storageService;
   final ProjectRoot? projectRoot;
 
+  /// Composes an `add_component` file that is itself an assembly with the files it references. Defaults to one
+  /// over [storageService]; tests pass one with a temp-directory file cache.
+  final AssemblyGraphComposer? composer;
+
   PlanTranslator({
     DocumentApiClient? documentApi,
     SketchApiClient? sketchApi,
     this.storageService,
     this.projectRoot,
+    this.composer,
   })  : documentApi = documentApi ?? DocumentApiClient(),
         sketchApi = sketchApi ?? SketchApiClient();
 
@@ -874,13 +886,13 @@ class PlanTranslator {
             : step.references[0].occurrenceId;
         if (solveTarget.isNotEmpty && !isWidth) {
           try {
-            await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(solveTarget, ids));
+            await documentApi.solveForOccurrence(partId, topLevelOccurrenceId(_resolveOccurrenceId(solveTarget, ids)));
           } on ApiException catch (e) {
             // The second reference is the grounded first component (`occurrence_is_fixed`): a plan may name the
             // mate's two sides in either order, so solve the other side instead (found by the AI-eval mates turn).
             final other = step.references[0].occurrenceId;
             if (!e.message.contains('occurrence_is_fixed') || other.isEmpty || other == solveTarget) rethrow;
-            await documentApi.solveForOccurrence(partId, _resolveOccurrenceId(other, ids));
+            await documentApi.solveForOccurrence(partId, topLevelOccurrenceId(_resolveOccurrenceId(other, ids)));
           }
         }
         return mate.id;
@@ -901,11 +913,23 @@ class PlanTranslator {
         } on StorageException catch (e) {
           throw ApiException('Failed to read component file ${step.relativePath}: ${e.message}');
         }
-        final Map<String, dynamic> componentPayload;
+        Map<String, dynamic> componentPayload;
         try {
           componentPayload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
         } catch (_) {
           throw ApiException('Not a valid native project file: ${step.relativePath}');
+        }
+        // A sub-assembly file holds only its own Part; its components are other files. Compose it with everything it
+        // references (as "Add Component" in the Part screen does), or they would arrive unresolved.
+        if (_hasOccurrences(componentPayload)) {
+          try {
+            componentPayload = (await (composer ?? AssemblyGraphComposer(storageService: storage)).compose(root, step.relativePath))
+                .documentPayload;
+          } on StorageException catch (e) {
+            throw ApiException('Failed to read the components of ${step.relativePath}: ${e.message}');
+          } on AssemblyGraphCycleException catch (e) {
+            throw ApiException('${step.relativePath}: $e');
+          }
         }
         final currentPayload = await documentApi.exportNative();
         final newOccurrenceId = const Uuid().v4();

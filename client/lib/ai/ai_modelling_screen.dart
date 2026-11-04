@@ -214,6 +214,27 @@ class _SavedAssemblyPart {
   const _SavedAssemblyPart({required this.name, required this.relativePath, required this.partId});
 }
 
+/// A sub-assembly an imported zip built and saved before its top-level assembly (`AiPlanBundle.subAssemblyJson`).
+class _SavedSubAssembly {
+  final String name;
+  final String relativePath;
+  final String partId;
+
+  /// What its plan placed, so a mate in the top level (or a later sub-assembly) can name a part inside it.
+  final PlacedComponentIds placed;
+
+  /// How its mates went (`_executeMatesPlan`'s note), shown on its row.
+  final String mateNote;
+
+  const _SavedSubAssembly({
+    required this.name,
+    required this.relativePath,
+    required this.partId,
+    required this.placed,
+    required this.mateNote,
+  });
+}
+
 class _AiModellingScreenState extends State<AiModellingScreen> {
   final TextEditingController _inputController = TextEditingController();
   final TextEditingController _manifestCorrectionsController = TextEditingController();
@@ -309,6 +330,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   bool _orchestrating = false;
   int _currentPartIndex = 0;
   List<_SavedAssemblyPart> _savedAssemblyParts = [];
+  // An imported zip's sub-assemblies, saved so far in manifest order (`_runImportedSubAssemblyCycle`). The assembly
+  // cycle builds them all before the top level.
+  List<_SavedSubAssembly> _savedSubAssemblies = [];
   // Coarse, human-readable progress text for whichever part cycle is
   // currently in flight (e.g. "Requesting plan for 'Mounting Plate'...",
   // "Building step 3 of 7...", "Saving..."). Deliberately coarser than
@@ -383,6 +407,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // be read back; it lives only in this screen, so the repair works in the same session as the import and no
   // longer (rebuilding it for an assembly reopened later is open). Null for an in-app-built assembly.
   Map<String, String>? _importedLocalIdToRealId;
+  // For each top-level component that is one of the zip's sub-assemblies, what that sub-assembly placed: lets a
+  // `mates.json` name a part inside it by path (`wheel_asm/wheel`), as the zip's own mates may.
+  Map<String, PlacedComponentIds> _importedNestedIds = {};
   List<ExternalMatesComponent> _importedComponents = [];
   _ImportedMates _importedMates = _ImportedMates.none;
   String _importedMatesProblems = '';
@@ -1317,12 +1344,14 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           ),
       ],
       assumptions: manifest.assumptions,
+      subAssemblies: manifest.subAssemblies,
     );
     setState(() {
       _partManifest = edited;
       _orchestrating = true;
       _currentPartIndex = 0;
       _savedAssemblyParts = [];
+      _savedSubAssemblies = [];
       _orchestrationError = null;
       _autoRetriedValidation.clear();
     });
@@ -1703,6 +1732,11 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final root = widget.projectRoot;
     final storage = widget.storageService;
     if (root == null || storage == null || _savedAssemblyParts.isEmpty || !mounted) return;
+    final importedSubs = _importedBundle?.subAssemblyJson.length ?? 0;
+    if (_savedSubAssemblies.length < importedSubs) {
+      await _runImportedSubAssemblyCycle(_savedSubAssemblies.length, root: root, storage: storage);
+      return;
+    }
     final retryPartId = _assemblyRetryPartId;
 
     if (retryPartId != null && _orchestrationRetryIsSaveOnly) {
@@ -1802,7 +1836,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       if (bundle != null) {
         // The imported assembly refers to parts by the names the external AI
         // chose; point each reference at the path it was really saved under.
-        detectedPlan = bundle.assemblyPlanFor([for (final part in _savedAssemblyParts) part.relativePath]);
+        detectedPlan = bundle.assemblyPlanFor(
+          [for (final part in _savedAssemblyParts) part.relativePath],
+          savedSubAssemblyPaths: [for (final sub in _savedSubAssemblies) sub.relativePath],
+        );
       } else {
         final result = await provider.sendScopingTurn(_transcript, systemPrompt: systemPrompt);
         final assistantMessage = AiChatMessage(role: AiMessageRole.assistant, text: result.assistantText);
@@ -1905,6 +1942,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             for (final entry in translation.localIdToRealId.entries)
               if (componentIds.contains(entry.key)) entry.key: entry.value,
           },
+          nested: _nestedSubAssemblyIds(placementPlan),
           storage: storage,
           root: root,
         );
@@ -1946,6 +1984,181 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       );
       _stopOrchestrationWithError('Could not save the assembly: ${e.message}');
     }
+  }
+
+  /// For each `add_component` of [plan] that placed one of the sub-assemblies saved this run, what that sub-assembly
+  /// placed (keyed by the step's `local_id`): the [PlacedComponentIds.nested] a mate path through it is rewritten with.
+  Map<String, PlacedComponentIds> _nestedSubAssemblyIds(AiGenerationPlan plan) {
+    final byPath = {for (final sub in _savedSubAssemblies) sub.relativePath: sub.placed};
+    return {
+      for (final step in plan.steps.whereType<AiAddComponentStep>())
+        if (byPath[step.relativePath] != null) step.localId: byPath[step.relativePath]!,
+    };
+  }
+
+  /// One sub-assembly of an imported zip (`AiPlanBundle.subAssemblyJson`), built like the top-level assembly but as a
+  /// step on the way to it: its placements, then its own mates, then saved under its manifest `type_prefix`, then back
+  /// to [_runAssemblyCycle] for the next sub-assembly or the top level. Its plan names parts (and earlier
+  /// sub-assemblies) by `<TYPE_PREFIX>_001.didsa`, repointed at the saved files. A mates failure does not stop the run
+  /// (as for the top level); the note says what happened. Imported plans are fixed, so only a cancelled save retries.
+  Future<void> _runImportedSubAssemblyCycle(int index, {required ProjectRoot root, required StorageService storage}) async {
+    final bundle = _importedBundle!;
+    final entry = bundle.manifest.subAssemblies[index];
+    final retryPartId = _assemblyRetryPartId;
+    if (retryPartId != null && _orchestrationRetryIsSaveOnly) {
+      setState(() => _orchestrationError = null);
+      try {
+        await _saveSubAssemblyAfterExecution(
+          index: index,
+          partId: retryPartId,
+          placed: _pendingSubAssemblyPlaced ?? const PlacedComponentIds({}),
+          mateNote: _pendingSubAssemblyMateNote,
+          root: root,
+          storage: storage,
+        );
+      } on ApiException catch (e) {
+        _stopOrchestrationWithError('Error while saving "${entry.name}": ${e.message}');
+      } on StorageException catch (e) {
+        _stopOrchestrationWithError('Could not save "${entry.name}": ${e.message}');
+      }
+      return;
+    }
+
+    setState(() {
+      _buildingAssembly = true;
+      _orchestrationStatus = 'Using the imported plan for sub-assembly "${entry.name}"...';
+      _orchestrationError = null;
+    });
+    String? partId;
+    try {
+      final plan = bundle.subAssemblyPlanFor(
+        index,
+        [for (final part in _savedAssemblyParts) part.relativePath],
+        savedSubAssemblyPaths: [for (final sub in _savedSubAssemblies) sub.relativePath],
+      );
+      setState(() => _orchestrationStatus = 'Creating sub-assembly "${entry.name}"...');
+      partId = (await _documentApi.createPart(entry.name)).id;
+      final split = splitPlacementAndMates(plan);
+      final placementPlan = split.placement ?? plan;
+      if (!mounted) return;
+      setState(() {
+        _orchestrationStatus = 'Validating and building sub-assembly "${entry.name}"...';
+        _orchestrationStepStatuses = List.filled(placementPlan.steps.length, TranslationStepStatus.pending);
+      });
+      final translation = await PlanTranslator(
+        documentApi: _documentApi,
+        sketchApi: _sketchApi,
+        storageService: storage,
+        projectRoot: root,
+      ).execute(
+        plan: placementPlan,
+        partId: partId,
+        disabledKinds: AiSystemPromptPreferences.disabledKinds,
+        onStepStatusChanged: (stepIndex, status) {
+          if (!mounted) return;
+          setState(() => _orchestrationStepStatuses![stepIndex] = status);
+        },
+      );
+      if (translation.outcome != PlanTranslationOutcome.success) {
+        await _prepareOrchestrationRetry(partId: partId, saveOnly: false, isAssembly: true);
+        if (translation.outcome == PlanTranslationOutcome.validationFailed) {
+          _appendOrchestrationFailureToTranscript(
+            'For sub-assembly "${entry.name}": ${describeAiPlanValidationFailure(placementPlan, translation.preflightResults)}',
+          );
+          _stopOrchestrationWithError('Validation failed for sub-assembly "${entry.name}" - stopping. Every part above is already saved.');
+        } else {
+          _appendStoppedRunToTranscript(placementPlan, translation);
+          _stopOrchestrationWithError(
+            'Execution failed for sub-assembly "${entry.name}": ${translation.errorMessage}. Steps before the failure '
+            'were created but never saved to disk.',
+          );
+        }
+        return;
+      }
+      final componentIds = addComponentLocalIds(placementPlan);
+      final placed = PlacedComponentIds(
+        {
+          for (final e in translation.localIdToRealId.entries)
+            if (componentIds.contains(e.key)) e.key: e.value,
+        },
+        nested: _nestedSubAssemblyIds(placementPlan),
+      );
+      var mateNote = 'No mates in its plan.';
+      if (split.mates.isNotEmpty) {
+        final matesPlan = rewriteMateOccurrenceIds(split.mates, placed.realIdByLocalId, nested: placed.nested);
+        final run = await _executeMatesPlan(assemblyPartId: partId, plan: matesPlan, storage: storage, root: root);
+        if (!mounted) return;
+        mateNote = run.note;
+      }
+      await _saveSubAssemblyAfterExecution(
+        index: index,
+        partId: partId,
+        placed: placed,
+        mateNote: mateNote,
+        root: root,
+        storage: storage,
+      );
+    } on ApiException catch (e) {
+      if (partId != null) await _prepareOrchestrationRetry(partId: partId, saveOnly: false, isAssembly: true);
+      _stopOrchestrationWithError('Error while building sub-assembly "${entry.name}": ${e.message}');
+    } on StorageException catch (e) {
+      if (partId != null) await _prepareOrchestrationRetry(partId: partId, saveOnly: false, isAssembly: true);
+      _stopOrchestrationWithError('Could not save sub-assembly "${entry.name}": ${e.message}');
+    }
+  }
+
+  // A built sub-assembly whose save was cancelled: kept for the save-only retry.
+  PlacedComponentIds? _pendingSubAssemblyPlaced;
+  String _pendingSubAssemblyMateNote = '';
+
+  /// Save prompt and save for sub-assembly [index] (proposed as `<TYPE_PREFIX>_NNN`, like a part), then on to the next
+  /// cycle. A cancel keeps what was built for a save-only retry.
+  Future<void> _saveSubAssemblyAfterExecution({
+    required int index,
+    required String partId,
+    required PlacedComponentIds placed,
+    required String mateNote,
+    required ProjectRoot root,
+    required StorageService storage,
+  }) async {
+    if (!mounted) return;
+    final entry = _importedBundle!.manifest.subAssemblies[index];
+    final proposedName = nextAvailablePartName(await storage.listNativeFiles(root), typePrefix: entry.typePrefix);
+    setState(() => _orchestrationStatus = null);
+    if (!mounted) return;
+    final confirmedPath = await showRelativePathPromptDialog(
+      context,
+      title: 'Save sub-assembly "${entry.name}" as…',
+      initialValue: proposedName,
+      storageService: storage,
+      root: root,
+    );
+    if (confirmedPath == null) {
+      _pendingSubAssemblyPlaced = placed;
+      _pendingSubAssemblyMateNote = mateNote;
+      await _prepareOrchestrationRetry(partId: partId, saveOnly: true, isAssembly: true);
+      _stopOrchestrationWithError(
+        'Save cancelled for sub-assembly "${entry.name}" - stopping. Every part above is already saved; Retry '
+        're-opens the save prompt.',
+      );
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _orchestrationStatus = 'Saving sub-assembly "${entry.name}"...');
+    await AssemblyDocumentClient(storageService: storage, documentApiClient: _documentApi).savePart(root, partId, confirmedPath);
+    if (!mounted) return;
+    _clearAssemblyRetryState();
+    _pendingSubAssemblyPlaced = null;
+    _pendingSubAssemblyMateNote = '';
+    setState(() {
+      _savedSubAssemblies = [
+        ..._savedSubAssemblies,
+        _SavedSubAssembly(name: entry.name, relativePath: confirmedPath, partId: partId, placed: placed, mateNote: mateNote),
+      ];
+      _orchestrationStatus = null;
+      _orchestrationStepStatuses = null;
+    });
+    await _runAssemblyCycle();
   }
 
   /// The assembly cycle's second turn. The place plan put every component where the drawing has it but could not
@@ -2080,12 +2293,16 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     required List<AiMateStep> mates,
     required List<AiIntendedMotion> intendedMotion,
     required Map<String, String> placedIds,
+    Map<String, PlacedComponentIds> nested = const {},
     required StorageService storage,
     required ProjectRoot root,
   }) async {
-    final plan = rewriteMateOccurrenceIds(mates, placedIds, intendedMotion: intendedMotion);
+    final plan = rewriteMateOccurrenceIds(mates, placedIds, intendedMotion: intendedMotion, nested: nested);
     _intendedMotion = [..._intendedMotion, ...plan.intendedMotion];
-    if (_importedBundle != null) _importedLocalIdToRealId = placedIds;
+    if (_importedBundle != null) {
+      _importedLocalIdToRealId = placedIds;
+      _importedNestedIds = nested;
+    }
     if (mates.isEmpty) {
       setState(() {
         _mateNote = 'Saved without mates: the imported assembly plan has none.';
@@ -2229,6 +2446,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           initialProjectRoot: root,
           initialRelativePathByPartId: {
             for (final part in _savedAssemblyParts) part.partId: part.relativePath,
+            for (final sub in _savedSubAssemblies) sub.partId: sub.relativePath,
             assemblyPartId: assemblyPath,
           },
           initialLens: AssemblyLens.assembly,
@@ -2309,6 +2527,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _assemblyTargetRelativePath = null;
       _currentPartIndex = 0;
       _savedAssemblyParts = [];
+      _savedSubAssemblies = [];
       _orchestrationStatus = null;
       _orchestrationError = null;
       _orchestrationStepStatuses = null;
@@ -2322,6 +2541,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _completenessReport = null;
       _intendedMotion = [];
       _importedLocalIdToRealId = null;
+      _importedNestedIds = {};
       _importedComponents = [];
       _importedMates = _ImportedMates.none;
       _importedMatesProblems = '';
@@ -2611,7 +2831,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
 
     setState(() => _repairingMates = true);
     try {
-      final rewritten = rewriteMateOccurrenceIds(plan.steps.cast<AiMateStep>(), map, intendedMotion: plan.intendedMotion);
+      final rewritten = rewriteMateOccurrenceIds(
+        plan.steps.cast<AiMateStep>(),
+        map,
+        intendedMotion: plan.intendedMotion,
+        nested: _importedNestedIds,
+      );
       _intendedMotion = [..._intendedMotion, ...rewritten.intendedMotion];
       var built = false;
       if (rewritten.steps.isNotEmpty) {
@@ -3164,6 +3389,21 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
             ),
             const SizedBox(height: 12),
           ],
+          if (manifest.subAssemblies.isNotEmpty) ...[
+            Text('Sub-assemblies', key: const Key('aiModellingManifestSubAssemblies'), style: Theme.of(context).textTheme.titleSmall),
+            const SizedBox(height: 4),
+            Text(
+              'Built and saved after the parts, in this order, each as its own assembly file; the top-level '
+              'assembly places them like parts.',
+              style: TextStyle(color: AiPalette.of(context).muted),
+            ),
+            for (final sub in manifest.subAssemblies)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Text('- ${sub.name} (${sub.typePrefix})'),
+              ),
+            const SizedBox(height: 12),
+          ],
           // Gap-closure (`13-...md`'s own E-1): only shown once there's
           // actually an existing file to offer - the dropdown's absence
           // itself communicates "a new assembly will be created", no extra
@@ -3288,6 +3528,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final total = manifest.parts.length;
     final assemblySaved = _assemblyRelativePath != null;
     final finished = assemblySaved || _orchestrationError != null;
+    final subAssemblies = _importedBundle?.manifest.subAssemblies ?? const <AiPartManifestEntry>[];
+    final subAssembliesDone = _savedSubAssemblies.length >= subAssemblies.length;
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
@@ -3330,7 +3572,34 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                   ),
                   if (i == _currentPartIndex && !_buildingAssembly) _buildOrchestrationStepStatuses(context),
                 ],
-                if (_buildingAssembly || assemblySaved) ...[
+                if (_buildingAssembly || assemblySaved)
+                  for (var i = 0; i < subAssemblies.length; i++) ...[
+                    ListTile(
+                      key: Key('aiModellingSubAssemblyRow$i'),
+                      leading: Icon(
+                        i < _savedSubAssemblies.length
+                            ? Icons.check_circle
+                            : i == _savedSubAssemblies.length && _orchestrationError != null
+                                ? Icons.error
+                                : i == _savedSubAssemblies.length
+                                    ? Icons.hourglass_top
+                                    : Icons.circle_outlined,
+                        color: i < _savedSubAssemblies.length
+                            ? AiPalette.of(context).success
+                            : i == _savedSubAssemblies.length && _orchestrationError != null
+                                ? AiPalette.of(context).danger
+                                : null,
+                      ),
+                      title: Text('Sub-assembly: ${subAssemblies[i].name}'),
+                      subtitle: i < _savedSubAssemblies.length
+                          ? Text('${_savedSubAssemblies[i].relativePath}\n${_savedSubAssemblies[i].mateNote}')
+                          : (i == _savedSubAssemblies.length && _orchestrationStatus != null)
+                              ? Text(_orchestrationStatus!)
+                              : null,
+                    ),
+                    if (i == _savedSubAssemblies.length && _buildingAssembly) _buildOrchestrationStepStatuses(context),
+                  ],
+                if ((_buildingAssembly && subAssembliesDone) || assemblySaved) ...[
                   ListTile(
                     key: const Key('aiModellingAssemblyRow'),
                     leading: Icon(

@@ -35,9 +35,22 @@ AiPlanSplit splitPlacementAndMates(AiGenerationPlan plan) {
   );
 }
 
+/// The components one built assembly plan placed: each `add_component` `local_id` -> its real occurrence id, and, for a
+/// component that is itself a sub-assembly, the same for the plan that built that sub-assembly (keyed by the outer
+/// `local_id`). What lets a mate name a part inside a placed sub-assembly by a path of local ids, `wheel_asm/wheel`.
+class PlacedComponentIds {
+  final Map<String, String> realIdByLocalId;
+  final Map<String, PlacedComponentIds> nested;
+
+  const PlacedComponentIds(this.realIdByLocalId, {this.nested = const {}});
+}
+
 /// A plan of [mates] in which every reference that names an `add_component` `local_id` found in [localToReal] now
-/// reads `existing:<real occurrence id>`. A reference that is `""`, already `existing:...`, or names anything else
-/// (an unknown id, or a `local_id` whose component was never placed) is left as written: validation reports it.
+/// reads `existing:<real occurrence id>`. A `/`-joined path of local ids (`wheel_asm/wheel`: the component `wheel`
+/// inside the placed sub-assembly `wheel_asm`) is rewritten segment by segment through [nested] to
+/// `existing:<real outer id>/<real inner id>`, the path a Mate into a sub-assembly is stored with. A reference that is
+/// `""`, already `existing:...`, or names anything else (an unknown id, a `local_id` whose component was never placed,
+/// a path through a component that is not a sub-assembly) is left as written: validation reports it.
 /// Covers each reference's `occurrence_id` and a Width mate's `midplane.b_occurrence_id`, and the `component` of each
 /// [intendedMotion] entry (a name that is not a local id stays as written).
 AiGenerationPlan rewriteMateOccurrenceIds(
@@ -45,11 +58,24 @@ AiGenerationPlan rewriteMateOccurrenceIds(
   Map<String, String> localToReal, {
   int version = 1,
   List<AiIntendedMotion> intendedMotion = const [],
+  Map<String, PlacedComponentIds> nested = const {},
 }) {
   String? rewrite(String? id) {
     if (id == null || id.isEmpty || id.startsWith('existing:')) return id;
-    final real = localToReal[id];
-    return real == null ? id : 'existing:$real';
+    var level = PlacedComponentIds(localToReal, nested: nested);
+    final realSegments = <String>[];
+    final segments = id.split('/');
+    for (var i = 0; i < segments.length; i++) {
+      final real = level.realIdByLocalId[segments[i]];
+      if (real == null) return id;
+      realSegments.add(real);
+      if (i < segments.length - 1) {
+        final inner = level.nested[segments[i]];
+        if (inner == null) return id;
+        level = inner;
+      }
+    }
+    return 'existing:${realSegments.join('/')}';
   }
 
   AiMateEntityRefStep rewriteRef(AiMateEntityRefStep ref) {

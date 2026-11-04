@@ -16,3 +16,9 @@ Expected (2026-11-04): both parts built, `assembly_ok`, `mates` 2, `pass` true, 
 spin about z, which the key allows: `held|spin`). Deleting the `m_seat` mate from `99_assembly.json` leaves the pin free
 to slide along z as well and scores `1/2` (`under`); an invalid `face_selector` direction (say `"+q"`) is refused by the
 server with HTTP 422 and shows as `mates: validationFailed` with the placed assembly still built.
+
+`asm_castor_sub/` (hand-written too): a bracket, an axle and a wheel-and-bush **sub-assembly** in one zip
+(`"sub_assemblies"` in the manifest, `90_WHEEL_ASM.json`, and top-level mates into `castor/bush`). It has no key, so it is
+not scored. Run it the same way, under `runs/asm_castor_sub/`. Expected (2026-11-04): 4 parts built, the sub-assembly
+built with 2 mates, the assembly with 4, 4 solids, bbox 54 x 80 x 80, no overlap, and the completeness check showing
+the bracket fixed and the castor and axle free only to spin about z (both declared).

@@ -72,6 +72,44 @@ end of `99_assembly.json`, naming components by their `add_component` `local_id`
 rewrites those ids and builds the mates (`ai_plan_split.dart`). The "no mate steps" wording above is what was true
 for the first version only.
 
+## Update 2026-11-04: sub-assemblies in the same zip
+
+Reported from testing the castor drawings (wheel and bush as a sub-assembly): the hand-off allowed one assembly per zip,
+so the external AI said a sub-assembly needed two zips imported in order. Now one zip carries them:
+
+- **Format** (`ai_plan_export.dart`, the Assembly-mode preamble). The manifest may add `"sub_assemblies": [{name,
+  type_prefix, summary}]`, in build order; their parts stay in `"parts"`. One assembly plan per sub-assembly,
+  `90_<TYPE_PREFIX>.json`, `91_...`, written like `99_assembly.json` (placements, then mates, its own frame). A later
+  assembly places a sub-assembly with one `add_component` of `<TYPE_PREFIX>_001.didsa`. A mate to a part inside it uses a
+  path of local ids, `castor/wheel`.
+- **Importer** (`ai_plan_bundle.dart`). Assembly plans are still found by content; the last by file name is the top
+  level, the ones before it are the manifest's `sub_assemblies` by order. A count mismatch (including two assembly plans
+  and no `sub_assemblies`) is a clear error. `subAssemblyPlanFor` / `assemblyPlanFor(savedSubAssemblyPaths:)` repoint
+  sub-assembly references like part ones; `assemblyComponents` lists a sub-assembly's parts by path for the mates-fix
+  package.
+- **Screen** (`ai_modelling_screen.dart`). After the parts, `_runAssemblyCycle` builds each sub-assembly first
+  (`_runImportedSubAssemblyCycle`: placements, its own mates, a save prompt proposing `<TYPE_PREFIX>_NNN`), then the top
+  level. Each gets a row on the progress panel; the confirm panel lists them. A cancelled sub-assembly save retries as a
+  save; any other failure stops the run (imported plans are fixed, as before).
+- **Mate paths** (`ai_plan_split.dart`). `rewriteMateOccurrenceIds(nested:)` turns `castor/wheel` into
+  `existing:<real castor id>/<real wheel id>`, using what each sub-assembly's build placed (`PlacedComponentIds`).
+  "Import mates" reads paths too.
+- **Backend** (`ai_plan.py`, `_lookup_mate_occurrence`). The dry run accepts `existing:<outer>/<inner>` in a mate
+  reference (the `/` path a real Mate into a sub-assembly is already stored with) and resolves `face_selector` against
+  the innermost component. Only for mates; `move_component` etc. still take a top-level component.
+- **Translator** (`ai_plan_translator.dart`). `add_component` of a file that places components is composed with the
+  files it references (`AssemblyGraphComposer`, as the Part screen's Add Component does), so the sub-assembly's parts
+  arrive resolved. A solve after a mate on a nested path solves its top-level component.
+
+Verified: unit tests (`ai_plan_sub_assembly_test.dart`, `test_ai_plan_mate_into_sub_assembly.py`), a screen test with a
+mocked backend (`ai_modelling_screen_orchestration_test.dart`, "an imported zip with a sub-assembly ..."), the existing AI and
+assembly client tests and the backend `ai_plan`/mate tests, and a hand-written castor zip
+(`tools/ai_eval/selftest/asm_castor_sub`, bracket + axle + a wheel-and-bush sub-assembly) built end to end through the
+eval harness against a live backend: every part, the sub-assembly and its 2 mates, the top level and its 4 mates (two of
+them into `castor/bush`), 4 solids, no overlap, only the declared spins free. Not verified: the screen driving a run against a
+real backend (the harness and the mocked screen test stand in for it), a real external chat writing such a zip, and the castor drawings themselves.
+The in-app flow (no zip) still has no sub-assemblies: its manifest turn does not ask for them.
+
 ## Open / not done
 
 - **The zip importer does not repair finding 3.** An imported assembly that
