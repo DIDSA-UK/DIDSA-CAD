@@ -5775,6 +5775,10 @@ class DocumentApiClient {
     // carries only the deprecated [flipped] still has it read into them and anything else is Closest (resolved by the solve).
     String? alignment,
     bool? secondaryFlip,
+    // Sends the branch fields as explicit nulls when [alignment]/[secondaryFlip] are not given: Closest to the pose the
+    // solve starts from, instead of reading the deprecated [flipped] (false = anti-aligned) into them. For a mate made
+    // on parts already where they belong (AI Modelling's mates turn), so it holds them there.
+    bool closestBranch = false,
     // Earlier mates the user confirmed moving to their other branch (the preview's `branchChanges`); without them a mate
     // that needs them is refused with 422 `branch_change_needed`.
     List<BranchChangeDto> branchChanges = const [],
@@ -5796,8 +5800,8 @@ class DocumentApiClient {
                 if (value != null) 'value': value,
                 'flipped': flipped,
                 'allow_rotation': allowRotation,
-                if (alignment != null) 'alignment': alignment,
-                if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
+                if (alignment != null || closestBranch) 'alignment': alignment,
+                if (secondaryFlip != null || closestBranch) 'secondary_flip': secondaryFlip,
                 if (branchChanges.isNotEmpty) 'branch_changes': [for (final c in branchChanges) c.toJson()],
                 if (limitMin != null) 'limit_min': limitMin,
                 if (limitMax != null) 'limit_max': limitMax,

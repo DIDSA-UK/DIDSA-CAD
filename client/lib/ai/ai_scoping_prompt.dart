@@ -940,7 +940,9 @@ steps only, naming faces with face_selector, that expresses how the parts
 fit (a pin concentric with its hole, its shoulder coincident with the
 face it sits on; a shaft concentric with its bores; a part seated flat on
 another). The mates must agree with where the components already are -
-they hold them there, they must not move them. Mate each part to the one
+they hold them there, they must not move them. Which way two faces meet
+(facing each other, or flush and facing the same way) is taken from where
+the parts already are, so leave "flipped" out. Mate each part to the one
 it actually touches, and do not add a mate the drawing does not imply.''';
 
 /// Multi-part/assembly overhaul gap-closure (`13-...md`'s own D-4): the

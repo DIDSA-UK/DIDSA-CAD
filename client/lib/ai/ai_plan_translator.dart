@@ -851,6 +851,11 @@ class PlanTranslator {
           ],
           value: step.value,
           flipped: step.flipped,
+          // A plan's mate that does not flip takes the branch nearest the parts' current pose (Closest), not the
+          // deprecated `flipped: false` = anti-aligned: Assembly mode places every part before its mates turn, and a
+          // flush mate between two faces pointing the same way was otherwise turned to face each other, moving the
+          // part (found by the AI-eval mates turn).
+          closestBranch: !step.flipped,
           solve: isWidth && widthTarget.isNotEmpty ? 'auto' : null,
           solveOccurrenceId: isWidth && widthTarget.isNotEmpty ? topLevelOccurrenceId(_resolveOccurrenceId(widthTarget, ids)) : null,
         );
