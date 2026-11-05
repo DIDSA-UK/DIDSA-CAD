@@ -15,6 +15,17 @@ Line numbers drift, so search for the named symbol if a line is off.
 Suggested order: **1 → 5 → 4 → 2 → 3**. 1 is a one-line fix plus a migration. 5 is small and on its own. 4 and 2 are
 independent. 3 is small, and Presentation mode (3B) needs 2's pivot.
 
+## Progress
+
+Branch `claude/flutter-testing-bugs-features-cbio35`. Nothing here has been looked at on a device. `flutter analyze` here
+runs on a newer Flutter master than CI's, so it reports ~230 `deprecated_member_use` infos for `material.dart` that are
+not from this work; there are no other findings.
+
+| Item | What landed | Tests |
+|---|---|---|
+| 1 | **On hold, nothing changed.** Google's docs were unreachable (`ai.google.dev` is not on the session's allowed hosts). Third-party pages give `gemini-3.5-flash` as the id, but some say it is superseded by 3.7 Flash, and they say the free tier is not offered in the UK/EU. The owner has to decide the default | None |
+| 5 | `PartToolbarAnchor { topLeft, bottomRight }` and `bottomInset` on `PartToolbar`; the phone layout anchors bottom right, slides in from the right, rounds the left corners, caps at two thirds of the screen height clamped below the top safe area + 8. `PartScreen._startButtonBottomInset` (also used by the Start button's padding via `_startButtonLift`) keeps the panel and the Start button aligned. Android Back / Esc closes the phone Menu panel first (`_cancelActiveMode`). The desktop layout is unchanged | `test/part_toolbar_test.dart` (anchor group: right edge, bottom inset, two-thirds cap, short landscape below the safe area, hidden off right, `topLeft` unchanged); `test/part_screen_test.dart` (phone Menu panel in the bottom-right quadrant, Back closes it) |
+
 The owner has accepted every recommended answer in **Decisions** at the end (2026-11-05).
 
 ---

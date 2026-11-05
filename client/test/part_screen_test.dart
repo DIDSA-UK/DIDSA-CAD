@@ -1706,6 +1706,25 @@ void main() {
       expect(tester.widget<PartToolbar>(find.byType(PartToolbar)).visible, isFalse);
     });
 
+    testWidgets('Menu panel opens in the bottom-right quadrant, and Back closes it', (tester) async {
+      await pumpScreen(tester);
+      await openToolbar(tester);
+      await _settleSheet(tester);
+      final rect = tester.getRect(find.byType(PartToolbar).evaluate().isEmpty
+          ? find.byType(Scaffold)
+          : find.descendant(
+              of: find.byType(PartToolbar),
+              matching: find.byWidgetPredicate((w) => w is Material && w.elevation == 4),
+            ));
+      final screen = tester.view.physicalSize / tester.view.devicePixelRatio;
+      expect(rect.center.dx, greaterThan(screen.width / 2));
+      expect(rect.center.dy, greaterThan(screen.height / 2));
+      expect(rect.height, lessThanOrEqualTo(screen.height * 2 / 3 + 0.01));
+      await tester.binding.handlePopRoute();
+      await _settleSheet(tester);
+      expect(tester.widget<PartToolbar>(find.byType(PartToolbar)).visible, isFalse);
+    });
+
     testWidgets('Fit closes the column', (tester) async {
       await pumpScreen(tester);
       await tapQuickButton(tester, 'quick-fit-fab');

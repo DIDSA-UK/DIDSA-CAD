@@ -24797,7 +24797,10 @@ class _PartScreenState extends State<PartScreen> {
   /// sketch / profile / path pickers, plane picking. False when none is
   /// active (then Back asks to exit the Part, and Esc clears the selection).
   bool _cancelActiveMode() {
-    if (_activeMultiSelect != null) {
+    if (_toolbarOpen && !_desktopLayout) {
+      // The phone layout's Menu panel is a short-lived overlay: Back closes it before anything else.
+      setState(() => _toolbarOpen = false);
+    } else if (_activeMultiSelect != null) {
       // Feature 1 (tree multi-select): back cancels the session, same
       // as the action bar's own Cancel.
       _exitMultiSelect();
@@ -24984,6 +24987,69 @@ class _PartScreenState extends State<PartScreen> {
   //
   // The ribbon, menus, left pane and status bar below only place and call what the phone layout already has: each
   // button runs the same action as its FAB or sheet entry, and the trees are the same widgets, docked.
+
+  /// How far the Start button column is lifted above its resting spot while a bottom-docked tool panel is open
+  /// (the old inline boolean on the `floatingActionButton` padding, unchanged).
+  double get _startButtonLift => (_extrudeActive ||
+                        _surfaceActive ||
+                        _createPlaneActive ||
+                        _filletActive ||
+                        _chamferActive ||
+                        _revolveActive ||
+                        _sweepActive ||
+                        _loftActive ||
+                        _planarSurfaceActive ||
+                        _revolveSurfaceActive ||
+                        _sweptSurfaceActive ||
+                        _loftSurfaceActive ||
+                        _ruledSurfaceActive ||
+      _thickenActive ||
+      _knitSurfaceActive ||
+      _solidFromSurfacesActive ||
+      _offsetSurfaceActive ||
+                        _mirrorActive ||
+                        _patternActive ||
+                        _mergeActive ||
+                        _booleanActive ||
+                        _deleteBodyActive ||
+                        _scaleBodyActive ||
+                        _moveBodyActive ||
+                        _deleteFaceActive ||
+                        _moveFaceActive ||
+                        _shellActive ||
+                        // Bug fix (on-device feedback: "the fab sits on top of
+                        // the tool bar obscuring part of the measure tool
+                        // bar"): MeasurementPanel is the same bottom-docked
+                        // ResizableToolPanel shell as every other tool panel
+                        // in this list, but was missing from it, so this "Add"
+                        // FAB column stayed pinned at the Scaffold's default
+                        // bottom-right (Scaffold always paints
+                        // floatingActionButton after the whole body Stack -
+                        // see this Padding's own sibling comments above) and
+                        // sat on top of the Measure panel instead of clearing
+                        // it like every other tool.
+                        _measureActive ||
+                        // Bug fix (on-device feedback: "the 'new' fab sits on
+                        // top of the [section] tool obscuring part of it"):
+                        // same gap as the Measure panel's own fix just above -
+                        // SectionPanel is the same bottom-docked
+                        // ResizableToolPanel shell too, but was likewise
+                        // missing from this list.
+                        _sectionPanelOpen ||
+                        // Bug report (assembly testing): "the 'new' fab sits
+                        // on top of the assembly mode 'pattern component'
+                        // tool bar" - ComponentPatternPanel is the same
+                        // bottom-docked ResizableToolPanel shell as every
+                        // other tool in this list, but was never added to it.
+                        _componentPatternPanelActive)
+      ? 180
+      : 0;
+
+  /// Distance from the screen's bottom edge to the Start button's bottom edge: Scaffold's end-float FAB margin (16,
+  /// or the bottom view padding when larger) plus [_startButtonLift]. The phone layout's [PartToolbar] anchors to
+  /// this, so the panel takes the Start button's place and the two cannot drift apart.
+  double get _startButtonBottomInset =>
+      math.max(kFloatingActionButtonMargin, MediaQuery.viewPaddingOf(context).bottom) + _startButtonLift;
 
   /// True while the app is in the desktop layout (a large window used with a mouse, or forced in Controls).
   bool get _desktopLayout => LayoutModeScope.isDesktop(context);
@@ -26359,7 +26425,11 @@ class _PartScreenState extends State<PartScreen> {
                     // No hamburger button on the phone layout any more (the quick column opens this), so the panel
                     // brings its own close icon and starts at the top.
                     onClose: _desktopLayout ? null : () => setState(() => _toolbarOpen = false),
-                    topInset: _desktopLayout ? 104 : 8,
+                    // The phone layout opens it from the Start button's quick column (bottom right), so the panel
+                    // takes the Start button's place; the desktop layout keeps the top-left panel under the ribbon.
+                    anchor: _desktopLayout ? PartToolbarAnchor.topLeft : PartToolbarAnchor.bottomRight,
+                    topInset: 104,
+                    bottomInset: _startButtonBottomInset,
                     lens: _lens,
                     referencePlanesHidden: _referencePlanesHidden,
                     onToggleReferencePlanes: _onToggleReferencePlanes,
@@ -27776,62 +27846,7 @@ class _PartScreenState extends State<PartScreen> {
       floatingActionButton: _toolbarOpen || _confirmingSketchOrientation
           ? null
           : Padding(
-              padding: EdgeInsets.only(
-                bottom: (_extrudeActive ||
-                        _surfaceActive ||
-                        _createPlaneActive ||
-                        _filletActive ||
-                        _chamferActive ||
-                        _revolveActive ||
-                        _sweepActive ||
-                        _loftActive ||
-                        _planarSurfaceActive ||
-                        _revolveSurfaceActive ||
-                        _sweptSurfaceActive ||
-                        _loftSurfaceActive ||
-                        _ruledSurfaceActive ||
-      _thickenActive ||
-      _knitSurfaceActive ||
-      _solidFromSurfacesActive ||
-      _offsetSurfaceActive ||
-                        _mirrorActive ||
-                        _patternActive ||
-                        _mergeActive ||
-                        _booleanActive ||
-                        _deleteBodyActive ||
-                        _scaleBodyActive ||
-                        _moveBodyActive ||
-                        _deleteFaceActive ||
-                        _moveFaceActive ||
-                        _shellActive ||
-                        // Bug fix (on-device feedback: "the fab sits on top of
-                        // the tool bar obscuring part of the measure tool
-                        // bar"): MeasurementPanel is the same bottom-docked
-                        // ResizableToolPanel shell as every other tool panel
-                        // in this list, but was missing from it, so this "Add"
-                        // FAB column stayed pinned at the Scaffold's default
-                        // bottom-right (Scaffold always paints
-                        // floatingActionButton after the whole body Stack -
-                        // see this Padding's own sibling comments above) and
-                        // sat on top of the Measure panel instead of clearing
-                        // it like every other tool.
-                        _measureActive ||
-                        // Bug fix (on-device feedback: "the 'new' fab sits on
-                        // top of the [section] tool obscuring part of it"):
-                        // same gap as the Measure panel's own fix just above -
-                        // SectionPanel is the same bottom-docked
-                        // ResizableToolPanel shell too, but was likewise
-                        // missing from this list.
-                        _sectionPanelOpen ||
-                        // Bug report (assembly testing): "the 'new' fab sits
-                        // on top of the assembly mode 'pattern component'
-                        // tool bar" - ComponentPatternPanel is the same
-                        // bottom-docked ResizableToolPanel shell as every
-                        // other tool in this list, but was never added to it.
-                        _componentPatternPanelActive)
-                    ? 180
-                    : 0,
-              ),
+              padding: EdgeInsets.only(bottom: _startButtonLift),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [

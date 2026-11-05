@@ -21,10 +21,23 @@ double sliderToClip(double t) =>
 double clipToSlider(double farClip) =>
     (log(farClip) - log(500)) / (log(50000) - log(500));
 
+/// Which screen corner [PartToolbar] is anchored to.
+enum PartToolbarAnchor {
+  /// Slides in from the left under the ribbon / top-left controls. The desktop layout's (and the default) placement.
+  topLeft,
+
+  /// Slides in from the right and sits where the Start button was: the phone layout's placement, because the panel
+  /// is opened from the Start button's quick column (bottom right).
+  bottomRight,
+}
+
 /// [PartScreen]'s contextual toolbar - styled and animated to match
-/// [SketchRibbon]'s slide-in-from-the-left panel (same [Material] card with
-/// rounded trailing corners, same [AnimatedSlide] offscreen-to-the-left
-/// hide), opened via [PartScreen]'s persistent top-left toggle button.
+/// [SketchRibbon]'s slide-in panel (same [Material] card with rounded
+/// corners on the free side, same [AnimatedSlide] offscreen hide). On the
+/// desktop layout ([PartToolbarAnchor.topLeft]) it slides in from the left
+/// under the ribbon; on the phone layout ([PartToolbarAnchor.bottomRight])
+/// it slides in from the right, where the Start button's quick column that
+/// opened it was.
 ///
 /// Stage 18 restructures this into the brief's two top-level categories,
 /// File and View, as [ExpansionTile]s. Stage 19b Item 2 moved the one
@@ -42,8 +55,15 @@ class PartToolbar extends StatelessWidget {
   /// column): when set, the panel draws a close icon.
   final VoidCallback? onClose;
 
-  /// How far down the panel starts, clearing whatever sits in the top-left corner.
+  /// Which corner the panel is anchored to. Defaults to [PartToolbarAnchor.topLeft] (desktop).
+  final PartToolbarAnchor anchor;
+
+  /// [PartToolbarAnchor.topLeft]: how far down the panel starts, clearing whatever sits in the top-left corner.
   final double topInset;
+
+  /// [PartToolbarAnchor.bottomRight]: the gap between the panel's bottom edge and the bottom of this widget's area
+  /// (the Start button's bottom edge: see `PartScreen._startButtonBottomInset`). Include any bottom safe-area inset.
+  final double bottomInset;
 
   /// Stage 10b: whether all three reference planes are currently hidden -
   /// mirrors [PartViewport]'s controlled `referencePlanesHidden`, the same
@@ -216,7 +236,9 @@ class PartToolbar extends StatelessWidget {
     super.key,
     required this.visible,
     this.onClose,
+    this.anchor = PartToolbarAnchor.topLeft,
     this.topInset = 104,
+    this.bottomInset = 16,
     this.referencePlanesHidden = false,
     this.onToggleReferencePlanes,
     this.renderMode = ViewportRenderMode.shaded,
@@ -269,38 +291,49 @@ class PartToolbar extends StatelessWidget {
     // panel - `BorderSide.none` in Part lens keeps today's exact look (a
     // plain `Material` card, no border at all).
     final accentColor = assemblyLensAccentColor(Theme.of(context).colorScheme, lens);
+    final bottomRight = anchor == PartToolbarAnchor.bottomRight;
+    final screen = MediaQuery.sizeOf(context);
+    final double maxHeight;
+    if (bottomRight) {
+      // Two thirds of the screen (the menu is long), but never under the status bar / notch: clamp to the room
+      // between the panel's bottom edge and the top safe-area inset plus 8.
+      final room = screen.height - bottomInset - (MediaQuery.paddingOf(context).top + 8);
+      maxHeight = min(screen.height * 2 / 3, max(0.0, room));
+    } else {
+      // A third of the screen's height, so it stays usable on short/landscape viewports.
+      maxHeight = screen.height / 3;
+    }
     return Align(
-      alignment: Alignment.topLeft,
+      alignment: bottomRight ? Alignment.bottomRight : Alignment.topLeft,
       child: ClipRect(
         child: AnimatedSlide(
-          offset: visible ? Offset.zero : const Offset(-1.05, 0),
+          offset: visible ? Offset.zero : Offset(bottomRight ? 1.05 : -1.05, 0),
           duration: const Duration(milliseconds: 200),
           curve: Curves.easeOut,
           child: SafeArea(
+            top: !bottomRight,
             bottom: false,
             child: Padding(
-              // Clears the persistent top-left button stack this is opened
-              // from (the orbit/select-mode FAB sitting just above the
-              // hamburger toggle, then the hamburger itself - see
-              // `part_screen.dart`'s own top-left `Positioned` Column) -
-              // 8px top inset + two 40px small FABs + an 8px gap between
-              // them + a little breathing room before this panel starts.
-              padding: EdgeInsets.only(top: topInset),
+              // topLeft: clears the top-left controls it is opened from. bottomRight: the panel's bottom edge lines
+              // up with the Start button's, so it reads as the button turning into the menu.
+              padding: bottomRight ? EdgeInsets.only(bottom: bottomInset) : EdgeInsets.only(top: topInset),
               child: Material(
                 elevation: 4,
                 shape: RoundedRectangleBorder(
-                  borderRadius: const BorderRadius.only(
-                    topRight: Radius.circular(12),
-                    bottomRight: Radius.circular(12),
-                  ),
+                  borderRadius: bottomRight
+                      ? const BorderRadius.only(
+                          topLeft: Radius.circular(12),
+                          bottomLeft: Radius.circular(12),
+                        )
+                      : const BorderRadius.only(
+                          topRight: Radius.circular(12),
+                          bottomRight: Radius.circular(12),
+                        ),
                   side: isAssemblyLens ? BorderSide(color: accentColor, width: 2) : BorderSide.none,
                 ),
                 child: ConstrainedBox(
-                  // Capped to a third of the screen's own height, rather
-                  // than a fixed pixel value, so this stays usable on
-                  // short/landscape viewports instead of overflowing or
-                  // eating almost the whole screen on a small phone.
-                  constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height / 3),
+                  // Capped relative to the screen's own height (see [maxHeight] above), not a fixed pixel value.
+                  constraints: BoxConstraints(maxHeight: maxHeight),
                   child: SizedBox(
                     width: 240,
                     child: Column(
