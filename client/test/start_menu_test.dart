@@ -2,7 +2,7 @@ import 'package:didsa_cad_client/assembly/assembly_lens.dart';
 import 'package:didsa_cad_client/viewport3d/desktop_chrome.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart';
 import 'package:didsa_cad_client/viewport3d/start_menu_sheet.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// The Start menu sheet on its own, over hand-made tabs (the PartScreen wiring is covered in part_screen_test.dart).

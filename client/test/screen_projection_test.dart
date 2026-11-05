@@ -1,5 +1,5 @@
 import 'package:didsa_cad_client/viewport3d/screen_projection.dart';
-import 'package:flutter/material.dart' show Offset, Size;
+import 'package:material_ui/material_ui.dart' show Offset, Size;
 import 'package:flutter_scene/scene.dart' show PerspectiveCamera;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;

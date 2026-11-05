@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// How much of a category is shown: every one of its Features, none, or a mix (one sketch hidden from the tree, say).
 enum VisibilityChipState { shown, hidden, partial }

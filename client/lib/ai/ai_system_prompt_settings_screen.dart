@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'ai_theme.dart';
 import 'ai_prompt_addons.dart';

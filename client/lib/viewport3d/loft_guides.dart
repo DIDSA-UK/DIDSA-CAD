@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// The "Guide curves" block shared by [LoftPanel] and [LoftSurfacePanel]: a loft can have any number of
 /// guides (the backend's `guide_curves`, each an ordered chain of sketch lines, arcs, ellipses or

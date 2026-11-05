@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:typed_data' show Float64List;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_scene/scene.dart' show Camera;
 import 'package:vector_math/vector_math.dart' as vm;
 

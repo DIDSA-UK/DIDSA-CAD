@@ -4,7 +4,7 @@
 /// Appearance panel and sections change what is on screen only, and Update scene / Save as new keep it.
 library;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../viewport3d/resizable_tool_panel.dart';
 import 'appearance_rule.dart';

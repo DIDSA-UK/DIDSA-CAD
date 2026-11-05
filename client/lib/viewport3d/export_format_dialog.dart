@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// One selectable entry in [showExportFormatDialog] - [label] is what the
 /// user sees, [value] is both the backend's own `GET /export/{format}`

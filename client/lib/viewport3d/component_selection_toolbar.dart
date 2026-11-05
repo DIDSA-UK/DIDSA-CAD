@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Bug fix ("selecting a component shows no contextual toolbar"): the
 /// Assembly-lens equivalent of `SelectionContextPanel` (which is deliberately

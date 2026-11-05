@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import '../viewport3d/resizable_tool_panel.dart';
 import 'sketch_controller.dart';
 import '../viewport3d/keyboard_shortcuts.dart';

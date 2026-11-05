@@ -1,6 +1,6 @@
 // The flat app's Scenes panel (`lib/appearance/scenes_panel.dart`): what it offers in the default, in a new scene and in a
 // shown one; the list; and the Update / Discard / Stay question.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/appearance/appearance_rule.dart';

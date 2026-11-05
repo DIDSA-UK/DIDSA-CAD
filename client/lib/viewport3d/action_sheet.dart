@@ -1,5 +1,5 @@
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import '../layout/adaptive_sheet.dart';
 
 /// Assembly support Phase 3b (`docs/assembly-scope.md` §3): the one

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'mesh_data.dart' show MeshUpAxis;
 import 'mesh_viewer_preferences.dart';

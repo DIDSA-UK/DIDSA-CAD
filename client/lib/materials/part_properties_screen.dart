@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../api/document_api_client.dart';
 import '../api/sketch_api_client.dart' show ApiException;

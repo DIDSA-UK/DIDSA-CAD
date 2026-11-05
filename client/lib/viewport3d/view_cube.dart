@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 /// Desktop input D5 (`docs/desktop-input-scope.md` section 4): the view

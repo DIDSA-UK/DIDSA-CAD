@@ -1,7 +1,7 @@
 // The flat app's Appearance panel (`lib/appearance/appearance_panel.dart`): the brush (palette, Clear, picker, hex, the
 // per-property switches and sliders, presets), the rows (hover previews, tap paints), the eyedropper and Save brush.
 import 'package:flutter/gestures.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/appearance/appearance_model.dart';

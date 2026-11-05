@@ -2,7 +2,7 @@ import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/viewport3d/orthographic_camera.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_constraint_overlay.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
-import 'package:flutter/material.dart' show Offset, Size;
+import 'package:material_ui/material_ui.dart' show Offset, Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 

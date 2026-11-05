@@ -2,7 +2,7 @@ import 'dart:convert';
 
 import 'package:didsa_cad_client/vr_pairing/headset_pairing.dart';
 import 'package:didsa_cad_client/vr_pairing/headset_pairing_screen.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';

@@ -1,5 +1,5 @@
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
 /// "Share screen" (`docs/flutter-testing-feedback-2026-11-05-plan.md` item 3). Two separate uses: presenting to a room
