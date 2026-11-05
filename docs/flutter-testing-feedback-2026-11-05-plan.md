@@ -379,8 +379,11 @@ line 26357). The class doc comment still says it is "opened via PartScreen's per
     drift apart.
   - `SafeArea(top: false, bottom: true)` instead of the current `bottom: false`.
   - The close (X) button stays in the panel's header row. On the right edge it is now nearest the thumb, which is fine.
-  - **Height cap**: today it is a third of the screen height, because at the top it had to clear the FABs below. At
-    the bottom right, about half the screen height is reasonable and less cramped. Keep it scrollable.
+  - **Height cap: two thirds of the screen height on the phone layout** (owner's decision, 2026-11-05: the menu has a
+    lot in it). Today it is a third, because at the top it had to clear the FABs below. Measure the two thirds of the
+    full screen height (`MediaQuery.sizeOf`), then also clamp it to the space between the panel's bottom inset and
+    the top safe-area inset plus 8 px. That way it can never run under the status bar in landscape or on a short
+    phone. Keep it scrollable. The desktop layout's cap is unchanged.
 - Rename `topInset` to something neutral (`edgeInset`), or keep it and add `bottomInset`. Update the doc comments that
   describe the top-left button stack.
 - Other phone overlays at the bottom right while the menu is open: check that nothing else is drawn there (the
@@ -396,7 +399,8 @@ line 26357). The class doc comment still says it is "opened via PartScreen's per
 **Tests** (`client/test/part_toolbar_test.dart` exists, so extend it):
 
 - `anchor: bottomRight`, visible: the panel's rect touches the right edge (minus margin), its bottom is at the given
-  bottom inset, and its height is at most half the screen.
+  bottom inset, and its height is at most two thirds of the screen. On a short screen (e.g. a 640 x 360 landscape) it
+  stays below the top safe-area inset.
 - Hidden: it is off screen to the right.
 - `topLeft` stays where it is (a regression test for the desktop layout).
 - `PartScreen` phone layout: tap `quick-menu-fab` → the toolbar is visible and its rect is in the bottom-right
