@@ -207,7 +207,7 @@ Not expected to work yet. Blockers found on 2026-11-05: `speech_to_text` 7.5.0 s
 
 | Phase | Commit | CI run | What landed / what failed | Not verified |
 |---|---|---|---|---|
-| 0 | | | | |
+| 0 | 5c4d8ad (commit 1) | 42121666962 (red) | Pin to `da33f2f` and JDK 21 landed. Flutter set-up, pub get and `flutter test` passed. `flutter analyze` failed: 237 infos, all `deprecated_member_use`, all the same one: the `import 'package:flutter/material.dart'` line itself ("Use package:material_ui/material_ui.dart instead ... deprecated after v3.47.0-0.0.pre"), one per file in `lib/` and `test/`. **Stopped here** (not the plan's `withOpacity`-style case: the fix adds a new pub dependency, `material_ui`, and rewrites 237 files). Java/APK steps were skipped because analyze failed, so the expected Android failure has not been seen yet. | Everything on a device. Android build not yet reached. |
 | 1 | | | | |
 | 2 | | | | |
 | 3 | | | | |
