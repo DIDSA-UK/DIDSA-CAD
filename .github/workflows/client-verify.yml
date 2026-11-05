@@ -39,10 +39,16 @@ jobs:
       # general (master is Flutter's most volatile channel and can break for
       # reasons unrelated to this repo), but the only channel that currently
       # reflects reality here.
+      #
+      # The master commit is pinned so CI is reproducible: an unpinned
+      # `channel: master` only ever refreshed when its cache key changed, so
+      # CI silently ran a weeks-old master. The action's cache key follows
+      # the pinned commit. To move it: change the hash below, push, check CI.
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: master
+          flutter-version: da33f2fadf235b352afffa8e7083305d44ea1dc1
           cache: true
 
       - name: Install dependencies
@@ -60,13 +66,15 @@ jobs:
       # contains no native solver any more (the drag clamp is pure Dart, see
       # docs/sketch-drag-projector.md). Runs only after analyze+test both pass
       # (default `if: success()`, unlike the `!cancelled()` steps above).
-      # The runner image's default JDK moved past what this project's Gradle (8.14, android/gradle/wrapper) can read
-      # ("Unsupported class file major version 69" = Java 25): pin the JDK the Android build is known to work with.
+      # JDK 21 (LTS): Gradle 9.5 runs on Java 17 to 26, but AGP 9.3 has a
+      # known lint crash on JDK 17 (NoSuchMethodError:
+      # java.util.List.removeLast()). Pinned so a newer runner-image default
+      # JDK cannot change the build.
       - name: Set up Java for the Android build
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Build debug APK
         run: flutter build apk --debug
