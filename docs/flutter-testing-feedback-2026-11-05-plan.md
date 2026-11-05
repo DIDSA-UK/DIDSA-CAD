@@ -10,8 +10,10 @@ Line numbers drift, so search for the named symbol if a line is off.
 | 2 | Touch: hard to inspect the far ends of a large model because orbit turns about the view target | Feature | Medium |
 | 3 | Screen sharing: (A) working on a monitor, (B) showing to a group | Feature | Small (A is mostly advice; B is Presentation mode) |
 | 4 | Reference planes (XY, XZ, YZ) listed in the build tree under Planes; hide/show, no delete | Feature | Medium (needs a backend change) |
+| 5 | Phone: the Menu opens from the quick column (bottom right) but the panel appears top left | Bug (UX) | Small |
 
-Suggested order: **1 → 4 → 2 → 3**. 1 is a one-line fix plus a migration. 4 and 2 are independent. 3 is small.
+Suggested order: **1 → 5 → 4 → 2 → 3**. 1 is a one-line fix plus a migration. 5 is small and on its own. 4 and 2 are
+independent. 3 is small, and Presentation mode (3B) needs 2's pivot.
 
 The owner has accepted every recommended answer in **Decisions** at the end (2026-11-05).
 
@@ -347,6 +349,63 @@ Recommend against unless time is short.
 
 ---
 
+## 5. Phone: the Menu panel opens far from the button that opened it
+
+**Problem.** On a phone, the File / View / Selection Filters menu (`PartToolbar`) is opened from the **Menu** button in
+the Start button's quick column (bottom right; `PartScreen._quickColumnButtons`, key `quick-menu-fab`, which sets
+`_toolbarOpen = true`). But the panel still appears in the **top left** and slides in from the left edge. That was
+right when it was opened from the old top-left hamburger FAB, which the touch viewport work removed. Now the menu
+appears on the opposite side of the screen from your thumb.
+
+**Cause.** `PartToolbar.build` (`client/lib/viewport3d/part_toolbar.dart`, around line 272) hard-codes
+`Align(alignment: Alignment.topLeft)`, `AnimatedSlide(offset: Offset(-1.05, 0))` (off to the left), rounded **right**
+corners only, and a `topInset` padding (`8` on a phone, `104` under the desktop ribbon; `part_screen.dart` around
+line 26357). The class doc comment still says it is "opened via PartScreen's persistent top-left toggle button".
+
+**Fix: anchor it bottom right on the phone layout, growing up from where the Start button was.**
+
+- Add an anchor to `PartToolbar`, for example `enum PartToolbarAnchor { topLeft, bottomRight }`. The default stays
+  `topLeft`, which the desktop layout keeps unchanged (it opens from the ribbon). `PartScreen` passes `bottomRight`
+  when `!_desktopLayout`.
+- `bottomRight`:
+  - `Align(alignment: Alignment.bottomRight)`, sliding in from the right (`Offset(1.05, 0)`), or sliding up and
+    fading. Either is fine. From the right matches the left version and is simplest.
+  - Rounded **left** corners (`topLeft`, `bottomLeft`) instead of right ones.
+  - Bottom padding that puts the panel's bottom edge where the Start button's bottom edge is (the same `bottom:`
+    padding the FAB column computes in `PartScreen.build`, around line 27778, plus Scaffold's FAB margin and
+    `SafeArea` bottom). The Start button and quick column are already hidden while `_toolbarOpen` (the
+    `floatingActionButton: _toolbarOpen || ... ? null` line), so the panel can take exactly that spot and reads as
+    "the button turned into the menu". Pull that bottom offset into one getter so the FAB column and the panel can't
+    drift apart.
+  - `SafeArea(top: false, bottom: true)` instead of the current `bottom: false`.
+  - The close (X) button stays in the panel's header row. On the right edge it is now nearest the thumb, which is fine.
+  - **Height cap**: today it is a third of the screen height, because at the top it had to clear the FABs below. At
+    the bottom right, about half the screen height is reasonable and less cramped. Keep it scrollable.
+- Rename `topInset` to something neutral (`edgeInset`), or keep it and add `bottomInset`. Update the doc comments that
+  describe the top-left button stack.
+- Other phone overlays at the bottom right while the menu is open: check that nothing else is drawn there (the
+  selection drawer / multi-select bar, the view cube / triad, tool panels). Tool panels hide the Start button
+  anyway, and the menu can't be opened during a tool session because the Start button is gone. If anything overlaps,
+  the menu wins while it is open, because it is a short-lived panel.
+- **Back / tap outside**: if a tap on the viewport doesn't close the panel today, leave it that way (out of scope).
+  Android Back should close it if it doesn't already. Check.
+- Presentation mode (item 3B) should reuse this position for its presenter menu if it is in the same corner, so both
+  menus open the same way.
+- The sketcher (`sketch_screen.dart`) has its own ribbon and no hamburger in the quick column. Not in scope.
+
+**Tests** (`client/test/part_toolbar_test.dart` exists, so extend it):
+
+- `anchor: bottomRight`, visible: the panel's rect touches the right edge (minus margin), its bottom is at the given
+  bottom inset, and its height is at most half the screen.
+- Hidden: it is off screen to the right.
+- `topLeft` stays where it is (a regression test for the desktop layout).
+- `PartScreen` phone layout: tap `quick-menu-fab` → the toolbar is visible and its rect is in the bottom-right
+  quadrant. If `PartScreen` widget tests can't build here, test the anchor through `PartToolbar` alone.
+
+**Not verifiable headless**: whether it feels right in the hand.
+
+---
+
 ## Decisions (owner accepted all, 2026-11-05)
 
 1. **Gemini default**: `gemini-3.5-flash`, or a `flash-lite` variant if 3.5 Flash has no free tier? → *3.5 Flash*,
@@ -365,4 +424,5 @@ Recommend against unless time is short.
 - Item 2: the feel on a touch device. The marker and tap only on GPU-backed runs.
 - Item 3: real mirroring to a TV or room screen. The Android settings intent on the owner's phone model. How the app
   and its 3D view behave in DeX / desktop windowing / Stage Manager (resizing, moving between displays).
+- Item 5: the feel on a phone. Any overlap with bottom-right overlays not covered by the tests.
 - Item 4: nothing beyond the usual: the viewport rendering of a single hidden plane needs a GPU run.
