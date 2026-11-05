@@ -192,7 +192,7 @@ call path.
 
 Asked directly: given this tool's current feature set (image upload,
 engineering-drawing interpretation, structured CAD plan output), which
-free model should drive it by default? **Google Gemini** (`gemini-2.5-flash`,
+free model should drive it by default? **Google Gemini** (`gemini-3.8-flash`,
 via its OpenAI-compatible endpoint, the same preset workstream 1 already
 shipped) — genuinely free through Google AI Studio, natively multimodal
 (handles a photographed/hand-drawn sketch directly, not through a separate
@@ -211,7 +211,7 @@ shouldn't need. Now:
 - On a genuinely fresh local slot (nothing ever saved —
   `AiProviderPreferences.localBaseUrl` still its own empty default),
   `AiProviderSettingsScreen._load()` pre-fills the baseUrl, model
-  (`gemini-2.5-flash`), and vision checkbox to the same values the Gemini
+  (`gemini-3.8-flash`), and vision checkbox to the same values the Gemini
   preset button produces. A real saved value (any provider, any prior
   local baseUrl) is never touched — this only fires on the true first-run
   empty case.

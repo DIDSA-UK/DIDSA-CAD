@@ -93,7 +93,7 @@ void main() {
     final baseUrlField = tester.widget<TextField>(find.widgetWithText(TextField, 'Base URL'));
     expect(baseUrlField.controller?.text, 'https://generativelanguage.googleapis.com/v1beta/openai');
     final modelField = tester.widget<TextField>(find.widgetWithText(TextField, 'Model'));
-    expect(modelField.controller?.text, 'gemini-2.5-flash');
+    expect(modelField.controller?.text, 'gemini-3.8-flash');
     expect(tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value, isTrue);
   });
 
@@ -196,7 +196,7 @@ void main() {
     final baseUrlField = tester.widget<TextField>(find.widgetWithText(TextField, 'Base URL'));
     expect(baseUrlField.controller?.text, 'https://generativelanguage.googleapis.com/v1beta/openai');
     final modelField = tester.widget<TextField>(find.widgetWithText(TextField, 'Model'));
-    expect(modelField.controller?.text, 'gemini-2.5-flash');
+    expect(modelField.controller?.text, 'gemini-3.8-flash');
     expect(tester.widget<CheckboxListTile>(find.byKey(const Key('aiLocalSupportsVision'))).value, isTrue);
     // The one thing left for the user - never pre-filled.
     final apiKeyField = tester.widget<TextField>(find.widgetWithText(TextField, 'API Key (optional)'));

@@ -38,8 +38,8 @@ class _AiProviderSettingsScreenState extends State<AiProviderSettingsScreen> {
   /// validated against (see `docs/ai-modelling/03-structured-plan-schema.md`'s
   /// documented Gemini failure case, since fixed). Pre-filled below so a
   /// first-time user only has to paste in their own API key.
-  static const String _geminiPresetBaseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
-  static const String _geminiDefaultModel = 'gemini-2.5-flash';
+  static const String _geminiPresetBaseUrl = AiProviderPreferences.geminiPresetBaseUrl;
+  static const String _geminiDefaultModel = AiProviderPreferences.geminiDefaultModel;
 
   String _activeProvider = AiProviderPreferences.defaultActiveProvider;
 

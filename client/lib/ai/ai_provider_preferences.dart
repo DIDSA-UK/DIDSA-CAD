@@ -26,6 +26,13 @@ class AiProviderPreferences {
   static const String anthropicApiKeyPrefKey = 'ai_anthropic_api_key';
   static const String anthropicModelPrefKey = 'ai_anthropic_model';
 
+  /// The Gemini preset (the settings screen's Gemini button and its fresh-install pre-fill).
+  static const String geminiPresetBaseUrl = 'https://generativelanguage.googleapis.com/v1beta/openai';
+  static const String geminiDefaultModel = 'gemini-3.8-flash';
+
+  /// The old preset model, which no longer works. [load] moves a saved copy of it to [geminiDefaultModel].
+  static const String geminiRetiredModel = 'gemini-2.5-flash';
+
   /// Fixed per `01-provider-abstraction.md`'s own OpenAI cloud slot.
   static const String openAiBaseUrl = 'https://api.openai.com/v1';
 
@@ -57,6 +64,12 @@ class AiProviderPreferences {
     _localBaseUrl = prefs.getString(localBaseUrlPrefKey) ?? '';
     _localApiKey = prefs.getString(localApiKeyPrefKey);
     _localModel = prefs.getString(localModelPrefKey) ?? '';
+    // Anyone who saved the old Gemini preset stays broken unless it is moved on. Only that exact pair is touched: any
+    // other model string was typed by the user.
+    if (_localBaseUrl == geminiPresetBaseUrl && _localModel == geminiRetiredModel) {
+      _localModel = geminiDefaultModel;
+      await prefs.setString(localModelPrefKey, _localModel);
+    }
     _localSupportsVision = prefs.getBool(localSupportsVisionPrefKey) ?? false;
     _openAiApiKey = prefs.getString(openAiApiKeyPrefKey) ?? '';
     _openAiModel = prefs.getString(openAiModelPrefKey) ?? '';

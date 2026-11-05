@@ -201,4 +201,37 @@ void main() {
     final provider = AiProviderPreferences.active as OpenAiCompatibleProvider;
     expect(provider.baseUrl, 'http://localhost:11434/v1');
   });
+
+  group('Gemini preset migration', () {
+    test('the saved retired model on the preset URL loads as the new default, and is saved', () async {
+      SharedPreferences.setMockInitialValues({
+        AiProviderPreferences.localBaseUrlPrefKey: AiProviderPreferences.geminiPresetBaseUrl,
+        AiProviderPreferences.localModelPrefKey: 'gemini-2.5-flash',
+      });
+      await AiProviderPreferences.load();
+      expect(AiProviderPreferences.localModel, 'gemini-3.8-flash');
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString(AiProviderPreferences.localModelPrefKey), 'gemini-3.8-flash');
+    });
+
+    test('the preset URL with any other model is left alone', () async {
+      for (final model in ['gemini-3.6-flash', 'gemini-2.5-pro', '']) {
+        SharedPreferences.setMockInitialValues({
+          AiProviderPreferences.localBaseUrlPrefKey: AiProviderPreferences.geminiPresetBaseUrl,
+          AiProviderPreferences.localModelPrefKey: model,
+        });
+        await AiProviderPreferences.load();
+        expect(AiProviderPreferences.localModel, model);
+      }
+    });
+
+    test('the retired model on another URL is left alone', () async {
+      SharedPreferences.setMockInitialValues({
+        AiProviderPreferences.localBaseUrlPrefKey: 'http://localhost:11434/v1',
+        AiProviderPreferences.localModelPrefKey: 'gemini-2.5-flash',
+      });
+      await AiProviderPreferences.load();
+      expect(AiProviderPreferences.localModel, 'gemini-2.5-flash');
+    });
+  });
 }
