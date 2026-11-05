@@ -23,6 +23,7 @@ import '../sketch/marquee_selection.dart' show kCrossingBoxColor;
 import 'orbit_camera.dart';
 import 'orthographic_camera.dart';
 import 'reference_planes.dart';
+import 'presentation_mode.dart' show Turntable;
 import 'touch_pivot.dart';
 import 'assembly_instance_render.dart';
 import 'render_mode.dart';
@@ -832,6 +833,9 @@ class PartViewport extends StatefulWidget {
   /// Desktop input D5: fired when a mouse middle click ends without a drag - in a sketch tool it ends the chain being drawn, as Enter does.
   final VoidCallback? onMouseMiddleClick;
 
+  /// Presentation mode: the turntable was switched on or off, including by a touch that took the view back.
+  final ValueChanged<bool>? onTurntableChanged;
+
   /// Fired when a tap (Fix 4) commits while the cursor is over empty space -
   /// Item 4's "clears entire selection set" rule.
   final VoidCallback? onClearSelection;
@@ -1105,6 +1109,7 @@ class PartViewport extends StatefulWidget {
     this.onSelectionToggle,
     this.onSelectClick,
     this.onContextMenuRequested,
+    this.onTurntableChanged,
     this.onMouseMiddleClick,
     this.onClearSelection,
     this.onMarqueeSelect,
@@ -1579,6 +1584,32 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     return true;
   }
 
+  final Turntable _turntable = Turntable();
+  Timer? _turntableTimer;
+
+  /// Whether the turntable (a slow constant orbit about the pivot, or the view target) is running.
+  bool get turntableOn => _turntable.running;
+
+  /// Starts or stops the turntable. A touch on the viewport stops it too ([onTurntableChanged] hears either).
+  void setTurntable(bool on) {
+    if (on == _turntable.running) return;
+    if (on) {
+      _turntable.start();
+      _turntableTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+        if (!mounted) return;
+        setState(() {
+          _turntable.tick(_camera, pivot: _touchPivot);
+          _resyncCameraDependentOverlays();
+        });
+      });
+    } else {
+      _turntable.stop();
+      _turntableTimer?.cancel();
+      _turntableTimer = null;
+    }
+    widget.onTurntableChanged?.call(on);
+  }
+
   /// One orbit step of [dx] / [dy] pixels: about the rotation pivot when one is set, else about the view target.
   void _orbitBy(double dx, double dy) {
     final pivot = _touchPivot;
@@ -1962,6 +1993,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   @override
   void dispose() {
+    _turntableTimer?.cancel();
     // P25: an already-scheduled (but not yet fired) long-press timer must
     // not fire after this State is torn down - it would call setState on a
     // disposed Element.
@@ -4859,6 +4891,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Offset _viewportCenter() => Offset(_viewportSize.width / 2, _viewportSize.height / 2);
 
   void _onPointerDown(PointerDownEvent event) {
+    if (_turntable.running) setTurntable(false);
     _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
     // Desktop input D1: a middle or right press drags the view in every

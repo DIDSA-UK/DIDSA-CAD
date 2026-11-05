@@ -114,6 +114,7 @@ void main() {
       bool selectionMode = false,
       List<int>? backgroundTaps,
       bool hidePlanes = true,
+      List<bool>? turntableChanges,
     }) async {
       final key = GlobalKey<PartViewportState>();
       await tester.pumpWidget(
@@ -131,6 +132,7 @@ void main() {
                 selectionMode: selectionMode,
                 onSelectionToggle: (_) {},
                 hiddenReferencePlanes: hidePlanes ? kAllReferencePlanes : const {},
+                onTurntableChanged: turntableChanges?.add,
               ),
             ),
           ),
@@ -176,6 +178,23 @@ void main() {
       await tester.pump();
       await tapAt(tester, tester.getCenter(find.byType(PartViewport)));
       expect(key.currentState!.rotationPivot, vm.Vector3(1, 2, 3));
+    });
+
+    testWidgets('the turntable runs until a touch lands on the viewport, then reports it stopped', (tester) async {
+      final changes = <bool>[];
+      final key = await pump(tester, turntableChanges: changes);
+      if (key == null) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      key.currentState!.setTurntable(true);
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(key.currentState!.turntableOn, isTrue);
+      final gesture = await tester.startGesture(tester.getCenter(find.byType(PartViewport)), kind: PointerDeviceKind.touch);
+      await gesture.up();
+      await tester.pump();
+      expect(key.currentState!.turntableOn, isFalse);
+      expect(changes, [true, false]);
     });
 
     testWidgets('Reset view clears the pivot', (tester) async {

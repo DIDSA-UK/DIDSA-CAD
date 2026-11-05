@@ -108,6 +108,8 @@ import 'mirror_panel.dart';
 import 'offset_surface_panel.dart';
 import 'override_stack.dart';
 import 'part_toolbar.dart';
+import 'presentation_mode.dart';
+import 'share_screen.dart';
 import 'part_viewport.dart';
 import 'pattern_panel.dart';
 import 'pending_job_store.dart';
@@ -436,6 +438,10 @@ class PartScreen extends StatefulWidget {
   /// per-platform answer."
   final bool? canPersistFilePathForReuse;
 
+  /// Presentation mode's system UI and orientation changes. Null uses the real ones (Android and iOS only); a test
+  /// passes `PresentationSystemUi(enabled: false)` or watches `SystemChannels.platform`.
+  final PresentationSystemUi? presentationSystemUi;
+
   /// Overridable for tests, same reasoning as [storageService] - defaults
   /// to a real `AssemblyDocumentClient` built from [storageService]/[documentApi].
   final AssemblyDocumentClient? assemblyDocumentClient;
@@ -480,6 +486,7 @@ class PartScreen extends StatefulWidget {
     this.initialWarnings = const [],
     this.storageService,
     this.canPersistFilePathForReuse,
+    this.presentationSystemUi,
     this.assemblyDocumentClient,
     this.initialProjectRoot,
     this.initialRelativePathByPartId = const {},
@@ -2439,6 +2446,194 @@ class _PartScreenState extends State<PartScreen> {
   /// skip re-syncing the selected-entity highlight nodes.
   Set<SelectionEntityRef> _selectedEntities = {};
 
+  // ---- Presentation mode (`docs/flutter-testing-feedback-2026-11-05-plan.md` item 3B) ----
+  //
+  // The editing chrome is hidden for a mirrored screen. The viewport, its orbit / pinch / pan and the tap-to-set pivot stay.
+  // A presenter button (top right, always there) opens a short menu; "Show all controls" brings the normal UI back
+  // without leaving the mode's immersive / landscape state.
+
+  /// Whether Presentation mode is on.
+  bool _presenting = false;
+
+  /// While presenting: the normal controls are brought back ("Show all controls").
+  bool _presenterControlsShown = false;
+  bool _presenterMenuOpen = false;
+  bool _presenterButtonFaded = false;
+  Timer? _presenterFadeTimer;
+
+  /// How long the presenter button stays fully visible after it was last used, before it fades to a ghost.
+  static const Duration _presenterFadeDelay = Duration(seconds: 4);
+
+  /// Mirrors the viewport's turntable (see [PartViewportState.setTurntable]).
+  bool _turntableOn = false;
+
+  /// What changes the system UI and orientation while presenting; a test can substitute one that does nothing.
+  PresentationSystemUi get _presentationSystemUi => widget.presentationSystemUi ?? const PresentationSystemUi();
+
+  /// True while presenting with the controls hidden: every editing overlay is left out.
+  bool get _chromeHidden => _presenting && !_presenterControlsShown;
+
+  /// Enters Presentation mode: closes the panels, goes to orbit mode, and (on a phone or tablet) immersive + landscape.
+  Future<void> _startPresenting() async {
+    if (_presenting) return;
+    if (_anyToolSessionActive) {
+      _showSnack('Close the open tool first');
+      return;
+    }
+    setState(() {
+      _presenting = true;
+      _presenterControlsShown = false;
+      _presenterMenuOpen = false;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _quickColumnOpen = false;
+      _visibilityPanelOpen = false;
+      _selectionMode = false;
+      _presenterButtonFaded = false;
+    });
+    _clearSelectedEntities();
+    _armPresenterFade();
+    await _presentationSystemUi.enter();
+  }
+
+  /// Leaves Presentation mode: the normal layout, system UI and orientation come back.
+  Future<void> _stopPresenting() async {
+    if (!_presenting) return;
+    _presenterFadeTimer?.cancel();
+    _viewportKey.currentState?.setTurntable(false);
+    setState(() {
+      _presenting = false;
+      _presenterControlsShown = false;
+      _presenterMenuOpen = false;
+      _turntableOn = false;
+    });
+    await _presentationSystemUi.exit();
+  }
+
+  /// The presenter button was just used: shows it fully and starts the timer that fades it again.
+  void _armPresenterFade() {
+    _presenterFadeTimer?.cancel();
+    _presenterFadeTimer = Timer(_presenterFadeDelay, () {
+      if (mounted) setState(() => _presenterButtonFaded = true);
+    });
+  }
+
+  void _togglePresenterMenu() {
+    setState(() {
+      _presenterMenuOpen = !_presenterMenuOpen;
+      _presenterButtonFaded = false;
+    });
+    _armPresenterFade();
+  }
+
+  /// Back (and Esc) while presenting: closes the presenter menu if it is open; else cancels an open tool; else hides
+  /// the controls if they are shown; else asks "Stop presenting?". Never leaves the mode on a single accidental Back.
+  /// True when presenting (the press was handled here).
+  bool _handlePresentationBack() {
+    if (!_presenting) return false;
+    if (_presenterMenuOpen) {
+      setState(() => _presenterMenuOpen = false);
+      return true;
+    }
+    if (_cancelActiveMode()) return true;
+    if (_presenterControlsShown) {
+      _hidePresenterControls();
+      return true;
+    }
+    unawaited(_askStopPresenting());
+    return true;
+  }
+
+  Future<void> _askStopPresenting() async {
+    if (await confirmStopPresenting(context)) await _stopPresenting();
+  }
+
+  void _hidePresenterControls() {
+    setState(() {
+      _presenterControlsShown = false;
+      _selectionMode = false;
+      _toolbarOpen = false;
+      _featureTreeVisible = false;
+      _quickColumnOpen = false;
+    });
+  }
+
+  void _togglePresenterControls() {
+    if (_presenterControlsShown) {
+      _hidePresenterControls();
+    } else {
+      setState(() => _presenterControlsShown = true);
+    }
+  }
+
+  /// The presenter menu's Open: the normal Open flow (it asks about unsaved changes, then the picker). A model that
+  /// loads is fitted to the view; the pivot goes with the reset. Presentation mode stays on throughout.
+  Future<void> _presenterOpenModel() async {
+    final before = _part;
+    await _onOpenPressed();
+    if (!mounted || identical(_part, before)) return;
+    _viewportKey.currentState?.resetView();
+  }
+
+  /// Steps through the saved scenes (Assembly lens scenes, `docs/scenes-scope.md`) as a walkthrough.
+  Future<void> _stepScene(int step) async {
+    if (_scenes.isEmpty) return;
+    final shownId = _shownScene?['id'];
+    final current = _scenes.indexWhere((s) => s['id'] == shownId);
+    final next = current == -1 ? (step > 0 ? 0 : _scenes.length - 1) : (current + step) % _scenes.length;
+    await _enterScene(_scenes[next]);
+  }
+
+  /// The Share screen dialog. Opening the Android cast settings sends the app to the background, so the dialog is
+  /// shown again on return, with Present ready.
+  Future<void> _showShareScreen() async {
+    while (mounted) {
+      final choice = await showShareScreenDialog(context);
+      if (!mounted) return;
+      if (choice == ShareScreenChoice.present) {
+        await _startPresenting();
+        return;
+      }
+      if (choice != ShareScreenChoice.openCastSettings) return;
+      if (!await ScreenShare.openAndroidCastSettings() && mounted) {
+        _showSnack('Could not open the cast settings on this device');
+      }
+    }
+  }
+
+  Widget _buildPresenterOverlay() {
+    final actions = PresenterMenuActions(
+      onOpenModel: () => unawaited(_presenterOpenModel()),
+      onToggleTurntable: () => _viewportKey.currentState?.setTurntable(!_turntableOn),
+      turntableOn: _turntableOn,
+      onResetView: () => _viewportKey.currentState?.resetView(),
+      onClearPivot: () => _viewportKey.currentState?.clearRotationPivot(),
+      hasPivot: _viewportKey.currentState?.rotationPivot != null,
+      onToggleControls: _togglePresenterControls,
+      controlsShown: _presenterControlsShown,
+      onStop: () => unawaited(_stopPresenting()),
+      onPreviousScene: _scenes.isEmpty ? null : () => unawaited(_stepScene(-1)),
+      onNextScene: _scenes.isEmpty ? null : () => unawaited(_stepScene(1)),
+    );
+    return Positioned(
+      top: 8,
+      right: 8,
+      child: SafeArea(
+        bottom: false,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            PresenterButton(faded: _presenterButtonFaded, menuOpen: _presenterMenuOpen, onPressed: _togglePresenterMenu),
+            if (_presenterMenuOpen) ...[
+              const SizedBox(height: 4),
+              PresenterMenu(actions: actions, onDismiss: () => setState(() => _presenterMenuOpen = false)),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   /// The second FAB's callback (Item 1) - just toggles which gesture set
   /// the viewport dispatches to; the selection itself is preserved across
   /// the switch so returning to Selection mode picks up where it left off.
@@ -2455,7 +2650,7 @@ class _PartScreenState extends State<PartScreen> {
   /// deliberately less restrictive [_selectionModeFabVisible] instead - the
   /// two corners can genuinely disagree now, so this is no longer a
   /// "shared by both" condition, just the left column's own.
-  bool get _viewportFabColumnsVisible => !_featureTreeVisible && !_anyToolSessionActive;
+  bool get _viewportFabColumnsVisible => !_featureTreeVisible && !_anyToolSessionActive && !_chromeHidden;
 
   /// Whether a tool session (or plane picking / sketch orientation) owns the
   /// viewport - [_viewportFabColumnsVisible]'s list, and the sessions in
@@ -2551,6 +2746,7 @@ class _PartScreenState extends State<PartScreen> {
   /// tool sessions and panels that hide it, each with the on-device report that put it there.
   bool get _startButtonVisible =>
       !_desktopLayout &&
+      !_chromeHidden &&
       !_extrudeActive &&
       !_surfaceActive &&
       !_createPlaneActive &&
@@ -12455,6 +12651,9 @@ class _PartScreenState extends State<PartScreen> {
     _busyOverlayTimer?.cancel();
     _jobPollTimer?.cancel();
     _dragPump?.cancel();
+    _presenterFadeTimer?.cancel();
+    // Leaving the screen while presenting must not leave the phone locked to landscape with the system bars hidden.
+    if (_presenting) unawaited(_presentationSystemUi.exit());
     if (widget.documentApi == null) {
       _api.close();
     }
@@ -14271,7 +14470,7 @@ class _PartScreenState extends State<PartScreen> {
   /// The Orbit / Select button stays on screen by itself while a tool session hides the Start button and its column
   /// (plan section 5.4): the user still orbits to see what they are about to pick. Outside tool sessions it lives in the
   /// quick column.
-  bool get _standaloneSelectionModeFabVisible => _selectionModeFabVisible && !_startButtonVisible;
+  bool get _standaloneSelectionModeFabVisible => _selectionModeFabVisible && !_startButtonVisible && !_chromeHidden;
 
   /// The quick column's buttons, nearest the Start button first. Every one closes the column once it has run.
   List<QuickColumnButton> _quickColumnButtons() => [
@@ -24804,6 +25003,7 @@ class _PartScreenState extends State<PartScreen> {
       canPop: false,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
+        if (_handlePresentationBack()) return;
         if (!_cancelActiveMode()) _confirmAndPopPart();
       },
       // Desktop input D3: the keyboard shortcuts, and the open tool panel's
@@ -24962,6 +25162,7 @@ class _PartScreenState extends State<PartScreen> {
       cancelPanel();
       return;
     }
+    if (_handlePresentationBack()) return;
     if (_cancelActiveMode()) return;
     if (_toolbarOpen) {
       setState(() => _toolbarOpen = false);
@@ -25108,7 +25309,7 @@ class _PartScreenState extends State<PartScreen> {
     if (!_desktopLayout) return viewportStack;
     return Row(
       children: [
-        if (_desktopPaneVisible && !_desktopToolPanelOpen)
+        if (_desktopPaneVisible && !_desktopToolPanelOpen && !_chromeHidden)
           DesktopLeftPane(
             width: _desktopPaneWidth,
             onResize: (delta) => setState(
@@ -25488,6 +25689,22 @@ class _PartScreenState extends State<PartScreen> {
                 onPressed: () => unawaited(_onRenderModeChanged(mode)),
               ),
           ]),
+          // Showing the model to a room or TV (`docs/flutter-testing-feedback-2026-11-05-plan.md` item 3).
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Present',
+              icon: Icons.slideshow,
+              tooltip: 'Present: hide the editing controls, for a mirrored screen',
+              selected: _presenting,
+              onPressed: _presenting ? null : () => unawaited(_startPresenting()),
+            ),
+            RibbonCommand(
+              label: 'Share screen',
+              icon: Icons.cast,
+              tooltip: 'How to show this on a TV, or work on a monitor',
+              onPressed: () => unawaited(_showShareScreen()),
+            ),
+          ]),
         ],
       ),
     ];
@@ -25581,6 +25798,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// True while the Part lens's selection drawer (the selected entities and what can be done with them) shows.
   bool get _selectionDrawerShown =>
+      !_chromeHidden &&
       _lens == AssemblyLens.part &&
                     !_extrudeActive &&
                     !_surfaceActive &&
@@ -25646,6 +25864,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// True while the Assembly lens's component drawer (Move / Fix / Delete for the selected component) shows.
   bool get _componentDrawerShown =>
+      !_chromeHidden &&
       _lens == AssemblyLens.assembly &&
                     _selectedOccurrenceId != null &&
                     !_assemblyMultiSelect.active &&
@@ -25987,7 +26206,9 @@ class _PartScreenState extends State<PartScreen> {
 
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
+      appBar: _chromeHidden
+          ? null
+          : AppBar(
         toolbarHeight: _desktopLayout ? kDesktopBarHeight : null,
         leading: DidsaLogoButton(height: _desktopLayout ? 24 : 32),
         leadingWidth: _desktopLayout ? 84 : 100,
@@ -26053,7 +26274,7 @@ class _PartScreenState extends State<PartScreen> {
                 ],
               ),
             ),
-          if (_desktopLayout) _buildDesktopRibbon(context),
+          if (_desktopLayout && !_chromeHidden) _buildDesktopRibbon(context),
           Expanded(
             child: _desktopFrame(
                 Stack(
@@ -26273,7 +26494,8 @@ class _PartScreenState extends State<PartScreen> {
                   anchorTriadAtOrigin: _anyToolPanelOpen,
                   // The phone layout's Fit lives in the Start button's quick column; the desktop layout keeps the
                   // button in the viewport's corner.
-                  showResetViewButton: _desktopLayout,
+                  showResetViewButton: _desktopLayout && !_chromeHidden,
+                  onTurntableChanged: (on) => setState(() => _turntableOn = on),
                 ),
                 if (_selectOtherCandidates != null)
                   Positioned.fill(
@@ -26457,7 +26679,7 @@ class _PartScreenState extends State<PartScreen> {
                 // used to cover the tree's lowest rows is gone.
                 Positioned.fill(
                   child: PartToolbar(
-                    visible: _toolbarOpen,
+                    visible: _toolbarOpen && !_chromeHidden,
                     // No hamburger button on the phone layout any more (the quick column opens this), so the panel
                     // brings its own close icon and starts at the top.
                     onClose: _desktopLayout ? null : () => setState(() => _toolbarOpen = false),
@@ -27856,10 +28078,12 @@ class _PartScreenState extends State<PartScreen> {
                 // [PatternPanel] now shows that same text in its own title
                 // row via its `tooltip` param instead (null once Direction 1/
                 // the axis is picked).
+                // Presentation mode: the presenter button and its menu, above everything else, always there.
+                if (_presenting) _buildPresenterOverlay(),
               ],
             )),
           ),
-          if (_desktopLayout) _buildDesktopStatusBar(),
+          if (_desktopLayout && !_chromeHidden) _buildDesktopStatusBar(),
         ],
       ),
       // Stage 22 item 3: hidden while the toolbar is open - Scaffold always

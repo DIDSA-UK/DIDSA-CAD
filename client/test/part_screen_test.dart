@@ -40,6 +40,7 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
+import 'package:didsa_cad_client/viewport3d/presentation_mode.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 import 'package:didsa_cad_client/viewport3d/visibility_panel.dart';
@@ -1831,6 +1832,208 @@ void main() {
       await _settleSheet(tester);
       await openStartMenu(tester);
       expect(find.byKey(const ValueKey('start-tile-Fit')), findsOneWidget, reason: 'reopened on View');
+    });
+  });
+
+  group('Presentation mode (phone layout)', () {
+    final platformCalls = <MethodCall>[];
+    _FakeStorageService? storage;
+
+    Future<void> pumpScreen(WidgetTester tester) async {
+      platformCalls.clear();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        (call) async {
+          platformCalls.add(call);
+          return null;
+        },
+      );
+      addTearDown(
+        () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, null),
+      );
+      final backend = _FakeDocumentBackend();
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      storage = _FakeStorageService();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+            canPersistFilePathForReuse: false,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    final presenterButton = find.byKey(const ValueKey('presenter-button'));
+
+    Future<void> present(WidgetTester tester) async {
+      await tapStartCommand(tester, 'Present', tab: 'view');
+      await tester.pump();
+    }
+
+    Future<void> openMenu(WidgetTester tester) async {
+      await tester.tap(presenterButton);
+      await _settleSheet(tester);
+    }
+
+    bool presenting(WidgetTester tester) => presenterButton.evaluate().isNotEmpty;
+
+    testWidgets('the View tab has Present and Share screen', (tester) async {
+      await pumpScreen(tester);
+      await openStartMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-view')));
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('start-tile-Present')), findsOneWidget);
+      expect(find.byKey(const ValueKey('start-tile-Share screen')), findsOneWidget);
+    });
+
+    testWidgets('Present hides the editing chrome, Stop presenting puts it back', (tester) async {
+      await pumpScreen(tester);
+      expect(_startFab, findsOneWidget);
+      expect(find.byType(AppBar), findsOneWidget);
+      await present(tester);
+      expect(presenting(tester), isTrue);
+      expect(_startFab, findsNothing);
+      expect(find.byType(AppBar), findsNothing);
+      expect(find.byTooltip('Feature tree'), findsNothing);
+      expect(find.byKey(const ValueKey('quick-column')), findsNothing);
+
+      await openMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('presenter-stop')));
+      await _settleSheet(tester);
+      expect(presenting(tester), isFalse);
+      expect(_startFab, findsOneWidget);
+      expect(find.byType(AppBar), findsOneWidget);
+    });
+
+    testWidgets('immersive and landscape while presenting, both undone on exit', (tester) async {
+      await pumpScreen(tester);
+      await present(tester);
+      expect(platformCalls.map((c) => c.method), contains('SystemChrome.setEnabledSystemUIMode'));
+      expect(platformCalls.firstWhere((c) => c.method == 'SystemChrome.setEnabledSystemUIMode').arguments,
+          'SystemUiMode.immersiveSticky');
+      expect(platformCalls.firstWhere((c) => c.method == 'SystemChrome.setPreferredOrientations').arguments,
+          ['DeviceOrientation.landscapeLeft', 'DeviceOrientation.landscapeRight']);
+      platformCalls.clear();
+      await openMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('presenter-stop')));
+      await _settleSheet(tester);
+      expect(platformCalls.firstWhere((c) => c.method == 'SystemChrome.setPreferredOrientations').arguments, isEmpty);
+      expect(platformCalls.firstWhere((c) => c.method == 'SystemChrome.setEnabledSystemUIMode').arguments,
+          'SystemUiMode.edgeToEdge');
+    });
+
+    testWidgets('the presenter button fades to a ghost but is still there and tappable', (tester) async {
+      await pumpScreen(tester);
+      await present(tester);
+      double opacity() => tester.widget<AnimatedOpacity>(find.ancestor(of: presenterButton, matching: find.byType(AnimatedOpacity))).opacity;
+      expect(opacity(), PresenterButton.activeOpacity);
+      await tester.pump(const Duration(seconds: 5));
+      await tester.pump(const Duration(seconds: 1));
+      expect(opacity(), PresenterButton.fadedOpacity);
+      expect(presenterButton.hitTestable(), findsOneWidget);
+      await openMenu(tester);
+      expect(find.byKey(const ValueKey('presenter-menu')), findsOneWidget);
+      expect(opacity(), PresenterButton.activeOpacity);
+    });
+
+    testWidgets('the menu lists Open, Show all controls and Stop presenting', (tester) async {
+      await pumpScreen(tester);
+      await present(tester);
+      await openMenu(tester);
+      for (final key in ['open', 'turntable', 'reset-view', 'clear-pivot', 'controls', 'stop']) {
+        expect(find.byKey(ValueKey('presenter-$key')), findsOneWidget, reason: key);
+      }
+      expect(find.text('Show all controls'), findsOneWidget);
+      // No pivot is set, so there is nothing to clear.
+      expect(tester.widget<ListTile>(find.byKey(const ValueKey('presenter-clear-pivot'))).enabled, isFalse);
+    });
+
+    testWidgets('Show all controls brings the UI back while still presenting; the button hides it again', (tester) async {
+      await pumpScreen(tester);
+      await present(tester);
+      await openMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('presenter-controls')));
+      await _settleSheet(tester);
+      expect(_startFab, findsOneWidget);
+      expect(find.byType(AppBar), findsOneWidget);
+      expect(presenting(tester), isTrue, reason: 'still presenting');
+      expect(platformCalls.where((c) => c.method == 'SystemChrome.setPreferredOrientations' && (c.arguments as List).isEmpty), isEmpty,
+          reason: 'the landscape lock stays');
+
+      await openMenu(tester);
+      expect(find.text('Hide controls'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('presenter-controls')));
+      await _settleSheet(tester);
+      expect(_startFab, findsNothing);
+      expect(presenting(tester), isTrue);
+    });
+
+    testWidgets('Back: closes the menu, then hides the controls, then asks Stop presenting?', (tester) async {
+      await pumpScreen(tester);
+      await present(tester);
+
+      // Menu open: Back closes it.
+      await openMenu(tester);
+      await tester.binding.handlePopRoute();
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('presenter-menu')), findsNothing);
+      expect(presenting(tester), isTrue);
+
+      // Controls shown: Back hides them.
+      await openMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('presenter-controls')));
+      await _settleSheet(tester);
+      expect(_startFab, findsOneWidget);
+      await tester.binding.handlePopRoute();
+      await _settleSheet(tester);
+      expect(_startFab, findsNothing);
+      expect(presenting(tester), isTrue);
+
+      // Nothing else: it asks, and Keep presenting keeps going.
+      await tester.binding.handlePopRoute();
+      await _settleSheet(tester);
+      expect(find.text('Stop presenting?'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('presenting-keep')));
+      await _settleSheet(tester);
+      expect(presenting(tester), isTrue);
+
+      // And Stop leaves it.
+      await tester.binding.handlePopRoute();
+      await _settleSheet(tester);
+      await tester.tap(find.byKey(const ValueKey('presenting-stop')));
+      await _settleSheet(tester);
+      expect(presenting(tester), isFalse);
+      expect(_startFab, findsOneWidget);
+    });
+
+    testWidgets('Open model runs the normal open flow and stays in Presentation mode', (tester) async {
+      await pumpScreen(tester);
+      await present(tester);
+      expect(storage!.pickOrCreateProjectRootCallCount, 0);
+      await openMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('presenter-open')));
+      await _settleSheet(tester);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(storage!.pickOrCreateProjectRootCallCount, 1, reason: 'the project folder picker of the Open flow ran');
+      expect(presenting(tester), isTrue);
+      expect(_startFab, findsNothing);
+    });
+
+    testWidgets('Share screen opens the dialog, and its Present button starts presenting', (tester) async {
+      await pumpScreen(tester);
+      await tapStartCommand(tester, 'Share screen', tab: 'view');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('share-screen-dialog')), findsOneWidget);
+      expect(presenting(tester), isFalse);
+      await tester.tap(find.byKey(const ValueKey('share-present')));
+      await _settleSheet(tester);
+      expect(presenting(tester), isTrue);
     });
   });
 
@@ -8309,6 +8512,35 @@ void main() {
       expect(find.text('Nothing selected'), findsOneWidget);
       // The tree is docked, so it carries no Close button.
       expect(find.byTooltip('Close'), findsNothing);
+    });
+
+    testWidgets('Presentation mode hides the ribbon, tree pane and status bar, and leaves the desktop layout alone on exit', (
+      tester,
+    ) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-view')));
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-view')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('ribbon-Present')));
+      await tester.pump();
+      for (final key in ['desktop-ribbon', 'desktop-status-bar', 'desktop-left-pane']) {
+        expect(find.byKey(ValueKey(key)), findsNothing, reason: key);
+      }
+      expect(find.byType(AppBar), findsNothing);
+      expect(find.byKey(const ValueKey('presenter-button')), findsOneWidget);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).showResetViewButton, isFalse);
+
+      // Esc steps back the same way Back does: no menu, no controls, so it asks.
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(find.text('Stop presenting?'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('presenting-stop')));
+      await tester.pump(const Duration(milliseconds: 300));
+      for (final key in ['desktop-ribbon', 'desktop-status-bar', 'desktop-left-pane']) {
+        expect(find.byKey(ValueKey(key)), findsOneWidget, reason: key);
+      }
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).showResetViewButton, isTrue);
     });
 
     testWidgets('the desktop layout has no Start button or quick column and keeps its Reset view button', (tester) async {

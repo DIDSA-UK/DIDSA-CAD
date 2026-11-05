@@ -67,9 +67,35 @@ class MainActivity : FlutterActivity() {
                 }
                 "isIgnoringBatteryOptimizations" -> result.success(isIgnoringBatteryOptimizations())
                 "requestIgnoreBatteryOptimizations" -> requestIgnoreBatteryOptimizations(result)
+                "openSettingsScreen" -> {
+                    val actions = call.argument<List<String>>("actions")
+                    if (actions == null) {
+                        result.error("bad_args", "actions is required", null)
+                    } else {
+                        result.success(openFirstSettingsScreen(actions))
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /// Opens the first of [actions] (system Settings intent actions, e.g. the cast screen, then the display settings some
+    /// OEMs fall back to) that this device can open. True if one opened, false if none did.
+    private fun openFirstSettingsScreen(actions: List<String>): Boolean {
+        for (action in actions) {
+            try {
+                val intent = Intent(action)
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                // No resolveActivity check: on Android 11+ package visibility can hide a Settings screen from it even
+                // though startActivity opens it. A missing screen throws ActivityNotFoundException instead.
+                startActivity(intent)
+                return true
+            } catch (e: Exception) {
+                // Try the next action.
+            }
+        }
+        return false
     }
 
     private fun hasRunCommandPermission(): Boolean =
