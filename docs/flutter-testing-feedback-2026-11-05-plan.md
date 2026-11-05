@@ -162,13 +162,13 @@ Bluetooth mouse and keyboard. **The client already handles this:** `client/lib/l
 And if a PC is already at the desk, the Windows / Linux build of the client against the same backend is the simplest
 option of all.
 
+**The owner reports that wired DeX already works well (2026-11-05)**, so this use case stays as it is. Wireless DeX
+and iPad Stage Manager have not been tried.
+
 **Work for the implementation session (small):**
 
-1. **Check the app behaves as a resizable window on Android.** `android:resizeableActivity` must be true, which is
-   the default when targeting SDK 24+ (confirm it isn't turned off in `client/android/app/src/main/AndroidManifest.xml`),
-   and the app must not lock orientation globally. Resizing must not lose state. Check what happens to the
-   `flutter_scene` view when the window resizes or moves between displays. This can't be done headless. List it as an
-   owner check on a DeX-capable phone or a tablet.
+1. **Don't break it.** Presentation mode's landscape lock and immersive mode (B, below) must only apply while
+   presenting and must be fully undone on exit, or they would fight DeX's window. Don't lock orientation globally.
 2. **Help text** (the same dialog as B's "Share screen" menu item, see below) with a "Working on a monitor" section:
    use DeX / desktop mode or Stage Manager rather than mirroring, add a Bluetooth mouse to get the desktop layout,
    or use the desktop app on a PC.
@@ -189,8 +189,31 @@ a presentation rather than an editing UI.
 - `SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky)` and a landscape lock while it is on, so a
   phone's mirror fills a 16:9 screen instead of a portrait strip with black bars. Restore both on exit. On desktop,
   go full screen in the window instead.
-- Exit: a small semi-transparent close button in a corner that fades after a few seconds and comes back on tap,
-  plus Back / Esc.
+- **Getting the controls back while presenting** (the owner's requirement: the presenter must be able to open
+  other models etc. without leaving the room's view in a mess). Design:
+  - A **presenter button** is always in one corner (top right). It is semi-transparent and fades to a faint ghost
+    after a few seconds of no touch, but it **never disappears and stays tappable** even when faded. Fading only
+    on the TV matters, the presenter can always find it. A tap anywhere does *not* bring it back, because a tap in
+    Presentation mode sets the pivot (item 2).
+  - Tapping it opens a **presenter menu** (a compact sheet or popup, not the full editing UI):
+    - **Open model…**: calls the part screen's existing `_onOpenPressed` (`part_screen.dart`, around line 12116),
+      which already runs `_confirmExitPart` for unsaved changes and then the platform's file or project-folder picker.
+      The newly opened model **stays in Presentation mode** and is fitted to the view (`_doRecentre`). The pivot is
+      cleared.
+    - **Recent files**, if the app already keeps a recent list. Check before adding one. If there isn't one, Open is
+      enough for now.
+    - **Scenes**: next / previous, if they are reachable (see the Scenes bullet below).
+    - **Turntable** on / off. **Reset view**. **Clear pivot**.
+    - **Show all controls**: brings the normal UI back (tree, ribbon, FABs) **without** leaving Presentation mode's
+      immersive / landscape state, so the presenter can do anything (open a sub-assembly, toggle visibility, change
+      appearance) and then tap the presenter button again to hide them. This is the escape hatch for anything the
+      menu doesn't list, so the menu can stay short.
+    - **Stop presenting**: restores the system UI, orientation and the normal layout.
+  - Back (Android) closes the menu if it is open. Otherwise it hides the controls if they are shown. Otherwise it asks
+    "Stop presenting?". Esc on desktop does the same in one step. Never leave Presentation mode on a single
+    accidental Back with no prompt.
+  - Dialogs opened while presenting (file picker, unsaved-changes prompt) are shown on the mirrored screen too.
+    That's unavoidable with mirroring. Say so in the help text ("the audience will see the file picker").
 - Navigation: orbit, pinch and pan, plus item 2's tap-to-set pivot (which is exactly what pointing out a detail to a
   room needs). No selection or editing.
 - **Turntable**: a toggle for a slow constant orbit about the pivot (or the target) for an unattended display. It is
@@ -221,7 +244,13 @@ a presentation rather than an editing UI.
 
 ### Tests
 
-- Widget: toggling Presentation mode removes the tree / FAB / ribbon widgets and puts them back on exit. The system UI
+- Widget: toggling Presentation mode removes the tree / FAB / ribbon widgets and puts them back on exit.
+- Widget: in Presentation mode the presenter button is present and hit-testable after the fade timer has run (pump
+  past it). Its menu has Open, Show all controls and Stop presenting. Show all controls brings the tree / ribbon back
+  while `presenting` stays true, and tapping the button again hides them. Back with the menu closed and controls
+  hidden shows the "Stop presenting?" prompt rather than exiting.
+- Widget: Open from the presenter menu calls the open flow (inject or fake `_onOpenPressed`'s picker as other
+  open-flow tests do). After a model loads, Presentation mode is still on. The system UI
   mode and orientation calls can be checked with the `SystemChannels.platform` mock.
 - Unit: the turntable advances the camera by a fixed angle per tick and stops when a pointer goes down.
 - The Android intent: test that the right action string is built. The launch itself can't be tested headless.
