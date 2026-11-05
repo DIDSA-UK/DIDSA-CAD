@@ -1603,7 +1603,7 @@ class _SketchScreenState extends State<SketchScreen> {
         // orbitBasis's own origin - no need to look it up via
         // _controller.points/originPointId here.
         originWorldPoint: orbitBasis.origin,
-        referencePlanesHidden: true,
+        hiddenReferencePlanes: kAllReferencePlanes,
         renderMode: _orbitRenderMode,
         bodyColourHex: _orbitBodyColourHex,
         bodyOpacity: _orbitBodyOpacity,

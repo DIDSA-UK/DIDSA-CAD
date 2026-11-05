@@ -3098,6 +3098,57 @@ void main() {
       expect(oldBackend.referencePlanesHidden, isFalse);
     });
 
+    test('PartDto reads the per-plane list, and falls back to the old bool (true = all three)', () {
+      final one = PartDto.fromJson({
+        'id': 'p',
+        'name': 'P',
+        'feature_ids': <String>[],
+        'hidden_reference_planes': ['XZ'],
+        'reference_planes_hidden': false,
+      });
+      expect(one.hiddenReferencePlanes, {'XZ'});
+      expect(one.referencePlanesHidden, isFalse);
+
+      final list = PartDto.fromJson({
+        'id': 'p',
+        'name': 'P',
+        'feature_ids': <String>[],
+        'hidden_reference_planes': ['YZ', 'XY', 'XZ', 'bogus'],
+      });
+      expect(list.hiddenReferencePlanes, {'XY', 'XZ', 'YZ'});
+      expect(list.referencePlanesHidden, isTrue);
+
+      final oldBool = PartDto.fromJson({
+        'id': 'p',
+        'name': 'P',
+        'feature_ids': <String>[],
+        'reference_planes_hidden': true,
+      });
+      expect(oldBool.hiddenReferencePlanes, {'XY', 'XZ', 'YZ'});
+      expect(PartVisibilityDto.fromJson({'reference_planes_hidden': true}).hiddenReferencePlanes, {'XY', 'XZ', 'YZ'});
+      expect(PartVisibilityDto.fromJson({'hidden_feature_ids': []}).hiddenReferencePlanes, isEmpty);
+    });
+
+    test('setVisibility sends reference_plane_ids only when given', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return http.Response(
+            jsonEncode({'hidden_feature_ids': [], 'hidden_reference_planes': ['XZ'], 'reference_planes_hidden': false}),
+            200,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+      final state = await client.setVisibility('part-1', hidden: true, referencePlaneIds: ['XZ']);
+      expect(bodies.single['reference_plane_ids'], ['XZ']);
+      expect(bodies.single['reference_planes'], false);
+      expect(state.hiddenReferencePlanes, {'XZ'});
+      await client.setVisibility('part-1', hidden: true, referencePlanes: true);
+      expect(bodies.last.containsKey('reference_plane_ids'), isFalse);
+    });
+
     test('setVisibility PATCHes the visibility route and returns the Part\'s whole state', () async {
       http.Request? captured;
       final client = DocumentApiClient(

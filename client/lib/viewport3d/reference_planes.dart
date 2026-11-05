@@ -12,6 +12,13 @@ import 'mesh_geometry.dart' show NormalDepthUnlitMaterial;
 /// every plane this stage ever renders or hit-tests is one of these three.
 enum ReferencePlaneKind { xy, xz, yz }
 
+/// All three default planes, for "every plane hidden".
+const Set<ReferencePlaneKind> kAllReferencePlanes = {
+  ReferencePlaneKind.xy,
+  ReferencePlaneKind.xz,
+  ReferencePlaneKind.yz,
+};
+
 /// The inverse of [ReferencePlaneKindX.apiValue] - parses a `SketchDto.plane`
 /// string (one of `"XY"`/`"XZ"`/`"YZ"`, per the backend's `Plane` enum, or -
 /// C3 - `null` for a Sketch anchored to a custom plane instead) back into a
@@ -275,11 +282,16 @@ class ReferencePlaneHit {
 /// real triangle data and these planes' GPU geometry only exists once
 /// `PartViewport` has a live scene, while this stays GPU-independent and
 /// unit-testable.
-ReferencePlaneHit? hitTestReferencePlanes(vm.Ray ray, {double halfSize = _referencePlaneHalfSize}) {
+ReferencePlaneHit? hitTestReferencePlanes(
+  vm.Ray ray, {
+  double halfSize = _referencePlaneHalfSize,
+  Set<ReferencePlaneKind> hidden = const {},
+}) {
   ReferencePlaneHit? best;
   double? bestT;
 
   for (final plane in ReferencePlaneKind.values) {
+    if (hidden.contains(plane)) continue; // A hidden plane cannot be hit.
     final axis = plane._zeroAxis;
     final originOnAxis = ray.origin[axis];
     final directionOnAxis = ray.direction[axis];

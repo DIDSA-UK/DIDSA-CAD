@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_gpu/gpu.dart' as gpu;
@@ -757,7 +758,10 @@ class PartViewport extends StatefulWidget {
   /// silently selecting an invisible target. [PartScreen] owns the toggle
   /// (via [PartToolbar]'s "Hide/Show Reference Planes" entry), the same
   /// controlled-widget pattern [selectedPlane] already uses.
-  final bool referencePlanesHidden;
+  final Set<ReferencePlaneKind> hiddenReferencePlanes;
+
+  /// Every default plane is hidden.
+  bool get referencePlanesHidden => hiddenReferencePlanes.length >= ReferencePlaneKind.values.length;
 
   /// Stage 11: which of [ViewportRenderMode]'s three display modes is
   /// currently active - controls whether [bodies]' filled faces are drawn
@@ -1087,7 +1091,7 @@ class PartViewport extends StatefulWidget {
     this.coarseOverlayMeshes = const {},
     this.transientCoarsePreviewBodies = const [],
     this.skippedPreviewBodyIds = const {},
-    this.referencePlanesHidden = false,
+    this.hiddenReferencePlanes = const {},
     this.renderMode = ViewportRenderMode.shaded,
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
@@ -2090,7 +2094,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       setState(_syncEdgesNode);
     }
     if (widget.selectedPlane != oldWidget.selectedPlane ||
-        widget.referencePlanesHidden != oldWidget.referencePlanesHidden ||
+        !setEquals(widget.hiddenReferencePlanes, oldWidget.hiddenReferencePlanes) ||
         widget.selectedEntities != oldWidget.selectedEntities) {
       setState(_syncReferencePlaneNodes);
     }
@@ -3203,13 +3207,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     for (final node in _planeNodes.values) {
       scene.remove(node);
     }
-    if (widget.referencePlanesHidden) {
-      _planeNodes = {};
-      return;
-    }
     _planeNodes = {
       for (final plane in ReferencePlaneKind.values)
-        plane: buildReferencePlaneNode(plane, selected: _isPlaneSelected(plane)),
+        if (!widget.hiddenReferencePlanes.contains(plane))
+          plane: buildReferencePlaneNode(plane, selected: _isPlaneSelected(plane)),
     };
     for (final node in _planeNodes.values) {
       scene.add(node);
@@ -4579,7 +4580,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // ordinarily hit instead, mirroring how a curved-face tap already has
     // no effect for Create Plane's own `offsetFace` mode).
     if (widget.sectionPlacementActive && widget.onSectionPlacementTap != null) {
-      final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
+      final referenceHit = hitTestReferencePlanes(ray, hidden: widget.hiddenReferencePlanes);
       if (referenceHit != null) {
         widget.onSectionPlacementTap!(vm.Vector3.zero(), _referencePlaneNormal(referenceHit.plane));
         return;
@@ -4623,7 +4624,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // ordinary meaning below, same as every other picking flow in this
       // app when a tap lands on empty space or an ineligible target.
     }
-    final hit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(ray);
+    final hit = hitTestReferencePlanes(ray, hidden: widget.hiddenReferencePlanes);
     if (hit != null) {
       widget.onPlaneTap(hit.plane);
       return;
@@ -5579,7 +5580,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// root-focused caller, so this is a no-op widening there.
   HoverHit? _hoverHitTestPlanes(vm.Ray worldRay, vm.Ray localRay) {
     if (!widget.selectionFilter.plane) return null;
-    final referenceHit = widget.referencePlanesHidden ? null : hitTestReferencePlanes(worldRay);
+    final referenceHit = hitTestReferencePlanes(worldRay, hidden: widget.hiddenReferencePlanes);
     if (referenceHit != null) {
       return HoverHit(
         entity: SelectionEntityRef(

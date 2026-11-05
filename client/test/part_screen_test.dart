@@ -89,6 +89,13 @@ class _FakeDocumentBackend {
   /// request body in order, and a switch that makes the route fail.
   final Map<String, Set<String>> hiddenByPart = {};
   final Map<String, bool> referencePlanesHiddenByPart = {};
+
+  /// Per-plane hidden state ("XY" / "XZ" / "YZ") a `reference_plane_ids` PATCH sets; when a Part has no entry the old
+  /// [referencePlanesHiddenByPart] bool stands for all three.
+  final Map<String, Set<String>> hiddenPlanesByPart = {};
+
+  Set<String> _hiddenPlanes(String partId) =>
+      hiddenPlanesByPart[partId] ?? ((referencePlanesHiddenByPart[partId] ?? false) ? {'XY', 'XZ', 'YZ'} : <String>{});
   final List<Map<String, dynamic>> visibilityRequests = [];
   bool failVisibility = false;
 
@@ -109,7 +116,8 @@ class _FakeDocumentBackend {
 
   Map<String, dynamic> _visibilityFields(String partId) => {
         'hidden_feature_ids': (hiddenByPart[partId] ?? <String>{}).toList()..sort(),
-        'reference_planes_hidden': referencePlanesHiddenByPart[partId] ?? false,
+        'hidden_reference_planes': _hiddenPlanes(partId).toList()..sort(),
+        'reference_planes_hidden': _hiddenPlanes(partId).length == 3,
       };
 
   /// Every Curve feature PATCH body, in order (the Helix edit test).
@@ -322,7 +330,8 @@ class _FakeDocumentBackend {
       final ids = ((body['feature_ids'] as List?) ?? const []).cast<String>();
       final categories = ((body['categories'] as List?) ?? const []).cast<String>();
       final planes = body['reference_planes'] == true;
-      if (ids.isEmpty && categories.isEmpty && !planes) return http.Response(jsonEncode({'detail': 'no target'}), 422);
+      final planeIds = ((body['reference_plane_ids'] as List?) ?? const []).cast<String>();
+      if (ids.isEmpty && categories.isEmpty && !planes && planeIds.isEmpty) return http.Response(jsonEncode({'detail': 'no target'}), 422);
       final known = features.map((f) => f['id']).toSet();
       if (partId == 'part-1' && ids.any((id) => !known.contains(id))) {
         return http.Response(jsonEncode({'detail': 'Unknown feature ids'}), 422);
@@ -336,7 +345,15 @@ class _FakeDocumentBackend {
       };
       final set = hiddenByPart.putIfAbsent(partId, () => <String>{});
       hidden ? set.addAll(targets) : set.removeAll(targets);
-      if (planes) referencePlanesHiddenByPart[partId] = hidden;
+      if (planes) {
+        referencePlanesHiddenByPart[partId] = hidden;
+        hiddenPlanesByPart.remove(partId);
+      }
+      if (planeIds.isNotEmpty) {
+        final current = {..._hiddenPlanes(partId)};
+        hidden ? current.addAll(planeIds) : current.removeAll(planeIds);
+        hiddenPlanesByPart[partId] = current;
+      }
       return _json(_visibilityFields(partId), 200);
     }
 
@@ -1964,6 +1981,54 @@ void main() {
       expect(backend.referencePlanesHiddenByPart['part-1'], isTrue);
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).referencePlanesHidden, isTrue);
       expect(chipData(tester, 'reference-planes').state, VisibilityChipState.hidden);
+    });
+
+    Set<ReferencePlaneKind> hiddenPlanes(WidgetTester tester) =>
+        tester.widget<PartViewport>(find.byType(PartViewport)).hiddenReferencePlanes;
+
+    testWidgets('the tree lists the three default planes under Planes; an eye hides one, the chip then reads partial', (
+      tester,
+    ) async {
+      final backend = await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await tester.tap(find.byTooltip('Feature tree'));
+      await _settleSheet(tester);
+      await tester.tap(find.text('Planes'));
+      await _settleSheet(tester);
+      for (final label in ['XY Plane', 'XZ Plane', 'YZ Plane']) {
+        expect(find.text(label), findsOneWidget);
+      }
+      await tester.tap(find.byKey(const ValueKey('ref-plane-eye-XZ')));
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.single, containsPair('reference_plane_ids', ['XZ']));
+      expect(backend.visibilityRequests.single, containsPair('hidden', true));
+      expect(hiddenPlanes(tester), {ReferencePlaneKind.xz});
+      await tester.tap(find.byTooltip('Close')); // the tree's own X
+      await _settleSheet(tester);
+      await openPanel(tester);
+      expect(chipData(tester, 'reference-planes').state, VisibilityChipState.partial);
+
+      // The chip with some hidden hides all three, then showing one from the tree leaves it not "hidden".
+      await tapChip(tester, 'reference-planes');
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.last, containsPair('reference_planes', true));
+      expect(backend.visibilityRequests.last, containsPair('hidden', true));
+      expect(hiddenPlanes(tester), kAllReferencePlanes);
+      expect(chipData(tester, 'reference-planes').state, VisibilityChipState.hidden);
+    });
+
+    testWidgets('showing one plane from the tree after hiding all three un-hides only that one', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: twoSketches)..referencePlanesHiddenByPart['part-1'] = true;
+      await pumpScreen(tester, backend, initialPartId: 'part-1');
+      expect(hiddenPlanes(tester), kAllReferencePlanes);
+      await tester.tap(find.byTooltip('Feature tree'));
+      await _settleSheet(tester);
+      await tester.tap(find.text('Planes'));
+      await _settleSheet(tester);
+      await tester.tap(find.byKey(const ValueKey('ref-plane-eye-YZ')));
+      await settleRequests(tester);
+      expect(backend.visibilityRequests.last, containsPair('reference_plane_ids', ['YZ']));
+      expect(backend.visibilityRequests.last, containsPair('hidden', false));
+      expect(hiddenPlanes(tester), {ReferencePlaneKind.xy, ReferencePlaneKind.xz});
     });
 
     testWidgets('what the backend holds when the Part loads is what the screen shows', (tester) async {

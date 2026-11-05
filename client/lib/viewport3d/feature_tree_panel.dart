@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../api/document_api_client.dart';
 import 'action_sheet.dart';
+import 'reference_planes.dart' show ReferencePlaneKind, ReferencePlaneKindX;
 import 'svg_icon.dart';
 import 'tree_multi_select_controller.dart';
 
@@ -309,6 +310,16 @@ class FeatureTreePanel extends StatefulWidget {
   /// its absence in the 3D view.
   final Set<String> hiddenFeatureIds;
 
+  /// Which of the three default planes (the XY / XZ / YZ rows under Planes) are hidden in the viewport.
+  final Set<ReferencePlaneKind> hiddenReferencePlanes;
+
+  /// A default plane's row was tapped: same as tapping the plane in the viewport (it opens the plane sheet).
+  final void Function(ReferencePlaneKind plane)? onReferencePlaneTap;
+
+  /// A default plane's eye (or its long-press / right-click menu) asked to hide ([hidden] true) or show it. The default
+  /// planes are not features: there is no delete, here or anywhere.
+  final void Function(ReferencePlaneKind plane, bool hidden)? onReferencePlaneVisibility;
+
   /// On-device feedback: Body ids the backend tagged `hidden` (see
   /// `app.document.router.get_part_mesh`'s own docstring) - unlike
   /// [hiddenFeatureIds] (Feature-scoped), Bodies-section rows are styled
@@ -501,6 +512,9 @@ class FeatureTreePanel extends StatefulWidget {
     this.bodyIds = const [],
     this.bodyNames = const {},
     this.hiddenFeatureIds = const {},
+    this.hiddenReferencePlanes = const {},
+    this.onReferencePlaneTap,
+    this.onReferencePlaneVisibility,
     this.hiddenBodyIds = const {},
     this.onSurfaceTap,
     this.onSurfaceLongPress,
@@ -758,7 +772,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     return ListView(
       children: [
         if (widget.bodyIds.isNotEmpty) _buildBodiesSection(context),
-        if (widget.features.any((f) => f.type == 'create_plane')) _buildPlanesSection(context),
+        _buildPlanesSection(context),
         if (widget.surfaceIds.isNotEmpty) _buildSurfacesSection(context),
         if (widget.curveIds.isNotEmpty) _buildCurvesSection(context),
         _buildFeaturesSection(context),
@@ -844,6 +858,8 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       leading: const SvgIcon('assets/icons/feature/feature_plane.svg', size: 26),
       title: const Text('Planes', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
       children: [
+        // The three default planes first, built in: hide / show only, never deletable.
+        for (final plane in ReferencePlaneKind.values) _buildReferencePlaneTile(plane),
         for (final feature in planeFeatures)
           Builder(builder: (context) {
             final hidden = widget.hiddenFeatureIds.contains(feature.id);
@@ -881,6 +897,57 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
             );
           }),
       ],
+    );
+  }
+
+  /// One default plane's row under Planes (XY, XZ, YZ). Tap = the plane sheet, the eye hides / shows it, long-press or
+  /// right-click offers Hide / Show only. In a tree multi-select session the row is disabled (no check, no tap), so a
+  /// multi-select Delete can never include a default plane.
+  Widget _buildReferencePlaneTile(ReferencePlaneKind plane) {
+    final hidden = widget.hiddenReferencePlanes.contains(plane);
+    final selecting = widget.isMultiSelectMode;
+    final colors = Theme.of(context).colorScheme;
+    void toggle() => widget.onReferencePlaneVisibility?.call(plane, !hidden);
+    Future<void> openMenu({Offset? at}) async {
+      final action = await showContextMenu<bool>(
+        context,
+        at: at,
+        [
+          ActionSheetEntry<bool>(
+            action: true,
+            label: hidden ? 'Show' : 'Hide',
+            icon: hidden ? Icons.visibility : Icons.visibility_off,
+          ),
+        ],
+      );
+      if (action == true) toggle();
+    }
+
+    return Opacity(
+      opacity: hidden || selecting ? 0.5 : 1.0,
+      child: MouseContextMenuRegion(
+        onOpen: selecting || widget.onReferencePlaneVisibility == null ? null : (at) => openMenu(at: at),
+        child: ListTile(
+          key: ValueKey('ref-plane-row-${plane.apiValue}'),
+          dense: true,
+          visualDensity: VisualDensity.compact,
+          enabled: !selecting,
+          leading: SvgIcon('assets/icons/feature/feature_plane.svg', size: 24, color: colors.onSurfaceVariant),
+          title: Text('${plane.apiValue} Plane', maxLines: 1, overflow: TextOverflow.ellipsis, style: _rowTitleStyle),
+          trailing: selecting || widget.onReferencePlaneVisibility == null
+              ? null
+              : IconButton(
+                  key: ValueKey('ref-plane-eye-${plane.apiValue}'),
+                  tooltip: hidden ? 'Show ${plane.apiValue} plane' : 'Hide ${plane.apiValue} plane',
+                  visualDensity: VisualDensity.compact,
+                  iconSize: 18,
+                  icon: Icon(hidden ? Icons.visibility_off : Icons.visibility),
+                  onPressed: toggle,
+                ),
+          onTap: selecting ? null : () => widget.onReferencePlaneTap?.call(plane),
+          onLongPress: selecting || widget.onReferencePlaneVisibility == null ? null : openMenu,
+        ),
+      ),
     );
   }
 

@@ -59,7 +59,13 @@ class PartDto {
   /// Hide / Show, saved with the Part (`PATCH /parts/{id}/visibility`): the Features the user has hidden, and whether the
   /// three default reference planes are.
   final List<String> hiddenFeatureIds;
-  final bool referencePlanesHidden;
+
+  /// Which default planes are hidden: `"XY"`, `"XZ"`, `"YZ"`. An older backend that only sends the all-or-nothing
+  /// `reference_planes_hidden` bool reads as all three (see [hiddenReferencePlanesFromJson]).
+  final Set<String> hiddenReferencePlanes;
+
+  /// All three default planes are hidden.
+  bool get referencePlanesHidden => hiddenReferencePlanes.length >= kReferencePlaneApiValues.length;
 
   PartDto({
     required this.id,
@@ -77,7 +83,7 @@ class PartDto {
     this.defaultMaterial,
     this.bodyMaterialAssignments = const {},
     this.hiddenFeatureIds = const [],
-    this.referencePlanesHidden = false,
+    this.hiddenReferencePlanes = const {},
   });
 
   factory PartDto.fromJson(Map<String, dynamic> json) => PartDto(
@@ -100,21 +106,38 @@ class PartDto {
           (k, v) => MapEntry(k, MaterialAssignmentDto.fromJson(v as Map<String, dynamic>)),
         ),
         hiddenFeatureIds: (json['hidden_feature_ids'] as List? ?? const []).cast<String>(),
-        referencePlanesHidden: json['reference_planes_hidden'] as bool? ?? false,
+        hiddenReferencePlanes: hiddenReferencePlanesFromJson(json),
       );
+}
+
+/// The three default planes' API values, in the order the build tree lists them.
+const List<String> kReferencePlaneApiValues = ['XY', 'XZ', 'YZ'];
+
+/// Reads which default planes are hidden from a Part or visibility response: the per-plane `hidden_reference_planes` list
+/// when present, otherwise the older `reference_planes_hidden` bool (true meaning all three), so a new client still works
+/// against an old backend.
+Set<String> hiddenReferencePlanesFromJson(Map<String, dynamic> json) {
+  final list = json['hidden_reference_planes'];
+  if (list is List) {
+    return list.whereType<String>().where(kReferencePlaneApiValues.contains).toSet();
+  }
+  return json['reference_planes_hidden'] == true ? {...kReferencePlaneApiValues} : <String>{};
 }
 
 /// `PATCH /parts/{part_id}/visibility` response: a Part's whole Hide / Show state. The client replaces its copy with this,
 /// it never patches it.
 class PartVisibilityDto {
   final Set<String> hiddenFeatureIds;
-  final bool referencePlanesHidden;
+  final Set<String> hiddenReferencePlanes;
 
-  const PartVisibilityDto({required this.hiddenFeatureIds, required this.referencePlanesHidden});
+  const PartVisibilityDto({required this.hiddenFeatureIds, this.hiddenReferencePlanes = const {}});
+
+  /// All three default planes are hidden.
+  bool get referencePlanesHidden => hiddenReferencePlanes.length >= kReferencePlaneApiValues.length;
 
   factory PartVisibilityDto.fromJson(Map<String, dynamic> json) => PartVisibilityDto(
         hiddenFeatureIds: ((json['hidden_feature_ids'] as List? ?? const []).cast<String>()).toSet(),
-        referencePlanesHidden: json['reference_planes_hidden'] as bool? ?? false,
+        hiddenReferencePlanes: hiddenReferencePlanesFromJson(json),
       );
 }
 
@@ -3482,13 +3505,15 @@ class DocumentApiClient {
 
   /// Hides ([hidden] true) or shows every target named: explicit [featureIds], whole [categories] (`plane`, `sketch`,
   /// `curve`, `body`, `surface`, resolved on the server from each Feature's `produces` when the call is made) and the
-  /// default reference planes ([referencePlanes]). At least one target is needed. Returns the Part's whole state.
+  /// default reference planes ([referencePlanes] for all three, [referencePlaneIds] for single ones: `"XY"`, `"XZ"`,
+  /// `"YZ"`). At least one target is needed. Returns the Part's whole state.
   Future<PartVisibilityDto> setVisibility(
     String partId, {
     required bool hidden,
     List<String> featureIds = const [],
     List<String> categories = const [],
     bool referencePlanes = false,
+    List<String> referencePlaneIds = const [],
   }) =>
       _send(
         () => _httpClient.patch(
@@ -3499,6 +3524,7 @@ class DocumentApiClient {
                 'feature_ids': featureIds,
                 'categories': categories,
                 'reference_planes': referencePlanes,
+                if (referencePlaneIds.isNotEmpty) 'reference_plane_ids': referencePlaneIds,
               }),
             ),
         (body) => PartVisibilityDto.fromJson(body as Map<String, dynamic>),

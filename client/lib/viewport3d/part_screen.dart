@@ -1221,10 +1221,13 @@ class _PartScreenState extends State<PartScreen> {
   /// `CreatePlaneFeature` instead of one of the three fixed planes.
   String? _selectedCreatePlaneFeatureId;
 
-  /// Stage 10b: whether all three reference planes are globally hidden -
-  /// toggled from [PartToolbar]'s "Hide/Show Reference Planes" entry,
-  /// in-memory only (no persistence across app restarts, per the brief).
-  bool _referencePlanesHidden = false;
+  /// Which of the three default reference planes are hidden: a cache of the Part's saved per-plane state (see
+  /// [_seedVisibility]). The build tree's XY / XZ / YZ rows toggle one each; the chip, the toolbar entry and the View
+  /// menu toggle all three.
+  Set<ReferencePlaneKind> _hiddenReferencePlanes = {};
+
+  /// Stage 10b's "all three hidden". False when only some are: the toggles then hide all.
+  bool get _referencePlanesHidden => _hiddenReferencePlanes.length >= ReferencePlaneKind.values.length;
 
   /// Planes are shown whatever [_referencePlanesHidden] says while a flow
   /// needs one to be tapped: picking the plane for a New Sketch (and its
@@ -1819,8 +1822,14 @@ class _PartScreenState extends State<PartScreen> {
   void _seedVisibility(PartDto part) {
     _visibilitySeededParts.add(part.id);
     _hiddenFeatureIdsByPart[part.id] = {...part.hiddenFeatureIds};
-    if (_part == null || part.id == _part!.id) _referencePlanesHidden = part.referencePlanesHidden;
+    if (_part == null || part.id == _part!.id) _hiddenReferencePlanes = _planeKinds(part.hiddenReferencePlanes);
   }
+
+  static Set<ReferencePlaneKind> _planeKinds(Iterable<String> apiValues) =>
+      {
+        for (final value in apiValues)
+          if (referencePlaneKindFromApiValue(value) case final kind?) kind,
+      };
 
   /// The Parts whose Hide / Show state has been read from the backend ([_hiddenFeatureIds] creates empty entries on read, so
   /// the map itself cannot say).
@@ -1877,11 +1886,27 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Hides or shows the default reference planes (the root Part's flag).
   void _setReferencePlanesHidden(bool hidden) {
-    setState(() => _referencePlanesHidden = hidden);
+    setState(() => _hiddenReferencePlanes = hidden ? {...kAllReferencePlanes} : {});
     final rootId = _part?.id;
     if (rootId == null) return;
     for (final target in _visibilityTargetPartIds()) {
       unawaited(_sendVisibility(target, hidden: hidden, referencePlanes: true));
+    }
+  }
+
+  /// Hides or shows one default plane (a build tree row's eye).
+  void _setReferencePlaneHidden(ReferencePlaneKind plane, bool hidden) {
+    setState(() {
+      _hiddenReferencePlanes = {
+        for (final p in _hiddenReferencePlanes)
+          if (p != plane) p,
+        if (hidden) plane,
+      };
+    });
+    final rootId = _part?.id;
+    if (rootId == null) return;
+    for (final target in _visibilityTargetPartIds()) {
+      unawaited(_sendVisibility(target, hidden: hidden, referencePlaneIds: [plane.apiValue]));
     }
   }
 
@@ -1901,6 +1926,7 @@ class _PartScreenState extends State<PartScreen> {
     List<String> featureIds = const [],
     List<String> categories = const [],
     bool referencePlanes = false,
+    List<String> referencePlaneIds = const [],
   }) {
     _visibilityPendingByPart[partId] = (_visibilityPendingByPart[partId] ?? 0) + 1;
     final run = _visibilityQueue.then((_) async {
@@ -1911,6 +1937,7 @@ class _PartScreenState extends State<PartScreen> {
           featureIds: featureIds,
           categories: categories,
           referencePlanes: referencePlanes,
+          referencePlaneIds: referencePlaneIds,
         );
         // Only the last call for a Part is authoritative: an earlier response would undo what a later tap already
         // showed.
@@ -1934,7 +1961,7 @@ class _PartScreenState extends State<PartScreen> {
 
   void _applyVisibility(String partId, PartVisibilityDto state) {
     _hiddenFeatureIdsByPart[partId] = {...state.hiddenFeatureIds};
-    if (partId == _part?.id) _referencePlanesHidden = state.referencePlanesHidden;
+    if (partId == _part?.id) _hiddenReferencePlanes = _planeKinds(state.hiddenReferencePlanes);
     _refreshVisibilityDisplay();
   }
 
@@ -2073,7 +2100,7 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Whether anything is hidden: the badge on the quick column's Visibility button, so hidden geometry is never a surprise.
   bool get _anythingHidden =>
-      _referencePlanesHidden || _features.any((f) => _hiddenFeatureIds.contains(f.id) && f.produces != 'none');
+      _hiddenReferencePlanes.isNotEmpty || _features.any((f) => _hiddenFeatureIds.contains(f.id) && f.produces != 'none');
 
   List<VisibilityChipData> _visibilityChips() {
     VisibilityChipData chip(String id, String label, String noun, Widget icon, String category) {
@@ -2101,8 +2128,11 @@ class _PartScreenState extends State<PartScreen> {
               ? 'assets/icons/feature/parttoolbar_show_reference_planes.svg'
               : 'assets/icons/feature/parttoolbar_hide_reference_planes.svg',
         ),
-        state: _referencePlanesHidden ? VisibilityChipState.hidden : VisibilityChipState.shown,
-        locked: _referencePlanesForcedVisible && _referencePlanesHidden,
+        // "Hidden" only when all three are; some hidden is "partial", and a tap then hides the rest.
+        state: _referencePlanesHidden
+            ? VisibilityChipState.hidden
+            : (_hiddenReferencePlanes.isEmpty ? VisibilityChipState.shown : VisibilityChipState.partial),
+        locked: _referencePlanesForcedVisible && _hiddenReferencePlanes.isNotEmpty,
         tooltip: _referencePlanesHidden ? 'Show the reference planes' : 'Hide the reference planes',
         onTap: () => _setReferencePlanesHidden(!_referencePlanesHidden),
       ),
@@ -13179,7 +13209,7 @@ class _PartScreenState extends State<PartScreen> {
         (bodyId, _) => newBodyIds.contains(bodyId) && !_pinnedCoarseFeatureIds.contains(baseFeatureId(bodyId)),
       );
       if (justGotFirstBody) {
-        _referencePlanesHidden = true;
+        _hiddenReferencePlanes = {...kAllReferencePlanes};
         _hasAutoHiddenReferencePlanes = true;
       }
     });
@@ -25670,6 +25700,10 @@ class _PartScreenState extends State<PartScreen> {
                     // The tree always shows the real hidden state (the eye-slash), also while a flow forces a category
                     // into view in the viewport.
                     hiddenFeatureIds: {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds},
+                    // The XY / XZ / YZ rows under Planes: the real per-plane state, also while a flow forces them shown.
+                    hiddenReferencePlanes: _hiddenReferencePlanes,
+                    onReferencePlaneTap: _onPlaneTap,
+                    onReferencePlaneVisibility: _setReferencePlaneHidden,
                     onFeatureTap: _onFeatureTap,
                     // Feature 1 (tree multi-select): long-press enters bulk
                     // multi-select; the old per-row context menu is reached
@@ -26192,7 +26226,7 @@ class _PartScreenState extends State<PartScreen> {
                   // own `referencePlanesHidden:` (below) is left alone so its
                   // toggle switch keeps reflecting the user's real
                   // underlying preference throughout.
-                  referencePlanesHidden: _referencePlanesForcedVisible ? false : _referencePlanesHidden,
+                  hiddenReferencePlanes: _referencePlanesForcedVisible ? const {} : _hiddenReferencePlanes,
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
                   bodyColourHex: _bodyColourHex,
