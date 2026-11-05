@@ -58,7 +58,7 @@ from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipp
 from app.document.mate_status import mate_status, mate_statuses
 from app.document.occurrence_paths import resolve_path
 from app.document.pattern_dissolve import PatternDissolveError, dissolve_component_pattern
-from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES
+from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES, REFERENCE_PLANE_IDS
 from app.document.limit import current_limit_value, prepare_limit, validate_limit_fields
 from app.document.coupler import prepare_coupler
 from app.document.assembly_group import GroupSolveQuality
@@ -471,6 +471,7 @@ def _part_response(part: Part) -> PartResponse:
             for body_id, assignment in part.body_material_assignments.items()
         },
         hidden_feature_ids=sorted(part.hidden_feature_ids),
+        hidden_reference_planes=sorted(part.hidden_reference_planes),
         reference_planes_hidden=part.reference_planes_hidden,
         **part_appearance_fields(part),
     )
@@ -3548,12 +3549,15 @@ def set_part_visibility(part_id: str, payload: PartVisibilityUpdate) -> PartVisi
     """Hide / Show as saved Part state (`docs/touch-viewport-ux-plan.md` section 6.1). Hides (`hidden=true`) or shows
     (`hidden=false`) every target named: explicit `feature_ids`, whole `categories` (every Feature whose `produces`, resolved
     through `resolve_feature_produces` so a Mirror / Pattern of a Surface counts as a surface, matches at call time), and the
-    default `reference_planes`. At least one target is required and an unknown Feature id is a 422, not ignored; nothing is
+    default planes (`reference_planes` for all three, `reference_plane_ids` for single ones). At least one target is required and an unknown Feature id is a 422, not ignored; nothing is
     changed on a 422. Purely cosmetic: it never changes what is computed, only what the mesh routes flag `hidden`. Returns
     the Part's whole state so the client replaces its copy."""
     part = get_part_or_404(part_id)
-    if not (payload.feature_ids or payload.categories or payload.reference_planes):
-        raise HTTPException(status_code=422, detail="At least one of feature_ids, categories or reference_planes is required")
+    if not (payload.feature_ids or payload.categories or payload.reference_planes or payload.reference_plane_ids):
+        raise HTTPException(
+            status_code=422,
+            detail="At least one of feature_ids, categories, reference_planes or reference_plane_ids is required",
+        )
     known_ids = {f.id for f in part.features}
     unknown = sorted(set(payload.feature_ids) - known_ids)
     if unknown:
@@ -3566,10 +3570,17 @@ def set_part_visibility(part_id: str, payload: PartVisibilityUpdate) -> PartVisi
         part.hidden_feature_ids |= targets
     else:
         part.hidden_feature_ids -= targets
+    plane_targets = set(payload.reference_plane_ids)
     if payload.reference_planes:
-        part.reference_planes_hidden = payload.hidden
+        plane_targets |= set(REFERENCE_PLANE_IDS)
+    if payload.hidden:
+        part.hidden_reference_planes |= plane_targets
+    else:
+        part.hidden_reference_planes -= plane_targets
     return PartVisibilityResponse(
-        hidden_feature_ids=sorted(part.hidden_feature_ids), reference_planes_hidden=part.reference_planes_hidden
+        hidden_feature_ids=sorted(part.hidden_feature_ids),
+        hidden_reference_planes=sorted(part.hidden_reference_planes),
+        reference_planes_hidden=part.reference_planes_hidden,
     )
 
 

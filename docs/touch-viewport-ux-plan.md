@@ -388,3 +388,10 @@ Left out / worth knowing:
 
 Recent row, animation timing pass, the landscape and 360 x 640 layout pass, the `docs/roadmap.md` / `docs/status.md` entries and
 the on-device checklist run.
+
+> **Update 2026-11-05 (`docs/flutter-testing-feedback-2026-11-05-plan.md` item 4):** the default planes are now hidden per
+> plane. `Part.hidden_reference_planes` (a subset of `XY` / `XZ` / `YZ`) is the source of truth; `reference_planes_hidden`
+> is derived as "all three hidden" and still returned. `PATCH /parts/{id}/visibility` also takes `reference_plane_ids`
+> (single planes; `reference_planes: true` still means all three) and returns `hidden_reference_planes`. The native format
+> writes `hidden_reference_planes` and, when all three are hidden, the old bool too; a file with only the old bool loads as
+> all three.

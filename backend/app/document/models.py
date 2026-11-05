@@ -3279,6 +3279,10 @@ class Scene:
     viewpoint: SceneViewpoint | None = None
 
 
+# The three default reference planes, by the `apiValue` the clients use.
+REFERENCE_PLANE_IDS = ("XY", "XZ", "YZ")
+
+
 @dataclass
 class Part:
     """A `.didsa` file's content: an ordered list of Features (this Part's
@@ -3359,7 +3363,14 @@ class Part:
     # default reference planes are hidden. Purely cosmetic - every Body is still computed against the real history; the
     # mesh routes only flag a hidden Body. Saved in the file (`native_format._part_to_dict`).
     hidden_feature_ids: set[str] = field(default_factory=set)
-    reference_planes_hidden: bool = False
+    # Which of the three default planes are hidden, each one of `REFERENCE_PLANE_IDS`. Per plane since the build tree
+    # lists them as rows (`docs/flutter-testing-feedback-2026-11-05-plan.md` item 4).
+    hidden_reference_planes: set[str] = field(default_factory=set)
+
+    @property
+    def reference_planes_hidden(self) -> bool:
+        """All three default planes hidden: the pre-per-plane bool, kept derived for older clients."""
+        return self.hidden_reference_planes >= set(REFERENCE_PLANE_IDS)
 
     def resolve_material(self, body_id: str) -> MaterialAssignment | None:
         """The material that applies to `body_id`: its own override if one

@@ -107,6 +107,7 @@ def test_hide_and_show_explicit_feature_ids():
     assert response.status_code == 200
     assert response.json() == {
         "hidden_feature_ids": sorted([s["sketch_1"], s["extrude"]]),
+        "hidden_reference_planes": [],
         "reference_planes_hidden": False,
     }
     # PartResponse carries the same state.
@@ -139,7 +140,11 @@ def test_categories_resolve_from_produces_at_call_time():
 def test_reference_planes_flag():
     s = _scene()
     response = _patch(s["part_id"], hidden=True, reference_planes=True)
-    assert response.json() == {"hidden_feature_ids": [], "reference_planes_hidden": True}
+    assert response.json() == {
+        "hidden_feature_ids": [],
+        "hidden_reference_planes": ["XY", "XZ", "YZ"],
+        "reference_planes_hidden": True,
+    }
     assert client.get(f"/document/parts/{s['part_id']}").json()["reference_planes_hidden"] is True
     assert _patch(s["part_id"], hidden=False, reference_planes=True).json()["reference_planes_hidden"] is False
 
@@ -226,3 +231,79 @@ def test_per_part_state_wins_over_the_legacy_key():
     exported["hidden_feature_ids"] = [s["sketch_2"]]
     assert client.post("/document/import/native", json=exported).status_code == 200
     assert client.get(f"/document/parts/{s['part_id']}").json()["hidden_feature_ids"] == [s["sketch_1"]]
+
+
+# Per-plane hiding (`docs/flutter-testing-feedback-2026-11-05-plan.md` item 4). These use a bare Part, no geometry.
+
+
+def _planes(part_id: str) -> dict:
+    part = client.get(f"/document/parts/{part_id}").json()
+    return {"ids": part["hidden_reference_planes"], "all": part["reference_planes_hidden"]}
+
+
+def test_a_single_reference_plane_can_be_hidden_and_shown():
+    part_id = _create_part()["id"]
+    response = _patch(part_id, hidden=True, reference_plane_ids=["XZ"])
+    assert response.status_code == 200
+    assert response.json()["hidden_reference_planes"] == ["XZ"]
+    assert response.json()["reference_planes_hidden"] is False  # not all three
+    assert _planes(part_id) == {"ids": ["XZ"], "all": False}
+    _patch(part_id, hidden=True, reference_plane_ids=["YZ", "XZ"])
+    assert _planes(part_id) == {"ids": ["XZ", "YZ"], "all": False}
+    _patch(part_id, hidden=True, reference_plane_ids=["XY"])
+    assert _planes(part_id) == {"ids": ["XY", "XZ", "YZ"], "all": True}
+    _patch(part_id, hidden=False, reference_plane_ids=["XZ"])
+    assert _planes(part_id) == {"ids": ["XY", "YZ"], "all": False}
+
+
+def test_reference_planes_true_still_means_all_three_and_combines_with_ids():
+    part_id = _create_part()["id"]
+    assert _patch(part_id, hidden=True, reference_planes=True).json()["hidden_reference_planes"] == ["XY", "XZ", "YZ"]
+    assert _patch(part_id, hidden=False, reference_plane_ids=["XY"]).json()["hidden_reference_planes"] == ["XZ", "YZ"]
+    assert _patch(part_id, hidden=False, reference_planes=True).json()["hidden_reference_planes"] == []
+
+
+def test_an_unknown_plane_id_is_422_and_a_plane_id_alone_is_a_valid_target():
+    part_id = _create_part()["id"]
+    assert _patch(part_id, hidden=True, reference_plane_ids=["AB"]).status_code == 422
+    assert _patch(part_id, hidden=True).status_code == 422
+    assert _planes(part_id) == {"ids": [], "all": False}
+
+
+def test_native_round_trip_keeps_a_single_hidden_plane():
+    part_id = _create_part()["id"]
+    _patch(part_id, hidden=True, reference_plane_ids=["XZ"])
+    exported = client.get("/document/export/native", params={"part_id": part_id}).json()
+    part_data = exported["document"]["parts"][0]
+    assert part_data["hidden_reference_planes"] == ["XZ"]
+    assert "reference_planes_hidden" not in part_data  # the legacy bool is only written for all three
+    assert client.post("/document/import/native", json=exported).status_code == 200
+    assert _planes(part_id) == {"ids": ["XZ"], "all": False}
+
+
+def test_native_all_three_hidden_also_writes_the_legacy_bool():
+    part_id = _create_part()["id"]
+    _patch(part_id, hidden=True, reference_planes=True)
+    part_data = client.get("/document/export/native", params={"part_id": part_id}).json()["document"]["parts"][0]
+    assert part_data["hidden_reference_planes"] == ["XY", "XZ", "YZ"]
+    assert part_data["reference_planes_hidden"] is True
+
+
+def test_a_file_with_only_the_old_bool_loads_as_all_three_hidden():
+    part_id = _create_part()["id"]
+    exported = client.get("/document/export/native", params={"part_id": part_id}).json()
+    old = copy.deepcopy(exported)
+    old["document"]["parts"][0]["reference_planes_hidden"] = True
+    assert "hidden_reference_planes" not in old["document"]["parts"][0]
+    assert client.post("/document/import/native", json=old).status_code == 200
+    assert _planes(part_id) == {"ids": ["XY", "XZ", "YZ"], "all": True}
+
+
+def test_the_new_list_wins_over_the_old_bool_and_drops_unknown_planes():
+    part_id = _create_part()["id"]
+    exported = client.get("/document/export/native", params={"part_id": part_id}).json()
+    data = copy.deepcopy(exported)
+    data["document"]["parts"][0]["reference_planes_hidden"] = True
+    data["document"]["parts"][0]["hidden_reference_planes"] = ["YZ", "bogus"]
+    assert client.post("/document/import/native", json=data).status_code == 200
+    assert _planes(part_id) == {"ids": ["YZ"], "all": False}

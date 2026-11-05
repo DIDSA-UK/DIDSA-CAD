@@ -22,6 +22,7 @@ import dataclasses
 
 from app.document.appearance import SCOPES as APPEARANCE_SCOPES, Appearance, appearance_errors
 from app.document.models import (
+    REFERENCE_PLANE_IDS,
     AppearanceOverride,
     Scene,
     SceneOverride,
@@ -2331,7 +2332,10 @@ def _part_to_dict(part: Part) -> dict:
     # Hide / Show (`docs/touch-viewport-ux-plan.md` section 6.1): likewise only when there is something hidden.
     if part.hidden_feature_ids:
         data["hidden_feature_ids"] = sorted(part.hidden_feature_ids)
+    if part.hidden_reference_planes:
+        data["hidden_reference_planes"] = sorted(part.hidden_reference_planes)
     if part.reference_planes_hidden:
+        # Also the pre-per-plane bool when all three are hidden, so an older reader still sees them hidden.
         data["reference_planes_hidden"] = True
     return data
 
@@ -2447,7 +2451,13 @@ def _part_from_dict(data: dict) -> Part:
     part.appearance_overrides = [_appearance_override_from_dict(o) for o in data.get("appearance_overrides") or []]
     part.scenes = [_scene_from_dict(sc) for sc in data.get("scenes") or []]
     part.hidden_feature_ids = {fid for fid in data.get("hidden_feature_ids") or [] if isinstance(fid, str)}
-    part.reference_planes_hidden = data.get("reference_planes_hidden") is True
+    if "hidden_reference_planes" in data:
+        part.hidden_reference_planes = {
+            plane for plane in data.get("hidden_reference_planes") or [] if plane in REFERENCE_PLANE_IDS
+        }
+    elif data.get("reference_planes_hidden") is True:
+        # A file from before the per-plane list: the old bool meant all three.
+        part.hidden_reference_planes = set(REFERENCE_PLANE_IDS)
     return part
 
 

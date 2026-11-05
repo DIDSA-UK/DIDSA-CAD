@@ -119,24 +119,29 @@ class PartResponse(BaseModel):
     face_appearances: list["FaceAppearanceSchema"] = []
     # Hide / Show state (`PATCH /parts/{id}/visibility`); see `Part.hidden_feature_ids`.
     hidden_feature_ids: list[str] = []
+    # Per default plane (sorted, from "XY" / "XZ" / "YZ"); `reference_planes_hidden` stays as "all three" for older clients.
+    hidden_reference_planes: list[str] = []
     reference_planes_hidden: bool = False
 
 
 class PartVisibilityUpdate(BaseModel):
     """`PATCH /parts/{part_id}/visibility`: hides (`hidden=True`) or shows (`hidden=False`) every named target. `feature_ids`
     are explicit Features, `categories` are resolved on the server from each Feature's `produces` at call time, and
-    `reference_planes` toggles the three default planes. Each list is optional but at least one target is required."""
+    `reference_planes` toggles all three default planes and `reference_plane_ids` names single planes (both may be given: the
+    union). Each list is optional but at least one target is required."""
 
     hidden: bool
     feature_ids: list[str] = []
     categories: list[Literal["plane", "sketch", "curve", "body", "surface"]] = []
     reference_planes: bool = False
+    reference_plane_ids: list[Literal["XY", "XZ", "YZ"]] = []
 
 
 class PartVisibilityResponse(BaseModel):
     """A Part's whole Hide / Show state; the client replaces its copy with this, never patches it."""
 
     hidden_feature_ids: list[str]
+    hidden_reference_planes: list[str]
     reference_planes_hidden: bool
 
 
