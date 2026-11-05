@@ -8,13 +8,12 @@ Line numbers drift, so search for the named symbol if a line is off.
 |---|---|---|---|
 | 1 | Default Gemini model is `gemini-2.5-flash`, which no longer works | Bug | Small |
 | 2 | Touch: hard to inspect the far ends of a large model because orbit turns about the view target | Feature | Medium |
-| 3 | Cast to TV | Feature (advice, then a small first step) | Small for step 1 |
+| 3 | Screen sharing: (A) working on a monitor, (B) showing to a group | Feature | Small (A is mostly advice; B is Presentation mode) |
 | 4 | Reference planes (XY, XZ, YZ) listed in the build tree under Planes; hide/show, no delete | Feature | Medium (needs a backend change) |
 
-Suggested order: **1 → 4 → 2 → 3**. 1 is a one-line fix plus a migration. 4 and 2 are independent. 3 step 1 is small,
-but step 2 is optional and should wait for the owner.
+Suggested order: **1 → 4 → 2 → 3**. 1 is a one-line fix plus a migration. 4 and 2 are independent. 3 is small.
 
-The **Open questions** at the end have a recommended answer each. Go with the recommendation unless the owner says otherwise.
+The owner has accepted every recommended answer in **Decisions** at the end (2026-11-05).
 
 ---
 
@@ -136,44 +135,98 @@ behaviour is unchanged.
 
 ---
 
-## 3. Cast to TV: advice
+## 3. Screen sharing: two use cases
 
-**The client's platforms** are Android, iOS, Windows and Linux (no web build). The 3D view is `flutter_scene` (Flutter
-GPU), which matters for anything that needs a second rendering surface.
+The owner's answer (2026-11-05): screen sharing has **two separate use cases**, and they need different things.
 
-### Options
+- **A. Working on a bigger screen**: share wirelessly to a desktop monitor and keep working on the model.
+- **B. Showing and reviewing with a group**: a meeting room screen or TV, where people watch and the presenter drives.
 
-| Option | What the user does | Work | Verdict |
-|---|---|---|---|
-| **OS screen mirroring** (Android Quick Settings → Cast / Smart View, works with Chromecast and Miracast TVs. iOS / iPadOS AirPlay mirroring to Apple TV or AirPlay 2 TVs. Windows Win+K to a Miracast TV) | Mirrors the whole screen | **None. Works today** | Use it. It is the answer for now |
-| **Presentation mode** in the app: one button that hides the chrome (panels, FABs, tree, ribbon, triad optional), goes full screen and landscape, and leaves only the 3D view and simple touch navigation | Turn on mirroring, then tap Present | Small | **Recommended first step.** It makes mirroring look like a real "cast" |
-| Second-screen render (Android `Presentation` API / iOS external `UIScreen`): the TV shows a clean 3D view while the phone keeps the full UI | Turn on mirroring. The app detects the external display | Large: a second Flutter view / engine, and a second `flutter_scene` GPU context, on two platforms with native code | Not now. Revisit if Presentation mode isn't enough |
-| Viewer web page: the backend (or the phone) serves a read-only viewer (glTF in a browser) that the TV's browser opens, and the phone drives the camera over a WebSocket | Open a URL or scan a QR code on the TV | Medium to large, and TV browsers are weak and inconsistent | No |
-| Google Cast SDK / DLNA | | Large, needs a Cast receiver app and registration | No, as the owner suspected |
+The client runs on Android, iOS, Windows and Linux (no web build). The 3D view is `flutter_scene` (Flutter GPU). A
+second rendering surface would need a second GPU context, which is why second-screen rendering is out of scope here.
 
-### Recommendation
+### A. Working on a bigger screen
 
-1. **Tell the user how to mirror** (a short help page or a dialog behind a "Cast to TV" menu item). On Android, the
-   item can open the system cast settings directly (intent action `android.settings.CAST_SETTINGS`, with a fallback to
-   `android.settings.DISPLAY_SETTINGS` because some OEMs remove it). On iOS there is no public way to open the AirPlay
-   picker without a native `AVRoutePickerView`, so show instructions: "Control Centre → Screen Mirroring". On
-   Windows: "Press Win+K".
-2. **Add Presentation mode** on the part / assembly screen:
-   - A toggle in the Start menu / View ribbon: "Present (full screen)".
-   - Hides: feature tree, tool panels, FAB columns, ribbon, breadcrumbs, status chips. Keeps: the 3D view, and
-     optionally the view cube.
-   - `SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky)` and a landscape lock while it is on. Restore on exit.
-   - Exit: a small semi-transparent close button in a corner that fades after a few seconds and comes back on tap, and
-     Back / Esc.
-   - Navigation: orbit / pinch / pan, plus item 2's pivot. No selection or editing.
-   - Optional: a "slow turntable" toggle (a constant small orbit about the pivot or target) for showing a model on a
-     TV with no one touching it. This is cheap to build on `orbitByScreenDelta` with a ticker.
-3. Only if the owner later wants "phone as remote, TV shows clean view", scope the second-screen option as its own
-   spike.
+Plain mirroring is the wrong tool for this. It sends the phone's own picture, at the phone's resolution and aspect
+ratio, to the monitor. The app still thinks it is on a phone, so it keeps the phone layout. The monitor only makes
+it bigger.
 
-**Tests.** Widget test: toggling Presentation mode removes the tree / FAB / ribbon widgets and restores them on exit.
-The system UI mode calls can be checked with the `SystemChannels.platform` mock. Cast settings intent: test that the
-right action string is built. The launch itself can't be tested headless.
+What does fit is a **desktop windowing mode** on the device. On Android that is Samsung DeX (wired, or wirelessly to a
+Miracast monitor / TV), or Android's own desktop windowing on newer Android versions. On iPad it is Stage Manager on
+an external display. There, the app gets a real large window and the monitor's resolution, and the user can attach a
+Bluetooth mouse and keyboard. **The client already handles this:** `client/lib/layout/layout_mode.dart`
+(`resolveLayoutMode`) switches to the desktop layout (ribbon, docked tree, status bar) when the window is at least
+1000 x 600 and the last pointer was a mouse. Controls also has an "Always desktop" setting. The desktop input work
+(right-drag / middle-drag navigation, context menus, shortcuts) then applies too.
+
+And if a PC is already at the desk, the Windows / Linux build of the client against the same backend is the simplest
+option of all.
+
+**Work for the implementation session (small):**
+
+1. **Check the app behaves as a resizable window on Android.** `android:resizeableActivity` must be true, which is
+   the default when targeting SDK 24+ (confirm it isn't turned off in `client/android/app/src/main/AndroidManifest.xml`),
+   and the app must not lock orientation globally. Resizing must not lose state. Check what happens to the
+   `flutter_scene` view when the window resizes or moves between displays. This can't be done headless. List it as an
+   owner check on a DeX-capable phone or a tablet.
+2. **Help text** (the same dialog as B's "Share screen" menu item, see below) with a "Working on a monitor" section:
+   use DeX / desktop mode or Stage Manager rather than mirroring, add a Bluetooth mouse to get the desktop layout,
+   or use the desktop app on a PC.
+3. Nothing else. No new layout is needed.
+
+### B. Showing and reviewing with a group
+
+Here **mirroring is the right transport**: Cast / Smart View on Android (Chromecast and Miracast TVs, most meeting
+room screens), AirPlay mirroring on iOS (Apple TV, AirPlay 2 TVs), and Win+K (Miracast) on Windows. Room systems with
+their own share dongles (ClickShare-style) also mirror. The work in the app is about making what is mirrored look like
+a presentation rather than an editing UI.
+
+**Presentation mode** on the part and assembly screens:
+
+- A toggle in the Start menu / View ribbon: "Present".
+- Hides: the feature tree, tool panels, FAB columns, ribbon, breadcrumbs and status chips. Keeps the 3D view, and
+  optionally the view cube.
+- `SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky)` and a landscape lock while it is on, so a
+  phone's mirror fills a 16:9 screen instead of a portrait strip with black bars. Restore both on exit. On desktop,
+  go full screen in the window instead.
+- Exit: a small semi-transparent close button in a corner that fades after a few seconds and comes back on tap,
+  plus Back / Esc.
+- Navigation: orbit, pinch and pan, plus item 2's tap-to-set pivot (which is exactly what pointing out a detail to a
+  room needs). No selection or editing.
+- **Turntable**: a toggle for a slow constant orbit about the pivot (or the target) for an unattended display. It is
+  cheap with a ticker driving `orbitByScreenDelta` / `orbitAboutPointByScreenDelta`. It stops on touch and resumes on
+  the toggle.
+- **Keep the pivot marker visible here**. It doubles as a pointer for the audience.
+- Optional, only if small: **Saved views / Scenes**. If `docs/scenes-scope.md`'s scenes are reachable from the part
+  screen, a simple next / previous scene control in Presentation mode turns it into a walkthrough. Check what exists
+  before building anything. If it is not already there, leave it out.
+
+**"Share screen" menu item** (serves A and B):
+
+- On Android, open the system cast settings directly (intent action `android.settings.CAST_SETTINGS`, with a fallback
+  to `android.settings.DISPLAY_SETTINGS` because some OEMs remove it). Then offer to enter Presentation mode.
+- On iOS there is no public way to open the AirPlay picker without a native `AVRoutePickerView`, so show
+  instructions: "Control Centre → Screen Mirroring".
+- On Windows: "Press Win+K".
+- The dialog has the two short sections: "Present to a room or TV" (mirror, then Present) and "Work on a monitor"
+  (A's help text).
+
+### Not now
+
+| Option | Why not |
+|---|---|
+| Second-screen render (Android `Presentation` API / iOS external `UIScreen`): a clean view on the TV while the phone keeps the full UI | Large: a second Flutter view / engine and a second `flutter_scene` GPU context, with native code on two platforms. Revisit only if Presentation mode isn't enough for B |
+| Viewer web page served to the TV's browser, driven from the phone | Medium to large, and TV browsers are weak and inconsistent |
+| Google Cast SDK / DLNA | Needs a Cast receiver app and registration. Too complex, as the owner said |
+
+### Tests
+
+- Widget: toggling Presentation mode removes the tree / FAB / ribbon widgets and puts them back on exit. The system UI
+  mode and orientation calls can be checked with the `SystemChannels.platform` mock.
+- Unit: the turntable advances the camera by a fixed angle per tick and stops when a pointer goes down.
+- The Android intent: test that the right action string is built. The launch itself can't be tested headless.
+- A (desktop windowing): `resolveLayoutMode` already has unit tests. Add a case for a large window with a mouse as
+  the last pointer on Android if there isn't one.
 
 ---
 
@@ -265,14 +318,15 @@ Recommend against unless time is short.
 
 ---
 
-## Open questions (with recommended answers)
+## Decisions (owner accepted all, 2026-11-05)
 
 1. **Gemini default**: `gemini-3.5-flash`, or a `flash-lite` variant if 3.5 Flash has no free tier? → *3.5 Flash*,
    unless the free-tier check fails.
 2. **Touch pivot in selection mode**: leave selection taps alone and add "Rotate about here" to the long-press menu?
    → *Yes.*
-3. **Cast**: ship the mirroring help and Presentation mode now, and leave second-screen rendering for later? → *Yes.*
-   Turntable toggle in Presentation mode? → *Yes if it stays small.*
+3. **Screen sharing**: ship the mirroring help and Presentation mode now, and leave second-screen rendering for later?
+   → *Yes.* Turntable toggle in Presentation mode? → *Yes if it stays small.* Use case A is met by desktop windowing
+   (DeX / Stage Manager) and the existing desktop layout, not a new layout. → *Owner confirmed the two use cases.*
 4. **Reference planes**: per-plane hide/show with the backend change, rather than one row for all three? → *Per-plane.*
 
 ## What the implementation session must say it could not verify
@@ -280,5 +334,6 @@ Recommend against unless time is short.
 - Item 1: that `gemini-3.5-flash` answers through the OpenAI-compatible endpoint with a real key. That needs the
   owner's key.
 - Item 2: the feel on a touch device. The marker and tap only on GPU-backed runs.
-- Item 3: real casting to a TV. The Android settings intent on the owner's phone model.
+- Item 3: real mirroring to a TV or room screen. The Android settings intent on the owner's phone model. How the app
+  and its 3D view behave in DeX / desktop windowing / Stage Manager (resizing, moving between displays).
 - Item 4: nothing beyond the usual: the viewport rendering of a single hidden plane needs a GPU run.
