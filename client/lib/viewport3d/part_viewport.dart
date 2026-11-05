@@ -23,6 +23,7 @@ import '../sketch/marquee_selection.dart' show kCrossingBoxColor;
 import 'orbit_camera.dart';
 import 'orthographic_camera.dart';
 import 'reference_planes.dart';
+import 'touch_pivot.dart';
 import 'assembly_instance_render.dart';
 import 'render_mode.dart';
 import 'scene_preferences.dart';
@@ -1553,6 +1554,41 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// over empty space, which orbits about the camera target as before.
   vm.Vector3? _orbitPivot;
 
+  /// The persistent rotation pivot a tap on the model sets in orbit mode (world space; `null` = orbit about the view
+  /// target as before). Separate from the per-drag [_orbitPivot] a middle mouse drag uses, which keeps priority while it
+  /// is active. Cleared by a tap on empty space, Reset view / Zoom to Fit, a change of the bodies, and entering a sketch.
+  vm.Vector3? _touchPivot;
+
+  /// The rotation pivot, if one is set (see [_touchPivot]).
+  vm.Vector3? get rotationPivot => _touchPivot;
+
+  /// Sets the rotation pivot at [point] (a world point), or clears it with null.
+  void setRotationPivot(vm.Vector3? point) => setState(() => _touchPivot = point);
+
+  /// Clears the rotation pivot: the view orbits about its target again.
+  void clearRotationPivot() => setRotationPivot(null);
+
+  /// Sets the pivot at the model point under [globalPosition] ("Rotate about here" in the context menu). False when
+  /// nothing is under it.
+  bool setRotationPivotAtGlobal(Offset globalPosition) {
+    final box = context.findRenderObject();
+    if (box is! RenderBox) return false;
+    final hit = _orbitPivotHitAt(box.globalToLocal(globalPosition));
+    if (hit == null) return false;
+    setRotationPivot(hit.point);
+    return true;
+  }
+
+  /// One orbit step of [dx] / [dy] pixels: about the rotation pivot when one is set, else about the view target.
+  void _orbitBy(double dx, double dy) {
+    final pivot = _touchPivot;
+    if (pivot != null) {
+      _camera.orbitAboutPointByScreenDelta(dx, dy, pivot);
+    } else {
+      _camera.orbitByScreenDelta(dx, dy);
+    }
+  }
+
   /// Desktop input D2: a middle double-click fits the view.
   final MiddleDoubleClickDetector _middleDoubleClick = MiddleDoubleClickDetector();
 
@@ -1938,6 +1974,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @override
   void didUpdateWidget(covariant PartViewport oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // The rotation pivot belongs to the model it was picked on: a different set of bodies (another part opened, a body
+    // deleted) or entering a sketch drops it.
+    if (_touchPivot != null &&
+        ((widget.sketchPlaneBasis != null && oldWidget.sketchPlaneBasis == null) ||
+            !setEquals(
+              {for (final b in widget.bodies) b.bodyId},
+              {for (final b in oldWidget.bodies) b.bodyId},
+            ))) {
+      _touchPivot = null;
+    }
     if (widget.bodies != oldWidget.bodies ||
         widget.isPreviewMesh != oldWidget.isPreviewMesh ||
         widget.previewOverlayBodyId != oldWidget.previewOverlayBodyId ||
@@ -4429,13 +4475,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (event.kind == PointerDeviceKind.mouse) {
       // Right and middle drags never get here - see [_mouseNavPointer].
       if (event.buttons & kPrimaryMouseButton != 0) {
-        setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
+        setState(() => _orbitBy(event.delta.dx, event.delta.dy));
       }
       return;
     }
 
     if (_activeTouches.length < 2) {
-      setState(() => _camera.orbitByScreenDelta(event.delta.dx, event.delta.dy));
+      setState(() => _orbitBy(event.delta.dx, event.delta.dy));
       return;
     }
 
@@ -4625,6 +4671,27 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // app when a tap lands on empty space or an ineligible target.
     }
     final hit = hitTestReferencePlanes(ray, hidden: widget.hiddenReferencePlanes);
+    // Orbit mode on the part / assembly screens (not the sketcher, where a tap means sketch): a tap on the model sets
+    // the rotation pivot there, unless a plane is nearer on the same ray, which keeps its own meaning.
+    final setsPivot = !widget.selectionMode && !widget.drawCursorMode && widget.sketchPlaneBasis == null;
+    final createPlaneHit = hitTestCreatePlanes(localRay, widget.createPlanes);
+    if (setsPivot) {
+      final pivotHit = _orbitPivotHitAt(localPosition);
+      // The plane hits' rayT is along the raw (non-unit) picking ray; the pivot's is a distance.
+      final scale = ray.direction.length;
+      final planeDistances = [
+        if (hit != null) hit.rayT * scale,
+        if (createPlaneHit != null) createPlaneHit.rayT * scale,
+      ];
+      final outcome = resolveOrbitTap(
+        pivotDistance: pivotHit?.distance,
+        planeDistance: planeDistances.isEmpty ? null : planeDistances.reduce(math.min),
+      );
+      if (outcome == OrbitTapOutcome.setPivot) {
+        setState(() => _touchPivot = pivotHit!.point);
+        return;
+      }
+    }
     if (hit != null) {
       widget.onPlaneTap(hit.plane);
       return;
@@ -4632,7 +4699,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // C3: checked after the three fixed reference planes so those keep
     // first claim on a tap (see [PartViewport.onCreatePlaneTap]'s own doc
     // comment).
-    final createPlaneHit = hitTestCreatePlanes(localRay, widget.createPlanes);
     if (createPlaneHit != null) {
       widget.onCreatePlaneTap?.call(createPlaneHit.featureId);
       return;
@@ -4681,6 +4747,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         return;
       }
     }
+    // Empty space: also puts the rotation pivot back to the view target.
+    if (setsPivot && _touchPivot != null) setState(() => _touchPivot = null);
     widget.onBackgroundTap();
   }
 
@@ -5272,7 +5340,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// While sketching ([PartViewport.sketchPlaneBasis] set), the sketch plane
   /// under the cursor is the pivot when nothing else is hit, so a middle
   /// drag over the sketch turns about the point under the mouse too.
-  vm.Vector3? _orbitPivotAt(Offset screenPosition) {
+  vm.Vector3? _orbitPivotAt(Offset screenPosition) => _orbitPivotHitAt(screenPosition)?.point;
+
+  /// [_orbitPivotAt] with the distance along the picking ray the point was found at, so a tap can compare it with a
+  /// plane hit ([resolveOrbitTap]).
+  PivotHit? _orbitPivotHitAt(Offset screenPosition) {
     final camera = _camera.cameraFor(_viewportSize);
     final ray = camera.screenPointToRay(screenPosition, _viewportSize);
     final meshHit = widget.bodies.isEmpty || widget.bodiesHidden
@@ -5291,13 +5363,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (basis == null) return null;
       final localRay = _toLocalRay(ray);
       final planeHit = hitTestSketchPlane(vm.Ray.originDirection(localRay.origin, localRay.direction.normalized()), basis);
-      return planeHit == null ? null : pointAtRayDistance(ray, planeHit.$2);
+      return planeHit == null ? null : (point: pointAtRayDistance(ray, planeHit.$2), distance: planeHit.$2);
     }
     // The local and world rays trace the same line at the same speed (see
     // [_toLocalRay]), so every hit's rayT is read along the world ray. rayT
     // is a distance, so not `ray.at` - see [pointAtRayDistance].
-    final nearest = hits.reduce((a, b) => a.rayT <= b.rayT ? a : b);
-    return pointAtRayDistance(ray, nearest.rayT);
+    return nearestPivotHit(ray, hits.map((h) => h.rayT));
   }
 
   /// Item 2: "Drag moves cursor relatively (sensitivity-scaled, not 1:1);
@@ -6281,6 +6352,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // Never lower a far clip that is already in force (the View-menu override, or an earlier auto-fit): Reset view
     // may only raise it when the framed geometry needs more.
     final previousFarClip = widget.farClip ?? _camera.farClip;
+    _touchPivot = null;
     final orientation = _camera.orientation.clone();
     _camera.reset();
     if (keepOrientation) _camera.orientation = orientation;
@@ -7180,6 +7252,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         // rather than drawn at a nonsense position.
         final originMarkerScreen =
             widget.originWorldPoint == null ? null : worldToScreen(_camera.cameraFor(size), size, widget.originWorldPoint!);
+        // The rotation pivot's marker: null when none is set or it is behind the camera.
+        final pivotMarkerScreen =
+            _touchPivot == null ? null : worldToScreen(_camera.cameraFor(size), size, _touchPivot!);
         return Stack(
           children: [
             // On-device feedback ("put it behind the cursor, dynamic
@@ -7267,6 +7342,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                 ),
               ),
             ),
+            if (pivotMarkerScreen != null)
+              IgnorePointer(
+                child: CustomPaint(
+                  key: const ValueKey('rotation-pivot-marker'),
+                  size: size,
+                  painter: PivotMarkerPainter(
+                    position: pivotMarkerScreen,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                ),
+              ),
             // top-right, not top-left, so it doesn't collide with
             // PartScreen's feature-tree toolbar toggle button which lives
             // in that corner.

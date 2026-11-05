@@ -8,7 +8,16 @@ import 'part_viewport.dart' show StandardView;
 /// right click on part geometry offers - SOLIDWORKS' face/edge/vertex menu.
 /// The owning body's own items (Hide / Show, Assign Material) follow the
 /// geometry ones, after a divider.
-enum GeometryMenuAction { selectOther, zoomToSelection, normalTo, measure, appearance, toggleBodyVisibility, assignMaterial }
+enum GeometryMenuAction {
+  selectOther,
+  zoomToSelection,
+  rotateAboutHere,
+  normalTo,
+  measure,
+  appearance,
+  toggleBodyVisibility,
+  assignMaterial,
+}
 
 /// [at] is the click's global position. A null [bodyHidden] means the
 /// click was not on a body of this part (a placed component's face, say),
@@ -35,6 +44,11 @@ Future<GeometryMenuAction?> showGeometryContextMenu(
       action: GeometryMenuAction.zoomToSelection,
       label: 'Zoom to Selection',
       icon: Icons.zoom_in_map,
+    ),
+    const ActionSheetEntry(
+      action: GeometryMenuAction.rotateAboutHere,
+      label: 'Rotate About Here',
+      icon: Icons.threed_rotation,
     ),
     ActionSheetEntry(
       action: GeometryMenuAction.normalTo,

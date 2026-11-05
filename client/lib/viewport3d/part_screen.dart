@@ -14166,6 +14166,8 @@ class _PartScreenState extends State<PartScreen> {
         viewport.selectOtherAtGlobal(at);
       case GeometryMenuAction.zoomToSelection:
         viewport.zoomToEntities(_selectedEntities.contains(entity) ? _selectedEntities : {entity});
+      case GeometryMenuAction.rotateAboutHere:
+        viewport.setRotationPivotAtGlobal(at);
       case GeometryMenuAction.normalTo:
         unawaited(viewport.animateToFaceNormal(entity));
       case GeometryMenuAction.measure:
