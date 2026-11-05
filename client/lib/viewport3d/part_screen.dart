@@ -60,6 +60,7 @@ import '../motion/se3.dart' show weightedDist;
 import '../sketch/sketch_controller.dart';
 import '../sketch/sketch_screen.dart';
 import '../storage/native_file_listing.dart';
+import '../storage/picked_file.dart' show savedFileNameFromUri;
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import '../storage/storage_service_factory.dart';
@@ -11639,20 +11640,10 @@ class _PartScreenState extends State<PartScreen> {
   /// Hands [bytes] to the platform's save-file dialog under
   /// [suggestedFileName].
   ///
-  /// Bug fix: `file_picker`'s own desktop implementations (Linux/Windows,
-  /// and by the same shared doc comment's own admission, macOS) only ever
-  /// run the native save dialog and hand back the user's chosen path - the
-  /// `bytes` parameter is accepted but silently ignored, never actually
-  /// written anywhere (confirmed directly against the plugin's Linux/
-  /// Windows source: both just shell out to a native picker/Win32 dialog
-  /// and return its result, with no write step at all). This was true
-  /// before the fix below too - Save/Save As/Export have likely never
-  /// actually persisted anything on desktop. Writing [bytes] here
-  /// ourselves via `dart:io` is what actually saves the file there.
-  /// Mobile's own native save flow (Android's SAF `ContentResolver` write,
-  /// iOS's export-to-service) already does a real write of its own -
-  /// [_canPersistFilePathForReuse] gates this so it doesn't redundantly
-  /// (and, given mobile app sandboxing, riskily) attempt a second one.
+  /// file_picker 8's desktop implementations only ran the native save dialog
+  /// and ignored `bytes`, so this used to write the file itself via `dart:io`
+  /// on desktop. file_picker 13's `saveFile` writes `bytes` on every platform
+  /// (and returns the saved file's `Uri`), so that manual write is gone.
   ///
   /// Remembers wherever the user actually saved to (the dialog lets them
   /// rename/relocate even the suggestion) as [_lastSavedFileName] always,
@@ -11666,17 +11657,20 @@ class _PartScreenState extends State<PartScreen> {
   /// whether to clear [_isDirty]; a cancelled dialog must never be
   /// mistaken for a successful save.
   Future<bool> _saveNativeFileViaDialog(String suggestedFileName, Uint8List bytes) async {
-    final savedPath = await FilePicker.platform.saveFile(
+    // file_picker 13 writes `bytes` itself on every platform and returns the saved file's Uri (null = cancelled).
+    final saved = await FilePicker.saveFile(
       dialogTitle: 'Save Project',
       fileName: suggestedFileName,
       bytes: bytes,
     );
-    if (savedPath == null) return false;
-    if (_canPersistFilePathForReuse) {
-      await File(savedPath).writeAsBytes(bytes);
-    }
-    _lastSavedFileName = savedPath.split('/').last;
-    _lastSavedFilePath = _canPersistFilePathForReuse ? savedPath : null;
+    if (saved == null) return false;
+    // On Android a content:// URI's last segment can be a document id rather than a name: keep the previous
+    // name unless this one looks like a project file.
+    final savedName = savedFileNameFromUri(saved);
+    _lastSavedFileName = savedName != null && hasNativeExtension(savedName)
+        ? savedName
+        : (_lastSavedFileName ?? suggestedFileName);
+    _lastSavedFilePath = _canPersistFilePathForReuse && saved.scheme == 'file' ? saved.toFilePath() : null;
     return true;
   }
 
@@ -12363,21 +12357,20 @@ class _PartScreenState extends State<PartScreen> {
   /// decode, then the backend's own schema_version check), so the
   /// extension filter was only ever a UX nicety, never load-bearing.
   Future<void> _openViaDesktopFilePicker() async {
-    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
-    if (result == null || result.files.isEmpty || !mounted) return;
-    final bytes = result.files.single.bytes;
-    if (bytes == null) return;
+    final pickedFile = await FilePicker.pickFile(type: FileType.any);
+    if (pickedFile == null || !mounted) return;
+    final bytes = await pickedFile.readAsBytes();
 
     final decoded = _decodeNativeFileOrShowError(bytes);
     if (decoded == null) return;
 
-    final pickedPath = result.files.single.path;
+    final pickedPath = pickedFile.path;
     if (pickedPath != null && !isBundleShapedNativeFile(decoded)) {
       final root = DesktopProjectRoot(p.dirname(pickedPath));
       await _openComposedProject(root, p.basename(pickedPath));
       return;
     }
-    await _openBundlePayload(decoded, fileName: result.files.single.name, filePath: pickedPath);
+    await _openBundlePayload(decoded, fileName: pickedFile.name, filePath: pickedPath);
   }
 
   /// Android/iOS half of [_onOpenPressed]: keeps today's two-step shape -
@@ -12564,11 +12557,9 @@ class _PartScreenState extends State<PartScreen> {
     if (sourceFormat == null || !mounted) return;
     final option = importFormatOptions.firstWhere((o) => o.value == sourceFormat);
 
-    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
-    if (result == null || result.files.isEmpty || !mounted) return;
-    final picked = result.files.single;
-    final bytes = picked.bytes;
-    if (bytes == null) return;
+    final picked = await FilePicker.pickFile(type: FileType.any);
+    if (picked == null || !mounted) return;
+    final bytes = await picked.readAsBytes();
 
     final extension = (picked.extension ?? picked.name.split('.').last).toLowerCase();
     if (!option.extensions.contains(extension)) {
@@ -12599,13 +12590,9 @@ class _PartScreenState extends State<PartScreen> {
   /// the new first step, then the existing folder/filename picker below,
   /// mirroring [_importGeometry]'s own single-entry-plus-dialog shape.
   ///
-  /// Bug fix: same desktop-only gap as native Save's own
-  /// [_saveNativeFileViaDialog] - `file_picker`'s desktop implementations
-  /// never actually write `bytes` themselves, only run the dialog and
-  /// return the chosen path, so this now writes the file itself via
-  /// `dart:io` there (see [_canPersistFilePathForReuse]'s own doc comment
-  /// for why mobile is excluded - its own native save flow already does a
-  /// real write).
+  /// `FilePicker.saveFile` (file_picker 13) writes the bytes itself on every
+  /// platform, the same as native Save's [_saveNativeFileViaDialog]; the
+  /// desktop-only manual `dart:io` write this used to need is gone.
   ///
   /// Assembly-audit gap `[29]` (`docs/assembly-scope.md`): picks
   /// [DocumentApiClient.exportAssemblyPart] over the plain [DocumentApiClient
@@ -12631,14 +12618,12 @@ class _PartScreenState extends State<PartScreen> {
       final bytes = rootOccurrences.isEmpty
           ? await _api.exportPart(part.id, format)
           : await _api.exportAssemblyPart(part.id, format);
-      final savedPath = await FilePicker.platform.saveFile(
+      // file_picker 13 writes `bytes` itself on every platform; null means the user cancelled.
+      await FilePicker.saveFile(
         dialogTitle: 'Export Part',
         fileName: '${part.name}.$format',
         bytes: bytes,
       );
-      if (savedPath != null && _canPersistFilePathForReuse) {
-        await File(savedPath).writeAsBytes(bytes);
-      }
     });
   }
 

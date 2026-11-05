@@ -24,6 +24,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../storage/picked_file.dart' show localPathForPickedFile;
 import '../viewport3d/keyboard_shortcuts.dart';
 import '../viewport3d/controls_preferences.dart';
 import '../viewport3d/mouse_navigation.dart';
@@ -67,7 +68,7 @@ class _DecodeRequest {
 /// Reads [_DecodeRequest.path] itself (via [File.readAsBytesSync], fine
 /// here since this already runs off the main isolate) rather than taking
 /// pre-read bytes - a real on-device crash log confirmed the previous
-/// "pick with `withData: true`, pass the resulting bytes in" approach was
+/// "pick and read the whole file as bytes, pass them in" approach was
 /// the actual cause of a reported crash: `file_picker` reads the whole file
 /// into a Java byte array *and* re-encodes it through a Flutter
 /// `MethodChannel`'s `StandardMessageCodec` (a growable `ByteArrayOutputStream`
@@ -344,25 +345,26 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   /// this trades a slightly less curated OS picker dialog for actually being
   /// able to select the other three formats at all.
   ///
-  /// Deliberately does *not* pass `withData: true` - a real on-device crash
-  /// log confirmed that reading the whole file into memory as
-  /// `PlatformFile.bytes` (which `file_picker` does by encoding it through a
-  /// Flutter `MethodChannel` reply, on Android's small default Java heap)
-  /// was the actual cause of a reported crash-to-home-screen on a large
-  /// file - see `_decodeAndDecimate`'s own doc comment for the exact
-  /// stack trace. `file.path` instead (file_picker copies content-provider
-  /// URIs to a real cache file even without `withData`, so this is reliably
-  /// non-null on the Android/iOS/desktop targets this app builds for - no
-  /// web target exists in this project) is read directly via `dart:io`
-  /// inside [_decodeAndDecimate]'s own background isolate, never crossing
-  /// the platform channel at all.
+  /// Deliberately never reads the whole file into memory in the main
+  /// isolate - a real on-device crash log confirmed that reading it all as
+  /// bytes through a Flutter `MethodChannel` reply (on Android's small
+  /// default Java heap) was the actual cause of a reported crash-to-home-
+  /// screen on a large file - see `_decodeAndDecimate`'s own doc comment for
+  /// the exact stack trace. A real local path is read directly via `dart:io`
+  /// inside [_decodeAndDecimate]'s own background isolate instead. With
+  /// file_picker 13 the path can be null (a `content://` pick on Android):
+  /// `localPathForPickedFile` then streams the file into the temp directory
+  /// and that copy's path is used, so the whole file is still never held in
+  /// memory at once.
   Future<void> _pickAndLoad() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.any);
-    if (result == null) return;
-    final file = result.files.single;
-    final path = file.path;
-    if (path == null) {
-      setState(() => _error = 'Could not access "${file.name}" - no local file path was returned.');
+    final file = await FilePicker.pickFile(type: FileType.any);
+    if (file == null) return;
+    // `path` is null for a `content://` pick on Android (e.g. a cloud provider): copy it to a temp file, streamed.
+    final String path;
+    try {
+      path = await localPathForPickedFile(file);
+    } catch (error) {
+      setState(() => _error = 'Could not access "${file.name}": $error');
       return;
     }
     final extension = (file.extension ?? '').toLowerCase();
@@ -432,7 +434,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   /// hands the resulting *file path* to `share_plus`'s `Share.shareXFiles`
   /// so the OS share sheet lets the user save/send it anywhere they like.
   ///
-  /// Deliberately does **not** use `FilePicker.platform.saveFile(bytes:
+  /// Deliberately does **not** use `FilePicker.saveFile(bytes:
   /// ...)` (an earlier version of this method did) - confirmed on-device to
   /// fail silently for a heavily-textured, "very large" source file. This
   /// viewer explicitly targets photogrammetry-scale meshes (the default
@@ -440,8 +442,8 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   /// already ~275 MiB of geometry before a single texture byte is counted),
   /// so "the decimated result is always small enough for the platform
   /// channel" - the assumption the `saveFile` version made - turned out to
-  /// be wrong for the same reason `_pickAndLoad`'s original `withData: true`
-  /// was: on Android, `saveFile`'s own `bytes` parameter still has to cross
+  /// be wrong for the same reason `_pickAndLoad`'s original read-the-whole-file-as-bytes
+  /// pick was: on Android, `saveFile`'s own `bytes` parameter still has to cross
   /// into native code as a `StandardMessageCodec`-encoded `MethodChannel`
   /// argument, bound by the same small Java heap. A local `dart:io` write
   /// followed by a share-sheet handoff of just the *path* avoids that

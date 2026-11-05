@@ -1,8 +1,7 @@
 import 'dart:convert';
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'material.dart';
@@ -92,26 +91,20 @@ class _MaterialsManagerScreenState extends State<MaterialsManagerScreen> {
   Future<void> _exportCsv() async {
     final csv = materialsToCsv(MaterialStore.all);
     final bytes = Uint8List.fromList(utf8.encode(csv));
-    final savedPath = await FilePicker.platform.saveFile(
+    // file_picker 13's saveFile writes `bytes` itself on every platform; null means the user cancelled.
+    final saved = await FilePicker.saveFile(
       dialogTitle: 'Export Material Library',
       fileName: 'materials.csv',
       bytes: bytes,
     );
-    if (savedPath == null) return;
-    // Mirrors PartScreen._saveNativeFileViaDialog's own desktop write
-    // workaround - file_picker's own desktop saveFile only runs the native
-    // dialog and never actually writes `bytes` there.
-    if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
-      await File(savedPath).writeAsBytes(bytes);
-    }
+    if (saved == null) return;
     if (mounted) setState(() => _statusMessage = 'Exported ${MaterialStore.all.length} materials.');
   }
 
   Future<void> _importCsv() async {
-    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
-    if (result == null || result.files.isEmpty) return;
-    final bytes = result.files.single.bytes;
-    if (bytes == null) return;
+    final picked = await FilePicker.pickFile(type: FileType.any);
+    if (picked == null) return;
+    final bytes = await picked.readAsBytes();
 
     final parsed = materialsFromCsv(utf8.decode(bytes));
     for (final material in parsed.imported) {
