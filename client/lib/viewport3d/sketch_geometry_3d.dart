@@ -1349,7 +1349,6 @@ Node buildSketchGeometryNode(
   UnlitMaterial materialFor(vm.Vector4 color) => AlwaysOnTopMaterial()
     ..alphaMode = AlphaMode.blend
     ..baseColorFactor = color;
-  UnlitMaterial outlineMaterialFor(String id) => materialFor(colorFor(id));
 
   final specs = sketchLineSpecsFor(geometry, entityColors: entityColors);
   MeshPrimitive primitiveFor(SketchLineSpec spec) => MeshPrimitive(
