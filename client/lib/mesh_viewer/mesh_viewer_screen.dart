@@ -431,7 +431,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   /// Writes the encoded bytes to a real file via `dart:io` in this app's own
   /// temporary directory (`path_provider`'s `getTemporaryDirectory()` - no
   /// storage permission needed, since it's this app's own sandbox), then
-  /// hands the resulting *file path* to `share_plus`'s `Share.shareXFiles`
+  /// hands the resulting *file path* to `share_plus`'s `SharePlus.instance.share`
   /// so the OS share sheet lets the user save/send it anywhere they like.
   ///
   /// Deliberately does **not** use `FilePicker.saveFile(bytes:
@@ -461,7 +461,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
       final exportPath = '${tempDir.path}/$baseName-reduced.$extension';
       await File(exportPath).writeAsBytes(bytes);
       if (!mounted) return;
-      await Share.shareXFiles([XFile(exportPath)], subject: 'DIDSA-CAD mesh export');
+      await SharePlus.instance.share(ShareParams(files: [XFile(exportPath)], subject: 'DIDSA-CAD mesh export'));
     } catch (error) {
       if (!mounted) return;
       setState(() => _error = 'Could not export mesh: $error');

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:didsa_cad_client/storage/picked_file.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:share_plus/share_plus.dart' show XFile;
 
 base class _FakePickedFile extends PlatformFile {
   _FakePickedFile(this.name, this.uri, this.data);
@@ -15,8 +16,7 @@ base class _FakePickedFile extends PlatformFile {
   final List<int> data;
 
   @override
-  // `dynamic` so the test needs no direct cross_file dependency (never called).
-  dynamic get xFile => throw UnimplementedError();
+  XFile get xFile => throw UnimplementedError();
   @override
   int? lengthSync() => data.length;
   @override

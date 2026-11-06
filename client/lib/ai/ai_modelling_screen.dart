@@ -2750,7 +2750,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       final path = '${tempDir.path}/$fileName';
       await File(path).writeAsString(package);
       if (!mounted) return;
-      await Share.shareXFiles([XFile(path)], subject: subject);
+      await SharePlus.instance.share(ShareParams(files: [XFile(path)], subject: subject));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not share: $error')));
