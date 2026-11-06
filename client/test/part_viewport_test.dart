@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'gpu_ready.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
@@ -86,7 +87,7 @@ void main() {
           ),
         ),
       );
-      await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
+      await _pumpUntil(tester, () => gpuSpinnerGone());
       await tester.pump();
 
       // A drag is exactly the gesture the existing orbit handler reads -
@@ -123,7 +124,7 @@ void main() {
       }
 
       await tester.pumpWidget(buildViewport(false));
-      await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
+      await _pumpUntil(tester, () => gpuSpinnerGone());
       await tester.pump();
 
       await tester.pumpWidget(buildViewport(true));
@@ -225,7 +226,7 @@ void main() {
           ),
         ),
       );
-      await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
+      await _pumpUntil(tester, () => gpuSpinnerGone());
       await tester.pump();
 
       // A drag well past the tap-travel threshold (10.0 logical pixels) must
@@ -262,7 +263,7 @@ void main() {
           );
 
       await tester.pumpWidget(buildWith(_boxBody));
-      await _pumpUntil(tester, () => find.byType(CircularProgressIndicator).evaluate().isEmpty);
+      await _pumpUntil(tester, () => gpuSpinnerGone());
       await tester.pump();
 
       final targetAfterFirstFrame = key.currentState!.debugCameraTarget.clone();
@@ -447,7 +448,7 @@ void main() {
       );
       final gpuReady = await _pumpUntil(
         tester,
-        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        () => gpuSpinnerGone(),
         maxPumps: 300,
       );
       if (!gpuReady) {
@@ -500,7 +501,7 @@ void main() {
       );
       final gpuReady = await _pumpUntil(
         tester,
-        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        () => gpuSpinnerGone(),
         maxPumps: 300,
       );
       if (!gpuReady) {
@@ -552,7 +553,7 @@ void main() {
       await tester.pumpWidget(buildWith([previewBody]));
       final gpuReady = await _pumpUntil(
         tester,
-        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        () => gpuSpinnerGone(),
         maxPumps: 300,
       );
       if (!gpuReady) {
@@ -621,7 +622,7 @@ void main() {
       );
       final gpuReady = await _pumpUntil(
         tester,
-        () => find.byType(CircularProgressIndicator).evaluate().isEmpty,
+        () => gpuSpinnerGone(),
         maxPumps: 300,
       );
       await tester.pump();

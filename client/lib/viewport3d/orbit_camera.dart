@@ -1,7 +1,7 @@
 import 'dart:math' as math;
 import 'dart:ui' show Offset, Size;
 
-import 'package:flutter_scene/scene.dart';
+import 'package:flutter_scene/scene.dart' hide OrthographicCamera, OrthographicProjection;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'orthographic_camera.dart';

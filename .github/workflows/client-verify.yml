@@ -27,28 +27,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # This project's `.metadata`/pubspec.lock track a `master`-channel
-      # Flutter revision, not stable - see docs/status.md's "Flutter CI
-      # workflow" entries for why: flutter_scene 0.18.1 depends directly on
-      # flutter_gpu's still-experimental, evolving API surface, and the
-      # specific shape it needs isn't present in current stable Flutter
-      # (confirmed by a real CI failure against stable 3.44.5 - VertexLayout/
-      # VertexFormat/VertexAttribute/TextureCompressionFamily and others were
-      # missing entirely). `channel: master` matches what this project is
-      # actually developed and run against - not a recommendation for CI in
-      # general (master is Flutter's most volatile channel and can break for
-      # reasons unrelated to this repo), but the only channel that currently
-      # reflects reality here.
-      #
-      # The master commit is pinned so CI is reproducible: an unpinned
-      # `channel: master` only ever refreshed when its cache key changed, so
-      # CI silently ran a weeks-old master. The action's cache key follows
-      # the pinned commit. To move it: change the hash below, push, check CI.
+      # Flutter stable, pinned. flutter_scene needs Flutter >= 3.47.0, and
+      # 3.47.0 is the first stable release that carries the Flutter GPU
+      # support it needs; that is why the project is on stable now (it used
+      # to be on master, see docs/flutter-scene-0.24-and-stable-plan.md).
+      # The version is pinned so CI is reproducible. Move it deliberately:
+      # 3.50 when it is stable (its Android floors are Gradle 9.3.1, AGP
+      # 9.1.1 and Kotlin 2.4.10, which this project already meets).
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: master
-          flutter-version: da33f2fadf235b352afffa8e7083305d44ea1dc1
+          channel: stable
+          flutter-version: 3.47.9
           cache: true
 
       - name: Install dependencies

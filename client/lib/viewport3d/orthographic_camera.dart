@@ -8,7 +8,7 @@
 import 'dart:math' as math;
 import 'dart:ui' show Size;
 
-import 'package:flutter_scene/scene.dart';
+import 'package:flutter_scene/scene.dart' hide OrthographicCamera, OrthographicProjection;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'orbit_camera.dart';
@@ -30,7 +30,8 @@ class OrthographicProjection extends CameraProjection {
   double far;
 
   @override
-  vm.Matrix4 getProjectionMatrix(double aspectRatio) {
+  // `jitter` (flutter_scene 0.23, temporal anti-aliasing) is ignored: TAA is off.
+  vm.Matrix4 getProjectionMatrix(double aspectRatio, {vm.Vector2? jitter}) {
     final halfWidth = halfHeight * aspectRatio;
     return vm.Matrix4(
       1.0 / halfWidth, 0.0, 0.0, 0.0, //

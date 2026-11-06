@@ -5,10 +5,11 @@ import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/gestures.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_gpu/gpu.dart' as gpu;
-import 'package:flutter_scene/scene.dart';
+import 'package:flutter_scene/scene.dart' hide OrthographicCamera, OrthographicProjection;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
+import 'gpu_unavailable.dart';
 import '../appearance/appearance_look.dart';
 import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus, pathEquals;
 import '../sketch/sketch_controller.dart' show ConstraintOverlayItem;
@@ -1523,6 +1524,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// anyone looking at the screen to tell something went wrong.
   String? _error;
 
+  /// Set when `Scene.initializeStaticResources()` fails (no usable GPU).
+  String? _gpuUnavailable;
+
   /// Live touch pointers by id, for pinch-zoom/two-finger-pan - same
   /// approach as [SketchCanvas]'s `_activeTouches`.
   final Map<int, Offset> _activeTouches = {};
@@ -1938,6 +1942,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (!mounted) return;
       setState(() {
         _scene = Scene()
+          // flutter_scene 0.24 defaults, switched off so the 3D view behaves as before:
+          // reversedDepth stays false: the NormalDepth*Material classes hard-code
+          // CompareFunction.lessEqual, which is wrong under reversed depth (Metal).
+          ..reversedDepth = false
+          // debugCheckCoplanarOverlaps stays false: a CAD scene is full of intended
+          // coplanar surfaces (sketches on faces, reference planes), so it is noise.
+          ..debugCheckCoplanarOverlaps = false
           // DIAGNOSTIC: on-device testing shows hidden edges/faces bleeding
           // through opaque bodies even after both were switched to
           // AlphaMode.opaque (see mesh_geometry.dart's doc comments on
@@ -1984,6 +1995,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncProfileFillNode();
         _syncProfileBranchMarkersNode();
       });
+    }, onError: (Object error) {
+      debugPrint('[PartViewport] Scene.initializeStaticResources() failed: $error');
+      if (!mounted) return;
+      setState(() => _gpuUnavailable = error.toString());
     }).catchError((Object error) {
       debugPrint('[PartViewport] GPU/scene setup failed: $error');
       if (!mounted) return;
@@ -7268,6 +7283,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         ),
       );
     }
+    final gpuUnavailable = _gpuUnavailable;
+    if (gpuUnavailable != null) return gpuUnavailableMessage(context, gpuUnavailable);
     final scene = _scene;
     if (scene == null) {
       return const Center(child: CircularProgressIndicator());

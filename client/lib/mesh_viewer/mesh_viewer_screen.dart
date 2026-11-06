@@ -24,6 +24,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
+import '../viewport3d/gpu_unavailable.dart';
 import '../storage/picked_file.dart' show localPathForPickedFile;
 import '../viewport3d/keyboard_shortcuts.dart';
 import '../viewport3d/controls_preferences.dart';
@@ -794,6 +795,7 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
   final OrbitCamera _camera = OrbitCamera()..isPerspective = true;
   Scene? _scene;
   String? _error;
+  String? _gpuUnavailable;
   final Map<int, Offset> _activeTouches = {};
 
   List<Node> _faceNodes = const [];
@@ -807,7 +809,14 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     ensureSceneResourcesLoaded().then((_) {
       if (!mounted) return;
       setState(() {
-        _scene = Scene();
+        _scene = Scene()
+          // flutter_scene 0.24 defaults, switched off so the 3D view behaves as before:
+          // reversedDepth stays false: the NormalDepth*Material classes hard-code
+          // CompareFunction.lessEqual, which is wrong under reversed depth (Metal).
+          ..reversedDepth = false
+          // debugCheckCoplanarOverlaps stays false: a CAD scene is full of intended
+          // coplanar surfaces (sketches on faces, reference planes), so it is noise.
+          ..debugCheckCoplanarOverlaps = false;
         applySceneLighting(_scene!, widget.lightIntensity);
         _faceNodes = buildMeshViewerNodes(widget.mesh, widget.materials);
         _syncFacetsAndWireframe();
@@ -815,6 +824,10 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
         _camera.setTarget(bounds.center);
         _camera.setZoomBoundsForRadius(bounds.radius);
       });
+    }, onError: (Object error) {
+      debugPrint('[MeshViewer] Scene.initializeStaticResources() failed: $error');
+      if (!mounted) return;
+      setState(() => _gpuUnavailable = error.toString());
     }).catchError((Object error) {
       if (!mounted) return;
       setState(() => _error = error.toString());
@@ -999,6 +1012,8 @@ class _MeshViewerViewportState extends State<_MeshViewerViewport> {
     if (error != null) {
       return Center(child: Text('Could not start the 3D viewport: $error'));
     }
+    final gpuUnavailable = _gpuUnavailable;
+    if (gpuUnavailable != null) return gpuUnavailableMessage(context, gpuUnavailable);
     final scene = _scene;
     if (scene == null) return const Center(child: CircularProgressIndicator());
     return LayoutBuilder(

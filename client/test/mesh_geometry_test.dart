@@ -7,7 +7,7 @@ import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/mesh_geometry.dart';
 
 void main() {
-  test('meshBuffersFromMesh packs position/normal/uv/color into 12 floats per vertex', () {
+  test('meshBuffersFromMesh packs position/normal/uv/uv1/color/tangent into 18 floats (72 bytes) per vertex', () {
     final mesh = MeshDto(
       vertices: [
         [0, 0, 0],
@@ -27,15 +27,39 @@ void main() {
     final buffers = meshBuffersFromMesh(mesh);
 
     expect(buffers.vertexCount, 3);
-    expect(buffers.vertexData.length, 3 * 12);
+    expect(buffers.vertexData.length, 3 * 18);
 
-    final vertex1 = buffers.vertexData.sublist(12, 24);
+    final vertex1 = buffers.vertexData.sublist(18, 36);
     expect(vertex1, [
       1, 0, 0, // position
       0, 0, 1, // normal
       0, 0, // uv
+      0, 0, // uv1 (flutter_scene 0.24)
       1, 1, 1, 1, // color
+      0, 0, 0, 0, // tangent (flutter_scene 0.24)
     ]);
+  });
+
+  test('meshBuffersFromMesh vertex data is exactly vertexCount * 72 bytes (flutter_scene 0.24 throws otherwise)', () {
+    final mesh = MeshDto(
+      vertices: [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      normals: [
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 1],
+      ],
+      triangleIndices: [
+        [0, 1, 2],
+      ],
+    );
+    for (final doubleSided in [false, true]) {
+      final buffers = meshBuffersFromMesh(mesh, doubleSidedWinding: doubleSided);
+      expect(buffers.vertexData.lengthInBytes, buffers.vertexCount * 72);
+    }
   });
 
   test('meshBuffersFromMesh writes a flat 32-bit index buffer from triangleIndices', () {
@@ -61,7 +85,9 @@ void main() {
     final buffers = meshBuffersFromMesh(mesh);
     final indices = Uint32List.sublistView(buffers.indexData);
 
-    expect(indices, [0, 1, 2, 2, 1, 3]);
+    // Index order: flutter_scene 0.23 flipped the front-face winding, so every triangle's 2nd and 3rd index
+    // are swapped on purpose (docs/flutter-scene-0.24-and-stable-plan.md, Phase 2 step 6).
+    expect(indices, [0, 2, 1, 2, 3, 1]);
   });
 
   test(
@@ -100,7 +126,9 @@ void main() {
 
     // A Uint16-backed index buffer would have wrapped these to
     // [70000 - 65536, 70001 - 65536, 70002 - 65536] = [4464, 4465, 4466].
-    expect(indices, [overflowIndex, overflowIndex + 1, overflowIndex + 2]);
+    // Index order: flutter_scene 0.23 flipped the front-face winding, so every triangle's 2nd and 3rd index
+    // are swapped on purpose (docs/flutter-scene-0.24-and-stable-plan.md, Phase 2 step 6).
+    expect(indices, [overflowIndex, overflowIndex + 2, overflowIndex + 1]);
   });
 
   test(
@@ -164,17 +192,19 @@ void main() {
     expect(firstCopyNormalZ, 1);
 
     // Second 3 vertices: same positions, negated normals.
-    final secondCopyPosition = buffers.vertexData.sublist(36, 39);
+    final secondCopyPosition = buffers.vertexData.sublist(54, 57);
     expect(secondCopyPosition, [0, 0, 0]); // same position as vertex 0
-    final secondCopyNormalZ = buffers.vertexData[41];
+    final secondCopyNormalZ = buffers.vertexData[59];
     expect(secondCopyNormalZ, -1);
 
     final indices = Uint32List.sublistView(buffers.indexData);
     expect(indices.length, 6);
-    // Front-facing triangle, unchanged.
-    expect(indices.sublist(0, 3), [0, 1, 2]);
+    // Original-normal copy (2nd and 3rd index swapped, see below).
+    expect(indices.sublist(0, 3), [0, 2, 1]);
     // Back-facing triangle: reversed winding, offset into the second vertex copy.
-    expect(indices.sublist(3, 6), [3, 5, 4]);
+    // (Both copies swapped on purpose: flutter_scene 0.23 flipped the front-face winding,
+    // docs/flutter-scene-0.24-and-stable-plan.md, Phase 2 step 6.)
+    expect(indices.sublist(3, 6), [3, 4, 5]);
   });
 
   test('boundsOfMesh returns the bounding box centre, not the vertex average', () {
@@ -345,13 +375,41 @@ void main() {
       // One input triangle → 2 output triangles (front + back) → 6 vertices.
       expect(buffers.vertexCount, 6);
       // Front-face vertex 0 is unchanged: position (0,0,0), normal +Z.
-      final vertex0 = buffers.vertexData.sublist(0, 12);
+      final vertex0 = buffers.vertexData.sublist(0, 18);
       expect(vertex0, [
         0, 0, 0, // position
         0, 0, 1, // normal (cross of the two edges, +Z for this winding)
         0, 0, // uv
+        0, 0, // uv1 (flutter_scene 0.24)
         1, 1, 1, 1, // color
+        0, 0, 0, 0, // tangent (flutter_scene 0.24)
       ]);
+    });
+
+    test('writes each triangle with its 2nd and 3rd corner swapped, normals still from the original order', () {
+      // flutter_scene 0.23 flipped the front-face winding (docs/flutter-scene-0.24-and-stable-plan.md,
+      // Phase 2 step 6): corners swapped on purpose, normal values unchanged.
+      final buffers = triangleHighlightBuffers([
+        (vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(0, 1, 0)),
+      ]);
+      double x(int vertex) => buffers.vertexData[vertex * 18];
+      double y(int vertex) => buffers.vertexData[vertex * 18 + 1];
+      double nz(int vertex) => buffers.vertexData[vertex * 18 + 5];
+      // First copy: corners a, c, b with the normal of (a, b, c) = +Z.
+      expect([x(1), y(1)], [0, 1]);
+      expect([x(2), y(2)], [1, 0]);
+      expect([nz(0), nz(1), nz(2)], [1, 1, 1]);
+      // Second copy: corners a, b, c with the normal of (a, c, b) = -Z.
+      expect([x(4), y(4)], [1, 0]);
+      expect([x(5), y(5)], [0, 1]);
+      expect([nz(3), nz(4), nz(5)], [-1, -1, -1]);
+    });
+
+    test('vertex data is exactly vertexCount * 72 bytes (flutter_scene 0.24 throws otherwise)', () {
+      final buffers = triangleHighlightBuffers([
+        (vm.Vector3(0, 0, 0), vm.Vector3(1, 0, 0), vm.Vector3(0, 1, 0)),
+      ]);
+      expect(buffers.vertexData.lengthInBytes, buffers.vertexCount * 72);
     });
 
     test('writes a flat 32-bit index buffer of 0..vertexCount-1', () {

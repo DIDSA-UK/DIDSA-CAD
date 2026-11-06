@@ -10,6 +10,7 @@ import 'package:didsa_cad_client/viewport3d/controls_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/mouse_navigation.dart' show SelectClick;
 import 'package:didsa_cad_client/viewport3d/orbit_camera.dart';
 import 'package:didsa_cad_client/viewport3d/view_cube.dart' show viewCubeEyeAndUp;
+import 'gpu_ready.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 
@@ -41,10 +42,10 @@ final _triangle = BodyMeshDto(
 
 Future<bool> _pumpUntilGpuReady(WidgetTester tester, {int maxPumps = 300}) async {
   for (var i = 0; i < maxPumps; i++) {
-    if (find.byType(CircularProgressIndicator).evaluate().isEmpty) return true;
+    if (gpuSpinnerGone()) return true;
     await tester.pump(const Duration(milliseconds: 100));
   }
-  return find.byType(CircularProgressIndicator).evaluate().isEmpty;
+  return gpuSpinnerGone();
 }
 
 void main() {
