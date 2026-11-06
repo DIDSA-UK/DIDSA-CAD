@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:didsa_cad_client/didsa_logo_button.dart';
 import 'package:didsa_cad_client/assembly/assembly_lens.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
 
@@ -112,6 +113,14 @@ void main() {
 
     Rect panelRect(WidgetTester tester) =>
         tester.getRect(find.byWidgetPredicate((w) => w is Material && w.elevation == 4));
+
+    testWidgets('the DIDSA logo sits at the top of the panel, left of the close button', (tester) async {
+      await pump(tester, size: const Size(400, 800));
+      final logo = find.byType(DidsaLogoButton);
+      expect(logo, findsOneWidget);
+      expect(tester.getRect(logo).right, lessThan(tester.getRect(find.byKey(closeKey)).left));
+      expect(tester.getRect(logo).top, lessThan(tester.getRect(find.text('File')).top));
+    });
 
     testWidgets('visible: touches the right edge, bottom at the inset, at most two thirds of the screen',
         (tester) async {
