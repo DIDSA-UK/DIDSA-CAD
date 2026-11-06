@@ -1,5 +1,5 @@
 import 'package:didsa_cad_client/viewport3d/visibility_panel.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// The Visibility panel on its own: three-state chips from the data, tap rules, the lock badge, the View row and its fold.

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// One axis of [PlaneIndicator]'s 2-axis indicator: its label/color (the
 /// same X=red/Y=green/Z=blue convention `viewport3d/triad.dart` and

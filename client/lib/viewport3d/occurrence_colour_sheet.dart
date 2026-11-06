@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'view_prefs_sheets.dart' show ColourSwatch, bodyColourSwatches;
 import 'view_preferences.dart';

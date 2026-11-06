@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:image/image.dart' as img;
@@ -320,7 +320,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   // instead of `DocumentApiClient.createPart('Assembly')`.
   String? _assemblyTargetRelativePath;
 
-  // Set by importing an external AI's `.zip` (`_importBundleFromFile`): the
+  // Set by importing an external AI's `.zip` (`_importBundleFromBytes`): the
   // part cycles and the assembly cycle take their plans from here instead of
   // asking the provider. Cleared with the rest of the orchestration state.
   AiPlanBundle? _importedBundle;
@@ -807,7 +807,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// roughly [aiImageMaxEdgePx] on its longest edge via
   /// `flutter_image_compress`, and appends the results to the pending
   /// attachment strip shown above the input row. Widened from
-  /// single-image-only (`result.files.single`) to `allowMultiple: true` in
+  /// single-image-only to a multi-file pick in
   /// Phase B of the multi-part/assembly overhaul (`docs/ai-modelling/13-
   /// multi-part-assembly-overhaul.md`) - a request may show several
   /// distinct parts across several images, or a single image may show a
@@ -816,11 +816,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// `flutter_image_compress` has no Linux/Windows desktop implementation
   /// (Android/iOS/macOS/Web only, per its own platform support table) - on
   /// those two platforms this falls back to the picked file's raw bytes,
-  /// unresized, read directly via `dart:io` from `file.path` rather than
-  /// through `file_picker`'s own bytes channel (the same large-file-safety
-  /// discipline `mesh_viewer_screen.dart`'s own `_pickAndLoad` doc comment
-  /// established, for the same MethodChannel-heap reason), rather than
-  /// crashing the attach flow outright.
+  /// unresized, read directly via `dart:io` from `file.path` (or, when the
+  /// pick has no local path - a `content://` file on Android - from the
+  /// picked file's own bytes), rather than crashing the attach flow
+  /// outright.
   ///
   /// One file failing to process never aborts the others - each is
   /// processed independently and a per-file failure is folded into
@@ -829,8 +828,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// codebase's existing "one failure doesn't abort the rest" convention
   /// (e.g. `AssemblyDocumentClient.saveAll`).
   Future<void> _attachImage() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image, allowMultiple: true);
-    if (result == null || result.files.isEmpty) return;
+    final picked = await FilePicker.pickFiles(type: FileType.image);
+    if (picked.isEmpty) return;
 
     setState(() {
       _preparingImage = true;
@@ -838,28 +837,36 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     });
     final prepared = <_PendingImage>[];
     String? error;
-    for (final file in result.files) {
+    for (final file in picked) {
+      // `path` is null for a `content://` pick on Android: those are compressed and read through their bytes instead.
       final path = file.path;
-      if (path == null) {
-        error = 'Could not access "${file.name}" - no local file path was returned.';
-        continue;
-      }
       try {
         Uint8List bytes;
         String mimeType;
         try {
-          final compressed = await FlutterImageCompress.compressWithFile(
-            path,
-            minWidth: aiImageMaxEdgePx,
-            minHeight: aiImageMaxEdgePx,
-            quality: 85,
-            format: CompressFormat.jpeg,
-          );
+          final Uint8List? compressed;
+          if (path != null) {
+            compressed = await FlutterImageCompress.compressWithFile(
+              path,
+              minWidth: aiImageMaxEdgePx,
+              minHeight: aiImageMaxEdgePx,
+              quality: 85,
+              format: CompressFormat.jpeg,
+            );
+          } else {
+            compressed = await FlutterImageCompress.compressWithList(
+              await file.readAsBytes(),
+              minWidth: aiImageMaxEdgePx,
+              minHeight: aiImageMaxEdgePx,
+              quality: 85,
+              format: CompressFormat.jpeg,
+            );
+          }
           if (compressed == null) throw StateError('compressWithFile returned null');
           bytes = compressed;
           mimeType = 'image/jpeg';
         } catch (_) {
-          bytes = await File(path).readAsBytes();
+          bytes = path != null ? await File(path).readAsBytes() : await file.readAsBytes();
           mimeType = _mimeTypeForExtension(file.extension ?? '');
         }
         final oriented = _bakeExifOrientation(bytes, mimeType);
@@ -2743,7 +2750,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       final path = '${tempDir.path}/$fileName';
       await File(path).writeAsString(package);
       if (!mounted) return;
-      await Share.shareXFiles([XFile(path)], subject: subject);
+      await SharePlus.instance.share(ShareParams(files: [XFile(path)], subject: subject));
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not share: $error')));
@@ -2805,9 +2812,8 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     if (hook != null) {
       text = await hook();
     } else {
-      final picked = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt']);
-      final path = picked?.files.single.path;
-      text = path == null ? null : await File(path).readAsString();
+      final picked = await FilePicker.pickFile(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt']);
+      text = picked == null ? null : utf8.decode(await picked.readAsBytes());
     }
     if (text == null || !mounted) return;
 
@@ -2946,8 +2952,6 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
   /// confirm-parts panel an in-app manifest does; "Confirm & Generate All"
   /// then builds and saves each part from its imported plan, then the
   /// assembly, with no provider calls.
-  Future<void> _importBundleFromFile(String path) async => _importBundleFromBytes(await File(path).readAsBytes());
-
   Future<void> _importBundleFromBytes(Uint8List bytes) async {
     AiPlanBundle bundle;
     try {
@@ -2991,28 +2995,31 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       if (bytes != null) await _importBundleFromBytes(bytes);
       return;
     }
-    final result = await FilePicker.platform.pickFiles(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt', 'zip']);
-    if (result == null) return;
-    final path = result.files.single.path;
-    if (path == null) {
+    final file = await FilePicker.pickFile(type: FileType.custom, allowedExtensions: ['json', 'md', 'txt', 'zip']);
+    if (file == null) return;
+    final Uint8List fileBytes;
+    try {
+      // Bytes, not a path: a `content://` pick on Android has no local path.
+      fileBytes = await file.readAsBytes();
+    } catch (error) {
       if (!mounted) return;
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Could not import plan'),
-          content: Text('Could not access "${result.files.single.name}" - no local file path was returned.'),
+          content: Text('Could not read "${file.name}": $error'),
           actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('OK'))],
         ),
       );
       return;
     }
 
-    if (path.toLowerCase().endsWith('.zip')) {
-      await _importBundleFromFile(path);
+    if (file.name.toLowerCase().endsWith('.zip')) {
+      await _importBundleFromBytes(fileBytes);
       return;
     }
 
-    final text = await File(path).readAsString();
+    final text = utf8.decode(fileBytes);
     AiGenerationPlan? plan;
     String? parseError;
     try {

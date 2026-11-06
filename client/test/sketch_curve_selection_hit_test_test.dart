@@ -1,7 +1,7 @@
 import 'package:didsa_cad_client/viewport3d/selection_filter.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_geometry_3d.dart';
-import 'package:flutter/material.dart' show Size;
+import 'package:material_ui/material_ui.dart' show Size;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 

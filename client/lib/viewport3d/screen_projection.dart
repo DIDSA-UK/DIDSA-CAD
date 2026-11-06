@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart' show Offset;
+import 'package:material_ui/material_ui.dart' show Offset;
 import 'package:flutter/rendering.dart' show Size;
 import 'package:flutter_scene/scene.dart' show Camera;
 import 'package:vector_math/vector_math.dart' as vm;

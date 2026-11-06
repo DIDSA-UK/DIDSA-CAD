@@ -35,6 +35,10 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
 
+  # Replaces the deprecated package:flutter/material.dart import (Flutter
+  # 3.47+; see docs/android-toolchain-upgrade-plan.md, Phase 0).
+  material_ui: ^1.10.0
+
   http: ^1.2.2
   flutter_scene: ^0.18.1
   flutter_gpu:
@@ -42,9 +46,9 @@ dependencies:
   vector_math: ^2.1.4
   shared_preferences: ^2.3.3
   url_launcher: ^6.3.1
-  file_picker: ^8.1.2
+  file_picker: ^13.3.2
   path_provider: ^2.1.4
-  share_plus: ^10.1.2
+  share_plus: ^13.3.1
   flutter_svg: ^2.0.17
   csv: ^6.0.0
 
@@ -75,7 +79,7 @@ dependencies:
   # production use" per that table's own release notes); Linux has no
   # implementation at all - see that doc's own "Spike" section.
   # `ai_modelling_screen.dart` never attempts to initialize it on Linux.
-  speech_to_text: ^7.0.0
+  speech_to_text: ^7.5.0
 
   # Assembly support's storage layer (`docs/assembly-scope.md`): Android/
   # iOS have no free-form filesystem access outside the app sandbox since

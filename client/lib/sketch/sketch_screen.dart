@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart' show listEquals;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
@@ -25,6 +25,7 @@ import '../api/sketch_api_client.dart'
         TextDto;
 import '../didsa_logo_button.dart';
 import '../layout/adaptive_sheet.dart';
+import '../storage/picked_file.dart' show savedFileNameFromUri;
 import '../layout/layout_mode.dart';
 import '../viewport3d/desktop_chrome.dart';
 import '../viewport3d/part_viewport.dart';
@@ -3305,7 +3306,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// file at all (it has no Part to be saved as part of, unlike every
   /// other Sketch in this app). Mirrors `part_screen.dart`'s
   /// `_exportAndSaveNativeFile` shape exactly (export -> JSON-encode ->
-  /// `FilePicker.platform.saveFile`), just calling `SketchApiClient.
+  /// `FilePicker.saveFile`), just calling `SketchApiClient.
   /// exportSketch` instead of the Part-level native-file export.
   String? _lastSavedSketchFileName;
 
@@ -3316,13 +3317,16 @@ class _SketchScreenState extends State<SketchScreen> {
     try {
       final data = await _controller.api.exportSketch(sketchId);
       final bytes = Uint8List.fromList(utf8.encode(jsonEncode(data)));
-      final savedPath = await FilePicker.platform.saveFile(
+      final saved = await FilePicker.saveFile(
         dialogTitle: 'Save Drawing',
         fileName: _lastSavedSketchFileName ?? 'drawing.DIDSAsketch',
         bytes: bytes,
       );
-      if (savedPath != null) {
-        _lastSavedSketchFileName = savedPath.split('/').last;
+      if (saved != null) {
+        // On Android the last segment of a content:// URI can be a document id, not a name:
+        // keep the previous name unless this one looks like a drawing file.
+        final name = savedFileNameFromUri(saved);
+        if (name != null && name.toLowerCase().endsWith('.didsasketch')) _lastSavedSketchFileName = name;
       }
     } on ApiException catch (e) {
       if (!mounted) return;
@@ -3340,10 +3344,9 @@ class _SketchScreenState extends State<SketchScreen> {
   /// the newly opened content, not a partially-reused one.
   Future<void> _openStandaloneSketch() async {
     setState(() => _menuOpen = false);
-    final result = await FilePicker.platform.pickFiles(withData: true, type: FileType.any);
-    if (result == null || result.files.isEmpty || !mounted) return;
-    final bytes = result.files.single.bytes;
-    if (bytes == null) return;
+    final picked = await FilePicker.pickFile(type: FileType.any);
+    if (picked == null || !mounted) return;
+    final bytes = await picked.readAsBytes();
 
     Map<String, dynamic> decoded;
     try {

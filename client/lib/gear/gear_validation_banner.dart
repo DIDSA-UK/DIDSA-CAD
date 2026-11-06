@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// `00-conventions.md`'s non-blocking validation banner convention - a
 /// small colored/iconed message strip, shared by every Gear Design screen

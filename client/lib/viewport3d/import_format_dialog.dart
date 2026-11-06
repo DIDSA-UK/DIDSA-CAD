@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// One selectable entry in [showImportFormatDialog] - [label] is what the
 /// user sees, [value] is the backend's own `source_format` string

@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Shown while a create/save call is in flight for a shape that can
 /// genuinely take a while to build server-side (helical/herringbone gears,

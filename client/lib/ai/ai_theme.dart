@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Look-and-feel for the AI tool's screens (AI Modelling, AI Provider
 /// Settings, AI System Prompt). The rest of the app is light-only, so the AI

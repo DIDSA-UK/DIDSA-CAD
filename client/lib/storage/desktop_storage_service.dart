@@ -28,7 +28,7 @@ class DesktopStorageService implements StorageService {
   Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async {
     final String? picked;
     try {
-      picked = await FilePicker.platform.getDirectoryPath(dialogTitle: 'Choose or create a DIDSA project folder');
+      picked = await FilePicker.getDirectoryPath(dialogTitle: 'Choose or create a DIDSA project folder');
     } on StorageException {
       rethrow;
     } catch (e) {

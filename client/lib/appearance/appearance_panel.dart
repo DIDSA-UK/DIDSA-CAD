@@ -9,7 +9,7 @@
 ///     whether that level has its own paint. Hovering a row previews it on the model; clicking it paints it.
 library;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 
 import '../viewport3d/resizable_tool_panel.dart';

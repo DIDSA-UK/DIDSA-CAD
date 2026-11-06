@@ -1,7 +1,7 @@
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// The XY / XZ / YZ rows under Planes (`docs/flutter-testing-feedback-2026-11-05-plan.md` item 4).

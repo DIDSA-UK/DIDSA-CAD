@@ -1,5 +1,5 @@
 // Finding moved files (`docs/moved-files-scope.md`, F3): the Review sheet and the banner's summary text.
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/assembly/reference_report.dart';
