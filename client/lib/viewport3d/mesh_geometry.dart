@@ -12,6 +12,7 @@ import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
+import 'view_preferences.dart' show ViewPreferences;
 
 /// [UnlitMaterial] that always wins the depth test, regardless of what's
 /// already in the depth buffer or which GPU is rendering - see
@@ -170,7 +171,8 @@ const int kVertexFloats = 18;
 const int kVertexBytes = kVertexFloats * 4;
 
 /// Writes vertex number [vertex] into [out] in the 18-float layout. UV1 is
-/// 0, 0, colour is opaque white and tangent is 0, 0, 0, 0: the values
+/// 0, 0, colour is [r], [g], [b], [a] (opaque white unless a caller sets it; body materials multiply the vertex
+/// colour in) and tangent is 0, 0, 0, 0: the values
 /// flutter_scene's own `MeshGeometry.fromArrays` uses when they are absent
 /// (`interleaved_layout.dart`).
 void writeUnskinnedVertex(
@@ -184,6 +186,10 @@ void writeUnskinnedVertex(
   required double nz,
   double u = 0,
   double v = 0,
+  double r = 1,
+  double g = 1,
+  double b = 1,
+  double a = 1,
 }) {
   final base = vertex * kVertexFloats;
   out[base] = px;
@@ -196,10 +202,10 @@ void writeUnskinnedVertex(
   out[base + 7] = v;
   out[base + 8] = 0; // u1
   out[base + 9] = 0; // v1
-  out[base + 10] = 1; // r
-  out[base + 11] = 1; // g
-  out[base + 12] = 1; // b
-  out[base + 13] = 1; // a
+  out[base + 10] = r;
+  out[base + 11] = g;
+  out[base + 12] = b;
+  out[base + 13] = a;
   out[base + 14] = 0; // tangent x
   out[base + 15] = 0; // tangent y
   out[base + 16] = 0; // tangent z
@@ -245,6 +251,17 @@ class MeshBuffers {
   });
 }
 
+/// Vertex colour (red, green and blue) of the inside copy of a see-through body's triangles. Looking through the near
+/// wall of a see-through body you see the far wall's inside copy, whose flipped normal points back at you, so the
+/// lighting treats it as a lit surface. Darkening that copy makes it read as the inside. 0.55 is a first guess to be
+/// tuned on a device; a shading cue only, not real light blocking: faces that genuinely face you through the near wall
+/// (the walls of a hole, say) are outside copies and stay lit.
+const double kSeeThroughInteriorShade = 0.55;
+
+/// The shade [meshBuffersFromMesh] gives the inside copy when its caller does not say: [kSeeThroughInteriorShade], or
+/// 1 (no darkening) when [ViewPreferences.darkenSeeThroughInterior] is off.
+double seeThroughInteriorShade() => ViewPreferences.darkenSeeThroughInterior ? kSeeThroughInteriorShade : 1.0;
+
 /// Builds the vertex/index buffers for a backend [MeshDto] in the same
 /// vertex layout `flutter_scene`'s own geometry types use (position, normal,
 /// uv, color - 12 floats/vertex before flutter_scene 0.24; now the
@@ -274,12 +291,13 @@ class MeshBuffers {
 /// quad or ad-hoc triangle list. Doubles [MeshBuffers.vertexCount] - no
 /// longer a 65535-vertex 16-bit-index concern now that indices are 32-bit
 /// (see [MeshBuffers]'s own doc comment), just twice the GPU buffer size.
-MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false}) {
+MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false, double? interiorShade}) {
+  final shade = interiorShade ?? seeThroughInteriorShade();
   final vertexCount = mesh.vertices.length;
   final copies = doubleSidedWinding ? 2 : 1;
   final vertexData = Float32List(vertexCount * kVertexFloats * copies);
 
-  void writeVertexCopy(int copyIndex, double normalSign) {
+  void writeVertexCopy(int copyIndex, double normalSign, double colour) {
     final vertexOffset = copyIndex * vertexCount;
     for (var i = 0; i < vertexCount; i++) {
       final position = mesh.vertices[i];
@@ -293,12 +311,16 @@ MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false})
         nx: normal[0] * normalSign,
         ny: normal[1] * normalSign,
         nz: normal[2] * normalSign,
+        r: colour,
+        g: colour,
+        b: colour,
       );
     }
   }
 
-  writeVertexCopy(0, 1.0);
-  if (doubleSidedWinding) writeVertexCopy(1, -1.0);
+  writeVertexCopy(0, 1.0, 1.0);
+  // The inside copy is darkened by [shade] (see [kSeeThroughInteriorShade]); alpha stays 1.
+  if (doubleSidedWinding) writeVertexCopy(1, -1.0, shade);
 
   final triangleCount = mesh.triangleIndices.length;
   final indexCount = triangleCount * 3 * copies;
@@ -334,8 +356,8 @@ MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false})
 /// into `flutter_scene`'s GPU shim to allocate a device buffer - a real
 /// GPU/Impeller context is needed for that, so unlike [meshBuffersFromMesh]
 /// this function cannot be exercised in a headless `flutter test` run.
-UnskinnedGeometry geometryFromMesh(MeshDto mesh, {bool doubleSidedWinding = false}) {
-  final buffers = meshBuffersFromMesh(mesh, doubleSidedWinding: doubleSidedWinding);
+UnskinnedGeometry geometryFromMesh(MeshDto mesh, {bool doubleSidedWinding = false, double? interiorShade}) {
+  final buffers = meshBuffersFromMesh(mesh, doubleSidedWinding: doubleSidedWinding, interiorShade: interiorShade);
   final geometry = UnskinnedGeometry();
   geometry.uploadVertexData(
     ByteData.sublistView(buffers.vertexData),

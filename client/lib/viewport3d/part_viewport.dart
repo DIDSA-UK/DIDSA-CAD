@@ -7752,14 +7752,20 @@ class _ScenePainter extends CustomPainter {
       debugPrint('[PartViewport] _ScenePainter.paint: first frame, calling scene.render()...');
     }
     final perspectiveCamera = camera.cameraFor(size);
-    for (final node in polylineCarryingNodes) {
+    // Child nodes too: the sketch outline primitives live in a child of the sketch node.
+    void updatePolylines(Node node) {
       for (final primitive in node.mesh?.primitives ?? const []) {
         final geometry = primitive.geometry;
         if (geometry is PolylineGeometry) {
           geometry.updateForCamera(perspectiveCamera, canvasSize);
         }
       }
+      for (final child in node.children) {
+        updatePolylines(child);
+      }
     }
+
+    polylineCarryingNodes.forEach(updatePolylines);
     scene.render(perspectiveCamera, canvas, viewport: Offset.zero & canvasSize);
     if (isFirstPaint) {
       debugPrint('[PartViewport] _ScenePainter.paint: first frame, scene.render() returned');

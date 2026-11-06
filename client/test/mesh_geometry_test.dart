@@ -1,10 +1,12 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/mesh_geometry.dart';
+import 'package:didsa_cad_client/viewport3d/view_preferences.dart';
 
 void main() {
   test('meshBuffersFromMesh packs position/normal/uv/uv1/color/tangent into 18 floats (72 bytes) per vertex', () {
@@ -205,6 +207,69 @@ void main() {
     // (Both copies swapped on purpose: flutter_scene 0.23 flipped the front-face winding,
     // docs/flutter-scene-0.24-and-stable-plan.md, Phase 2 step 6.)
     expect(indices.sublist(3, 6), [3, 4, 5]);
+  });
+
+  test('see-through inside copy is darkened by the shade; outside copy and alpha stay 1; layout is 72 bytes', () {
+    final mesh = MeshDto(
+      vertices: [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      normals: [
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 1],
+      ],
+      triangleIndices: [
+        [0, 1, 2],
+      ],
+    );
+    final buffers = meshBuffersFromMesh(mesh, doubleSidedWinding: true, interiorShade: kSeeThroughInteriorShade);
+    expect(kSeeThroughInteriorShade, 0.55);
+    expect(buffers.vertexData.lengthInBytes, buffers.vertexCount * 72);
+    for (var v = 0; v < 6; v++) {
+      final colour = buffers.vertexData.sublist(v * kVertexFloats + 10, v * kVertexFloats + 14);
+      final s = v < 3 ? 1.0 : kSeeThroughInteriorShade;
+      expect(colour[0], closeTo(s, 1e-6));
+      expect(colour[1], closeTo(s, 1e-6));
+      expect(colour[2], closeTo(s, 1e-6));
+      expect(colour[3], 1.0);
+    }
+  });
+
+  test('with the shade at 1 (switch off) every vertex colour is 1, 1, 1, 1', () {
+    final mesh = MeshDto(
+      vertices: [
+        [0, 0, 0],
+        [1, 0, 0],
+        [0, 1, 0],
+      ],
+      normals: [
+        [0, 0, 1],
+        [0, 0, 1],
+        [0, 0, 1],
+      ],
+      triangleIndices: [
+        [0, 1, 2],
+      ],
+    );
+    final buffers = meshBuffersFromMesh(mesh, doubleSidedWinding: true, interiorShade: 1.0);
+    for (var v = 0; v < 6; v++) {
+      expect(buffers.vertexData.sublist(v * kVertexFloats + 10, v * kVertexFloats + 14), [1, 1, 1, 1]);
+    }
+  });
+
+  test('the default shade follows ViewPreferences.darkenSeeThroughInterior', () async {
+    SharedPreferences.setMockInitialValues({});
+    await ViewPreferences.load();
+    expect(ViewPreferences.defaultDarkenSeeThroughInterior, isTrue);
+    expect(ViewPreferences.darkenSeeThroughInteriorPrefKey, 'view_darken_see_through_interior');
+    expect(seeThroughInteriorShade(), kSeeThroughInteriorShade);
+    await ViewPreferences.setDarkenSeeThroughInterior(false);
+    await ViewPreferences.load();
+    expect(seeThroughInteriorShade(), 1.0);
+    await ViewPreferences.setDarkenSeeThroughInterior(true);
   });
 
   test('boundsOfMesh returns the bounding box centre, not the vertex average', () {

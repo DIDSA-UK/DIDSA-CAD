@@ -5,6 +5,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
+import '../didsa_logo_button.dart';
 import 'orbit_camera.dart' show kDefaultFarClip;
 import 'render_mode.dart';
 import 'scene_controls_panel.dart';
@@ -342,17 +343,21 @@ class PartToolbar extends StatelessWidget {
                       children: [
                         // Outside the scroll view, so it stays put however far the menus below are scrolled.
                         if (onClose != null && visible)
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: Padding(
-                              padding: const EdgeInsets.only(right: 4, top: 4),
-                              child: IconButton(
-                                key: const ValueKey('toolbar-close'),
-                                tooltip: 'Close toolbar',
-                                visualDensity: VisualDensity.compact,
-                                icon: const Icon(Icons.close),
-                                onPressed: onClose,
-                              ),
+                          Padding(
+                            padding: const EdgeInsets.only(left: 12, right: 4, top: 4),
+                            child: Row(
+                              children: [
+                                // The DIDSA logo fills the empty space left of the close button.
+                                const DidsaLogoButton(height: 28),
+                                const Spacer(),
+                                IconButton(
+                                  key: const ValueKey('toolbar-close'),
+                                  tooltip: 'Close toolbar',
+                                  visualDensity: VisualDensity.compact,
+                                  icon: const Icon(Icons.close),
+                                  onPressed: onClose,
+                                ),
+                              ],
                             ),
                           ),
                         Flexible(

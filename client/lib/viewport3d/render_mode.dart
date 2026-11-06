@@ -34,13 +34,12 @@ extension ViewportRenderModeX on ViewportRenderMode {
 
   bool get showsEdges => this != ViewportRenderMode.shaded;
 
-  /// Edge line color for this mode - dark grey (#333333) for
-  /// `shadedWithEdges` (reads clearly against filled faces without
-  /// overpowering them), mid grey (#666666) for `wireframe` (the only
+  /// Edge line color for this mode - near black (#0D0D0D, was #333333) for
+  /// `shadedWithEdges`: the owner found the old dark grey faint on faces turned away from the light, mid grey (#666666) for `wireframe` (the only
   /// geometry on screen, so it can afford to be lighter). Unused (never
   /// read) when [showsEdges] is false.
   vm.Vector4 get edgeColor => switch (this) {
-        ViewportRenderMode.shadedWithEdges => vm.Vector4(0x33 / 255, 0x33 / 255, 0x33 / 255, 1.0),
+        ViewportRenderMode.shadedWithEdges => vm.Vector4(0x0D / 255, 0x0D / 255, 0x0D / 255, 1.0),
         ViewportRenderMode.wireframe => vm.Vector4(0x66 / 255, 0x66 / 255, 0x66 / 255, 1.0),
         ViewportRenderMode.shaded => vm.Vector4(0, 0, 0, 0),
       };
