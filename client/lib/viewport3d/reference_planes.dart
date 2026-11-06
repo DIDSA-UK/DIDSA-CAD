@@ -207,10 +207,13 @@ DoubleSidedQuadBuffers doubleSidedQuadBuffers(double halfSize) {
   return DoubleSidedQuadBuffers(
     positions: positions,
     normals: normals,
-    // Front (+Y, corners 0-3): CCW when viewed from +Y.
-    // Back (-Y, corners 4-7, same positions): reversed winding, so it's
-    // CCW - and therefore not culled - when viewed from -Y instead.
-    indices: const [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7],
+    // Front (+Y, corners 0-3) and back (-Y, corners 4-7, same positions,
+    // reversed winding) so one of them faces the viewer from either side.
+    // flutter_scene 0.23 flipped which winding is front-facing: this is the
+    // pre-0.23 order [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7] with each
+    // triangle's 2nd and 3rd index swapped, so the same copy is drawn as
+    // before (docs/flutter-scene-0.24-and-stable-plan.md, Phase 2 step 6).
+    indices: const [0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6],
   );
 }
 

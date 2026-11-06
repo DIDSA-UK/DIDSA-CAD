@@ -239,8 +239,13 @@ List<Node> _buildMeshViewerBatches(
     final vertexCount = batchTriangles * 3;
     final vertexData = Float32List(vertexCount * kVertexFloats);
     for (var v = 0; v < vertexCount; v++) {
-      final srcBase = ((startTriangle + start) * 3 + v) * 3;
-      final srcUvBase = ((startTriangle + start) * 3 + v) * 2;
+      // flutter_scene 0.23 flipped the front-face winding: each triangle's
+      // 2nd and 3rd vertex are written swapped (normals and UVs travel with
+      // their vertex). docs/flutter-scene-0.24-and-stable-plan.md, Phase 2 step 6.
+      final corner = v % 3;
+      final sourceVertex = corner == 0 ? v : (corner == 1 ? v + 1 : v - 1);
+      final srcBase = ((startTriangle + start) * 3 + sourceVertex) * 3;
+      final srcUvBase = ((startTriangle + start) * 3 + sourceVertex) * 2;
       writeUnskinnedVertex(
         vertexData,
         v,

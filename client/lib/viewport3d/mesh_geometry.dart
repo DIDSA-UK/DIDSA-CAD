@@ -305,17 +305,19 @@ MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false})
   final indices = Uint32List(indexCount);
   var i = 0;
   for (final triangle in mesh.triangleIndices) {
+    // flutter_scene 0.23 flipped the front-face winding (docs/flutter-scene-0.24-and-stable-plan.md,
+    // Phase 2 step 6): 2nd and 3rd index swapped so the same copy is drawn as before.
     indices[i++] = triangle[0];
-    indices[i++] = triangle[1];
     indices[i++] = triangle[2];
+    indices[i++] = triangle[1];
   }
   if (doubleSidedWinding) {
     for (final triangle in mesh.triangleIndices) {
       // Reversed winding (so it's front-facing when viewed from the
       // opposite side), referencing the second, normal-flipped vertex copy.
       indices[i++] = vertexCount + triangle[0];
-      indices[i++] = vertexCount + triangle[2];
       indices[i++] = vertexCount + triangle[1];
+      indices[i++] = vertexCount + triangle[2];
     }
   }
 
@@ -757,8 +759,12 @@ MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> 
   final vertexCount = totalTriCount * 3;
   final vertexData = Float32List(vertexCount * kVertexFloats);
 
+  // The normal is computed from the corners in the order given (a, b, c);
+  // the corners are then written with the 2nd and 3rd swapped, for
+  // flutter_scene 0.23's flipped front-face winding (docs/flutter-scene-0.24-and-stable-plan.md,
+  // Phase 2 step 6). The normal values stay what they were before.
   void writeTriangle(int triIdx, vm.Vector3 a, vm.Vector3 b, vm.Vector3 c) {
-    final corners = [a, b, c];
+    final corners = [a, c, b];
     final cross = (b - a).cross(c - a);
     final normal = cross.length2 < 1e-12 ? vm.Vector3.zero() : cross.normalized();
     for (var i = 0; i < 3; i++) {

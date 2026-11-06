@@ -1424,7 +1424,10 @@ DoubleSidedQuadBuffers doubleSidedSketchPlaneQuadBuffers(SketchPlaneBasis basis,
   return DoubleSidedQuadBuffers(
     positions: positions,
     normals: normals,
-    indices: const [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7],
+    // flutter_scene 0.23 flipped the front-face winding: the pre-0.23 order
+    // [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7] with each triangle's 2nd and 3rd index
+    // swapped (docs/flutter-scene-0.24-and-stable-plan.md, Phase 2 step 6).
+    indices: const [0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6],
   );
 }
 
@@ -1928,8 +1931,10 @@ Node? buildProfileFillNode(
       final a = triangleIndices[t];
       final b = triangleIndices[t + 1];
       final c = triangleIndices[t + 2];
-      indices.addAll([a, b, c]);
-      indices.addAll([c + n, b + n, a + n]);
+      // 2nd and 3rd index swapped for flutter_scene 0.23's flipped winding
+      // (was [a, b, c] and [c + n, b + n, a + n]); normals unchanged.
+      indices.addAll([a, c, b]);
+      indices.addAll([c + n, a + n, b + n]);
     }
     final geometry = MeshGeometry.fromArrays(positions: positions, normals: normals, indices: indices);
     primitives.add(MeshPrimitive(geometry, material));
