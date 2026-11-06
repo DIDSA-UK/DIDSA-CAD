@@ -6,7 +6,7 @@ import 'package:flutter_scene/scene.dart';
 // path, not `package:flutter_gpu/gpu.dart` (a different, incompatible type
 // under static analysis) or `package:flutter_scene/gpu.dart` (the
 // package's curated public surface, which doesn't expose RenderPass/
-// HostBuffer/CullMode at all).
+// TransientWriter/CullMode at all).
 // ignore: implementation_imports
 import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
@@ -42,7 +42,7 @@ import '../api/document_api_client.dart';
 /// immediately before every primitive's own draw call.
 class AlwaysOnTopMaterial extends UnlitMaterial {
   @override
-  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
+  void bind(gpu.RenderPass pass, TransientWriter transientsBuffer, Lighting lighting) {
     super.bind(pass, transientsBuffer, lighting);
     pass.setDepthCompareOperation(gpu.CompareFunction.always);
     pass.setCullMode(gpu.CullMode.none);
@@ -78,7 +78,7 @@ class AlwaysOnTopMaterial extends UnlitMaterial {
 /// this Scene builds that does *not* itself want always-on-top treatment.
 class NormalDepthUnlitMaterial extends UnlitMaterial {
   @override
-  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
+  void bind(gpu.RenderPass pass, TransientWriter transientsBuffer, Lighting lighting) {
     super.bind(pass, transientsBuffer, lighting);
     pass.setDepthCompareOperation(gpu.CompareFunction.lessEqual);
   }
@@ -90,7 +90,7 @@ class NormalDepthUnlitMaterial extends UnlitMaterial {
 /// renders with) is not a subclass of `UnlitMaterial`.
 class NormalDepthPhysicallyBasedMaterial extends PhysicallyBasedMaterial {
   @override
-  void bind(gpu.RenderPass pass, gpu.HostBuffer transientsBuffer, Lighting lighting) {
+  void bind(gpu.RenderPass pass, TransientWriter transientsBuffer, Lighting lighting) {
     super.bind(pass, transientsBuffer, lighting);
     pass.setDepthCompareOperation(gpu.CompareFunction.lessEqual);
   }
@@ -161,6 +161,51 @@ MeshDto renderMirrorCorrectedMesh(MeshDto mesh) {
   );
 }
 
+/// Floats per vertex in flutter_scene 0.24's unskinned layout (72 bytes):
+/// position 3, normal 3, UV0 2, UV1 2, colour 4, tangent 4.
+/// `UnskinnedGeometry.uploadVertexData` throws on any other size.
+const int kVertexFloats = 18;
+
+/// Bytes per vertex in the layout above.
+const int kVertexBytes = kVertexFloats * 4;
+
+/// Writes vertex number [vertex] into [out] in the 18-float layout. UV1 is
+/// 0, 0, colour is opaque white and tangent is 0, 0, 0, 0: the values
+/// flutter_scene's own `MeshGeometry.fromArrays` uses when they are absent
+/// (`interleaved_layout.dart`).
+void writeUnskinnedVertex(
+  Float32List out,
+  int vertex, {
+  required double px,
+  required double py,
+  required double pz,
+  required double nx,
+  required double ny,
+  required double nz,
+  double u = 0,
+  double v = 0,
+}) {
+  final base = vertex * kVertexFloats;
+  out[base] = px;
+  out[base + 1] = py;
+  out[base + 2] = pz;
+  out[base + 3] = nx;
+  out[base + 4] = ny;
+  out[base + 5] = nz;
+  out[base + 6] = u;
+  out[base + 7] = v;
+  out[base + 8] = 0; // u1
+  out[base + 9] = 0; // v1
+  out[base + 10] = 1; // r
+  out[base + 11] = 1; // g
+  out[base + 12] = 1; // b
+  out[base + 13] = 1; // a
+  out[base + 14] = 0; // tangent x
+  out[base + 15] = 0; // tangent y
+  out[base + 16] = 0; // tangent z
+  out[base + 17] = 0; // tangent w
+}
+
 /// Holds the pure, GPU-independent vertex/index buffers `flutter_scene`
 /// expects for an [UnskinnedGeometry] - kept separate from
 /// [geometryFromMesh] so this data-layout logic can be unit-tested without a
@@ -202,7 +247,8 @@ class MeshBuffers {
 
 /// Builds the vertex/index buffers for a backend [MeshDto] in the same
 /// vertex layout `flutter_scene`'s own geometry types use (position, normal,
-/// uv, color - 12 floats/vertex), so it works with `flutter_scene`'s
+/// uv, color - 12 floats/vertex before flutter_scene 0.24; now the
+/// 18-float [kVertexFloats] layout), so it works with `flutter_scene`'s
 /// default/built-in materials with no custom shader.
 ///
 /// [mesh.vertices] and [mesh.normals] are already a flat triangle-soup (see
@@ -231,26 +277,23 @@ class MeshBuffers {
 MeshBuffers meshBuffersFromMesh(MeshDto mesh, {bool doubleSidedWinding = false}) {
   final vertexCount = mesh.vertices.length;
   final copies = doubleSidedWinding ? 2 : 1;
-  final vertexData = Float32List(vertexCount * 12 * copies);
+  final vertexData = Float32List(vertexCount * kVertexFloats * copies);
 
   void writeVertexCopy(int copyIndex, double normalSign) {
     final vertexOffset = copyIndex * vertexCount;
     for (var i = 0; i < vertexCount; i++) {
       final position = mesh.vertices[i];
       final normal = mesh.normals[i];
-      final base = (vertexOffset + i) * 12;
-      vertexData[base] = position[0];
-      vertexData[base + 1] = position[1];
-      vertexData[base + 2] = position[2];
-      vertexData[base + 3] = normal[0] * normalSign;
-      vertexData[base + 4] = normal[1] * normalSign;
-      vertexData[base + 5] = normal[2] * normalSign;
-      vertexData[base + 6] = 0; // u
-      vertexData[base + 7] = 0; // v
-      vertexData[base + 8] = 1; // r
-      vertexData[base + 9] = 1; // g
-      vertexData[base + 10] = 1; // b
-      vertexData[base + 11] = 1; // a
+      writeUnskinnedVertex(
+        vertexData,
+        vertexOffset + i,
+        px: position[0],
+        py: position[1],
+        pz: position[2],
+        nx: normal[0] * normalSign,
+        ny: normal[1] * normalSign,
+        nz: normal[2] * normalSign,
+      );
     }
   }
 
@@ -712,7 +755,7 @@ MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> 
   // Two passes per input triangle: front-face then back-face.
   final totalTriCount = triangles.length * 2;
   final vertexCount = totalTriCount * 3;
-  final vertexData = Float32List(vertexCount * 12);
+  final vertexData = Float32List(vertexCount * kVertexFloats);
 
   void writeTriangle(int triIdx, vm.Vector3 a, vm.Vector3 b, vm.Vector3 c) {
     final corners = [a, b, c];
@@ -720,19 +763,16 @@ MeshBuffers triangleHighlightBuffers(List<(vm.Vector3, vm.Vector3, vm.Vector3)> 
     final normal = cross.length2 < 1e-12 ? vm.Vector3.zero() : cross.normalized();
     for (var i = 0; i < 3; i++) {
       final position = corners[i];
-      final base = (triIdx * 3 + i) * 12;
-      vertexData[base] = position.x;
-      vertexData[base + 1] = position.y;
-      vertexData[base + 2] = position.z;
-      vertexData[base + 3] = normal.x;
-      vertexData[base + 4] = normal.y;
-      vertexData[base + 5] = normal.z;
-      vertexData[base + 6] = 0; // u
-      vertexData[base + 7] = 0; // v
-      vertexData[base + 8] = 1; // r
-      vertexData[base + 9] = 1; // g
-      vertexData[base + 10] = 1; // b
-      vertexData[base + 11] = 1; // a
+      writeUnskinnedVertex(
+        vertexData,
+        triIdx * 3 + i,
+        px: position.x,
+        py: position.y,
+        pz: position.z,
+        nx: normal.x,
+        ny: normal.y,
+        nz: normal.z,
+      );
     }
   }
 

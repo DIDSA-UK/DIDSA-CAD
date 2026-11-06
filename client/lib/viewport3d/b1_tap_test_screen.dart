@@ -27,9 +27,10 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:material_ui/material_ui.dart';
-import 'package:flutter_scene/scene.dart';
+import 'package:flutter_scene/scene.dart' hide OrthographicCamera, OrthographicProjection;
 import 'package:vector_math/vector_math.dart' as vm;
 
+import 'gpu_unavailable.dart';
 import 'orbit_camera.dart';
 import 'reference_planes.dart';
 
@@ -47,7 +48,8 @@ class OrthographicProjection extends CameraProjection {
   double far;
 
   @override
-  vm.Matrix4 getProjectionMatrix(double aspectRatio) {
+  // `jitter` (flutter_scene 0.23, temporal anti-aliasing) is ignored: TAA is off.
+  vm.Matrix4 getProjectionMatrix(double aspectRatio, {vm.Vector2? jitter}) {
     final halfWidth = halfHeight * aspectRatio;
     return vm.Matrix4(
       1.0 / halfWidth, 0.0, 0.0, 0.0, //
@@ -111,6 +113,7 @@ class B1TapTestScreen extends StatefulWidget {
 class _B1TapTestScreenState extends State<B1TapTestScreen> {
   final OrbitCamera _camera = OrbitCamera();
   Scene? _scene;
+  String? _gpuUnavailable;
   Size _viewportSize = Size.zero;
   String? _status;
   bool _orthographic = false;
@@ -142,11 +145,26 @@ class _B1TapTestScreenState extends State<B1TapTestScreen> {
     super.initState();
     Scene.initializeStaticResources().then((_) {
       if (!mounted) return;
-      final scene = Scene();
+      final scene = Scene()
+        // flutter_scene 0.24 defaults, switched off so the 3D view behaves as before:
+        // reversedDepth stays false: the NormalDepth*Material classes hard-code
+        // CompareFunction.lessEqual, which is wrong under reversed depth (Metal).
+        ..reversedDepth = false
+        // fitNearPlane stays false: fitting the near plane changes which of two
+        // nearly coplanar surfaces wins (edge and sketch offsets were tuned
+        // against the authored planes). Phase 3 turns it on separately.
+        ..fitNearPlane = false
+        // debugCheckCoplanarOverlaps stays false: a CAD scene is full of intended
+        // coplanar surfaces (sketches on faces, reference planes), so it is noise.
+        ..debugCheckCoplanarOverlaps = false;
       for (final plane in ReferencePlaneKind.values) {
         scene.add(buildReferencePlaneNode(plane));
       }
       setState(() => _scene = scene);
+    }, onError: (Object error) {
+      debugPrint('[B1TapTest] Scene.initializeStaticResources() failed: $error');
+      if (!mounted) return;
+      setState(() => _gpuUnavailable = error.toString());
     });
   }
 
@@ -224,7 +242,9 @@ class _B1TapTestScreenState extends State<B1TapTestScreen> {
           ),
         ],
       ),
-      body: scene == null
+      body: _gpuUnavailable != null
+          ? gpuUnavailableMessage(context, _gpuUnavailable!)
+          : scene == null
           ? const Center(child: CircularProgressIndicator())
           : Stack(
               children: [

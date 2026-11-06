@@ -6,6 +6,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/orbit_camera.dart';
+import 'gpu_ready.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/screen_projection.dart';
@@ -103,10 +104,10 @@ void main() {
 
     Future<bool> gpuReady(WidgetTester tester) async {
       for (var i = 0; i < 300; i++) {
-        if (find.byType(CircularProgressIndicator).evaluate().isEmpty) return true;
+        if (gpuSpinnerGone()) return true;
         await tester.pump(const Duration(milliseconds: 100));
       }
-      return find.byType(CircularProgressIndicator).evaluate().isEmpty;
+      return gpuSpinnerGone();
     }
 
     Future<GlobalKey<PartViewportState>?> pump(

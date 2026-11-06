@@ -3,6 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
+import 'gpu_ready.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 
 /// Assembly support Phase 5 (`docs/assembly-scope.md` §3): the component
@@ -44,10 +45,10 @@ final _identityTransform = RigidTransformDto(
 
 Future<bool> _pumpUntilGpuReady(WidgetTester tester, {int maxPumps = 300}) async {
   for (var i = 0; i < maxPumps; i++) {
-    if (find.byType(CircularProgressIndicator).evaluate().isEmpty) return true;
+    if (gpuSpinnerGone()) return true;
     await tester.pump(const Duration(milliseconds: 100));
   }
-  return find.byType(CircularProgressIndicator).evaluate().isEmpty;
+  return gpuSpinnerGone();
 }
 
 void main() {

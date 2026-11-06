@@ -30,11 +30,13 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
-import 'package:flutter_gpu/gpu.dart' as gpu;
+// ignore: implementation_imports
+import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart';
 import 'package:vector_math/vector_math.dart' as vm;
 
-import '../viewport3d/mesh_geometry.dart' show buildMeshEdgesNode, kEdgeStrokeWidth;
+import '../viewport3d/mesh_geometry.dart'
+    show buildMeshEdgesNode, kEdgeStrokeWidth, kVertexFloats, writeUnskinnedVertex;
 import '../viewport3d/view_preferences.dart' show vector4FromHex;
 import 'mesh_data.dart';
 
@@ -215,7 +217,7 @@ void applySceneLighting(Scene scene, double lightIntensity) {
 /// `baseColorTexture` setter - both materials share the same base-color
 /// texture-slot convention.
 void _bindBaseColorTexture(PhysicallyBasedMaterial material, gpu.Texture texture) {
-  material.baseColorTexture = texture;
+  material.baseColorTexture = GpuTextureSource(texture);
 }
 
 /// Builds the batch [Node]s for one contiguous triangle range of [mesh]
@@ -235,23 +237,22 @@ List<Node> _buildMeshViewerBatches(
     final end = (start + _kMaxTrianglesPerBatch).clamp(0, triangleCount);
     final batchTriangles = end - start;
     final vertexCount = batchTriangles * 3;
-    final vertexData = Float32List(vertexCount * 12);
+    final vertexData = Float32List(vertexCount * kVertexFloats);
     for (var v = 0; v < vertexCount; v++) {
       final srcBase = ((startTriangle + start) * 3 + v) * 3;
       final srcUvBase = ((startTriangle + start) * 3 + v) * 2;
-      final dstBase = v * 12;
-      vertexData[dstBase] = mesh.positions[srcBase];
-      vertexData[dstBase + 1] = mesh.positions[srcBase + 1];
-      vertexData[dstBase + 2] = mesh.positions[srcBase + 2];
-      vertexData[dstBase + 3] = mesh.normals[srcBase];
-      vertexData[dstBase + 4] = mesh.normals[srcBase + 1];
-      vertexData[dstBase + 5] = mesh.normals[srcBase + 2];
-      vertexData[dstBase + 6] = mesh.uvs[srcUvBase];
-      vertexData[dstBase + 7] = mesh.uvs[srcUvBase + 1];
-      vertexData[dstBase + 8] = 1;
-      vertexData[dstBase + 9] = 1;
-      vertexData[dstBase + 10] = 1;
-      vertexData[dstBase + 11] = 1;
+      writeUnskinnedVertex(
+        vertexData,
+        v,
+        px: mesh.positions[srcBase],
+        py: mesh.positions[srcBase + 1],
+        pz: mesh.positions[srcBase + 2],
+        nx: mesh.normals[srcBase],
+        ny: mesh.normals[srcBase + 1],
+        nz: mesh.normals[srcBase + 2],
+        u: mesh.uvs[srcUvBase],
+        v: mesh.uvs[srcUvBase + 1],
+      );
     }
     final indices = Uint16List(vertexCount);
     for (var i = 0; i < vertexCount; i++) {
