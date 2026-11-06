@@ -22,19 +22,26 @@ FLUTTER_STATUS=0
 BACKEND_STATUS=0
 
 # --- Flutter SDK (client/) ------------------------------------------------
-# flutter_scene (client/pubspec.lock) depends on flutter_gpu APIs that only
-# exist on Flutter's master channel as of this pin - see the same channel
-# choice and rationale in .github/workflows/client-verify.yml.
+# Flutter stable, pinned to the same version as CI
+# (.github/workflows/client-verify.yml). flutter_scene needs Flutter >= 3.47.0.
+FLUTTER_VERSION="3.47.9"
 install_flutter() {
-  if [ ! -x "$FLUTTER_DIR/bin/flutter" ]; then
-    echo "[session-start] Cloning Flutter SDK (master channel)..."
+  # A session image may already hold another SDK (e.g. an old master clone):
+  # keep it only if it is exactly the pinned tag.
+  if [ -d "$FLUTTER_DIR" ] && \
+     [ "$(git -C "$FLUTTER_DIR" describe --tags --exact-match 2>/dev/null)" != "$FLUTTER_VERSION" ]; then
+    echo "[session-start] Flutter SDK present but not $FLUTTER_VERSION, removing it."
     rm -rf "$FLUTTER_DIR"
-    if ! git clone --depth 1 -b master https://github.com/flutter/flutter.git "$FLUTTER_DIR"; then
+  fi
+  if [ ! -x "$FLUTTER_DIR/bin/flutter" ]; then
+    echo "[session-start] Cloning Flutter SDK $FLUTTER_VERSION (stable)..."
+    rm -rf "$FLUTTER_DIR"
+    if ! git clone --depth 1 -b "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$FLUTTER_DIR"; then
       echo "[session-start] ERROR: Flutter clone failed" >&2
       return 1
     fi
   else
-    echo "[session-start] Flutter SDK already present, skipping clone."
+    echo "[session-start] Flutter SDK $FLUTTER_VERSION already present, skipping clone."
   fi
 
   export PATH="$FLUTTER_DIR/bin:$PATH"
