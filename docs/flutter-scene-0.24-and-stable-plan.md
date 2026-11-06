@@ -181,8 +181,8 @@ One line per `Scene()`: remove the `fitNearPlane = false` from Phase 2 step 5. 0
 
 | Phase / step | Commit | CI run | What landed / what failed | Not verified |
 |---|---|---|---|---|
-| 1 | 7b498ec | 42191061423 (green, incl. Build debug APK) | CI, session hook and pubspec.lock on Flutter stable 3.47.9. Local on 3.47.9: analyze no issues, 3581 passed / 47 skipped. No Gradle workaround needed | Owner device check pending; local APK build not run (no Android SDK) |
+| 1 | 7b498ec | 42191061423 (green, incl. Build debug APK) | CI, session hook and pubspec.lock on Flutter stable 3.47.9. Local on 3.47.9: analyze no issues, 3581 passed / 47 skipped. No Gradle workaround needed | Owner device check passed (on the right APK, after first installing an older one by mistake); local APK build not run (no Android SDK) |
 | 1 (DIDSA-VR) | 72724b4 (DIDSA-VR) | n/a | setup_test_env.sh clones 3.47.9, re-clones a wrong version | Script not run end to end (only syntax-checked) |
-| 2a | | | | |
-| 2b | | | | |
+| 2a | aba4d95 | 42198981744 (green, incl. APK; same run as 2b) | Steps 1-5: package, 12 compile errors, 72-byte vertex layout, no-GPU message, three Scene defaults. Local: analyze clean, 3584 passed / 47 skipped (3 new tests) | Rendering never run (no GPU here); mesh viewer batch layout has no test (needs a GPU-built material); owner device check pending |
+| 2b | 008140e | 42198981744 (green) | Step 6: triangle winding swap at all sites; expected index orders in mesh_geometry_test changed on purpose; one new highlight test. Local: 3585 passed / 47 skipped | Whether the swap is right is only visible on a device (see-through body lighting); owner device check pending |
 | 3 | | | | |
