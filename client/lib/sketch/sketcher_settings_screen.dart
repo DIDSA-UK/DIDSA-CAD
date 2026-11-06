@@ -28,6 +28,7 @@ class SketcherSettingsScreen extends StatefulWidget {
 
 class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
   bool _debugShowCameraOrientation = ViewPreferences.defaultDebugShowCameraOrientation;
+  bool _sketchLineOutline = ViewPreferences.defaultSketchLineOutline;
   bool _loaded = false;
   String _projectRootDisplayName = '';
 
@@ -43,6 +44,7 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
     if (!mounted) return;
     setState(() {
       _debugShowCameraOrientation = ViewPreferences.debugShowCameraOrientation;
+      _sketchLineOutline = ViewPreferences.sketchLineOutline;
       _projectRootDisplayName = displayName;
       _loaded = true;
     });
@@ -72,6 +74,11 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
     await ViewPreferences.setDebugShowCameraOrientation(value);
   }
 
+  Future<void> _onSketchLineOutlineChanged(bool value) async {
+    setState(() => _sketchLineOutline = value);
+    await ViewPreferences.setSketchLineOutline(value);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -95,6 +102,21 @@ class _SketcherSettingsScreenState extends State<SketcherSettingsScreen> {
                   subtitle: Text(_projectRootDisplayName),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: _changeProjectFolder,
+                ),
+                const SizedBox(height: 24),
+                Text('Sketch lines', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text(
+                  'Draws a thin dark edge around sketch lines so they stay readable against a light or '
+                  'see-through body. Takes effect the next time the sketch is redrawn (leave and reopen the part).',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Outline sketch lines'),
+                  value: _sketchLineOutline,
+                  onChanged: _onSketchLineOutlineChanged,
                 ),
                 const SizedBox(height: 24),
                 Text('Debug: camera orientation readout', style: Theme.of(context).textTheme.titleMedium),

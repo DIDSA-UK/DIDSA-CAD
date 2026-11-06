@@ -10,6 +10,7 @@ import '../api/sketch_api_client.dart';
 import '../sketch/pattern_mirror_expansion.dart';
 import 'mesh_geometry.dart' show AlwaysOnTopMaterial, NormalDepthUnlitMaterial, vertexMarkerSegments;
 import 'reference_planes.dart';
+import 'view_preferences.dart' show ViewPreferences;
 
 /// C3: a Sketch's local-(x, y) -> world embedding basis - either one of the
 /// three fixed [ReferencePlaneKind]s ([SketchPlaneBasis.fixed]) or (new in
@@ -988,6 +989,38 @@ final vm.Vector4 sketchLineColor = vm.Vector4(0.85, 0.85, 0.85, 1.0);
 // up a bit from that pass's `1.2`.
 const double sketchLineWidth = 1.5;
 
+/// Colour of the thin dark edge drawn under every sketch line. [sketchLineColor] is a light grey so it reads on the
+/// dark default background, but on a light or see-through body it has almost no contrast, and no single colour reads
+/// on both. A light line with a dark edge reads on either (the same trick map labels use).
+final vm.Vector4 sketchOutlineColor = vm.Vector4(0.08, 0.08, 0.08, 1.0);
+
+/// How far, in screen pixels, the dark edge sticks out on each side of a sketch line (`PolylineGeometry` widths are
+/// screen pixels by default, `PolylineWidthMode.screenPixels`). The outline is drawn this much wider on both sides.
+const double sketchOutlinePixels = 1.25;
+
+/// One sketch polyline primitive, described as plain data so the core and outline primitives are built from the same
+/// list and cannot drift apart, and so tests can check them without a GPU. [cap] null means `PolylineGeometry`'s own
+/// default cap.
+class SketchLineSpec {
+  final List<vm.Vector3> points;
+  final double width;
+  final PolylineCap? cap;
+  final vm.Vector4 color;
+
+  const SketchLineSpec({required this.points, required this.width, this.cap, required this.color});
+
+  /// The dark outline twin of this primitive: same points and cap, [sketchOutlinePixels] wider on each side.
+  SketchLineSpec outlined() => SketchLineSpec(
+        points: points,
+        width: width + 2 * sketchOutlinePixels,
+        cap: cap,
+        color: sketchOutlineColor,
+      );
+}
+
+/// The outline twin of every spec in [specs], in the same order (so the two lists are always the same length).
+List<SketchLineSpec> sketchOutlineSpecsFor(List<SketchLineSpec> specs) => [for (final s in specs) s.outlined()];
+
 /// P19 on-device feedback: deliberately its own constant, not
 /// [kVertexMarkerWidth] (`mesh_geometry.dart`'s shared default) - that
 /// constant also sizes Selection mode's own selected-vertex highlight
@@ -1130,6 +1163,89 @@ List<(vm.Vector3, vm.Vector3)> dashedSegments(
   return result;
 }
 
+/// The pure description of every polyline primitive [buildSketchGeometryNode] builds for [geometry]: entity outlines
+/// (dashed when construction), the text handle lines and markers, and Point markers. [buildSketchGeometryNode] builds
+/// the core primitives and their dark outline twins from this one list. No GPU is involved, so tests can reach it.
+List<SketchLineSpec> sketchLineSpecsFor(SketchGeometry3D geometry, {Map<String, vm.Vector4>? entityColors}) {
+  vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
+
+
+  // P26: [id]'s outline as one or more [MeshPrimitive]s - a single solid
+  // polyline normally, or a run of short dash primitives (all sharing the
+  // same material) when [id] is in [SketchGeometry3D.constructionIds].
+  Iterable<SketchLineSpec> outlinePrimitivesFor(String id, List<vm.Vector3> polyline) sync* {
+    final color = colorFor(id);
+    if (!geometry.constructionIds.contains(id)) {
+      yield SketchLineSpec(points: polyline, width: sketchLineWidth, color: color);
+      return;
+    }
+    for (final dash in dashedSegments(polyline)) {
+      yield SketchLineSpec(points: [dash.$1, dash.$2], width: sketchLineWidth, color: color);
+    }
+  }
+
+  final specs = <SketchLineSpec>[
+    for (var i = 0; i < geometry.lineSegments.length; i++)
+      ...outlinePrimitivesFor(
+        geometry.lineIds[i],
+        [geometry.lineSegments[i].$1, geometry.lineSegments[i].$2],
+      ),
+    for (var i = 0; i < geometry.circlePolygons.length; i++)
+      ...outlinePrimitivesFor(geometry.circleIds[i], geometry.circlePolygons[i]),
+    for (var i = 0; i < geometry.arcPolylines.length; i++)
+      ...outlinePrimitivesFor(geometry.arcIds[i], geometry.arcPolylines[i]),
+    for (var i = 0; i < geometry.ellipsePolygons.length; i++)
+      ...outlinePrimitivesFor(geometry.ellipseIds[i], geometry.ellipsePolygons[i]),
+    for (var i = 0; i < geometry.ellipseArcPolylines.length; i++)
+      ...outlinePrimitivesFor(geometry.ellipseArcIds[i], geometry.ellipseArcPolylines[i]),
+    for (var i = 0; i < geometry.splinePolylines.length; i++)
+      ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
+    // 3D-viewport Text tool round: outline-only, same as every other
+    // curved entity above - no fill/hole triangulation needed here (see
+    // [SketchGeometry3D.textPolygons]'s own doc comment for why holes are
+    // just their own loop rather than something a Face/fill primitive
+    // needs). Matches the flat 2D canvas's own outline stroke around a
+    // Text's fill (`sketch_canvas.dart` fills *and* strokes each contour);
+    // the fill itself is deliberately not reproduced in 3D, consistent
+    // with every other Sketch entity here never being filled in this view.
+    for (var i = 0; i < geometry.textPolygons.length; i++)
+      ...outlinePrimitivesFor(geometry.textIds[i], geometry.textPolygons[i]),
+    // §2.3's own bounding-box/center-line overlay - always dashed (see
+    // [SketchGeometry3D.textHandleLines]'s own doc comment for why this
+    // never consults [constructionIds] the way [outlinePrimitivesFor]
+    // does), using a dedicated construction-style material distinct from
+    // [outlineMaterialFor] (there's no owning entity id to key a color
+    // lookup off - this isn't a real sketch entity).
+    for (final line in geometry.textHandleLines)
+      for (final dash in dashedSegments([line.$1, line.$2]))
+        SketchLineSpec(points: [dash.$1, dash.$2], width: sketchLineWidth, color: sketchConstructionColor),
+    // The two handle markers themselves (center, then corner - see
+    // [SketchGeometry3D.textHandleMarkers]'s own doc comment) - same
+    // round-cap disk primitive [vertexMarkerSegments] already builds for
+    // every ordinary Point marker below, just in a distinct color so they
+    // read as a different affordance.
+    for (final marker in geometry.textHandleMarkers)
+      for (final segment in vertexMarkerSegments([marker]))
+        SketchLineSpec(
+          points: [segment.$1, segment.$2],
+          width: sketchPointMarkerWidth,
+          cap: PolylineCap.round,
+          color: sketchIndicatorAnchorColor,
+        ),
+    for (var i = 0; i < geometry.points.length; i++)
+      if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]) &&
+          geometry.pointIds[i] != geometry.originPointId)
+        for (final segment in vertexMarkerSegments([geometry.points[i]]))
+          SketchLineSpec(
+            points: [segment.$1, segment.$2],
+            width: sketchPointMarkerWidth,
+            cap: PolylineCap.round,
+            color: colorFor(geometry.pointIds[i]),
+          ),
+  ];
+  return specs;
+}
+
 /// Builds the [Node] rendering one Feature's [geometry] - one
 /// [MeshPrimitive] per Line segment, Circle/Arc/Ellipse/Spline outline, and
 /// Point marker, combined into a single [Mesh] so they share one
@@ -1175,8 +1291,8 @@ Node buildSketchGeometryNode(
   String featureId,
   SketchGeometry3D geometry, {
   Map<String, vm.Vector4>? entityColors,
+  bool? outline,
 }) {
-  vm.Vector4 colorFor(String id) => entityColors?[id] ?? sketchLineColor;
   // Bug fix round 4 (on-device feedback, with screenshots: a Sketch on the
   // exact plane of an opaque Body's face was still completely invisible
   // against it - "let's try sketches always render on top regardless").
@@ -1235,84 +1351,28 @@ Node buildSketchGeometryNode(
     ..baseColorFactor = color;
   UnlitMaterial outlineMaterialFor(String id) => materialFor(colorFor(id));
 
-  // P26: [id]'s outline as one or more [MeshPrimitive]s - a single solid
-  // polyline normally, or a run of short dash primitives (all sharing the
-  // same material) when [id] is in [SketchGeometry3D.constructionIds].
-  Iterable<MeshPrimitive> outlinePrimitivesFor(String id, List<vm.Vector3> polyline) sync* {
-    final material = outlineMaterialFor(id);
-    if (!geometry.constructionIds.contains(id)) {
-      yield MeshPrimitive(PolylineGeometry(polyline, width: sketchLineWidth), material);
-      return;
-    }
-    for (final dash in dashedSegments(polyline)) {
-      yield MeshPrimitive(PolylineGeometry([dash.$1, dash.$2], width: sketchLineWidth), material);
-    }
+  final specs = sketchLineSpecsFor(geometry, entityColors: entityColors);
+  MeshPrimitive primitiveFor(SketchLineSpec spec) => MeshPrimitive(
+        spec.cap == null
+            ? PolylineGeometry(spec.points, width: spec.width)
+            : PolylineGeometry(spec.points, width: spec.width, cap: spec.cap!),
+        materialFor(spec.color),
+      );
+
+  final node = Node(
+    name: 'sketch-$featureId',
+    mesh: Mesh.primitives(primitives: [for (final spec in specs) primitiveFor(spec)]),
+  );
+  if (outline ?? ViewPreferences.sketchLineOutline) {
+    // One child node for every outline primitive, drawn first (renderOrder -1) - see [sketchOutlineColor].
+    node.add(
+      Node(
+        name: 'sketch-$featureId-outline',
+        mesh: Mesh.primitives(primitives: [for (final spec in sketchOutlineSpecsFor(specs)) primitiveFor(spec)]),
+      )..renderOrder = -1,
+    );
   }
-
-  final primitives = <MeshPrimitive>[
-    for (var i = 0; i < geometry.lineSegments.length; i++)
-      ...outlinePrimitivesFor(
-        geometry.lineIds[i],
-        [geometry.lineSegments[i].$1, geometry.lineSegments[i].$2],
-      ),
-    for (var i = 0; i < geometry.circlePolygons.length; i++)
-      ...outlinePrimitivesFor(geometry.circleIds[i], geometry.circlePolygons[i]),
-    for (var i = 0; i < geometry.arcPolylines.length; i++)
-      ...outlinePrimitivesFor(geometry.arcIds[i], geometry.arcPolylines[i]),
-    for (var i = 0; i < geometry.ellipsePolygons.length; i++)
-      ...outlinePrimitivesFor(geometry.ellipseIds[i], geometry.ellipsePolygons[i]),
-    for (var i = 0; i < geometry.ellipseArcPolylines.length; i++)
-      ...outlinePrimitivesFor(geometry.ellipseArcIds[i], geometry.ellipseArcPolylines[i]),
-    for (var i = 0; i < geometry.splinePolylines.length; i++)
-      ...outlinePrimitivesFor(geometry.splineIds[i], geometry.splinePolylines[i]),
-    // 3D-viewport Text tool round: outline-only, same as every other
-    // curved entity above - no fill/hole triangulation needed here (see
-    // [SketchGeometry3D.textPolygons]'s own doc comment for why holes are
-    // just their own loop rather than something a Face/fill primitive
-    // needs). Matches the flat 2D canvas's own outline stroke around a
-    // Text's fill (`sketch_canvas.dart` fills *and* strokes each contour);
-    // the fill itself is deliberately not reproduced in 3D, consistent
-    // with every other Sketch entity here never being filled in this view.
-    for (var i = 0; i < geometry.textPolygons.length; i++)
-      ...outlinePrimitivesFor(geometry.textIds[i], geometry.textPolygons[i]),
-    // §2.3's own bounding-box/center-line overlay - always dashed (see
-    // [SketchGeometry3D.textHandleLines]'s own doc comment for why this
-    // never consults [constructionIds] the way [outlinePrimitivesFor]
-    // does), using a dedicated construction-style material distinct from
-    // [outlineMaterialFor] (there's no owning entity id to key a color
-    // lookup off - this isn't a real sketch entity).
-    for (final line in geometry.textHandleLines)
-      for (final dash in dashedSegments([line.$1, line.$2]))
-        MeshPrimitive(
-          PolylineGeometry([dash.$1, dash.$2], width: sketchLineWidth),
-          materialFor(sketchConstructionColor),
-        ),
-    // The two handle markers themselves (center, then corner - see
-    // [SketchGeometry3D.textHandleMarkers]'s own doc comment) - same
-    // round-cap disk primitive [vertexMarkerSegments] already builds for
-    // every ordinary Point marker below, just in a distinct color so they
-    // read as a different affordance.
-    for (final marker in geometry.textHandleMarkers)
-      for (final segment in vertexMarkerSegments([marker]))
-        MeshPrimitive(
-          PolylineGeometry([segment.$1, segment.$2], width: sketchPointMarkerWidth, cap: PolylineCap.round),
-          materialFor(sketchIndicatorAnchorColor),
-        ),
-    for (var i = 0; i < geometry.points.length; i++)
-      if (!geometry.hiddenPointIds.contains(geometry.pointIds[i]) &&
-          geometry.pointIds[i] != geometry.originPointId)
-        for (final segment in vertexMarkerSegments([geometry.points[i]]))
-          MeshPrimitive(
-            PolylineGeometry(
-              [segment.$1, segment.$2],
-              width: sketchPointMarkerWidth,
-              cap: PolylineCap.round,
-            ),
-            materialFor(colorFor(geometry.pointIds[i])),
-          ),
-  ];
-
-  return Node(name: 'sketch-$featureId', mesh: Mesh.primitives(primitives: primitives));
+  return node;
 }
 
 /// Sketcher restructure Phase 2 follow-up (P8/P9): side length of the active
@@ -2046,6 +2106,19 @@ final vm.Vector4 sketchIndicatorTangentColor = vm.Vector4(0.914, 0.118, 0.388, 1
 final vm.Vector4 sketchIndicatorPointOnCurveColor = vm.Vector4(0.0, 0.588, 0.533, 1.0);
 const double sketchIndicatorInferenceWidth = 8.0;
 
+/// The pure description of [buildDrawIndicatorsNode]'s primitives: one round-capped "fake dot" per marker, with its
+/// own colour and width. Tests can reach it without a GPU.
+List<SketchLineSpec> drawIndicatorSpecsFor(List<DrawIndicatorMarker> markers) => [
+      for (final marker in markers)
+        for (final segment in vertexMarkerSegments([marker.point]))
+          SketchLineSpec(
+            points: [segment.$1, segment.$2],
+            width: marker.width,
+            cap: PolylineCap.round,
+            color: marker.color,
+          ),
+    ];
+
 /// P20 follow-up: [DrawIndicatorMarker]'s GPU-facing [Node] - one
 /// near-zero-length, round-capped [PolylineGeometry] "fake dot" primitive
 /// per marker (the same trick [buildVertexMarkersNode] uses for committed
@@ -2054,13 +2127,11 @@ const double sketchIndicatorInferenceWidth = 8.0;
 /// deepOrange, alongside a cyan snap-candidate) in one [Node]. Returns null
 /// for an empty [markers] list, matching every other optional-node
 /// convention in this file.
-Node? buildDrawIndicatorsNode(List<DrawIndicatorMarker> markers) {
+Node? buildDrawIndicatorsNode(List<DrawIndicatorMarker> markers, {bool? outline}) {
   if (markers.isEmpty) return null;
-  final primitives = <MeshPrimitive>[
-    for (final marker in markers)
-      for (final segment in vertexMarkerSegments([marker.point]))
-        MeshPrimitive(
-          PolylineGeometry([segment.$1, segment.$2], width: marker.width, cap: PolylineCap.round),
+  final specs = drawIndicatorSpecsFor(markers);
+  MeshPrimitive primitiveFor(SketchLineSpec spec) => MeshPrimitive(
+        PolylineGeometry(spec.points, width: spec.width, cap: spec.cap!),
           // On-device feedback ("the invisible cursor being naughty in the
           // background" - the in-progress draw anchor/snap/candidate dots
           // this Node renders): same round-cap culling bug as
@@ -2081,9 +2152,22 @@ Node? buildDrawIndicatorsNode(List<DrawIndicatorMarker> markers) {
           // [buildMeshEdgesNode]'s opt-in `alwaysOnTop`.
           AlwaysOnTopMaterial()
             ..alphaMode = AlphaMode.opaque
-            ..baseColorFactor = marker.color
+            ..baseColorFactor = spec.color
             ..doubleSided = true,
-        ),
-  ];
-  return Node(name: 'sketch-draw-indicators', mesh: Mesh.primitives(primitives: primitives));
+      );
+
+  final node = Node(
+    name: 'sketch-draw-indicators',
+    mesh: Mesh.primitives(primitives: [for (final spec in specs) primitiveFor(spec)]),
+  );
+  if (outline ?? ViewPreferences.sketchLineOutline) {
+    // Same dark edge as committed sketch geometry, in one child node drawn first - see [sketchOutlineColor].
+    node.add(
+      Node(
+        name: 'sketch-draw-indicators-outline',
+        mesh: Mesh.primitives(primitives: [for (final spec in sketchOutlineSpecsFor(specs)) primitiveFor(spec)]),
+      )..renderOrder = -1,
+    );
+  }
+  return node;
 }
