@@ -55,6 +55,11 @@ import 'sketch_speed_dial.dart';
 import 'sketch_text_bar.dart';
 import 'sketch_trim_bar.dart';
 
+/// Opacity every body starts at when the 3D sketch view is entered: 0.40, that is 60% transparent (the owner's ask, was
+/// 0.75). Session-only and separate from the Part view's own stored body opacity, which entering or leaving a sketch
+/// never changes, so leaving a sketch always returns to the Part view's own setting.
+const double kSketchEntryBodyOpacity = 0.40;
+
 /// Phase 4.1/4.2: converts [controller]'s live points into the
 /// [PointDto]/[LineDto]/[CircleDto] shapes [sketchGeometry3DFrom] expects -
 /// needed because [SketchController]'s own `SketchPointView`/`SketchLineView`/
@@ -480,12 +485,12 @@ class _SketchScreenState extends State<SketchScreen> {
   /// [_build3DViewMenu]), session-only like the 2D canvas's own view
   /// preferences above. [_orbitRenderMode] defaults to `shadedWithEdges`
   /// (on-device feedback: edges should be visible by default).
-  /// [_orbitBodyOpacity] defaults to 4.1's "~25% transparent" ask,
+  /// [_orbitBodyOpacity] defaults to [kSketchEntryBodyOpacity] (60% transparent; 4.1 first asked for ~25%),
   /// overriding [ViewPreferences.defaultBodyOpacity]'s `1.0` rather than
   /// reusing the Part viewport's own persisted preference.
   ViewportRenderMode _orbitRenderMode = ViewportRenderMode.shadedWithEdges;
   String _orbitBodyColourHex = ViewPreferences.defaultBodyColourHex;
-  double _orbitBodyOpacity = 0.75;
+  double _orbitBodyOpacity = kSketchEntryBodyOpacity;
 
   /// Sketcher restructure Phase 2 follow-up (P8/P9): on-device feedback -
   /// now that real Bodies are visible behind the embedded sketch plane
@@ -3010,7 +3015,7 @@ class _SketchScreenState extends State<SketchScreen> {
     _orbitViewportKey.currentState?.animateToBasis(orbitBasis);
   }
 
-  /// On-device feedback: entering Orbit View should always start at 4.1's
+  /// On-device feedback: entering Orbit View should always start at [kSketchEntryBodyOpacity]
   /// ~25% transparent default, not whatever [_orbitBodyOpacity] was left at
   /// from a previous Orbit View session on this same Sketch - each entry is
   /// a fresh, predictable "temporary inspection mode" (see
@@ -3033,7 +3038,7 @@ class _SketchScreenState extends State<SketchScreen> {
     }
     setState(() {
       _orbitViewActive = true;
-      _orbitBodyOpacity = 0.75;
+      _orbitBodyOpacity = kSketchEntryBodyOpacity;
       // P19 on-device feedback: "Cursor-first" - every fresh entry starts
       // ready to draw/select precisely, not in plain-orbit sub-mode.
       _orbitCursorActive = true;
