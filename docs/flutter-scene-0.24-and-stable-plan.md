@@ -25,6 +25,18 @@ All in a scratch copy, never in the repo. Flutter 3.47.9 stable was installed fr
 
 Not checked anywhere: anything rendered. Tests here have no GPU (`Flutter GPU requires the Impeller rendering backend`), so every rendering change below is reasoned from `flutter_scene`'s source and changelog and must be checked on a device.
 
+## Earlier decisions this upgrade must not undo
+
+Checked against 0.24.3's source on 2026-11-06.
+
+- **The mirror fix (2026-07-22 in `docs/status.md`).** `flutter_scene`'s private `_matrix4LookAt` builds `right = up.cross(forward)`, a mirror. It is **unchanged in 0.24.3**. The app renders only through its own `FixedPerspectiveCamera` and `OrthographicCamera` (`orthographic_camera.dart`, both on `correctedLookAt`). 0.24's `ViewportBoundCamera` wrapper and `rasterViewTransformOf` call the app's `getViewMatrix()`, and `_matrix4Perspective` is identical for unjittered, non-reversed use, so the fix still holds. **Never** use flutter_scene's `PerspectiveCamera`, `OrthographicCamera`, `OrbitCameraController`, `FollowCameraController`, `FlyCameraController` or `Node.lookAt` for anything the app renders or hit-tests: they all go through the mirrored `_matrix4LookAt`. (`test/triad_test.dart` and `test/screen_projection_test.dart` construct `PerspectiveCamera` for maths checks only; leave them.)
+- **The orthographic clipping fix** (`orthographicCameraFor`: near may go negative). The fitted near plane only applies when the projection is exactly `PerspectiveProjection` (`Scene._depthRasterFor`), so the app's orthographic projection is never refitted, in Phase 3 too.
+- **`AlwaysOnTopMaterial` / `NormalDepth*Material`.** 0.24 skips `bind` when the same material instance is bound again, but always re-binds when the material changes, so the depth-compare reset still runs after an always-on-top draw. The translucent pass still runs after the opaque one with depth write off. Keep both classes.
+- **Double-copy winding for translucent geometry** (`doubleSidedWinding`). 0.24's `renderCullMode` has the same rule (double-sided honoured only for opaque), so it is still needed.
+- **32-bit indices** for large meshes: still needed (`IndexType` is now exported, but leave the imports as they are).
+- **Anti-aliasing off** in `PartViewport` (`AntiAliasingMode.none`, a diagnostic for edges showing through bodies). Keep it. Note for later: 0.24.0 fixed "Switching `Scene.antiAliasingMode` from `msaa` to another mode on the OpenGL ES backend no longer renders without a depth test (far surfaces drew over near ones)", the same symptom.
+- **Translucent sort order (changed).** 0.18 sorted translucent draws by the distance from the camera to the node's origin (`_depthOf`), and the sketch-plane surface and grid were separated by moving their node origins (`_sketchPlaneNodeTransform`, `sketch_geometry_3d.dart`). 0.24 sorts by the centre of the geometry's bounds projected on the view direction (`sceneSortDepth`), after `Node.renderOrder`. The layering should survive (the offset is along the plane normal), but it is a real change: Phase 2's device check includes it. If the grid ends up behind the surface, set `renderOrder` on the grid node above the surface node's (higher draws later) and record it; do not move origins again.
+
 ## Rules for the implementing session
 
 - Branch: the one you were given. One commit per step marked **(commit)**. Push after each phase and wait for the `Client - build and test` workflow. Do not start the next phase until CI is green **and** the owner has done that phase's device check (ask them, and wait).
@@ -142,7 +154,8 @@ Owner device check, comparing against the Phase 1 APK if possible (two phones, o
 2. A see-through Body (Appearance, opacity about 50%): lit on the side facing you, not darker than before. **If it looks lit from behind, revert commit 2b** and report: that would mean the reasoning above is wrong for this case.
 3. Select a face (highlight), select edges and vertices.
 4. Edit a sketch on a face: sketch lines and points stay on top; the "Select Other" long-press preview does not show internal faces through a near face (the bug `NormalDepth*Material` was written for).
-5. Reference planes and a sketch plane, from both sides.
+5. Reference planes and a sketch plane, from both sides. While sketching on a plane: the grid shows on top of the plane's tinted surface, from both sides and in orthographic view (0.24 changed how see-through surfaces are ordered).
+5a. Mirror check (the 2026-07-22 fix): a Boss extruded in +Z on the XY plane builds on the +Z side, the triad agrees, and an asymmetric labelled STEP part matches SolidWorks (not mirrored), in both perspective and orthographic views.
 6. Orthographic view, section view (section gizmo), an assembly with several instances, a mate preview.
 7. Mesh viewer: an STL, and a GLB with a texture.
 8. Feel: is orbiting a heavy model smoother? (The 2.5 to 6x figure is for Mali GPUs; say which phone.)
@@ -159,8 +172,9 @@ One line per `Scene()`: remove the `fitNearPlane = false` from Phase 2 step 5. 0
 
 - `Material.depthLayer` (0.24): "a higher layer draws over a lower one at any distance". It could replace the `AlwaysOnTopMaterial` / `NormalDepth*Material` depth-compare workarounds and the edge offset tricks. Those were written for on-device bugs, so swapping them needs its own investigation and device checks.
 - `reversedDepth` on iOS/macOS: needs the `NormalDepth*` materials to use the scene's depth compare instead of `lessEqual`.
-- flutter_scene's own `OrthographicCamera` instead of the app's.
-- Anti-aliasing: the Part viewport sets `AntiAliasingMode.none`. 0.24 has SMAA and TAA; worth a trial for edge quality.
+- Not flutter_scene's own `OrthographicCamera` (or any of its cameras): see "Earlier decisions" above, it would bring the mirror back.
+- Anti-aliasing: the Part viewport sets `AntiAliasingMode.none` as an old diagnostic. 0.24 fixed a GLES bug with the same symptom, and has SMAA and TAA; worth a trial for edge quality, with an on-device check for edges showing through bodies.
+- `Node.renderOrder` (0.24) could replace the node-origin offsets used to order translucent overlays.
 - Flutter 3.50 stable when it is released (CI pin, the hook, DIDSA-VR's script).
 
 ## Progress
