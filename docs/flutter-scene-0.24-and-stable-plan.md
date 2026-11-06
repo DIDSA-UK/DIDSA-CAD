@@ -181,8 +181,8 @@ One line per `Scene()`: remove the `fitNearPlane = false` from Phase 2 step 5. 0
 
 | Phase / step | Commit | CI run | What landed / what failed | Not verified |
 |---|---|---|---|---|
-| 1 | | | | |
-| 1 (DIDSA-VR) | | | | |
+| 1 | 7b498ec | 42191061423 (green, incl. Build debug APK) | CI, session hook and pubspec.lock on Flutter stable 3.47.9. Local on 3.47.9: analyze no issues, 3581 passed / 47 skipped. No Gradle workaround needed | Owner device check pending; local APK build not run (no Android SDK) |
+| 1 (DIDSA-VR) | 72724b4 (DIDSA-VR) | n/a | setup_test_env.sh clones 3.47.9, re-clones a wrong version | Script not run end to end (only syntax-checked) |
 | 2a | | | | |
 | 2b | | | | |
 | 3 | | | | |
