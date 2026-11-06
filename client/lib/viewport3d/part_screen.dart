@@ -11744,11 +11744,12 @@ class _PartScreenState extends State<PartScreen> {
   /// [_saveFocusedPartAs]. No identity re-mint: nothing else carries this
   /// Part's ids yet.
   ///
-  /// Mobile: [_ensureProjectRoot] (the remembered folder if its grant is
-  /// still held, otherwise the SAF folder picker - asked once), then the name
-  /// prompt with Change Folder. Desktop: the native save dialog is used only
-  /// to *pick the path* (it writes nothing itself), then the write goes
-  /// through the same `savePart` as everywhere else. Cancelling either step
+  /// All platforms: [_ensureProjectRoot] (the remembered folder if its grant
+  /// is still held, otherwise the folder picker - asked once), then the name
+  /// prompt with Change Folder, then the write through `savePart`. (Desktop
+  /// used to use a native save dialog for this; file_picker 13's `saveFile`
+  /// requires and writes bytes, so desktop now shares the mobile flow.)
+  /// Cancelling either step
   /// changes nothing: no state, [_isDirty] as it was, and a folder that was
   /// only just granted for this attempt is not kept as the session's root.
   Future<void> _firstSaveIntoProject({required bool isSaveAs}) async {
@@ -11756,40 +11757,30 @@ class _PartScreenState extends State<PartScreen> {
     if (part == null) return;
 
     final hadRoot = _projectRoot != null;
-    final ProjectRoot root;
-    final String path;
-    if (_canPersistFilePathForReuse) {
-      final picked = await FilePicker.platform.saveFile(
-        dialogTitle: isSaveAs ? 'Save Project As' : 'Save Project',
-        fileName: '${part.name}$kNativeFileExtension',
-      );
-      if (picked == null || !mounted) return;
-      final withExtension = withDefaultExtension(picked);
-      root = DesktopProjectRoot(p.dirname(withExtension));
-      path = p.basename(withExtension);
-    } else {
-      final ensured = await _ensureProjectRoot();
-      if (ensured == null || !mounted) return;
-      var chosenRoot = ensured;
-      final prompted = await showRelativePathPromptDialog(
-        context,
-        title: 'Save "${part.name}" as…',
-        initialValue: part.name,
-        storageService: _storageService,
-        root: ensured,
-        confirmText: isSaveAs ? 'Save As' : 'Save',
-        onRootChanged: (newRoot) {
-          chosenRoot = newRoot;
-          if (mounted) setState(() => _projectRoot = newRoot);
-        },
-      );
-      if (prompted == null || !mounted) {
-        if (!hadRoot && mounted) setState(() => _projectRoot = null);
-        return;
-      }
-      root = chosenRoot;
-      path = prompted;
+    // Every platform: the project folder (asked once, then remembered), then the name prompt with Change Folder.
+    // Desktop used to open a native save dialog just to pick a path; file_picker 13's saveFile always writes the
+    // bytes it is given, which cannot be built before the folder is known, so desktop now uses this flow too.
+    final ensured = await _ensureProjectRoot();
+    if (ensured == null || !mounted) return;
+    var chosenRoot = ensured;
+    final prompted = await showRelativePathPromptDialog(
+      context,
+      title: 'Save "${part.name}" as…',
+      initialValue: part.name,
+      storageService: _storageService,
+      root: ensured,
+      confirmText: isSaveAs ? 'Save As' : 'Save',
+      onRootChanged: (newRoot) {
+        chosenRoot = newRoot;
+        if (mounted) setState(() => _projectRoot = newRoot);
+      },
+    );
+    if (prompted == null || !mounted) {
+      if (!hadRoot && mounted) setState(() => _projectRoot = null);
+      return;
     }
+    final ProjectRoot root = chosenRoot;
+    final String path = prompted;
 
     var written = false;
     await _runGuarded(() async {
