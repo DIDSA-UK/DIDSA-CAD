@@ -88,6 +88,6 @@ If Phase 1 check 2 showed no fading, do not do this phase. Record "not needed" i
 
 | Phase | Commit | CI run | What landed / what failed | Not verified |
 |---|---|---|---|---|
-| 1 | (this commit) | pending | Dark outline under every sketch line and draw marker; "Outline sketch lines" switch | Look on a device; needs leave-and-reopen of the part after toggling |
+| 1 | 213c99c + abf3a72 (build fix) | 42224554750 green: analyze clean, all tests, APK built | Dark outline under every sketch line and draw marker; "Outline sketch lines" switch | Look on a device; needs leave-and-reopen of the part after toggling |
 | 2 | | | | |
 | 3 | | | | |
