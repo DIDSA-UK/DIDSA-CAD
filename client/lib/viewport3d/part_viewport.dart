@@ -1946,10 +1946,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // reversedDepth stays false: the NormalDepth*Material classes hard-code
           // CompareFunction.lessEqual, which is wrong under reversed depth (Metal).
           ..reversedDepth = false
-          // fitNearPlane stays false: fitting the near plane changes which of two
-          // nearly coplanar surfaces wins (edge and sketch offsets were tuned
-          // against the authored planes). Phase 3 turns it on separately.
-          ..fitNearPlane = false
           // debugCheckCoplanarOverlaps stays false: a CAD scene is full of intended
           // coplanar surfaces (sketches on faces, reference planes), so it is noise.
           ..debugCheckCoplanarOverlaps = false
