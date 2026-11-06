@@ -994,9 +994,9 @@ const double sketchLineWidth = 1.5;
 /// on both. A light line with a dark edge reads on either (the same trick map labels use).
 final vm.Vector4 sketchOutlineColor = vm.Vector4(0.08, 0.08, 0.08, 1.0);
 
-/// How far, in screen pixels, the dark edge sticks out on each side of a sketch line (`PolylineGeometry` widths are
+/// How far, in screen pixels, the dark edge sticks out on each side of a sketch line (was 1.25, narrowed on the owner's say-so) (`PolylineGeometry` widths are
 /// screen pixels by default, `PolylineWidthMode.screenPixels`). The outline is drawn this much wider on both sides.
-const double sketchOutlinePixels = 1.25;
+const double sketchOutlinePixels = 0.75;
 
 /// One sketch polyline primitive, described as plain data so the core and outline primitives are built from the same
 /// list and cannot drift apart, and so tests can check them without a GPU. [cap] null means `PolylineGeometry`'s own

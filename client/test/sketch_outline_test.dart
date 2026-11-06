@@ -42,12 +42,12 @@ void main() {
       expect(specs.any((s) => s.color == sketchLineColor), isTrue);
     });
 
-    test('outline list matches the core list one to one, 2 x outline pixels wider, dark', () {
+    test('outline list matches the core list one to one, 1.5 (2 x 0.75) pixels wider, dark', () {
       final core = sketchLineSpecsFor(geometry);
       final outline = sketchOutlineSpecsFor(core);
       expect(outline.length, core.length);
       for (var i = 0; i < core.length; i++) {
-        expect(outline[i].width, closeTo(core[i].width + 2.5, 1e-9));
+        expect(outline[i].width, closeTo(core[i].width + 1.5, 1e-9));
         expect(identical(outline[i].points, core[i].points) || outline[i].points == core[i].points, isTrue);
         expect(outline[i].cap, core[i].cap);
         expect(outline[i].color, sketchOutlineColor);
@@ -55,7 +55,7 @@ void main() {
     });
 
     test('outline constants', () {
-      expect(sketchOutlinePixels, 1.25);
+      expect(sketchOutlinePixels, 0.75);
       expect(sketchOutlineColor, vm.Vector4(0.08, 0.08, 0.08, 1.0));
     });
 
@@ -70,7 +70,7 @@ void main() {
       expect(outline.length, core.length);
       expect(core.first.color, sketchIndicatorAnchorColor);
       expect(core.every((s) => s.cap == PolylineCap.round), isTrue);
-      expect(outline.map((s) => s.width), core.map((s) => s.width + 2.5));
+      expect(outline.map((s) => s.width), core.map((s) => s.width + 1.5));
       expect(outline.every((s) => s.color == sketchOutlineColor), isTrue);
     });
 
