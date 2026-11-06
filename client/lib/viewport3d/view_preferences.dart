@@ -29,6 +29,8 @@ class ViewPreferences {
   // screen.
   static const String debugShowCameraOrientationPrefKey = 'view_debug_camera_orientation';
   // Dark edge under sketch lines, so they read on both a dark background and a light or see-through body.
+  // Darker inside faces on see-through bodies (see kSeeThroughInteriorShade in mesh_geometry.dart).
+  static const String darkenSeeThroughInteriorPrefKey = 'view_darken_see_through_interior';
   static const String sketchLineOutlinePrefKey = 'view_sketch_line_outline';
 
   /// Was `#1E1E2E` (Studio Dark) through Stage 18, then `#F5F5F0`
@@ -74,6 +76,7 @@ class ViewPreferences {
   static const bool defaultDebugShowCameraOrientation = false;
   // On by default: sketch lines are otherwise hard to see on a light or see-through body.
   static const bool defaultSketchLineOutline = true;
+  static const bool defaultDarkenSeeThroughInterior = true;
 
   static String _bgColourHex = defaultBgColourHex;
   static String _bodyColourHex = defaultBodyColourHex;
@@ -84,6 +87,7 @@ class ViewPreferences {
   static double _farClip = kDefaultFarClip;
   static bool _debugShowCameraOrientation = defaultDebugShowCameraOrientation;
   static bool _sketchLineOutline = defaultSketchLineOutline;
+  static bool _darkenSeeThroughInterior = defaultDarkenSeeThroughInterior;
 
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
@@ -94,6 +98,7 @@ class ViewPreferences {
   static double get farClip => _farClip;
   static bool get debugShowCameraOrientation => _debugShowCameraOrientation;
   static bool get sketchLineOutline => _sketchLineOutline;
+  static bool get darkenSeeThroughInterior => _darkenSeeThroughInterior;
 
   /// Populates the in-memory cache from `shared_preferences`, falling back to
   /// the defaults above for any key never [save]d. [renderModePrefKey] is
@@ -116,6 +121,8 @@ class ViewPreferences {
     _debugShowCameraOrientation =
         prefs.getBool(debugShowCameraOrientationPrefKey) ?? defaultDebugShowCameraOrientation;
     _sketchLineOutline = prefs.getBool(sketchLineOutlinePrefKey) ?? defaultSketchLineOutline;
+    _darkenSeeThroughInterior =
+        prefs.getBool(darkenSeeThroughInteriorPrefKey) ?? defaultDarkenSeeThroughInterior;
   }
 
   static Future<void> setBgColourHex(String hex) async {
@@ -164,6 +171,12 @@ class ViewPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(debugShowCameraOrientationPrefKey, value);
     _debugShowCameraOrientation = value;
+  }
+
+  static Future<void> setDarkenSeeThroughInterior(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(darkenSeeThroughInteriorPrefKey, value);
+    _darkenSeeThroughInterior = value;
   }
 
   static Future<void> setSketchLineOutline(bool value) async {
