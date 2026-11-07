@@ -11,8 +11,13 @@ the recommended answer and say that is what you did.
 | 1 | View menu Body Colour / Body Transparency become a display override that beats every other appearance and covers the whole viewport (sub-parts and sub-assemblies too), with a button to turn it off | Bug + rework | Small-medium (client only) |
 | 2 | **Edit Alone**: edit one component or sub-assembly on its own, inside the same screen, with a one-tap way back to the assembly | Feature | Medium (client only) |
 | 3 | Sketch origin: choose the sketch's origin when defining a sketch (Body vertex, Sketch Point, line / curve endpoint, circle centre); sensible defaults (a face corner on a face, the plane origin on a plane) | Feature | Medium-large (backend + client) |
+| 3d | DIDSA-VR: place a Sketch with a moved origin correctly; its own new face sketches get the same corner default | Follow-up in `DIDSA-UK/DIDSA-VR` | Small |
 
-Suggested order: **1 → 2 → 3**. They do not depend on each other. 1 is the smallest and fixes a real bug. 2 is client only and
+Items 1 and 2 are Flutter-only and do not touch DIDSA-VR. Item 3 changes the backend and the `.didsa` file, and DIDSA-VR builds
+a Sketch's frame itself, so it needs 3d (see "DIDSA-VR" at the end of Item 3).
+
+Suggested order: **1 → 2 → 3 (3a → 3d → 3b)**. 3d goes straight after the backend phase so DIDSA-VR is never left drawing
+moved-origin sketches in the wrong place. They do not depend on each other. 1 is the smallest and fixes a real bug. 2 is client only and
 reuses the focus stack. 3 needs a backend model change, a native-format change and reference-identity work, so it goes last.
 
 ---
@@ -281,8 +286,11 @@ is always on screen ends it. Nothing is written to the backend, so the file is n
      every other place that builds a Sketch basis without going through it (the client `SketchPlaneBasis` builders,
      `ai_plan.py`, `gear*` and the AI plan translator) and route them through it.
 6. **Native format** (`native_format.py`): write `origin` on the sketch feature only when set. Old files load with `None`. Add
-   a round-trip test and an old-file test. If the native file has golden vectors read by DIDSA-VR, add a case and tell the VR
-   side (DIDSA-VR reads `.didsa` files; it must at least ignore the new key, and ideally use it when placing a Sketch).
+   a round-trip test and an old-file test. DIDSA-VR's `scripts/native_compose.gd` composes `.didsa` files and must keep the
+   new key (see 3d).
+7. **"auto" is opt-in.** A `SketchFeatureCreate` with no `origin` gets `None` (the plane's own origin, today's behaviour).
+   Only a client that sends `"auto"` gets the corner default. So DIDSA-VR, the AI plan and any older client keep working
+   unchanged until they choose to send it.
 
 ### Defaults ("auto")
 
@@ -346,7 +354,7 @@ backend (it has the face's topology; the client mesh has no face → vertex map,
 ### Phases
 
 - **3a (backend):** model, resolve, auto rule, lost-reference fallback, upstream check, PATCH, native format. Tests in
-  `backend/tests/test_sketch_origin.py` (new): fixed plane unchanged; face sketch auto = bottom-left corner for the default
+  `backend/tests/test_sketch_origin.py` (new): fixed plane unchanged; a create with no `origin` stores None even on a face (VR and older clients); face sketch auto = bottom-left corner for the default
   orientation and for each of the 4 rotations × flip on a box face; disc face = centre; a vertex off the plane is projected;
   an Extrude of a rectangle drawn at local `(0, 0)` lands at the chosen corner; a downstream Sketch Point and the Sketch's own
   point are refused; a lost vertex falls back and is reported; a followed vertex is followed; native round trip and old file.
@@ -358,6 +366,52 @@ backend (it has the face's topology; the client mesh has no face → vertex map,
   calls `updateSketchOrigin` with a `vertex_ref`; Plane origin sends null; flip after Auto re-sends auto, flip after a manual
   pick does not; redefine Cancel restores the old origin; New Sketch on Face sends `origin: 'auto'`).
 - **3c (optional):** Set origin here, inside the sketcher.
+- **3d (DIDSA-VR):** see below.
+
+### DIDSA-VR (3d)
+
+Checked against DIDSA-VR `main` at the time of writing. Read that repo's `CLAUDE.md`, `docs/backend-api-notes.md` and
+`tests/README.md` first. Work on the branch of the same name there (`ccr-b90afddb-8kqv89`).
+
+**Why it is needed.** DIDSA-VR does not ask the backend for a Sketch's frame. It builds the frame from the plane itself:
+`SketchMath.fixed_basis(plane)` for XY / XZ / YZ, or `SketchMath.basis_from_plane_response(<the create_plane Build row>)`
+(`scripts/design_table/sketch_math.gd`, line 37), whose `origin` is the **plane's** origin. Today it refuses a Sketch that is
+flipped or turned in the flat app ("That sketch is flipped or turned in the flat app...", `table_editor.gd` around line 1190,
+and `_plane_for_row` around line 2457). It has **no such check for a moved origin**, so once 3a lands a flat-app Sketch with an
+origin would open in VR **shifted**: its curves drawn in the wrong place, and new geometry drawn there landing offset from
+where the user put it. The same happens to finished sketches drawn for Loft / Sweep / Pattern picks (`_plane_for_row`,
+`_load_sketch_picks`). The picks are by id, so they still pick the right curve, but they are drawn in the wrong place.
+
+**Changes:**
+
+1. **Use the resolved origin.** Wherever DIDSA-VR builds a Sketch's frame from a Build row (`table_editor.gd`'s open-sketch
+   path around line 1176-1187, `_plane_for_row`, and `SketchSession.reopen` if it rebuilds one), if the Sketch's row carries
+   `resolved_origin` (3a, point 5), replace the basis `origin` with it. That is the only change: the axes and normal stay the
+   plane's. Add `SketchMath.with_origin(basis, row)` and test it. A `resolved_origin` of `null` (lost reference) means the
+   plane's origin, which is what the backend fell back to as well.
+2. **Old backends:** a row with no `resolved_origin` key and no `origin` key is today's Sketch. Leave it as it is.
+3. **The `.didsa` file:** check that `scripts/native_compose.gd` copies a sketch feature's dictionary through unchanged (keys
+   it does not know survive). Add a test with a sketch feature carrying `origin` (a `vertex_ref` and a `sketch_point_ref`
+   case). If the composer remaps ids (occurrence paths, `#pattern:`), check whether it must remap ids inside `origin` too.
+   It should not need to, because the refs are Part-local, but confirm it.
+4. **New sketches made in VR** (`SketchSession.start`, `scripts/design_table/sketch_session.gd` around line 99-140): on a
+   **face** send `"origin": "auto"` in the sketch feature body, so a face sketch gets the same bottom-left corner as in the
+   flat app, and use the create response's `resolved_origin` for `plane["origin"]`. On a fixed or created plane send nothing
+   (the plane origin, as now). VR has no orientation step and no flip / rotate, so "auto" is worked out once, at creation.
+   Picking an origin by hand in VR is **not** in this plan (it would need the orientation step VR does not have); note it as
+   open work in VR's `docs/status.md`.
+5. **Fake backend:** `tests/helpers/fake_cad.gd` (the sketch-feature create at around line 189) returns `resolved_origin`
+   when the request had `origin: "auto"`, so the headless tests cover both paths.
+6. **Docs:** add the `origin` / `resolved_origin` fields and the PATCH route to `docs/backend-api-notes.md`, and update
+   `docs/status.md`.
+
+**Tests (DIDSA-VR):**
+- headless: `SketchMath.with_origin`; opening a Build row with `resolved_origin` puts the session plane's origin there; a row
+  without it is unchanged; `native_compose` keeps `origin`; a face sketch sends `"auto"` and a plane sketch does not. Add each
+  new file to `tests/run_all.sh` and a row in `tests/README.md`.
+- live backend (`tests/ci_e2e.sh`, needs 3a running): make a face sketch with `"auto"`, draw a point at local (0, 0), and
+  check it lands on the face's corner in the part's frame. Add it to `tests/e2e_ci_list.txt`.
+- **Cannot be tested here:** how it looks and feels on the headset.
 
 ---
 
