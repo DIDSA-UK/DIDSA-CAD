@@ -41,6 +41,7 @@ import 'sketch_orientation_indicator.dart';
 import 'sketch_plane_hit_test.dart';
 import 'svg_icon.dart';
 import 'triad.dart';
+import 'view_appearance_override.dart';
 import 'view_preferences.dart';
 
 /// The Stage 7 3D viewport: renders [mesh] (the placeholder Part mesh from
@@ -787,6 +788,12 @@ class PartViewport extends StatefulWidget {
   final String bodyColourHex;
   final double bodyOpacity;
 
+  /// The View menu's display override (`view_appearance_override.dart`); null = off. When set it beats every other
+  /// appearance (looks, `focusOccurrenceColorHex`, an Occurrence's colour disc, a shown scene's overrides) on the primary
+  /// bodies and on every placed instance, and replaces [bodyColourHex] / [bodyOpacity] for them. Live previews, overlays,
+  /// ghosts, section caps, edges and selection highlights are left alone.
+  final ViewAppearanceOverride? appearanceOverride;
+
   /// The `PhysicallyBasedMaterial`/lighting upgrade's own controls (see
   /// `ScenePreferences`) - same controlled-widget/next-rebuild-only
   /// convention as [bodyColourHex]/[bodyOpacity] just above for
@@ -1102,6 +1109,7 @@ class PartViewport extends StatefulWidget {
     this.bgColourHex = ViewPreferences.defaultBgColourHex,
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
+    this.appearanceOverride,
     this.roughness = ScenePreferences.defaultRoughness,
     this.lightIntensity = ScenePreferences.defaultLightIntensity,
     this.emissiveIntensity = ScenePreferences.defaultEmissiveIntensity,
@@ -1880,7 +1888,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   ];
 
   vm.Vector4 _highContrastFaceHighlightColor() =>
-      highContrastColorFrom(_faceHighlightPalette, vector4FromHex(widget.bodyColourHex));
+      highContrastColorFrom(
+        _faceHighlightPalette,
+        vector4FromHex(widget.appearanceOverride?.colourHex ?? widget.bodyColourHex),
+      );
 
   /// Darker than [_selectedColor] so a selected edge reads as visually
   /// distinct from a selected face's tint - Material Blue 900.
@@ -2041,6 +2052,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.renderMode != oldWidget.renderMode ||
         widget.bodyColourHex != oldWidget.bodyColourHex ||
         widget.bodyOpacity != oldWidget.bodyOpacity ||
+        widget.appearanceOverride != oldWidget.appearanceOverride ||
         widget.roughness != oldWidget.roughness ||
         widget.emissiveIntensity != oldWidget.emissiveIntensity ||
         // On-device feedback ("the eye ball FAB that should hide/show all
@@ -2090,6 +2102,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.sectionPreviewCutFaceIds != oldWidget.sectionPreviewCutFaceIds ||
         widget.renderMode != oldWidget.renderMode ||
         widget.bodiesHidden != oldWidget.bodiesHidden ||
+        widget.appearanceOverride != oldWidget.appearanceOverride ||
+        widget.roughness != oldWidget.roughness ||
         widget.assemblyInstanceLooks != oldWidget.assemblyInstanceLooks) {
       setState(_syncAssemblyInstanceNodes);
     }
@@ -2451,7 +2465,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // [focusWorldTransformMatrix] (below) is what now shows *where* this
     // content actually sits once something is focused - opacity was never
     // the right signal for that, only ever a stand-in for it.
-    final baseBodyOpacity = widget.bodyOpacity;
+    final appearanceOverride = widget.appearanceOverride;
     final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
     final bodies = widget.bodies;
     if (bodies.isEmpty) {
@@ -2573,8 +2587,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         final highlightOverride = widget.highlightOverride;
         final dimmedForSelectOther = highlightOverride != null &&
             !_isHighlightOwner(highlightOverride, bodyId: body.bodyId, occurrenceId: '');
-        final effectiveBodyOpacity =
-            dimmedForSelectOther ? math.min(baseBodyOpacity, kSelectOtherDimOpacity) : baseBodyOpacity;
+        final primaryLookForBody = widget.primaryLook;
+        final resolvedPrimary = resolvePrimaryLook(
+          override: appearanceOverride,
+          hasLook: primaryLookForBody != null && !primaryLookForBody.isEmpty,
+          focusColourHex: widget.focusOccurrenceColorHex,
+          baseColourHex: widget.bodyColourHex,
+          baseOpacity: widget.bodyOpacity,
+          dim: dimmedForSelectOther,
+        );
+        final effectiveBodyOpacity = resolvedPrimary.opacity;
         // Face-culling bug fix: any translucent material below (preview
         // overlays are always translucent; a confirmed Body is translucent
         // whenever bodyOpacity < 1.0) needs double-sided-winding geometry,
@@ -2625,10 +2647,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               // focused Occurrence's own colour override (if any) wins over
               // the global default - mirrors [buildAssemblyInstanceNode]'s
               // own `tint ?? <neutral default>` precedent one level up.
-              ..baseColorFactor = vector4FromHex(
-                widget.focusOccurrenceColorHex ?? widget.bodyColourHex,
-                opacity: effectiveBodyOpacity,
-              )
+              ..baseColorFactor = vector4FromHex(resolvedPrimary.colourHex!, opacity: effectiveBodyOpacity)
               ..roughnessFactor = widget.roughness
               ..metallicFactor = ScenePreferences.fixedMetallic
               ..emissiveFactor = vm.Vector4(
@@ -2640,6 +2659,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ..doubleSided = true);
         final primaryLook = widget.primaryLook;
         final looked = primaryLook != null &&
+            resolvedPrimary.useLook &&
             !primaryLook.isEmpty &&
             !widget.isPreviewMesh &&
             !isPreviewOverlay &&
@@ -2654,7 +2674,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                     () {
                       final params = LookParams.of(
                         appearance,
-                        defaultColour: vector4FromHex(widget.focusOccurrenceColorHex ?? widget.bodyColourHex).xyz,
+                        defaultColour: vector4FromHex(resolvedPrimary.colourHex!).xyz,
                         defaultRoughness: widget.roughness,
                         defaultMetallic: ScenePreferences.fixedMetallic,
                       );
@@ -2818,7 +2838,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // (an exact target-Part match) - see [isOccurrencePathWithinFocus]'s
       // own doc comment for why that read a genuinely nested instance the
       // same as a peer/parent.
-      final opacity = assemblyInstanceOpacity(
+      final fade = assemblyInstanceOpacity(
         focusActive: focusedPath.isNotEmpty,
         isFocusedInstance: isOccurrencePathWithinFocus(instance.occurrencePath, focusedPath),
       );
@@ -2830,7 +2850,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // [buildAssemblyInstanceNode]'s own pre-existing `tint` param, until
       // now only ever fed [kMatePreviewTint] - `null` (no override) leaves
       // that builder's own neutral default tint exactly as it always was.
-      final tint = instance.color == null ? null : vector4FromHex(instance.color!).xyz;
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
@@ -2877,23 +2896,35 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           final highlightOverride = widget.highlightOverride;
           final dimmedForSelectOther = highlightOverride != null &&
               !_isHighlightOwner(highlightOverride, bodyId: body.bodyId, occurrenceId: occurrenceKey);
-          final effectiveOpacity = dimmedForSelectOther ? math.min(opacity, kSelectOtherDimOpacity) : opacity;
           // The Appearance tool (V3): a painted instance wears its whole look, split per face when its faces differ.
+          // The View menu's override (when on) beats the look, the colour disc and a scene's colours, and covers sub-parts
+          // and sub-assemblies alike.
           final look = widget.assemblyInstanceLooks[occurrenceKey];
-          final node = look != null && !look.isEmpty
+          final resolved = resolveInstanceLook(
+            override: widget.appearanceOverride,
+            hasLook: look != null && !look.isEmpty,
+            tintHex: instance.color,
+            fade: fade,
+            dim: dimmedForSelectOther,
+          );
+          final effectiveOpacity = resolved.opacity;
+          final resolvedTint = resolved.colourHex == null ? null : vector4FromHex(resolved.colourHex!).xyz;
+          final node = resolved.useLook
               ? buildLookedInstanceNode(
                   displayMesh,
                   bodyId: body.bodyId,
-                  look: look,
+                  look: look!,
                   localTransform: nodeTransform,
                   opacity: effectiveOpacity,
-                  defaultColour: tint,
+                  defaultColour: resolvedTint,
                 )
               : buildAssemblyInstanceNode(
                   displayMesh,
                   localTransform: nodeTransform,
                   opacity: effectiveOpacity,
-                  tint: tint,
+                  tint: resolvedTint,
+                  roughness: widget.roughness,
+                  metallic: ScenePreferences.fixedMetallic,
                 );
           scene.add(node);
           _assemblyInstanceNodes[sectionKey] = node;

@@ -12,7 +12,7 @@ import 'package:flutter_scene/src/gpu/gpu.dart' as gpu;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/document_api_client.dart';
-import 'view_preferences.dart' show ViewPreferences;
+import 'view_preferences.dart' show ViewPreferences, vector4FromHex;
 
 /// [UnlitMaterial] that always wins the depth test, regardless of what's
 /// already in the depth buffer or which GPU is rendering - see
@@ -1120,15 +1120,20 @@ Node buildAssemblyInstanceNode(
   // RGB only; alpha always comes from [opacity] below, matching every
   // pre-existing call site's exact prior color when this is omitted.
   vm.Vector3? tint,
+  // The viewport passes its scene roughness / fixed metallic so a placed instance matches the root's own bodies; the
+  // defaults are the old fixed values (mate / pattern ghosts keep them).
+  double roughness = 0.6,
+  double metallic = 0.1,
 }) {
   final isTranslucent = opacity < 1.0;
   final geometry = geometryFromMesh(mesh, doubleSidedWinding: isTranslucent);
-  final color = tint ?? vm.Vector3(0.68, 0.72, 0.78);
+  // An unpainted instance looks like an unpainted root body: the same default grey (was a hard-coded 0.68, 0.72, 0.78).
+  final color = tint ?? vector4FromHex(ViewPreferences.defaultBodyColourHex).xyz;
   final material = NormalDepthPhysicallyBasedMaterial()
     ..alphaMode = isTranslucent ? AlphaMode.blend : AlphaMode.opaque
     ..baseColorFactor = vm.Vector4(color.x, color.y, color.z, opacity)
-    ..roughnessFactor = 0.6
-    ..metallicFactor = 0.1;
+    ..roughnessFactor = roughness
+    ..metallicFactor = metallic;
   return Node(name: 'assembly-instance', localTransform: localTransform, mesh: Mesh(geometry, material));
 }
 

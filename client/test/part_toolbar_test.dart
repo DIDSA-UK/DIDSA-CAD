@@ -171,4 +171,62 @@ void main() {
       expect(r.height, lessThanOrEqualTo(900 / 3 + 0.01));
     });
   });
+  group('View > Override appearance', () {
+    Future<void> pump(WidgetTester tester, {bool on = false, void Function(bool)? onSwitch, void Function(String)? onColour}) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: PartToolbar(
+                visible: true,
+                bodyColourHex: '#6C8EAD',
+                bodyOpacity: 0.6,
+                appearanceOverrideOn: on,
+                onAppearanceOverrideChanged: onSwitch,
+                onBodyColourChanged: onColour ?? (_) {},
+                onBodyOpacityChanged: (_) {},
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('View'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    testWidgets('off: the three entries say the model\'s own colours show, and the switch is off', (tester) async {
+      await pump(tester, onSwitch: (_) {});
+      expect(find.byKey(const ValueKey('view-override-switch')), findsOneWidget);
+      expect(tester.widget<SwitchListTile>(find.byKey(const ValueKey('view-override-switch'))).value, isFalse);
+      expect(find.text(kViewOverrideOffText), findsNWidgets(3));
+    });
+
+    testWidgets('on: subtitles show the colour and the see-through percentage', (tester) async {
+      await pump(tester, on: true, onSwitch: (_) {});
+      expect(find.text('Overriding: #6C8EAD'), findsOneWidget);
+      expect(find.text('Overriding: 40% see-through'), findsOneWidget);
+    });
+
+    testWidgets('the switch reports on and off', (tester) async {
+      final seen = <bool>[];
+      await pump(tester, on: true, onSwitch: seen.add);
+      await tester.ensureVisible(find.byKey(const ValueKey('view-override-switch')));
+      await tester.tap(find.byKey(const ValueKey('view-override-switch')));
+      await tester.pump();
+      expect(seen, [false]);
+    });
+
+    testWidgets('picking a colour reports it (PartScreen turns the override on)', (tester) async {
+      final picked = <String>[];
+      await pump(tester, onSwitch: (_) {}, onColour: picked.add);
+      await tester.ensureVisible(find.byKey(const ValueKey('view-override-colour')));
+      await tester.tap(find.byKey(const ValueKey('view-override-colour')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('Orange'));
+      await tester.pump();
+      expect(picked, ['#E8834A']);
+    });
+  });
 }

@@ -82,6 +82,11 @@ class AppearancePanel extends StatefulWidget {
   final String title;
   final bool busy;
 
+  /// True while the View menu's appearance override is on: the paint is saved but hidden. [onTurnOffOverride] turns it off
+  /// (the panel never does that by itself).
+  final bool viewOverrideOn;
+  final VoidCallback? onTurnOffOverride;
+
   const AppearancePanel({
     super.key,
     required this.brush,
@@ -99,6 +104,8 @@ class AppearancePanel extends StatefulWidget {
     required this.onClose,
     this.title = 'Appearance',
     this.busy = false,
+    this.viewOverrideOn = false,
+    this.onTurnOffOverride,
   });
 
   @override
@@ -166,6 +173,23 @@ class _AppearancePanelState extends State<AppearancePanel> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (widget.viewOverrideOn)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                key: const ValueKey('appearance-override-banner'),
+                children: [
+                  const Icon(Icons.visibility_off_outlined, size: 18),
+                  const SizedBox(width: 8),
+                  const Expanded(child: Text('View override is on: your paint is saved but hidden.')),
+                  TextButton(
+                    key: const ValueKey('appearance-override-turn-off'),
+                    onPressed: widget.onTurnOffOverride,
+                    child: const Text('Turn off'),
+                  ),
+                ],
+              ),
+            ),
           Row(
             children: [
               _PreviewSwatch(key: const ValueKey('appearance-preview'), appearance: widget.brush),

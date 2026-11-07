@@ -20,6 +20,22 @@ Suggested order: **1 → 2 → 3 (3a → 3d → 3b)**. 3d goes straight after th
 moved-origin sketches in the wrong place. They do not depend on each other. 1 is the smallest and fixes a real bug. 2 is client only and
 reuses the focus stack. 3 needs a backend model change, a native-format change and reference-identity work, so it goes last.
 
+## Progress
+
+Branch `ccr-b90afddb-8kqv89`. Nothing here has been looked at on a device or the headset. Flutter 3.47.9 (CI's pin) ran the
+client tests here; the widget tests that need a GPU skip (`PartViewport` reports "no real GPU backend in this sandbox"), so
+**what a body looks like on screen is untested** for Items 1 and 2.
+
+Decisions: the owner's answers (2a Edit Alone, 2c keep Isolate, the Pick origin button in both orientation modes) are built
+as given. **Every other open decision was built as the recommended answer, without asking**: 1a (the on/off state is not
+remembered; colour and opacity are), 1b (a switch named "Override appearance" plus the viewport chip), 1c (the sketch screen
+is not covered), 2b (the edited component stays where it sits), 3a (bottom-left in the oriented frame, follows flip / rotate
+until a manual pick), 3b (the geometry moves with the origin), 3c (not built).
+
+| Item | What landed | Tests (added) | Ran here | Not run here |
+|---|---|---|---|---|
+| 1 | `ViewAppearanceOverride` (`viewport3d/view_appearance_override.dart`) with the pure `resolveInstanceLook` / `resolvePrimaryLook`; `PartViewport.appearanceOverride` (null = off) beats looks, `focusOccurrenceColorHex`, the colour disc and a scene on the primary bodies and on every placed instance (sub-parts and sub-assemblies; a shown scene goes through the same path), keeps the focus fade and the Select Other dim, and rebuilds both node sets when it changes. New keys `view_override_colour` / `view_override_opacity` are seeded from the old body keys, which are never rewritten (the mesh viewer and sketch screen keep them). The off look is now one grey: `buildAssemblyInstanceNode` defaults to `defaultBodyColourHex` and takes the scene roughness / metallic. View menu: a header, an "Override appearance" switch, Body Colour and Body Transparency with "Overriding: ..." / "Off: ..." subtitles; picking either turns it on, only the switch / chip / ribbon turns it off. The View ribbon tab (and so the phone Start menu's View tab) has Override, Body colour and Transparency. A chip at the top centre ("Appearance override · Turn off", hidden while presenting); the Appearance panel shows a banner with Turn off while it is on, and never turns it off itself. Off at every start (Decision 1a). **Differences from the plan text:** the viewport keeps its `bodyColourHex` / `bodyOpacity` (the sketch screen still uses them), `PartScreen` no longer passes them, so the root's own bodies now show the default grey when the override is off | `view_appearance_override_test.dart` (every combination of override x painted x tinted x focused x Select Other dim for instances and for primary bodies; value equality; the new keys: seeded, explicit wins, old keys untouched), `part_toolbar_test.dart` (the switch, subtitles, colour pick reports), `part_screen_test.dart` (starts off; Body Colour turns it on and the viewport gets a non-null override; the chip turns it off; the View tab's Override command), `appearance_panel_test.dart` (the banner and Turn off) | `flutter analyze` (no issues); the four files above; the whole of `part_screen_test.dart` (205 pass); `mesh_geometry_test.dart`, `part_viewport_test.dart`, `scene_display_test.dart` | That the rendered colour and see-through are right on screen (the widget tests skip the GPU), including a shown scene and that `buildAssemblyInstanceNode`'s default colour is the grey (GPU-bound; the colour choice is covered by the pure resolver instead). Not tried on a device |
+
 ---
 
 ## 1. View menu: Body Colour and Body Transparency as an override

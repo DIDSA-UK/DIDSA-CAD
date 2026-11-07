@@ -170,6 +170,12 @@ class PartToolbar extends StatelessWidget {
   final void Function(String hex)? onBodyColourChanged;
   final void Function(double opacity)? onBodyOpacityChanged;
 
+  /// The View menu's appearance override (`view_appearance_override.dart`): [bodyColourHex] / [bodyOpacity] above are its
+  /// colour and opacity. Picking either reports through the callbacks above (PartScreen turns the override on); this
+  /// switch turns it on or off by itself. Off by default so a screen that does not wire it shows "Off".
+  final bool appearanceOverrideOn;
+  final void Function(bool on)? onAppearanceOverrideChanged;
+
   /// Polygon Resolution slider (curved-surface tessellation density) - same
   /// [ViewPreferences]-backed load/persist pattern as [bodyOpacity] etc.
   /// just above, opened via [_pickMeshQuality] below.
@@ -261,6 +267,8 @@ class PartToolbar extends StatelessWidget {
     this.onBgColourChanged,
     this.onBodyColourChanged,
     this.onBodyOpacityChanged,
+    this.appearanceOverrideOn = false,
+    this.onAppearanceOverrideChanged,
     this.meshQuality = ViewPreferences.defaultMeshQuality,
     this.onMeshQualityChanged,
     this.sceneRoughness = ScenePreferences.defaultRoughness,
@@ -517,7 +525,23 @@ class PartToolbar extends StatelessWidget {
           title: const Text('Background Colour'),
           onTap: onBgColourChanged == null ? null : () => _pickBgColour(context),
         ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text('Override appearance', style: TextStyle(fontWeight: FontWeight.w600)),
+          ),
+        ),
+        SwitchListTile(
+          key: const ValueKey('view-override-switch'),
+          secondary: const Icon(Icons.format_color_reset),
+          title: const Text('Override appearance'),
+          subtitle: Text(appearanceOverrideOn ? 'On: beats every paint, colour and scene' : kViewOverrideOffText),
+          value: appearanceOverrideOn,
+          onChanged: onAppearanceOverrideChanged == null ? null : (on) => onAppearanceOverrideChanged!(on),
+        ),
         ListTile(
+          key: const ValueKey('view-override-colour'),
           // A fixed multi-colour glyph, not tinted like every other icon
           // here - see sketch_screen.dart's own identical Body Colour entry
           // for why (deliberately reads as "colour picker" at a glance
@@ -529,11 +553,14 @@ class PartToolbar extends StatelessWidget {
             height: 30,
           ),
           title: const Text('Body Colour'),
+          subtitle: Text(viewOverrideColourSubtitle(on: appearanceOverrideOn, colourHex: bodyColourHex)),
           onTap: onBodyColourChanged == null ? null : () => _pickBodyColour(context),
         ),
         ListTile(
+          key: const ValueKey('view-override-opacity'),
           leading: const SvgIcon('assets/icons/sketchbar/sketchbar_body_transparency.svg'),
           title: const Text('Body Transparency'),
+          subtitle: Text(viewOverrideOpacitySubtitle(on: appearanceOverrideOn, opacity: bodyOpacity)),
           onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
         ),
         ListTile(
@@ -669,3 +696,12 @@ class PartToolbar extends StatelessWidget {
     if (quality != null) onMeshQualityChanged!(quality);
   }
 }
+
+/// Subtitle text for the View menu's override entries (pure, so the phone menu, the ribbon and the tests agree).
+const String kViewOverrideOffText = "Off: showing the model's own colours";
+
+String viewOverrideColourSubtitle({required bool on, required String colourHex}) =>
+    on ? 'Overriding: ${colourHex.toUpperCase()}' : kViewOverrideOffText;
+
+String viewOverrideOpacitySubtitle({required bool on, required double opacity}) =>
+    on ? 'Overriding: ${((1.0 - opacity) * 100).round()}% see-through' : kViewOverrideOffText;

@@ -154,7 +154,9 @@ import 'svg_icon.dart';
 import 'scene_preferences.dart';
 import 'view_cube.dart' show showViewCube;
 import 'viewport_context_menus.dart';
+import 'view_appearance_override.dart';
 import 'view_preferences.dart';
+import 'view_prefs_sheets.dart' show bodyColourSwatches, showBodyOpacitySheet, showColourSwatchSheet;
 import '../layout/adaptive_sheet.dart';
 
 /// Prompt G: which Feature type the profile picker (see [_PartScreenState]'s
@@ -1656,6 +1658,12 @@ class _PartScreenState extends State<PartScreen> {
   String _bgColourHex = ViewPreferences.defaultBgColourHex;
   String _bodyColourHex = ViewPreferences.defaultBodyColourHex;
   double _bodyOpacity = ViewPreferences.defaultBodyOpacity;
+
+  /// The View menu's display override (`view_appearance_override.dart`): [_bodyColourHex] / [_bodyOpacity] are its colour
+  /// and opacity (remembered); whether it is ON is session state only (it always starts off, plan Decision 1a).
+  bool _appearanceOverrideOn = false;
+  ViewAppearanceOverride? get _appearanceOverride =>
+      _appearanceOverrideOn ? ViewAppearanceOverride(colourHex: _bodyColourHex, opacity: _bodyOpacity) : null;
 
   /// Polygon Resolution slider - unlike every other [ViewPreferences] field
   /// on this screen, this one is a *mesh fetch* param (see
@@ -4943,6 +4951,8 @@ class _PartScreenState extends State<PartScreen> {
       onUndo: _paintUndo.isEmpty ? null : () => unawaited(_undoPaint()),
       onClose: _closeAppearance,
       busy: _paintBusy,
+      viewOverrideOn: _appearanceOverrideOn,
+      onTurnOffOverride: () => _onAppearanceOverrideChanged(false),
     );
   }
 
@@ -11414,8 +11424,8 @@ class _PartScreenState extends State<PartScreen> {
     final meshQualityChanged = storedMeshQuality != _meshQuality;
     setState(() {
       _bgColourHex = ViewPreferences.bgColourHex;
-      _bodyColourHex = ViewPreferences.bodyColourHex;
-      _bodyOpacity = ViewPreferences.bodyOpacity;
+      _bodyColourHex = ViewPreferences.overrideColourHex;
+      _bodyOpacity = ViewPreferences.overrideOpacity;
       _meshQuality = storedMeshQuality;
       _renderMode = ViewPreferences.renderMode;
       _isPerspective = ViewPreferences.isPerspective;
@@ -11449,14 +11459,51 @@ class _PartScreenState extends State<PartScreen> {
     await ScenePreferences.setEmissiveIntensity(value);
   }
 
+  // Picking a colour or an opacity turns the override on; only the switch / chip / ribbon command turns it off.
   Future<void> _onBodyColourChanged(String hex) async {
-    setState(() => _bodyColourHex = hex);
-    await ViewPreferences.setBodyColourHex(hex);
+    setState(() {
+      _bodyColourHex = hex;
+      _appearanceOverrideOn = true;
+    });
+    await ViewPreferences.setOverrideColourHex(hex);
   }
 
   Future<void> _onBodyOpacityChanged(double opacity) async {
-    setState(() => _bodyOpacity = opacity);
-    await ViewPreferences.setBodyOpacity(opacity);
+    setState(() {
+      _bodyOpacity = opacity;
+      _appearanceOverrideOn = true;
+    });
+    await ViewPreferences.setOverrideOpacity(opacity);
+  }
+
+  void _onAppearanceOverrideChanged(bool on) {
+    if (on == _appearanceOverrideOn) return;
+    setState(() => _appearanceOverrideOn = on);
+  }
+
+  Future<void> _pickOverrideColour() async {
+    final hex = await showColourSwatchSheet(
+      context,
+      title: 'Body Colour',
+      swatches: bodyColourSwatches,
+      selectedHex: _bodyColourHex,
+    );
+    if (hex != null) await _onBodyColourChanged(hex);
+  }
+
+  Future<void> _pickOverrideOpacity() async {
+    final opacity = await showBodyOpacitySheet(context, initialOpacity: _bodyOpacity);
+    if (opacity != null) await _onBodyOpacityChanged(opacity);
+  }
+
+  /// The chip at the top of the viewport while the override is on (a forgotten override hides all the paint).
+  Widget _buildViewOverrideChip() {
+    return ActionChip(
+      key: const ValueKey('view-override-chip'),
+      avatar: const Icon(Icons.format_color_reset, size: 18),
+      label: const Text('Appearance override · Turn off'),
+      onPressed: () => _onAppearanceOverrideChanged(false),
+    );
   }
 
   /// Unlike [_onBodyOpacityChanged] etc., [_meshQuality] is a mesh *fetch*
@@ -24614,7 +24661,6 @@ class _PartScreenState extends State<PartScreen> {
     setState(() => _focusStack?.pop());
     await _refreshFocusTargetContent();
   }
-
   /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): every
   /// push/pop of [_focusStack] must re-fetch not just the Assembly tree
   /// ([_refreshAssemblyTree], the only thing focus ever drove before this
@@ -25651,6 +25697,28 @@ class _PartScreenState extends State<PartScreen> {
               onPressed: _onToggleReferencePlanes,
             ),
           ]),
+          // The View menu's display override (Item 1 of `docs/view-override-edit-alone-sketch-origin-plan.md`).
+          RibbonGroup([
+            RibbonCommand(
+              label: 'Override',
+              icon: Icons.format_color_reset,
+              tooltip: 'Override appearance: one colour and transparency over everything (display only)',
+              selected: _appearanceOverrideOn,
+              onPressed: () => _onAppearanceOverrideChanged(!_appearanceOverrideOn),
+            ),
+            RibbonCommand(
+              label: 'Body colour',
+              icon: Icons.palette_outlined,
+              tooltip: viewOverrideColourSubtitle(on: _appearanceOverrideOn, colourHex: _bodyColourHex),
+              onPressed: () => unawaited(_pickOverrideColour()),
+            ),
+            RibbonCommand(
+              label: 'Transparency',
+              svg: 'assets/icons/sketchbar/sketchbar_body_transparency.svg',
+              tooltip: viewOverrideOpacitySubtitle(on: _appearanceOverrideOn, opacity: _bodyOpacity),
+              onPressed: () => unawaited(_pickOverrideOpacity()),
+            ),
+          ]),
           RibbonGroup([
             for (final mode in ViewportRenderMode.values)
               RibbonCommand(
@@ -26428,8 +26496,7 @@ class _PartScreenState extends State<PartScreen> {
                   hiddenReferencePlanes: _referencePlanesForcedVisible ? const {} : _hiddenReferencePlanes,
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
-                  bodyColourHex: _bodyColourHex,
-                  bodyOpacity: _bodyOpacity,
+                  appearanceOverride: _appearanceOverride,
                   roughness: _sceneRoughness,
                   lightIntensity: _sceneLightIntensity,
                   emissiveIntensity: _sceneEmissiveIntensity,
@@ -26683,6 +26750,8 @@ class _PartScreenState extends State<PartScreen> {
                     bgColourHex: _bgColourHex,
                     bodyColourHex: _bodyColourHex,
                     bodyOpacity: _bodyOpacity,
+                    appearanceOverrideOn: _appearanceOverrideOn,
+                    onAppearanceOverrideChanged: _onAppearanceOverrideChanged,
                     onBgColourChanged: _onBgColourChanged,
                     onBodyColourChanged: _onBodyColourChanged,
                     onBodyOpacityChanged: _onBodyOpacityChanged,
@@ -28056,6 +28125,14 @@ class _PartScreenState extends State<PartScreen> {
                 // the axis is picked).
                 // Presentation mode: the presenter button and its menu, above everything else, always there.
                 if (_presenting) _buildPresenterOverlay(),
+                // Chips at the top centre (out of the FAB columns): the View override reminder.
+                if (_appearanceOverrideOn && !_chromeHidden)
+                  Positioned(
+                    top: 8,
+                    left: 0,
+                    right: 0,
+                    child: SafeArea(bottom: false, child: Center(child: _buildViewOverrideChip())),
+                  ),
               ],
             )),
           ),

@@ -15,6 +15,11 @@ class ViewPreferences {
   static const String bgColourPrefKey = 'view_bg_colour';
   static const String bodyColourPrefKey = 'view_body_colour';
   static const String bodyOpacityPrefKey = 'view_body_opacity';
+  // The View menu's appearance override (colour + opacity; `view_appearance_override.dart`). Seeded from the two keys
+  // above the first time; the old keys are never rewritten (the mesh viewer still uses them as its plain body colour).
+  // Whether the override is ON is deliberately not stored: the app always starts with it off.
+  static const String overrideColourPrefKey = 'view_override_colour';
+  static const String overrideOpacityPrefKey = 'view_override_opacity';
   // Polygon Resolution slider (hamburger menu > View > Polygon Resolution) -
   // see [defaultMeshQuality]'s own doc comment for what the stored value
   // means.
@@ -81,6 +86,8 @@ class ViewPreferences {
   static String _bgColourHex = defaultBgColourHex;
   static String _bodyColourHex = defaultBodyColourHex;
   static double _bodyOpacity = defaultBodyOpacity;
+  static String _overrideColourHex = defaultBodyColourHex;
+  static double _overrideOpacity = defaultBodyOpacity;
   static double _meshQuality = defaultMeshQuality;
   static ViewportRenderMode _renderMode = defaultRenderMode;
   static bool _isPerspective = defaultIsPerspective;
@@ -92,6 +99,8 @@ class ViewPreferences {
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
   static double get bodyOpacity => _bodyOpacity;
+  static String get overrideColourHex => _overrideColourHex;
+  static double get overrideOpacity => _overrideOpacity;
   static double get meshQuality => _meshQuality;
   static ViewportRenderMode get renderMode => _renderMode;
   static bool get isPerspective => _isPerspective;
@@ -110,6 +119,8 @@ class ViewPreferences {
     _bgColourHex = prefs.getString(bgColourPrefKey) ?? defaultBgColourHex;
     _bodyColourHex = prefs.getString(bodyColourPrefKey) ?? defaultBodyColourHex;
     _bodyOpacity = prefs.getDouble(bodyOpacityPrefKey) ?? defaultBodyOpacity;
+    _overrideColourHex = prefs.getString(overrideColourPrefKey) ?? _bodyColourHex;
+    _overrideOpacity = prefs.getDouble(overrideOpacityPrefKey) ?? _bodyOpacity;
     _meshQuality = prefs.getDouble(meshQualityPrefKey) ?? defaultMeshQuality;
     final storedRenderMode = prefs.getString(renderModePrefKey);
     _renderMode = ViewportRenderMode.values.firstWhere(
@@ -141,6 +152,18 @@ class ViewPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(bodyOpacityPrefKey, opacity);
     _bodyOpacity = opacity;
+  }
+
+  static Future<void> setOverrideColourHex(String hex) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(overrideColourPrefKey, hex);
+    _overrideColourHex = hex;
+  }
+
+  static Future<void> setOverrideOpacity(double opacity) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(overrideOpacityPrefKey, opacity);
+    _overrideOpacity = opacity;
   }
 
   static Future<void> setMeshQuality(double quality) async {

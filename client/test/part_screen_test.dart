@@ -38,6 +38,7 @@ import 'package:didsa_cad_client/viewport3d/component_pattern_panel.dart';
 import 'package:didsa_cad_client/layout/layout_mode.dart';
 import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
+import 'package:didsa_cad_client/viewport3d/view_appearance_override.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 import 'package:didsa_cad_client/viewport3d/presentation_mode.dart';
@@ -9274,5 +9275,69 @@ void main() {
         }
       });
     }
+  });
+
+  group('View appearance override (Item 1 of the view-override plan)', () {
+    Future<void> pumpScreen(WidgetTester tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async => _FakeDocumentBackend().handle(request)),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    ViewAppearanceOverride? current(WidgetTester tester) =>
+        tester.widget<PartViewport>(find.byType(PartViewport)).appearanceOverride;
+
+    testWidgets('starts off; picking Body Colour turns it on; the chip turns it off', (tester) async {
+      await pumpScreen(tester);
+      expect(current(tester), isNull);
+      expect(find.byKey(const ValueKey('view-override-chip')), findsNothing);
+
+      await openToolbar(tester);
+      await tester.tap(find.text('View'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.byKey(const ValueKey('view-override-colour')));
+      await tester.tap(find.byKey(const ValueKey('view-override-colour')));
+      await _settleSheet(tester);
+      await tester.tap(find.text('Orange'));
+      await _settleSheet(tester);
+
+      expect(current(tester), const ViewAppearanceOverride(colourHex: '#E8834A', opacity: 1.0));
+      expect(find.byKey(const ValueKey('view-override-chip')), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('view-override-chip')));
+      await tester.pump();
+      expect(current(tester), isNull);
+      expect(find.byKey(const ValueKey('view-override-chip')), findsNothing);
+    });
+
+    testWidgets('the View tab\'s Override command switches it on and off, and its colour stays', (tester) async {
+      await pumpScreen(tester);
+      await openStartMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-view')));
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('start-tile-Body colour')), findsOneWidget);
+      expect(find.byKey(const ValueKey('start-tile-Transparency')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('start-tile-Override')));
+      await _settleSheet(tester);
+      expect(current(tester), isNotNull);
+      await openStartMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-view')));
+      await _settleSheet(tester);
+      await tester.tap(find.byKey(const ValueKey('start-tile-Override')));
+      await _settleSheet(tester);
+      expect(current(tester), isNull);
+    });
   });
 }

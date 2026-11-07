@@ -147,4 +147,36 @@ void main() {
     expect(describeAppearance({'colour': '#FF0000', 'opacity': 0.5, 'roughness': 0.2, 'metallic': 1.0, 'emission_strength': 2.0}),
         '#FF0000 · 50% · shine 0.80 · metal 1.00 · glow 2.0');
   });
+
+  testWidgets('the View override banner shows only while the override is on, and Turn off reports (the panel never does it itself)', (
+    tester,
+  ) async {
+    var off = 0;
+    Widget panel({required bool on}) => MaterialApp(
+          home: Scaffold(
+            body: AppearancePanel(
+              brush: const {'colour': '#E63946'},
+              onBrushChanged: (_) {},
+              rows: const [],
+              onPreviewRow: (_) {},
+              onPaintRow: (_) {},
+              onEyedropperChanged: (_) {},
+              onSaveBrush: (_) {},
+              onClose: () {},
+              viewOverrideOn: on,
+              onTurnOffOverride: () => off++,
+            ),
+          ),
+        );
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    await tester.pumpWidget(panel(on: false));
+    expect(find.byKey(const ValueKey('appearance-override-banner')), findsNothing);
+    await tester.pumpWidget(panel(on: true));
+    expect(find.byKey(const ValueKey('appearance-override-banner')), findsOneWidget);
+    expect(find.textContaining('saved but hidden'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('appearance-override-turn-off')));
+    expect(off, 1);
+  });
 }
