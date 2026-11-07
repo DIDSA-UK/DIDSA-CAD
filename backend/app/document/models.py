@@ -79,6 +79,9 @@ class SketchFeature(Feature):
     id: str
     sketch_id: str
     plane_feature_id: str | None = None
+    # Sketch origin (docs/view-override-edit-alone-sketch-origin-plan.md Item 3): where the Sketch's local (0, 0) sits in its anchor plane. None (every
+    # existing Sketch and file) = the anchor plane's own origin. See `SketchOrigin` and `app.document.create_plane.basis_for_sketch`.
+    origin: "SketchOrigin | None" = None
 
     @property
     def type(self) -> str:
@@ -414,6 +417,19 @@ class PointRef:
 
     vertex_ref: SubShapeRef | None = None
     sketch_point_ref: SketchEntityRef | None = None
+
+
+@dataclass(frozen=True)
+class SketchOrigin:
+    """Where a Sketch's local (0, 0) sits: at most one field is set (router-validated, the usual pattern).
+    - `point_ref`: a Body vertex or a Sketch Point (a line / curve endpoint or a circle centre is a Sketch Point). A Sketch Point must belong to an EARLIER Sketch.
+    - `circle_centre_ref`: the centre of a circular Body edge (a hole's or boss's rim, a disc face's rim).
+    The point is projected onto the anchor plane; the plane's axes and normal do not change. Only geometry that exists before the Sketch in the Feature history
+    can resolve, so there are no cycles. A reference that no longer resolves falls back to the anchor plane's own origin and is reported as a lost reference
+    (`origin.point_ref.vertex_ref`, `origin.circle_centre_ref`); the Sketch never fails because of it."""
+
+    point_ref: PointRef | None = None
+    circle_centre_ref: SubShapeRef | None = None
 
 
 @dataclass(frozen=True)

@@ -461,6 +461,26 @@ def _sketch_external_reference_dependencies(feature: SketchFeature) -> tuple[str
     return tuple({base_feature_id(ref.body_id) for ref in sketch.external_references.values()})
 
 
+def _sketch_origin_dependencies(part: Part, feature: SketchFeature) -> tuple[str, ...]:
+    """A Sketch whose origin names a Body vertex / circular edge depends on the Feature that made that Body; one whose origin is a Sketch Point depends on the
+    SketchFeature wrapping that Sketch (so deleting either takes this Sketch's origin with it instead of leaving it dangling, the rule every reference kind
+    here follows). Ids that do not resolve are skipped, as everywhere in this module."""
+    origin = feature.origin
+    if origin is None:
+        return ()
+    found: list[str] = []
+    if origin.circle_centre_ref is not None:
+        found.append(base_feature_id(origin.circle_centre_ref.body_id))
+    if origin.point_ref is not None:
+        if origin.point_ref.vertex_ref is not None:
+            found.append(base_feature_id(origin.point_ref.vertex_ref.body_id))
+        if origin.point_ref.sketch_point_ref is not None:
+            owner = sketch_feature_id_for_sketch(part, origin.point_ref.sketch_point_ref.sketch_id)
+            if owner is not None and owner != feature.id:
+                found.append(owner)
+    return tuple(found)
+
+
 def build_feature_graph(part: Part) -> list[GraphNode]:
     """The dependency edges recompute is driven by (A1) - every
     ExtrudeFeature depends on the SketchFeature it extrudes plus every Body
@@ -578,7 +598,7 @@ def build_feature_graph(part: Part) -> list[GraphNode]:
         if isinstance(feature, SketchFeature):
             depends_on = (
                 (feature.plane_feature_id,) if feature.plane_feature_id else ()
-            ) + _sketch_external_reference_dependencies(feature)
+            ) + _sketch_external_reference_dependencies(feature) + _sketch_origin_dependencies(part, feature)
         elif isinstance(feature, ExtrudeFeature):
             depends_on = (
                 feature.sketch_feature_id,

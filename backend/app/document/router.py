@@ -68,14 +68,21 @@ from app.document.jobs import JobStatus, cancel_job, get_job
 from app.document.reference_history import history_for_part
 from app.document.subshape_identity import refresh_feature_subshape_refs
 from app.document.create_plane import (
+    _circle_centre_of_edge,
     basis_for_sketch,
     capture_external_reference,
     make_circle_centre_reference,
     make_external_vertex_reference,
     refresh_external_references,
+    oriented_anchor_basis,
+    project_point_onto_basis_plane,
     resolve_create_plane,
     resolve_external_vertex_position,
+    resolve_point_ref_position,
+    resolve_sketch_origin_point,
+    sketch_origin_is_upstream,
 )
+from app.document.sketch_origin import auto_sketch_origin
 from app.document.extrude import (
     _register_solids,
     apply_rigid_transform_to_shape,
@@ -107,6 +114,7 @@ from app.document.graph import (
     build_feature_graph,
     excluded_feature_ids_after,
     resolve_feature_produces,
+    sketch_feature_id_for_sketch,
     tool_feature_qualifies,
     transitive_dependents,
 )
@@ -191,6 +199,7 @@ from app.document.models import (
     ScaleBodyFeature,
     ShellFeature,
     SketchFeature,
+    SketchOrigin,
     SketchOrEdgeRef,
     SolidFromSurfacesFeature,
     SplitFeature,
@@ -385,6 +394,8 @@ from app.document.schemas import (
     SketchFeatureCreate,
     SketchFeatureResponse,
     SketchOrEdgeRefSchema,
+    SketchOriginSchema,
+    SketchOriginUpdate,
     SolidFromSurfacesFeatureCreate,
     SolidFromSurfacesFeatureResponse,
     SolidFromSurfacesFeatureUpdate,
@@ -679,6 +690,20 @@ def _point_ref_to_domain(schema: PointRefSchema) -> PointRef:
         sketch_point_ref=_sketch_entity_ref_to_domain(schema.sketch_point_ref)
         if schema.sketch_point_ref
         else None,
+    )
+
+
+def _sketch_origin_to_domain(schema: SketchOriginSchema) -> SketchOrigin:
+    return SketchOrigin(
+        point_ref=_point_ref_to_domain(schema.point_ref) if schema.point_ref is not None else None,
+        circle_centre_ref=_subshape_ref_to_domain(schema.circle_centre_ref) if schema.circle_centre_ref is not None else None,
+    )
+
+
+def _sketch_origin_to_schema(origin: SketchOrigin) -> SketchOriginSchema:
+    return SketchOriginSchema(
+        point_ref=_point_ref_to_schema(origin.point_ref) if origin.point_ref is not None else None,
+        circle_centre_ref=_subshape_ref_to_schema(origin.circle_centre_ref) if origin.circle_centre_ref is not None else None,
     )
 
 
@@ -1024,15 +1049,48 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         response.moved_references = state.moved
         response.followed_references = state.followed
         response.reference_reasons = {**response.reference_reasons, **state.reasons}
+    if isinstance(feature, SketchFeature) and feature.origin is not None and response.resolved_origin is None:
+        # An origin that does not resolve (a deleted Sketch Point, or anything the Body-reference walk above could not say): reported like any lost reference.
+        path = _sketch_origin_origin_path(feature.origin)
+        if path not in response.lost_references:
+            response.lost_references = [*response.lost_references, path]
+            response.reference_reasons = {**response.reference_reasons, path: "origin_unresolved"}
+        response.has_lost_reference = True
     return response
+
+
+def _sketch_origin_origin_path(origin: SketchOrigin) -> str:
+    """The reference path a lost origin reports in `lost_references` (the same walk `refresh_feature_subshape_refs` uses for a Body reference)."""
+    if origin.circle_centre_ref is not None:
+        return "origin.circle_centre_ref"
+    assert origin.point_ref is not None
+    return "origin.point_ref.vertex_ref" if origin.point_ref.vertex_ref is not None else "origin.point_ref.sketch_point_ref"
+
+
+def _resolved_sketch_origin(part: Part, feature: SketchFeature) -> tuple[float, float, float] | None:
+    """Where `feature.origin` is in the world (mm, projected onto the Sketch's plane); None for no origin, a lost one, or any failure (the response must never fail
+    because of it: the Sketch then sits at its plane's own origin, which is what `basis_for_sketch` does as well)."""
+    if feature.origin is None:
+        return None
+    try:
+        excluded = excluded_feature_ids_after(part, feature.id)
+        bodies = compute_part_bodies(part, excluded)
+        point = resolve_sketch_origin_point(part, feature, bodies, excluded)
+        basis = oriented_anchor_basis(part, get_sketch_or_404(feature.sketch_id), bodies, excluded)
+        return project_point_onto_basis_plane(basis, point)
+    except HTTPException:
+        return None
 
 
 def _feature_response_unflagged(part: Part, feature: Feature) -> FeatureResponse:
     if isinstance(feature, SketchFeature):
+        resolved_origin = _resolved_sketch_origin(part, feature)
         return SketchFeatureResponse(
             id=feature.id,
             sketch_id=feature.sketch_id,
             plane_feature_id=feature.plane_feature_id,
+            origin=_sketch_origin_to_schema(feature.origin) if feature.origin is not None else None,
+            resolved_origin=resolved_origin,
             **_sketch_reference_state(part, feature),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
@@ -5204,11 +5262,71 @@ def _preview_members(part: Part, driven_id: str, result: GroupSolveResult) -> li
 def create_sketch_feature(part_id: str, payload: SketchFeatureCreate) -> SketchFeatureResponse:
     part = get_part_or_404(part_id)
     _validate_sketch_feature_payload(part, payload.plane, payload.plane_feature_id)
+    explicit_origin = _sketch_origin_to_domain(payload.origin) if isinstance(payload.origin, SketchOriginSchema) else None
+    if explicit_origin is not None:
+        _validate_sketch_origin(part, explicit_origin, None)
     sketch = create_sketch(payload.plane)
     feature = SketchFeature(
-        id=str(uuid.uuid4()), sketch_id=sketch.id, plane_feature_id=payload.plane_feature_id
+        id=str(uuid.uuid4()), sketch_id=sketch.id, plane_feature_id=payload.plane_feature_id, origin=explicit_origin
     )
     part.add_feature(feature)
+    if payload.origin == "auto":
+        # Appended last, so the Part's Bodies as they are now are what this Sketch sees; the concrete result is stored (it never changes by itself afterwards).
+        feature.origin = _auto_origin_or_none(part, feature)
+    return _feature_response(part, feature)
+
+
+def _auto_origin_or_none(part: Part, feature: SketchFeature) -> SketchOrigin | None:
+    excluded = excluded_feature_ids_after(part, feature.id)
+    try:
+        return auto_sketch_origin(part, feature, compute_part_bodies(part, excluded), excluded)
+    except HTTPException:
+        return None
+
+
+def _validate_sketch_origin(part: Part, origin: SketchOrigin, feature: SketchFeature | None) -> None:
+    """Payload shape and reachability of a Sketch origin. `feature` is the existing SketchFeature being changed (None while creating one: the new Sketch will be
+    last in the history, so every existing Sketch and Body is upstream of it). 422 `origin_reference_not_upstream` for a Sketch Point of this Sketch or of a later
+    one; the usual `missing_reference` / `not_a_circular_edge` when the reference does not resolve now."""
+    if (origin.point_ref is None) == (origin.circle_centre_ref is None):
+        raise HTTPException(status_code=422, detail="origin must have exactly one of point_ref or circle_centre_ref")
+    if origin.circle_centre_ref is not None and origin.circle_centre_ref.shape_type != SubShapeType.EDGE:
+        raise HTTPException(status_code=422, detail="origin.circle_centre_ref must have shape_type=EDGE")
+    if origin.point_ref is not None:
+        point_ref = origin.point_ref
+        if (point_ref.vertex_ref is None) == (point_ref.sketch_point_ref is None):
+            raise HTTPException(status_code=422, detail="origin.point_ref must have exactly one of vertex_ref or sketch_point_ref")
+        if point_ref.vertex_ref is not None and point_ref.vertex_ref.shape_type != SubShapeType.VERTEX:
+            raise HTTPException(status_code=422, detail="origin.point_ref.vertex_ref must have shape_type=VERTEX")
+        if point_ref.sketch_point_ref is not None:
+            if point_ref.sketch_point_ref.entity_type != SketchEntityType.POINT:
+                raise HTTPException(status_code=422, detail="origin.point_ref.sketch_point_ref must have entity_type=POINT")
+            owner_id = sketch_feature_id_for_sketch(part, point_ref.sketch_point_ref.sketch_id)
+            if owner_id is None or (feature is not None and not sketch_origin_is_upstream(part, dataclasses.replace(feature, origin=origin))):
+                raise HTTPException(status_code=422, detail={"type": "origin_reference_not_upstream"})
+    excluded = excluded_feature_ids_after(part, feature.id) if feature is not None else frozenset()
+    bodies = compute_part_bodies(part, excluded)
+    if origin.circle_centre_ref is not None:
+        _circle_centre_of_edge(bodies, origin.circle_centre_ref)
+    else:
+        resolve_point_ref_position(part, bodies, origin.point_ref, excluded)
+
+
+@router.patch("/parts/{part_id}/features/{feature_id}/sketch-origin", response_model=SketchFeatureResponse)
+def update_sketch_origin(part_id: str, feature_id: str, payload: SketchOriginUpdate) -> SketchFeatureResponse:
+    """Sets where a Sketch's local (0, 0) sits: a concrete origin (a Body vertex, a Sketch Point of an earlier Sketch, or a circular edge's centre), "auto" (the
+    default for its anchor, worked out now against the Sketch's current orientation) or null (the anchor plane's own origin). Existing geometry keeps its LOCAL
+    coordinates, so it moves with the origin, as flip and rotate do."""
+    part = get_part_or_404(part_id)
+    feature = _get_sketch_feature_or_404(part, feature_id)
+    if payload.origin == "auto":
+        feature.origin = _auto_origin_or_none(part, feature)
+    elif payload.origin is None:
+        feature.origin = None
+    else:
+        origin = _sketch_origin_to_domain(payload.origin)
+        _validate_sketch_origin(part, origin, feature)
+        feature.origin = origin
     return _feature_response(part, feature)
 
 

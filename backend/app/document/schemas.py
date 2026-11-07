@@ -157,21 +157,6 @@ class MassPropertiesResponse(BaseModel):
     body_masses: dict[str, float]
 
 
-class SketchFeatureCreate(BaseModel):
-    """Creates a SketchFeature wrapping a brand-new, empty Sketch, either on
-    one of the three fixed reference planes (`plane`) or (C3) anchored to an
-    existing `CreatePlaneFeature` (`plane_feature_id`) - exactly one of the
-    two must be supplied (see
-    `app.document.router._validate_sketch_feature_payload`, same "payload
-    shape validated by the API layer" split every other mutually-exclusive
-    Feature field already uses). There is no "wrap an existing Sketch" mode,
-    since the out-of-scope "tap a locked Feature to re-edit its sketch" flow
-    is the only case that would need one."""
-
-    plane: Plane | None = None
-    plane_feature_id: str | None = None
-
-
 class FeatureResponseBase(BaseModel):
     """Reference-identity overhaul (docs/reference-identity-design.md): every Feature response can say that some of the Feature's `SubShapeRef`s (an edge a Fillet
     rounds, the face a Plane sits on, a Pattern's direction edge, ...) are lost - not found, or found only ambiguously, never silently rebound - or were bound on
@@ -184,41 +169,6 @@ class FeatureResponseBase(BaseModel):
     lost_references: list[str] = []
     moved_references: list[str] = []
     followed_references: list[str] = []
-    reference_reasons: dict[str, str] = {}
-
-
-# `type` is a discriminator, same pattern as app.sketch.schemas'
-# SketchEntityResponse.
-class SketchFeatureResponse(FeatureResponseBase):
-    type: Literal["sketch"] = "sketch"
-    id: str
-    sketch_id: str
-    # C3: echoes SketchFeature.plane_feature_id - null for a Sketch on one of
-    # the three fixed reference planes (the common case, unchanged from
-    # before C3), set for one anchored to a custom plane instead.
-    plane_feature_id: str | None = None
-    locked: bool
-    # B1: what this Feature contributes, for the client tree's grouping
-    # (B3) - see app.document.models.Feature.produces.
-    produces: Produces
-    # Sketcher-roadmap Phase 4.3 v1: true whenever at least one of this
-    # Sketch's `external_references` (a Point tracking a Body vertex) no
-    # longer resolves against the Part's *current* Bodies - resolved live
-    # on every response the same soft-fail-without-raising way
-    # `_create_plane_feature_response`'s own `origin`/`normal` fields
-    # already are (see `app.document.router._feature_response`'s
-    # SketchFeature branch), so one Sketch with a since-broken reference
-    # never fails the whole `GET .../features` list. Always false for a
-    # Sketch with no external references at all - the common case, and the
-    # only case before this field existed.
-    has_lost_reference: bool = False
-    # Reference-identity overhaul (docs/reference-identity-design.md): which external-reference Points are lost (not found, consumed by an upstream
-    # feature, or found ambiguously - never silently rebound), which are bound but "potentially moved" (bound on weaker evidence; the user should look
-    # and can confirm or re-attach), and which were re-found at a new index automatically (informational). `reference_reasons` maps each of those ids
-    # to a short machine-readable reason ("no_match", "ambiguous", "body_missing", "consumed_by_<feature>", "nearest_of_identical_vertices", ...).
-    lost_reference_point_ids: list[str] = []
-    moved_reference_point_ids: list[str] = []
-    followed_reference_point_ids: list[str] = []
     reference_reasons: dict[str, str] = {}
 
 
@@ -698,6 +648,79 @@ class PointRefSchema(BaseModel):
 
     vertex_ref: SubShapeRefSchema | None = None
     sketch_point_ref: SketchEntityRefSchema | None = None
+
+
+class SketchOriginSchema(BaseModel):
+    """The wire counterpart to `app.document.models.SketchOrigin`: exactly one of `point_ref` (a Body vertex or a Sketch Point of an EARLIER Sketch) or
+    `circle_centre_ref` (a circular Body edge, whose centre is used). Validated by `app.document.router._validate_sketch_origin`."""
+
+    point_ref: PointRefSchema | None = None
+    circle_centre_ref: SubShapeRefSchema | None = None
+
+
+class SketchOriginUpdate(BaseModel):
+    """Body of `PATCH .../features/{feature_id}/sketch-origin`: a concrete origin, "auto" (the default for the Sketch's anchor, worked out now against the Sketch's current
+    orientation) or null (the anchor plane's own origin)."""
+
+    origin: SketchOriginSchema | Literal["auto"] | None = None
+
+
+class SketchFeatureCreate(BaseModel):
+    """Creates a SketchFeature wrapping a brand-new, empty Sketch, either on
+    one of the three fixed reference planes (`plane`) or (C3) anchored to an
+    existing `CreatePlaneFeature` (`plane_feature_id`) - exactly one of the
+    two must be supplied (see
+    `app.document.router._validate_sketch_feature_payload`, same "payload
+    shape validated by the API layer" split every other mutually-exclusive
+    Feature field already uses). There is no "wrap an existing Sketch" mode,
+    since the out-of-scope "tap a locked Feature to re-edit its sketch" flow
+    is the only case that would need one."""
+
+    plane: Plane | None = None
+    plane_feature_id: str | None = None
+    # Sketch origin (docs/view-override-edit-alone-sketch-origin-plan.md Item 3): omitted / null = the anchor plane's own origin (today's behaviour, so DIDSA-VR, the AI
+    # plan and older clients are unchanged). "auto" = the server picks a default and stores the concrete result: the bottom-left corner of a Body face the Sketch sits on
+    # (as the Sketch is oriented), or the centre of a disc face's rim; the plane's own origin for anything else.
+    origin: SketchOriginSchema | Literal['auto'] | None = None
+
+
+# `type` is a discriminator, same pattern as app.sketch.schemas'
+# SketchEntityResponse.
+class SketchFeatureResponse(FeatureResponseBase):
+    type: Literal["sketch"] = "sketch"
+    id: str
+    sketch_id: str
+    # C3: echoes SketchFeature.plane_feature_id - null for a Sketch on one of
+    # the three fixed reference planes (the common case, unchanged from
+    # before C3), set for one anchored to a custom plane instead.
+    plane_feature_id: str | None = None
+    locked: bool
+    # B1: what this Feature contributes, for the client tree's grouping
+    # (B3) - see app.document.models.Feature.produces.
+    produces: Produces
+    # The stored origin (null = the anchor plane's own origin) and, when set and it resolves, where it is in the world (mm, already projected onto the plane). A lost
+    # origin reference reports `origin.point_ref.vertex_ref` (or `origin.circle_centre_ref`) in `lost_references` and has no `resolved_origin`.
+    origin: SketchOriginSchema | None = None
+    resolved_origin: tuple[float, float, float] | None = None
+    # Sketcher-roadmap Phase 4.3 v1: true whenever at least one of this
+    # Sketch's `external_references` (a Point tracking a Body vertex) no
+    # longer resolves against the Part's *current* Bodies - resolved live
+    # on every response the same soft-fail-without-raising way
+    # `_create_plane_feature_response`'s own `origin`/`normal` fields
+    # already are (see `app.document.router._feature_response`'s
+    # SketchFeature branch), so one Sketch with a since-broken reference
+    # never fails the whole `GET .../features` list. Always false for a
+    # Sketch with no external references at all - the common case, and the
+    # only case before this field existed.
+    has_lost_reference: bool = False
+    # Reference-identity overhaul (docs/reference-identity-design.md): which external-reference Points are lost (not found, consumed by an upstream
+    # feature, or found ambiguously - never silently rebound), which are bound but "potentially moved" (bound on weaker evidence; the user should look
+    # and can confirm or re-attach), and which were re-found at a new index automatically (informational). `reference_reasons` maps each of those ids
+    # to a short machine-readable reason ("no_match", "ambiguous", "body_missing", "consumed_by_<feature>", "nearest_of_identical_vertices", ...).
+    lost_reference_point_ids: list[str] = []
+    moved_reference_point_ids: list[str] = []
+    followed_reference_point_ids: list[str] = []
+    reference_reasons: dict[str, str] = {}
 
 
 class SketchOrEdgeRefSchema(BaseModel):

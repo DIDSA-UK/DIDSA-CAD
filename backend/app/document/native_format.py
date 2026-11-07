@@ -104,6 +104,7 @@ from app.document.models import (
     ScaleBodyFeature,
     ShellFeature,
     SketchFeature,
+    SketchOrigin,
     SketchOrEdgeRef,
     SolidFromSurfacesFeature,
     SpiralBevelHand,
@@ -1083,6 +1084,20 @@ def _point_ref_from_dict(data: dict) -> PointRef:
     )
 
 
+def _sketch_origin_to_dict(origin: SketchOrigin) -> dict:
+    return {
+        "point_ref": _point_ref_to_dict(origin.point_ref) if origin.point_ref else None,
+        "circle_centre_ref": _subshape_ref_to_dict(origin.circle_centre_ref) if origin.circle_centre_ref else None,
+    }
+
+
+def _sketch_origin_from_dict(data: dict) -> SketchOrigin:
+    return SketchOrigin(
+        point_ref=_point_ref_from_dict(data["point_ref"]) if data.get("point_ref") else None,
+        circle_centre_ref=_subshape_ref_from_dict(data["circle_centre_ref"]) if data.get("circle_centre_ref") else None,
+    )
+
+
 def _plane_ref_to_dict(ref: PlaneRef) -> dict:
     return {
         "face_ref": _subshape_ref_to_dict(ref.face_ref) if ref.face_ref else None,
@@ -1172,12 +1187,15 @@ def _offset_source_ref_from_dict(data: dict) -> OffsetSourceRef:
 
 def _feature_to_dict(feature: Feature) -> dict:
     if isinstance(feature, SketchFeature):
-        return {
+        data = {
             "type": "sketch",
             "id": feature.id,
             "sketch_id": feature.sketch_id,
             "plane_feature_id": feature.plane_feature_id,
         }
+        if feature.origin is not None:  # written only when set: a file with no moved origin is byte-for-byte what it was
+            data["origin"] = _sketch_origin_to_dict(feature.origin)
+        return data
     if isinstance(feature, ExtrudeFeature):
         return {
             "type": "extrude",
@@ -1608,6 +1626,7 @@ def _feature_from_dict(data: dict) -> Feature:
             id=feature_id,
             sketch_id=_require(data, "sketch_id"),
             plane_feature_id=data.get("plane_feature_id"),
+            origin=_sketch_origin_from_dict(data["origin"]) if data.get("origin") else None,
         )
     if feature_type == "extrude":
         return ExtrudeFeature(

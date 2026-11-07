@@ -45,7 +45,7 @@ from typing import TYPE_CHECKING
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
-from OCC.Core.GeomAbs import GeomAbs_Line, GeomAbs_Plane
+from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Line, GeomAbs_Plane
 from OCC.Core.gp import gp_Pnt
 from OCC.Core.TopAbs import TopAbs_REVERSED
 from OCC.Core.TopoDS import TopoDS_Shape, topods
@@ -61,6 +61,7 @@ from app.document.models import (
     PointRef,
     ResolvedPlane,
     SketchFeature,
+    SketchOrigin,
     SubShapeRef,
     SubShapeType,
 )
@@ -459,15 +460,97 @@ def basis_for_sketch(
     branches now go through `apply_orientation` the same way."""
     sketch_feature_id = sketch_feature_id_for_sketch(part, sketch.id)
     sketch_feature = part.get_feature(sketch_feature_id) if sketch_feature_id else None
+    oriented = oriented_anchor_basis(part, sketch, bodies, excluded_feature_ids)
+    if isinstance(sketch_feature, SketchFeature):
+        return basis_with_sketch_origin(part, sketch_feature, oriented, bodies, excluded_feature_ids)
+    return oriented
+
+
+def oriented_anchor_basis(
+    part: Part,
+    sketch: Sketch,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """`sketch`'s anchor plane with the Sketch's own flip / rotation applied, WITHOUT its origin moved (`basis_for_sketch` = this + `basis_with_sketch_origin`). The
+    frame the "auto" origin default is worked out in."""
+    sketch_feature_id = sketch_feature_id_for_sketch(part, sketch.id)
+    sketch_feature = part.get_feature(sketch_feature_id) if sketch_feature_id else None
     if isinstance(sketch_feature, SketchFeature) and sketch_feature.plane_feature_id is not None:
         plane_feature = part.get_feature(sketch_feature.plane_feature_id)
         assert isinstance(plane_feature, CreatePlaneFeature)
         anchor_basis = resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
-        return apply_orientation(
-            anchor_basis, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns
-        )
+        return apply_orientation(anchor_basis, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns)
     assert sketch.plane is not None, f"Sketch {sketch.id} has neither a fixed plane nor an anchor plane"
     return oriented_basis_for_plane(sketch.plane, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns)
+
+
+# --- Sketch origin (docs/view-override-edit-alone-sketch-origin-plan.md Item 3) ----------------------------------------------------------
+
+
+def sketch_origin_is_upstream(part: Part, sketch_feature: SketchFeature) -> bool:
+    """Whether `sketch_feature.origin` only names things that exist BEFORE the Sketch: a Sketch Point must belong to a Sketch whose SketchFeature comes earlier in
+    `part.features` (never the Sketch itself). A Body vertex / circular edge is upstream by construction (`basis_for_sketch` resolves it against the Bodies as of the
+    Sketch's place in the history, so a Body made later cannot resolve). True for no origin at all."""
+    origin = sketch_feature.origin
+    if origin is None or origin.point_ref is None or origin.point_ref.sketch_point_ref is None:
+        return True
+    other_id = sketch_feature_id_for_sketch(part, origin.point_ref.sketch_point_ref.sketch_id)
+    if other_id is None or other_id == sketch_feature.id:
+        return False
+    ids = [f.id for f in part.features]
+    return other_id in ids and sketch_feature.id in ids and ids.index(other_id) < ids.index(sketch_feature.id)
+
+
+def _circle_centre_of_edge(bodies: dict[str, TopoDS_Shape], ref: SubShapeRef) -> tuple[float, float, float]:
+    """The centre of the CIRCULAR Body edge `ref` (422 `not_a_circular_edge` when it is not one; `missing_reference` when it no longer resolves)."""
+    edge = topods.Edge(resolve_subshape_from_bodies(bodies, ref))
+    curve = BRepAdaptor_Curve(edge)
+    if curve.GetType() != GeomAbs_Circle:
+        raise HTTPException(status_code=422, detail={"type": "not_a_circular_edge", "body_id": ref.body_id, "index": ref.index})
+    centre = curve.Circle().Location()
+    return (centre.X(), centre.Y(), centre.Z())
+
+
+def resolve_sketch_origin_point(
+    part: Part,
+    sketch_feature: SketchFeature,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> tuple[float, float, float]:
+    """The world position `sketch_feature.origin` names, before projection onto the plane. Raises `HTTPException` when it does not resolve (the caller falls back)."""
+    origin = sketch_feature.origin
+    assert origin is not None
+    if not sketch_origin_is_upstream(part, sketch_feature):
+        raise HTTPException(status_code=422, detail={"type": "origin_reference_not_upstream"})
+    if origin.circle_centre_ref is not None:
+        return _circle_centre_of_edge(bodies, origin.circle_centre_ref)
+    assert origin.point_ref is not None
+    return resolve_point_ref_position(part, bodies, origin.point_ref, excluded_feature_ids)
+
+
+def project_point_onto_basis_plane(basis: ResolvedPlane, point: tuple[float, float, float]) -> tuple[float, float, float]:
+    """`point - dot(point - origin, normal) * normal`: the point's foot on `basis`'s plane."""
+    offset = sum((p - o) * n for p, o, n in zip(point, basis.origin, basis.normal))
+    return (point[0] - offset * basis.normal[0], point[1] - offset * basis.normal[1], point[2] - offset * basis.normal[2])
+
+
+def basis_with_sketch_origin(
+    part: Part,
+    sketch_feature: SketchFeature,
+    basis: ResolvedPlane,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """`basis` (already oriented) with its origin moved to the Sketch's chosen origin, projected onto the plane; the axes and normal do not change. A reference that
+    does not resolve (lost, or not upstream) leaves `basis` as it is: the anchor plane's own origin, never a failure of the Sketch."""
+    if sketch_feature.origin is None:
+        return basis
+    try:
+        point = resolve_sketch_origin_point(part, sketch_feature, bodies, excluded_feature_ids)
+    except HTTPException:
+        return basis
+    return replace(basis, origin=project_point_onto_basis_plane(basis, point))
 
 
 def resolve_sketch_basis(
