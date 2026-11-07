@@ -2,13 +2,14 @@
 
 Source: the owner's request of 2026-11-07 (Flutter client). This plan is for the implementation session.
 Code pointers were checked against `main` at `8228024`. Line numbers drift, so search for the named symbol if a line is off.
-Nothing here has been built yet. The **Decisions** at the end each have a recommended answer. The owner has not answered them
-yet, so check with the owner first, or build the recommended answer and say that is what you did.
+Nothing here has been built yet. The **Decisions** at the end each have a recommended answer. The owner answered 2a and 2c
+and the origin button's placement on 2026-11-07 (marked **Owner** there). For the rest, check with the owner first, or build
+the recommended answer and say that is what you did.
 
 | Item | Summary | Kind | Size |
 |---|---|---|---|
 | 1 | View menu Body Colour / Body Transparency become a display override that beats every other appearance and covers the whole viewport (sub-parts and sub-assemblies too), with a button to turn it off | Bug + rework | Small-medium (client only) |
-| 2 | **Edit Alone** (working name): edit one component or sub-assembly on its own, inside the same screen, with a one-tap way back to the assembly | Feature | Medium (client only) |
+| 2 | **Edit Alone**: edit one component or sub-assembly on its own, inside the same screen, with a one-tap way back to the assembly | Feature | Medium (client only) |
 | 3 | Sketch origin: choose the sketch's origin when defining a sketch (Body vertex, Sketch Point, line / curve endpoint, circle centre); sensible defaults (a face corner on a face, the plane origin on a plane) | Feature | Medium-large (backend + client) |
 
 Suggested order: **1 → 2 → 3**. They do not depend on each other. 1 is the smallest and fixes a real bug. 2 is client only and
@@ -110,7 +111,7 @@ opacity and an on/off flag. It is display only. It never writes to the model, a 
 
 ---
 
-## 2. Edit Alone (working name)
+## 2. Edit Alone
 
 ### What exists today
 
@@ -194,8 +195,9 @@ is always on screen ends it. Nothing is written to the backend, so the file is n
      hide the entry for a copy. Check what Make Focus does today and do the same.
 8. **Saving:** nothing new. Edits inside a sub-part are saved by the existing multi-file save (`assembly/save_all.dart`), as
    they are while focused now.
-9. **Naming:** Decision 2a. Use one constant (`kEditAloneLabel`) so a rename is one line. Consider renaming the existing
-   **Isolate** to "Hide Others" at the same time, so "isolate" does not mean two things (Decision 2c).
+9. **Naming (Owner):** the new function is **Edit Alone** (menu entry "Edit Alone", the selection toolbar button "Edit
+   Alone" or "Edit" where space is short, the pill "Editing <name>" + Done). The existing **Isolate** keeps its name and
+   behaviour. Use one constant (`kEditAloneLabel`) for the label.
 
 ### Tests
 
@@ -308,7 +310,15 @@ backend (it has the face's topology; the client mesh has no face → vertex map,
    the sketch-geometry refresh, `SketchScreen`'s basis, the orientation indicator), use `resolvedSketchOrigin` as the
    `origin` when it is set. Add `SketchPlaneBasis.withOrigin(vm.Vector3)`. Check that a Sketch's 3D rendering and its Extrude
    line up for a moved origin (that is the classic bug this file's history records for flip / rotate).
-3. **The confirm step's pill** gets an **Origin** button (icon `Icons.my_location`), between flip and Cancel. Tapping it:
+3. **A Pick origin button in the orientation step (Owner).** The orientation pill (rotate / flip / Cancel / Continue or Done,
+   `part_screen.dart` around line 27776) gets a **Pick origin** button (icon `Icons.my_location`, tooltip "Pick a point for
+   the sketch origin"), between flip and Cancel. It is there **in both modes of that step**:
+   - **defining** a new Sketch's orientation and flip (`_PendingOrientationMode.newSketch`, from `_addSketchFeature`,
+     including New Sketch on Face), and
+   - **editing** an existing Sketch's orientation and flip (`_PendingOrientationMode.redefine`, from the Sketch's context
+     menu via `_redefineSketchOrientation`; point 4 below covers what changes there).
+
+   Key the button (`ValueKey('sketch-orientation-pick-origin')`) so tests can find it in both modes. Tapping it:
    - enters an "origin pick" sub-mode: push a selection-filter override that allows **vertex**, **sketch point** and
      **edge** (a circular edge picks its centre; a straight edge picks the nearer endpoint to the tap), using the
      `_selectionFilterOverrides.push(...)` pattern the other pickers use. Selection mode is forced off during the step today
@@ -319,7 +329,10 @@ backend (it has the face's topology; the client mesh has no face → vertex map,
      viewport during the step) moves to the new origin. Draw a small ring at `resolvedSketchOrigin` while the step is open.
    - Only allow Sketch Points from Sketches above this one (the backend refuses others; grey them out in the picker as well,
      using the feature order the client already has).
-4. **Redefine an existing Sketch** (`_PendingOrientationMode.redefine`): the same Origin button. Moving the origin of a Sketch
+4. **Editing an existing Sketch's orientation** (`_PendingOrientationMode.redefine`): the same Pick origin button and the
+   same picker. On entry, save the Sketch's current origin (`_pendingOrientationOriginalOrigin`, next to
+   `_pendingOrientationOriginalFlip` / `Rotation`) and the "auto" flag is off (the stored origin is kept as it is; flip /
+   rotate do not move it unless the user taps Auto in the picker). Moving the origin of a Sketch
    that already has geometry **moves the geometry with it**, as flip and rotate do now (local coordinates do not change).
    Points pinned to Body vertices (external references) stay where they are in world space and their local coordinates are
    worked out again, so a Sketch that mixes free and pinned geometry can distort. Show a one-line warning in the ribbon when
@@ -340,7 +353,8 @@ backend (it has the face's topology; the client mesh has no face → vertex map,
   Needs pythonocc: run in CI or the conda env from `tools/` (earlier sessions could not run the geometry tests in the sandbox,
   so say which tests ran).
 - **3b (client):** DTOs, basis plumbing, the Origin button and picker, redefine with Cancel. Tests: `document_api_client_test.dart`
-  (parse / send), a `SketchPlaneBasis.withOrigin` unit test, `part_screen_test.dart` (the pill has Origin; picking a vertex
+  (parse / send), a `SketchPlaneBasis.withOrigin` unit test, `part_screen_test.dart` (the pill has Pick origin both when
+  defining a new Sketch and when editing an existing one's orientation; picking a vertex
   calls `updateSketchOrigin` with a `vertex_ref`; Plane origin sends null; flip after Auto re-sends auto, flip after a manual
   pick does not; redefine Cancel restores the old origin; New Sketch on Face sends `origin: 'auto'`).
 - **3c (optional):** Set origin here, inside the sketcher.
@@ -349,7 +363,11 @@ backend (it has the face's topology; the client mesh has no face → vertex map,
 
 ## Decisions
 
-The owner has not answered these. Each has a recommended answer.
+Answered by the owner on 2026-11-07: 2a, 2c and the origin button's placement (marked **Owner**). The rest are still open,
+each with a recommended answer.
+
+- **Owner:** the sketch origin is chosen with a **Pick origin** button in the orientation step, both when defining a new
+  Sketch's orientation and flip and when editing an existing Sketch's orientation and flip (Item 3, Client points 3 and 4).
 
 1a. **Is the override's on/off state remembered after the app restarts?** *Recommended: no.* The colour and opacity are
     remembered, but the app always starts with the override off, so painted models never look unpainted by surprise. The
@@ -359,14 +377,11 @@ The owner has not answered these. Each has a recommended answer.
     a button; the switch is a button that also shows its state.
 1c. **Does the override also cover the sketch screen's 3D view?** *Recommended: no.* That screen's see-through bodies are
     deliberate (`kSketchEntryBodyOpacity`).
-2a. **Name.** Options: "Edit Alone", "Edit in Isolation", "Solo Edit", "Edit Separately". *Recommended: "Edit Alone"*
-    (short, says what it feels like, and does not clash with the existing Isolate). The pill reads "Editing <name>" with a
-    Done button.
+2a. **Name. Owner: "Edit Alone".** The pill reads "Editing <name>" with a Done button.
 2b. **Does the edited component stay where it sits in the assembly, or move to the world origin?** *Recommended: it stays.*
     It is still the same Part in the same place. Moving it would make its planes and sketches seem to jump, and Fit already
     frames it.
-2c. **Rename the existing "Isolate" (which saves hidden flags into the file) to "Hide Others"?** *Recommended: yes*, so the two
-    are not confused.
+2c. **Rename the existing "Isolate"? Owner: no**, it stays "Isolate".
 3a. **Bottom-left corner as the face default.** "Corner" needs a rule for which one. *Recommended:* bottom-left as seen in the
     Sketch's orientation (smallest y, then smallest x), and it follows flip / rotate until the user picks one by hand.
 3b. **Moving the origin of a Sketch that already has geometry: does the geometry move with it, or stay where it is?**
