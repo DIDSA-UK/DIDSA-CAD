@@ -3082,6 +3082,11 @@ class _PartScreenState extends State<PartScreen> {
       _closeSelectOther();
       return;
     }
+    // The orientation step's Pick origin: a corner, a Sketch Point or a circle sets the Sketch's origin.
+    if (_pickingSketchOrigin) {
+      unawaited(_onSketchOriginPicked(entity));
+      return;
+    }
     // New Sketch's "tap a reference plane": in Selection mode a tap arrives
     // here rather than at [_onPlaneTap], so it has to start the sketch from
     // here too - it must not just select the plane.
@@ -11258,14 +11263,23 @@ class _PartScreenState extends State<PartScreen> {
     if (sketchId == null) return null;
     final sketch = await _sketchApi.getSketch(sketchId);
     final planeFeatureId = feature.planeFeatureId;
+    // The Sketch's own origin (Item 3 of `docs/view-override-edit-alone-sketch-origin-plan.md`): the axes are the plane's, the origin may have been moved.
+    final origin = _sketchOriginOf(feature);
     if (planeFeatureId != null) {
       final raw = _customPlaneBasis(planeFeatureId);
-      return raw?.withOrientation(flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns);
+      return raw?.withOrientation(flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns).withOrigin(origin);
     }
     final plane = referencePlaneKindFromApiValue(sketch.plane);
     return plane == null
         ? null
-        : SketchPlaneBasis.oriented(plane, flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns);
+        : SketchPlaneBasis.oriented(plane, flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns)
+            .withOrigin(origin);
+  }
+
+  /// [feature]'s resolved Sketch origin as a world point, or null when it has none (or a lost one: the backend then used the plane's own origin too).
+  vm.Vector3? _sketchOriginOf(FeatureDto feature) {
+    final o = feature.resolvedSketchOrigin;
+    return o == null || o.length != 3 ? null : vm.Vector3(o[0], o[1], o[2]);
   }
 
   /// C2: resolves a `SelectionEntityRef.sketchFeatureId` (a Feature id) back
@@ -13961,6 +13975,8 @@ class _PartScreenState extends State<PartScreen> {
         _focusPartId,
         plane: fixedPlane?.apiValue,
         planeFeatureId: planeFeatureId,
+        // The default origin for what the Sketch sits on: a face's bottom-left corner (as it is oriented), a disc's centre, else the plane's own origin.
+        origin: SketchOriginDto.auto,
       );
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -14006,6 +14022,13 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationRawBasis = rawBasis;
       _pendingOrientationFlip = defaultFlip;
       _pendingOrientationRotation = defaultRotation;
+      _pendingOrientationOrigin = _sketchOriginOf(feature);
+      // Stays "auto" (re-asked after each flip / rotate, so the origin stays at the bottom-left corner of what is seen) until the user picks one by hand.
+      _pendingOrientationOriginAuto = true;
+      _pendingOrientationOriginTouched = false;
+      _pendingOrientationOriginalOrigin = null;
+      _pendingOrientationHasExternalRefs = false;
+      _pickingSketchOrigin = false;
       _pendingOrientationMode = _PendingOrientationMode.newSketch;
       _pendingOrientationFixedPlaneKind = fixedPlane;
       // On-device feedback: judging a pending orientation needs free orbit
@@ -14050,6 +14073,9 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
     if (rawBasis == null || !mounted) return;
+    // Moving the origin of a Sketch that holds points pinned to the part leaves those points where they are in the world.
+    final hasExternalRefs = feature.sketchId != null && await _sketchApi.countExternalReferences(_focusPartId, feature.id) > 0;
+    if (!mounted) return;
     if (orientation != null) {
       await _viewportKey.currentState?.animateToPlane(
         orientation.plane,
@@ -14065,6 +14091,13 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationRotation = currentRotation;
       _pendingOrientationOriginalFlip = currentFlip;
       _pendingOrientationOriginalRotation = currentRotation;
+      // The stored origin is kept as it is: flip / rotate do not move it unless the user asks for Auto in the Pick origin step.
+      _pendingOrientationOrigin = _sketchOriginOf(feature);
+      _pendingOrientationOriginAuto = false;
+      _pendingOrientationOriginTouched = false;
+      _pendingOrientationOriginalOrigin = feature.sketchOrigin;
+      _pendingOrientationHasExternalRefs = hasExternalRefs;
+      _pickingSketchOrigin = false;
       _pendingOrientationMode = _PendingOrientationMode.redefine;
       // Irrelevant to redefine (only _addSketchFeature's new-sketch camera
       // sequence reads this) - cleared rather than left stale from a
@@ -14085,6 +14118,33 @@ class _PartScreenState extends State<PartScreen> {
   _PendingOrientationMode _pendingOrientationMode = _PendingOrientationMode.newSketch;
   bool _pendingOrientationOriginalFlip = false;
   int _pendingOrientationOriginalRotation = 0;
+
+  /// Sketch origin, in the orientation step (Item 3 of `docs/view-override-edit-alone-sketch-origin-plan.md`): where the pending Sketch's origin is in the world (null =
+  /// the plane's own), whether it is still the backend's "auto" default (flip / rotate then ask for it again), whether the user changed it this step (Cancel then
+  /// puts [_pendingOrientationOriginalOrigin] back), and whether the Sketch has points pinned to the part (a warning in the picker).
+  vm.Vector3? _pendingOrientationOrigin;
+  bool _pendingOrientationOriginAuto = false;
+  bool _pendingOrientationOriginTouched = false;
+  SketchOriginDto? _pendingOrientationOriginalOrigin;
+  bool _pendingOrientationHasExternalRefs = false;
+
+  /// True while the Pick origin sub-step is open (a [PickerRibbon] replaces the orientation pill, and a corner, point or circle tap sets the origin).
+  bool _pickingSketchOrigin = false;
+  String? _sketchOriginNote;
+
+  static const _sketchOriginPickFilter = SelectionFilterState(
+    vertex: true,
+    edge: true,
+    face: false,
+    body: false,
+    sketchPoint: true,
+    sketchLine: false,
+    sketchCircle: true,
+    sketchArc: true,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
 
   /// On-device feedback: whether cursor/select mode was active right before
   /// entering the sketch-orientation-confirm step - both entry points
@@ -14111,10 +14171,119 @@ class _PartScreenState extends State<PartScreen> {
   SketchPlaneBasis? get _pendingOrientationBasis {
     final raw = _pendingOrientationRawBasis;
     if (raw == null) return null;
-    return raw.withOrientation(
-      flip: _pendingOrientationFlip,
-      rotationQuarterTurns: _pendingOrientationRotation,
-    );
+    return raw
+        .withOrientation(
+          flip: _pendingOrientationFlip,
+          rotationQuarterTurns: _pendingOrientationRotation,
+        )
+        .withOrigin(_pendingOrientationOrigin);
+  }
+
+  /// Opens the Pick origin sub-step: the orientation pill gives way to a [PickerRibbon], and a tap on a corner, a Sketch Point or a circular edge sets the Sketch's
+  /// origin (Plane origin and Auto are buttons on the ribbon). Selection mode is forced off in the orientation step (it needs free orbiting), so this turns it on
+  /// for the pick and [_endPickSketchOrigin] puts it back.
+  void _startPickSketchOrigin() {
+    if (!_confirmingSketchOrientation || _pickingSketchOrigin || _busy) return;
+    setState(() {
+      _pickingSketchOrigin = true;
+      _sketchOriginNote = null;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_sketchOriginPickFilter);
+      _selectionMode = true;
+    });
+  }
+
+  void _endPickSketchOrigin() {
+    if (!_pickingSketchOrigin) return;
+    setState(() {
+      _pickingSketchOrigin = false;
+      _sketchOriginNote = null;
+      _selectedEntities = {};
+      _selectionFilterOverrides.pop();
+      _selectionMode = false;
+    });
+  }
+
+  /// Sends a new origin for the pending Sketch (a [SketchOriginDto], [SketchOriginDto.auto] or null = the plane's own) and, when it is accepted, moves the
+  /// orientation axes there and leaves the picker. A refusal (a straight edge, a point of a later Sketch) keeps the picker open with the reason.
+  Future<void> _applySketchOrigin(Object? origin) async {
+    final feature = _pendingOrientationFeature;
+    if (feature == null || _busy) return;
+    FeatureDto? updated;
+    await _runGuarded(() async {
+      updated = await _api.updateSketchOrigin(_focusPartId, feature.id, origin);
+    });
+    if (!mounted) return;
+    final done = updated;
+    if (done == null) {
+      final message = _errorMessage ?? '';
+      if (message.contains('not_a_circular_edge')) {
+        setState(() {
+          _errorMessage = null;
+          _sketchOriginNote = 'That edge is straight: pick a corner, or the rim of a circle';
+        });
+      } else if (message.contains('origin_reference_not_upstream')) {
+        setState(() {
+          _errorMessage = null;
+          _sketchOriginNote = 'That point belongs to this sketch or a later one: pick something that exists before it';
+        });
+      }
+      return;
+    }
+    setState(() {
+      _pendingOrientationOrigin = _sketchOriginOf(done);
+      _pendingOrientationOriginAuto = origin == SketchOriginDto.auto;
+      _pendingOrientationOriginTouched = true;
+    });
+    _endPickSketchOrigin();
+  }
+
+  /// A tap while the Pick origin sub-step is open: a Body corner (vertex), a Sketch Point of an EARLIER Sketch, the centre of a Sketch circle or arc of an earlier
+  /// Sketch, or a circular Body edge (its centre). Anything else is ignored with a hint.
+  Future<void> _onSketchOriginPicked(SelectionEntityRef entity) async {
+    final pending = _pendingOrientationFeature;
+    if (pending == null || _busy) return;
+    bool upstream(String sketchFeatureId) {
+      final own = _features.indexWhere((f) => f.id == pending.id);
+      final other = _features.indexWhere((f) => f.id == sketchFeatureId);
+      return own >= 0 && other >= 0 && other < own;
+    }
+
+    switch (entity.kind) {
+      case SelectionEntityKind.vertex:
+        await _applySketchOrigin(
+          SketchOriginDto(pointRef: PointRefDto(vertexRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'vertex', index: entity.id))),
+        );
+      case SelectionEntityKind.edge:
+        await _applySketchOrigin(
+          SketchOriginDto(circleCentreRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id)),
+        );
+      case SelectionEntityKind.sketchPoint:
+      case SelectionEntityKind.sketchCircle:
+      case SelectionEntityKind.sketchArc:
+        if (!upstream(entity.sketchFeatureId)) {
+          setState(() => _sketchOriginNote = 'That belongs to this sketch or a later one: pick something that exists before it');
+          return;
+        }
+        final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+        if (sketchId == null) return;
+        var pointId = entity.sketchEntityId;
+        if (entity.kind == SelectionEntityKind.sketchCircle) {
+          final circles = await _sketchApi.listCircles(sketchId);
+          pointId = circles.where((c) => c.id == entity.sketchEntityId).map((c) => c.centerPointId).firstOrNull ?? '';
+        } else if (entity.kind == SelectionEntityKind.sketchArc) {
+          final arcs = await _sketchApi.listArcs(sketchId);
+          pointId = arcs.where((a) => a.id == entity.sketchEntityId).map((a) => a.centerPointId).firstOrNull ?? '';
+        }
+        if (pointId.isEmpty || !mounted) return;
+        await _applySketchOrigin(
+          SketchOriginDto(
+            pointRef: PointRefDto(sketchPointRef: SketchEntityRefDto(sketchId: sketchId, entityType: 'point', entityId: pointId)),
+          ),
+        );
+      default:
+        setState(() => _sketchOriginNote = 'Tap a corner, a point or a circle');
+    }
   }
 
   /// Applies [flip]/[rotationDelta] and PATCHes the pending Sketch's real
@@ -14128,17 +14297,28 @@ class _PartScreenState extends State<PartScreen> {
     if (feature?.sketchId == null || _busy) return;
     final nextFlip = flip ?? _pendingOrientationFlip;
     final nextRotation = (_pendingOrientationRotation + rotationDelta) % 4;
+    FeatureDto? reAsked;
     await _runGuarded(() async {
       await _sketchApi.updateSketchOrientation(
         feature!.sketchId!,
         flip: nextFlip,
         rotationQuarterTurns: nextRotation,
       );
+      // Still on the default origin: ask for it again, so it stays at the bottom-left corner of what the user now sees. (A fixed plane's default is always its
+      // own origin, so only a Sketch on a created Plane can change.) After a manual pick flip / rotate leave the origin alone.
+      if (_pendingOrientationOriginAuto && feature.planeFeatureId != null) {
+        reAsked = await _api.updateSketchOrigin(_focusPartId, feature.id, SketchOriginDto.auto);
+      }
     });
     if (!mounted) return;
     setState(() {
       _pendingOrientationFlip = nextFlip;
       _pendingOrientationRotation = nextRotation;
+      final fresh = reAsked;
+      if (fresh != null) {
+        _pendingOrientationOrigin = _sketchOriginOf(fresh);
+        _pendingOrientationOriginTouched = true;
+      }
     });
   }
 
@@ -14164,10 +14344,13 @@ class _PartScreenState extends State<PartScreen> {
     final fixedPlaneKind = _pendingOrientationFixedPlaneKind;
     final flip = _pendingOrientationFlip;
     final rotation = _pendingOrientationRotation;
+    if (_pickingSketchOrigin) _endPickSketchOrigin();
     setState(() {
       _pendingOrientationFeature = null;
       _pendingOrientationRawBasis = null;
       _pendingOrientationFixedPlaneKind = null;
+      _pendingOrientationOrigin = null;
+      _pendingOrientationOriginAuto = false;
       _selectionMode = _pendingOrientationPreviousSelectionMode;
     });
     if (mode == _PendingOrientationMode.newSketch) {
@@ -14194,7 +14377,10 @@ class _PartScreenState extends State<PartScreen> {
       }
       await _openSketch(feature, basis: basis);
     } else {
-      await _refreshSketchGeometries();
+      await _runGuarded(() async {
+        await _refreshFeatures(); // (the Sketch's new origin, for its drawn geometry)
+        await _refreshSketchGeometries();
+      });
     }
   }
 
@@ -14215,10 +14401,15 @@ class _PartScreenState extends State<PartScreen> {
     final mode = _pendingOrientationMode;
     final originalFlip = _pendingOrientationOriginalFlip;
     final originalRotation = _pendingOrientationOriginalRotation;
+    final originalOrigin = _pendingOrientationOriginalOrigin;
+    final originTouched = _pendingOrientationOriginTouched;
+    if (_pickingSketchOrigin) _endPickSketchOrigin();
     setState(() {
       _pendingOrientationFeature = null;
       _pendingOrientationRawBasis = null;
       _pendingOrientationFixedPlaneKind = null;
+      _pendingOrientationOrigin = null;
+      _pendingOrientationOriginAuto = false;
       _selectionMode = _pendingOrientationPreviousSelectionMode;
     });
     if (feature == null) return;
@@ -14237,6 +14428,9 @@ class _PartScreenState extends State<PartScreen> {
           flip: originalFlip,
           rotationQuarterTurns: originalRotation,
         );
+        // The origin the Sketch had when the step started (only if it was changed here).
+        if (originTouched) await _api.updateSketchOrigin(_focusPartId, feature.id, originalOrigin);
+        await _refreshFeatures();
         await _refreshSketchGeometries();
       });
     }
@@ -25211,6 +25405,8 @@ class _PartScreenState extends State<PartScreen> {
       // Feature 1 (tree multi-select): back cancels the session, same
       // as the action bar's own Cancel.
       _exitMultiSelect();
+    } else if (_pickingSketchOrigin) {
+      _endPickSketchOrigin();
     } else if (_confirmingSketchOrientation) {
       _cancelPendingOrientation();
     } else if (_sketchPickerActive) {
@@ -28017,7 +28213,32 @@ class _PartScreenState extends State<PartScreen> {
                 // immediately (see [_adjustPendingOrientation]'s own doc
                 // comment); Confirm/Cancel behave differently per
                 // [_pendingOrientationMode] - see their own doc comments.
-                if (_confirmingSketchOrientation)
+                if (_confirmingSketchOrientation && _pickingSketchOrigin)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Sketch origin',
+                      tooltip: _sketchOriginNote ??
+                          (_pendingOrientationHasExternalRefs
+                              ? 'Tap a corner, point or circle for the sketch origin. Points pinned to the part stay where they are, so a sketch that mixes free and pinned geometry can distort.'
+                              : 'Tap a corner, point or circle for the sketch origin'),
+                      onCancel: _endPickSketchOrigin,
+                      extraActions: [
+                        PickerRibbonAction(
+                          key: const ValueKey('sketch-origin-plane-origin'),
+                          label: 'Plane origin',
+                          icon: Icons.filter_center_focus,
+                          onPressed: _busy ? null : () => unawaited(_applySketchOrigin(null)),
+                        ),
+                        PickerRibbonAction(
+                          key: const ValueKey('sketch-origin-auto'),
+                          label: 'Auto',
+                          icon: Icons.auto_fix_high,
+                          onPressed: _busy ? null : () => unawaited(_applySketchOrigin(SketchOriginDto.auto)),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_confirmingSketchOrientation && !_pickingSketchOrigin)
                   Positioned(
                     bottom: 8,
                     left: 8,
@@ -28068,6 +28289,12 @@ class _PartScreenState extends State<PartScreen> {
                                   onPressed: _busy
                                       ? null
                                       : () => _adjustPendingOrientation(flip: !_pendingOrientationFlip),
+                                ),
+                                IconButton(
+                                  key: const ValueKey('sketch-orientation-pick-origin'),
+                                  tooltip: 'Pick a point for the sketch origin',
+                                  icon: const Icon(Icons.my_location),
+                                  onPressed: _busy ? null : _startPickSketchOrigin,
                                 ),
                                 const SizedBox(width: 4),
                                 TextButton(

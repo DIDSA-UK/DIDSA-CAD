@@ -664,4 +664,28 @@ void main() {
       expect(mergedPoints.where((p) => p.id == 'p1').length, 1);
     });
   });
+
+  group('SketchPlaneBasis.withOrigin (sketch origin, 3b)', () {
+    test('moves the origin and keeps the axes and normal, for every orientation', () {
+      final base = SketchPlaneBasis.fixed(ReferencePlaneKind.xz);
+      for (final flip in [false, true]) {
+        for (var turns = 0; turns < 4; turns++) {
+          final oriented = base.withOrientation(flip: flip, rotationQuarterTurns: turns);
+          final moved = oriented.withOrigin(vm.Vector3(10, 20, 30));
+          expect(moved.origin, vm.Vector3(10, 20, 30));
+          expect(moved.xAxis, oriented.xAxis);
+          expect(moved.yAxis, oriented.yAxis);
+          expect(moved.normal, oriented.normal);
+          // Local (0, 0) is the moved origin; local (2, 1) is two x-axes and one y-axis away from it.
+          expect(sketchPointToWorld(moved, 0, 0), vm.Vector3(10, 20, 30));
+          expect(sketchPointToWorld(moved, 2, 1), vm.Vector3(10, 20, 30) + oriented.xAxis * 2 + oriented.yAxis);
+        }
+      }
+    });
+
+    test('null leaves the basis as it is (the plane\'s own origin)', () {
+      final base = SketchPlaneBasis.fixed(ReferencePlaneKind.yz);
+      expect(identical(base.withOrigin(null), base), isTrue);
+    });
+  });
 }

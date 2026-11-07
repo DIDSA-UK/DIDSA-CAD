@@ -117,6 +117,14 @@ class _FakeDocumentBackend {
   /// Every request that is not a GET, in order (so a test can check that nothing was written).
   final List<String> writes = [];
 
+  /// Sketch origin (Item 3b): every `POST .../features/sketch` body, every `origin` a `PATCH .../sketch-origin` sent (`'auto'`, a map, or null), and what the fake
+  /// answers with: [autoStored] / [autoResolved] for `'auto'` (null = "no origin", the plane's own), [pickResolved] for a concrete origin.
+  final List<Map<String, dynamic>> sketchCreateBodies = [];
+  final List<Object?> originPatches = [];
+  Map<String, dynamic>? autoStored;
+  List<double>? autoResolved;
+  List<double> pickResolved = const [11.0, 12.0, 13.0];
+
   /// When set, `GET .../part-1/mesh` returns these Bodies (`body_id` / `source` / `mesh` maps, optionally
   /// `is_surface` / `is_curve`) with `hidden` worked out from [hiddenByPart] and the `hidden_feature_ids` query parameter,
   /// the way the real route does.
@@ -550,14 +558,38 @@ class _FakeDocumentBackend {
       for (final feature in features) {
         feature['locked'] = true;
       }
-      final feature = {
+      sketchCreateBodies.add(body);
+      final feature = <String, dynamic>{
         'type': 'sketch',
         'id': 'feature-${_nextFeatureId++}',
         'sketch_id': 'sketch-$_nextFeatureId',
         'locked': false,
+        if (body['plane_feature_id'] != null) 'plane_feature_id': body['plane_feature_id'],
       };
+      if (body['origin'] == 'auto' && autoResolved != null) {
+        feature['origin'] = autoStored;
+        feature['resolved_origin'] = autoResolved;
+      }
       features.add(feature);
       return _json(feature, 201);
+    }
+
+    final originMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)/sketch-origin$').firstMatch(path);
+    if (originMatch != null && method == 'PATCH') {
+      final feature = features.firstWhere((f) => f['id'] == originMatch.group(1));
+      final origin = body['origin'];
+      originPatches.add(origin);
+      if (origin == 'auto') {
+        feature['origin'] = autoStored;
+        feature['resolved_origin'] = autoResolved;
+      } else if (origin == null) {
+        feature.remove('origin');
+        feature.remove('resolved_origin');
+      } else {
+        feature['origin'] = origin;
+        feature['resolved_origin'] = pickResolved;
+      }
+      return _json(feature, 200);
     }
 
     final cascadePreviewMatch =
@@ -1027,7 +1059,25 @@ class _FakeSketchBackend {
 
   _FakeSketchBackend({this.profileStatus = 'closed_loop'});
 
+  /// Every `PATCH .../orientation`: `(flip, rotation_quarter_turns)`.
+  final List<(bool, int)> orientationPatches = [];
+
   http.Response handle(http.Request request) {
+    final orientationMatch = RegExp(r'^/sketch/sketches/([^/]+)/orientation$').firstMatch(request.url.path);
+    if (orientationMatch != null && request.method == 'PATCH') {
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      orientationPatches.add((body['flip'] as bool, body['rotation_quarter_turns'] as int));
+      return http.Response(
+        jsonEncode({
+          'id': orientationMatch.group(1),
+          'plane': null,
+          'origin_point_id': 'origin-1',
+          'flip': body['flip'],
+          'rotation_quarter_turns': body['rotation_quarter_turns'],
+        }),
+        200,
+      );
+    }
     final profileMatch = RegExp(r'^/sketch/sketches/([^/]+)/profile$').firstMatch(request.url.path);
     if (profileMatch != null && request.method == 'GET') {
       return http.Response(
@@ -9525,6 +9575,184 @@ void main() {
       await menuAction(tester, 'occ-1', 'Edit Alone');
       expect(viewport(tester).soloFocus, isFalse);
       expect(pill, findsNothing);
+    });
+  });
+
+  // Sketch origin, 3b (Item 3 of the view-override plan): the Pick origin button in the orientation step, both for a new Sketch and for an existing one's.
+  group('Sketch origin in the orientation step', () {
+    final planeFeature = <String, dynamic>{
+      'type': 'create_plane',
+      'id': 'feature-3',
+      'locked': false,
+      'produces': 'plane',
+      'origin': [0.0, 0.0, 5.0],
+      'normal': [0.0, 0.0, 1.0],
+      'x_axis': [1.0, 0.0, 0.0],
+      'y_axis': [0.0, 1.0, 0.0],
+    };
+    final pickButton = find.byKey(const ValueKey('sketch-orientation-pick-origin'));
+
+    Future<void> pump(WidgetTester tester, _FakeDocumentBackend backend, _FakeSketchBackend sketchBackend) async {
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    Future<void> settle(WidgetTester tester) async {
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    /// New Sketch on the created Plane (a tap on it, then "Create Sketch on Plane"): the orientation step opens.
+    Future<void> newSketchOnPlane(WidgetTester tester) async {
+      tester.widget<PartViewport>(find.byType(PartViewport)).onCreatePlaneTap!('feature-3');
+      await settle(tester);
+      await tester.tap(find.text('Create Sketch on Plane'));
+      await _pumpUntil(tester, () => find.text('Continue').evaluate().isNotEmpty);
+    }
+
+    PartViewport viewport(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport));
+
+    testWidgets('a new Sketch sends origin auto and the pill has Pick origin; the axes sit at the resolved origin', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: [planeFeature])
+        ..autoStored = {'point_ref': {'vertex_ref': {'body_id': 'b', 'shape_type': 'vertex', 'index': 1}}}
+        ..autoResolved = [3.0, 4.0, 5.0];
+      await pump(tester, backend, _FakeSketchBackend());
+      await newSketchOnPlane(tester);
+      expect(backend.sketchCreateBodies.single, {'plane_feature_id': 'feature-3', 'origin': 'auto'});
+      expect(pickButton, findsOneWidget);
+      expect(viewport(tester).sketchOrientationBasis!.origin.x, 3.0, reason: 'the orientation axes are drawn from the resolved corner');
+      expect(viewport(tester).sketchOrientationBasis!.origin.z, 5.0);
+    });
+
+    testWidgets('a Sketch on a fixed plane asks for auto too (the backend answers: the plane\'s own origin) and shows Pick origin', (tester) async {
+      final backend = _FakeDocumentBackend();
+      await pump(tester, backend, _FakeSketchBackend());
+      await tapStartCommand(tester, 'New Sketch');
+      tester.widget<PartViewport>(find.byType(PartViewport)).onPlaneTap(ReferencePlaneKind.xy);
+      await _pumpUntil(tester, () => find.text('Continue').evaluate().isNotEmpty);
+      expect(backend.sketchCreateBodies.single, {'plane': 'XY', 'origin': 'auto'});
+      expect(pickButton, findsOneWidget);
+      expect(viewport(tester).sketchOrientationBasis!.origin.length, 0.0);
+    });
+
+    testWidgets('flip after Auto asks for auto again; after a manual pick it does not', (tester) async {
+      final sketchBackend = _FakeSketchBackend();
+      final backend = _FakeDocumentBackend(seedFeatures: [planeFeature])
+        ..autoStored = {'point_ref': {'vertex_ref': {'body_id': 'b', 'shape_type': 'vertex', 'index': 1}}}
+        ..autoResolved = [3.0, 4.0, 5.0];
+      await pump(tester, backend, sketchBackend);
+      await newSketchOnPlane(tester);
+      expect(backend.originPatches, isEmpty);
+
+      await tester.tap(find.byTooltip('Flip'));
+      await settle(tester);
+      expect(sketchBackend.orientationPatches.last.$1, isTrue);
+      expect(backend.originPatches, ['auto'], reason: 'still on the default: asked again so it follows the flip');
+
+      // A manual pick: a Body corner.
+      await tester.tap(pickButton);
+      await settle(tester);
+      expect(find.text('Sketch origin'), findsOneWidget);
+      viewport(tester).onSelectionToggle!(const SelectionEntityRef(kind: SelectionEntityKind.vertex, bodyId: 'b', id: 7));
+      await settle(tester);
+      expect(backend.originPatches.last, {
+        'point_ref': {'vertex_ref': {'body_id': 'b', 'shape_type': 'vertex', 'index': 7}},
+      });
+      expect(find.text('Sketch origin'), findsNothing, reason: 'back to the pill after a pick');
+      expect(viewport(tester).sketchOrientationBasis!.origin.x, 11.0);
+
+      final patchesBefore = backend.originPatches.length;
+      await tester.tap(find.byTooltip('Un-flip'));
+      await settle(tester);
+      expect(backend.originPatches, hasLength(patchesBefore), reason: 'a manual pick is left alone by flip and rotate');
+      expect(viewport(tester).sketchOrientationBasis!.origin.x, 11.0);
+    });
+
+    testWidgets('Plane origin sends null, Auto sends auto; Cancel of the picker keeps the pill and the origin', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: [planeFeature])
+        ..autoStored = {'point_ref': {'vertex_ref': {'body_id': 'b', 'shape_type': 'vertex', 'index': 1}}}
+        ..autoResolved = [3.0, 4.0, 5.0];
+      await pump(tester, backend, _FakeSketchBackend());
+      await newSketchOnPlane(tester);
+      await tester.tap(pickButton);
+      await settle(tester);
+      await tester.tap(find.byKey(const ValueKey('sketch-origin-plane-origin')));
+      await settle(tester);
+      expect(backend.originPatches.last, isNull);
+      expect(viewport(tester).sketchOrientationBasis!.origin.x, 0.0, reason: 'null: the Plane\'s own origin, (0, 0, 5)');
+      expect(viewport(tester).sketchOrientationBasis!.origin.z, 5.0);
+
+      await tester.tap(pickButton);
+      await settle(tester);
+      await tester.tap(find.byKey(const ValueKey('sketch-origin-auto')));
+      await settle(tester);
+      expect(backend.originPatches.last, 'auto');
+
+      await tester.tap(pickButton);
+      await settle(tester);
+      await tester.tap(find.text('Cancel'));
+      await settle(tester);
+      expect(find.text('Sketch origin'), findsNothing);
+      expect(pickButton, findsOneWidget, reason: 'Cancel of the picker leaves the orientation step open');
+    });
+
+    testWidgets('a Sketch Point of this or a later Sketch is refused with a note and nothing is sent', (tester) async {
+      final backend = _FakeDocumentBackend(seedFeatures: [planeFeature]);
+      await pump(tester, backend, _FakeSketchBackend());
+      await newSketchOnPlane(tester);
+      await tester.tap(pickButton);
+      await settle(tester);
+      final own = backend.features.last['id'] as String;
+      viewport(tester).onSelectionToggle!(SelectionEntityRef(kind: SelectionEntityKind.sketchPoint, sketchFeatureId: own, sketchEntityId: 'p1'));
+      await settle(tester);
+      expect(backend.originPatches, isEmpty);
+      expect(find.textContaining('this sketch or a later one'), findsOneWidget);
+    });
+
+    testWidgets('editing an existing Sketch\'s orientation has Pick origin too; Cancel puts the old origin back', (tester) async {
+      final stored = {'circle_centre_ref': {'body_id': 'b', 'shape_type': 'edge', 'index': 2}};
+      final backend = _FakeDocumentBackend(
+        seedFeatures: [
+          {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false, 'origin': stored, 'resolved_origin': [1.0, 2.0, 0.0]},
+        ],
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await pump(tester, backend, sketchBackend);
+      await tester.tap(find.byTooltip('Feature tree'));
+      await settle(tester);
+      await tester.longPress(find.text('Sketch 1'));
+      await settle(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await settle(tester);
+      await tester.tap(find.text('Sketch Orientation'));
+      await _pumpUntil(tester, () => pickButton.evaluate().isNotEmpty);
+      expect(find.text('Done'), findsOneWidget, reason: 'the redefine mode of the step');
+      expect(viewport(tester).sketchOrientationBasis!.origin.x, 1.0, reason: 'the axes start at the Sketch\'s stored origin');
+
+      await tester.tap(find.byTooltip('Flip'));
+      await settle(tester);
+      expect(backend.originPatches, isEmpty, reason: 'flip does not move a stored origin unless Auto is asked for');
+
+      await tester.tap(pickButton);
+      await settle(tester);
+      viewport(tester).onSelectionToggle!(const SelectionEntityRef(kind: SelectionEntityKind.vertex, bodyId: 'b', id: 4));
+      await settle(tester);
+      expect(backend.originPatches.single, isNotNull);
+      expect(viewport(tester).sketchOrientationBasis!.origin.x, 11.0);
+
+      await tester.tap(find.text('Cancel'));
+      await settle(tester);
+      expect(backend.originPatches.last, stored, reason: 'Cancel restores the origin the Sketch had');
+      expect(sketchBackend.orientationPatches.last, (false, 0), reason: '...and the orientation, as before');
     });
   });
 }

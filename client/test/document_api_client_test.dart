@@ -1819,6 +1819,131 @@ void main() {
     });
   });
 
+  group('Sketch origin (view-override plan, Item 3b)', () {
+    http.Response jsonResponse(Object body, {int status = 200}) =>
+        http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
+
+    const vertexOrigin = {
+      'point_ref': {
+        'vertex_ref': {'body_id': 'b1', 'shape_type': 'vertex', 'index': 3},
+        'sketch_point_ref': null,
+      },
+      'circle_centre_ref': null,
+    };
+
+    test('a sketch row with an origin object and a resolved_origin parses; origin stays the Plane\'s list for a Plane', () {
+      final sketch = FeatureDto.fromJson({
+        'type': 'sketch',
+        'id': 'sf-1',
+        'sketch_id': 's1',
+        'locked': false,
+        'produces': 'sketch',
+        'plane_feature_id': null,
+        'origin': vertexOrigin,
+        'resolved_origin': [10.0, 20, 30.5],
+      });
+      expect(sketch.sketchOrigin!.pointRef!.vertexRef!.index, 3);
+      expect(sketch.sketchOrigin!.pointRef!.sketchPointRef, isNull);
+      expect(sketch.sketchOrigin!.circleCentreRef, isNull);
+      expect(sketch.resolvedSketchOrigin, [10.0, 20.0, 30.5]);
+      expect(sketch.origin, isNull, reason: 'a Sketch\'s origin is not a Plane\'s resolved origin');
+
+      final plane = FeatureDto.fromJson({
+        'type': 'create_plane',
+        'id': 'pl-1',
+        'locked': false,
+        'produces': 'plane',
+        'origin': [1.0, 2.0, 3.0],
+        'normal': [0.0, 0.0, 1.0],
+      });
+      expect(plane.origin, [1.0, 2.0, 3.0]);
+      expect(plane.sketchOrigin, isNull);
+    });
+
+    test('a sketch row from a backend without the origin parses with none (null, or no key at all)', () {
+      for (final extra in [<String, dynamic>{}, {'origin': null, 'resolved_origin': null}]) {
+        final sketch = FeatureDto.fromJson({
+          'type': 'sketch',
+          'id': 'sf-1',
+          'sketch_id': 's1',
+          'locked': false,
+          'produces': 'sketch',
+          ...extra,
+        });
+        expect(sketch.sketchOrigin, isNull);
+        expect(sketch.resolvedSketchOrigin, isNull);
+      }
+    });
+
+    test('SketchOriginDto round-trips a vertex, a sketch point and a circle centre', () {
+      for (final json in [
+        vertexOrigin,
+        {
+          'point_ref': {
+            'vertex_ref': null,
+            'sketch_point_ref': {'sketch_id': 's0', 'entity_type': 'point', 'entity_id': 'p7'},
+          },
+          'circle_centre_ref': null,
+        },
+        {
+          'point_ref': null,
+          'circle_centre_ref': {'body_id': 'b1', 'shape_type': 'edge', 'index': 9},
+        },
+      ]) {
+        final dto = SketchOriginDto.fromJson(json);
+        final again = SketchOriginDto.fromJson(dto.toJson());
+        expect(again.toJson(), dto.toJson());
+      }
+      expect(SketchOriginDto.fromJson(vertexOrigin).toJson(), {
+        'point_ref': {'vertex_ref': {'body_id': 'b1', 'shape_type': 'vertex', 'index': 3}},
+      });
+    });
+
+    test('createSketchFeature sends no origin by default (so older callers and DIDSA-VR are unchanged), auto, or an origin', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return jsonResponse({'type': 'sketch', 'id': 'sf-1', 'sketch_id': 's1', 'locked': false, 'produces': 'sketch'}, status: 201);
+        }),
+      );
+      await client.createSketchFeature('part-1');
+      await client.createSketchFeature('part-1', plane: null, planeFeatureId: 'plane-1', origin: SketchOriginDto.auto);
+      await client.createSketchFeature('part-1', origin: SketchOriginDto.fromJson(vertexOrigin));
+      expect(bodies[0], {'plane': 'XY'});
+      expect(bodies[1], {'plane_feature_id': 'plane-1', 'origin': 'auto'});
+      expect(bodies[2]['origin'], {
+        'point_ref': {'vertex_ref': {'body_id': 'b1', 'shape_type': 'vertex', 'index': 3}},
+      });
+    });
+
+    test('updateSketchOrigin PATCHes .../sketch-origin with auto, an origin or null, and parses the row', () async {
+      final requests = <http.Request>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return jsonResponse({
+            'type': 'sketch',
+            'id': 'sf-1',
+            'sketch_id': 's1',
+            'locked': false,
+            'produces': 'sketch',
+            'origin': vertexOrigin,
+            'resolved_origin': [1.0, 2.0, 3.0],
+          });
+        }),
+      );
+      final a = await client.updateSketchOrigin('part-1', 'sf-1', SketchOriginDto.auto);
+      await client.updateSketchOrigin('part-1', 'sf-1', SketchOriginDto.fromJson(vertexOrigin));
+      await client.updateSketchOrigin('part-1', 'sf-1', null);
+      expect(requests.every((r) => r.method == 'PATCH' && r.url.path == '/document/parts/part-1/features/sf-1/sketch-origin'), isTrue);
+      expect(jsonDecode(requests[0].body), {'origin': 'auto'});
+      expect((jsonDecode(requests[1].body) as Map)['origin'], isA<Map>());
+      expect(jsonDecode(requests[2].body), {'origin': null});
+      expect(a.resolvedSketchOrigin, [1.0, 2.0, 3.0]);
+    });
+  });
+
   group('Gear Design Workstream 8: GearPreviewDto.fromJson', () {
     test('parses a gear-kind response with reference circles', () {
       final dto = GearPreviewDto.fromJson({

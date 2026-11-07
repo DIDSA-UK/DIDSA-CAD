@@ -57,6 +57,9 @@ class PickerRibbon extends StatelessWidget {
   final String? extraActionLabel;
   final VoidCallback? onExtraAction;
 
+  /// More text buttons beside Cancel (label, icon, callback), after [extraActionLabel]'s: "Pick origin" offers Plane origin and Auto this way.
+  final List<PickerRibbonAction> extraActions;
+
   const PickerRibbon({
     super.key,
     required this.title,
@@ -66,6 +69,7 @@ class PickerRibbon extends StatelessWidget {
     this.onConfirm,
     this.extraActionLabel,
     this.onExtraAction,
+    this.extraActions = const [],
   });
 
   @override
@@ -140,6 +144,13 @@ class PickerRibbon extends StatelessWidget {
                         icon: const Icon(Icons.account_tree_outlined, size: 16),
                         label: Text(extraActionLabel!),
                       ),
+                    for (final action in extraActions)
+                      TextButton.icon(
+                        key: action.key,
+                        onPressed: action.onPressed,
+                        icon: Icon(action.icon, size: 16),
+                        label: Text(action.label),
+                      ),
                     ToolPanelKeys(onConfirm: onConfirm, onCancel: onCancel),
                     TextButton(onPressed: onCancel, child: const Text('Cancel')),
                     if (showConfirm)
@@ -159,4 +170,14 @@ class PickerRibbon extends StatelessWidget {
       ),
     );
   }
+}
+
+/// One extra text button on a [PickerRibbon] (see [PickerRibbon.extraActions]).
+class PickerRibbonAction {
+  final String label;
+  final IconData icon;
+  final VoidCallback? onPressed;
+  final Key? key;
+
+  const PickerRibbonAction({required this.label, required this.icon, required this.onPressed, this.key});
 }

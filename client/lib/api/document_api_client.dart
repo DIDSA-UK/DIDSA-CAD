@@ -566,6 +566,32 @@ class PointRefDto {
       };
 }
 
+/// Sketch origin (`docs/view-override-edit-alone-sketch-origin-plan.md` Item 3): where a Sketch's local (0, 0) sits - the wire counterpart to the backend's
+/// `SketchOriginSchema`. Exactly one of [pointRef] (a Body vertex, or a Sketch Point of an EARLIER Sketch) or [circleCentreRef] (a circular Body edge, whose
+/// centre is used). Never sent as "none" (that is `null` / `'auto'` on the request, see [DocumentApiClient.updateSketchOrigin]).
+class SketchOriginDto {
+  final PointRefDto? pointRef;
+  final SubShapeRefDto? circleCentreRef;
+
+  const SketchOriginDto({this.pointRef, this.circleCentreRef});
+
+  factory SketchOriginDto.fromJson(Map<String, dynamic> json) => SketchOriginDto(
+        pointRef: json['point_ref'] == null ? null : PointRefDto.fromJson(json['point_ref'] as Map<String, dynamic>),
+        circleCentreRef: json['circle_centre_ref'] == null
+            ? null
+            : SubShapeRefDto.fromJson(json['circle_centre_ref'] as Map<String, dynamic>),
+      );
+
+  Map<String, dynamic> toJson() => {
+        if (pointRef != null) 'point_ref': pointRef!.toJson(),
+        if (circleCentreRef != null) 'circle_centre_ref': circleCentreRef!.toJson(),
+      };
+
+  /// The `origin` value that asks the backend for the default for the Sketch's anchor (a face's bottom-left corner as the Sketch is oriented, a disc's centre,
+  /// else the plane's own origin), worked out and stored right then.
+  static const String auto = 'auto';
+}
+
 /// C5: the wire counterpart to the backend's `PlaneRefSchema` - exactly one
 /// of [faceRef]/[fixedPlane]/[planeFeatureId] should be supplied (a Body
 /// face, a fixed reference plane, or an existing `CreatePlaneFeature`),
@@ -887,6 +913,14 @@ class FeatureDto {
   /// neither with the other (always both null or both non-null together).
   final List<double>? origin;
   final List<double>? normal;
+
+  /// Sketch origin: only on a `"sketch"` Feature. The backend's `origin` key is a list for a Plane (the resolved world origin, [origin] above) and an object for a
+  /// Sketch, so it is read into this field instead when it is an object. Null = the anchor plane's own origin (every Sketch before this existed).
+  final SketchOriginDto? sketchOrigin;
+
+  /// Sketch origin: where [sketchOrigin] is in the world (mm, already projected onto the Sketch's plane), from the backend's `resolved_origin`. Null for a Sketch with
+  /// no origin, for a lost one (the backend fell back to the plane's origin), and from an older backend that sends neither key.
+  final List<double>? resolvedSketchOrigin;
 
   /// C3: the plane's own in-plane basis (see the backend's `ResolvedPlane.
   /// x_axis`/`y_axis`) - the exact orientation a Sketch anchored to this
@@ -1337,6 +1371,8 @@ class FeatureDto {
     this.vertexRef,
     this.pointRefs = const [],
     this.origin,
+    this.sketchOrigin,
+    this.resolvedSketchOrigin,
     this.normal,
     this.xAxis,
     this.yAxis,
@@ -1451,7 +1487,9 @@ class FeatureDto {
                 ?.map((r) => PointRefDto.fromJson(r as Map<String, dynamic>))
                 .toList() ??
             const [],
-        origin: (json['origin'] as List?)?.map((v) => (v as num).toDouble()).toList(),
+        origin: json['origin'] is List ? (json['origin'] as List).map((v) => (v as num).toDouble()).toList() : null,
+        sketchOrigin: json['origin'] is Map ? SketchOriginDto.fromJson(json['origin'] as Map<String, dynamic>) : null,
+        resolvedSketchOrigin: (json['resolved_origin'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         normal: (json['normal'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         xAxis: (json['x_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         yAxis: (json['y_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
@@ -3577,14 +3615,34 @@ class DocumentApiClient {
   /// that [planeFeatureId] resolves to a real, currently-resolvable Plane).
   /// [plane] defaults to `'XY'` for every pre-C3 call site that never passes
   /// [planeFeatureId] - passing both, or neither, is rejected server-side.
-  Future<FeatureDto> createSketchFeature(String partId, {String? plane = 'XY', String? planeFeatureId}) =>
+  ///
+  /// [origin] (sketch origin, Item 3 of `docs/view-override-edit-alone-sketch-origin-plan.md`): omitted = the plane's own origin (what every caller got before, and
+  /// what DIDSA-VR and the AI plan still get); [SketchOriginDto.auto] = the default for the anchor, stored now (a Body face's bottom-left corner as the Sketch is
+  /// oriented, a disc face's centre; the plane's origin for a fixed plane); or a [SketchOriginDto].
+  Future<FeatureDto> createSketchFeature(String partId, {String? plane = 'XY', String? planeFeatureId, Object? origin}) =>
       _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/features/sketch'),
               headers: _headers,
               body: jsonEncode({
                 if (planeFeatureId != null) 'plane_feature_id': planeFeatureId else 'plane': plane,
+                if (origin != null) 'origin': _sketchOriginBody(origin),
               }),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  static Object _sketchOriginBody(Object origin) => origin is SketchOriginDto ? origin.toJson() : origin;
+
+  /// Sets where an existing Sketch's local (0, 0) sits (`PATCH .../features/{featureId}/sketch-origin`): a [SketchOriginDto], [SketchOriginDto.auto] (the default for
+  /// its anchor, worked out now against its CURRENT orientation) or `null` (the plane's own origin). Existing geometry keeps its local coordinates, so it moves with
+  /// the origin, as flip and rotate do. 422 `origin_reference_not_upstream` for a Sketch Point of this Sketch or of a later one. Returns the Sketch's Feature row, whose
+  /// [FeatureDto.resolvedSketchOrigin] says where it landed.
+  Future<FeatureDto> updateSketchOrigin(String partId, String featureId, Object? origin) => _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/features/$featureId/sketch-origin'),
+              headers: _headers,
+              body: jsonEncode({'origin': origin == null ? null : _sketchOriginBody(origin)}),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );

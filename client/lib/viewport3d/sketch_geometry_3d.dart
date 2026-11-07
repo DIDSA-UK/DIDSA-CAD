@@ -89,6 +89,11 @@ class SketchPlaneBasis {
   }) =>
       SketchPlaneBasis.fixed(plane).withOrientation(flip: flip, rotationQuarterTurns: rotationQuarterTurns);
 
+  /// This basis with its origin moved to [newOrigin] (a Sketch's own origin: a Body vertex, a Sketch Point or a circle's centre, already projected onto the plane by
+  /// the backend - `FeatureDto.resolvedSketchOrigin`). The axes and the normal stay the plane's. Null = no change (the plane's own origin).
+  SketchPlaneBasis withOrigin(vm.Vector3? newOrigin) =>
+      newOrigin == null ? this : SketchPlaneBasis(origin: newOrigin, xAxis: xAxis, yAxis: yAxis, normal: normal);
+
   /// [oriented]'s own flip-then-rotate transform, generalized to start from
   /// any orthonormal basis rather than only [fixed]'s three fixed planes -
   /// a custom (`create_plane`) plane's own resolved basis is exactly as

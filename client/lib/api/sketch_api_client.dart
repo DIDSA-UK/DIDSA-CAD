@@ -1984,6 +1984,22 @@ class SketchApiClient {
         (body) => PointDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// How many external references (Points pinned to the part's own vertices, edges and circle centres) the Sketch Feature [sketchFeatureId] holds: the Pick origin
+  /// step warns about a Sketch that has any (they stay put in the world when the origin moves). 0 when the list cannot be read.
+  Future<int> countExternalReferences(String partId, String sketchFeatureId) async {
+    try {
+      return await _send(
+        () => _httpClient.get(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/external-references'),
+              headers: _headers,
+            ),
+        (body) => (body as List).length,
+      );
+    } catch (_) {
+      return 0;
+    }
+  }
+
   /// Sketcher-roadmap Phase 4.3 v2: [createExternalVertexReference]'s
   /// edge-shaped sibling - materializes a whole Body edge as a real,
   /// pinned Line (via two external-reference Points, see the backend's
