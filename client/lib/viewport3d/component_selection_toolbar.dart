@@ -1,5 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'component_context_menu.dart' show kEditAloneLabel;
+
 /// Bug fix ("selecting a component shows no contextual toolbar"): the
 /// Assembly-lens equivalent of `SelectionContextPanel` (which is deliberately
 /// Part-lens-only - see its own gating comment in `part_screen.dart`) for a
@@ -19,6 +21,9 @@ class ComponentSelectionToolbar extends StatelessWidget {
   /// convention `component_context_menu.dart`'s own entry uses.
   final bool fixed;
 
+  /// Edit Alone, first (before Move). Null hides it.
+  final VoidCallback? onEdit;
+
   final VoidCallback onMove;
   final VoidCallback onFixFloat;
   final VoidCallback onDelete;
@@ -26,6 +31,7 @@ class ComponentSelectionToolbar extends StatelessWidget {
   const ComponentSelectionToolbar({
     super.key,
     required this.fixed,
+    this.onEdit,
     required this.onMove,
     required this.onFixFloat,
     required this.onDelete,
@@ -45,6 +51,16 @@ class ComponentSelectionToolbar extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (onEdit != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: OutlinedButton.icon(
+                      key: const ValueKey('component-toolbar-edit-alone'),
+                      onPressed: onEdit,
+                      icon: const Icon(Icons.edit_note),
+                      label: const Text(kEditAloneLabel),
+                    ),
+                  ),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: OutlinedButton.icon(

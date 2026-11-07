@@ -11,7 +11,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 import '../api/document_api_client.dart';
 import 'gpu_unavailable.dart';
 import '../appearance/appearance_look.dart';
-import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus, pathEquals;
+import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus, pathEquals, soloFocusShowsInstance;
 import '../sketch/sketch_controller.dart' show ConstraintOverlayItem;
 import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
@@ -794,6 +794,11 @@ class PartViewport extends StatefulWidget {
   /// ghosts, section caps, edges and selection highlights are left alone.
   final ViewAppearanceOverride? appearanceOverride;
 
+  /// Edit Alone (`docs/view-override-edit-alone-sketch-origin-plan.md` Item 2): while true (and something is focused), every
+  /// placed instance outside the focus is not drawn, instead of fading to context, and Fit frames only the target. Display
+  /// only; nothing is written to the model.
+  final bool soloFocus;
+
   /// The `PhysicallyBasedMaterial`/lighting upgrade's own controls (see
   /// `ScenePreferences`) - same controlled-widget/next-rebuild-only
   /// convention as [bodyColourHex]/[bodyOpacity] just above for
@@ -1110,6 +1115,7 @@ class PartViewport extends StatefulWidget {
     this.bodyColourHex = ViewPreferences.defaultBodyColourHex,
     this.bodyOpacity = ViewPreferences.defaultBodyOpacity,
     this.appearanceOverride,
+    this.soloFocus = false,
     this.roughness = ScenePreferences.defaultRoughness,
     this.lightIntensity = ScenePreferences.defaultLightIntensity,
     this.emissiveIntensity = ScenePreferences.defaultEmissiveIntensity,
@@ -2103,6 +2109,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.renderMode != oldWidget.renderMode ||
         widget.bodiesHidden != oldWidget.bodiesHidden ||
         widget.appearanceOverride != oldWidget.appearanceOverride ||
+        widget.soloFocus != oldWidget.soloFocus ||
         widget.roughness != oldWidget.roughness ||
         widget.assemblyInstanceLooks != oldWidget.assemblyInstanceLooks) {
       setState(_syncAssemblyInstanceNodes);
@@ -2137,6 +2144,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         widget.assemblyInstances != oldWidget.assemblyInstances ||
         widget.renderMode != oldWidget.renderMode ||
         widget.sectionPlanes != oldWidget.sectionPlanes ||
+        widget.soloFocus != oldWidget.soloFocus ||
+        widget.focusedOccurrencePath != oldWidget.focusedOccurrencePath ||
         widget.bodiesHidden != oldWidget.bodiesHidden) {
       setState(_syncAssemblyInstanceEdgesNode);
     }
@@ -2829,6 +2838,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       // one level deeper is still a distinct, still-live placed instance
       // this loop must keep rendering normally.
       if (focusedPath.isNotEmpty && pathEquals(instance.occurrencePath, focusedPath)) continue;
+      // Edit Alone: everything outside the target (siblings, ancestors, the root's own context) is not drawn.
+      if (widget.soloFocus && !soloFocusShowsInstance(instance.occurrencePath, focusedPath)) continue;
       // Assembly support Phase 3b/4: an instance somewhere along its own
       // chain has been Hidden - the same "genuinely absent, not merely
       // deprioritized" contract [PartViewport.bodiesHidden] already applies
@@ -3043,6 +3054,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final focusedPath = widget.focusedOccurrencePath;
     for (final instance in widget.assemblyInstances) {
       if ((instance.occurrencePath.isEmpty && focusedPath.isEmpty) || instance.hidden) continue;
+      if (widget.soloFocus && !soloFocusShowsInstance(instance.occurrencePath, focusedPath)) continue;
       final transform = matrix4FromRigidTransform(instance.worldTransform);
       final occurrenceKey = instance.occurrencePath.join('/');
       for (final partGeometry in widget.assemblyGeometry) {
@@ -3196,6 +3208,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     vm.Vector3? max;
     for (final instance in widget.assemblyInstances) {
       if (instance.occurrencePath.isEmpty || instance.hidden) continue;
+      if (widget.soloFocus && !soloFocusShowsInstance(instance.occurrencePath, widget.focusedOccurrencePath)) continue;
       final transform = matrix4FromRigidTransform(instance.worldTransform);
       for (final partGeometry in widget.assemblyGeometry) {
         if (partGeometry.partId != instance.partId) continue;
@@ -4279,7 +4292,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final bounds = boundsOfPoints(_worldPointsOf(entities));
     if (bounds == null) return false;
     // A lone vertex has no extent: frame a small patch of the model instead.
-    final model = _enclosingBounds(boundsOfBodies(widget.bodies), _assemblyInstanceBounds());
+    final model = _framingBounds();
     final radius = math.max(bounds.boundingSphereRadius, (model?.boundingSphereRadius ?? 100) * 0.02);
     setState(() {
       _camera.target = bounds.center;
@@ -6458,7 +6471,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // leaving [OrbitCamera.reset] to fall back on `_defaultTarget` (itself
     // set the same bodies-only way, by [_syncMeshNode], whenever any local
     // Body exists at all).
-    final bounds = _enclosingBounds(boundsOfBodies(widget.bodies), _assemblyInstanceBounds());
+    final bounds = _framingBounds();
     if (bounds == null || bounds.boundingSphereRadius <= 0) return;
     final radius = bounds.boundingSphereRadius;
     final center = bounds.center;
@@ -6479,6 +6492,19 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final newFarClip = math.max(math.max(kDefaultFarClip, previousFarClip), neededFarClip);
     _camera.farClip = newFarClip;
     widget.onFarClipChanged?.call(newFarClip);
+  }
+
+  /// What Fit / Reset frames: the root's own bodies plus every placed instance; in Edit Alone only the target. While
+  /// something is focused [PartViewport.bodies] is the focused Part's content in its own frame (it is drawn at
+  /// [PartViewport.focusWorldTransformMatrix]), so its bounds are moved to where it is drawn before being combined.
+  MeshBounds? _framingBounds() {
+    final bodies = boundsOfBodies(widget.bodies);
+    if (!widget.soloFocus) return _enclosingBounds(bodies, _assemblyInstanceBounds());
+    final focus = widget.focusWorldTransformMatrix;
+    final placed = bodies == null || focus == null
+        ? bodies
+        : MeshBounds(center: focus.transformed3(bodies.center), boundingSphereRadius: bodies.boundingSphereRadius);
+    return _enclosingBounds(placed, _assemblyInstanceBounds());
   }
 
   /// The smallest sphere enclosing both bounds - [_doRecentre] used to take whichever of the body/assembly spheres

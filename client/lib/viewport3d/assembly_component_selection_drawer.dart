@@ -4,6 +4,7 @@ import '../layout/layout_mode.dart';
 
 import '../api/document_api_client.dart';
 import 'assembly_tree_panel.dart';
+import 'component_context_menu.dart' show kEditAloneLabel;
 
 /// Assembly lens component selection drawer - the assembly equivalent of
 /// [SelectionListDrawer] for Part lens mesh entity selection. Shows the
@@ -17,6 +18,10 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
   final VoidCallback onMove;
   final VoidCallback onFixFloat;
   final VoidCallback onDelete;
+
+  /// Edit Alone for the selected component (the first button). Null hides it (inside Edit Alone, or when the screen
+  /// cannot start one).
+  final VoidCallback? onEditAlone;
 
   /// Bug report 2026-10-14, item 6: the only way out used to be tapping empty
   /// space. When non-null, an X ("Clear selection") closes the drawer by
@@ -32,6 +37,7 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
     required this.onMove,
     required this.onFixFloat,
     required this.onDelete,
+    this.onEditAlone,
     this.onClose,
   });
 
@@ -73,6 +79,12 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
                 spacing: 8,
                 runSpacing: 8,
                 children: [
+                  if (onEditAlone != null)
+                    FilledButton.tonal(
+                      key: const ValueKey('component-edit-alone'),
+                      onPressed: onEditAlone,
+                      child: const Text(kEditAloneLabel),
+                    ),
                   FilledButton.tonal(onPressed: onMove, child: const Text('Move')),
                   FilledButton.tonal(onPressed: onFixFloat, child: Text(selectedComponent.fixed ? 'Float' : 'Fix')),
                   FilledButton.tonal(onPressed: onDelete, child: const Text('Delete')),
@@ -137,10 +149,15 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
                             spacing: 8,
                             runSpacing: 8,
                             children: [
+                              if (onEditAlone != null)
+                                FilledButton.tonal(
+                                  key: const ValueKey('component-edit-alone'),
+                                  onPressed: onEditAlone,
+                                  child: const Text(kEditAloneLabel),
+                                ),
                               FilledButton.tonal(
                                 onPressed: onMove,
-                                child: const Text('Move'),
-                              ),
+                                child: const Text('Move')),
                               FilledButton.tonal(
                                 onPressed: onFixFloat,
                                 child: Text(selectedComponent.fixed ? 'Float' : 'Fix'),

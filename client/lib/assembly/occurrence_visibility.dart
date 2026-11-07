@@ -131,6 +131,12 @@ bool isOccurrencePathWithinFocus(List<String> occurrencePath, List<String> focus
   return true;
 }
 
+/// Edit Alone (`docs/view-override-edit-alone-sketch-origin-plan.md` Item 2): whether a placed instance is drawn while the
+/// rest of the assembly is hidden. Only the target and what is nested inside it; the root's own `[]` instance, siblings and
+/// ancestors are not. [focusedPath] empty means nothing is focused (Edit Alone is never on then), so nothing shows.
+bool soloFocusShowsInstance(List<String> occurrencePath, List<String> focusedPath) =>
+    isOccurrencePathWithinFocus(occurrencePath, focusedPath);
+
 /// Assembly support Phase 12 (`docs/assembly-scope.md` §6 `[18]`):
 /// [isOccurrencePathWithinFocus]'s stricter sibling - true only for
 /// [occurrencePath] naming an *immediate* child of [focusedOccurrencePath]

@@ -34,6 +34,16 @@ void main() {
   }
 
   group('showComponentContextMenu', () {
+    testWidgets('Edit Alone is the first entry (above Make Focus) and resolves editAlone', (tester) async {
+      await openMenu(tester, isFocused: false, hidden: false);
+      expect(find.text(kEditAloneLabel), findsOneWidget);
+      expect(find.text('Isolate'), findsOneWidget, reason: 'Isolate keeps its name');
+      expect(tester.getTopLeft(find.text('Edit Alone')).dy, lessThan(tester.getTopLeft(find.text('Make Focus')).dy));
+      await tester.tap(find.text('Edit Alone'));
+      await tester.pumpAndSettle();
+      expect(await pendingResult, ComponentContextMenuAction.editAlone);
+    });
+
     testWidgets('not focused: shows Make Focus, tapping resolves makeFocus', (tester) async {
       await openMenu(tester, isFocused: false, hidden: false);
       expect(find.text('Make Focus'), findsOneWidget);

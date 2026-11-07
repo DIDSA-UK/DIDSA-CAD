@@ -111,6 +111,12 @@ class _FakeDocumentBackend {
   /// Part ids the fake's `assembly-mesh` carries (empty) geometry for, so a test can have several Parts in the scene.
   List<String> assemblyGeometryPartIds = const [];
 
+  /// Occurrences of a sub-assembly (a Part other than `part-1`), by Part id: `GET .../parts/{id}/occurrences` answers them.
+  Map<String, List<Map<String, dynamic>>> subOccurrences = {};
+
+  /// Every request that is not a GET, in order (so a test can check that nothing was written).
+  final List<String> writes = [];
+
   /// When set, `GET .../part-1/mesh` returns these Bodies (`body_id` / `source` / `mesh` maps, optionally
   /// `is_surface` / `is_curve`) with `hidden` worked out from [hiddenByPart] and the `hidden_feature_ids` query parameter,
   /// the way the real route does.
@@ -246,6 +252,7 @@ class _FakeDocumentBackend {
   http.Response handle(http.Request request) {
     final path = request.url.path;
     final method = request.method;
+    if (method != 'GET') writes.add('$method $path');
     final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
 
     if (path == '/document/new' && method == 'POST') {
@@ -765,7 +772,8 @@ class _FakeDocumentBackend {
     // fake never separately modeled) gets an empty-but-valid response.
     final occurrencesGetMatch = RegExp(r'^/document/parts/([^/]+)/occurrences$').firstMatch(path);
     if (occurrencesGetMatch != null && method == 'GET') {
-      return _json(occurrencesGetMatch.group(1) == 'part-1' ? occurrences : <dynamic>[], 200);
+      final listedPart = occurrencesGetMatch.group(1)!;
+      return _json(listedPart == 'part-1' ? occurrences : (subOccurrences[listedPart] ?? <dynamic>[]), 200);
     }
     // Item 7: the Assembly tree's constraint badge. Scripted by tests via
     // [constraintStatus]; empty by default (no badge, plain fixed pin).
@@ -9338,6 +9346,185 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('start-tile-Override')));
       await _settleSheet(tester);
       expect(current(tester), isNull);
+    });
+  });
+
+  // Edit Alone (Item 2 of `docs/view-override-edit-alone-sketch-origin-plan.md`).
+  group('Edit Alone', () {
+    Map<String, dynamic> occurrence(String id, {String? partId = 'unset'}) => {
+          'id': id,
+          'external_ref': 'parts/$id.didsa',
+          'resolved_part_id': partId == 'unset' ? '$id-part' : partId,
+          'name_override': null,
+          'transform': {
+            'translation': [0.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'suppressed': false,
+          'hidden': false,
+          'fixed': false,
+        };
+
+    Future<void> settle(WidgetTester tester) async {
+      for (var i = 0; i < 8; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    /// occ-1 is a part, occ-2 a sub-assembly holding occ-3 (a part), occ-4 is unresolved.
+    Future<_FakeDocumentBackend> open(WidgetTester tester) async {
+      final backend = _FakeDocumentBackend(
+        seedOccurrences: [occurrence('occ-1'), occurrence('occ-2'), occurrence('occ-4', partId: null)],
+      )..subOccurrences = {
+          'occ-2-part': [occurrence('occ-3')],
+        };
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await switchLens(tester, 'Assembly');
+      backend.writes.clear();
+      return backend;
+    }
+
+    PartViewport viewport(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport));
+
+    /// Long press a tree row, then the menu entry (a long press enters multi-select; the menu is behind More actions).
+    Future<void> menuAction(WidgetTester tester, String occurrenceId, String label) async {
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      tree.onOccurrenceLongPress(tree.occurrences.firstWhere((o) => o.id == occurrenceId));
+      await settle(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await settle(tester);
+      await tester.tap(find.text(label));
+      await settle(tester);
+    }
+
+    final pill = find.byKey(const ValueKey('edit-alone-pill'));
+    final done = find.byKey(const ValueKey('edit-alone-done'));
+
+    testWidgets('the menu lists Edit Alone first, above Make Focus', (tester) async {
+      await open(tester);
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      tree.onOccurrenceLongPress(tree.occurrences.first);
+      await settle(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await settle(tester);
+      expect(find.text('Edit Alone'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('Edit Alone')).dy, lessThan(tester.getTopLeft(find.text('Make Focus')).dy));
+    });
+
+    testWidgets('on a part: focus +1, Part lens, soloFocus, the pill names it; Done undoes it and writes nothing', (tester) async {
+      final backend = await open(tester);
+      expect(viewport(tester).soloFocus, isFalse);
+      await menuAction(tester, 'occ-1', 'Edit Alone');
+      expect(viewport(tester).soloFocus, isTrue);
+      expect(viewport(tester).focusedOccurrencePath, ['occ-1']);
+      expect(pill, findsOneWidget);
+      expect(find.descendant(of: pill, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
+      expect(find.byType(AssemblyTreePanel), findsNothing, reason: 'Part lens: the assembly tree is not mounted');
+      // The way back is a button on the pill, and in the ribbon.
+      expect(done, findsOneWidget);
+
+      await tester.tap(done);
+      await settle(tester);
+      expect(viewport(tester).soloFocus, isFalse);
+      expect(viewport(tester).focusedOccurrencePath, isEmpty);
+      expect(pill, findsNothing);
+      expect(find.byType(AssemblyTreePanel), findsOneWidget, reason: 'the lens before (Assembly) is back');
+      expect(backend.writes, isEmpty, reason: 'entering and leaving never write (no hidden flags)');
+    });
+
+    testWidgets('on a sub-assembly: Assembly lens and the tree shows its children', (tester) async {
+      final backend = await open(tester);
+      await menuAction(tester, 'occ-2', 'Edit Alone');
+      expect(viewport(tester).soloFocus, isTrue);
+      expect(viewport(tester).focusedOccurrencePath, ['occ-2']);
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      expect(tree.occurrences.map((o) => o.id), ['occ-3']);
+      await tester.tap(done);
+      await settle(tester);
+      expect(viewport(tester).focusedOccurrencePath, isEmpty);
+      expect(backend.writes, isEmpty);
+    });
+
+    testWidgets('Make Focus inside Edit Alone, then Done: back to the start in one step; no nested Edit Alone', (tester) async {
+      await open(tester);
+      await menuAction(tester, 'occ-2', 'Edit Alone');
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      tree.onOccurrenceLongPress(tree.occurrences.single);
+      await settle(tester);
+      await tester.tap(find.byTooltip('More actions'));
+      await settle(tester);
+      expect(find.text('Edit Alone'), findsNothing, reason: 'inside Edit Alone it is the same as Make Focus');
+      await tester.tap(find.text('Make Focus'));
+      await settle(tester);
+      expect(viewport(tester).focusedOccurrencePath, ['occ-2', 'occ-3']);
+      expect(viewport(tester).soloFocus, isTrue);
+      await tester.tap(done);
+      await settle(tester);
+      expect(viewport(tester).focusedOccurrencePath, isEmpty);
+      expect(viewport(tester).soloFocus, isFalse);
+    });
+
+    testWidgets('Back closes the Menu panel first, then leaves Edit Alone', (tester) async {
+      await open(tester);
+      await menuAction(tester, 'occ-1', 'Edit Alone');
+      await openToolbar(tester);
+      await _settleSheet(tester);
+      expect(tester.widget<PartToolbar>(find.byType(PartToolbar)).visible, isTrue);
+      await tester.binding.handlePopRoute();
+      await _settleSheet(tester);
+      expect(tester.widget<PartToolbar>(find.byType(PartToolbar)).visible, isFalse);
+      expect(viewport(tester).soloFocus, isTrue, reason: 'the first Back only closed the panel');
+      await tester.binding.handlePopRoute();
+      await settle(tester);
+      expect(viewport(tester).soloFocus, isFalse);
+      expect(pill, findsNothing);
+    });
+
+    testWidgets('the selected component\'s drawer has an Edit Alone button first', (tester) async {
+      await open(tester);
+      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      tree.onOccurrenceTap(tree.occurrences.firstWhere((o) => o.id == 'occ-1'));
+      await settle(tester);
+      final button = find.byKey(const ValueKey('component-edit-alone'));
+      expect(button, findsOneWidget);
+      // (In the 800x600 test window the sheet's first row sits below the fold: call the button's own callback.)
+      tester.widget<FilledButton>(button).onPressed!();
+      await settle(tester);
+      expect(viewport(tester).soloFocus, isTrue);
+      expect(viewport(tester).focusedOccurrencePath, ['occ-1']);
+    });
+
+    testWidgets('an unresolved component is refused', (tester) async {
+      await open(tester);
+      await menuAction(tester, 'occ-4', 'Edit Alone');
+      expect(viewport(tester).soloFocus, isFalse);
+      expect(pill, findsNothing);
+      expect(find.textContaining('unresolved component'), findsOneWidget);
+    });
+
+    testWidgets('refused while a scene is shown', (tester) async {
+      await open(tester);
+      await tapStartCommand(tester, 'Scenes', tab: 'evaluate');
+      await settle(tester);
+      await tester.tap(find.byKey(const ValueKey('scenes-new')));
+      await settle(tester);
+      expect(find.textContaining('New scene from the default'), findsOneWidget, reason: 'a scene is being shown');
+      await tester.tap(find.byKey(const ValueKey('scenes-close')));
+      await settle(tester);
+      await menuAction(tester, 'occ-1', 'Edit Alone');
+      expect(viewport(tester).soloFocus, isFalse);
+      expect(pill, findsNothing);
     });
   });
 }

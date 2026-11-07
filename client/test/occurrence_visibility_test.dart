@@ -343,4 +343,22 @@ void main() {
       expect(topLevelOccurrenceId(''), '');
     });
   });
+
+  group('soloFocusShowsInstance (Edit Alone)', () {
+    const focus = ['a'];
+    test('the target and its descendants show', () {
+      expect(soloFocusShowsInstance(['a'], focus), isTrue);
+      expect(soloFocusShowsInstance(['a', 'b'], focus), isTrue);
+      expect(soloFocusShowsInstance(['a', 'b', 'c'], focus), isTrue, reason: 'a sub-assembly\'s grandchildren still draw');
+    });
+    test('the root\'s own instance, a sibling and an ancestor do not', () {
+      expect(soloFocusShowsInstance(const [], focus), isFalse);
+      expect(soloFocusShowsInstance(['z'], focus), isFalse);
+      expect(soloFocusShowsInstance(['z', 'a'], focus), isFalse);
+      expect(soloFocusShowsInstance(['a'], ['a', 'b']), isFalse, reason: 'the ancestor of a deeper target');
+    });
+    test('with nothing focused nothing shows', () {
+      expect(soloFocusShowsInstance(['a'], const []), isFalse);
+    });
+  });
 }

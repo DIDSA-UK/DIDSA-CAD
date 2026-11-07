@@ -12706,6 +12706,7 @@ class _PartScreenState extends State<PartScreen> {
       }
       _part = part;
       _focusStack = AssemblyFocusStack(part.id);
+      _editAlone = null;
       // Assembly support Phase 20: seed the root Part's own per-Part state
       // now that its real id is finally known - [_focusPartId] reads as
       // `part.id` at this exact point (nothing has been focused yet), so
@@ -24013,7 +24014,10 @@ class _PartScreenState extends State<PartScreen> {
   /// changes [_part]. Re-fetches the assembly tree on every switch into
   /// Assembly mode (see [_refreshAssemblyTree]'s own doc comment for why
   /// this isn't instead kept always-fresh in the background).
-  void _toggleAssemblyLens() {
+  void _toggleAssemblyLens() => _setLens(_lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part);
+
+  /// Sets the lens (what [_toggleAssemblyLens] does, without the flip), for Edit Alone's enter and leave.
+  void _setLens(AssemblyLens lens) {
     _clearTransientError();
     // Feature 1 (tree multi-select): a session belongs to one tree, and
     // only the current lens's tree is ever mounted.
@@ -24021,7 +24025,7 @@ class _PartScreenState extends State<PartScreen> {
     setState(() {
       _selectOtherCandidates = null;
       _selectOtherHighlight = null;
-      _lens = _lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part;
+      _lens = lens;
     });
     if (_lens == AssemblyLens.assembly) {
       // Bug fix (found auditing [_focusOccurrenceColorHex]'s own new test):
@@ -24168,10 +24172,19 @@ class _PartScreenState extends State<PartScreen> {
     // toolbar for the lifetime of this modal sheet so the two never render
     // (and so collide, e.g. in a `find.text('Fix')` widget test) at once.
     setState(() => _componentContextMenuOpen = true);
-    final action = await showComponentContextMenu(context, isFocused: isFocused, hidden: hidden, fixed: fixed, at: at);
+    final action = await showComponentContextMenu(
+      context,
+      isFocused: isFocused,
+      hidden: hidden,
+      fixed: fixed,
+      at: at,
+      showEditAlone: _editAlone == null,
+    );
     if (mounted) setState(() => _componentContextMenuOpen = false);
     if (!mounted || action == null) return;
     switch (action) {
+      case ComponentContextMenuAction.editAlone:
+        await _enterEditAlone(occurrence);
       case ComponentContextMenuAction.makeFocus:
         _clearTransientError();
         if (resolvedPartId == null) {
@@ -24185,7 +24198,7 @@ class _PartScreenState extends State<PartScreen> {
         setState(() => focusStack?.push(resolvedPartId, occurrence.id, label));
         await _refreshFocusTargetContent();
       case ComponentContextMenuAction.exitFocus:
-        await _exitAssemblyFocus();
+        await _exitFocusOneLevel();
       case ComponentContextMenuAction.hide:
         await _setOccurrenceHidden(occurrence, true);
       case ComponentContextMenuAction.show:
@@ -24657,10 +24670,150 @@ class _PartScreenState extends State<PartScreen> {
   /// empty state), which previously left no way back to Part lens or a
   /// shallower focus depth at all once drilled into a leaf component.
   Future<void> _exitAssemblyFocus() async {
+    // In Edit Alone the breadcrumb's back leaves Edit Alone altogether, not one level of focus.
+    if (_editAlone != null) {
+      await _exitEditAlone();
+      return;
+    }
     _clearTransientError();
     setState(() => _focusStack?.pop());
     await _refreshFocusTargetContent();
   }
+
+  // --- Edit Alone (`docs/view-override-edit-alone-sketch-origin-plan.md` Item 2) -------------------------------------
+  // Make Focus plus: the rest of the assembly is hidden (display only, nothing is written to the backend, so entering and
+  // leaving never change the file), the lens follows the target (Part for a part, Assembly for a sub-assembly), the camera
+  // frames it, and a pill with Done is always on screen. It sits on top of [_focusStack], which stays a plain focus path.
+
+  _EditAloneSession? _editAlone;
+
+  /// Edit Alone on [occurrence] (a part or a sub-assembly). Refused for an unresolved component and while a tool, a shown
+  /// scene or Presentation mode owns the screen. Inside Edit Alone it is the same as Make Focus, so it does nothing there.
+  Future<void> _enterEditAlone(OccurrenceDto occurrence) async {
+    _clearTransientError();
+    final focusStack = _focusStack;
+    if (focusStack == null || _editAlone != null) return;
+    final resolvedPartId = occurrence.resolvedPartId;
+    if (resolvedPartId == null) {
+      setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
+      return;
+    }
+    if (_sceneMode) {
+      _showSnack('Go back to the default view before editing a component alone');
+      return;
+    }
+    if (_anyToolSessionActive || _presenting) {
+      _showSnack('Close the open tool first');
+      return;
+    }
+    final occurrenceIndex = _occurrences.indexWhere((o) => o.id == occurrence.id);
+    final label = occurrenceIndex >= 0
+        ? occurrenceDisplayName(_occurrences, occurrenceIndex)
+        : occurrenceDisplayName([occurrence], 0);
+    final session = _EditAloneSession(
+      baseDepth: focusStack.depth,
+      lensBefore: _lens,
+      viewpointBefore: _viewportKey.currentState?.currentViewpoint(),
+      label: label,
+    );
+    setState(() {
+      _editAlone = session;
+      focusStack.push(resolvedPartId, occurrence.id, label);
+      _selectedOccurrenceId = null;
+      _selectedMateId = null;
+      _selectedEntities = {};
+      _toolbarOpen = false;
+      _selectOtherCandidates = null;
+      _selectOtherHighlight = null;
+    });
+    await _refreshFocusTargetContent();
+    if (!mounted || _editAlone != session) return;
+    // A sub-assembly is a focus whose own Occurrences are not empty (the tree was just refreshed for it).
+    session.isSubAssembly = _occurrences.isNotEmpty;
+    _setLens(session.isSubAssembly ? AssemblyLens.assembly : AssemblyLens.part);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _editAlone == session) _viewportKey.currentState?.zoomToFit();
+    });
+  }
+
+  /// Done: back to the assembly the user started from (whatever focus was pushed since), the lens and the view as they
+  /// were. Nothing was written, so there is nothing to undo. An open tool must be closed first.
+  Future<void> _exitEditAlone() async {
+    final session = _editAlone;
+    if (session == null) return;
+    if (_anyToolSessionActive) {
+      _showSnack('Close the open tool first');
+      return;
+    }
+    _clearTransientError();
+    final focusStack = _focusStack;
+    setState(() {
+      while (focusStack != null && focusStack.depth > session.baseDepth) {
+        focusStack.pop();
+      }
+      _editAlone = null;
+      _selectedOccurrenceId = null;
+      _selectedMateId = null;
+      _selectedEntities = {};
+      _selectOtherCandidates = null;
+      _selectOtherHighlight = null;
+    });
+    await _refreshFocusTargetContent();
+    if (!mounted) return;
+    _setLens(session.lensBefore);
+    final viewpoint = session.viewpointBefore;
+    if (viewpoint != null) await _viewportKey.currentState?.animateToViewpoint(Map<String, dynamic>.from(viewpoint));
+  }
+
+  /// Exit Focus from the component menu: one level, except that the first level inside Edit Alone is Done.
+  Future<void> _exitFocusOneLevel() async {
+    final session = _editAlone;
+    if (session != null && (_focusStack?.depth ?? 0) <= session.baseDepth + 1) {
+      await _exitEditAlone();
+      return;
+    }
+    _clearTransientError();
+    setState(() => _focusStack?.pop());
+    await _refreshFocusTargetContent();
+  }
+
+  /// The pill at the top of the viewport while in Edit Alone: what is being edited, and the way back.
+  Widget _buildEditAlonePill() {
+    final session = _editAlone!;
+    final theme = Theme.of(context);
+    return Material(
+      key: const ValueKey('edit-alone-pill'),
+      elevation: 3,
+      color: theme.colorScheme.secondaryContainer,
+      borderRadius: BorderRadius.circular(24),
+      child: Padding(
+        padding: const EdgeInsets.only(left: 14, right: 4),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text.rich(
+                TextSpan(children: [
+                  const TextSpan(text: 'Editing '),
+                  TextSpan(text: session.label, style: const TextStyle(fontWeight: FontWeight.bold)),
+                ]),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            const SizedBox(width: 4),
+            TextButton.icon(
+              key: const ValueKey('edit-alone-done'),
+              onPressed: () => unawaited(_exitEditAlone()),
+              icon: const Icon(Icons.close_fullscreen, size: 18),
+              label: const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): every
   /// push/pop of [_focusStack] must re-fetch not just the Assembly tree
   /// ([_refreshAssemblyTree], the only thing focus ever drove before this
@@ -25084,6 +25237,9 @@ class _PartScreenState extends State<PartScreen> {
       _cancelPathPicker();
     } else if (_planeSelectionMode) {
       _cancelPlaneSelectionMode();
+    } else if (_editAlone != null) {
+      // Last: Back first closes the menu, picker or tool, then leaves Edit Alone (an open tool panel asks to be closed).
+      unawaited(_exitEditAlone());
     } else {
       return false;
     }
@@ -25506,12 +25662,26 @@ class _PartScreenState extends State<PartScreen> {
           onPressed: viewport == null ? null : () => unawaited(viewport.animateToStandardView(view)),
         );
 
+    // While in Edit Alone the Assembly and Features tabs lead with the way back.
+    final exitEditAloneGroup = _editAlone == null
+        ? const <RibbonGroup>[]
+        : [
+            RibbonGroup([
+              RibbonCommand(
+                label: 'Exit $kEditAloneLabel',
+                icon: Icons.close_fullscreen,
+                tooltip: 'Back to the assembly',
+                onPressed: () => unawaited(_exitEditAlone()),
+              ),
+            ]),
+          ];
     final tabs = [
       RibbonTabData(
         id: 'features',
         label: 'Features',
         groups: touch
             ? [
+                ...exitEditAloneGroup,
                 RibbonGroup([
                   RibbonCommand(
                     label: 'New Sketch',
@@ -25523,6 +25693,7 @@ class _PartScreenState extends State<PartScreen> {
                   RibbonGroup([for (final entry in group.entries) featureAt(entry)], title: group.title),
               ]
             : [
+          ...exitEditAloneGroup,
           RibbonGroup([
             RibbonCommand(
               label: 'New Sketch',
@@ -25591,6 +25762,7 @@ class _PartScreenState extends State<PartScreen> {
         id: 'assembly',
         label: 'Assembly',
         groups: [
+          ...exitEditAloneGroup,
           RibbonGroup([
             RibbonCommand(
               label: 'Add Component',
@@ -25938,6 +26110,7 @@ class _PartScreenState extends State<PartScreen> {
                         },
                         onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
                         onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
+                        onEditAlone: _editAlone == null ? () => unawaited(_enterEditAlone(occurrence)) : null,
                         onClose: _clearSelectionFromDrawer,
                       );
                     },
@@ -26497,6 +26670,7 @@ class _PartScreenState extends State<PartScreen> {
                   renderMode: _renderMode,
                   bgColourHex: _bgColourHex,
                   appearanceOverride: _appearanceOverride,
+                  soloFocus: _editAlone != null,
                   roughness: _sceneRoughness,
                   lightIntensity: _sceneLightIntensity,
                   emissiveIntensity: _sceneEmissiveIntensity,
@@ -28125,13 +28299,23 @@ class _PartScreenState extends State<PartScreen> {
                 // the axis is picked).
                 // Presentation mode: the presenter button and its menu, above everything else, always there.
                 if (_presenting) _buildPresenterOverlay(),
-                // Chips at the top centre (out of the FAB columns): the View override reminder.
-                if (_appearanceOverrideOn && !_chromeHidden)
+                // Top centre (out of the FAB columns): Edit Alone's pill, then the View override reminder.
+                if ((_editAlone != null || _appearanceOverrideOn) && !_chromeHidden)
                   Positioned(
                     top: 8,
-                    left: 0,
-                    right: 0,
-                    child: SafeArea(bottom: false, child: Center(child: _buildViewOverrideChip())),
+                    left: 56,
+                    right: 56,
+                    child: SafeArea(
+                      bottom: false,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_editAlone != null) _buildEditAlonePill(),
+                          if (_editAlone != null && _appearanceOverrideOn) const SizedBox(height: 6),
+                          if (_appearanceOverrideOn) _buildViewOverrideChip(),
+                        ],
+                      ),
+                    ),
                   ),
               ],
             )),
@@ -28364,4 +28548,21 @@ class _SaveFailure {
   final String name;
   final String relativePath;
   final String reason;
+}
+
+/// Edit Alone's screen state (`_enterEditAlone`): where to go back to. Not part of [AssemblyFocusStack], which stays a plain
+/// focus path.
+class _EditAloneSession {
+  /// [AssemblyFocusStack.depth] before entering; Done pops back to it (it may be deeper if the user used Make Focus inside).
+  final int baseDepth;
+  final AssemblyLens lensBefore;
+
+  /// `PartViewportState.currentViewpoint()` before entering, restored by Done.
+  final Map<String, dynamic>? viewpointBefore;
+  final String label;
+
+  /// Set once the target's own Occurrences are known: a sub-assembly has some, a part has none.
+  bool isSubAssembly = false;
+
+  _EditAloneSession({required this.baseDepth, required this.lensBefore, required this.viewpointBefore, required this.label});
 }

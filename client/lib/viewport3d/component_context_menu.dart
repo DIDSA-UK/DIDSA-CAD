@@ -12,7 +12,12 @@ import 'action_sheet.dart';
 /// action-list shape and share two entries (Mate/Pattern) - see
 /// [showComponentContextMenu]'s own doc comment for why this file exists
 /// ahead of the phase that actually wires it up.
+/// The one label for Edit Alone (menu entry, selection drawer button, pill, ribbon).
+const String kEditAloneLabel = 'Edit Alone';
+
 enum ComponentContextMenuAction {
+  /// Edit Alone: edit this component or sub-assembly on its own, inside the same screen (`kEditAloneLabel`).
+  editAlone,
   makeFocus,
   exitFocus,
   moveRotate,
@@ -66,8 +71,16 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
   required bool hidden,
   required bool fixed,
   Offset? at,
+  // False inside Edit Alone: it would be the same as Make Focus there.
+  bool showEditAlone = true,
 }) {
   return showContextMenu<ComponentContextMenuAction>(context, at: at, [
+    if (showEditAlone)
+      const ActionSheetEntry(
+        action: ComponentContextMenuAction.editAlone,
+        label: kEditAloneLabel,
+        icon: Icons.edit_note,
+      ),
     ActionSheetEntry(
       action: isFocused ? ComponentContextMenuAction.exitFocus : ComponentContextMenuAction.makeFocus,
       label: isFocused ? 'Exit Focus' : 'Make Focus',
