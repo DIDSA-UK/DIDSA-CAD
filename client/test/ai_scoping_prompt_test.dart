@@ -307,4 +307,22 @@ Assumptions: hole goes all the way through.
       expect(text, isNot(contains('no components placed in it')));
     });
   });
+
+  group('rules for exact, non-over-defined plans (B5)', () {
+    test('the part rules say joined features overlap by 0.1 mm and angled geometry is written from exact values', () {
+      final prompt = buildAiScopingSystemPrompt();
+      expect(prompt, contains('OVERLAP by\nat least 0.1 mm - never just touch'));
+      expect(prompt, contains('Write angled geometry from EXACT values'));
+    });
+
+    test('the in-app mate vocabulary and the external-hand-off guidance both say not to fix the same rotation twice', () {
+      expect(buildAiScopingSystemPrompt(), contains('DO NOT FIX THE SAME ROTATION TWICE'));
+      expect(assemblyModeExternalMatesGuidance, contains('Do not fix the same rotation twice'));
+    });
+
+    test('face_selector body_id may be left out whenever near is given', () {
+      expect(buildAiScopingSystemPrompt(), contains('with "near" the Body whose matching face is'));
+      expect(assemblyModeExternalMatesGuidance, contains('Leave out "body_id" when you give "near"'));
+    });
+  });
 }

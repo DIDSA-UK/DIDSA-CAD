@@ -6360,6 +6360,21 @@ class DocumentApiClient {
         (body) => body as Map<String, dynamic>,
       );
 
+  /// B5: `GET /health`'s `api_features` (what this backend can do that an older one cannot; see `app/main.py`). An older backend
+  /// answers without the key: an empty set. Null when `/health` could not be read at all, so nothing can be claimed about it.
+  Future<Set<String>?> apiFeatures() async {
+    try {
+      final response = await _httpClient.get(_uri('/health'), headers: _headers).timeout(ApiConfig.documentRequestTimeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) return null;
+      final features = decoded['api_features'];
+      return features is List ? {for (final f in features) f.toString()} : <String>{};
+    } on Object {
+      return null;
+    }
+  }
+
   /// Native Load: the inverse of [exportNative] - a full replace, not a
   /// merge (client-owned files, locked-in scope): whatever Document/Sketches
   /// were open on the backend before this call are discarded entirely in

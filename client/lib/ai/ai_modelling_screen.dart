@@ -29,6 +29,7 @@ import 'ai_model_check.dart';
 import 'ai_part_manifest.dart';
 import 'ai_part_naming.dart';
 import 'ai_plan.dart';
+import 'ai_plan_features.dart';
 import 'ai_assembly_report.dart';
 import 'ai_plan_bundle.dart';
 import 'ai_plan_detection.dart';
@@ -119,7 +120,7 @@ const int aiImageMaxEdgePx = 1568;
 enum _ImportedMates { none, failedValidation, partlyBuilt, built }
 
 /// What [_AiModellingScreenState._executeMatesPlan] did with a plan of mates.
-enum _MatesOutcome { built, partial, validationFailed }
+enum _MatesOutcome { built, partial, validationFailed, backendTooOld }
 
 class _MatesRun {
   final _MatesOutcome outcome;
@@ -2236,6 +2237,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     required StorageService storage,
     required ProjectRoot root,
   }) async {
+    // B5: say once, before anything is built, that this backend predates what the plan uses.
+    final missing = missingApiFeatures(plan, await _documentApi.apiFeatures());
+    if (missing.isNotEmpty) {
+      final message = backendTooOldMessage(missing);
+      return _MatesRun(_MatesOutcome.backendTooOld, 'Saved without mates: $message', problems: message);
+    }
     setState(() {
       _orchestrationStatus = 'Validating and building the mates...';
       _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
@@ -2348,7 +2355,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _importedMates = switch (run.outcome) {
         _MatesOutcome.built => _ImportedMates.built,
         _MatesOutcome.partial => _ImportedMates.partlyBuilt,
-        _MatesOutcome.validationFailed => _ImportedMates.failedValidation,
+        _MatesOutcome.validationFailed || _MatesOutcome.backendTooOld => _ImportedMates.failedValidation,
       };
       _importedMatesProblems = run.problems;
     });
@@ -2449,9 +2456,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _MatesOutcome.built => 'The follow-up added ${run.note}',
       _MatesOutcome.partial => 'The follow-up: ${run.note}',
       _MatesOutcome.validationFailed => 'The follow-up mates failed validation and were not built.',
+      _MatesOutcome.backendTooOld => 'The follow-up mates were not built: ${run.problems}',
     };
     setState(() => _mateNote = '${_mateNote ?? ''}\n$followUp');
-    return run.outcome != _MatesOutcome.validationFailed;
+    return run.outcome != _MatesOutcome.validationFailed && run.outcome != _MatesOutcome.backendTooOld;
   }
 
   /// "Open Assembly" - navigates into `PartScreen` for the just-saved
@@ -2872,14 +2880,16 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       if (rewritten.steps.isNotEmpty) {
         final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: rewritten, storage: storage, root: root);
         if (!mounted) return;
-        built = run.outcome != _MatesOutcome.validationFailed;
+        final notBuilt = run.outcome == _MatesOutcome.validationFailed || run.outcome == _MatesOutcome.backendTooOld;
+        built = !notBuilt;
         setState(() {
           _mateNote = switch (run.outcome) {
             _MatesOutcome.built => 'Imported ${run.note}',
             _MatesOutcome.partial => 'Imported some of the mates: ${run.note}',
             _MatesOutcome.validationFailed => 'The imported mates failed validation and were not built.\n${run.problems}',
+            _MatesOutcome.backendTooOld => 'The imported mates were not built: ${run.problems}',
           };
-          if (run.outcome == _MatesOutcome.validationFailed) {
+          if (notBuilt) {
             // Nothing from this reply was built: what the fix package says stays as it was, with the new failure.
             if (_importedMates != _ImportedMates.built) _importedMatesProblems = run.problems;
           } else {

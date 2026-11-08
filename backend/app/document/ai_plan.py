@@ -548,7 +548,7 @@ class _PlanValidator:
             occurrence = inner
         return "/".join(segments), occurrence
 
-    def _resolve_occurrence_target_part(self, occurrence: Occurrence, field: str) -> Part:
+    def _resolve_occurrence_target_part(self, occurrence: Occurrence, field: str, selector: str = "edge_selector") -> Part:
         """Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-
         multi-part-assembly-overhaul.md): resolves a placed Occurrence's
         own target Part, for a Mate's `edge_selector` to compute real
@@ -569,7 +569,7 @@ class _PlanValidator:
                 {
                     "type": "invalid_step_payload",
                     "message": (
-                        f"{field}.edge_selector needs this occurrence's target Part to be resolvable in the "
+                        f"{field}.{selector} needs this occurrence's target Part to be resolvable in the "
                         "current session - it isn't (unresolved, or not loaded into this session's Document)"
                     ),
                 }
@@ -1290,7 +1290,7 @@ def _mate_entity_ref_from_step(
         subshape_ref = _resolve_mate_edge_selector(target_part, subshape_ref, ref.edge_selector, field)
         resolved_subshape_ref = subshape_ref
     if ref.face_selector is not None:
-        target_part = v.part if occurrence is None else v._resolve_occurrence_target_part(occurrence, field)
+        target_part = v.part if occurrence is None else v._resolve_occurrence_target_part(occurrence, field, "face_selector")
         subshape_ref = _resolve_mate_face_selector(target_part, ref.face_selector, field)
         resolved_subshape_ref = subshape_ref
 

@@ -260,3 +260,21 @@ def test_no_matching_face_on_any_body_is_refused():
 
     with pytest.raises(_StepError):
         _resolve_mate_face_selector_across_bodies(_two_bodies(), _selector(cylinder_radius=7.0, near=[1.0, 1.0, 1.0]), "references[0]")
+
+
+def test_an_unresolvable_target_part_names_the_selector_that_failed():
+    """B5: the error said `edge_selector` even when a `face_selector` was the one that needed the target Part."""
+    from app.document.ai_plan import _PlanValidator, _StepError
+    from app.document.models import Occurrence, RigidTransform
+
+    top_id, _, _, _ = _setup_top_with_occurrence_target_having_its_own_body()
+    from app.document.store import get_part_or_404
+
+    validator = _PlanValidator(get_part_or_404(top_id), frozenset(), None)  # no Document: no occurrence can be resolved
+    occurrence = Occurrence(id="o", external_ref="x.didsa", part_id="missing", transform=RigidTransform())
+    with pytest.raises(_StepError) as face_error:
+        validator._resolve_occurrence_target_part(occurrence, "references[0]", "face_selector")
+    assert "references[0].face_selector needs" in str(face_error.value.payload if hasattr(face_error.value, "payload") else face_error.value)
+    with pytest.raises(_StepError) as edge_error:
+        validator._resolve_occurrence_target_part(occurrence, "references[0]")
+    assert "references[0].edge_selector needs" in str(edge_error.value.payload if hasattr(edge_error.value, "payload") else edge_error.value)

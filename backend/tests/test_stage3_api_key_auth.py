@@ -58,3 +58,11 @@ def test_sketch_endpoint_with_correct_api_key_succeeds():
     )
 
     assert response.status_code == 201
+
+
+def test_health_lists_the_api_features_a_client_may_depend_on():
+    # B5 (docs/assembly-perf-mates-and-ui-plan.md): a client checks these before it runs a plan an older backend would fail mate by mate.
+    features = client.get("/health", headers={"X-API-Key": TEST_API_KEY}).json()["api_features"]
+    assert isinstance(features, list) and all(isinstance(f, str) for f in features)
+    assert {"ai_plan.face_selector.normal", "ai_plan.mate_paths"} <= set(features)
+    assert len(features) == len(set(features))
