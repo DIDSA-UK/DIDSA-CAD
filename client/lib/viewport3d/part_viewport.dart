@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data' show Float32List;
 
 import 'package:flutter/foundation.dart' show setEquals;
 import 'package:flutter/gestures.dart';
@@ -15,6 +16,7 @@ import '../assembly/occurrence_visibility.dart' show isOccurrencePathWithinFocus
 import '../sketch/sketch_controller.dart' show ConstraintOverlayItem;
 import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
+import 'edge_batching.dart';
 import 'mesh_geometry.dart';
 import 'controls_preferences.dart';
 import 'box_select.dart';
@@ -1376,6 +1378,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [PartViewport.renderMode]. Always empty for every Part with no
   /// Occurrences at all.
   Map<String, Node> _assemblyInstanceEdgesNodes = {};
+
+  /// A1: the batched edge nodes of [_edgesNodes] and [_assemblyInstanceEdgesNodes] with what the per-frame update
+  /// ([_updateBatchedEdges]) needs: each one's geometry (to set its world-space width) and world-space centre.
+  final List<_EdgeEntry> _edgeEntries = [];
 
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5: one filled-faces [Node]
   /// per [PartViewport.transientCoarsePreviewBodies] entry, keyed by that
@@ -3043,6 +3049,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(node);
     }
     _assemblyInstanceEdgesNodes = {};
+    _edgeEntries.removeWhere((e) => e.instances);
     if (!widget.renderMode.showsEdges) return;
     if (widget.bodiesHidden) return;
     final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
@@ -3061,17 +3068,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         if (partGeometry.partId != instance.partId) continue;
         for (final body in partGeometry.bodies) {
           if (!isRenderableAssemblyBody(body)) continue;
-          var segments = [
-            for (final s in edgeSegmentsFromMesh(body.mesh))
-              (transform.transformed3(s.$1), transform.transformed3(s.$2)),
-          ];
-          segments = clipSegmentsByPlanes(segments, widget.sectionPlanes);
-          if (segments.isEmpty) continue;
-          if (biased) {
-            segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
-          }
-          final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor);
-          scene.add(node);
+          final positions = clippedEdgePositions(body.mesh.edges, transform, widget.sectionPlanes);
+          if (positions.isEmpty) continue;
+          final node = _addBatchedEdgesNode(scene, positions, vm.Matrix4.identity(), biased: biased, instances: true);
           _assemblyInstanceEdgesNodes['$occurrenceKey/${body.bodyId}'] = node;
         }
       }
@@ -3276,6 +3275,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       scene.remove(node);
     }
     _edgesNodes = {};
+    _edgeEntries.removeWhere((e) => !e.instances);
     if (!widget.renderMode.showsEdges) return;
     // On-device feedback: see _syncMeshNode's identical bodiesHidden gate.
     if (widget.bodiesHidden) return;
@@ -3297,22 +3297,77 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
           ? widget.previewOverlayMesh!
           : widget.coarseOverlayMeshes[body.bodyId] ?? body.mesh;
-      var segments = edgeSegmentsFromMesh(mesh);
-      segments = clipSegmentsByPlanes(segments, widget.sectionPlanes);
-      if (segments.isEmpty) continue;
-      if (biased) {
-        segments = biasSegmentsTowardCamera(segments, _camera.position, kEdgeDepthBias);
-      }
-      final node = buildMeshEdgesNode(segments, color: widget.renderMode.edgeColor)..localTransform = focusTransform;
-      scene.add(node);
+      final positions = clippedEdgePositions(mesh.edges, null, widget.sectionPlanes);
+      if (positions.isEmpty) continue;
+      final node = _addBatchedEdgesNode(scene, positions, focusTransform, biased: biased, instances: false);
       _edgesNodes[body.bodyId] = node;
-      totalSegments += segments.length;
+      totalSegments += positions.length ~/ 6;
     }
     debugPrint(
       '[PartViewport][RenderDebug] edges: renderMode=${widget.renderMode} biased=$biased '
       'kEdgeDepthBias=$kEdgeDepthBias segments=$totalSegments bodies=${_edgesNodes.length} '
       'cameraPosition=${_camera.position} cameraDistance=${_camera.distance}',
     );
+  }
+
+  /// A1: adds one batched edge [Node] for [positions] (six floats per segment, in the space [base] places) and
+  /// records it for the per-frame update. The depth bias of `shadedWithEdges` is a per-frame node offset towards the
+  /// camera ([_updateBatchedEdges]), no longer baked into the points.
+  Node _addBatchedEdgesNode(
+    Scene scene,
+    Float32List positions,
+    vm.Matrix4 base, {
+    required bool biased,
+    required bool instances,
+  }) {
+    final geometry = buildBatchedEdgesGeometry(positions);
+    final node = buildBatchedEdgesNode(geometry, color: widget.renderMode.edgeColor)..localTransform = base;
+    scene.add(node);
+    _edgeEntries.add(
+      _EdgeEntry(
+        node: node,
+        geometry: geometry,
+        base: base,
+        worldCentre: base.transformed3(edgePositionsCentre(positions)),
+        segmentCount: positions.length ~/ 6,
+        biased: biased,
+        instances: instances,
+      ),
+    );
+    return node;
+  }
+
+  /// A1: runs before every [Scene.render] (from [_ScenePainter.paint]): sets each batched edge geometry's world-space
+  /// width so the line draws [kEdgeStrokeWidth] pixels wide (orthographic: exact; perspective: exact at the node's
+  /// distance, see [worldUnitsPerPixel]) and offsets `shadedWithEdges` nodes towards the camera. Nothing is rebuilt.
+  void _updateBatchedEdges(Size canvasSize) {
+    if (_edgeEntries.isEmpty) return;
+    final camera = _camera;
+    final cameraPosition = camera.position;
+    final perspective = camera.isPerspective;
+    final orthoUnits = worldUnitsPerPixel(
+      perspective: false,
+      viewportHeight: canvasSize.height,
+      halfHeight: camera.halfHeight,
+    );
+    for (final entry in _edgeEntries) {
+      final units = perspective
+          ? worldUnitsPerPixel(
+              perspective: true,
+              viewportHeight: canvasSize.height,
+              fovRadiansY: camera.fovRadiansY,
+              distance: (entry.worldCentre - cameraPosition).length,
+            )
+          : orthoUnits;
+      final next = nextEdgeWidth(entry.geometry.width, edgeWorldWidth(kEdgeStrokeWidth, units));
+      if (next != null) entry.geometry.width = next;
+      if (entry.biased) {
+        entry.node.localTransform = offsetTransform(
+          entry.base,
+          edgeDepthOffset(entry.worldCentre, cameraPosition, kEdgeDepthBias),
+        );
+      }
+    }
   }
 
   /// C5: true if [plane] is highlighted - either the single "just tapped,
@@ -7404,6 +7459,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                     scene: scene,
                     camera: _camera,
                     size: size,
+                    beforeRender: _updateBatchedEdges,
                     polylineCarryingNodes: [
                       ..._planeNodes.values,
                       // Bug report ("the triad for moving and rotating the
@@ -7436,8 +7492,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                       if (_profileBranchMarkersNode != null) _profileBranchMarkersNode!,
                       ..._sketchNodes.values,
                       ..._createPlaneNodes.values,
-                      ..._edgesNodes.values,
-                      ..._assemblyInstanceEdgesNodes.values,
                       if (_hoverNode != null) _hoverNode!,
                       if (_selectedEdgesNode != null) _selectedEdgesNode!,
                       if (_selectedVerticesNode != null) _selectedVerticesNode!,
@@ -7779,6 +7833,9 @@ class _ScenePainter extends CustomPainter {
   /// before [Scene.render], per [PolylineGeometry]'s own contract.
   final List<Node> polylineCarryingNodes;
 
+  /// Runs with the canvas size right before [Scene.render]: per-frame, build-free updates (the batched edges' width).
+  final void Function(Size canvasSize)? beforeRender;
+
   /// See [PartViewport.anchorTriadAtOrigin]'s own doc comment.
   final bool anchorTriadAtOrigin;
 
@@ -7791,6 +7848,7 @@ class _ScenePainter extends CustomPainter {
     required this.scene,
     required this.camera,
     required this.size,
+    this.beforeRender,
     this.polylineCarryingNodes = const [],
     this.anchorTriadAtOrigin = false,
   });
@@ -7823,6 +7881,7 @@ class _ScenePainter extends CustomPainter {
     }
 
     polylineCarryingNodes.forEach(updatePolylines);
+    beforeRender?.call(canvasSize);
     scene.render(perspectiveCamera, canvas, viewport: Offset.zero & canvasSize);
     if (isFirstPaint) {
       debugPrint('[PartViewport] _ScenePainter.paint: first frame, scene.render() returned');
@@ -7875,4 +7934,31 @@ enum StandardView {
         StandardView.bottom => vm.Vector3(0, 0, 1),
         _ => vm.Vector3(0, 1, 0),
       };
+}
+
+/// One batched edge node and what [PartViewportState._updateBatchedEdges] needs each frame.
+class _EdgeEntry {
+  _EdgeEntry({
+    required this.node,
+    required this.geometry,
+    required this.base,
+    required this.worldCentre,
+    required this.segmentCount,
+    required this.biased,
+    required this.instances,
+  });
+
+  final Node node;
+  final LineSegmentsGeometry geometry;
+
+  /// The node's transform without the depth offset.
+  final vm.Matrix4 base;
+  final vm.Vector3 worldCentre;
+  final int segmentCount;
+
+  /// Whether the towards-camera depth offset applies (`shadedWithEdges`).
+  final bool biased;
+
+  /// Placed-instance edges (true) or the root Part's own (false).
+  final bool instances;
 }

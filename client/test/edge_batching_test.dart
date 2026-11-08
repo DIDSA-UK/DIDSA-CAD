@@ -1,0 +1,116 @@
+import 'dart:math' as math;
+import 'dart:typed_data';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:vector_math/vector_math.dart' as vm;
+
+import 'package:didsa_cad_client/viewport3d/edge_batching.dart';
+import 'package:didsa_cad_client/viewport3d/section_plane.dart';
+
+void main() {
+  group('worldUnitsPerPixel', () {
+    test('orthographic is 2 * halfHeight / viewportHeight, whatever the distance', () {
+      expect(worldUnitsPerPixel(perspective: false, viewportHeight: 800, halfHeight: 200), closeTo(0.5, 1e-12));
+      expect(
+        worldUnitsPerPixel(perspective: false, viewportHeight: 800, halfHeight: 200, distance: 5),
+        closeTo(0.5, 1e-12),
+      );
+    });
+
+    test('perspective is 2 * d * tan(fovY / 2) / viewportHeight', () {
+      final fov = 60 * math.pi / 180;
+      final value = worldUnitsPerPixel(perspective: true, viewportHeight: 1000, fovRadiansY: fov, distance: 500);
+      expect(value, closeTo(2 * 500 * math.tan(fov / 2) / 1000, 1e-12));
+      // Twice as far: twice as many world units per pixel.
+      final far = worldUnitsPerPixel(perspective: true, viewportHeight: 1000, fovRadiansY: fov, distance: 1000);
+      expect(far, closeTo(value * 2, 1e-12));
+    });
+
+    test('a zero-height viewport gives 0, not infinity', () {
+      expect(worldUnitsPerPixel(perspective: false, viewportHeight: 0), 0);
+      expect(worldUnitsPerPixel(perspective: true, viewportHeight: 0), 0);
+    });
+
+    test('edgeWorldWidth scales the pixel width', () {
+      expect(edgeWorldWidth(1.4, 0.5), closeTo(0.7, 1e-12));
+    });
+  });
+
+  group('nextEdgeWidth', () {
+    test('the first width is always applied', () {
+      expect(nextEdgeWidth(null, 0.7), 0.7);
+      expect(nextEdgeWidth(0, 0.7), 0.7);
+    });
+    test('a change under 1 % is skipped, over 1 % is applied', () {
+      expect(nextEdgeWidth(1.0, 1.005), isNull);
+      expect(nextEdgeWidth(1.0, 1.02), 1.02);
+      expect(nextEdgeWidth(1.0, 0.98), 0.98);
+    });
+    test('a non-positive desired width is ignored', () {
+      expect(nextEdgeWidth(1.0, 0), isNull);
+      expect(nextEdgeWidth(1.0, -1), isNull);
+    });
+  });
+
+  group('depth offset', () {
+    test('points from the node centre towards the camera, bias long', () {
+      final offset = edgeDepthOffset(vm.Vector3(0, 0, 0), vm.Vector3(0, 0, 10), 0.05);
+      expect(offset.x, closeTo(0, 1e-6));
+      expect(offset.z, closeTo(0.05, 1e-6));
+      expect(offset.length, closeTo(0.05, 1e-6));
+    });
+    test('a node at the camera gets no offset', () {
+      expect(edgeDepthOffset(vm.Vector3(1, 2, 3), vm.Vector3(1, 2, 3), 0.05).length, 0);
+    });
+    test('offsetTransform adds to the translation and keeps the rotation', () {
+      final base = vm.Matrix4.translation(vm.Vector3(1, 2, 3))..rotateZ(0.5);
+      final moved = offsetTransform(base, vm.Vector3(0.1, 0.2, 0.3));
+      expect(moved.getTranslation().x, closeTo(1.1, 1e-6));
+      expect(moved.getTranslation().y, closeTo(2.2, 1e-6));
+      expect(moved.getTranslation().z, closeTo(3.3, 1e-6));
+      for (var i = 0; i < 9; i++) {
+        expect(moved.getRotation().storage[i], closeTo(base.getRotation().storage[i], 1e-6));
+      }
+      // The input is untouched.
+      expect(base.getTranslation().x, 1);
+    });
+  });
+
+  group('edge data', () {
+    test('edgePositions keeps whole segments and drops a trailing partial run', () {
+      final p = edgePositions([1, 2, 3, 4, 5, 6, 7, 8]);
+      expect(p, Float32List.fromList([1, 2, 3, 4, 5, 6]));
+      expect(edgeSegmentCount([1, 2, 3, 4, 5, 6, 7]), 1);
+    });
+
+    test('clippedEdgePositions transforms, and clips by an enabled section', () {
+      final flat = <double>[0, 0, 0, 10, 0, 0];
+      final moved = clippedEdgePositions(flat, vm.Matrix4.translation(vm.Vector3(0, 5, 0)), const []);
+      expect(moved, Float32List.fromList([0, 5, 0, 10, 5, 0]));
+      final plane = SectionPlane(
+        id: 's',
+        origin: vm.Vector3(4, 0, 0),
+        normal: vm.Vector3(1, 0, 0),
+        anchorOrigin: vm.Vector3(4, 0, 0),
+      );
+      final clipped = clippedEdgePositions(flat, null, [plane]);
+      expect(clipped, Float32List.fromList([4, 0, 0, 10, 0, 0]));
+    });
+
+    test('sectionSignature is empty without an enabled plane and changes with the plane', () {
+      final a = SectionPlane(id: 'a', origin: vm.Vector3(1, 0, 0), normal: vm.Vector3(1, 0, 0), anchorOrigin: vm.Vector3.zero());
+      final off = SectionPlane(id: 'a', origin: vm.Vector3(1, 0, 0), normal: vm.Vector3(1, 0, 0), anchorOrigin: vm.Vector3.zero(), enabled: false);
+      final moved = SectionPlane(id: 'a', origin: vm.Vector3(2, 0, 0), normal: vm.Vector3(1, 0, 0), anchorOrigin: vm.Vector3.zero());
+      expect(sectionSignature(const []), '');
+      expect(sectionSignature([off]), '');
+      expect(sectionSignature([a]), isNot(sectionSignature([moved])));
+      expect(sectionSignature([a]), sectionSignature([a]));
+    });
+
+    test('edgePositionsCentre is the middle of the box', () {
+      final c = edgePositionsCentre(Float32List.fromList([0, 0, 0, 10, 4, 2]));
+      expect([c.x, c.y, c.z], [5, 2, 1]);
+      expect(edgePositionsCentre(Float32List(0)).length, 0);
+    });
+  });
+}

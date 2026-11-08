@@ -714,6 +714,26 @@ Node buildMeshEdgesNode(
   return Node(name: 'mesh-edges', mesh: Mesh.primitives(primitives: primitives));
 }
 
+/// A1: one [LineSegmentsGeometry] for a whole body's edges - [positions] is six floats per segment (the backend's
+/// `mesh.edges` layout, see `edgePositions`). Static GPU data: drawn as one instanced call, expanded into camera-facing
+/// quads in the vertex shader, so it costs no per-frame CPU work and is never rebuilt when the camera moves. [width]
+/// is in world units; the viewport sets it every frame from the camera (`worldUnitsPerPixel`).
+///
+/// GPU-bound, so - like [buildMeshEdgesNode] - not covered by `flutter test`; the logic around it is in
+/// `edge_batching.dart`.
+LineSegmentsGeometry buildBatchedEdgesGeometry(Float32List positions, {double width = 0.01}) =>
+    LineSegmentsGeometry(LineSegmentData(positions: positions), width: width);
+
+/// A1: a [Node] drawing [geometry] (which several nodes may share, A2) in [color], opaque and double-sided with the
+/// same depth-tested material [buildMeshEdgesNode] uses. The node's `localTransform` places it.
+Node buildBatchedEdgesNode(LineSegmentsGeometry geometry, {required vm.Vector4 color}) {
+  final material = NormalDepthUnlitMaterial()
+    ..alphaMode = AlphaMode.opaque
+    ..baseColorFactor = color
+    ..doubleSided = true;
+  return Node(name: 'mesh-edges-batched', mesh: Mesh(geometry, material));
+}
+
 /// Stage 23 Item 3: thicker than [kEdgeStrokeWidth] for both hover and
 /// selected edge highlights - "colour change + thickness increase" per the
 /// brief - the two states are told apart by colour alone, not by a further

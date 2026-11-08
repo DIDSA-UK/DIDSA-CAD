@@ -24,6 +24,22 @@ its mate plans against the backend in process (usage in the script's docstring).
 | C2 | Visibility panel: a row of Shaded / Shaded + Edges / Wireframe buttons between Show and View; drop the View row's fold chevron | UI | Small (client) |
 | C3 | Hamburger View section: drop the long subtitles; the Override appearance switch moves onto its header line | UI | Small (client) |
 
+## Progress
+
+| Item | State | Notes |
+|---|---|---|
+| A1 | Done (client) | `LineSegmentsGeometry` per body (`buildBatchedEdgesGeometry`); width and depth offset set per frame in `_updateBatchedEdges`. Pure logic in `viewport3d/edge_batching.dart`, tests `edge_batching_test.dart`. GPU result not testable here. |
+| A2 | Not started | |
+| A3 | Not started | |
+| B1 | Not started | |
+| B2 | Not started | |
+| B3 | Not started | |
+| B4 | Not started | |
+| B5 | Not started | |
+| C1 | Not started | |
+| C2 | Not started | |
+| C3 | Not started | |
+
 Suggested order: **A1 → A2 → A3**, then **B2 → B3 → B4 → B1 → B5**, then **C1-C3** (independent, any order). A is the crash
 and comes first. In B, B2 makes a plan's good mates survive its bad ones, so it goes before the rest.
 
