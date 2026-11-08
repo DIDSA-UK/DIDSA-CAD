@@ -1,0 +1,929 @@
+{
+ "version": 1,
+ "steps": [
+  {
+   "local_id": "sk1",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p2",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -44.35,
+   "y": -44.35
+  },
+  {
+   "local_id": "p3",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 44.35,
+   "y": -44.35
+  },
+  {
+   "local_id": "p4",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 44.35,
+   "y": 44.35
+  },
+  {
+   "local_id": "p5",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -44.35,
+   "y": 44.35
+  },
+  {
+   "local_id": "r6",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk1",
+   "corner_point_ids": [
+    "p2",
+    "p3",
+    "p4",
+    "p5"
+   ],
+   "width": 88.7,
+   "height": 88.7
+  },
+  {
+   "local_id": "f7",
+   "kind": "extrude",
+   "sketch_feature_id": "sk1",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 10.0
+  },
+  {
+   "local_id": "sk8",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p9",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk8",
+   "x": 0.0,
+   "y": 0.0
+  },
+  {
+   "local_id": "c10",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk8",
+   "center_point_id": "p9",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p11",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk8",
+   "x": 0.0,
+   "y": 0.0
+  },
+  {
+   "local_id": "c12",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk8",
+   "center_point_id": "p11",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f13",
+   "kind": "extrude",
+   "sketch_feature_id": "sk8",
+   "extrude_type": "boss",
+   "start_distance": 10.0,
+   "end_distance": 1075.85,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk14",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p15",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk14",
+   "x": 0.0,
+   "y": 1075.85
+  },
+  {
+   "local_id": "c16",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk14",
+   "center_point_id": "p15",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p17",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk14",
+   "x": 0.0,
+   "y": 1075.85
+  },
+  {
+   "local_id": "c18",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk14",
+   "center_point_id": "p17",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f19",
+   "kind": "extrude",
+   "sketch_feature_id": "sk14",
+   "extrude_type": "boss",
+   "start_distance": -24.15,
+   "end_distance": 3935.45,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk20",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p21",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk20",
+   "x": 737.91,
+   "y": -44.35
+  },
+  {
+   "local_id": "p22",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk20",
+   "x": 826.61,
+   "y": -44.35
+  },
+  {
+   "local_id": "p23",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk20",
+   "x": 826.61,
+   "y": 44.35
+  },
+  {
+   "local_id": "p24",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk20",
+   "x": 737.91,
+   "y": 44.35
+  },
+  {
+   "local_id": "r25",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk20",
+   "corner_point_ids": [
+    "p21",
+    "p22",
+    "p23",
+    "p24"
+   ],
+   "width": 88.7,
+   "height": 88.7
+  },
+  {
+   "local_id": "f26",
+   "kind": "extrude",
+   "sketch_feature_id": "sk20",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 10.0,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk27",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p28",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk27",
+   "x": 782.26,
+   "y": 0.0
+  },
+  {
+   "local_id": "c29",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk27",
+   "center_point_id": "p28",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p30",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk27",
+   "x": 782.26,
+   "y": 0.0
+  },
+  {
+   "local_id": "c31",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk27",
+   "center_point_id": "p30",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f32",
+   "kind": "extrude",
+   "sketch_feature_id": "sk27",
+   "extrude_type": "boss",
+   "start_distance": 10.0,
+   "end_distance": 1075.85,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk33",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p34",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk33",
+   "x": 1520.17,
+   "y": -44.35
+  },
+  {
+   "local_id": "p35",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk33",
+   "x": 1608.87,
+   "y": -44.35
+  },
+  {
+   "local_id": "p36",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk33",
+   "x": 1608.87,
+   "y": 44.35
+  },
+  {
+   "local_id": "p37",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk33",
+   "x": 1520.17,
+   "y": 44.35
+  },
+  {
+   "local_id": "r38",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk33",
+   "corner_point_ids": [
+    "p34",
+    "p35",
+    "p36",
+    "p37"
+   ],
+   "width": 88.7,
+   "height": 88.7
+  },
+  {
+   "local_id": "f39",
+   "kind": "extrude",
+   "sketch_feature_id": "sk33",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 10.0,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk40",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p41",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk40",
+   "x": 1564.52,
+   "y": 0.0
+  },
+  {
+   "local_id": "c42",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk40",
+   "center_point_id": "p41",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p43",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk40",
+   "x": 1564.52,
+   "y": 0.0
+  },
+  {
+   "local_id": "c44",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk40",
+   "center_point_id": "p43",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f45",
+   "kind": "extrude",
+   "sketch_feature_id": "sk40",
+   "extrude_type": "boss",
+   "start_distance": 10.0,
+   "end_distance": 1075.85,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk46",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p47",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk46",
+   "x": 2302.43,
+   "y": -44.35
+  },
+  {
+   "local_id": "p48",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk46",
+   "x": 2391.13,
+   "y": -44.35
+  },
+  {
+   "local_id": "p49",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk46",
+   "x": 2391.13,
+   "y": 44.35
+  },
+  {
+   "local_id": "p50",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk46",
+   "x": 2302.43,
+   "y": 44.35
+  },
+  {
+   "local_id": "r51",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk46",
+   "corner_point_ids": [
+    "p47",
+    "p48",
+    "p49",
+    "p50"
+   ],
+   "width": 88.7,
+   "height": 88.7
+  },
+  {
+   "local_id": "f52",
+   "kind": "extrude",
+   "sketch_feature_id": "sk46",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 10.0,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk53",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p54",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk53",
+   "x": 2346.78,
+   "y": 0.0
+  },
+  {
+   "local_id": "c55",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk53",
+   "center_point_id": "p54",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p56",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk53",
+   "x": 2346.78,
+   "y": 0.0
+  },
+  {
+   "local_id": "c57",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk53",
+   "center_point_id": "p56",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f58",
+   "kind": "extrude",
+   "sketch_feature_id": "sk53",
+   "extrude_type": "boss",
+   "start_distance": 10.0,
+   "end_distance": 1075.85,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk59",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p60",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk59",
+   "x": 3084.69,
+   "y": -44.35
+  },
+  {
+   "local_id": "p61",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk59",
+   "x": 3173.39,
+   "y": -44.35
+  },
+  {
+   "local_id": "p62",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk59",
+   "x": 3173.39,
+   "y": 44.35
+  },
+  {
+   "local_id": "p63",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk59",
+   "x": 3084.69,
+   "y": 44.35
+  },
+  {
+   "local_id": "r64",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk59",
+   "corner_point_ids": [
+    "p60",
+    "p61",
+    "p62",
+    "p63"
+   ],
+   "width": 88.7,
+   "height": 88.7
+  },
+  {
+   "local_id": "f65",
+   "kind": "extrude",
+   "sketch_feature_id": "sk59",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 10.0,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk66",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p67",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk66",
+   "x": 3129.04,
+   "y": 0.0
+  },
+  {
+   "local_id": "c68",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk66",
+   "center_point_id": "p67",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p69",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk66",
+   "x": 3129.04,
+   "y": 0.0
+  },
+  {
+   "local_id": "c70",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk66",
+   "center_point_id": "p69",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f71",
+   "kind": "extrude",
+   "sketch_feature_id": "sk66",
+   "extrude_type": "boss",
+   "start_distance": 10.0,
+   "end_distance": 1075.85,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk72",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p73",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk72",
+   "x": 3866.95,
+   "y": -44.35
+  },
+  {
+   "local_id": "p74",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk72",
+   "x": 3955.65,
+   "y": -44.35
+  },
+  {
+   "local_id": "p75",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk72",
+   "x": 3955.65,
+   "y": 44.35
+  },
+  {
+   "local_id": "p76",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk72",
+   "x": 3866.95,
+   "y": 44.35
+  },
+  {
+   "local_id": "r77",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk72",
+   "corner_point_ids": [
+    "p73",
+    "p74",
+    "p75",
+    "p76"
+   ],
+   "width": 88.7,
+   "height": 88.7
+  },
+  {
+   "local_id": "f78",
+   "kind": "extrude",
+   "sketch_feature_id": "sk72",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 10.0,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk79",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p80",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk79",
+   "x": 3911.3,
+   "y": 0.0
+  },
+  {
+   "local_id": "c81",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk79",
+   "center_point_id": "p80",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p82",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk79",
+   "x": 3911.3,
+   "y": 0.0
+  },
+  {
+   "local_id": "c83",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk79",
+   "center_point_id": "p82",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f84",
+   "kind": "extrude",
+   "sketch_feature_id": "sk79",
+   "extrude_type": "boss",
+   "start_distance": 10.0,
+   "end_distance": 1075.85,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk85",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p86",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk85",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c87",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk85",
+   "center_point_id": "p86",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p88",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk85",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c89",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk85",
+   "center_point_id": "p88",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f90",
+   "kind": "extrude",
+   "sketch_feature_id": "sk85",
+   "extrude_type": "boss",
+   "start_distance": 0.0,
+   "end_distance": 782.26,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk91",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p92",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk91",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c93",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk91",
+   "center_point_id": "p92",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p94",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk91",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c95",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk91",
+   "center_point_id": "p94",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f96",
+   "kind": "extrude",
+   "sketch_feature_id": "sk91",
+   "extrude_type": "boss",
+   "start_distance": 782.26,
+   "end_distance": 1564.52,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk97",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p98",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk97",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c99",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk97",
+   "center_point_id": "p98",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p100",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk97",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c101",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk97",
+   "center_point_id": "p100",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f102",
+   "kind": "extrude",
+   "sketch_feature_id": "sk97",
+   "extrude_type": "boss",
+   "start_distance": 1564.52,
+   "end_distance": 2346.78,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk103",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p104",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk103",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c105",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk103",
+   "center_point_id": "p104",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p106",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk103",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c107",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk103",
+   "center_point_id": "p106",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f108",
+   "kind": "extrude",
+   "sketch_feature_id": "sk103",
+   "extrude_type": "boss",
+   "start_distance": 2346.78,
+   "end_distance": 3129.04,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk109",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p110",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk109",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c111",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk109",
+   "center_point_id": "p110",
+   "radius": 24.15
+  },
+  {
+   "local_id": "p112",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk109",
+   "x": 0.0,
+   "y": 550.0
+  },
+  {
+   "local_id": "c113",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk109",
+   "center_point_id": "p112",
+   "radius": 20.95
+  },
+  {
+   "local_id": "f114",
+   "kind": "extrude",
+   "sketch_feature_id": "sk109",
+   "extrude_type": "boss",
+   "start_distance": 3129.04,
+   "end_distance": 3911.3,
+   "target_body_ids": [
+    "f7"
+   ]
+  },
+  {
+   "local_id": "sk115",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p116",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk115",
+   "x": -29.15,
+   "y": 10.0
+  },
+  {
+   "local_id": "p117",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk115",
+   "x": -23.15,
+   "y": 10.0
+  },
+  {
+   "local_id": "p118",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk115",
+   "x": -23.15,
+   "y": 160.0
+  },
+  {
+   "local_id": "p119",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk115",
+   "x": -29.15,
+   "y": 160.0
+  },
+  {
+   "local_id": "r120",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk115",
+   "corner_point_ids": [
+    "p116",
+    "p117",
+    "p118",
+    "p119"
+   ],
+   "width": 6.0,
+   "height": 150.0
+  },
+  {
+   "local_id": "f121",
+   "kind": "extrude",
+   "sketch_feature_id": "sk115",
+   "extrude_type": "boss",
+   "start_distance": -30.15,
+   "end_distance": 3941.45,
+   "target_body_ids": [
+    "f7"
+   ]
+  }
+ ]
+}

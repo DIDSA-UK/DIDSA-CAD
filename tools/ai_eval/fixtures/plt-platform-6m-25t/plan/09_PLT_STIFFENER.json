@@ -1,0 +1,59 @@
+{
+ "version": 1,
+ "steps": [
+  {
+   "local_id": "sk1",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p2",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 0.0,
+   "y": 0.0
+  },
+  {
+   "local_id": "p3",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 61.7,
+   "y": 0.0
+  },
+  {
+   "local_id": "p4",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 61.7,
+   "y": 187.6
+  },
+  {
+   "local_id": "p5",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 0.0,
+   "y": 187.6
+  },
+  {
+   "local_id": "r6",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk1",
+   "corner_point_ids": [
+    "p2",
+    "p3",
+    "p4",
+    "p5"
+   ],
+   "width": 61.7,
+   "height": 187.6
+  },
+  {
+   "local_id": "f7",
+   "kind": "extrude",
+   "sketch_feature_id": "sk1",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 10.0
+  }
+ ]
+}

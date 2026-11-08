@@ -1,0 +1,217 @@
+{
+ "version": 1,
+ "steps": [
+  {
+   "local_id": "lower",
+   "kind": "add_component",
+   "relative_path": "PLT_MODULE_001.didsa",
+   "name_override": "Module 1 (lower)"
+  },
+  {
+   "local_id": "upper",
+   "kind": "add_component",
+   "relative_path": "PLT_MODULE_001.didsa",
+   "name_override": "Module 2 (upper)"
+  },
+  {
+   "local_id": "deck",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_001.didsa",
+   "name_override": "Deck"
+  },
+  {
+   "local_id": "mv_upper",
+   "kind": "move_component",
+   "occurrence_id": "upper",
+   "translation": [
+    0.0,
+    0.0,
+    2807.2
+   ]
+  },
+  {
+   "local_id": "mv_deck",
+   "kind": "move_component",
+   "occurrence_id": "deck",
+   "translation": [
+    -500.0,
+    0.0,
+    5634.4
+   ]
+  },
+  {
+   "local_id": "m1",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "upper/bp0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "lower/cp0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m2",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "upper/bp0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "lower/cp0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -150.0,
+       0.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m3",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "upper/bp0",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "lower/cp0",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -150.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m4",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "deck/dp0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "upper/cp0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m5",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "deck/dp0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "upper/cp0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -150.0,
+       0.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m6",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "deck/dp0",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "upper/cp0",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -150.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  }
+ ]
+}

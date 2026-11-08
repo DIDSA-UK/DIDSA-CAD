@@ -3850,3 +3850,15 @@ Verified: CI green for each phase (analyze clean; 3593, 3593 and 3597 tests pass
 Not verified: how it looks (no GPU in tests; only the device checks above). The shade value 0.55 was kept without a comparison of other values. **Open, found during the Phase 2 check and not part of this plan:** in "shaded with edges" mode with a fully opaque body, the hole rims looked missing at one end. The owner's close-ups showed the rims are drawn at both ends and the cause is contrast, not depth: the mid-grey edge colour is faint on a dark, shaded face (the face turned away from the light) and clear on a light one. Not fixed. A possible follow-up is the same light-line-with-dark-edge idea used for sketch lines, or a darker edge colour for body edges (`buildMeshEdgesNode`, `mesh_geometry.dart`); only on the owner's say-so.
 
 Follow-ups on the same branch (owner's requests after the device checks; CI run 42253509464 green: analyze clean, 3598 passed, 47 skipped, APK built): body edges in "shaded with edges" mode are now near black `#0D0D0D` (was `#333333`; wireframe unchanged), which resolves the faint hole rims above; sketch line outlines are 0.75 px each side (was 1.25), so outlined lines are 1 px narrower overall; the DIDSA logo (`DidsaLogoButton`, still tappable to the website) sits at the top of the Part menu panel on the phone layout, left of the close button (the desktop panel has no header row, so no logo there). Not verified on a device. Only the Part menu panel was changed: the sketch screen's hamburger panel was not touched.
+
+## 2026-11-08 — Investigation: assembly crash on orbit / zoom, AI-plan mates; plan written (not built)
+
+The owner's AI Modelling platform assembly (6 m, two tower modules and a deck, from an external-AI zip) crashed the app when
+orbiting fast or zooming in, on both backends, and every saved file had no mates. **Crash:** body edges are drawn as one
+`PolylineGeometry` per segment (11,918 for this model, about 298,000 GPU buffers), updated every frame and rebuilt at every
+gesture end; the owner confirmed no crash with edges off. **Mates:** on current `main` the module builds 89 of 93 (four
+near-redundant brace mates, 3.5e-6 rad apart from rounded AI coordinates), the deck's plan fails validation (the guardrail parts
+came out as 17 and 7 bodies) and the top level builds 6 of 6; the owner's backends are probably older than 2026-11-04.
+The fix plan, with the owner's UI requests (Edit Alone pill, Visibility panel styles, View menu tidy-up), is
+`docs/assembly-perf-mates-and-ui-plan.md`. Fixture: `tools/ai_eval/fixtures/plt-platform-6m-25t/`; replay tool:
+`tools/ai_eval/replay_bundle_mates.py`. Nothing tried on a device beyond the owner's edges-off check.

@@ -1,0 +1,3405 @@
+{
+ "version": 1,
+ "steps": [
+  {
+   "local_id": "bp0",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Base pad C1"
+  },
+  {
+   "local_id": "bp1",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Base pad C2"
+  },
+  {
+   "local_id": "bp2",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Base pad C3"
+  },
+  {
+   "local_id": "bp3",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Base pad C4"
+  },
+  {
+   "local_id": "col0",
+   "kind": "add_component",
+   "relative_path": "PLT_COLUMN_001.didsa",
+   "name_override": "Column C1"
+  },
+  {
+   "local_id": "col1",
+   "kind": "add_component",
+   "relative_path": "PLT_COLUMN_001.didsa",
+   "name_override": "Column C2"
+  },
+  {
+   "local_id": "col2",
+   "kind": "add_component",
+   "relative_path": "PLT_COLUMN_001.didsa",
+   "name_override": "Column C3"
+  },
+  {
+   "local_id": "col3",
+   "kind": "add_component",
+   "relative_path": "PLT_COLUMN_001.didsa",
+   "name_override": "Column C4"
+  },
+  {
+   "local_id": "cp0",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Cap pad C1"
+  },
+  {
+   "local_id": "cp1",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Cap pad C2"
+  },
+  {
+   "local_id": "cp2",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Cap pad C3"
+  },
+  {
+   "local_id": "cp3",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Cap pad C4"
+  },
+  {
+   "local_id": "bb0",
+   "kind": "add_component",
+   "relative_path": "PLT_TIE_BEAM_001.didsa",
+   "name_override": "Bottom beam F1"
+  },
+  {
+   "local_id": "tb0",
+   "kind": "add_component",
+   "relative_path": "PLT_TIE_BEAM_001.didsa",
+   "name_override": "Top beam F1"
+  },
+  {
+   "local_id": "gb0",
+   "kind": "add_component",
+   "relative_path": "PLT_GUSSET_W_001.didsa",
+   "name_override": "Gusset bottom F1"
+  },
+  {
+   "local_id": "gt0",
+   "kind": "add_component",
+   "relative_path": "PLT_GUSSET_F_001.didsa",
+   "name_override": "Gusset top F1"
+  },
+  {
+   "local_id": "br0",
+   "kind": "add_component",
+   "relative_path": "PLT_BRACE_001.didsa",
+   "name_override": "Brace F1"
+  },
+  {
+   "local_id": "bb1",
+   "kind": "add_component",
+   "relative_path": "PLT_TIE_BEAM_001.didsa",
+   "name_override": "Bottom beam F2"
+  },
+  {
+   "local_id": "tb1",
+   "kind": "add_component",
+   "relative_path": "PLT_TIE_BEAM_001.didsa",
+   "name_override": "Top beam F2"
+  },
+  {
+   "local_id": "gb1",
+   "kind": "add_component",
+   "relative_path": "PLT_GUSSET_W_001.didsa",
+   "name_override": "Gusset bottom F2"
+  },
+  {
+   "local_id": "gt1",
+   "kind": "add_component",
+   "relative_path": "PLT_GUSSET_F_001.didsa",
+   "name_override": "Gusset top F2"
+  },
+  {
+   "local_id": "br1",
+   "kind": "add_component",
+   "relative_path": "PLT_BRACE_001.didsa",
+   "name_override": "Brace F2"
+  },
+  {
+   "local_id": "bb2",
+   "kind": "add_component",
+   "relative_path": "PLT_TIE_BEAM_001.didsa",
+   "name_override": "Bottom beam F3"
+  },
+  {
+   "local_id": "tb2",
+   "kind": "add_component",
+   "relative_path": "PLT_TIE_BEAM_001.didsa",
+   "name_override": "Top beam F3"
+  },
+  {
+   "local_id": "gb2",
+   "kind": "add_component",
+   "relative_path": "PLT_GUSSET_W_001.didsa",
+   "name_override": "Gusset bottom F3"
+  },
+  {
+   "local_id": "gt2",
+   "kind": "add_component",
+   "relative_path": "PLT_GUSSET_F_001.didsa",
+   "name_override": "Gusset top F3"
+  },
+  {
+   "local_id": "br2",
+   "kind": "add_component",
+   "relative_path": "PLT_BRACE_001.didsa",
+   "name_override": "Brace F3"
+  },
+  {
+   "local_id": "bb3",
+   "kind": "add_component",
+   "relative_path": "PLT_TIE_BEAM_001.didsa",
+   "name_override": "Bottom beam F4"
+  },
+  {
+   "local_id": "tb3",
+   "kind": "add_component",
+   "relative_path": "PLT_TIE_BEAM_001.didsa",
+   "name_override": "Top beam F4"
+  },
+  {
+   "local_id": "gb3",
+   "kind": "add_component",
+   "relative_path": "PLT_GUSSET_W_001.didsa",
+   "name_override": "Gusset bottom F4"
+  },
+  {
+   "local_id": "gt3",
+   "kind": "add_component",
+   "relative_path": "PLT_GUSSET_F_001.didsa",
+   "name_override": "Gusset top F4"
+  },
+  {
+   "local_id": "br3",
+   "kind": "add_component",
+   "relative_path": "PLT_BRACE_001.didsa",
+   "name_override": "Brace F4"
+  },
+  {
+   "local_id": "mv_bp1",
+   "kind": "move_component",
+   "occurrence_id": "bp1",
+   "translation": [
+    3000.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "local_id": "mv_bp2",
+   "kind": "move_component",
+   "occurrence_id": "bp2",
+   "translation": [
+    3000.0,
+    3000.0,
+    0.0
+   ]
+  },
+  {
+   "local_id": "mv_bp3",
+   "kind": "move_component",
+   "occurrence_id": "bp3",
+   "translation": [
+    0.0,
+    3000.0,
+    0.0
+   ]
+  },
+  {
+   "local_id": "mv_col0",
+   "kind": "move_component",
+   "occurrence_id": "col0",
+   "translation": [
+    0.0,
+    0.0,
+    20.0
+   ]
+  },
+  {
+   "local_id": "mv_col1",
+   "kind": "move_component",
+   "occurrence_id": "col1",
+   "translation": [
+    3000.0,
+    0.0,
+    20.0
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_col2",
+   "kind": "move_component",
+   "occurrence_id": "col2",
+   "translation": [
+    3000.0,
+    3000.0,
+    20.0
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_col3",
+   "kind": "move_component",
+   "occurrence_id": "col3",
+   "translation": [
+    0.0,
+    3000.0,
+    20.0
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_cp0",
+   "kind": "move_component",
+   "occurrence_id": "cp0",
+   "translation": [
+    0.0,
+    0.0,
+    2787.2
+   ]
+  },
+  {
+   "local_id": "mv_cp1",
+   "kind": "move_component",
+   "occurrence_id": "cp1",
+   "translation": [
+    3000.0,
+    0.0,
+    2787.2
+   ]
+  },
+  {
+   "local_id": "mv_cp2",
+   "kind": "move_component",
+   "occurrence_id": "cp2",
+   "translation": [
+    3000.0,
+    3000.0,
+    2787.2
+   ]
+  },
+  {
+   "local_id": "mv_cp3",
+   "kind": "move_component",
+   "occurrence_id": "cp3",
+   "translation": [
+    0.0,
+    3000.0,
+    2787.2
+   ]
+  },
+  {
+   "local_id": "mv_bb0",
+   "kind": "move_component",
+   "occurrence_id": "bb0",
+   "translation": [
+    2.9,
+    0.0,
+    83.5
+   ]
+  },
+  {
+   "local_id": "mv_tb0",
+   "kind": "move_component",
+   "occurrence_id": "tb0",
+   "translation": [
+    2.9,
+    0.0,
+    2723.7
+   ]
+  },
+  {
+   "local_id": "mv_gb0",
+   "kind": "move_component",
+   "occurrence_id": "gb0",
+   "translation": [
+    2.9,
+    5.0,
+    147.0
+   ],
+   "rotation_axis": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_gt0",
+   "kind": "move_component",
+   "occurrence_id": "gt0",
+   "translation": [
+    2923.8,
+    5.0,
+    2660.2
+   ],
+   "rotation_axis": [
+    0.0,
+    0.707107,
+    -0.707107
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_br0",
+   "kind": "move_component",
+   "occurrence_id": "br0",
+   "translation": [
+    150.262,
+    -7.0,
+    215.74
+   ],
+   "rotation_axis": [
+    0.0,
+    -1.0,
+    0.0
+   ],
+   "rotation_angle_degrees": 41.3499
+  },
+  {
+   "local_id": "mv_bb1",
+   "kind": "move_component",
+   "occurrence_id": "bb1",
+   "translation": [
+    3000.0,
+    2.9,
+    83.5
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_tb1",
+   "kind": "move_component",
+   "occurrence_id": "tb1",
+   "translation": [
+    3000.0,
+    2.9,
+    2723.7
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_gb1",
+   "kind": "move_component",
+   "occurrence_id": "gb1",
+   "translation": [
+    2995.0,
+    2.9,
+    147.0
+   ],
+   "rotation_axis": [
+    0.57735,
+    0.57735,
+    0.57735
+   ],
+   "rotation_angle_degrees": 120.0
+  },
+  {
+   "local_id": "mv_gt1",
+   "kind": "move_component",
+   "occurrence_id": "gt1",
+   "translation": [
+    2995.0,
+    2923.8,
+    2660.2
+   ],
+   "rotation_axis": [
+    -0.57735,
+    0.57735,
+    -0.57735
+   ],
+   "rotation_angle_degrees": 120.0
+  },
+  {
+   "local_id": "mv_br1",
+   "kind": "move_component",
+   "occurrence_id": "br1",
+   "translation": [
+    3007.0,
+    150.262,
+    215.74
+   ],
+   "rotation_axis": [
+    0.332925,
+    -0.332925,
+    0.882226
+   ],
+   "rotation_angle_degrees": 97.1609
+  },
+  {
+   "local_id": "mv_bb2",
+   "kind": "move_component",
+   "occurrence_id": "bb2",
+   "translation": [
+    2997.1,
+    3000.0,
+    83.5
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_tb2",
+   "kind": "move_component",
+   "occurrence_id": "tb2",
+   "translation": [
+    2997.1,
+    3000.0,
+    2723.7
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_gb2",
+   "kind": "move_component",
+   "occurrence_id": "gb2",
+   "translation": [
+    2997.1,
+    2995.0,
+    147.0
+   ],
+   "rotation_axis": [
+    0.0,
+    0.707107,
+    0.707107
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_gt2",
+   "kind": "move_component",
+   "occurrence_id": "gt2",
+   "translation": [
+    76.2,
+    2995.0,
+    2660.2
+   ],
+   "rotation_axis": [
+    -1.0,
+    0.0,
+    0.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_br2",
+   "kind": "move_component",
+   "occurrence_id": "br2",
+   "translation": [
+    2849.738,
+    3007.0,
+    215.74
+   ],
+   "rotation_axis": [
+    0.353066,
+    0.0,
+    0.935598
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_bb3",
+   "kind": "move_component",
+   "occurrence_id": "bb3",
+   "translation": [
+    0.0,
+    2997.1,
+    83.5
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_tb3",
+   "kind": "move_component",
+   "occurrence_id": "tb3",
+   "translation": [
+    0.0,
+    2997.1,
+    2723.7
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_gb3",
+   "kind": "move_component",
+   "occurrence_id": "gb3",
+   "translation": [
+    5.0,
+    2997.1,
+    147.0
+   ],
+   "rotation_axis": [
+    0.57735,
+    -0.57735,
+    -0.57735
+   ],
+   "rotation_angle_degrees": 120.0
+  },
+  {
+   "local_id": "mv_gt3",
+   "kind": "move_component",
+   "occurrence_id": "gt3",
+   "translation": [
+    5.0,
+    76.2,
+    2660.2
+   ],
+   "rotation_axis": [
+    -0.57735,
+    -0.57735,
+    0.57735
+   ],
+   "rotation_angle_degrees": 120.0
+  },
+  {
+   "local_id": "mv_br3",
+   "kind": "move_component",
+   "occurrence_id": "br3",
+   "translation": [
+    -7.0,
+    2849.738,
+    215.74
+   ],
+   "rotation_axis": [
+    -0.332925,
+    -0.332925,
+    -0.882226
+   ],
+   "rotation_angle_degrees": 97.1609
+  },
+  {
+   "local_id": "m1",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       75.2,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m2",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       76.1,
+       74.2,
+       500.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp0",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       150.0,
+       0.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.9
+  },
+  {
+   "local_id": "m3",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       500.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.8
+  },
+  {
+   "local_id": "m4",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m5",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       500.0,
+       0.0,
+       -63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m6",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.2
+  },
+  {
+   "local_id": "m7",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb0",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2920.9,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m8",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       75.2,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m9",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       76.1,
+       74.2,
+       500.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.1
+  },
+  {
+   "local_id": "m10",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       75.2,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m11",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -76.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.8
+  },
+  {
+   "local_id": "m12",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       76.1,
+       74.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.9
+  },
+  {
+   "local_id": "m13",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       75.2,
+       2767.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m14",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp0",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       76.1,
+       74.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.9
+  },
+  {
+   "local_id": "m15",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.8
+  },
+  {
+   "local_id": "m16",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       2703.7
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m17",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       500.0,
+       0.0,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "cp0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m18",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.2
+  },
+  {
+   "local_id": "m19",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       63.137,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       213.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m20",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb0",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       100.197,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       100.197,
+       0.0,
+       63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m21",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       175.395,
+       5.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       2.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3.0
+  },
+  {
+   "local_id": "m22",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       63.137,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2553.7
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m23",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt0",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       63.547,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "tb0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       2857.353,
+       0.0,
+       -63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m24",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       102.095,
+       5.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "tb0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       2.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3.0
+  },
+  {
+   "local_id": "m25",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1798.0,
+       2.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       175.395,
+       5.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m26",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       1798.0,
+       0.0,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb0",
+     "face_selector": {
+      "normal": [
+       -0.660656,
+       0.750689,
+       0.0
+      ],
+      "near": [
+       185.644,
+       169.037,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 13.5
+  },
+  {
+   "local_id": "m27",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb0",
+     "face_selector": {
+      "normal": [
+       0.750689,
+       0.660656,
+       0.0
+      ],
+      "near": [
+       289.993,
+       194.265,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 190.0
+  },
+  {
+   "local_id": "m28",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m29",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       500.0,
+       0.0,
+       -63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m30",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.2
+  },
+  {
+   "local_id": "m31",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2920.9,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m32",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       75.2,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m33",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       76.1,
+       74.2,
+       500.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.1
+  },
+  {
+   "local_id": "m34",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       75.2,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m35",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp2",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -76.1,
+       74.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.9
+  },
+  {
+   "local_id": "m36",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -76.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.8
+  },
+  {
+   "local_id": "m37",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       75.2,
+       2767.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m38",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -76.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.8
+  },
+  {
+   "local_id": "m39",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       76.1,
+       74.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.9
+  },
+  {
+   "local_id": "m40",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       2703.7
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m41",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       500.0,
+       0.0,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "cp1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m42",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.2
+  },
+  {
+   "local_id": "m43",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       63.137,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col1",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       213.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m44",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       100.197,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       100.197,
+       0.0,
+       63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m45",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       175.395,
+       5.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       2.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3.0
+  },
+  {
+   "local_id": "m46",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       63.137,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2553.7
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m47",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       63.547,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "tb1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       2857.353,
+       0.0,
+       -63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m48",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       102.095,
+       5.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "tb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       2.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3.0
+  },
+  {
+   "local_id": "m49",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1798.0,
+       2.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       175.395,
+       5.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m50",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       1798.0,
+       0.0,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb1",
+     "face_selector": {
+      "normal": [
+       -0.660656,
+       0.750689,
+       0.0
+      ],
+      "near": [
+       185.644,
+       169.037,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 13.5
+  },
+  {
+   "local_id": "m51",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb1",
+     "face_selector": {
+      "normal": [
+       0.750689,
+       0.660656,
+       0.0
+      ],
+      "near": [
+       289.993,
+       194.265,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 190.0
+  },
+  {
+   "local_id": "m52",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m53",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       500.0,
+       0.0,
+       -63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m54",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.2
+  },
+  {
+   "local_id": "m55",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb2",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2920.9,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m56",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       75.2,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m57",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       76.1,
+       74.2,
+       500.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.1
+  },
+  {
+   "local_id": "m58",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp3",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       75.2,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m59",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp3",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.8
+  },
+  {
+   "local_id": "m60",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bp3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -76.1,
+       74.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.9
+  },
+  {
+   "local_id": "m61",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       75.2,
+       2767.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m62",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp2",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -76.1,
+       74.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.9
+  },
+  {
+   "local_id": "m63",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -76.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.8
+  },
+  {
+   "local_id": "m64",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       2703.7
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m65",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       500.0,
+       0.0,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "cp2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m66",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.2
+  },
+  {
+   "local_id": "m67",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       63.137,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col2",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       213.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m68",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       100.197,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       100.197,
+       0.0,
+       63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m69",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       175.395,
+       5.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       2.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3.0
+  },
+  {
+   "local_id": "m70",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       63.137,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2553.7
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m71",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       63.547,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "tb2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       2857.353,
+       0.0,
+       -63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m72",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       102.095,
+       5.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "tb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       2.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3.0
+  },
+  {
+   "local_id": "m73",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1798.0,
+       2.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       175.395,
+       5.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m74",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       1798.0,
+       0.0,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb2",
+     "face_selector": {
+      "normal": [
+       -0.660656,
+       0.750689,
+       0.0
+      ],
+      "near": [
+       185.644,
+       169.037,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 13.5
+  },
+  {
+   "local_id": "m75",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb2",
+     "face_selector": {
+      "normal": [
+       0.750689,
+       0.660656,
+       0.0
+      ],
+      "near": [
+       289.993,
+       194.265,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 190.0
+  },
+  {
+   "local_id": "m76",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m77",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       500.0,
+       0.0,
+       -63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bp3",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m78",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "bb3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       500.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.2
+  },
+  {
+   "local_id": "m79",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       75.2,
+       2767.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m80",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp3",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.8
+  },
+  {
+   "local_id": "m81",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "cp3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -76.1,
+       74.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 73.9
+  },
+  {
+   "local_id": "m82",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       2703.7
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m83",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb3",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       500.0,
+       0.0,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "cp3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m84",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "tb3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       38.0,
+       61.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2000.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 38.2
+  },
+  {
+   "local_id": "m85",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       63.137,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col3",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       2.9,
+       0.0,
+       213.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m86",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb3",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       100.197,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb3",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       100.197,
+       0.0,
+       63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m87",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gb3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       175.395,
+       5.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "bb3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       2.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3.0
+  },
+  {
+   "local_id": "m88",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       63.137,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "col0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       76.2,
+       2553.7
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m89",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt3",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       63.547,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "tb3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       2857.353,
+       0.0,
+       -63.5
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m90",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "gt3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       102.095,
+       5.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "tb3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       2.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3.0
+  },
+  {
+   "local_id": "m91",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1798.0,
+       2.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb3",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       175.395,
+       5.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m92",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br3",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       1798.0,
+       0.0,
+       63.5
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb3",
+     "face_selector": {
+      "normal": [
+       -0.660656,
+       0.750689,
+       0.0
+      ],
+      "near": [
+       185.644,
+       169.037,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 13.5
+  },
+  {
+   "local_id": "m93",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "br3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "gb3",
+     "face_selector": {
+      "normal": [
+       0.750689,
+       0.660656,
+       0.0
+      ],
+      "near": [
+       289.993,
+       194.265,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 190.0
+  }
+ ]
+}

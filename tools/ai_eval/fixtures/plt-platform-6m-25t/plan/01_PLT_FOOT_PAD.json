@@ -1,0 +1,131 @@
+{
+ "version": 1,
+ "steps": [
+  {
+   "local_id": "sk1",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p2",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -150.0,
+   "y": -150.0
+  },
+  {
+   "local_id": "p3",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 150.0,
+   "y": -150.0
+  },
+  {
+   "local_id": "p4",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 150.0,
+   "y": 150.0
+  },
+  {
+   "local_id": "p5",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -150.0,
+   "y": 150.0
+  },
+  {
+   "local_id": "r6",
+   "kind": "sketch_rectangle",
+   "sketch_feature_id": "sk1",
+   "corner_point_ids": [
+    "p2",
+    "p3",
+    "p4",
+    "p5"
+   ],
+   "width": 300.0,
+   "height": 300.0
+  },
+  {
+   "local_id": "f7",
+   "kind": "extrude",
+   "sketch_feature_id": "sk1",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 20.0
+  },
+  {
+   "local_id": "sk8",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p9",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk8",
+   "x": -115.0,
+   "y": -115.0
+  },
+  {
+   "local_id": "c10",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk8",
+   "center_point_id": "p9",
+   "radius": 11
+  },
+  {
+   "local_id": "p11",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk8",
+   "x": -115.0,
+   "y": 115.0
+  },
+  {
+   "local_id": "c12",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk8",
+   "center_point_id": "p11",
+   "radius": 11
+  },
+  {
+   "local_id": "p13",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk8",
+   "x": 115.0,
+   "y": -115.0
+  },
+  {
+   "local_id": "c14",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk8",
+   "center_point_id": "p13",
+   "radius": 11
+  },
+  {
+   "local_id": "p15",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk8",
+   "x": 115.0,
+   "y": 115.0
+  },
+  {
+   "local_id": "c16",
+   "kind": "sketch_circle",
+   "sketch_feature_id": "sk8",
+   "center_point_id": "p15",
+   "radius": 11
+  },
+  {
+   "local_id": "f17",
+   "kind": "extrude",
+   "sketch_feature_id": "sk8",
+   "extrude_type": "cut",
+   "start_distance": 0,
+   "end_distance": 20.0,
+   "target_body_ids": [
+    "f7"
+   ]
+  }
+ ]
+}

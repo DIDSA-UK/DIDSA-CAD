@@ -1,0 +1,2590 @@
+{
+ "version": 1,
+ "steps": [
+  {
+   "local_id": "mb1",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_BEAM_001.didsa",
+   "name_override": "Deck main beam 1"
+  },
+  {
+   "local_id": "mb2",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_BEAM_001.didsa",
+   "name_override": "Deck main beam 2"
+  },
+  {
+   "local_id": "j0",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_JOIST_001.didsa",
+   "name_override": "Deck joist 1"
+  },
+  {
+   "local_id": "j1",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_JOIST_001.didsa",
+   "name_override": "Deck joist 2"
+  },
+  {
+   "local_id": "j2",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_JOIST_001.didsa",
+   "name_override": "Deck joist 3"
+  },
+  {
+   "local_id": "j3",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_JOIST_001.didsa",
+   "name_override": "Deck joist 4"
+  },
+  {
+   "local_id": "j4",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_JOIST_001.didsa",
+   "name_override": "Deck joist 5"
+  },
+  {
+   "local_id": "j5",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_JOIST_001.didsa",
+   "name_override": "Deck joist 6"
+  },
+  {
+   "local_id": "dp0",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Deck bearing pad 1"
+  },
+  {
+   "local_id": "dp1",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Deck bearing pad 2"
+  },
+  {
+   "local_id": "dp2",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Deck bearing pad 3"
+  },
+  {
+   "local_id": "dp3",
+   "kind": "add_component",
+   "relative_path": "PLT_FOOT_PAD_001.didsa",
+   "name_override": "Deck bearing pad 4"
+  },
+  {
+   "local_id": "st0a",
+   "kind": "add_component",
+   "relative_path": "PLT_STIFFENER_001.didsa",
+   "name_override": "Stiffener 1a"
+  },
+  {
+   "local_id": "st0b",
+   "kind": "add_component",
+   "relative_path": "PLT_STIFFENER_001.didsa",
+   "name_override": "Stiffener 1b"
+  },
+  {
+   "local_id": "st1a",
+   "kind": "add_component",
+   "relative_path": "PLT_STIFFENER_001.didsa",
+   "name_override": "Stiffener 2a"
+  },
+  {
+   "local_id": "st1b",
+   "kind": "add_component",
+   "relative_path": "PLT_STIFFENER_001.didsa",
+   "name_override": "Stiffener 2b"
+  },
+  {
+   "local_id": "st2a",
+   "kind": "add_component",
+   "relative_path": "PLT_STIFFENER_001.didsa",
+   "name_override": "Stiffener 3a"
+  },
+  {
+   "local_id": "st2b",
+   "kind": "add_component",
+   "relative_path": "PLT_STIFFENER_001.didsa",
+   "name_override": "Stiffener 3b"
+  },
+  {
+   "local_id": "st3a",
+   "kind": "add_component",
+   "relative_path": "PLT_STIFFENER_001.didsa",
+   "name_override": "Stiffener 4a"
+  },
+  {
+   "local_id": "st3b",
+   "kind": "add_component",
+   "relative_path": "PLT_STIFFENER_001.didsa",
+   "name_override": "Stiffener 4b"
+  },
+  {
+   "local_id": "plate",
+   "kind": "add_component",
+   "relative_path": "PLT_DECK_PLATE_001.didsa",
+   "name_override": "Deck plate"
+  },
+  {
+   "local_id": "rail_a1",
+   "kind": "add_component",
+   "relative_path": "PLT_RAIL_A_001.didsa",
+   "name_override": "Guardrail A front"
+  },
+  {
+   "local_id": "rail_a2",
+   "kind": "add_component",
+   "relative_path": "PLT_RAIL_A_001.didsa",
+   "name_override": "Guardrail A rear"
+  },
+  {
+   "local_id": "rail_b1",
+   "kind": "add_component",
+   "relative_path": "PLT_RAIL_B_001.didsa",
+   "name_override": "Guardrail B right"
+  },
+  {
+   "local_id": "rail_b2",
+   "kind": "add_component",
+   "relative_path": "PLT_RAIL_B_001.didsa",
+   "name_override": "Guardrail B left"
+  },
+  {
+   "local_id": "mv_mb2",
+   "kind": "move_component",
+   "occurrence_id": "mb2",
+   "translation": [
+    0.0,
+    3000.0,
+    0.0
+   ]
+  },
+  {
+   "local_id": "mv_j0",
+   "kind": "move_component",
+   "occurrence_id": "j0",
+   "translation": [
+    44.35,
+    -500.0,
+    203.2
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_j1",
+   "kind": "move_component",
+   "occurrence_id": "j1",
+   "translation": [
+    826.61,
+    -500.0,
+    203.2
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_j2",
+   "kind": "move_component",
+   "occurrence_id": "j2",
+   "translation": [
+    1608.87,
+    -500.0,
+    203.2
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_j3",
+   "kind": "move_component",
+   "occurrence_id": "j3",
+   "translation": [
+    2391.13,
+    -500.0,
+    203.2
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_j4",
+   "kind": "move_component",
+   "occurrence_id": "j4",
+   "translation": [
+    3173.39,
+    -500.0,
+    203.2
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_j5",
+   "kind": "move_component",
+   "occurrence_id": "j5",
+   "translation": [
+    3955.65,
+    -500.0,
+    203.2
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_dp0",
+   "kind": "move_component",
+   "occurrence_id": "dp0",
+   "translation": [
+    500.0,
+    0.0,
+    -20.0
+   ]
+  },
+  {
+   "local_id": "mv_dp1",
+   "kind": "move_component",
+   "occurrence_id": "dp1",
+   "translation": [
+    3500.0,
+    0.0,
+    -20.0
+   ]
+  },
+  {
+   "local_id": "mv_dp2",
+   "kind": "move_component",
+   "occurrence_id": "dp2",
+   "translation": [
+    3500.0,
+    3000.0,
+    -20.0
+   ]
+  },
+  {
+   "local_id": "mv_dp3",
+   "kind": "move_component",
+   "occurrence_id": "dp3",
+   "translation": [
+    500.0,
+    3000.0,
+    -20.0
+   ]
+  },
+  {
+   "local_id": "mv_st0a",
+   "kind": "move_component",
+   "occurrence_id": "st0a",
+   "translation": [
+    495.0,
+    2.85,
+    7.8
+   ]
+  },
+  {
+   "local_id": "mv_st0b",
+   "kind": "move_component",
+   "occurrence_id": "st0b",
+   "translation": [
+    505.0,
+    -2.85,
+    7.8
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_st1a",
+   "kind": "move_component",
+   "occurrence_id": "st1a",
+   "translation": [
+    3495.0,
+    2.85,
+    7.8
+   ]
+  },
+  {
+   "local_id": "mv_st1b",
+   "kind": "move_component",
+   "occurrence_id": "st1b",
+   "translation": [
+    3505.0,
+    -2.85,
+    7.8
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_st2a",
+   "kind": "move_component",
+   "occurrence_id": "st2a",
+   "translation": [
+    3495.0,
+    3002.85,
+    7.8
+   ]
+  },
+  {
+   "local_id": "mv_st2b",
+   "kind": "move_component",
+   "occurrence_id": "st2b",
+   "translation": [
+    3505.0,
+    2997.15,
+    7.8
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_st3a",
+   "kind": "move_component",
+   "occurrence_id": "st3a",
+   "translation": [
+    495.0,
+    3002.85,
+    7.8
+   ]
+  },
+  {
+   "local_id": "mv_st3b",
+   "kind": "move_component",
+   "occurrence_id": "st3b",
+   "translation": [
+    505.0,
+    2997.15,
+    7.8
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_plate",
+   "kind": "move_component",
+   "occurrence_id": "plate",
+   "translation": [
+    0.0,
+    -500.0,
+    355.6
+   ]
+  },
+  {
+   "local_id": "mv_rail_a1",
+   "kind": "move_component",
+   "occurrence_id": "rail_a1",
+   "translation": [
+    44.35,
+    -455.65,
+    365.6
+   ]
+  },
+  {
+   "local_id": "mv_rail_a2",
+   "kind": "move_component",
+   "occurrence_id": "rail_a2",
+   "translation": [
+    3955.65,
+    3455.65,
+    365.6
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 180.0
+  },
+  {
+   "local_id": "mv_rail_b1",
+   "kind": "move_component",
+   "occurrence_id": "rail_b1",
+   "translation": [
+    3955.65,
+    -455.65,
+    365.6
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "mv_rail_b2",
+   "kind": "move_component",
+   "occurrence_id": "rail_b2",
+   "translation": [
+    44.35,
+    3455.65,
+    365.6
+   ],
+   "rotation_axis": [
+    0.0,
+    0.0,
+    -1.0
+   ],
+   "rotation_angle_degrees": 90.0
+  },
+  {
+   "local_id": "m1",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       510.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       44.35,
+       0.0,
+       203.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m2",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       76.2
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       44.35,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 497.15
+  },
+  {
+   "local_id": "m3",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j0",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       1000.0,
+       -44.35,
+       150.4
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 88.7
+  },
+  {
+   "local_id": "m4",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       510.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       826.61,
+       0.0,
+       203.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m5",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       76.2
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       826.61,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 497.15
+  },
+  {
+   "local_id": "m6",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       1000.0,
+       -44.35,
+       150.4
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 870.96
+  },
+  {
+   "local_id": "m7",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       510.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       1608.87,
+       0.0,
+       203.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m8",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       76.2
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       1608.87,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 497.15
+  },
+  {
+   "local_id": "m9",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       1000.0,
+       -44.35,
+       150.4
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 1653.22
+  },
+  {
+   "local_id": "m10",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j3",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       510.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       2391.13,
+       0.0,
+       203.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m11",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       76.2
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       2391.13,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 497.15
+  },
+  {
+   "local_id": "m12",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j3",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       1000.0,
+       -44.35,
+       150.4
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 2435.48
+  },
+  {
+   "local_id": "m13",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j4",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       510.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       3173.39,
+       0.0,
+       203.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m14",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j4",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       76.2
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       3173.39,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 497.15
+  },
+  {
+   "local_id": "m15",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j4",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       1000.0,
+       -44.35,
+       150.4
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3217.74
+  },
+  {
+   "local_id": "m16",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j5",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       510.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       3955.65,
+       0.0,
+       203.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m17",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j5",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       76.2
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       3955.65,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 497.15
+  },
+  {
+   "local_id": "m18",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "j5",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       1000.0,
+       -44.35,
+       150.4
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 4000.0
+  },
+  {
+   "local_id": "m19",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       44.35,
+       0.0,
+       203.2
+      ]
+     }
+    },
+    {
+     "occurrence_id": "j0",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       3500.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m20",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m21",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       1000.0,
+       -2.85,
+       101.6
+      ]
+     }
+    },
+    {
+     "occurrence_id": "j0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       76.2
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3497.15
+  },
+  {
+   "local_id": "m22",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       500.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m23",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 350.0
+  },
+  {
+   "local_id": "m24",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       500.0,
+       2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 147.15
+  },
+  {
+   "local_id": "m25",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       3500.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m26",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3350.0
+  },
+  {
+   "local_id": "m27",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       3500.0,
+       2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 147.15
+  },
+  {
+   "local_id": "m28",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       3500.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m29",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3350.0
+  },
+  {
+   "local_id": "m30",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       3500.0,
+       2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 147.15
+  },
+  {
+   "local_id": "m31",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp3",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       0.0,
+       0.0,
+       20.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       500.0,
+       0.0,
+       0.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m32",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp3",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -150.0,
+       0.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 350.0
+  },
+  {
+   "local_id": "m33",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "dp3",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       0.0,
+       150.0,
+       10.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       500.0,
+       2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 147.15
+  },
+  {
+   "local_id": "m34",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st0a",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       5.0,
+       0.0,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       500.0,
+       2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m35",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st0a",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       5.0,
+       30.85,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       500.0,
+       33.3,
+       7.8
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m36",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st0a",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       30.85,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 495.0
+  },
+  {
+   "local_id": "m37",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st0b",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       5.0,
+       0.0,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       500.0,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m38",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st0b",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       5.0,
+       30.85,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       500.0,
+       33.3,
+       7.8
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m39",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st0b",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       30.85,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 505.0
+  },
+  {
+   "local_id": "m40",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st1a",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       5.0,
+       0.0,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       3500.0,
+       2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m41",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st1a",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       5.0,
+       30.85,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       3500.0,
+       33.3,
+       7.8
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m42",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st1a",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       30.85,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3495.0
+  },
+  {
+   "local_id": "m43",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st1b",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       5.0,
+       0.0,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       3500.0,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m44",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st1b",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       5.0,
+       30.85,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       3500.0,
+       33.3,
+       7.8
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m45",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st1b",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       30.85,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3505.0
+  },
+  {
+   "local_id": "m46",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st2a",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       5.0,
+       0.0,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       3500.0,
+       2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m47",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st2a",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       5.0,
+       30.85,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       3500.0,
+       33.3,
+       7.8
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m48",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st2a",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       30.85,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3495.0
+  },
+  {
+   "local_id": "m49",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st2b",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       5.0,
+       0.0,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       3500.0,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m50",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st2b",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       5.0,
+       30.85,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       3500.0,
+       33.3,
+       7.8
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m51",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st2b",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       30.85,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 3505.0
+  },
+  {
+   "local_id": "m52",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st3a",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       5.0,
+       0.0,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       500.0,
+       2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m53",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st3a",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       5.0,
+       30.85,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       500.0,
+       33.3,
+       7.8
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m54",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st3a",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       30.85,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 495.0
+  },
+  {
+   "local_id": "m55",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st3b",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       5.0,
+       0.0,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       500.0,
+       -2.85,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m56",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st3b",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       5.0,
+       30.85,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       500.0,
+       33.3,
+       7.8
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m57",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "st3b",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       30.85,
+       93.8
+      ]
+     }
+    },
+    {
+     "occurrence_id": "mb2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       101.6
+      ]
+     }
+    }
+   ],
+   "type": "distance",
+   "value": 505.0
+  },
+  {
+   "local_id": "m58",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       2000.0,
+       2000.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "j0",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       510.0,
+       0.0,
+       152.4
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m59",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       2000.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "j0",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       1000.0,
+       44.35,
+       150.4
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m60",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       2000.0,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "j0",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       0.0,
+       76.2
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m61",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_a1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       2000.0,
+       2000.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m62",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_a1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -44.35,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       2000.0,
+       0.0,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m63",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_a1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -44.35,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       2000.0,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m64",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_a2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       2000.0,
+       2000.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m65",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_a2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -44.35,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       2000.0,
+       4000.0,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m66",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_a2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -44.35,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       4000.0,
+       2000.0,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m67",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_b1",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       2000.0,
+       2000.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m68",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_b1",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -44.35,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "+x",
+      "near": [
+       4000.0,
+       2000.0,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m69",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_b1",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -44.35,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       2000.0,
+       0.0,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m70",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_b2",
+     "face_selector": {
+      "direction": "-z",
+      "near": [
+       0.0,
+       0.0,
+       0.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "+z",
+      "near": [
+       2000.0,
+       2000.0,
+       10.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m71",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_b2",
+     "face_selector": {
+      "direction": "-y",
+      "near": [
+       0.0,
+       -44.35,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       0.0,
+       2000.0,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  },
+  {
+   "local_id": "m72",
+   "kind": "mate",
+   "references": [
+    {
+     "occurrence_id": "rail_b2",
+     "face_selector": {
+      "direction": "-x",
+      "near": [
+       -44.35,
+       0.0,
+       5.0
+      ]
+     }
+    },
+    {
+     "occurrence_id": "plate",
+     "face_selector": {
+      "direction": "+y",
+      "near": [
+       2000.0,
+       4000.0,
+       5.0
+      ]
+     }
+    }
+   ],
+   "type": "coincident"
+  }
+ ]
+}
