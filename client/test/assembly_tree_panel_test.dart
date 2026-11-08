@@ -1091,4 +1091,40 @@ void main() {
       expect(find.byTooltip('Over-constrained - mates conflict'), findsOneWidget);
     });
   });
+
+  group('Edit Alone row (C1)', () {
+    Widget panel({String? label, VoidCallback? onDone, bool visible = true}) => _wrap(
+          AssemblyTreePanel(
+            visible: visible,
+            occurrences: [_occurrence('a')],
+            mates: const [],
+            selectedOccurrenceId: null,
+            onOccurrenceTap: (_) {},
+            onOccurrenceLongPress: (_) {},
+            onClose: () {},
+            rootLabel: 'Frame',
+            editAloneLabel: label,
+            onEditAloneDone: onDone,
+          ),
+        );
+
+    testWidgets('sits directly under the parent row, names the component and Done calls back', (tester) async {
+      var done = 0;
+      await tester.pumpWidget(panel(label: 'Bracket', onDone: () => done++));
+      final row = find.byKey(const ValueKey('edit-alone-pill'));
+      expect(row, findsOneWidget);
+      expect(find.descendant(of: row, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
+      expect(tester.getTopLeft(row).dy, greaterThan(tester.getTopLeft(find.text('Frame')).dy));
+      expect(tester.getTopLeft(row).dy, lessThan(tester.getTopLeft(find.text('Components')).dy));
+      await tester.tap(find.byKey(const ValueKey('edit-alone-done')));
+      expect(done, 1);
+    });
+
+    testWidgets('is not there without a label, or while the floating panel is closed', (tester) async {
+      await tester.pumpWidget(panel());
+      expect(find.byKey(const ValueKey('edit-alone-pill')), findsNothing);
+      await tester.pumpWidget(panel(label: 'Bracket', onDone: () {}, visible: false));
+      expect(find.byKey(const ValueKey('edit-alone-pill')), findsNothing);
+    });
+  });
 }

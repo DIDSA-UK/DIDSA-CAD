@@ -25,7 +25,9 @@ import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
+import 'package:didsa_cad_client/viewport3d/edit_alone_row.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
+import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
 import 'package:didsa_cad_client/viewport3d/mate_panel.dart';
 import 'package:didsa_cad_client/viewport3d/measurement_panel.dart';
@@ -9523,6 +9525,31 @@ void main() {
       await settle(tester);
       expect(viewport(tester).focusedOccurrencePath, isEmpty);
       expect(viewport(tester).soloFocus, isFalse);
+    });
+
+    testWidgets('C1: with a tree open the pill moves into the tree, under its header; closed, it is the pill at the top again', (tester) async {
+      await open(tester);
+      await menuAction(tester, 'occ-1', 'Edit Alone');
+      // No tree open: the pill is the floating one at the top, outside any tree.
+      expect(pill, findsOneWidget);
+      expect(find.descendant(of: find.byType(FeatureTreePanel), matching: pill), findsNothing);
+      final topPill = tester.widget<EditAloneRow>(pill);
+      expect(topPill.pill, isTrue);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await settle(tester);
+      // Tree open (Part lens: the Build Tree): exactly one row, inside the tree, directly under the header row, not floating.
+      expect(pill, findsOneWidget);
+      expect(find.descendant(of: find.byType(FeatureTreePanel), matching: pill), findsOneWidget);
+      expect(tester.widget<EditAloneRow>(pill).pill, isFalse);
+      expect(tester.getTopLeft(pill).dy, greaterThan(tester.getTopLeft(find.text('Build Tree')).dy));
+      expect(tester.getTopLeft(pill).dy, lessThan(tester.getTopLeft(find.text('Features')).dy));
+      expect(find.descendant(of: pill, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
+
+      await tester.tap(done);
+      await settle(tester);
+      expect(viewport(tester).soloFocus, isFalse);
+      expect(pill, findsNothing);
     });
 
     testWidgets('Back closes the Menu panel first, then leaves Edit Alone', (tester) async {

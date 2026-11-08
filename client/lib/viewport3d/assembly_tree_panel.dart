@@ -8,6 +8,7 @@ import '../assembly/occurrence_visibility.dart' show topLevelOccurrenceId;
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import 'action_sheet.dart';
+import 'edit_alone_row.dart';
 import 'mate_panel.dart' show mateValueSummary;
 import 'view_preferences.dart' show colorFromHex;
 import 'width_pick.dart' show isSymmetricMate, isWidthMate;
@@ -220,6 +221,11 @@ class AssemblyTreePanel extends StatefulWidget {
   /// Desktop layout (D6): the panel fills its parent (the left pane) instead of sliding over the viewport as an
   /// overlay - no slide, no drag handle, no rounded edge. The pane owns the width.
   final bool docked;
+
+  /// Edit Alone (C1): the component being edited, and the way back. When both are set the panel shows "Editing <label> [Done]"
+  /// as its first row under the header, instead of the pill that would float over it at the top of the viewport.
+  final String? editAloneLabel;
+  final VoidCallback? onEditAloneDone;
   final List<OccurrenceDto> occurrences;
   final List<MateDto> mates;
 
@@ -366,6 +372,8 @@ class AssemblyTreePanel extends StatefulWidget {
     super.key,
     required this.visible,
     this.docked = false,
+    this.editAloneLabel,
+    this.onEditAloneDone,
     required this.occurrences,
     required this.mates,
     this.patterns = const [],
@@ -565,6 +573,8 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
                                   ),
                                 ),
                                 _buildParentPartRow(context),
+                                if (widget.editAloneLabel != null && widget.onEditAloneDone != null && (widget.visible || widget.docked))
+                                  EditAloneRow(label: widget.editAloneLabel!, onDone: widget.onEditAloneDone!),
                                 if (widget.motionSummary != null && widget.motionSummary!.isNotEmpty)
                                   Padding(
                                     padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
