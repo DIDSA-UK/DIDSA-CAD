@@ -1383,6 +1383,24 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// ([_updateBatchedEdges]) needs: each one's geometry (to set its world-space width) and world-space centre.
   final List<_EdgeEntry> _edgeEntries = [];
 
+  /// A3: whether the view is moving right now (an orbit / pan / zoom / pinch / animation / turntable step happened in
+  /// the last [_kViewMovingHold]). Only read to hide edges on large models when the user turned that on.
+  bool _viewMoving = false;
+  Timer? _viewMovingTimer;
+  static const Duration _kViewMovingHold = Duration(milliseconds: 160);
+
+  /// Marks the view as moving; it stops 160 ms after the last call (and repaints with the edges back).
+  void _noteViewMoving() {
+    if (!ControlsPreferences.hideEdgesWhileMoving) return;
+    _viewMoving = true;
+    _viewMovingTimer?.cancel();
+    _viewMovingTimer = Timer(_kViewMovingHold, () {
+      _viewMovingTimer = null;
+      if (!mounted) return;
+      setState(() => _viewMoving = false);
+    });
+  }
+
   /// A2: the batched edge geometry, built once per Part body (and mesh) and shared by every node that draws it. One
   /// cache for the root Part's own bodies, one for placed instances, so each sync's eviction pass is its own.
   final EdgeBatchCache<_EdgeGeom> _rootEdgeCache = EdgeBatchCache<_EdgeGeom>();
@@ -1627,6 +1645,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       _turntableTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
         if (!mounted) return;
         setState(() {
+          _noteViewMoving();
           _turntable.tick(_camera, pivot: _touchPivot);
           _resyncCameraDependentOverlays();
         });
@@ -1641,6 +1660,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   /// One orbit step of [dx] / [dy] pixels: about the rotation pivot when one is set, else about the view target.
   void _orbitBy(double dx, double dy) {
+    _noteViewMoving();
     final pivot = _touchPivot;
     if (pivot != null) {
       _camera.orbitAboutPointByScreenDelta(dx, dy, pivot);
@@ -2037,6 +2057,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @override
   void dispose() {
     _turntableTimer?.cancel();
+    _viewMovingTimer?.cancel();
     // P25: an already-scheduled (but not yet fired) long-press timer must
     // not fire after this State is torn down - it would call setState on a
     // disposed Element.
@@ -3377,7 +3398,18 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// width so the line draws [kEdgeStrokeWidth] pixels wide (orthographic: exact; perspective: exact at the node's
   /// distance, see [worldUnitsPerPixel]) and offsets `shadedWithEdges` nodes towards the camera. Nothing is rebuilt.
   void _updateBatchedEdges(Size canvasSize) {
-    if (_edgeEntries.isEmpty) return;
+    if (_edgeEntries.isEmpty) {
+      ControlsPreferences.visibleEdgeSegments = 0;
+      return;
+    }
+    final totalSegments = _edgeEntries.fold<int>(0, (sum, e) => sum + e.segmentCount);
+    ControlsPreferences.visibleEdgeSegments = totalSegments;
+    final hide = shouldHideEdges(
+      enabled: ControlsPreferences.hideEdgesWhileMoving,
+      moving: _viewMoving,
+      segmentCount: totalSegments,
+      limit: ControlsPreferences.edgeLimit,
+    );
     final camera = _camera;
     final cameraPosition = camera.position;
     final perspective = camera.isPerspective;
@@ -3396,6 +3428,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
     }
     for (final entry in _edgeEntries) {
+      entry.node.visible = !hide;
+      if (hide) continue;
       final units = perspective
           ? worldUnitsPerPixel(
               perspective: true,
@@ -4545,6 +4579,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final curved = CurvedAnimation(parent: controller, curve: Curves.easeInOut);
     void tick() {
       if (!mounted) return;
+      _noteViewMoving();
       setState(() {
         _camera.orientation = from.slerp(to, curved.value);
         if (toTarget != null) {
@@ -4972,6 +5007,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// The lens zoom shared by the wheel and a Shift+middle drag: a
   /// [scaleFactor] above 1 zooms out, anchored on [screenPoint].
   void _zoomCameraToward(double scaleFactor, Offset screenPoint) {
+    _noteViewMoving();
     if (_camera.isPerspective) {
       _camera.zoomFovTowardScreenPoint(scaleFactor, screenPoint, _viewportSize);
     } else {
@@ -5006,6 +5042,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final beforeSpread = _averageSpread(before.values, beforeCentroid);
     final afterSpread = _averageSpread(after.values, afterCentroid);
     final panDelta = afterCentroid - beforeCentroid;
+    _noteViewMoving();
 
     setState(() {
       _camera.panByScreenDelta(panDelta.dx, panDelta.dy);
@@ -5462,6 +5499,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             _camera.orbitByScreenDelta(delta.dx, delta.dy);
           }
         case MouseNavAction.pan:
+          _noteViewMoving();
           _camera.panByScreenDelta(event.delta.dx, event.delta.dy);
         case MouseNavAction.zoom:
           _zoomCameraToward(dragZoomFactor(event.delta.dy), _mouseNavAnchor ?? event.localPosition);

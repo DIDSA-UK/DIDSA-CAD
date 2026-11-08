@@ -203,4 +203,29 @@ void main() {
       expect(nodes, bodies * 9);
     });
   });
+
+  group('shouldHideEdges (A3)', () {
+    bool gate({bool enabled = true, bool moving = true, int count = 60000, int limit = 50000}) =>
+        shouldHideEdges(enabled: enabled, moving: moving, segmentCount: count, limit: limit);
+
+    test('hides only when on, moving and over the limit', () {
+      expect(gate(), isTrue);
+      expect(gate(enabled: false), isFalse);
+      expect(gate(moving: false), isFalse);
+      expect(gate(count: 50000), isFalse, reason: 'at the limit is not over it');
+      expect(gate(count: 11918), isFalse);
+    });
+
+    test('the platform (11,918) only hides under a low limit', () {
+      expect(gate(count: 11918, limit: 10000), isTrue);
+      expect(gate(count: 11918, limit: 20000), isFalse);
+    });
+
+    test('snapEdgeLimit picks the nearest log step', () {
+      expect(snapEdgeLimit(50000), 50000);
+      expect(snapEdgeLimit(21000), 20000);
+      expect(snapEdgeLimit(1), 5000);
+      expect(snapEdgeLimit(10000000), 200000);
+    });
+  });
 }
