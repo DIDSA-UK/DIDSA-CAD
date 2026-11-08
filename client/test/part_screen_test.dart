@@ -2408,7 +2408,7 @@ void main() {
       expect(find.byType(VisibilityPanel), findsOneWidget, reason: 'nothing was lost');
     });
 
-    testWidgets('the View row has the standard views and folds away', (tester) async {
+    testWidgets('the View row has the standard views and no fold chevron', (tester) async {
       await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
       await openPanel(tester);
       for (final name in ['front', 'back', 'left', 'right', 'top', 'bottom', 'isometric']) {
@@ -2419,9 +2419,23 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100)); // the 400 ms camera move, frame by frame
       }
       expect(tester.takeException(), isNull);
-      await tester.tap(find.byKey(const ValueKey('vis-fold-views')));
-      await tester.pump();
-      expect(find.byKey(const ValueKey('vis-view-top')), findsNothing);
+      expect(find.byKey(const ValueKey('vis-fold-views')), findsNothing);
+      expect(find.byKey(const ValueKey('vis-view-top')), findsOneWidget);
+    });
+
+    testWidgets('C2: the Style row changes the render mode the same way the View menu does', (tester) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      PartViewport viewportNow() => tester.widget<PartViewport>(find.byType(PartViewport));
+      final before = viewportNow().renderMode;
+      final other = ViewportRenderMode.values.firstWhere((m) => m != before);
+      await tester.tap(find.byKey(ValueKey('vis-mode-${other.name}')));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(viewportNow().renderMode, other);
+      final selected = tester.widget<OutlinedButton>(find.byKey(ValueKey('vis-mode-${other.name}')));
+      expect(selected.style?.backgroundColor?.resolve(<WidgetState>{}), isNotNull, reason: 'the panel shows the new mode selected');
     });
 
     testWidgets('in Assembly lens a chip makes one call for every Part in the scene', (tester) async {

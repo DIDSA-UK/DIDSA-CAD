@@ -1,5 +1,8 @@
 import 'package:material_ui/material_ui.dart';
 
+import 'render_mode.dart';
+import 'svg_icon.dart';
+
 /// How much of a category is shown: every one of its Features, none, or a mix (one sketch hidden from the tree, say).
 enum VisibilityChipState { shown, hidden, partial }
 
@@ -39,25 +42,26 @@ class VisibilityViewData {
 }
 
 /// The phone layout's Visibility panel (`docs/touch-viewport-ux-plan.md` section 6): a card with a row of category
-/// toggles (`Show`) and a row of standard views (`View`). It stays open until its own close button is tapped. Pure
-/// presentation: the parent works out each chip's state and what a tap does.
+/// toggles (`Show`), a row of render-mode buttons (`Style`: Shaded / Shaded + Edges / Wireframe, the same choice as the View
+/// menu) and a row of standard views (`View`). It stays open until its own close button is tapped. Pure presentation: the
+/// parent works out each chip's state and what a tap does.
 class VisibilityPanel extends StatelessWidget {
   const VisibilityPanel({
     super.key,
     required this.chips,
     required this.views,
     required this.onClose,
-    required this.viewsFolded,
-    required this.onViewsFoldedChanged,
+    required this.renderMode,
+    required this.onRenderModeChanged,
   });
 
   final List<VisibilityChipData> chips;
   final List<VisibilityViewData> views;
   final VoidCallback onClose;
 
-  /// The View row is folded away (the chevron at its left), remembered by the parent for the session.
-  final bool viewsFolded;
-  final ValueChanged<bool> onViewsFoldedChanged;
+  /// The Style row: the current render mode, and what choosing another does (the same handler as the View menu's).
+  final ViewportRenderMode renderMode;
+  final ValueChanged<ViewportRenderMode> onRenderModeChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -96,45 +100,93 @@ class VisibilityPanel extends StatelessWidget {
             ),
             Row(
               children: [
-                _RowLabel(
-                  text: 'View',
-                  leading: SizedBox(
-                    width: 24,
-                    child: InkResponse(
-                      key: const ValueKey('vis-fold-views'),
-                      onTap: () => onViewsFoldedChanged(!viewsFolded),
-                      child: Icon(viewsFolded ? Icons.chevron_right : Icons.expand_more, size: 20),
+                _RowLabel(text: 'Style', leading: const SizedBox(width: 24)),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final mode in ViewportRenderMode.values)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: _ModeButton(
+                              mode: mode,
+                              selected: mode == renderMode,
+                              onTap: () => onRenderModeChanged(mode),
+                            ),
+                          ),
+                      ],
                     ),
                   ),
                 ),
-                if (!viewsFolded)
-                  Expanded(
-                    child: SingleChildScrollView(
-                      scrollDirection: Axis.horizontal,
-                      child: Row(
-                        children: [
-                          for (final view in views)
-                            Padding(
-                              padding: const EdgeInsets.only(right: 4),
-                              child: OutlinedButton(
-                                key: ValueKey('vis-view-${view.id}'),
-                                style: OutlinedButton.styleFrom(
-                                  visualDensity: VisualDensity.compact,
-                                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                                  minimumSize: const Size(0, 32),
-                                ),
-                                onPressed: view.onTap,
-                                child: Text(view.label, style: theme.textTheme.labelSmall),
+              ],
+            ),
+            Row(
+              children: [
+                // The leading 24 dp keeps the label column lined up with the rows above.
+                _RowLabel(text: 'View', leading: const SizedBox(width: 24)),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final view in views)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: OutlinedButton(
+                              key: ValueKey('vis-view-${view.id}'),
+                              style: OutlinedButton.styleFrom(
+                                visualDensity: VisualDensity.compact,
+                                padding: const EdgeInsets.symmetric(horizontal: 10),
+                                minimumSize: const Size(0, 32),
                               ),
+                              onPressed: view.onTap,
+                              child: Text(view.label, style: theme.textTheme.labelSmall),
                             ),
-                        ],
-                      ),
+                          ),
+                      ],
                     ),
                   ),
+                ),
               ],
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// One Style button: the mode's icon and label; filled when it is the current mode.
+class _ModeButton extends StatelessWidget {
+  const _ModeButton({required this.mode, required this.selected, required this.onTap});
+
+  final ViewportRenderMode mode;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final foreground = selected ? scheme.onPrimaryContainer : scheme.onSurface;
+    return Semantics(
+      selected: selected,
+      button: true,
+      label: mode.label,
+      child: OutlinedButton.icon(
+        key: ValueKey('vis-mode-${mode.name}'),
+        style: OutlinedButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          minimumSize: const Size(0, 32),
+          backgroundColor: selected ? scheme.primaryContainer : null,
+          side: BorderSide(color: selected ? scheme.primary : scheme.outline),
+          foregroundColor: foreground,
+        ),
+        onPressed: onTap,
+        icon: SvgIcon(mode.svgAsset, size: 16, color: foreground),
+        label: Text(mode.label, style: theme.textTheme.labelSmall?.copyWith(color: foreground)),
       ),
     );
   }

@@ -2101,7 +2101,6 @@ class _PartScreenState extends State<PartScreen> {
   /// Whether the Visibility panel is open: it stays until its own close button, and is only drawn while the Start button
   /// is (no tool owns the screen), coming back when the tool closes.
   bool _visibilityPanelOpen = false;
-  bool _visibilityViewsFolded = false;
 
   /// One category's state, from the focused Part's Features and its hidden set.
   VisibilityChipState _categoryState(String category) {
@@ -28158,8 +28157,8 @@ class _PartScreenState extends State<PartScreen> {
                           chips: _visibilityChips(),
                           views: _visibilityViews(),
                           onClose: () => setState(() => _visibilityPanelOpen = false),
-                          viewsFolded: _visibilityViewsFolded,
-                          onViewsFoldedChanged: (folded) => setState(() => _visibilityViewsFolded = folded),
+                          renderMode: _renderMode,
+                          onRenderModeChanged: (mode) => unawaited(_onRenderModeChanged(mode)),
                         ),
                       ),
                     ),
