@@ -51,6 +51,7 @@ import '../assembly/occurrence_visibility.dart' show topLevelOccurrenceId;
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'ai_plan.dart';
+import 'ai_validation_feedback.dart' show formatAiStepError;
 
 /// Where a step landed in [PlanTranslator.execute]'s walk - drives the
 /// Review & Generate panel's per-step pending -> in-progress -> done/failed
@@ -77,6 +78,23 @@ enum PlanTranslationOutcome {
   /// A `gear_request` step was reached - see this file's own top-level doc
   /// comment for why this stops rather than attempting a hand-off.
   gearRequestEncountered,
+
+  /// Only from a [PlanTranslator.execute] run with `bestEffortMates`: every mate that could be built was, in plan order,
+  /// and at least one was not ([PlanTranslationResult.failures] lists each with its reason). A mate that failed was
+  /// never stored. Nothing else in the plan is stopped by it.
+  completedWithFailures,
+}
+
+/// One step of a best-effort mates run that was not built, and why.
+class PlanStepFailure {
+  const PlanStepFailure({required this.index, required this.localId, required this.message, required this.atValidation});
+
+  final int index;
+  final String localId;
+  final String message;
+
+  /// True when the dry run refused the step (nothing was tried); false when the real create or its solve failed.
+  final bool atValidation;
 }
 
 /// The result of one [PlanTranslator.execute] run - always carries
@@ -116,6 +134,13 @@ class PlanTranslationResult {
   /// real backend error text.
   final String? errorMessage;
 
+  /// Only for a `bestEffortMates` run: the steps that were not built, in plan order (empty on a clean run).
+  final List<PlanStepFailure> failures;
+
+  /// Only for a `bestEffortMates` run: the local ids of the mates that were built but only within tolerance (the
+  /// backend's `X-Mate-Tolerance: near` / a `near` status), in plan order.
+  final List<String> nearMateLocalIds;
+
   const PlanTranslationResult._({
     required this.outcome,
     required this.localIdToRealId,
@@ -124,18 +149,38 @@ class PlanTranslationResult {
     this.stoppedAtIndex,
     this.stoppedAtLocalId,
     this.errorMessage,
+    this.failures = const [],
+    this.nearMateLocalIds = const [],
   });
+
+  factory PlanTranslationResult.completedWithFailures({
+    required List<PlanStepFailure> failures,
+    required List<String> nearMateLocalIds,
+    required Map<String, String> localIdToRealId,
+    required List<String> createdFeatureIds,
+    required List<AiPlanStepResultDto> preflightResults,
+  }) =>
+      PlanTranslationResult._(
+        outcome: PlanTranslationOutcome.completedWithFailures,
+        localIdToRealId: localIdToRealId,
+        createdFeatureIds: createdFeatureIds,
+        preflightResults: preflightResults,
+        failures: failures,
+        nearMateLocalIds: nearMateLocalIds,
+      );
 
   factory PlanTranslationResult.success({
     required Map<String, String> localIdToRealId,
     required List<String> createdFeatureIds,
     required List<AiPlanStepResultDto> preflightResults,
+    List<String> nearMateLocalIds = const [],
   }) =>
       PlanTranslationResult._(
         outcome: PlanTranslationOutcome.success,
         localIdToRealId: localIdToRealId,
         createdFeatureIds: createdFeatureIds,
         preflightResults: preflightResults,
+        nearMateLocalIds: nearMateLocalIds,
       );
 
   factory PlanTranslationResult.validationFailed(List<AiPlanStepResultDto> results) => PlanTranslationResult._(
@@ -289,10 +334,34 @@ class PlanTranslator {
     List<FeatureDto> existingFeatures = const [],
     Set<String> disabledKinds = const {},
     void Function(int index, TranslationStepStatus status)? onStepStatusChanged,
+    bool bestEffortMates = false,
   }) async {
     final validation = await documentApi.validateAiPlan(partId, plan.toJson(), disabledKinds: disabledKinds);
+    // `bestEffortMates` (B2, docs/assembly-perf-mates-and-ui-plan.md): a plan of mates is not all-or-nothing. Mates the
+    // dry run refused are skipped and reported; the rest are built. Only when none could be built is it a validation
+    // failure (so the in-app turn can still ask the provider for a corrected plan).
+    final failures = <PlanStepFailure>[];
+    final nearMateLocalIds = <String>[];
+    final refused = <String>{};
     if (validation.results.any((r) => !r.ok)) {
-      return PlanTranslationResult.validationFailed(validation.results);
+      final mateIds = {for (final step in plan.steps.whereType<AiMateStep>()) step.localId};
+      final onlyMates = bestEffortMates && plan.steps.every((step) => step is AiMateStep);
+      final anyBuildable = onlyMates && validation.results.any((r) => r.ok && mateIds.contains(r.localId));
+      if (!anyBuildable) return PlanTranslationResult.validationFailed(validation.results);
+      for (var i = 0; i < plan.steps.length; i++) {
+        final result = validation.results.where((r) => r.localId == plan.steps[i].localId).firstOrNull;
+        if (result != null && !result.ok) {
+          refused.add(plan.steps[i].localId);
+          failures.add(
+            PlanStepFailure(
+              index: i,
+              localId: plan.steps[i].localId,
+              message: formatAiStepError(result.error),
+              atValidation: true,
+            ),
+          );
+        }
+      }
     }
     final resolvedEdgesByLocalId = <String, List<SubShapeRefDto>>{
       for (final r in validation.results)
@@ -347,6 +416,10 @@ class PlanTranslator {
         );
       }
 
+      if (refused.contains(step.localId)) {
+        onStepStatusChanged?.call(i, TranslationStepStatus.failed);
+        continue;
+      }
       onStepStatusChanged?.call(i, TranslationStepStatus.inProgress);
       try {
         final realId = await _executeStep(
@@ -358,6 +431,8 @@ class PlanTranslator {
           resolvedEdgesByLocalId: resolvedEdgesByLocalId,
           resolvedMateReferencesByLocalId: resolvedMateReferencesByLocalId,
           resolvedFacesByLocalId: resolvedFacesByLocalId,
+          atomicMates: bestEffortMates,
+          onNearMate: bestEffortMates ? () => nearMateLocalIds.add(step.localId) : null,
         );
         localIdToRealId[step.localId] = realId;
         // An in-place move/scale keeps its Body's id - no Body exists under
@@ -373,6 +448,11 @@ class PlanTranslator {
         onStepStatusChanged?.call(i, TranslationStepStatus.done);
       } on ApiException catch (e) {
         onStepStatusChanged?.call(i, TranslationStepStatus.failed);
+        if (bestEffortMates && step is AiMateStep) {
+          // The atomic create stored nothing for this mate, so a later mate is not blocked by it.
+          failures.add(PlanStepFailure(index: i, localId: step.localId, message: e.message, atValidation: false));
+          continue;
+        }
         return PlanTranslationResult.stepFailed(
           index: i,
           localId: step.localId,
@@ -384,10 +464,21 @@ class PlanTranslator {
       }
     }
 
+    if (failures.isNotEmpty) {
+      failures.sort((a, b) => a.index.compareTo(b.index));
+      return PlanTranslationResult.completedWithFailures(
+        failures: failures,
+        nearMateLocalIds: nearMateLocalIds,
+        localIdToRealId: localIdToRealId,
+        createdFeatureIds: createdFeatureIds,
+        preflightResults: validation.results,
+      );
+    }
     return PlanTranslationResult.success(
       localIdToRealId: localIdToRealId,
       createdFeatureIds: createdFeatureIds,
       preflightResults: validation.results,
+      nearMateLocalIds: nearMateLocalIds,
     );
   }
 
@@ -434,6 +525,8 @@ class PlanTranslator {
     required Map<String, String> sketchIds,
     required Map<String, List<SubShapeRefDto>> resolvedEdgesByLocalId,
     required Map<String, List<SubShapeRefDto?>> resolvedMateReferencesByLocalId,
+    bool atomicMates = false,
+    void Function()? onNearMate,
     required Map<String, List<SubShapeRefDto>> resolvedFacesByLocalId,
   }) async {
     switch (step) {
@@ -854,23 +947,23 @@ class PlanTranslator {
         final widthTarget = step.references[1].occurrenceId.isNotEmpty
             ? step.references[1].occurrenceId
             : step.references[0].occurrenceId;
-        final mate = await documentApi.createMate(
-          partId,
-          type: step.type.wireValue,
-          references: [
-            for (var i = 0; i < step.references.length; i++)
-              _mateEntityRefDto(step.references[i], resolvedReferences == null ? null : resolvedReferences[i], ids),
-          ],
-          value: step.value,
-          flipped: step.flipped,
-          // A plan's mate that does not flip takes the branch nearest the parts' current pose (Closest), not the
-          // deprecated `flipped: false` = anti-aligned: Assembly mode places every part before its mates turn, and a
-          // flush mate between two faces pointing the same way was otherwise turned to face each other, moving the
-          // part (found by the AI-eval mates turn).
-          closestBranch: !step.flipped,
-          solve: isWidth && widthTarget.isNotEmpty ? 'auto' : null,
-          solveOccurrenceId: isWidth && widthTarget.isNotEmpty ? topLevelOccurrenceId(_resolveOccurrenceId(widthTarget, ids)) : null,
-        );
+        Future<MateDto> create({String? solveOccurrenceId, String? solve}) => documentApi.createMate(
+              partId,
+              type: step.type.wireValue,
+              references: [
+                for (var i = 0; i < step.references.length; i++)
+                  _mateEntityRefDto(step.references[i], resolvedReferences == null ? null : resolvedReferences[i], ids),
+              ],
+              value: step.value,
+              flipped: step.flipped,
+              // A plan's mate that does not flip takes the branch nearest the parts' current pose (Closest), not the
+              // deprecated `flipped: false` = anti-aligned: Assembly mode places every part before its mates turn, and a
+              // flush mate between two faces pointing the same way was otherwise turned to face each other, moving the
+              // part (found by the AI-eval mates turn).
+              closestBranch: !step.flipped,
+              solve: solve,
+              solveOccurrenceId: solveOccurrenceId,
+            );
         // Mirrors `MatePanel`'s own real-UI behavior (`docs/assembly-scope.md`
         // §2i): solve immediately so the mated Occurrence visibly snaps into
         // place. Ambiguous which of the two references is "the one being
@@ -884,15 +977,34 @@ class PlanTranslator {
         final solveTarget = step.references[1].occurrenceId.isNotEmpty
             ? step.references[1].occurrenceId
             : step.references[0].occurrenceId;
-        if (solveTarget.isNotEmpty && !isWidth) {
+        Future<MateDto> createAtomic() async {
+          // Atomic create (B2): the mate is stored together with the solved poses ONLY if the solve converges, so a
+          // mate that cannot be satisfied is never left behind to block every later solve in the same group.
+          if (solveTarget.isEmpty) return create();
           try {
-            await documentApi.solveForOccurrence(partId, topLevelOccurrenceId(_resolveOccurrenceId(solveTarget, ids)));
+            return await create(solve: 'auto', solveOccurrenceId: topLevelOccurrenceId(_resolveOccurrenceId(solveTarget, ids)));
           } on ApiException catch (e) {
             // The second reference is the grounded first component (`occurrence_is_fixed`): a plan may name the
-            // mate's two sides in either order, so solve the other side instead (found by the AI-eval mates turn).
+            // mate's two sides in either order, so drive the other side instead. Nothing was stored by the failure.
             final other = step.references[0].occurrenceId;
-            if (!e.message.contains('occurrence_is_fixed') || other.isEmpty || other == solveTarget) rethrow;
-            await documentApi.solveForOccurrence(partId, topLevelOccurrenceId(_resolveOccurrenceId(other, ids)));
+            if (isWidth || !e.message.contains('occurrence_is_fixed') || other.isEmpty || other == solveTarget) rethrow;
+            return create(solve: 'auto', solveOccurrenceId: topLevelOccurrenceId(_resolveOccurrenceId(other, ids)));
+          }
+        }
+
+        final MateDto mate;
+        if (atomicMates || (isWidth && widthTarget.isNotEmpty)) {
+          mate = await createAtomic();
+        } else {
+          mate = await create();
+          if (solveTarget.isNotEmpty) {
+            try {
+              await documentApi.solveForOccurrence(partId, topLevelOccurrenceId(_resolveOccurrenceId(solveTarget, ids)));
+            } on ApiException catch (e) {
+              final other = step.references[0].occurrenceId;
+              if (!e.message.contains('occurrence_is_fixed') || other.isEmpty || other == solveTarget) rethrow;
+              await documentApi.solveForOccurrence(partId, topLevelOccurrenceId(_resolveOccurrenceId(other, ids)));
+            }
           }
         }
         return mate.id;

@@ -1,5 +1,6 @@
 import '../api/document_api_client.dart';
 import 'ai_plan.dart';
+import 'ai_plan_translator.dart' show PlanStepFailure;
 
 /// How many times a plan that fails the dry-run validation is sent back to
 /// the assistant automatically, with the errors, before the failure is shown
@@ -59,3 +60,9 @@ String listAiPlanValidationProblems(AiGenerationPlan plan, List<AiPlanStepResult
   }
   return buffer.toString().trimRight();
 }
+
+/// One line per mate a best-effort mates run did not build (`PlanTranslationResult.failures`): its local id, whether the
+/// dry run refused it or the real create failed, and the reason.
+String describeMateFailures(List<PlanStepFailure> failures) => failures
+    .map((f) => '- mate ${f.localId} (${f.atValidation ? 'failed validation' : 'could not be solved'}): ${f.message}')
+    .join('\n');

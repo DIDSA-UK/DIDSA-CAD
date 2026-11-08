@@ -1609,7 +1609,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           PlanTranslationOutcome.gearRequestEncountered =>
             'The assistant proposed a gear step for "${entry.name}", which Assembly mode cannot '
                 'create automatically yet - use the Gear Design tool separately for this part.',
-          PlanTranslationOutcome.success => '',
+          PlanTranslationOutcome.success || PlanTranslationOutcome.completedWithFailures => '',
         };
         await _prepareOrchestrationRetry(partId: partId, saveOnly: false, isAssembly: false);
         if (translation.outcome == PlanTranslationOutcome.stepFailed ||
@@ -1912,7 +1912,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           PlanTranslationOutcome.gearRequestEncountered =>
             'The assistant proposed a gear step for the assembly, which cannot be created '
                 'automatically yet.',
-          PlanTranslationOutcome.success => '',
+          PlanTranslationOutcome.success || PlanTranslationOutcome.completedWithFailures => '',
         };
         await _prepareOrchestrationRetry(partId: assemblyPartId, saveOnly: false, isAssembly: true);
         if (translation.outcome == PlanTranslationOutcome.stepFailed ||
@@ -2251,6 +2251,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         plan: plan,
         partId: assemblyPartId,
         disabledKinds: AiSystemPromptPreferences.disabledKinds,
+        bestEffortMates: true,
         onStepStatusChanged: (stepIndex, status) {
           if (!mounted) return;
           setState(() => _orchestrationStepStatuses![stepIndex] = status);
@@ -2271,6 +2272,16 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     switch (translation.outcome) {
       case PlanTranslationOutcome.success:
         return _MatesRun(_MatesOutcome.built, '$mates mate${mates == 1 ? '' : 's'} added.');
+      case PlanTranslationOutcome.completedWithFailures:
+        // B2: every mate that could be built was; the rest were never stored.
+        final failures = translation.failures;
+        final built = mates - failures.length;
+        final problems = describeMateFailures(failures);
+        return _MatesRun(
+          _MatesOutcome.partial,
+          'Built $built of $mates mate${mates == 1 ? '' : 's'}; ${failures.length} could not be built:\n$problems',
+          problems: problems,
+        );
       case PlanTranslationOutcome.validationFailed:
         final problems = listAiPlanValidationProblems(plan, translation.preflightResults);
         return _MatesRun(
@@ -3942,6 +3953,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           icon: Icons.error_outline,
           text: '$failed of $total step(s) failed validation - nothing was created. See above.',
         );
+      case PlanTranslationOutcome.completedWithFailures:
+        // Only a mates run ends this way, and it reports through the mate note, not this banner.
+        return const SizedBox.shrink();
       case PlanTranslationOutcome.stepFailed:
       case PlanTranslationOutcome.gearRequestEncountered:
         // Both of these switch the panel back to chat mode as soon as the
