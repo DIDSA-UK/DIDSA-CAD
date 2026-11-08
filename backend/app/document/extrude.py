@@ -1528,6 +1528,29 @@ def _safe_fuse(
     return shape
 
 
+def _expand_split_target_ids(bodies: dict[str, TopoDS_Shape], target_body_ids: list[str]) -> dict[str, str]:
+    """The existing Bodies a Boss's `target_body_ids` name. An id that exists is used as it is. One that does not may have
+    been split since the Boss was made: a fuse that leaves disconnected solids is stored as `<id>#0`, `<id>#1` (see
+    `_register_solids`), so the id then names those pieces, in their stored order, and the Boss fuses into all of them
+    (which also re-joins them if the new solid bridges them). Without this a later Boss whose target was split found no
+    Body and started a new one, so every later rail tube of the owner's platform deck became its own Body.
+
+    Returns {existing Body id: the id the Boss named} in order. The fused result is registered under the NAMED id, so
+    pieces that are re-joined get back the id they had before the split (and pieces that stay apart become `<id>#0`,
+    `<id>#1` again) instead of ids that grow a suffix per fuse. Ids that were never split, and ids that name nothing at
+    all, behave as before. Duplicates are dropped."""
+    expanded: dict[str, str] = {}
+    for target_id in target_body_ids:
+        if target_id in bodies:
+            matches = [target_id]
+        else:
+            prefix = f"{target_id}#"
+            matches = [body_id for body_id in bodies if body_id.startswith(prefix)]
+        for body_id in matches:
+            expanded.setdefault(body_id, target_id)
+    return expanded
+
+
 def _apply_boss_or_cut(
     bodies: dict[str, TopoDS_Shape],
     feature_id: str,
@@ -1553,7 +1576,8 @@ def _apply_boss_or_cut(
     (Extrude or Revolve) just produced `solid` - see each call site in
     `compute_part_bodies` below."""
     if not is_cut:
-        target_ids = [tid for tid in target_body_ids if tid in bodies]
+        named_by = _expand_split_target_ids(bodies, target_body_ids)
+        target_ids = list(named_by)
         if target_body_ids and not target_ids:
             logger.warning(
                 "Boss feature %s: none of its target_body_ids currently exist "
@@ -1570,7 +1594,7 @@ def _apply_boss_or_cut(
             merged = _safe_fuse(merged, bodies[target_id], "boss_fuse", target_ids, convert_a=merged_is_fresh)
             merged_is_fresh = False
 
-        survivor_id = min(target_ids, key=lambda tid: feature_index[base_feature_id(tid)])
+        survivor_id = named_by[min(target_ids, key=lambda tid: feature_index[base_feature_id(tid)])]
         for target_id in target_ids:
             del bodies[target_id]
         _register_solids(bodies, survivor_id, merged)
