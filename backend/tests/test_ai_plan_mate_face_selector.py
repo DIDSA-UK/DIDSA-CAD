@@ -196,3 +196,85 @@ def test_a_normal_names_a_sloped_face():
     assert _face_centre(tenon, flank.index)[1] == pytest.approx(17.5)
     with pytest.raises(HTTPException):
         resolve_mate_face_selector(tenon, "b", normal=(0.0, 1.0, 0.0))
+
+
+# --- B3 (docs/assembly-perf-mates-and-ui-plan.md): no body_id on a component of several Bodies --------------------------
+
+
+def _two_bodies():
+    """Two 10x10x10 boxes side by side: `left` spans x 0-10, `right` spans x 30-40. Both have a +z face at z=10."""
+    return {
+        "left": BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(),
+        "right": BRepPrimAPI_MakeBox(gp_Pnt(30, 0, 0), 10.0, 10.0, 10.0).Shape(),
+    }
+
+
+def _selector(**fields):
+    from app.document.ai_plan_schemas import MateFaceSelector
+
+    return MateFaceSelector(**fields)
+
+
+def test_without_body_id_the_nearest_matching_face_picks_the_body():
+    from app.document.ai_plan import _resolve_mate_face_selector_across_bodies
+
+    bodies = _two_bodies()
+    left = _resolve_mate_face_selector_across_bodies(bodies, _selector(direction="+z", near=[4.0, 5.0, 10.0]), "references[0]")
+    right = _resolve_mate_face_selector_across_bodies(bodies, _selector(direction="+z", near=[36.0, 5.0, 10.0]), "references[0]")
+    assert (left.body_id, right.body_id) == ("left", "right")
+    assert left.shape_type.value == "face"
+    assert _face_centre(bodies["left"], left.index) == (5.0, 5.0, 10.0)
+    assert _face_centre(bodies["right"], right.index) == (35.0, 5.0, 10.0)
+
+
+def test_a_body_with_no_matching_face_is_skipped():
+    """Only `right` has a cylinder of radius 2: it is chosen however near the point is to `left`."""
+    from app.document.ai_plan import _resolve_mate_face_selector_across_bodies
+
+    bodies = {
+        "left": BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape(),
+        "right": BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(30, 5, 0), gp_Dir(0, 0, 1)), 2.0, 10.0).Shape(),
+    }
+    chosen = _resolve_mate_face_selector_across_bodies(bodies, _selector(cylinder_radius=2.0, near=[1.0, 1.0, 1.0]), "references[0]")
+    assert chosen.body_id == "right"
+
+
+def test_without_near_several_bodies_are_refused_and_listed():
+    from app.document.ai_plan import _StepError, _resolve_mate_face_selector_across_bodies
+
+    with pytest.raises(_StepError) as error:
+        _resolve_mate_face_selector_across_bodies(_two_bodies(), _selector(direction="+z"), "references[0]")
+    message = error.value.payload["message"] if hasattr(error.value, "payload") else str(error.value)
+    assert "left" in message and "right" in message
+
+
+def test_two_bodies_equally_near_are_refused():
+    from app.document.ai_plan import _StepError, _resolve_mate_face_selector_across_bodies
+
+    with pytest.raises(_StepError):
+        _resolve_mate_face_selector_across_bodies(_two_bodies(), _selector(direction="+z", near=[20.0, 5.0, 10.0]), "references[0]")
+
+
+def test_no_matching_face_on_any_body_is_refused():
+    from app.document.ai_plan import _StepError, _resolve_mate_face_selector_across_bodies
+
+    with pytest.raises(_StepError):
+        _resolve_mate_face_selector_across_bodies(_two_bodies(), _selector(cylinder_radius=7.0, near=[1.0, 1.0, 1.0]), "references[0]")
+
+
+def test_an_unresolvable_target_part_names_the_selector_that_failed():
+    """B5: the error said `edge_selector` even when a `face_selector` was the one that needed the target Part."""
+    from app.document.ai_plan import _PlanValidator, _StepError
+    from app.document.models import Occurrence, RigidTransform
+
+    top_id, _, _, _ = _setup_top_with_occurrence_target_having_its_own_body()
+    from app.document.store import get_part_or_404
+
+    validator = _PlanValidator(get_part_or_404(top_id), frozenset(), None)  # no Document: no occurrence can be resolved
+    occurrence = Occurrence(id="o", external_ref="x.didsa", part_id="missing", transform=RigidTransform())
+    with pytest.raises(_StepError) as face_error:
+        validator._resolve_occurrence_target_part(occurrence, "references[0]", "face_selector")
+    assert "references[0].face_selector needs" in str(face_error.value.payload if hasattr(face_error.value, "payload") else face_error.value)
+    with pytest.raises(_StepError) as edge_error:
+        validator._resolve_occurrence_target_part(occurrence, "references[0]")
+    assert "references[0].edge_selector needs" in str(edge_error.value.payload if hasattr(edge_error.value, "payload") else edge_error.value)

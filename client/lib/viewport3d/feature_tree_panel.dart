@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../api/document_api_client.dart';
 import 'action_sheet.dart';
+import 'edit_alone_row.dart';
 import 'reference_planes.dart' show ReferencePlaneKind, ReferencePlaneKindX;
 import 'svg_icon.dart';
 import 'tree_multi_select_controller.dart';
@@ -272,6 +273,11 @@ class FeatureTreePanel extends StatefulWidget {
   /// Desktop layout (D6): the panel fills its parent (the left pane) instead of sliding over the viewport as an
   /// overlay - no slide, no drag handle, no rounded edge. The pane owns the width.
   final bool docked;
+
+  /// Edit Alone (C1): the component being edited, and the way back. When both are set the panel shows "Editing <label> [Done]"
+  /// as its first row under the header, instead of the pill that would float over it at the top of the viewport.
+  final String? editAloneLabel;
+  final VoidCallback? onEditAloneDone;
   final List<FeatureDto> features;
   final String? selectedFeatureId;
   final void Function(FeatureDto feature) onFeatureTap;
@@ -502,6 +508,8 @@ class FeatureTreePanel extends StatefulWidget {
     super.key,
     required this.visible,
     this.docked = false,
+    this.editAloneLabel,
+    this.onEditAloneDone,
     required this.features,
     required this.selectedFeatureId,
     required this.onFeatureTap,
@@ -633,6 +641,8 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                                 ],
                               ),
                             ),
+                            if (widget.editAloneLabel != null && widget.onEditAloneDone != null && (widget.visible || widget.docked))
+                              EditAloneRow(label: widget.editAloneLabel!, onDone: widget.onEditAloneDone!),
                             // Prompt D: an inline banner (not a dialog) naming the
                             // picker mode the user is in - sits below the header so
                             // the close (X) button stays usable to cancel the

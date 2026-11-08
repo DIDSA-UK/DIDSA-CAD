@@ -78,6 +78,7 @@ from app.document.assembly_solver import (
 )
 from app.document.coupler import coupler_rows, is_coupler, travel_along, turn_about
 from app.document.limit import is_limit, limit_value, row_unit, violated_bound
+from app.document.mate_tolerance import is_within_tolerance, physical_residual
 from app.document.constraint_model import (
     ConstraintModel,
     export_constraint_model,
@@ -727,6 +728,10 @@ class GroupSolveResult:
     # The branch every mate of the component solved on, `{mate_id: (alignment, secondary_flip)}`: what Closest resolved to (a mate
     # that already named its branch is listed with it). A commit writes the resolved values of still-unresolved mates back.
     branches: dict[str, tuple[str | None, bool | None]] = field(default_factory=dict)
+    # B1 (`app.document.mate_tolerance`): `{mate_id: (millimetres at the far end, degrees)}` of the mates that sit above `_NOISE_TOL` in a result
+    # accepted as converged because every mate is within the near-redundant limits. Empty for an exact solve. Never silent: the
+    # routes report it (`X-Mate-Tolerance: near`) and every listing marks those mates `near`.
+    near: dict[str, tuple[float, float]] = field(default_factory=dict)
 
     @property
     def dof(self) -> int | None:
@@ -1124,6 +1129,13 @@ def _solve_model(
                         seeded_by = "predicted-seed"
 
     converged = residual_inf <= _NOISE_TOL
+    near: dict[str, tuple[float, float]] = {}
+    if not converged:
+        # B1: the strict solve missed. Accept the least-squares result it reached only if every mate is within the
+        # near-redundant limits in physical units (`near_redundant_mates`); anything else is a real conflict and stays unconverged.
+        accepted = near_redundant_mates(document, part, model, poses)
+        if accepted is not None:
+            converged, near = True, accepted
     constraint_model = export_constraint_model(model) if converged else None
     if converged and wanted_pose is not None and constraint_model is not None:
         refined = _nearest_point_stage(model, constraint_model, poses, stored, wanted_pose, grabbed_id, lever_arm)
@@ -1142,7 +1154,49 @@ def _solve_model(
         quality=GroupSolveQuality(residual_inf=residual_inf, jump=jump, iterations=iterations, seeded_by=seeded_by, max_step=max_step),
         constraint_model=constraint_model,
         branches=dict(model.branches),
+        near=near,
     )
+
+
+def near_redundant_mates(
+    document: Document, part: Part, model: GroupModel, poses: dict[str, RigidTransform]
+) -> dict[str, tuple[float, float]] | None:
+    """`{mate_id: (mm, degrees)}` of the mates above `_NOISE_TOL` at `poses` when EVERY mate of `model` is within the
+    near-redundant limits (`app.document.mate_tolerance`); `None` when any mate is outside them (a real conflict), when a
+    coupler or a held limit is part of the group (they measure motion, not a placement: never accepted this way), or when a
+    mate's size cannot be measured (it is then not accepted). Nothing is changed."""
+    from fastapi import HTTPException  # local: this module is otherwise HTTP-free
+
+    if model.active_limits or any(is_coupler(mate) for mate, _a, _b in model.sides):
+        return None
+    placed = dict(poses)
+    radii: dict[str, float] = {}
+    out: dict[str, tuple[float, float]] = {}
+    try:
+        for mate, a, b in model.sides:
+            if is_limit(mate):
+                continue
+            first, second = model._world(a, placed), model._world(b, placed)
+            rows = _mate_residual_vector(mate, first, second)
+            parallel = tuple(r for side in (a, b) if side.partner is not None for r in model._parallel_rows(side, placed))
+            if not rows and not parallel:
+                continue
+            if max((abs(float(r)) for r in (*rows, *parallel)), default=0.0) <= _NOISE_TOL:
+                continue
+            residual = physical_residual(mate, first, second, rows, parallel)
+            radius = 0.0
+            for top in mate_tops(mate):
+                if top == "":
+                    continue
+                if top not in radii:
+                    radii[top] = bounding_radius(document, part, top)
+                radius = max(radius, radii[top])
+            if not is_within_tolerance(residual, radius):
+                return None
+            out[mate.id] = (residual.displacement_mm(radius), residual.angular_deg)
+    except (HTTPException, KeyError, ValueError):
+        return None  # a mate that cannot be measured is not accepted
+    return out or None
 
 
 _NEAREST_ITERATIONS = 12  # the backend is not on the per-frame path: plenty to settle

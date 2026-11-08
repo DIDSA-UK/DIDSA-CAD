@@ -3635,7 +3635,12 @@ class MateResponse(BaseModel):
     # COMPUTED at every listing, never stored (`app.document.mate_status`): `broken` when the mate's residual at the stored poses is
     # above tolerance (a pattern edit it could not follow, a part file edited under it, an over-constrained import), a limit mate's
     # value is outside its range, or a reference no longer resolves. Suppressed mates and couplers are `ok`.
-    status: Literal["ok", "broken"] = "ok"
+    # B1 (`app.document.mate_tolerance`): `near` is a mate that misses by a hair (within 0.01 mm at the far end of its parts and 1e-4 rad)
+    # because the mates over-define the parts and disagree slightly (typically rounded AI coordinates): nothing is stored or changed
+    # for it, it is only flagged. `status_residual_mm` / `status_residual_deg` give the miss of a `near` mate (null otherwise).
+    status: Literal["ok", "near", "broken"] = "ok"
+    status_residual_mm: float | None = None
+    status_residual_deg: float | None = None
 
 
 class MateCreate(BaseModel):

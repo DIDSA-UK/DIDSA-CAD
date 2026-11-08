@@ -525,20 +525,30 @@ class PartToolbar extends StatelessWidget {
           title: const Text('Background Colour'),
           onTap: onBgColourChanged == null ? null : () => _pickBgColour(context),
         ),
-        const Padding(
-          padding: EdgeInsets.fromLTRB(16, 8, 16, 0),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: Text('Override appearance', style: TextStyle(fontWeight: FontWeight.w600)),
+        // C3 (`docs/assembly-perf-mates-and-ui-plan.md`): the header line IS the switch (it used to be a bold header plus a
+        // second "Override appearance" in a SwitchListTile that wrapped mid-word on a phone).
+        InkWell(
+          onTap: onAppearanceOverrideChanged == null ? null : () => onAppearanceOverrideChanged!(!appearanceOverrideOn),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 12, 0),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Override appearance',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+                Switch(
+                  key: const ValueKey('view-override-switch'),
+                  value: appearanceOverrideOn,
+                  onChanged: onAppearanceOverrideChanged == null ? null : (on) => onAppearanceOverrideChanged!(on),
+                ),
+              ],
+            ),
           ),
-        ),
-        SwitchListTile(
-          key: const ValueKey('view-override-switch'),
-          secondary: const Icon(Icons.format_color_reset),
-          title: const Text('Override appearance'),
-          subtitle: Text(appearanceOverrideOn ? 'On: beats every paint, colour and scene' : kViewOverrideOffText),
-          value: appearanceOverrideOn,
-          onChanged: onAppearanceOverrideChanged == null ? null : (on) => onAppearanceOverrideChanged!(on),
         ),
         ListTile(
           key: const ValueKey('view-override-colour'),
@@ -553,14 +563,12 @@ class PartToolbar extends StatelessWidget {
             height: 30,
           ),
           title: const Text('Body Colour'),
-          subtitle: Text(viewOverrideColourSubtitle(on: appearanceOverrideOn, colourHex: bodyColourHex)),
           onTap: onBodyColourChanged == null ? null : () => _pickBodyColour(context),
         ),
         ListTile(
           key: const ValueKey('view-override-opacity'),
           leading: const SvgIcon('assets/icons/sketchbar/sketchbar_body_transparency.svg'),
           title: const Text('Body Transparency'),
-          subtitle: Text(viewOverrideOpacitySubtitle(on: appearanceOverrideOn, opacity: bodyOpacity)),
           onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
         ),
         ListTile(

@@ -58,7 +58,12 @@ from dataclasses import dataclass
 
 from fastapi import HTTPException
 
-from app.document.ai_plan_edges import resolve_edge_selector, resolve_face_selector, resolve_mate_face_selector
+from app.document.ai_plan_edges import (
+    resolve_edge_selector,
+    resolve_face_selector,
+    resolve_mate_face_selector,
+    resolve_mate_face_selector_with_distance,
+)
 from app.document.ai_plan_schemas import (
     AddComponentStep,
     BooleanStep,
@@ -543,7 +548,7 @@ class _PlanValidator:
             occurrence = inner
         return "/".join(segments), occurrence
 
-    def _resolve_occurrence_target_part(self, occurrence: Occurrence, field: str) -> Part:
+    def _resolve_occurrence_target_part(self, occurrence: Occurrence, field: str, selector: str = "edge_selector") -> Part:
         """Multi-part/assembly overhaul, Phase D2 (docs/ai-modelling/13-
         multi-part-assembly-overhaul.md): resolves a placed Occurrence's
         own target Part, for a Mate's `edge_selector` to compute real
@@ -564,7 +569,7 @@ class _PlanValidator:
                 {
                     "type": "invalid_step_payload",
                     "message": (
-                        f"{field}.edge_selector needs this occurrence's target Part to be resolvable in the "
+                        f"{field}.{selector} needs this occurrence's target Part to be resolvable in the "
                         "current session - it isn't (unresolved, or not loaded into this session's Document)"
                     ),
                 }
@@ -1082,20 +1087,83 @@ _MATE_EDGE_SELECTOR_UNSUPPORTED_KINDS = frozenset(
 )
 
 
+# Two bodies' nearest faces count as tied when they are this close (relative to the size of the part): a tie names no
+# single face, so the selector is refused rather than guessed.
+_FACE_TIE_RELATIVE_TOLERANCE = 1e-6
+
+
+def _part_size(bodies: dict) -> float:
+    """The diagonal of the box around every body (0 for none)."""
+    from OCC.Core.Bnd import Bnd_Box
+    from OCC.Core.BRepBndLib import brepbndlib
+
+    box = Bnd_Box()
+    for shape in bodies.values():
+        brepbndlib.Add(shape, box)
+    if box.IsVoid():
+        return 0.0
+    xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
+    return ((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2) ** 0.5
+
+
+def _resolve_mate_face_selector_across_bodies(bodies: dict, selector: MateFaceSelector, field: str) -> SubShapeRefSchema:
+    """A `face_selector` with no `body_id` on a component of several Bodies: resolve it on every Body and take the single
+    face nearest `near`. Exact (it picks a real face; nothing is approximated). Refused (422, listing the Bodies) when
+    there is no `near` to choose by, when no Body has a matching face, or when two Bodies' faces tie within 1e-6 of the
+    part's size."""
+    listing = f"{len(bodies)} Bodies ({', '.join(bodies)})"
+    if not selector.near:
+        raise _StepError(
+            {
+                "type": "invalid_step_payload",
+                "message": f"{field}.face_selector needs body_id or near: that component has {listing}",
+            }
+        )
+    near = tuple(selector.near)
+    found: list[tuple[float, str, SubShapeRef]] = []
+    for candidate_id, shape in bodies.items():
+        try:
+            ref, distance = resolve_mate_face_selector_with_distance(
+                shape,
+                candidate_id,
+                direction=selector.direction,
+                cylinder_radius=selector.cylinder_radius,
+                near=near,
+                normal=tuple(selector.normal) if selector.normal else None,
+            )
+        except HTTPException:
+            continue  # this Body has no such face; another may
+        found.append((distance if distance is not None else 0.0, candidate_id, ref))
+    if not found:
+        raise _StepError(
+            {
+                "type": "face_selector_no_matching_face",
+                "message": f"{field}.face_selector matches no face on any of {listing}",
+            }
+        )
+    found.sort(key=lambda item: item[0])
+    if len(found) > 1 and found[1][0] - found[0][0] <= _FACE_TIE_RELATIVE_TOLERANCE * max(_part_size(bodies), 1.0):
+        raise _StepError(
+            {
+                "type": "face_selector_ambiguous",
+                "message": (
+                    f"{field}.face_selector is equally near faces of {found[0][1]} and {found[1][1]}; "
+                    f"set body_id (the component has {listing})"
+                ),
+            }
+        )
+    _, chosen_id, chosen = found[0]
+    return SubShapeRefSchema(body_id=chosen_id, shape_type=SubShapeType.FACE, index=chosen.index)
+
+
 def _resolve_mate_face_selector(target_part: Part, selector: MateFaceSelector, field: str) -> SubShapeRefSchema:
     """A mate reference's `face_selector` (see `MateFaceSelector`) resolved to a real FACE ref on `target_part` - the
     same "resolve in the dry run, the translator substitutes the result" path `edge_selector` takes."""
     bodies = compute_part_bodies(target_part, frozenset())
     body_id = selector.body_id
+    if body_id is None and len(bodies) != 1:
+        return _resolve_mate_face_selector_across_bodies(bodies, selector, field)
     if body_id is None:
-        if len(bodies) != 1:
-            raise _StepError(
-                {
-                    "type": "invalid_step_payload",
-                    "message": f"{field}.face_selector needs body_id: that component has {len(bodies)} Bodies "
-                    f"({', '.join(bodies)})",
-                }
-            )
         (body_id,) = bodies
     if body_id not in bodies:
         # "Placed Components" lists every body-producing Feature, including one joined onto an earlier Body, so a
@@ -1222,7 +1290,7 @@ def _mate_entity_ref_from_step(
         subshape_ref = _resolve_mate_edge_selector(target_part, subshape_ref, ref.edge_selector, field)
         resolved_subshape_ref = subshape_ref
     if ref.face_selector is not None:
-        target_part = v.part if occurrence is None else v._resolve_occurrence_target_part(occurrence, field)
+        target_part = v.part if occurrence is None else v._resolve_occurrence_target_part(occurrence, field, "face_selector")
         subshape_ref = _resolve_mate_face_selector(target_part, ref.face_selector, field)
         resolved_subshape_ref = subshape_ref
 

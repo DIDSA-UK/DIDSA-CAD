@@ -2,10 +2,13 @@ import 'dart:math' as math;
 
 import 'package:material_ui/material_ui.dart';
 
+import '../ai/ai_theme.dart' show AiPalette;
 import '../api/document_api_client.dart';
+import '../assembly/occurrence_visibility.dart' show topLevelOccurrenceId;
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import 'action_sheet.dart';
+import 'edit_alone_row.dart';
 import 'mate_panel.dart' show mateValueSummary;
 import 'view_preferences.dart' show colorFromHex;
 import 'width_pick.dart' show isSymmetricMate, isWidthMate;
@@ -140,6 +143,35 @@ String componentPatternSummary(ComponentPatternDto pattern) {
 /// The subtitle of a broken mate's row (the Assembly tree).
 const String kBrokenMateText = "Broken - can't be satisfied";
 
+/// B1: what the tooltip of a `near` mate says it means.
+const String kNearMateTooltip =
+    'These mates over-define the part and disagree by this much. Remove one, or make the geometry exact.';
+
+/// B1: "Within tolerance: 0.006 mm / 0.0002°" for a `near` mate (the backend's `status_residual_mm` / `status_residual_deg`).
+String nearMateText(MateDto mate) {
+  String fmt(double? v, int digits) {
+    if (v == null) return '?';
+    final s = v.toStringAsFixed(digits);
+    return s.contains('.') ? s.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '') : s;
+  }
+
+  return 'Within tolerance: ${fmt(mate.statusResidualMm, 3)} mm / ${fmt(mate.statusResidualDeg, 4)}°';
+}
+
+/// B1: true when [occurrenceId] is over-constrained only by `near` mates: it has at least one, and none of the mates that touch
+/// it (by their top-level occurrence) is broken. Its constraint badge is then amber instead of red.
+bool occurrenceConflictsAreAllNear(List<MateDto> mates, String occurrenceId) {
+  var near = 0;
+  for (final mate in mates) {
+    if (mate.suppressed) continue;
+    final touches = mate.references.any((r) => topLevelOccurrenceId(r.occurrenceId) == occurrenceId);
+    if (!touches) continue;
+    if (mate.isBroken) return false;
+    if (mate.isNear) near++;
+  }
+  return near > 0;
+}
+
 /// The display name for the Mate at [index] in [mates] - mirrors
 /// [occurrenceDisplayName]/`featureDisplayName`'s "Type N" convention
 /// (ordinal counts only same-type mates up to and including [index]), since a
@@ -189,6 +221,11 @@ class AssemblyTreePanel extends StatefulWidget {
   /// Desktop layout (D6): the panel fills its parent (the left pane) instead of sliding over the viewport as an
   /// overlay - no slide, no drag handle, no rounded edge. The pane owns the width.
   final bool docked;
+
+  /// Edit Alone (C1): the component being edited, and the way back. When both are set the panel shows "Editing <label> [Done]"
+  /// as its first row under the header, instead of the pill that would float over it at the top of the viewport.
+  final String? editAloneLabel;
+  final VoidCallback? onEditAloneDone;
   final List<OccurrenceDto> occurrences;
   final List<MateDto> mates;
 
@@ -335,6 +372,8 @@ class AssemblyTreePanel extends StatefulWidget {
     super.key,
     required this.visible,
     this.docked = false,
+    this.editAloneLabel,
+    this.onEditAloneDone,
     required this.occurrences,
     required this.mates,
     this.patterns = const [],
@@ -534,6 +573,8 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
                                   ),
                                 ),
                                 _buildParentPartRow(context),
+                                if (widget.editAloneLabel != null && widget.onEditAloneDone != null && (widget.visible || widget.docked))
+                                  EditAloneRow(label: widget.editAloneLabel!, onDone: widget.onEditAloneDone!),
                                 if (widget.motionSummary != null && widget.motionSummary!.isNotEmpty)
                                   Padding(
                                     padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
@@ -737,6 +778,11 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
         Icons.lock_open,
         scheme.onSurfaceVariant,
         'Under-constrained - ${status.dof} degree${status.dof == 1 ? '' : 's'} of freedom',
+      ),
+      ConstraintState.overConstrained when occurrenceConflictsAreAllNear(widget.mates, occurrence.id) => (
+        Icons.warning_amber_rounded,
+        AiPalette.of(context).warning,
+        'Over-constrained - the mates agree to within tolerance',
       ),
       ConstraintState.overConstrained => (Icons.warning_amber_rounded, scheme.error, 'Over-constrained - mates conflict'),
     };
@@ -948,9 +994,14 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
     // A broken mate (the backend computes it, `MateDto.status`) draws in the error colour with a warning icon; a suppressed one
     // is never broken (the backend says `ok`).
     final broken = mate.isBroken && !mate.suppressed;
+    // A `near` mate (B1) draws in the amber warning colour: it works, but only to within a hair.
+    final near = mate.isNear && !mate.suppressed;
     final errorColour = Theme.of(context).colorScheme.error;
+    final nearColour = AiPalette.of(context).warning;
     final summary = mateValueSummary(mate);
     final pulse = widget.flashMateIds.contains(mate.id) ? _flashPulse : 0.0;
+    final accent = broken ? errorColour : (near ? nearColour : null);
+    final nearText = near ? nearMateText(mate) : null;
     return Opacity(
       opacity: mate.suppressed ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
@@ -960,20 +1011,29 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
           visualDensity: VisualDensity.compact,
           selected: mate.id == widget.selectedMateId,
           tileColor: pulse > 0 ? errorColour.withValues(alpha: 0.35 * pulse) : null,
-          leading: Icon(broken ? Icons.warning_amber_rounded : Icons.link, size: 24, color: broken ? errorColour : null),
+          leading: near
+              ? Tooltip(
+                  message: kNearMateTooltip,
+                  child: Icon(Icons.warning_amber_rounded, size: 24, color: accent),
+                )
+              : Icon(broken ? Icons.warning_amber_rounded : Icons.link, size: 24, color: accent),
           title: Text(
             mateDisplayName(widget.mates, index),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: broken ? _rowTitleStyle.copyWith(color: errorColour) : _rowTitleStyle,
+            style: accent != null ? _rowTitleStyle.copyWith(color: accent) : _rowTitleStyle,
           ),
-          subtitle: !broken && summary == null
+          subtitle: !broken && !near && summary == null
               ? null
               : Text(
-                  broken ? (summary == null ? kBrokenMateText : '$kBrokenMateText · $summary') : summary!,
+                  broken
+                      ? (summary == null ? kBrokenMateText : '$kBrokenMateText · $summary')
+                      : near
+                          ? (summary == null ? nearText! : '$nearText · $summary')
+                          : summary!,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: broken ? TextStyle(color: errorColour) : null,
+                  style: accent != null ? TextStyle(color: accent) : null,
                 ),
           trailing: mate.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
           onTap: widget.onMateTap == null || widget.isMultiSelectMode ? null : () => widget.onMateTap!(mate),

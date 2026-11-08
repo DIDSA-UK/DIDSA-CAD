@@ -50,7 +50,19 @@ def _read_git_branch() -> str:
 _GIT_BRANCH = _read_git_branch()
 
 
+# What this backend can do that an older one cannot, for a client that must know BEFORE it runs a plan (an imported AI zip's
+# mates): `GET /health` lists them as `api_features`. An older backend has no such key at all. Add a name when behaviour a
+# client depends on lands; never rename or remove one.
+API_FEATURES = [
+    "ai_plan.face_selector.normal",  # a mate reference's face_selector may carry `normal` (a sloped face)
+    "ai_plan.mate_paths",  # a mate reference may be a path into a placed sub-assembly (`outer/inner`)
+    "ai_plan.face_selector.nearest_body",  # face_selector without body_id picks the Body by `near` on a multi-body component
+    "mate.status_near",  # a mate's status may be `near` (solved within tolerance), with `status_residual_mm` / `_deg`
+    "boss.split_targets",  # a Boss target id also names the pieces its body was split into
+]
+
+
 @app.get("/health")
 def health() -> dict:
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
-    return {"status": "ok", "occt_shape_valid": not box.IsNull(), "git_branch": _GIT_BRANCH}
+    return {"status": "ok", "occt_shape_valid": not box.IsNull(), "git_branch": _GIT_BRANCH, "api_features": API_FEATURES}

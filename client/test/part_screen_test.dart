@@ -25,7 +25,9 @@ import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
+import 'package:didsa_cad_client/viewport3d/edit_alone_row.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
+import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
 import 'package:didsa_cad_client/viewport3d/mate_panel.dart';
 import 'package:didsa_cad_client/viewport3d/measurement_panel.dart';
@@ -2406,7 +2408,7 @@ void main() {
       expect(find.byType(VisibilityPanel), findsOneWidget, reason: 'nothing was lost');
     });
 
-    testWidgets('the View row has the standard views and folds away', (tester) async {
+    testWidgets('the View row has the standard views and no fold chevron', (tester) async {
       await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
       await openPanel(tester);
       for (final name in ['front', 'back', 'left', 'right', 'top', 'bottom', 'isometric']) {
@@ -2417,9 +2419,23 @@ void main() {
         await tester.pump(const Duration(milliseconds: 100)); // the 400 ms camera move, frame by frame
       }
       expect(tester.takeException(), isNull);
-      await tester.tap(find.byKey(const ValueKey('vis-fold-views')));
-      await tester.pump();
-      expect(find.byKey(const ValueKey('vis-view-top')), findsNothing);
+      expect(find.byKey(const ValueKey('vis-fold-views')), findsNothing);
+      expect(find.byKey(const ValueKey('vis-view-top')), findsOneWidget);
+    });
+
+    testWidgets('C2: the Style row changes the render mode the same way the View menu does', (tester) async {
+      await pumpScreen(tester, _FakeDocumentBackend(seedFeatures: twoSketches));
+      await openPanel(tester);
+      PartViewport viewportNow() => tester.widget<PartViewport>(find.byType(PartViewport));
+      final before = viewportNow().renderMode;
+      final other = ViewportRenderMode.values.firstWhere((m) => m != before);
+      await tester.tap(find.byKey(ValueKey('vis-mode-${other.name}')));
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(viewportNow().renderMode, other);
+      final selected = tester.widget<OutlinedButton>(find.byKey(ValueKey('vis-mode-${other.name}')));
+      expect(selected.style?.backgroundColor?.resolve(<WidgetState>{}), isNotNull, reason: 'the panel shows the new mode selected');
     });
 
     testWidgets('in Assembly lens a chip makes one call for every Part in the scene', (tester) async {
@@ -9523,6 +9539,31 @@ void main() {
       await settle(tester);
       expect(viewport(tester).focusedOccurrencePath, isEmpty);
       expect(viewport(tester).soloFocus, isFalse);
+    });
+
+    testWidgets('C1: with a tree open the pill moves into the tree, under its header; closed, it is the pill at the top again', (tester) async {
+      await open(tester);
+      await menuAction(tester, 'occ-1', 'Edit Alone');
+      // No tree open: the pill is the floating one at the top, outside any tree.
+      expect(pill, findsOneWidget);
+      expect(find.descendant(of: find.byType(FeatureTreePanel), matching: pill), findsNothing);
+      final topPill = tester.widget<EditAloneRow>(pill);
+      expect(topPill.pill, isTrue);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await settle(tester);
+      // Tree open (Part lens: the Build Tree): exactly one row, inside the tree, directly under the header row, not floating.
+      expect(pill, findsOneWidget);
+      expect(find.descendant(of: find.byType(FeatureTreePanel), matching: pill), findsOneWidget);
+      expect(tester.widget<EditAloneRow>(pill).pill, isFalse);
+      expect(tester.getTopLeft(pill).dy, greaterThan(tester.getTopLeft(find.text('Build Tree')).dy));
+      expect(tester.getTopLeft(pill).dy, lessThan(tester.getTopLeft(find.text('Features')).dy));
+      expect(find.descendant(of: pill, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
+
+      await tester.tap(done);
+      await settle(tester);
+      expect(viewport(tester).soloFocus, isFalse);
+      expect(pill, findsNothing);
     });
 
     testWidgets('Back closes the Menu panel first, then leaves Edit Alone', (tester) async {

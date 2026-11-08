@@ -29,6 +29,7 @@ import 'ai_model_check.dart';
 import 'ai_part_manifest.dart';
 import 'ai_part_naming.dart';
 import 'ai_plan.dart';
+import 'ai_plan_features.dart';
 import 'ai_assembly_report.dart';
 import 'ai_plan_bundle.dart';
 import 'ai_plan_detection.dart';
@@ -119,7 +120,7 @@ const int aiImageMaxEdgePx = 1568;
 enum _ImportedMates { none, failedValidation, partlyBuilt, built }
 
 /// What [_AiModellingScreenState._executeMatesPlan] did with a plan of mates.
-enum _MatesOutcome { built, partial, validationFailed }
+enum _MatesOutcome { built, partial, validationFailed, backendTooOld }
 
 class _MatesRun {
   final _MatesOutcome outcome;
@@ -1609,7 +1610,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           PlanTranslationOutcome.gearRequestEncountered =>
             'The assistant proposed a gear step for "${entry.name}", which Assembly mode cannot '
                 'create automatically yet - use the Gear Design tool separately for this part.',
-          PlanTranslationOutcome.success => '',
+          PlanTranslationOutcome.success || PlanTranslationOutcome.completedWithFailures => '',
         };
         await _prepareOrchestrationRetry(partId: partId, saveOnly: false, isAssembly: false);
         if (translation.outcome == PlanTranslationOutcome.stepFailed ||
@@ -1912,7 +1913,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           PlanTranslationOutcome.gearRequestEncountered =>
             'The assistant proposed a gear step for the assembly, which cannot be created '
                 'automatically yet.',
-          PlanTranslationOutcome.success => '',
+          PlanTranslationOutcome.success || PlanTranslationOutcome.completedWithFailures => '',
         };
         await _prepareOrchestrationRetry(partId: assemblyPartId, saveOnly: false, isAssembly: true);
         if (translation.outcome == PlanTranslationOutcome.stepFailed ||
@@ -2236,6 +2237,12 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     required StorageService storage,
     required ProjectRoot root,
   }) async {
+    // B5: say once, before anything is built, that this backend predates what the plan uses.
+    final missing = missingApiFeatures(plan, await _documentApi.apiFeatures());
+    if (missing.isNotEmpty) {
+      final message = backendTooOldMessage(missing);
+      return _MatesRun(_MatesOutcome.backendTooOld, 'Saved without mates: $message', problems: message);
+    }
     setState(() {
       _orchestrationStatus = 'Validating and building the mates...';
       _orchestrationStepStatuses = List.filled(plan.steps.length, TranslationStepStatus.pending);
@@ -2251,6 +2258,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         plan: plan,
         partId: assemblyPartId,
         disabledKinds: AiSystemPromptPreferences.disabledKinds,
+        bestEffortMates: true,
         onStepStatusChanged: (stepIndex, status) {
           if (!mounted) return;
           setState(() => _orchestrationStepStatuses![stepIndex] = status);
@@ -2270,7 +2278,19 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final mates = plan.steps.whereType<AiMateStep>().length;
     switch (translation.outcome) {
       case PlanTranslationOutcome.success:
-        return _MatesRun(_MatesOutcome.built, '$mates mate${mates == 1 ? '' : 's'} added.');
+        final near = await _nearMatesNote(assemblyPartId);
+        return _MatesRun(_MatesOutcome.built, '$mates mate${mates == 1 ? '' : 's'} added$near.');
+      case PlanTranslationOutcome.completedWithFailures:
+        // B2: every mate that could be built was; the rest were never stored.
+        final failures = translation.failures;
+        final built = mates - failures.length;
+        final problems = describeMateFailures(failures);
+        final near = await _nearMatesNote(assemblyPartId);
+        return _MatesRun(
+          _MatesOutcome.partial,
+          'Built $built of $mates mate${mates == 1 ? '' : 's'}$near; ${failures.length} could not be built:\n$problems',
+          problems: problems,
+        );
       case PlanTranslationOutcome.validationFailed:
         final problems = listAiPlanValidationProblems(plan, translation.preflightResults);
         return _MatesRun(
@@ -2287,6 +2307,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           'Saved with only some mates: ${translation.errorMessage}.',
           problems: '${translation.errorMessage}',
         );
+    }
+  }
+
+  /// B1: ", N within tolerance (largest 0.006 mm)" when some of the assembly's mates are `near` (the backend computes it from the
+  /// stored poses), else "". Read from the listing after the run, so a mate made `near` by a LATER mate is counted too.
+  /// Never throws: an older backend, or a failed call, just gives no note.
+  Future<String> _nearMatesNote(String assemblyPartId) async {
+    try {
+      return nearMatesNote(await _documentApi.listMates(assemblyPartId));
+    } on Object {
+      return '';
     }
   }
 
@@ -2324,7 +2355,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _importedMates = switch (run.outcome) {
         _MatesOutcome.built => _ImportedMates.built,
         _MatesOutcome.partial => _ImportedMates.partlyBuilt,
-        _MatesOutcome.validationFailed => _ImportedMates.failedValidation,
+        _MatesOutcome.validationFailed || _MatesOutcome.backendTooOld => _ImportedMates.failedValidation,
       };
       _importedMatesProblems = run.problems;
     });
@@ -2425,9 +2456,10 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       _MatesOutcome.built => 'The follow-up added ${run.note}',
       _MatesOutcome.partial => 'The follow-up: ${run.note}',
       _MatesOutcome.validationFailed => 'The follow-up mates failed validation and were not built.',
+      _MatesOutcome.backendTooOld => 'The follow-up mates were not built: ${run.problems}',
     };
     setState(() => _mateNote = '${_mateNote ?? ''}\n$followUp');
-    return run.outcome != _MatesOutcome.validationFailed;
+    return run.outcome != _MatesOutcome.validationFailed && run.outcome != _MatesOutcome.backendTooOld;
   }
 
   /// "Open Assembly" - navigates into `PartScreen` for the just-saved
@@ -2848,14 +2880,16 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
       if (rewritten.steps.isNotEmpty) {
         final run = await _executeMatesPlan(assemblyPartId: assemblyPartId, plan: rewritten, storage: storage, root: root);
         if (!mounted) return;
-        built = run.outcome != _MatesOutcome.validationFailed;
+        final notBuilt = run.outcome == _MatesOutcome.validationFailed || run.outcome == _MatesOutcome.backendTooOld;
+        built = !notBuilt;
         setState(() {
           _mateNote = switch (run.outcome) {
             _MatesOutcome.built => 'Imported ${run.note}',
             _MatesOutcome.partial => 'Imported some of the mates: ${run.note}',
             _MatesOutcome.validationFailed => 'The imported mates failed validation and were not built.\n${run.problems}',
+            _MatesOutcome.backendTooOld => 'The imported mates were not built: ${run.problems}',
           };
-          if (run.outcome == _MatesOutcome.validationFailed) {
+          if (notBuilt) {
             // Nothing from this reply was built: what the fix package says stays as it was, with the new failure.
             if (_importedMates != _ImportedMates.built) _importedMatesProblems = run.problems;
           } else {
@@ -3942,6 +3976,9 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           icon: Icons.error_outline,
           text: '$failed of $total step(s) failed validation - nothing was created. See above.',
         );
+      case PlanTranslationOutcome.completedWithFailures:
+        // Only a mates run ends this way, and it reports through the mate note, not this banner.
+        return const SizedBox.shrink();
       case PlanTranslationOutcome.stepFailed:
       case PlanTranslationOutcome.gearRequestEncountered:
         // Both of these switch the panel back to chat mode as soon as the

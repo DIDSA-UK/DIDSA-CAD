@@ -49,6 +49,52 @@ void main() {
     });
   });
 
+  group('Performance: hide edges while moving (A3)', () {
+    test('defaults: off, 50,000 segments', () async {
+      await ControlsPreferences.load();
+      expect(ControlsPreferences.hideEdgesWhileMoving, isFalse);
+      expect(ControlsPreferences.edgeLimit, 50000);
+    });
+
+    test('both survive a reload, and a stray stored limit snaps to a step', () async {
+      SharedPreferences.setMockInitialValues({
+        ControlsPreferences.hideEdgesWhileMovingPrefKey: true,
+        ControlsPreferences.edgeLimitPrefKey: 21000,
+      });
+      await ControlsPreferences.load();
+      expect(ControlsPreferences.hideEdgesWhileMoving, isTrue);
+      expect(ControlsPreferences.edgeLimit, 20000);
+      await ControlsPreferences.setEdgeLimit(120000);
+      expect(ControlsPreferences.edgeLimit, 100000);
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getInt(ControlsPreferences.edgeLimitPrefKey), 100000);
+    });
+
+    testWidgets('the switch and the slider are saved, the slider is off until the switch is on, the count shows', (tester) async {
+      ControlsPreferences.visibleEdgeSegments = 11918;
+      addTearDown(() => ControlsPreferences.visibleEdgeSegments = 0);
+      tester.view.physicalSize = const Size(800, 1200);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(const MaterialApp(home: ControlsSettingsScreen()));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(find.byKey(const ValueKey('hide-edges-switch')), 200);
+      expect(tester.widget<Slider>(find.byKey(const ValueKey('edge-limit-slider'))).onChanged, isNull);
+      expect(find.text('This model: 11,918'), findsOneWidget);
+      expect(find.text('Edge limit: 50,000 segments'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('hide-edges-switch')));
+      await tester.pumpAndSettle();
+      expect(ControlsPreferences.hideEdgesWhileMoving, isTrue);
+      expect(tester.widget<Slider>(find.byKey(const ValueKey('edge-limit-slider'))).onChanged, isNotNull);
+
+      await tester.drag(find.byKey(const ValueKey('edge-limit-slider')), const Offset(-400, 0));
+      await tester.pumpAndSettle();
+      expect(ControlsPreferences.edgeLimit, 5000);
+      expect(find.text('Edge limit: 5,000 segments'), findsOneWidget);
+    });
+  });
+
   group('ControlsSettingsScreen', () {
     Future<void> pump(WidgetTester tester, {Size size = const Size(800, 900)}) async {
       tester.view.physicalSize = size;
@@ -77,7 +123,7 @@ void main() {
       await tester.pumpAndSettle();
       expect(ControlsPreferences.invertWheel, isTrue);
 
-      await tester.drag(find.byType(Slider), const Offset(300, 0));
+      await tester.drag(find.byType(Slider).first, const Offset(300, 0));
       await tester.pumpAndSettle();
       expect(ControlsPreferences.orbitSpeed, greaterThan(1.0));
       expect(find.textContaining('Orbit speed: '), findsOneWidget);
@@ -92,11 +138,13 @@ void main() {
       await ControlsPreferences.setInvertWheel(true);
       await pump(tester);
       await tester.scrollUntilVisible(find.text('Reset to defaults'), 200);
+      await tester.ensureVisible(find.text('Reset to defaults'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('Reset to defaults'));
       await tester.pumpAndSettle();
       expect(ControlsPreferences.preset, NavigationPreset.solidworks);
       expect(ControlsPreferences.invertWheel, isFalse);
-      expect(tester.widget<Switch>(find.byType(Switch)).value, isFalse);
+      expect(tester.widget<Switch>(find.byType(Switch).first).value, isFalse);
     });
 
     testWidgets('the shortcut list opens from here', (tester) async {

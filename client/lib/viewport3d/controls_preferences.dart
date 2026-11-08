@@ -1,6 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../layout/layout_mode.dart';
+import 'edge_batching.dart' show kEdgeLimitDefault, kHideEdgesWhileMovingDefault, snapEdgeLimit;
 
 /// Desktop input D5 (`docs/desktop-input-scope.md` section 4): which CAD
 /// package's mouse bindings the view drags follow - see
@@ -29,6 +30,8 @@ class ControlsPreferences {
   static const String orbitSpeedPrefKey = 'controls_orbit_speed';
   static const String layoutPrefKey = 'controls_layout_preference';
   static const String quickColumnOpensPrefKey = 'controls_quick_column_opens';
+  static const String hideEdgesWhileMovingPrefKey = 'controls_hide_edges_while_moving';
+  static const String edgeLimitPrefKey = 'controls_edge_limit';
 
   static const NavigationPreset defaultPreset = NavigationPreset.solidworks;
   static const bool defaultInvertWheel = false;
@@ -44,6 +47,12 @@ class ControlsPreferences {
   static double _orbitSpeed = defaultOrbitSpeed;
   static LayoutPreference _layoutPreference = LayoutPreference.automatic;
   static int _quickColumnOpens = 0;
+  static bool _hideEdgesWhileMoving = kHideEdgesWhileMovingDefault;
+  static int _edgeLimit = kEdgeLimitDefault;
+
+  /// How many edge segments the part viewport is drawing now (set by the viewport; 0 = none or not known). The
+  /// Controls screen shows it under the edge limit.
+  static int visibleEdgeSegments = 0;
 
   /// The Start button's swipe hint goes after the quick column has been opened this many times.
   static const int quickColumnHintLimit = 3;
@@ -52,6 +61,10 @@ class ControlsPreferences {
   static bool get invertWheel => _invertWheel;
   static double get orbitSpeed => _orbitSpeed;
   static LayoutPreference get layoutPreference => _layoutPreference;
+
+  /// Performance (A3): hide the body edges while the view moves on models with more than [edgeLimit] edge segments.
+  static bool get hideEdgesWhileMoving => _hideEdgesWhileMoving;
+  static int get edgeLimit => _edgeLimit;
 
   /// Whether the Start button still draws its swipe-up hint (a once-per-install hint: never reset by [reset]).
   static bool get showQuickColumnHint => _quickColumnOpens < quickColumnHintLimit;
@@ -66,6 +79,8 @@ class ControlsPreferences {
         LayoutPreference.values.where((p) => p.name == storedLayout).firstOrNull ?? LayoutPreference.automatic;
     _orbitSpeed = (prefs.getDouble(orbitSpeedPrefKey) ?? defaultOrbitSpeed).clamp(minOrbitSpeed, maxOrbitSpeed);
     _quickColumnOpens = prefs.getInt(quickColumnOpensPrefKey) ?? 0;
+    _hideEdgesWhileMoving = prefs.getBool(hideEdgesWhileMovingPrefKey) ?? kHideEdgesWhileMovingDefault;
+    _edgeLimit = snapEdgeLimit(prefs.getInt(edgeLimitPrefKey) ?? kEdgeLimitDefault);
   }
 
   /// Counts one more user-opened quick column, towards dropping the swipe hint.
@@ -100,11 +115,25 @@ class ControlsPreferences {
     await prefs.setString(layoutPrefKey, value.name);
   }
 
+  static Future<void> setHideEdgesWhileMoving(bool value) async {
+    _hideEdgesWhileMoving = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(hideEdgesWhileMovingPrefKey, value);
+  }
+
+  static Future<void> setEdgeLimit(int value) async {
+    _edgeLimit = snapEdgeLimit(value);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(edgeLimitPrefKey, _edgeLimit);
+  }
+
   /// Puts every control back to its default.
   static Future<void> reset() async {
     await setPreset(defaultPreset);
     await setInvertWheel(defaultInvertWheel);
     await setOrbitSpeed(defaultOrbitSpeed);
     await setLayoutPreference(LayoutPreference.automatic);
+    await setHideEdgesWhileMoving(kHideEdgesWhileMovingDefault);
+    await setEdgeLimit(kEdgeLimitDefault);
   }
 }

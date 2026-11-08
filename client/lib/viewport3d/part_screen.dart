@@ -67,6 +67,7 @@ import '../storage/storage_service_factory.dart';
 import '../vr_pairing/headset_pairing_screen.dart';
 import 'action_sheet.dart';
 import 'assembly_tree_panel.dart';
+import 'edit_alone_row.dart';
 import 'body_naming.dart';
 import 'boolean_panel.dart';
 import 'cascade_delete_dialog.dart';
@@ -2100,7 +2101,6 @@ class _PartScreenState extends State<PartScreen> {
   /// Whether the Visibility panel is open: it stays until its own close button, and is only drawn while the Start button
   /// is (no tool owns the screen), coming back when the tool closes.
   bool _visibilityPanelOpen = false;
-  bool _visibilityViewsFolded = false;
 
   /// One category's state, from the focused Part's Features and its hidden set.
   VisibilityChipState _categoryState(String category) {
@@ -24971,42 +24971,17 @@ class _PartScreenState extends State<PartScreen> {
     await _refreshFocusTargetContent();
   }
 
-  /// The pill at the top of the viewport while in Edit Alone: what is being edited, and the way back.
+  /// The pill at the top of the viewport while in Edit Alone: what is being edited, and the way back. Only while no tree is
+  /// open (C1, `docs/assembly-perf-mates-and-ui-plan.md`): an open tree shows the same row under its own header instead, so
+  /// the pill never covers it.
   Widget _buildEditAlonePill() {
     final session = _editAlone!;
-    final theme = Theme.of(context);
-    return Material(
-      key: const ValueKey('edit-alone-pill'),
-      elevation: 3,
-      color: theme.colorScheme.secondaryContainer,
-      borderRadius: BorderRadius.circular(24),
-      child: Padding(
-        padding: const EdgeInsets.only(left: 14, right: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Flexible(
-              child: Text.rich(
-                TextSpan(children: [
-                  const TextSpan(text: 'Editing '),
-                  TextSpan(text: session.label, style: const TextStyle(fontWeight: FontWeight.bold)),
-                ]),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-            const SizedBox(width: 4),
-            TextButton.icon(
-              key: const ValueKey('edit-alone-done'),
-              onPressed: () => unawaited(_exitEditAlone()),
-              icon: const Icon(Icons.close_fullscreen, size: 18),
-              label: const Text('Done'),
-            ),
-          ],
-        ),
-      ),
-    );
+    return EditAloneRow(label: session.label, onDone: () => unawaited(_exitEditAlone()), pill: true);
   }
+
+  /// Whether a tree panel (the Build Tree or the Assembly Tree, floating on a phone or docked on the desktop) is on screen,
+  /// i.e. whether Edit Alone's row is in it rather than in the pill at the top.
+  bool get _editAloneRowInTree => _desktopLayout ? (_desktopPaneVisible && !_desktopToolPanelOpen && !_chromeHidden) : _featureTreePanelVisible;
 
   /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): every
   /// push/pop of [_focusStack] must re-fetch not just the Assembly tree
@@ -26070,7 +26045,7 @@ class _PartScreenState extends State<PartScreen> {
             RibbonCommand(
               label: 'Override',
               icon: Icons.format_color_reset,
-              tooltip: 'Override appearance: one colour and transparency over everything (display only)',
+              tooltip: 'Override appearance',
               selected: _appearanceOverrideOn,
               onPressed: () => _onAppearanceOverrideChanged(!_appearanceOverrideOn),
             ),
@@ -26317,6 +26292,8 @@ class _PartScreenState extends State<PartScreen> {
   Widget _buildFeatureTreePanel({required bool docked}) {
     return FeatureTreePanel(
       docked: docked,
+      editAloneLabel: _editAlone?.label,
+      onEditAloneDone: _editAlone == null ? null : () => unawaited(_exitEditAlone()),
                     visible: _featureTreePanelVisible,
                     multiSelectHeader: _activeMultiSelect == null
                         ? null
@@ -26556,6 +26533,8 @@ class _PartScreenState extends State<PartScreen> {
   Widget _buildAssemblyTreePanel({required bool docked}) {
     return AssemblyTreePanel(
       docked: docked,
+      editAloneLabel: _editAlone?.label,
+      onEditAloneDone: _editAlone == null ? null : () => unawaited(_exitEditAlone()),
                     motionSummary: _motionStatusText,
                     unsavedPartIds: _dirtyPartIds,
                     neverSavedPartIds: _neverWrittenPartIds,
@@ -28178,8 +28157,8 @@ class _PartScreenState extends State<PartScreen> {
                           chips: _visibilityChips(),
                           views: _visibilityViews(),
                           onClose: () => setState(() => _visibilityPanelOpen = false),
-                          viewsFolded: _visibilityViewsFolded,
-                          onViewsFoldedChanged: (folded) => setState(() => _visibilityViewsFolded = folded),
+                          renderMode: _renderMode,
+                          onRenderModeChanged: (mode) => unawaited(_onRenderModeChanged(mode)),
                         ),
                       ),
                     ),
@@ -28527,7 +28506,7 @@ class _PartScreenState extends State<PartScreen> {
                 // Presentation mode: the presenter button and its menu, above everything else, always there.
                 if (_presenting) _buildPresenterOverlay(),
                 // Top centre (out of the FAB columns): Edit Alone's pill, then the View override reminder.
-                if ((_editAlone != null || _appearanceOverrideOn) && !_chromeHidden)
+                if (((_editAlone != null && !_editAloneRowInTree) || _appearanceOverrideOn) && !_chromeHidden)
                   Positioned(
                     top: 8,
                     left: 56,
@@ -28537,8 +28516,8 @@ class _PartScreenState extends State<PartScreen> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (_editAlone != null) _buildEditAlonePill(),
-                          if (_editAlone != null && _appearanceOverrideOn) const SizedBox(height: 6),
+                          if (_editAlone != null && !_editAloneRowInTree) _buildEditAlonePill(),
+                          if (_editAlone != null && !_editAloneRowInTree && _appearanceOverrideOn) const SizedBox(height: 6),
                           if (_appearanceOverrideOn) _buildViewOverrideChip(),
                         ],
                       ),

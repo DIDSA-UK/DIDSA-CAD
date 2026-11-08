@@ -2195,12 +2195,18 @@ class MateDto {
   /// A limit mate: the measured value at the stored poses.
   final double? limitValue;
 
-  /// `'ok'` or `'broken'` (computed by the backend at every listing, never stored): a broken mate's residual at the stored poses is
-  /// above tolerance (a pattern edit it could not follow, a part edited under it ...), its limit is outside its range, or a
-  /// reference no longer resolves. Older backends omit it: `'ok'`.
+  /// `'ok'`, `'near'` or `'broken'` (computed by the backend at every listing, never stored): a broken mate's residual at the
+  /// stored poses is above tolerance (a pattern edit it could not follow, a part edited under it ...), its limit is outside its
+  /// range, or a reference no longer resolves. `'near'` (B1): the mates over-define the parts and disagree by a hair (within
+  /// 0.01 mm at the far end of the parts and 1e-4 rad): see [statusResidualMm] / [statusResidualDeg]. Older backends omit it: `'ok'`.
   final String status;
 
+  /// A `near` mate's miss: millimetres (at the far end of its parts) and degrees. Null for every other status.
+  final double? statusResidualMm;
+  final double? statusResidualDeg;
+
   bool get isBroken => status == 'broken';
+  bool get isNear => status == 'near';
 
   MateDto({
     required this.id,
@@ -2216,6 +2222,8 @@ class MateDto {
     this.limitMax,
     this.limitValue,
     this.status = 'ok',
+    this.statusResidualMm,
+    this.statusResidualDeg,
   });
 
   factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
@@ -2234,6 +2242,8 @@ class MateDto {
         limitMax: (json['limit_max'] as num?)?.toDouble(),
         limitValue: (json['limit_value'] as num?)?.toDouble(),
         status: json['status'] as String? ?? 'ok',
+        statusResidualMm: (json['status_residual_mm'] as num?)?.toDouble(),
+        statusResidualDeg: (json['status_residual_deg'] as num?)?.toDouble(),
       );
 }
 
@@ -6349,6 +6359,21 @@ class DocumentApiClient {
             ),
         (body) => body as Map<String, dynamic>,
       );
+
+  /// B5: `GET /health`'s `api_features` (what this backend can do that an older one cannot; see `app/main.py`). An older backend
+  /// answers without the key: an empty set. Null when `/health` could not be read at all, so nothing can be claimed about it.
+  Future<Set<String>?> apiFeatures() async {
+    try {
+      final response = await _httpClient.get(_uri('/health'), headers: _headers).timeout(ApiConfig.documentRequestTimeout);
+      if (response.statusCode < 200 || response.statusCode >= 300) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is! Map<String, dynamic>) return null;
+      final features = decoded['api_features'];
+      return features is List ? {for (final f in features) f.toString()} : <String>{};
+    } on Object {
+      return null;
+    }
+  }
 
   /// Native Load: the inverse of [exportNative] - a full replace, not a
   /// merge (client-owned files, locked-in scope): whatever Document/Sketches

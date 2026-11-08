@@ -1,5 +1,6 @@
 import '../api/document_api_client.dart';
 import 'ai_plan.dart';
+import 'ai_plan_translator.dart' show PlanStepFailure;
 
 /// How many times a plan that fails the dry-run validation is sent back to
 /// the assistant automatically, with the errors, before the failure is shown
@@ -58,4 +59,19 @@ String listAiPlanValidationProblems(AiGenerationPlan plan, List<AiPlanStepResult
         '${dependents == 1 ? 'it depends' : 'they depend'} on a failed step.)');
   }
   return buffer.toString().trimRight();
+}
+
+/// One line per mate a best-effort mates run did not build (`PlanTranslationResult.failures`): its local id, whether the
+/// dry run refused it or the real create failed, and the reason.
+String describeMateFailures(List<PlanStepFailure> failures) => failures
+    .map((f) => '- mate ${f.localId} (${f.atValidation ? 'failed validation' : 'could not be solved'}): ${f.message}')
+    .join('\n');
+
+/// B1: ", N within tolerance (largest 0.006 mm)" for the mates the backend marks `near`; "" when there are none.
+String nearMatesNote(List<MateDto> mates) {
+  final near = mates.where((m) => m.isNear && !m.suppressed).toList();
+  if (near.isEmpty) return '';
+  final largest = near.map((m) => m.statusResidualMm ?? 0).reduce((a, b) => a > b ? a : b);
+  final text = largest.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+  return ', ${near.length} within tolerance (largest $text mm)';
 }

@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../layout/layout_mode.dart';
 import 'controls_preferences.dart';
+import 'edge_batching.dart' show kEdgeLimitSteps;
 import 'keyboard_shortcuts.dart';
 
 /// Desktop input D5 (`docs/desktop-input-scope.md` section 4): the mouse and
@@ -22,6 +23,8 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
   bool _invertWheel = ControlsPreferences.invertWheel;
   double _orbitSpeed = ControlsPreferences.orbitSpeed;
   LayoutPreference _layout = ControlsPreferences.layoutPreference;
+  bool _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
+  int _edgeLimit = ControlsPreferences.edgeLimit;
 
   @override
   void initState() {
@@ -37,6 +40,8 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
       _invertWheel = ControlsPreferences.invertWheel;
       _orbitSpeed = ControlsPreferences.orbitSpeed;
       _layout = ControlsPreferences.layoutPreference;
+      _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
+      _edgeLimit = ControlsPreferences.edgeLimit;
     });
   }
 
@@ -48,6 +53,8 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
       _invertWheel = ControlsPreferences.invertWheel;
       _orbitSpeed = ControlsPreferences.orbitSpeed;
       _layout = ControlsPreferences.layoutPreference;
+      _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
+      _edgeLimit = ControlsPreferences.edgeLimit;
     });
   }
 
@@ -141,6 +148,49 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
                 ),
               ),
               const Divider(),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                child: Text('Performance', style: theme.textTheme.titleMedium),
+              ),
+              SwitchListTile(
+                key: const ValueKey('hide-edges-switch'),
+                title: const Text('Hide edges while moving on large models'),
+                subtitle: const Text('Edges come back when the view stops. Off by default.'),
+                value: _hideEdges,
+                onChanged: (value) {
+                  setState(() => _hideEdges = value);
+                  ControlsPreferences.setHideEdgesWhileMoving(value);
+                },
+              ),
+              ListTile(
+                title: Text('Edge limit: ${_formatCount(_edgeLimit)} segments'),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Slider(
+                      key: const ValueKey('edge-limit-slider'),
+                      value: kEdgeLimitSteps.indexOf(_edgeLimit).clamp(0, kEdgeLimitSteps.length - 1).toDouble(),
+                      min: 0,
+                      max: (kEdgeLimitSteps.length - 1).toDouble(),
+                      divisions: kEdgeLimitSteps.length - 1,
+                      label: _formatCount(_edgeLimit),
+                      onChanged: _hideEdges
+                          ? (value) {
+                              final limit = kEdgeLimitSteps[value.round()];
+                              setState(() => _edgeLimit = limit);
+                              ControlsPreferences.setEdgeLimit(limit);
+                            }
+                          : null,
+                    ),
+                    if (ControlsPreferences.visibleEdgeSegments > 0)
+                      Text(
+                        'This model: ${_formatCount(ControlsPreferences.visibleEdgeSegments)}',
+                        key: const ValueKey('edge-count-label'),
+                      ),
+                  ],
+                ),
+              ),
+              const Divider(),
               ListTile(
                 leading: const Icon(Icons.keyboard_outlined),
                 title: const Text('Keyboard shortcuts'),
@@ -164,4 +214,15 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
       ),
     );
   }
+}
+
+/// 11918 as "11,918".
+String _formatCount(int value) {
+  final digits = value.toString();
+  final out = StringBuffer();
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) out.write(',');
+    out.write(digits[i]);
+  }
+  return out.toString();
 }

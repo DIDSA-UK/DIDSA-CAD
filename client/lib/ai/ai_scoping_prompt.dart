@@ -236,6 +236,17 @@ earliest Body-producing step - never the joining boss or merge step itself,
 which no longer names a Body of its own. Do each fillet/chamfer on its own
 Body before joining it to another.
 
+Two rules that keep joined parts exact. (1) Features you join must OVERLAP by
+at least 0.1 mm - never just touch. A tube lying exactly on the top of a post,
+a rail tangent to a post, two blocks meeting along an edge: the join then
+meets along a line or a point, and the Body falls apart into loose solids that
+later steps can no longer find. Let the second feature run 0.1 mm or more into
+the first. (2) Write angled geometry from EXACT values: give the angle and the
+lengths (e.g. a 41.35 degree gusset with 120 mm legs) and let the coordinates
+follow, rather than typing coordinates you rounded to three decimals. Parts
+that are mated later to two edges of such a shape otherwise disagree with
+themselves by a few millionths of a radian.
+
 `profile_refs` (extrude/revolve/sweep, all optional) narrows which profile
 in the Sketch a step builds from - each entry is the local_id of a Line/
 Circle/Arc/Ellipse/Polygon/Slot/Rectangle step that anchors one profile. It
@@ -705,8 +716,9 @@ that is none of these three.
   along its direction; add "near": [x, y, z] (same part coordinates) to
   pick the one nearest that point instead - needed to tell apart, say, a
   pin's shoulder from its tip (both face -z), or one of several equal
-  holes. Leave out "body_id": it is only needed for a component with more
-  than one Body, and the check then tells you which ids it has.
+  holes. Leave out "body_id": with "near" the Body whose matching face is
+  nearest that point is used; it is only needed for a component with more
+  than one Body when you give no "near" (the check then tells you which ids it has).
   Only on an "existing:<id>" occurrence, resolved against its real
   geometry when the plan is checked.
   WIDTH (centre one part between two parallel faces): a reference may be
@@ -728,6 +740,14 @@ that is none of these three.
   ordinary subshape_ref face on a THIRD component (or "" for this Part's own
   geometry) - the mirror plane. The two faces end up equally far from that
   face, on its two sides. Faces only; there is no Symmetric for points or axes.
+  DO NOT FIX THE SAME ROTATION TWICE. A face-to-face mate (coincident or distance
+  between two planar faces) already fixes which way the part faces. A second
+  such mate against another face that points the same way fixes it again, and
+  because coordinates are rounded the two disagree slightly, so the model is
+  over-defined. Use ONE face pair for the orientation and the first position,
+  then position it along the other directions with a distance from a point or
+  an edge to a face, or a concentric mate - not a second face-to-face mate
+  parallel to the first.
 - move_component: {local_id, kind:"move_component", occurrence_id,
   translation?, rotation_axis?, rotation_angle_degrees?} - translation is
   an [x, y, z] triple in mm (world space, not the component's own local
@@ -980,7 +1000,7 @@ normal, or a cylinder's radius, from that plan. {"direction": "+z"} is a planar 
 {"normal": [0, 0.86, 0.51]} is a sloped planar face (a dovetail flank, a mitre); {"cylinder_radius": 5} is a
 cylindrical face (a bore, a pin). Of several matches a planar selector takes the outermost along its direction; add
 "near": [x, y, z] (that part's coordinates) to pick the one nearest a point instead (a pin's shoulder from its tip,
-one of several equal holes). Leave out "body_id".
+one of several equal holes). Leave out "body_id" when you give "near" (the Body with the nearest matching face is used).
 
 A component that is a sub-assembly has no faces of its own: to mate to one of its parts, write the path of
 local_ids, "<the sub-assembly's add_component local_id>/<the part's local_id in the sub-assembly's own plan>"
@@ -992,6 +1012,9 @@ leave "flipped" out. Write enough mates that each part is held where it is, unle
 rarely does it (a part seated flat on another face can still slide along it and spin on it; a pin needs its
 concentric mate and a mate that stops it sliding along the bore). Mate a part to the part or parts it actually
 touches; add the mates against its other faces (sides, flanks, a second bore) that stop it sliding and turning. A
+Do not fix the same rotation twice: two coincident or distance mates between planar faces of the same two parts, whose
+faces are both parallel, over-define the part and, with rounded coordinates, disagree slightly. Use one face pair for the
+orientation and the first position, then a distance from a point or an edge to a face, or a concentric mate, for the rest.
 part that is meant to move (a wheel on its axle, a swivel) keeps that freedom: do not lock it, and say so in a
 top-level "intended_motion" of this same plan (next to "version" and "steps"), one entry per such component:
 {"component": "<its add_component local_id>", "motion": "spins about its axle"}. The app reports each component as
