@@ -26045,7 +26045,7 @@ class _PartScreenState extends State<PartScreen> {
             RibbonCommand(
               label: 'Override',
               icon: Icons.format_color_reset,
-              tooltip: 'Override appearance: one colour and transparency over everything (display only)',
+              tooltip: 'Override appearance',
               selected: _appearanceOverrideOn,
               onPressed: () => _onAppearanceOverrideChanged(!_appearanceOverrideOn),
             ),

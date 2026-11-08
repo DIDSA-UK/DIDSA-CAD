@@ -195,17 +195,43 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
     }
 
-    testWidgets('off: the three entries say the model\'s own colours show, and the switch is off', (tester) async {
+    testWidgets('off: the switch is off, and no entry carries a subtitle', (tester) async {
       await pump(tester, onSwitch: (_) {});
       expect(find.byKey(const ValueKey('view-override-switch')), findsOneWidget);
-      expect(tester.widget<SwitchListTile>(find.byKey(const ValueKey('view-override-switch'))).value, isFalse);
-      expect(find.text(kViewOverrideOffText), findsNWidgets(3));
+      expect(tester.widget<Switch>(find.byKey(const ValueKey('view-override-switch'))).value, isFalse);
+      expect(find.text(kViewOverrideOffText), findsNothing);
+      for (final key in ['view-override-colour', 'view-override-opacity']) {
+        expect(tester.widget<ListTile>(find.byKey(ValueKey(key))).subtitle, isNull, reason: key);
+      }
     });
 
-    testWidgets('on: subtitles show the colour and the see-through percentage', (tester) async {
+    testWidgets('on: no subtitle shows the colour or the see-through percentage either', (tester) async {
       await pump(tester, on: true, onSwitch: (_) {});
-      expect(find.text('Overriding: #6C8EAD'), findsOneWidget);
-      expect(find.text('Overriding: 40% see-through'), findsOneWidget);
+      expect(tester.widget<Switch>(find.byKey(const ValueKey('view-override-switch'))).value, isTrue);
+      expect(find.text('Overriding: #6C8EAD'), findsNothing);
+      expect(find.text('Overriding: 40% see-through'), findsNothing);
+      expect(find.text('On: beats every paint, colour and scene'), findsNothing);
+    });
+
+    testWidgets('"Override appearance" is one line that is the switch\'s own header, not repeated and never wrapped', (tester) async {
+      await pump(tester, onSwitch: (_) {});
+      final header = find.text('Override appearance');
+      expect(header, findsOneWidget, reason: 'one header line: no second title for the switch');
+      expect(find.byType(SwitchListTile), findsNothing);
+      final text = tester.widget<Text>(header);
+      expect(text.maxLines, 1);
+      // Same row as the switch: the text's vertical centre is the switch's.
+      expect((tester.getCenter(header).dy - tester.getCenter(find.byKey(const ValueKey('view-override-switch'))).dy).abs(), lessThan(8));
+      expect(tester.getTopLeft(header).dx, lessThan(tester.getTopLeft(find.byKey(const ValueKey('view-override-switch'))).dx));
+    });
+
+    testWidgets('the whole header line toggles it, not just the switch', (tester) async {
+      final seen = <bool>[];
+      await pump(tester, onSwitch: seen.add);
+      await tester.ensureVisible(find.text('Override appearance'));
+      await tester.tap(find.text('Override appearance'));
+      await tester.pump();
+      expect(seen, [true]);
     });
 
     testWidgets('the switch reports on and off', (tester) async {
