@@ -1383,6 +1383,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// ([_updateBatchedEdges]) needs: each one's geometry (to set its world-space width) and world-space centre.
   final List<_EdgeEntry> _edgeEntries = [];
 
+  /// A2: the batched edge geometry, built once per Part body (and mesh) and shared by every node that draws it. One
+  /// cache for the root Part's own bodies, one for placed instances, so each sync's eviction pass is its own.
+  final EdgeBatchCache<_EdgeGeom> _rootEdgeCache = EdgeBatchCache<_EdgeGeom>();
+  final EdgeBatchCache<_EdgeGeom> _instanceEdgeCache = EdgeBatchCache<_EdgeGeom>();
+
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5: one filled-faces [Node]
   /// per [PartViewport.transientCoarsePreviewBodies] entry, keyed by that
   /// entry's own (synthetic) `body_id` - a separate map from [_meshNodes]
@@ -3050,30 +3055,59 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _assemblyInstanceEdgesNodes = {};
     _edgeEntries.removeWhere((e) => e.instances);
-    if (!widget.renderMode.showsEdges) return;
-    if (widget.bodiesHidden) return;
-    final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
-    // Assembly support Phase 20 Stage 4: mirrors [_syncAssemblyInstanceNodes]'s
-    // own identical fix - the root's own `occurrence_path: []` instance
-    // stays skipped only while nothing is focused (covered by
-    // [_syncEdgesNode] in that case), so its edges keep rendering as
-    // context rather than vanishing once something else is focused.
-    final focusedPath = widget.focusedOccurrencePath;
-    for (final instance in widget.assemblyInstances) {
-      if ((instance.occurrencePath.isEmpty && focusedPath.isEmpty) || instance.hidden) continue;
-      if (widget.soloFocus && !soloFocusShowsInstance(instance.occurrencePath, focusedPath)) continue;
-      final transform = matrix4FromRigidTransform(instance.worldTransform);
-      final occurrenceKey = instance.occurrencePath.join('/');
-      for (final partGeometry in widget.assemblyGeometry) {
-        if (partGeometry.partId != instance.partId) continue;
-        for (final body in partGeometry.bodies) {
-          if (!isRenderableAssemblyBody(body)) continue;
-          final positions = clippedEdgePositions(body.mesh.edges, transform, widget.sectionPlanes);
-          if (positions.isEmpty) continue;
-          final node = _addBatchedEdgesNode(scene, positions, vm.Matrix4.identity(), biased: biased, instances: true);
-          _assemblyInstanceEdgesNodes['$occurrenceKey/${body.bodyId}'] = node;
+    _instanceEdgeCache.beginPass();
+    try {
+      if (!widget.renderMode.showsEdges) return;
+      if (widget.bodiesHidden) return;
+      final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
+      // Assembly support Phase 20 Stage 4: mirrors [_syncAssemblyInstanceNodes]'s
+      // own identical fix - the root's own `occurrence_path: []` instance
+      // stays skipped only while nothing is focused (covered by
+      // [_syncEdgesNode] in that case), so its edges keep rendering as
+      // context rather than vanishing once something else is focused.
+      final focusedPath = widget.focusedOccurrencePath;
+      final sectionSig = sectionSignature(widget.sectionPlanes);
+      for (final instance in widget.assemblyInstances) {
+        if ((instance.occurrencePath.isEmpty && focusedPath.isEmpty) || instance.hidden) continue;
+        if (widget.soloFocus && !soloFocusShowsInstance(instance.occurrencePath, focusedPath)) continue;
+        final transform = matrix4FromRigidTransform(instance.worldTransform);
+        final occurrenceKey = instance.occurrencePath.join('/');
+        for (final partGeometry in widget.assemblyGeometry) {
+          if (partGeometry.partId != instance.partId) continue;
+          for (final body in partGeometry.bodies) {
+            if (!isRenderableAssemblyBody(body)) continue;
+            // A2: without a section, every instance of a Part body shares one geometry in the Part's own space and
+            // only its node transform differs. A section clips in world space, so the segments become
+            // instance-specific: keyed by the instance and the planes, rebuilt only when the section changes.
+            final sectioned = sectionSig.isNotEmpty;
+            final geom = _instanceEdgeCache.obtain(
+              EdgeBatchKey(
+                partId: partGeometry.partId,
+                bodyId: body.bodyId,
+                instanceKey: sectioned ? occurrenceKey : '',
+                sectionSignature: sectionSig,
+              ),
+              body.mesh,
+              () => _edgeGeomFor(
+                sectioned
+                    ? clippedEdgePositions(body.mesh.edges, transform, widget.sectionPlanes)
+                    : edgePositions(body.mesh.edges),
+              ),
+            );
+            if (geom.segmentCount == 0) continue;
+            final node = _addBatchedEdgesNode(
+              scene,
+              geom,
+              sectioned ? vm.Matrix4.identity() : transform,
+              biased: biased,
+              instances: true,
+            );
+            _assemblyInstanceEdgesNodes['$occurrenceKey/${body.bodyId}'] = node;
+          }
         }
       }
+    } finally {
+      _instanceEdgeCache.endPass();
     }
   }
 
@@ -3233,21 +3267,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// edge polylines (see [edgeSegmentsFromMesh]) whenever
   /// [ViewportRenderModeX.showsEdges] is set - independent of whether the
   /// filled-faces Nodes above are also present, since `wireframe` mode shows
-  /// edges with no faces at all. In `shadedWithEdges` mode the segments are
-  /// biased towards the current camera position (see [kEdgeDepthBias]'s doc
-  /// comment for why towards-camera, and C3's status doc for the
-  /// alternatives this replaced/rejected) to keep them from z-fighting
-  /// against the filled faces underneath; `wireframe` mode has no faces to
-  /// fight, so it skips this.
+  /// edges at all. A1/A2: one batched geometry per Part body, cached by [_rootEdgeCache]; `shadedWithEdges` gets its
+  /// towards-camera depth offset per frame ([_updateBatchedEdges], see [kEdgeDepthBias]), so nothing here depends on
+  /// the camera and a camera move never calls this. Mesh, render-mode, section and visibility changes still do.
   ///
-  /// C3: since this bias depends on the *current* camera position, this is
-  /// re-run (not just on mesh/render-mode change, as before) whenever the
-  /// camera itself moves - see the `setState(_syncEdgesNode)` calls in
-  /// `_onPointerEnd`/`_onPointerSignal`/`_doRecentre`/`animateToPlane`. Those
-  /// all resync once a gesture/animation *completes* rather than on every
-  /// intermediate frame, trading a small amount of staleness while
-  /// orbiting for not rebuilding every `PolylineGeometry` primitive on
-  /// every pointer-move delta.
   /// Bug report (Section tool: "the triad should remain [usably sized] on
   /// screen ... normal panning, zooming, orbiting works when not dragging
   /// the triad"): the section gizmo/plane-quad's constant-on-screen-size
@@ -3259,12 +3282,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// [_syncSectionNodes] rebuild whenever there's no section quad/gizmo
   /// currently on screen to rescale.
   void _resyncCameraDependentOverlays() {
-    _syncEdgesNode();
-    // Bug fix (bug report: "on child parts, edges do not appear to
-    // render"): [_syncAssemblyInstanceEdgesNode]'s own towards-camera bias
-    // (shaded-with-edges mode) needs the same per-completed-gesture resync
-    // [_syncEdgesNode] itself gets here.
-    _syncAssemblyInstanceEdgesNode();
+    // A2: the edges are no longer here. Their depth offset is applied per frame by [_updateBatchedEdges], so a
+    // camera move rebuilds nothing (it used to rebuild every edge node at each gesture end and each turntable tick).
     if (_sectionGizmoNode != null || _sectionQuadNodes.isNotEmpty) _syncSectionNodes();
   }
 
@@ -3276,51 +3295,68 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     }
     _edgesNodes = {};
     _edgeEntries.removeWhere((e) => !e.instances);
-    if (!widget.renderMode.showsEdges) return;
-    // On-device feedback: see _syncMeshNode's identical bodiesHidden gate.
-    if (widget.bodiesHidden) return;
-    final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
-    // Assembly support Phase 20 Stage 4: found while closing appendix item
-    // [17] - [widget.bodies] renders its filled faces at [focusTransform]
-    // ([_syncMeshNode]) but this wireframe overlay never got the same
-    // treatment, which would have misaligned it against the focused Part's
-    // own real position the instant [_syncMeshNode]'s own fix (Stage 1)
-    // landed. Same reasoning as that method's own `focusTransform` local.
-    final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
-    var totalSegments = 0;
-    for (final body in widget.bodies) {
-      // See _syncMeshNode's identical substitution for why - keeps the
-      // wireframe/shaded-with-edges overlay consistent with whichever mesh
-      // (stable or preview) that Body's filled faces are actually showing.
-      // Deliberately not renderMirrorCorrectedMesh - see _syncMeshNode's
-      // identical reversion for why.
-      final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
-          ? widget.previewOverlayMesh!
-          : widget.coarseOverlayMeshes[body.bodyId] ?? body.mesh;
-      final positions = clippedEdgePositions(mesh.edges, null, widget.sectionPlanes);
-      if (positions.isEmpty) continue;
-      final node = _addBatchedEdgesNode(scene, positions, focusTransform, biased: biased, instances: false);
-      _edgesNodes[body.bodyId] = node;
-      totalSegments += positions.length ~/ 6;
+    _rootEdgeCache.beginPass();
+    try {
+      if (!widget.renderMode.showsEdges) return;
+      // On-device feedback: see _syncMeshNode's identical bodiesHidden gate.
+      if (widget.bodiesHidden) return;
+      final biased = widget.renderMode == ViewportRenderMode.shadedWithEdges;
+      // Assembly support Phase 20 Stage 4: found while closing appendix item
+      // [17] - [widget.bodies] renders its filled faces at [focusTransform]
+      // ([_syncMeshNode]) but this wireframe overlay never got the same
+      // treatment, which would have misaligned it against the focused Part's
+      // own real position the instant [_syncMeshNode]'s own fix (Stage 1)
+      // landed. Same reasoning as that method's own `focusTransform` local.
+      final focusTransform = widget.focusWorldTransformMatrix ?? vm.Matrix4.identity();
+      final sectionSig = sectionSignature(widget.sectionPlanes);
+      var totalSegments = 0;
+      for (final body in widget.bodies) {
+        // See _syncMeshNode's identical substitution for why - keeps the
+        // wireframe/shaded-with-edges overlay consistent with whichever mesh
+        // (stable or preview) that Body's filled faces are actually showing.
+        // Deliberately not renderMirrorCorrectedMesh - see _syncMeshNode's
+        // identical reversion for why.
+        final mesh = (widget.previewOverlayMesh != null && body.bodyId == widget.previewOverlayBodyId)
+            ? widget.previewOverlayMesh!
+            : widget.coarseOverlayMeshes[body.bodyId] ?? body.mesh;
+        final geom = _rootEdgeCache.obtain(
+          EdgeBatchKey(partId: '', bodyId: body.bodyId, sectionSignature: sectionSig),
+          mesh,
+          () => _edgeGeomFor(clippedEdgePositions(mesh.edges, null, widget.sectionPlanes)),
+        );
+        if (geom.segmentCount == 0) continue;
+        final node = _addBatchedEdgesNode(scene, geom, focusTransform, biased: biased, instances: false);
+        _edgesNodes[body.bodyId] = node;
+        totalSegments += geom.segmentCount;
+      }
+      debugPrint(
+        '[PartViewport][RenderDebug] edges: renderMode=${widget.renderMode} biased=$biased '
+        'kEdgeDepthBias=$kEdgeDepthBias segments=$totalSegments bodies=${_edgesNodes.length} '
+        'cameraPosition=${_camera.position} cameraDistance=${_camera.distance}',
+      );
+    } finally {
+      _rootEdgeCache.endPass();
     }
-    debugPrint(
-      '[PartViewport][RenderDebug] edges: renderMode=${widget.renderMode} biased=$biased '
-      'kEdgeDepthBias=$kEdgeDepthBias segments=$totalSegments bodies=${_edgesNodes.length} '
-      'cameraPosition=${_camera.position} cameraDistance=${_camera.distance}',
-    );
   }
+
+  /// A2: the cached value for one body's edges: the batched geometry plus its centre and segment count.
+  _EdgeGeom _edgeGeomFor(Float32List positions) => _EdgeGeom(
+        geometry: positions.isEmpty ? null : buildBatchedEdgesGeometry(positions),
+        localCentre: edgePositionsCentre(positions),
+        segmentCount: positions.length ~/ 6,
+      );
 
   /// A1: adds one batched edge [Node] for [positions] (six floats per segment, in the space [base] places) and
   /// records it for the per-frame update. The depth bias of `shadedWithEdges` is a per-frame node offset towards the
   /// camera ([_updateBatchedEdges]), no longer baked into the points.
   Node _addBatchedEdgesNode(
     Scene scene,
-    Float32List positions,
+    _EdgeGeom geom,
     vm.Matrix4 base, {
     required bool biased,
     required bool instances,
   }) {
-    final geometry = buildBatchedEdgesGeometry(positions);
+    final geometry = geom.geometry!;
     final node = buildBatchedEdgesNode(geometry, color: widget.renderMode.edgeColor)..localTransform = base;
     scene.add(node);
     _edgeEntries.add(
@@ -3328,8 +3364,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         node: node,
         geometry: geometry,
         base: base,
-        worldCentre: base.transformed3(edgePositionsCentre(positions)),
-        segmentCount: positions.length ~/ 6,
+        worldCentre: base.transformed3(geom.localCentre),
+        segmentCount: geom.segmentCount,
         biased: biased,
         instances: instances,
       ),
@@ -3350,13 +3386,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       viewportHeight: canvasSize.height,
       halfHeight: camera.halfHeight,
     );
+    // A geometry shared by several nodes (A2) has one width: in perspective, taken at the mean distance of the nodes
+    // that share it, so it neither flip-flops between them nor favours one.
+    final distanceSums = <LineSegmentsGeometry, (double, int)>{};
+    if (perspective) {
+      for (final entry in _edgeEntries) {
+        final (sum, count) = distanceSums[entry.geometry] ?? (0.0, 0);
+        distanceSums[entry.geometry] = (sum + (entry.worldCentre - cameraPosition).length, count + 1);
+      }
+    }
     for (final entry in _edgeEntries) {
       final units = perspective
           ? worldUnitsPerPixel(
               perspective: true,
               viewportHeight: canvasSize.height,
               fovRadiansY: camera.fovRadiansY,
-              distance: (entry.worldCentre - cameraPosition).length,
+              distance: distanceSums[entry.geometry]!.$1 / distanceSums[entry.geometry]!.$2,
             )
           : orthoUnits;
       final next = nextEdgeWidth(entry.geometry.width, edgeWorldWidth(kEdgeStrokeWidth, units));
@@ -5289,8 +5334,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         }
         setState(() {
           _endMarquee();
-          _syncEdgesNode();
-          _syncAssemblyInstanceEdgesNode();
         });
         return;
       }
@@ -6507,8 +6550,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // towards-camera bias (see [_syncEdgesNode]) for the new position, and
     // the section triad/plane-quad's own constant-on-screen-size scaling
     // (see [_resyncCameraDependentOverlays]) the same way.
-    _syncEdgesNode();
-    _syncAssemblyInstanceEdgesNode();
     if (_sectionGizmoNode != null || _sectionQuadNodes.isNotEmpty) _syncSectionNodes();
     // Bug fix ("Reset view doesn't account for the size of the assembly
     // parts... it tries to zoom to its own internal geometry extremities,
@@ -7934,6 +7975,15 @@ enum StandardView {
         StandardView.bottom => vm.Vector3(0, 0, 1),
         _ => vm.Vector3(0, 1, 0),
       };
+}
+
+/// A2: one cached edge geometry (null when the body has no edge segments left, e.g. clipped away by a section).
+class _EdgeGeom {
+  _EdgeGeom({required this.geometry, required this.localCentre, required this.segmentCount});
+
+  final LineSegmentsGeometry? geometry;
+  final vm.Vector3 localCentre;
+  final int segmentCount;
 }
 
 /// One batched edge node and what [PartViewportState._updateBatchedEdges] needs each frame.

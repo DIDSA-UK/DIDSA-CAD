@@ -29,7 +29,7 @@ its mate plans against the backend in process (usage in the script's docstring).
 | Item | State | Notes |
 |---|---|---|
 | A1 | Done (client) | `LineSegmentsGeometry` per body (`buildBatchedEdgesGeometry`); width and depth offset set per frame in `_updateBatchedEdges`. Pure logic in `viewport3d/edge_batching.dart`, tests `edge_batching_test.dart`. GPU result not testable here. |
-| A2 | Not started | |
+| A2 | Done (client) | `EdgeBatchCache` (`edge_batching.dart`): geometry built once per `(part, body, mesh)`, shared by all instances (node transform differs); per instance and per section only while a section is on. Camera moves rebuild no edges (`_resyncCameraDependentOverlays` keeps only the section-gizmo rescale; the turntable rebuilds nothing). Width in perspective is set per node from its own centre distance, but a geometry shared by several nodes has one width (the last node's), see status. |
 | A3 | Not started | |
 | B1 | Not started | |
 | B2 | Not started | |

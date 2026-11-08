@@ -113,4 +113,94 @@ void main() {
       expect(edgePositionsCentre(Float32List(0)).length, 0);
     });
   });
+
+  group('EdgeBatchCache', () {
+    test('builds once per key however many times it is asked for', () {
+      final cache = EdgeBatchCache<int>();
+      final mesh = Object();
+      var n = 0;
+      const key = EdgeBatchKey(partId: 'foot', bodyId: 'b0');
+      for (var instance = 0; instance < 20; instance++) {
+        cache.obtain(key, mesh, () => ++n);
+      }
+      expect(cache.buildCount, 1);
+      expect(n, 1);
+    });
+
+    test('a camera-only change (the same keys and meshes again) rebuilds nothing', () {
+      final cache = EdgeBatchCache<int>();
+      final meshes = {for (var i = 0; i < 5; i++) 'b$i': Object()};
+      void pass() {
+        cache.beginPass();
+        for (final e in meshes.entries) {
+          cache.obtain(EdgeBatchKey(partId: 'p', bodyId: e.key), e.value, () => 1);
+        }
+        cache.endPass();
+      }
+
+      pass();
+      expect(cache.buildCount, 5);
+      pass();
+      pass();
+      expect(cache.buildCount, 5);
+    });
+
+    test('a new mesh object, a new section, or a new body rebuilds that entry only', () {
+      final cache = EdgeBatchCache<int>();
+      final a = Object();
+      final b = Object();
+      cache.obtain(const EdgeBatchKey(partId: 'p', bodyId: 'a'), a, () => 1);
+      cache.obtain(const EdgeBatchKey(partId: 'p', bodyId: 'b'), b, () => 1);
+      expect(cache.buildCount, 2);
+      cache.obtain(const EdgeBatchKey(partId: 'p', bodyId: 'a'), Object(), () => 1); // mesh replaced
+      expect(cache.buildCount, 3);
+      cache.obtain(const EdgeBatchKey(partId: 'p', bodyId: 'b', sectionSignature: 's1'), b, () => 1); // section on
+      expect(cache.buildCount, 4);
+      cache.obtain(const EdgeBatchKey(partId: 'p', bodyId: 'b', sectionSignature: 's1'), b, () => 1);
+      expect(cache.buildCount, 4);
+    });
+
+    test('endPass evicts what the pass did not use, and reports it', () {
+      final evicted = <int>[];
+      final cache = EdgeBatchCache<int>(onEvict: evicted.add);
+      final m = Object();
+      cache.beginPass();
+      cache.obtain(const EdgeBatchKey(partId: 'p', bodyId: 'a'), m, () => 1);
+      cache.obtain(const EdgeBatchKey(partId: 'p', bodyId: 'b'), m, () => 2);
+      cache.endPass();
+      cache.beginPass();
+      cache.obtain(const EdgeBatchKey(partId: 'p', bodyId: 'a'), m, () => 1);
+      cache.endPass();
+      expect(cache.length, 1);
+      expect(evicted, [2]);
+      cache.clear();
+      expect(cache.length, 0);
+    });
+
+    test('platform fixture numbers: 133 bodies / 11,918 segments is 133 geometries, not 11,918', () {
+      // The owner's platform (docs/assembly-perf-mates-and-ui-plan.md, Part A): 133 bodies, 11,918 edge segments.
+      // Per-segment primitives were the crash; the batched form is one geometry per body, and instancing the same
+      // Part (e.g. 20 foot pads) must not add any.
+      const bodies = 133;
+      const totalSegments = 11918;
+      final perBody = [for (var i = 0; i < bodies; i++) totalSegments ~/ bodies + (i < totalSegments % bodies ? 1 : 0)];
+      expect(perBody.reduce((a, b) => a + b), totalSegments);
+      final cache = EdgeBatchCache<Float32List>();
+      final meshes = [for (var i = 0; i < bodies; i++) Object()];
+      var nodes = 0;
+      for (var pass = 0; pass < 3; pass++) {
+        cache.beginPass();
+        for (var instance = 0; instance < 3; instance++) {
+          for (var i = 0; i < bodies; i++) {
+            cache.obtain(EdgeBatchKey(partId: 'part$i', bodyId: 'b'), meshes[i], () => Float32List(perBody[i] * 6));
+            nodes++;
+          }
+        }
+        cache.endPass();
+      }
+      expect(cache.buildCount, bodies);
+      expect(cache.length, bodies);
+      expect(nodes, bodies * 9);
+    });
+  });
 }
