@@ -103,6 +103,7 @@ def main() -> None:
         return
 
     failures = 0
+    near_header = 0
     for mate, result in zip(mates, results):
         if not result["ok"]:
             continue
@@ -130,6 +131,8 @@ def main() -> None:
         solved = client.post(f"/document/parts/{top}/occurrences/{target}/solve")
         if solved.status_code != 200 and "occurrence_is_fixed" in solved.text:
             solved = client.post(f"/document/parts/{top}/occurrences/{refs[0]['occurrence_id'].split('/')[0]}/solve")
+        if solved.status_code == 200 and solved.headers.get("X-Mate-Tolerance") == "near":
+            near_header += 1
         if solved.status_code != 200:
             failures += 1
             print("solve", mate["local_id"], mate["type"], mate.get("value"), solved.text[:200])
@@ -137,7 +140,18 @@ def main() -> None:
                 client.delete(f"/document/parts/{top}/mates/{created.json()['id']}")
             elif failures > 5:
                 break
+    built = len(mates) - failures
     print(f"built: {len(mates)} mates tried, {failures} failures")
+    # B1: how the stored mates stand now (computed status, never stored): ok / near (within tolerance) / broken.
+    listed = client.get(f"/document/parts/{top}/mates").json()
+    counts = collections.Counter(m["status"] for m in listed)
+    near = [m for m in listed if m["status"] == "near"]
+    print(
+        f"mates now: {built} built = {counts['ok']} ok + {counts['near']} near + {counts['broken']} broken; "
+        f"{near_header} solves answered X-Mate-Tolerance: near"
+    )
+    for m in near:
+        print(f"  near {m['id'][:8]} {m['type']} value={m.get('value')} residual {m['status_residual_mm']:.5f} mm / {m['status_residual_deg']:.6f} deg")
 
 
 if __name__ == "__main__":

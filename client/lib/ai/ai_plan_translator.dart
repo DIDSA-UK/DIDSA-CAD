@@ -137,10 +137,6 @@ class PlanTranslationResult {
   /// Only for a `bestEffortMates` run: the steps that were not built, in plan order (empty on a clean run).
   final List<PlanStepFailure> failures;
 
-  /// Only for a `bestEffortMates` run: the local ids of the mates that were built but only within tolerance (the
-  /// backend's `X-Mate-Tolerance: near` / a `near` status), in plan order.
-  final List<String> nearMateLocalIds;
-
   const PlanTranslationResult._({
     required this.outcome,
     required this.localIdToRealId,
@@ -150,12 +146,10 @@ class PlanTranslationResult {
     this.stoppedAtLocalId,
     this.errorMessage,
     this.failures = const [],
-    this.nearMateLocalIds = const [],
   });
 
   factory PlanTranslationResult.completedWithFailures({
     required List<PlanStepFailure> failures,
-    required List<String> nearMateLocalIds,
     required Map<String, String> localIdToRealId,
     required List<String> createdFeatureIds,
     required List<AiPlanStepResultDto> preflightResults,
@@ -166,21 +160,18 @@ class PlanTranslationResult {
         createdFeatureIds: createdFeatureIds,
         preflightResults: preflightResults,
         failures: failures,
-        nearMateLocalIds: nearMateLocalIds,
       );
 
   factory PlanTranslationResult.success({
     required Map<String, String> localIdToRealId,
     required List<String> createdFeatureIds,
     required List<AiPlanStepResultDto> preflightResults,
-    List<String> nearMateLocalIds = const [],
   }) =>
       PlanTranslationResult._(
         outcome: PlanTranslationOutcome.success,
         localIdToRealId: localIdToRealId,
         createdFeatureIds: createdFeatureIds,
         preflightResults: preflightResults,
-        nearMateLocalIds: nearMateLocalIds,
       );
 
   factory PlanTranslationResult.validationFailed(List<AiPlanStepResultDto> results) => PlanTranslationResult._(
@@ -341,7 +332,6 @@ class PlanTranslator {
     // dry run refused are skipped and reported; the rest are built. Only when none could be built is it a validation
     // failure (so the in-app turn can still ask the provider for a corrected plan).
     final failures = <PlanStepFailure>[];
-    final nearMateLocalIds = <String>[];
     final refused = <String>{};
     if (validation.results.any((r) => !r.ok)) {
       final mateIds = {for (final step in plan.steps.whereType<AiMateStep>()) step.localId};
@@ -432,7 +422,6 @@ class PlanTranslator {
           resolvedMateReferencesByLocalId: resolvedMateReferencesByLocalId,
           resolvedFacesByLocalId: resolvedFacesByLocalId,
           atomicMates: bestEffortMates,
-          onNearMate: bestEffortMates ? () => nearMateLocalIds.add(step.localId) : null,
         );
         localIdToRealId[step.localId] = realId;
         // An in-place move/scale keeps its Body's id - no Body exists under
@@ -468,7 +457,6 @@ class PlanTranslator {
       failures.sort((a, b) => a.index.compareTo(b.index));
       return PlanTranslationResult.completedWithFailures(
         failures: failures,
-        nearMateLocalIds: nearMateLocalIds,
         localIdToRealId: localIdToRealId,
         createdFeatureIds: createdFeatureIds,
         preflightResults: validation.results,
@@ -478,7 +466,6 @@ class PlanTranslator {
       localIdToRealId: localIdToRealId,
       createdFeatureIds: createdFeatureIds,
       preflightResults: validation.results,
-      nearMateLocalIds: nearMateLocalIds,
     );
   }
 
@@ -526,7 +513,6 @@ class PlanTranslator {
     required Map<String, List<SubShapeRefDto>> resolvedEdgesByLocalId,
     required Map<String, List<SubShapeRefDto?>> resolvedMateReferencesByLocalId,
     bool atomicMates = false,
-    void Function()? onNearMate,
     required Map<String, List<SubShapeRefDto>> resolvedFacesByLocalId,
   }) async {
     switch (step) {

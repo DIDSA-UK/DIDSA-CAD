@@ -55,7 +55,7 @@ from app.document.assembly_group import (
     validate_mate_geometry,
 )
 from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
-from app.document.mate_status import mate_status, mate_statuses
+from app.document.mate_status import MateStatusDetail, mate_status, mate_status_detail, mate_status_details
 from app.document.occurrence_paths import resolve_path
 from app.document.pattern_dissolve import PatternDissolveError, dissolve_component_pattern
 from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES, REFERENCE_PLANE_IDS
@@ -3728,13 +3728,15 @@ def _midplane_ref_to_domain(schema: MidplaneRefSchema) -> MidplaneRef:
     return MidplaneRef(a=_plane_ref_to_domain(schema.a), b=_plane_ref_to_domain(schema.b), b_occurrence_id=schema.b_occurrence_id)
 
 
-def _mate_response(mate: Mate, part: Part | None = None, status: str | None = None) -> MateResponse:
-    """`status` (`mate_status`): given by a listing that computed every mate's at once (one tessellation per target Part); else
-    computed here for `part`'s mate; `ok` when there is no Part to measure against."""
+def _mate_response(mate: Mate, part: Part | None = None, status: MateStatusDetail | None = None) -> MateResponse:
+    """`status` (`mate_status_details`): given by a listing that computed every mate's at once (one tessellation per target
+    Part); else computed here for `part`'s mate; `ok` when there is no Part to measure against."""
     if status is None:
-        status = mate_status(get_document(), part, mate) if part is not None else "ok"
+        status = mate_status_detail(get_document(), part, mate) if part is not None else MateStatusDetail("ok")
     return MateResponse(
-        status=status,
+        status=status.status,
+        status_residual_mm=status.residual_mm,
+        status_residual_deg=status.residual_deg,
         id=mate.id,
         type=mate.type.value,
         references=[_mate_entity_ref_response(ref) for ref in mate.references],
@@ -3785,8 +3787,8 @@ def list_mates(part_id: str) -> list[MateResponse]:
     Mates list - `part_id`'s own `mates`, full detail (unlike
     `PartResponse.mate_ids`, ids only)."""
     part = get_part_or_404(part_id)
-    statuses = mate_statuses(get_document(), part)
-    return [_mate_response(mate, part, statuses.get(mate.id, "ok")) for mate in part.mates]
+    statuses = mate_status_details(get_document(), part)
+    return [_mate_response(mate, part, statuses.get(mate.id)) for mate in part.mates]
 
 
 def _get_occurrence_or_404(part: Part, occurrence_id: str) -> Occurrence:
@@ -4251,8 +4253,21 @@ def create_mate(
             _commit_group(part, outcome.result)
             _fill_new_mate_branch(mate, outcome.result)
             response.headers["X-Movement-Used"] = outcome.used
+            _note_near(response, outcome.result)
     part.mates.append(mate)
     return _mate_response(mate, part)
+
+
+def _note_near(response: Response, result) -> None:
+    """B1: `X-Mate-Tolerance: near` (and the largest miss in `X-Mate-Residual-Mm` / `X-Mate-Residual-Deg`) when the stored answer
+    is a near-redundant one - every mate within the limits of `app.document.mate_tolerance`, some above the strict tolerance.
+    Never left out: a client must be able to tell an exact solve from a within-tolerance one."""
+    near = getattr(result, "near", None)
+    if not near:
+        return
+    response.headers["X-Mate-Tolerance"] = "near"
+    response.headers["X-Mate-Residual-Mm"] = f"{max(mm for mm, _deg in near.values()):.6g}"
+    response.headers["X-Mate-Residual-Deg"] = f"{max(deg for _mm, deg in near.values()):.6g}"
 
 
 def _mate_with_branch_fields(document: Document, part: Part, mate: Mate, fields_set: set[str]) -> Mate:
@@ -4357,6 +4372,7 @@ def update_mate(
         _apply_branch_changes(part, outcome.changes)
         _commit_group(part, outcome.result)
         response.headers["X-Movement-Used"] = outcome.used
+        _note_near(response, outcome.result)
     return _mate_response(mate, part)
 
 
@@ -4988,6 +5004,7 @@ def solve_for_occurrence(
         raise _mate_solve_did_not_converge(occurrence_id, result, minimal_movement=movement == "minimal")
     _commit_group(part, result)
     response.headers["X-Movement-Used"] = used
+    _note_near(response, result)
     return _occurrence_response(occurrence)
 
 

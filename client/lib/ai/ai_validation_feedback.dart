@@ -66,3 +66,12 @@ String listAiPlanValidationProblems(AiGenerationPlan plan, List<AiPlanStepResult
 String describeMateFailures(List<PlanStepFailure> failures) => failures
     .map((f) => '- mate ${f.localId} (${f.atValidation ? 'failed validation' : 'could not be solved'}): ${f.message}')
     .join('\n');
+
+/// B1: ", N within tolerance (largest 0.006 mm)" for the mates the backend marks `near`; "" when there are none.
+String nearMatesNote(List<MateDto> mates) {
+  final near = mates.where((m) => m.isNear && !m.suppressed).toList();
+  if (near.isEmpty) return '';
+  final largest = near.map((m) => m.statusResidualMm ?? 0).reduce((a, b) => a > b ? a : b);
+  final text = largest.toStringAsFixed(3).replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+  return ', ${near.length} within tolerance (largest $text mm)';
+}

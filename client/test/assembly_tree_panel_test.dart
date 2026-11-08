@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:didsa_cad_client/ai/ai_theme.dart' show AiPalette;
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/pattern_context_menu.dart';
@@ -991,6 +992,103 @@ void main() {
     testWidgets('Dissolve is disabled for a suppressed pattern: tapping it picks nothing', (tester) async {
       expect(await open(tester, suppressed: true, tap: 'Dissolve'), isNull);
       expect(find.text('Dissolve'), findsOneWidget, reason: 'the sheet stays open');
+    });
+  });
+
+  group('near mates (B1: within tolerance, amber)', () {
+    MateDto nearMate(String id, {double mm = 0.006, double deg = 0.0002, List<String> occurrences = const []}) => MateDto(
+          id: id,
+          type: 'distance',
+          references: [for (final o in occurrences) MateEntityRefDto(occurrenceId: o)],
+          status: 'near',
+          statusResidualMm: mm,
+          statusResidualDeg: deg,
+        );
+
+    Widget panel({List<MateDto> mates = const [], List<OccurrenceDto> occurrences = const [], Map<String, ConstraintStatusDto> status = const {}}) =>
+        _wrap(
+          AssemblyTreePanel(
+            visible: true,
+            occurrences: occurrences,
+            mates: mates,
+            selectedOccurrenceId: null,
+            onOccurrenceTap: (_) {},
+            onOccurrenceLongPress: (_) {},
+            onClose: () {},
+            constraintStatusByOccurrenceId: status,
+          ),
+        );
+
+    test('MateDto reads status near and the residuals; an older backend gives ok', () {
+      final json = {
+        'id': 'm',
+        'type': 'distance',
+        'references': [
+          {'occurrence_id': 'a'},
+          {'occurrence_id': 'b'},
+        ],
+      };
+      expect(MateDto.fromJson(json).isNear, isFalse);
+      final near = MateDto.fromJson({...json, 'status': 'near', 'status_residual_mm': 0.006, 'status_residual_deg': 0.0002});
+      expect(near.isNear, isTrue);
+      expect(near.isBroken, isFalse);
+      expect(near.statusResidualMm, 0.006);
+      expect(near.statusResidualDeg, 0.0002);
+    });
+
+    test('the subtitle text is "Within tolerance: 0.006 mm / 0.0002°" with trailing zeros dropped', () {
+      expect(nearMateText(nearMate('m')), 'Within tolerance: 0.006 mm / 0.0002°');
+      expect(nearMateText(nearMate('m', mm: 0.01, deg: 0.1)), 'Within tolerance: 0.01 mm / 0.1°');
+      expect(nearMateText(nearMate('m', mm: 0.00385, deg: 0.000123)), 'Within tolerance: 0.004 mm / 0.0001°');
+    });
+
+    testWidgets('a near mate row is amber (the warning token, not the error red), says how far, and explains itself in a tooltip', (tester) async {
+      await tester.pumpWidget(panel(mates: [nearMate('n'), _mate('good')]));
+      final amber = AiPalette.of(tester.element(find.text('Mates'))).warning;
+      final error = Theme.of(tester.element(find.text('Mates'))).colorScheme.error;
+      expect(amber, isNot(error));
+      final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Distance 1'));
+      final icon = tester.widget<Icon>(find.descendant(of: find.byWidget(tile.leading!), matching: find.byType(Icon)));
+      expect(icon.icon, Icons.warning_amber_rounded);
+      expect(icon.color, amber);
+      expect((tile.title as Text).style?.color, amber);
+      expect(find.text('Within tolerance: 0.006 mm / 0.0002°'), findsOneWidget);
+      expect(find.byTooltip(kNearMateTooltip), findsOneWidget);
+      expect(find.text(kBrokenMateText), findsNothing);
+      final good = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
+      expect((good.leading as Icon).icon, Icons.link);
+    });
+
+    testWidgets('a suppressed near mate is drawn plain', (tester) async {
+      final suppressed = MateDto(id: 's', type: 'distance', references: const [], status: 'near', suppressed: true);
+      await tester.pumpWidget(panel(mates: [suppressed]));
+      expect(find.textContaining('Within tolerance'), findsNothing);
+    });
+
+    test('occurrenceConflictsAreAllNear: needs a near mate, and any broken one on the part makes it a real conflict', () {
+      final near = nearMate('n', occurrences: ['a', 'b']);
+      final broken = MateDto(id: 'x', type: 'distance', references: [MateEntityRefDto(occurrenceId: 'a/inner')], status: 'broken');
+      expect(occurrenceConflictsAreAllNear([near], 'a'), isTrue);
+      expect(occurrenceConflictsAreAllNear([near, broken], 'a'), isFalse, reason: 'a/inner is inside the top-level a');
+      expect(occurrenceConflictsAreAllNear([near, broken], 'b'), isTrue, reason: 'the broken mate does not touch b');
+      expect(occurrenceConflictsAreAllNear([_mate('ok')], 'a'), isFalse);
+      expect(occurrenceConflictsAreAllNear([near], 'c'), isFalse);
+    });
+
+    testWidgets('an over-constrained part whose mates are all near shows the amber badge, not the red one', (tester) async {
+      final status = {'a': const ConstraintStatusDto(state: ConstraintState.overConstrained, dof: 0)};
+      await tester.pumpWidget(panel(occurrences: [_occurrence('a')], mates: [nearMate('n', occurrences: ['a', ''])], status: status));
+      final amber = AiPalette.of(tester.element(find.text('Mates'))).warning;
+      final badge = tester.widget<Icon>(find.byIcon(Icons.warning_amber_rounded).first);
+      expect(badge.color, amber);
+      expect(find.byTooltip('Over-constrained - the mates agree to within tolerance'), findsOneWidget);
+    });
+
+    testWidgets('an over-constrained part with a broken mate keeps the red badge', (tester) async {
+      final status = {'a': const ConstraintStatusDto(state: ConstraintState.overConstrained, dof: 0)};
+      final broken = MateDto(id: 'x', type: 'distance', references: [MateEntityRefDto(occurrenceId: 'a')], status: 'broken');
+      await tester.pumpWidget(panel(occurrences: [_occurrence('a')], mates: [broken], status: status));
+      expect(find.byTooltip('Over-constrained - mates conflict'), findsOneWidget);
     });
   });
 }

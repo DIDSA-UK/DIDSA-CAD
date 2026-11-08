@@ -2271,15 +2271,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
     final mates = plan.steps.whereType<AiMateStep>().length;
     switch (translation.outcome) {
       case PlanTranslationOutcome.success:
-        return _MatesRun(_MatesOutcome.built, '$mates mate${mates == 1 ? '' : 's'} added.');
+        final near = await _nearMatesNote(assemblyPartId);
+        return _MatesRun(_MatesOutcome.built, '$mates mate${mates == 1 ? '' : 's'} added$near.');
       case PlanTranslationOutcome.completedWithFailures:
         // B2: every mate that could be built was; the rest were never stored.
         final failures = translation.failures;
         final built = mates - failures.length;
         final problems = describeMateFailures(failures);
+        final near = await _nearMatesNote(assemblyPartId);
         return _MatesRun(
           _MatesOutcome.partial,
-          'Built $built of $mates mate${mates == 1 ? '' : 's'}; ${failures.length} could not be built:\n$problems',
+          'Built $built of $mates mate${mates == 1 ? '' : 's'}$near; ${failures.length} could not be built:\n$problems',
           problems: problems,
         );
       case PlanTranslationOutcome.validationFailed:
@@ -2298,6 +2300,17 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
           'Saved with only some mates: ${translation.errorMessage}.',
           problems: '${translation.errorMessage}',
         );
+    }
+  }
+
+  /// B1: ", N within tolerance (largest 0.006 mm)" when some of the assembly's mates are `near` (the backend computes it from the
+  /// stored poses), else "". Read from the listing after the run, so a mate made `near` by a LATER mate is counted too.
+  /// Never throws: an older backend, or a failed call, just gives no note.
+  Future<String> _nearMatesNote(String assemblyPartId) async {
+    try {
+      return nearMatesNote(await _documentApi.listMates(assemblyPartId));
+    } on Object {
+      return '';
     }
   }
 

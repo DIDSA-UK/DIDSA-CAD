@@ -47,4 +47,25 @@ void main() {
     expect(text, contains('(1 later step also failed only because it depends on a failed step.)'));
     expect(text, isNot(contains('"sk1"')));
   });
+
+  group('nearMatesNote (B1)', () {
+    MateDto mate(String id, String status, {double? mm, bool suppressed = false}) =>
+        MateDto(id: id, type: 'distance', references: const [], status: status, statusResidualMm: mm, suppressed: suppressed);
+
+    test('is empty when no mate is near', () {
+      expect(nearMatesNote([mate('a', 'ok'), mate('b', 'broken')]), '');
+      expect(nearMatesNote(const []), '');
+    });
+
+    test('counts the near mates and names the largest miss', () {
+      expect(
+        nearMatesNote([mate('a', 'ok'), mate('b', 'near', mm: 0.004), mate('c', 'near', mm: 0.0061)]),
+        ', 2 within tolerance (largest 0.006 mm)',
+      );
+    });
+
+    test('a suppressed near mate is not counted', () {
+      expect(nearMatesNote([mate('a', 'near', mm: 0.004, suppressed: true)]), '');
+    });
+  });
 }
