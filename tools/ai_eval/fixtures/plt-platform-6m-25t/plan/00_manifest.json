@@ -1,0 +1,91 @@
+{
+ "kind": "part_manifest",
+ "parts": [
+  {
+   "name": "Foot / connection pad",
+   "type_prefix": "PLT_FOOT_PAD",
+   "summary": "300x300x20 S355 plate, 4 x 22 dia holes (M20) on 230 square; module base, cap and deck bearing pad"
+  },
+  {
+   "name": "Column",
+   "type_prefix": "PLT_COLUMN",
+   "summary": "UC 152x152x23 S355, 2767.2 long"
+  },
+  {
+   "name": "Module tie beam",
+   "type_prefix": "PLT_TIE_BEAM",
+   "summary": "UB 127x76x13 S355, 2920.9 long; one end to column web, other to column flange"
+  },
+  {
+   "name": "Diagonal brace",
+   "type_prefix": "PLT_BRACE",
+   "summary": "UB 127x76x13 S355, 3596 long, square cut, web lapped onto gussets"
+  },
+  {
+   "name": "Brace gusset - web side",
+   "type_prefix": "PLT_GUSSET_W",
+   "summary": "10mm S355 gusset welded to column web and tie beam flange, 190 lap to brace web"
+  },
+  {
+   "name": "Brace gusset - flange side",
+   "type_prefix": "PLT_GUSSET_F",
+   "summary": "10mm S355 gusset welded to column flange and tie beam flange, 190 lap to brace web"
+  },
+  {
+   "name": "Deck main beam",
+   "type_prefix": "PLT_DECK_BEAM",
+   "summary": "UB 203x133x25 S355, 4000 long, 500 cantilever each end past columns"
+  },
+  {
+   "name": "Deck joist",
+   "type_prefix": "PLT_DECK_JOIST",
+   "summary": "UB 152x89x16 S355, 4000 long, on top of main beams, 782 crs"
+  },
+  {
+   "name": "Bearing stiffener",
+   "type_prefix": "PLT_STIFFENER",
+   "summary": "62x187.6x10 S355 web stiffener, pair at each main-beam bearing"
+  },
+  {
+   "name": "Deck plate",
+   "type_prefix": "PLT_DECK_PLATE",
+   "summary": "4000x4000x10 chequer plate (modelled flat)"
+  },
+  {
+   "name": "Guardrail panel A",
+   "type_prefix": "PLT_RAIL_A",
+   "summary": "CHS 48.3x3.2 panel 3911 post crs: 6 posts over joists, handrail at 1100, knee rail at 550, 150x6 toe board"
+  },
+  {
+   "name": "Guardrail panel B",
+   "type_prefix": "PLT_RAIL_B",
+   "summary": "CHS 48.3x3.2 infill panel between panel A corner posts: 2 posts, same rails and toe board"
+  }
+ ],
+ "sub_assemblies": [
+  {
+   "name": "Tower module (welded)",
+   "type_prefix": "PLT_MODULE",
+   "summary": "3000x3000 crs x 2807.2 high: 4 UC152x152x23 columns, 8 UB127x76x13 ties, 4 UB127x76x13 braces, 8 gussets, 8 pads"
+  },
+  {
+   "name": "Deck (welded)",
+   "type_prefix": "PLT_DECK",
+   "summary": "4000x4000 deck: 2 UB203x133x25 main beams, 6 UB152x89x16 joists, 10mm plate, 4 pads, 8 stiffeners, CHS guardrails"
+  }
+ ],
+ "assumptions": [
+  "Column grid kept at 3000 x 3000 (footprint unchanged); deck now 4000 x 4000, cantilevering 500 past the columns on all sides",
+  "Finished deck level 6000: two modules of 2807.2 + 385.6 deck build-up",
+  "25t treated as a static load spread over the deck (about 15.3 kN/m2); concentrated feet need spreaders or a re-check",
+  "EN 1993-1-1, S355 UC/UB to EN 10365; gamma_Q 1.5, gamma_G 1.35; worst column takes 50% of the imposed load",
+  "Indoor (no wind); horizontal design load 5% of factored vertical at deck level",
+  "Braces also UB 127x76x13 (UB/UC throughout), web lapped onto a 10mm gusset, 190 lap fillet welded",
+  "Columns turned 90 deg at each corner so every face has one tie-beam end on a column web and one on a flange",
+  "Deck: joists sit on top of main beams; bearing stiffeners (pair) over each column",
+  "Shop welded inside each module and deck; site bolted 4 x M20 8.8 per pad between modules and deck",
+  "Guardrails CHS 48.3x3.2, posts over joists / edge joist at <= 1304 crs, welded to deck plate",
+  "No access opening, gate or ladder included - position to be confirmed",
+  "Root radii, weld preps and lifting points not modelled; ground anchors by others"
+ ]
+}

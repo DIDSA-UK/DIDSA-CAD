@@ -1,0 +1,198 @@
+{
+ "version": 1,
+ "steps": [
+  {
+   "local_id": "sk1",
+   "kind": "sketch",
+   "plane": "YZ"
+  },
+  {
+   "local_id": "p2",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -66.6,
+   "y": 0.0
+  },
+  {
+   "local_id": "p3",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 66.6,
+   "y": 0.0
+  },
+  {
+   "local_id": "p4",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 66.6,
+   "y": 7.8
+  },
+  {
+   "local_id": "p5",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 2.85,
+   "y": 7.8
+  },
+  {
+   "local_id": "p6",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 2.85,
+   "y": 195.4
+  },
+  {
+   "local_id": "p7",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 66.6,
+   "y": 195.4
+  },
+  {
+   "local_id": "p8",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 66.6,
+   "y": 203.2
+  },
+  {
+   "local_id": "p9",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -66.6,
+   "y": 203.2
+  },
+  {
+   "local_id": "p10",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -66.6,
+   "y": 195.4
+  },
+  {
+   "local_id": "p11",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -2.85,
+   "y": 195.4
+  },
+  {
+   "local_id": "p12",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -2.85,
+   "y": 7.8
+  },
+  {
+   "local_id": "p13",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": -66.6,
+   "y": 7.8
+  },
+  {
+   "local_id": "l14",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p2",
+   "end_point_id": "p3",
+   "length": 133.2
+  },
+  {
+   "local_id": "l15",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p3",
+   "end_point_id": "p4",
+   "length": 7.8
+  },
+  {
+   "local_id": "l16",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p4",
+   "end_point_id": "p5",
+   "length": 63.75
+  },
+  {
+   "local_id": "l17",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p5",
+   "end_point_id": "p6",
+   "length": 187.6
+  },
+  {
+   "local_id": "l18",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p6",
+   "end_point_id": "p7",
+   "length": 63.75
+  },
+  {
+   "local_id": "l19",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p7",
+   "end_point_id": "p8",
+   "length": 7.8
+  },
+  {
+   "local_id": "l20",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p8",
+   "end_point_id": "p9",
+   "length": 133.2
+  },
+  {
+   "local_id": "l21",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p9",
+   "end_point_id": "p10",
+   "length": 7.8
+  },
+  {
+   "local_id": "l22",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p10",
+   "end_point_id": "p11",
+   "length": 63.75
+  },
+  {
+   "local_id": "l23",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p11",
+   "end_point_id": "p12",
+   "length": 187.6
+  },
+  {
+   "local_id": "l24",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p12",
+   "end_point_id": "p13",
+   "length": 63.75
+  },
+  {
+   "local_id": "l25",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p13",
+   "end_point_id": "p2",
+   "length": 7.8
+  },
+  {
+   "local_id": "f26",
+   "kind": "extrude",
+   "sketch_feature_id": "sk1",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 4000.0
+  }
+ ]
+}

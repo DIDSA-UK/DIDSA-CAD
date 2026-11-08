@@ -1,0 +1,138 @@
+{
+ "version": 1,
+ "steps": [
+  {
+   "local_id": "sk1",
+   "kind": "sketch",
+   "plane": "XY"
+  },
+  {
+   "local_id": "p2",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 20.0,
+   "y": 0.0
+  },
+  {
+   "local_id": "p3",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 107.095,
+   "y": 0.0
+  },
+  {
+   "local_id": "p4",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 107.095,
+   "y": 31.206
+  },
+  {
+   "local_id": "p5",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 249.725,
+   "y": 156.731
+  },
+  {
+   "local_id": "p6",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 183.66,
+   "y": 231.799
+  },
+  {
+   "local_id": "p7",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 41.029,
+   "y": 106.275
+  },
+  {
+   "local_id": "p8",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 0.0,
+   "y": 106.275
+  },
+  {
+   "local_id": "p9",
+   "kind": "sketch_point",
+   "sketch_feature_id": "sk1",
+   "x": 0.0,
+   "y": 20.0
+  },
+  {
+   "local_id": "l10",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p2",
+   "end_point_id": "p3",
+   "length": 87.095
+  },
+  {
+   "local_id": "l11",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p3",
+   "end_point_id": "p4",
+   "length": 31.206
+  },
+  {
+   "local_id": "l12",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p4",
+   "end_point_id": "p5",
+   "length": 190.0
+  },
+  {
+   "local_id": "l13",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p5",
+   "end_point_id": "p6",
+   "length": 100.0
+  },
+  {
+   "local_id": "l14",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p6",
+   "end_point_id": "p7",
+   "length": 190.0
+  },
+  {
+   "local_id": "l15",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p7",
+   "end_point_id": "p8",
+   "length": 41.029
+  },
+  {
+   "local_id": "l16",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p8",
+   "end_point_id": "p9",
+   "length": 86.275
+  },
+  {
+   "local_id": "l17",
+   "kind": "sketch_line",
+   "sketch_feature_id": "sk1",
+   "start_point_id": "p9",
+   "end_point_id": "p2",
+   "length": 28.284
+  },
+  {
+   "local_id": "f18",
+   "kind": "extrude",
+   "sketch_feature_id": "sk1",
+   "extrude_type": "boss",
+   "start_distance": 0,
+   "end_distance": 10.0
+  }
+ ]
+}
