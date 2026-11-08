@@ -547,7 +547,8 @@ class MateFaceSelector(BaseModel):
     plan was written in: a planar face whose outward normal is `direction` (one of the six axes) or `normal` (any
     vector, for a sloped face - a dovetail flank), or a cylindrical face (a bore, a shaft) of `cylinder_radius`.
     `near` (a point in the same frame) picks among several; without it a planar selector takes the outermost face
-    along its normal. `body_id` may be left out when the component has only one Body."""
+    along its normal. `body_id` may be left out when the component has only one Body, or (several Bodies) when `near` is given: the Body
+    whose matching face is nearest `near` is used."""
 
     body_id: str | None = None
     direction: CardinalDirection | None = None

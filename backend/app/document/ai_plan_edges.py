@@ -265,6 +265,21 @@ def resolve_mate_face_selector(
     near: tuple[float, float, float] | None = None,
     normal: tuple[float, float, float] | None = None,
 ) -> SubShapeRef:
+    """`resolve_mate_face_selector_with_distance` without the distance (the one FACE ref)."""
+    return resolve_mate_face_selector_with_distance(
+        body, body_id, direction=direction, cylinder_radius=cylinder_radius, near=near, normal=normal
+    )[0]
+
+
+def resolve_mate_face_selector_with_distance(
+    body: TopoDS_Shape,
+    body_id: str,
+    *,
+    direction: CardinalDirection | None = None,
+    cylinder_radius: float | None = None,
+    near: tuple[float, float, float] | None = None,
+    normal: tuple[float, float, float] | None = None,
+) -> tuple[SubShapeRef, float | None]:
     """The one FACE a mate reference's `face_selector` names on `body`, in that Body's own (Part-local) frame:
     a planar face whose outward normal is `direction`, or a cylindrical face of `cylinder_radius`. Of several
     candidates, the one nearest `near`, or without `near` the outermost along `direction` (for a cylinder
@@ -312,9 +327,11 @@ def resolve_mate_face_selector(
         c = props.CentreOfMass()
         return (c.X(), c.Y(), c.Z())
 
+    distance: float | None = None
     if near is not None:
         vertex = BRepBuilderAPI_MakeVertex(gp_Pnt(*near)).Vertex()
-        index, _ = min(candidates, key=lambda c: BRepExtrema_DistShapeShape(vertex, c[1]).Value())
+        distances = [(BRepExtrema_DistShapeShape(vertex, face).Value(), i) for i, face in candidates]
+        distance, index = min(distances)
     elif target is not None:
         index, _ = max(candidates, key=lambda c: _dot(centre(c[1]), target))
     else:
@@ -338,7 +355,7 @@ def resolve_mate_face_selector(
                 },
             )
         index = candidates[0][0]
-    return SubShapeRef(body_id=body_id, shape_type=SubShapeType.FACE, index=index - 1)
+    return SubShapeRef(body_id=body_id, shape_type=SubShapeType.FACE, index=index - 1), distance
 
 
 def resolve_edge_selector(
