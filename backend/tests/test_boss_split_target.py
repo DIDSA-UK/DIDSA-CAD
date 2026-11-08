@@ -1,5 +1,6 @@
 """B4 (docs/assembly-perf-mates-and-ui-plan.md): a Boss whose target body was split into pieces (`<id>#0`, `<id>#1`) still
 fuses into those pieces instead of starting a new Body."""
+import pytest
 from fastapi.testclient import TestClient
 
 from app.document.extrude import compute_part_bodies
@@ -90,6 +91,8 @@ def test_the_platform_rails_from_the_owners_run_are_one_body_each():
     from pathlib import Path
 
     fixtures = Path(__file__).resolve().parents[2] / "tools" / "ai_eval" / "fixtures" / "plt-platform-6m-25t"
+    if not fixtures.is_dir():  # the backend's CI image holds backend/ only, not tools/
+        pytest.skip("tools/ai_eval fixtures are not in this checkout")
     for name in ("PLT_RAIL_A_001.didsa", "PLT_RAIL_B_001.didsa"):
         response = client.post("/document/import/native", json=json.loads((fixtures / name).read_text()))
         assert response.status_code == 200, response.text
