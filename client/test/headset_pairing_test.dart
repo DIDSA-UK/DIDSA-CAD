@@ -8,11 +8,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-/// A backend that answers /health for [key] and serves an OpenAPI schema listing [paths].
-MockClient _server({String key = 'secret', List<String>? paths, bool up = true, List<String>? hosts}) {
+/// A backend that answers /health for [key] and serves an OpenAPI schema listing [paths]. [relay], when given, answers every request
+/// on port 8100 (the browser relay's).
+MockClient _server({
+  String key = 'secret',
+  List<String>? paths,
+  bool up = true,
+  List<String>? hosts,
+  Future<http.Response> Function(http.Request request)? relay,
+}) {
   final listed = paths ?? [...HeadsetPairing.requiredPaths, ...HeadsetPairing.optionalPaths.keys];
   return MockClient((request) async {
     hosts?.add(request.url.host);
+    if (relay != null && request.url.port == 8100) return relay(request);
     if (!up) throw http.ClientException('connection refused');
     if (request.url.path == '/health') {
       return request.headers['X-API-Key'] == key ? http.Response('{"status":"ok"}', 200) : http.Response('', 401);
@@ -201,6 +209,75 @@ void main() {
     });
   });
 
+  group('browser relay', () {
+    test('ws:// on the local network and wss:// are put in the code; http(s) is taken as ws(s); /ws is dropped', () {
+      expect(HeadsetPairing.checkRelayAddress('ws://192.168.1.20:8100').$2, 'ws://192.168.1.20:8100');
+      expect(HeadsetPairing.checkRelayAddress('ws://192.168.1.20:8100').$1.state, PairingCheckState.warn);
+      expect(HeadsetPairing.checkRelayAddress('wss://relay.example.net/ws/').$2, 'wss://relay.example.net');
+      expect(HeadsetPairing.checkRelayAddress('wss://relay.example.net').$1.state, PairingCheckState.pass);
+      expect(HeadsetPairing.checkRelayAddress('http://192.168.1.20:8100').$2, 'ws://192.168.1.20:8100');
+      expect(HeadsetPairing.checkRelayAddress('https://relay.example.net').$2, 'wss://relay.example.net');
+    });
+
+    test('an address the headset would refuse is left out, with a warning, never a failure', () {
+      for (final url in ['ws://relay.example.net', 'ws://127.0.0.1:8100', 'ftp://192.168.1.20']) {
+        final (check, wsUrl) = HeadsetPairing.checkRelayAddress(url);
+        expect(wsUrl, isNull, reason: url);
+        expect(check.state, PairingCheckState.warn, reason: url);
+      }
+      expect(HeadsetPairing.checkRelayAddress('ws://relay.example.net').$1.message, contains('ws://'));
+    });
+
+    test('runChecks: the relay rides along, checked at its /health over http; a dead relay only warns', () async {
+      final asked = <String>[];
+      final client = _server(relay: (request) async {
+        asked.add(request.url.toString());
+        return http.Response('{"status":"ok"}', 200);
+      });
+      final result = await HeadsetPairing.runChecks(
+        client: client,
+        baseUrl: 'https://cad.example.net',
+        apiKey: 'secret',
+        relayUrl: 'wss://relay.example.net:8100',
+        relayApiKey: 'rk',
+      );
+      expect(result.compatible, isTrue);
+      expect(result.relayUrl, 'wss://relay.example.net:8100');
+      expect(asked, contains('https://relay.example.net:8100/health'));
+      expect(result.checks.last.title, 'Browser relay running');
+      expect(result.checks.last.state, PairingCheckState.pass);
+
+      final down = await HeadsetPairing.runChecks(
+        client: _server(relay: (request) async => throw http.ClientException('refused')),
+        baseUrl: 'https://cad.example.net',
+        apiKey: 'secret',
+        relayUrl: 'wss://relay.example.net:8100',
+        relayApiKey: 'rk',
+      );
+      expect(down.compatible, isTrue);
+      expect(down.relayUrl, 'wss://relay.example.net:8100');
+      expect(down.checks.last.state, PairingCheckState.warn);
+    });
+
+    test('runChecks: a relay with no key is left out', () async {
+      final result = await HeadsetPairing.runChecks(
+        client: _server(),
+        baseUrl: 'https://cad.example.net',
+        apiKey: 'secret',
+        relayUrl: 'wss://relay.example.net',
+      );
+      expect(result.compatible, isTrue);
+      expect(result.relayUrl, isNull);
+      expect(result.checks.last.title, 'Browser relay key');
+    });
+
+    test('runChecks: no relay set adds no relay check', () async {
+      final result = await HeadsetPairing.runChecks(client: _server(), baseUrl: 'https://cad.example.net', apiKey: 'secret');
+      expect(result.relayUrl, isNull);
+      expect(result.checks.any((c) => c.title.startsWith('Browser relay')), isFalse);
+    });
+  });
+
   group('payload', () {
     test('is versioned and round-trips through Uri', () {
       final text = HeadsetPairing.payload(
@@ -211,6 +288,22 @@ void main() {
       expect(text, startsWith('didsa-vr:1?'));
       final query = Uri.splitQueryString(text.substring(text.indexOf('?') + 1));
       expect(query, {'n': 'Workshop PC', 'u': 'https://cad.example.net', 'k': 'a b&c=d'});
+    });
+
+    test('carries the browser relay and its key when both are given, and neither otherwise', () {
+      Map<String, String> query(String text) => Uri.splitQueryString(text.substring(text.indexOf('?') + 1));
+      final withRelay = HeadsetPairing.payload(
+        name: 'Pi',
+        baseUrl: 'http://192.168.1.20:8000',
+        apiKey: 'k',
+        relayUrl: 'ws://192.168.1.20:8100',
+        relayApiKey: 'r k',
+      );
+      expect(query(withRelay)['r'], 'ws://192.168.1.20:8100');
+      expect(query(withRelay)['rk'], 'r k');
+      final noKey = HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', relayUrl: 'ws://192.168.1.20:8100');
+      expect(query(noKey).containsKey('r'), isFalse);
+      expect(query(noKey).containsKey('rk'), isFalse);
     });
 
     test('the default name is the host', () {
@@ -250,6 +343,45 @@ void main() {
       await tester.tap(find.text('Hide now'));
       await tester.pump();
       expect(find.byType(QrImageView), findsNothing);
+    });
+
+    testWidgets('a relay typed and saved goes into the code', (tester) async {
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final saved = <List<String>>[];
+      await tester.pumpWidget(MaterialApp(
+        home: HeadsetPairingScreen(
+          baseUrl: 'https://cad.example.net',
+          apiKey: 'secret',
+          httpClient: _server(relay: (request) async => http.Response('{"status":"ok"}', 200)),
+          relayUrl: '',
+          relayApiKey: '',
+          saveRelay: (url, key) async => saved.add([url, key]),
+        ),
+      ));
+      await tester.pump();
+      await tester.pump();
+      String qrText() => tester.widget<MetaData>(find.byKey(const ValueKey('headset-pairing-payload'))).metaData as String;
+      expect(qrText(), isNot(contains('rk=')));
+      await tester.ensureVisible(find.text('Browser relay (optional)'));
+      await tester.pump();
+      await tester.tap(find.text('Browser relay (optional)'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const ValueKey('headset-pairing-relay-url')), 'wss://relay.example.net:8100');
+      await tester.enterText(find.byKey(const ValueKey('headset-pairing-relay-key')), 'relaysecret');
+      await tester.ensureVisible(find.text('Save relay and check again'));
+      await tester.pump();
+      await tester.tap(find.text('Save relay and check again'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      expect(saved, [
+        ['wss://relay.example.net:8100', 'relaysecret'],
+      ]);
+      final query = Uri.splitQueryString(qrText().substring(qrText().indexOf('?') + 1));
+      expect(query['r'], 'wss://relay.example.net:8100');
+      expect(query['rk'], 'relaysecret');
     });
 
     testWidgets('the on-phone server shows why, and no code', (tester) async {

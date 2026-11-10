@@ -28,6 +28,12 @@ class HeadsetPairingScreen extends StatefulWidget {
   final bool? localServerOnWifi;
   final Future<List<String>> Function()? wifiAddresses;
 
+  /// The browser relay to put in the code; default [ApiConfig.relayUrl] / [ApiConfig.relayApiKey]. [saveRelay] stores what is typed
+  /// (default [ApiConfig.saveRelay]; tests replace it).
+  final String? relayUrl;
+  final String? relayApiKey;
+  final Future<void> Function(String relayUrl, String relayApiKey)? saveRelay;
+
   const HeadsetPairingScreen({
     super.key,
     this.baseUrl,
@@ -36,6 +42,9 @@ class HeadsetPairingScreen extends StatefulWidget {
     this.showFor = const Duration(seconds: 60),
     this.localServerOnWifi,
     this.wifiAddresses,
+    this.relayUrl,
+    this.relayApiKey,
+    this.saveRelay,
   });
 
   @override
@@ -47,6 +56,10 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
   bool _shown = false;
   int _secondsLeft = 0;
   Timer? _timer;
+  late final TextEditingController _relayUrlField;
+  late final TextEditingController _relayKeyField;
+  late String _relayUrl;
+  late String _relayApiKey;
 
   String get _baseUrl => widget.baseUrl ?? ApiConfig.baseUrl;
   String get _apiKey => widget.apiKey ?? ApiConfig.apiKey;
@@ -56,13 +69,31 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
   @override
   void initState() {
     super.initState();
+    _relayUrl = widget.relayUrl ?? ApiConfig.relayUrl;
+    _relayApiKey = widget.relayApiKey ?? ApiConfig.relayApiKey;
+    _relayUrlField = TextEditingController(text: _relayUrl);
+    _relayKeyField = TextEditingController(text: _relayApiKey);
     _runChecks();
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    _relayUrlField.dispose();
+    _relayKeyField.dispose();
     super.dispose();
+  }
+
+  Future<void> _saveRelay() async {
+    final url = _relayUrlField.text.trim();
+    final key = _relayKeyField.text.trim();
+    await (widget.saveRelay ?? (u, k) => ApiConfig.saveRelay(relayUrl: u, relayApiKey: k))(url, key);
+    if (!mounted) return;
+    setState(() {
+      _relayUrl = url;
+      _relayApiKey = key;
+    });
+    await _runChecks();
   }
 
   Future<void> _runChecks() async {
@@ -76,6 +107,8 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
         apiKey: _apiKey,
         localServerOnWifi: widget.localServerOnWifi,
         wifiAddresses: widget.wifiAddresses,
+        relayUrl: _relayUrl,
+        relayApiKey: _relayApiKey,
       );
       if (!mounted) return;
       setState(() => _result = result);
@@ -136,17 +169,31 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                     icon: const Icon(Icons.refresh),
                     label: const Text('Check again'),
                   ),
-                if (_compatible && _shown) ...[
+                if (_compatible && _shown && result != null) ...[
                   Center(
                     child: Container(
                       color: Colors.white,
                       padding: const EdgeInsets.all(16),
-                      child: QrImageView(
-                        key: const ValueKey('headset-pairing-qr'),
-                        data: HeadsetPairing.payload(name: result!.name, baseUrl: result.pairUrl!, apiKey: _apiKey),
-                        size: 260,
-                        backgroundColor: Colors.white,
-                      ),
+                      child: Builder(builder: (context) {
+                        final code = HeadsetPairing.payload(
+                          name: result.name,
+                          baseUrl: result.pairUrl!,
+                          apiKey: _apiKey,
+                          relayUrl: result.relayUrl,
+                          relayApiKey: _relayApiKey,
+                        );
+                        // MetaData: lets a widget test read what the code says (QrImageView does not expose it); invisible.
+                        return MetaData(
+                          key: const ValueKey('headset-pairing-payload'),
+                          metaData: code,
+                          child: QrImageView(
+                            key: const ValueKey('headset-pairing-qr'),
+                            data: code,
+                            size: 260,
+                            backgroundColor: Colors.white,
+                          ),
+                        );
+                      }),
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -161,11 +208,45 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                     icon: const Icon(Icons.qr_code),
                     label: const Text('Show the code'),
                   ),
+                const SizedBox(height: 16),
+                ExpansionTile(
+                  key: const ValueKey('headset-pairing-relay'),
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('Browser relay (optional)'),
+                  subtitle: Text(_relayUrl.isEmpty ? 'Not set: the headset\'s Browser window will not work.' : _relayUrl),
+                  children: [
+                    const Text(
+                      'The headset\'s Browser window needs the browser-relay service (browser-relay/ in DIDSA-CAD; port 8100 by '
+                      'default). Its address, for example ws://192.168.1.20:8100, and its own key (BROWSER_RELAY_API_KEY, not the '
+                      'CAD key) go in the code with the server.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    TextField(
+                      key: const ValueKey('headset-pairing-relay-url'),
+                      controller: _relayUrlField,
+                      decoration: const InputDecoration(labelText: 'Relay address (ws:// or wss://)'),
+                      keyboardType: TextInputType.url,
+                      autocorrect: false,
+                    ),
+                    TextField(
+                      key: const ValueKey('headset-pairing-relay-key'),
+                      controller: _relayKeyField,
+                      decoration: const InputDecoration(labelText: 'Relay key'),
+                      obscureText: true,
+                      autocorrect: false,
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: OutlinedButton(onPressed: _saveRelay, child: const Text('Save relay and check again')),
+                    ),
+                  ],
+                ),
                 if (_compatible) ...[
                   const SizedBox(height: 16),
                   const Text(
-                    'The code contains this server\'s API key. Anyone who photographs it can use your server, so show it only '
-                    'to your own headset.',
+                    'The code contains this server\'s API key (and the relay\'s, when set). Anyone who photographs it can use your '
+                    'server, so show it only to your own headset.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12),
                   ),
