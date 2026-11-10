@@ -18,11 +18,15 @@ class ApiConfig {
   static const String apiKeyPrefKey = 'api_key';
   static const String localApiKeyPrefKey = 'local_api_key';
   static const String localServerOnWifiPrefKey = 'local_server_on_wifi';
+  static const String relayUrlPrefKey = 'browser_relay_url';
+  static const String relayApiKeyPrefKey = 'browser_relay_api_key';
 
   static String _baseUrl = '';
   static String _apiKey = '';
   static String _localApiKey = '';
   static bool _localServerOnWifi = false;
+  static String _relayUrl = '';
+  static String _relayApiKey = '';
   static String? _sessionId;
 
   /// The backend base URL, e.g. `https://cad-api.snail-shell.uk` - empty
@@ -48,6 +52,13 @@ class ApiConfig {
   /// (`0.0.0.0`) instead of only inside the phone (`127.0.0.1`), so a headset on the same Wi-Fi can reach it at the phone's
   /// Wi-Fi address (see `vr_pairing/headset_pairing.dart`). Off by default; takes effect the next time the server starts.
   static bool get localServerOnWifi => _localServerOnWifi;
+
+  /// The browser relay (`browser-relay/`, a `ws://` or `wss://` address) that Connect a VR headset puts in the pairing code, so the
+  /// headset's Browser window works without typing. This app never connects to it; it only hands it on. Empty when not set.
+  static String get relayUrl => _relayUrl;
+
+  /// The relay's own key (`BROWSER_RELAY_API_KEY`), not the CAD key.
+  static String get relayApiKey => _relayApiKey;
 
   /// Whether both [baseUrl] and [apiKey] are non-empty - drives whether
   /// [ConnectionScreen] can pre-fill its fields and offer Connect on cold
@@ -87,6 +98,17 @@ class ApiConfig {
     _apiKey = prefs.getString(apiKeyPrefKey) ?? '';
     _localApiKey = prefs.getString(localApiKeyPrefKey) ?? '';
     _localServerOnWifi = prefs.getBool(localServerOnWifiPrefKey) ?? false;
+    _relayUrl = prefs.getString(relayUrlPrefKey) ?? '';
+    _relayApiKey = prefs.getString(relayApiKeyPrefKey) ?? '';
+  }
+
+  /// Saves (or, with empty strings, clears) the browser relay handed to a VR headset when pairing.
+  static Future<void> saveRelay({required String relayUrl, required String relayApiKey}) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(relayUrlPrefKey, relayUrl.trim());
+    await prefs.setString(relayApiKeyPrefKey, relayApiKey.trim());
+    _relayUrl = relayUrl.trim();
+    _relayApiKey = relayApiKey.trim();
   }
 
   /// Persists [baseUrl]/[apiKey] to `shared_preferences` and updates the

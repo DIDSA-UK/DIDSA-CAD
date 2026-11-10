@@ -34,7 +34,11 @@ class PairingResult {
   final String? pairUrl;
   final String name;
 
-  const PairingResult(this.checks, {this.pairUrl, this.name = ''});
+  /// The browser relay the code carries (normalised `ws://` / `wss://`), or null: none set, or one the headset would refuse (left out,
+  /// so the rest of the code still pairs).
+  final String? relayUrl;
+
+  const PairingResult(this.checks, {this.pairUrl, this.name = '', this.relayUrl});
 
   bool get compatible => pairUrl != null && checks.every((c) => !c.failed);
 }
@@ -151,6 +155,58 @@ class HeadsetPairing {
     return const PairingCheck(title, PairingCheckState.pass, 'A public https:// address.');
   }
 
+  /// The browser relay's address, judged by the same rules as the server's ([checkAddress]): `ws://` like `http://`, `wss://` like
+  /// `https://`. An `http(s)://` address is taken as the matching `ws(s)://` one. Returns the check and the address to put in the code
+  /// (null when the headset would refuse it). The headset adds `/ws` itself, so a trailing `/ws` is dropped.
+  static (PairingCheck, String?) checkRelayAddress(String rawUrl) {
+    const title = 'Browser relay address';
+    var url = _trimmed(rawUrl);
+    final lower = url.toLowerCase();
+    String asHttp;
+    if (lower.startsWith('wss://')) {
+      asHttp = 'https://${url.substring(6)}';
+    } else if (lower.startsWith('ws://')) {
+      asHttp = 'http://${url.substring(5)}';
+    } else if (lower.startsWith('https://') || lower.startsWith('http://')) {
+      asHttp = url;
+    } else {
+      return (const PairingCheck(title, PairingCheckState.warn, 'Not a ws:// or wss:// address, so it is left out of the code.'), null);
+    }
+    if (asHttp.toLowerCase().endsWith('/ws')) asHttp = asHttp.substring(0, asHttp.length - 3);
+    final address = checkAddress(asHttp);
+    final wsUrl = asHttp.toLowerCase().startsWith('https://') ? 'wss://${asHttp.substring(8)}' : 'ws://${asHttp.substring(7)}';
+    final message = address.message
+        .replaceAll('The server URL is not a valid http(s) address.', 'Not a valid ws:// or wss:// address.')
+        .replaceAll('plain http://', 'plain ws://')
+        .replaceAll('Plain http', 'Plain ws')
+        .replaceAll('https://', 'wss://')
+        .replaceAll('API key', 'relay key');
+    if (address.failed) {
+      return (PairingCheck(title, PairingCheckState.warn, '$message The relay is left out of the code; the rest still pairs.'), null);
+    }
+    return (PairingCheck(title, address.state, message), wsUrl);
+  }
+
+  /// The relay answers its unauthenticated `GET /health` (on the `http(s)://` form of its address). A warning at worst: the Browser
+  /// window is one tool, and the relay may be reachable from the headset even when not from here.
+  static Future<PairingCheck> checkRelayHealth(http.Client client, String wsUrl) async {
+    const title = 'Browser relay running';
+    final httpUrl = wsUrl.startsWith('wss://') ? 'https://${wsUrl.substring(6)}' : 'http://${wsUrl.substring(5)}';
+    try {
+      final response = await client.get(Uri.parse('$httpUrl/health')).timeout(ApiConfig.requestTimeout);
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return const PairingCheck(title, PairingCheckState.pass, 'The relay answers. Its key is not checked here.');
+      }
+      return PairingCheck(title, PairingCheckState.warn, 'The relay answered ${response.statusCode}. The Browser window may not work.');
+    } catch (_) {
+      return const PairingCheck(
+        title,
+        PairingCheckState.warn,
+        'Could not reach the relay from here. Is it running (docker compose up -d browser-relay)? It is still put in the code.',
+      );
+    }
+  }
+
   /// The server answers `GET /health` with this key.
   static Future<PairingCheck> checkHealth(http.Client client, String baseUrl, String apiKey) async {
     const title = 'Server running';
@@ -227,6 +283,8 @@ class HeadsetPairing {
     required String apiKey,
     bool? localServerOnWifi,
     Future<List<String>> Function()? wifiAddresses,
+    String relayUrl = '',
+    String relayApiKey = '',
   }) async {
     if (baseUrl.trim().isEmpty || apiKey.trim().isEmpty) {
       return const PairingResult([
@@ -285,7 +343,23 @@ class HeadsetPairing {
     if (health.failed) return PairingResult(checks);
     checks.add(await checkEndpoints(client, pairUrl, apiKey));
     if (checks.last.failed) return PairingResult(checks);
-    return PairingResult(checks, pairUrl: pairUrl, name: name);
+    // The browser relay is optional and never stops the code: at worst it is left out (an address the headset would refuse).
+    String? relay;
+    if (relayUrl.trim().isNotEmpty) {
+      final (addressCheck, wsUrl) = checkRelayAddress(relayUrl);
+      checks.add(addressCheck);
+      if (wsUrl != null && relayApiKey.trim().isEmpty) {
+        checks.add(const PairingCheck(
+          'Browser relay key',
+          PairingCheckState.warn,
+          'No relay key set (BROWSER_RELAY_API_KEY on the relay\'s machine), so the relay is left out of the code.',
+        ));
+      } else if (wsUrl != null) {
+        checks.add(await checkRelayHealth(client, wsUrl));
+        relay = wsUrl;
+      }
+    }
+    return PairingResult(checks, pairUrl: pairUrl, name: name, relayUrl: relay);
   }
 
   /// This phone's local-network IPv4 addresses, Wi-Fi (and hotspot) interfaces first. A mobile-data interface's address is left
@@ -312,12 +386,23 @@ class HeadsetPairing {
     return [...wifi, ...other];
   }
 
-  /// The QR code's text: `didsa-vr:1?n=<name>&u=<url>&k=<key>`, each value percent-encoded.
-  static String payload({required String name, required String baseUrl, required String apiKey}) {
+  /// The QR code's text: `didsa-vr:1?n=<name>&u=<url>&k=<key>`, each value percent-encoded, plus `r=<relay>&rk=<relay key>` when a
+  /// browser relay is given (both, or neither: DIDSA-VR's `pairing_payload.gd` reads them).
+  static String payload({
+    required String name,
+    required String baseUrl,
+    required String apiKey,
+    String? relayUrl,
+    String relayApiKey = '',
+  }) {
     final query = [
       'n=${Uri.encodeQueryComponent(name)}',
       'u=${Uri.encodeQueryComponent(_trimmed(baseUrl))}',
       'k=${Uri.encodeQueryComponent(apiKey.trim())}',
+      if (relayUrl != null && relayUrl.isNotEmpty && relayApiKey.trim().isNotEmpty) ...[
+        'r=${Uri.encodeQueryComponent(_trimmed(relayUrl))}',
+        'rk=${Uri.encodeQueryComponent(relayApiKey.trim())}',
+      ],
     ].join('&');
     return '$payloadScheme:$payloadVersion?$query';
   }

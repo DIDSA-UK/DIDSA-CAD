@@ -69,6 +69,13 @@ BROWSER_RELAY_API_KEY=dev-key BROWSER_RELAY_CHROME_BINARY=/path/to/chromium \
     python -m uvicorn app.main:app --port 8100
 ```
 
+## Pointing a headset at it
+
+DIDSA-VR needs this service's address (`ws://<host>:8100`, or `wss://` behind an https tunnel; no `/ws`, the client adds it) and
+`BROWSER_RELAY_API_KEY`. Put them in the flat app's File > Connect a VR headset... > **Browser relay (optional)** and they ride in the
+pairing QR code (`docs/vr-headset-pairing.md`), or type them on the headset (Landing > Servers > **Relay**). Quick check that it is up:
+`curl http://<host>:8100/health`. Step by step: DIDSA-VR `docs/servers.md`, "Setting up the Browser".
+
 ## Tests
 
 ```

@@ -47,18 +47,25 @@ didsa-vr:1?n=<name>&u=<base url>&k=<api key>
 
 - `1` is the payload version. The headset refuses a version it does not know.
 - Each value is percent-encoded (`Uri.encodeQueryComponent`); `u` has no trailing slash. `n` is the server's host name.
-- Reserved for later, optional: `s` (document session), `r` / `rk` (browser relay URL and key).
+- Optional: `r` / `rk`, the browser relay (`browser-relay/`) the headset's Browser window uses, and its key (`BROWSER_RELAY_API_KEY`, not the CAD
+  key). Written only when both are set under **Browser relay (optional)** on this screen (saved in the app's preferences, `ApiConfig.relayUrl` /
+  `relayApiKey`). `r` is a `ws://` or `wss://` base address with no `/ws` (an `http(s)://` one typed there is written as `ws(s)://`). The relay is
+  checked like the server's address (`HeadsetPairing.checkRelayAddress`: plain `ws://` only on a local network) and by its unauthenticated
+  `/health`; a relay problem is only ever a warning, and a relay the headset would refuse is left out of the code so the rest still pairs. (The
+  headset accepts `ws://` / `wss://` here from DIDSA-VR's 10 Nov 2026 build; an older build refuses a code that has `r`.)
+- Reserved for later, optional: `s` (document session).
 
 ## Safety
 
-The code carries the backend's single `CAD_API_KEY`: anyone who photographs it can use the server. So it appears only on this
+The code carries the backend's single `CAD_API_KEY` (and the relay's key, when set): anyone who photographs it can use the server. So it appears only on this
 screen, hides itself after 60 s (Show the code brings it back), and the screen says so. A short-lived pairing token exchanged for a
 per-device key would need backend work (per-device keys do not exist yet).
 
 ## Tests
 
-`client/test/headset_pairing_test.dart` (20): every address rule, the check order (the phone's server with the switch off makes no
+`client/test/headset_pairing_test.dart` (27): every address rule, the check order (the phone's server with the switch off makes no
 request), a down server, a wrong key, a server too old, a server without Scenes (warning), the phone's server (refused with the switch
 off or no Wi-Fi; paired at its Wi-Fi address and checked only there; "Restart" when it does not answer there), the payload round trip,
-and the screen. `test/server_management/termux_commands_test.dart`: the switch's `0.0.0.0` on Start, Restart and Pull & start. Not
+the browser relay (its address rules, left out when refused or keyless, its `/health` over http(s), a dead relay only warning, `r` / `rk`
+in the code only together, and typed and saved on the screen into the code), and the screen. `test/server_management/termux_commands_test.dart`: the switch's `0.0.0.0` on Start, Restart and Pull & start. Not
 seen on a device; `NetworkInterface.list` on Android not tried; not scanned by a headset.
