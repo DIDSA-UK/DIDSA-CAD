@@ -6,6 +6,15 @@ enum ReferenceOutcome {
   /// Found by its id in a new place: used, and the corrected path is an unsaved change.
   movedById,
 
+  /// No stored id, but exactly one file has the same path after the project folder's leading folders are dropped or added
+  /// ([LookupResult.likely]): not used until the user agrees ([ReferenceReport.foundPath] is the candidate, also the only
+  /// entry of [ReferenceReport.candidates]).
+  likely,
+
+  /// A [likely] file the user agreed to (or the session's stored answer applied): used, and the corrected path is an unsaved
+  /// change, like [movedById].
+  foundByFolder,
+
   /// Several files carry the id: nothing is loaded until the user picks one.
   ask,
 
@@ -40,7 +49,7 @@ class ReferenceReport {
   final String? storedPartId;
   final ReferenceOutcome outcome;
 
-  /// [ReferenceOutcome.movedById]: where it was found.
+  /// [ReferenceOutcome.movedById] / [ReferenceOutcome.foundByFolder]: where it was found; [ReferenceOutcome.likely]: the candidate.
   final String? foundPath;
 
   /// [ReferenceOutcome.ask] / [ReferenceOutcome.suggest]: the files to choose from.
@@ -53,7 +62,21 @@ class ReferenceReport {
   final bool staleCopy;
 
   /// True when the user has something to decide; a reference found by id needs nothing.
-  bool get needsYou => outcome != ReferenceOutcome.movedById;
+  bool get needsYou => outcome != ReferenceOutcome.movedById && outcome != ReferenceOutcome.foundByFolder;
+
+  /// A copy with [parentPartId] replaced - for the nested reports of a file brought into the session under re-minted ids.
+  ReferenceReport withParentPartId(String newParentPartId) => ReferenceReport(
+        parentPartId: newParentPartId,
+        parentPath: parentPath,
+        occurrenceId: occurrenceId,
+        requestedPath: requestedPath,
+        storedPartId: storedPartId,
+        outcome: outcome,
+        foundPath: foundPath,
+        candidates: candidates,
+        pathMismatch: pathMismatch,
+        staleCopy: staleCopy,
+      );
 
   /// The file name the reference was placed under, for display.
   String get fileName {
@@ -63,6 +86,7 @@ class ReferenceReport {
 
   static ReferenceOutcome outcomeOf(LookupResult result) => switch (result) {
         LookupResult.found => ReferenceOutcome.movedById,
+        LookupResult.likely => ReferenceOutcome.likely,
         LookupResult.ask => ReferenceOutcome.ask,
         LookupResult.suggest => ReferenceOutcome.suggest,
         LookupResult.missing => ReferenceOutcome.missing,

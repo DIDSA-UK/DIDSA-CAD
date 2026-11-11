@@ -43,6 +43,34 @@ def test_vectors_say_what_the_scope_decided():
     assert _case("path_older_reference") == {"result": "found", "path": "parts/Frame A.didsa", "via": "path", "candidates": [], "path_mismatch": False}
 
 
+def test_folder_shift_vectors():
+    """Item 1b (Flutter-testing feedback 2026-11-11): a whole-path-suffix match for a reference with no stored id is `likely`
+    (the client asks before using it); ties, a name-only match, a non-suffix match and a stored id are all suggestions."""
+    for name in ("folder_prefix_added", "folder_prefix_removed", "folder_shift_longest_wins", "folder_shift_backslash_and_case"):
+        case = _case(name)
+        assert case["result"] == "likely" and case["via"] == "suffix" and case["path"] and case["candidates"] == [], name
+    for name in (
+        "folder_shift_two_equal_suggest",
+        "folder_shift_name_only_suggest",
+        "folder_shift_not_a_suffix_suggest",
+        "folder_shift_stored_id_never_likely",
+    ):
+        assert _case(name)["result"] == "suggest" and _case(name)["path"] is None, name
+    assert _case("folder_shift_two_equal_suggest")["candidates"] == ["proj1/parts/Frame A.didsa", "proj2/parts/Frame A.didsa"]
+    # The id is looked up first: a file found by id is never overridden by a suffix match.
+    assert _case("folder_shift_id_found_beats_suffix")["via"] == "id"
+
+
+def test_candidates_are_ordered_by_shared_trailing_segments():
+    answer = find_file(
+        {"external_ref": "a/b/x.didsa", "ref_part_id": "id-1"},
+        None,
+        [{"path": "z/x.didsa", "part_id": "o"}, {"path": "q/b/x.didsa", "part_id": "o"}, {"path": "c/b/x.didsa", "part_id": "o"}],
+    )
+    assert answer["result"] == "suggest"
+    assert answer["candidates"] == ["c/b/x.didsa", "q/b/x.didsa", "z/x.didsa"]
+
+
 def test_name_key():
     assert name_key("parts/Bracket.didsa") == name_key("old/bracket.DIDSAprt") == name_key("Bracket.DIDSACAD") == "bracket"
     assert name_key("a\\b\\Frame A.didsa") == "frame a"

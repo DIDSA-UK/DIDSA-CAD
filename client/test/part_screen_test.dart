@@ -9272,6 +9272,193 @@ void main() {
     expect(find.byKey(const Key('reference-o-frame')), findsOneWidget);
   });
 
+  // Item 1a (Flutter-testing feedback 2026-11-11): Use on a level-1 reference adds the references found INSIDE that file to the sheet.
+  testWidgets('Use on a level-1 reference adds its nested (level-2) references to the open Review sheet', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    Uint8List native(String id, {List<Map<String, dynamic>> occurrences = const []}) => Uint8List.fromList(utf8.encode(jsonEncode({
+          'schema_version': 1,
+          'document': {
+            'id': 'doc-$id',
+            'root_part_id': id,
+            'parts': [
+              {'id': id, 'name': id, 'features': [], 'occurrences': occurrences, 'mates': []},
+            ],
+          },
+          'sketches': [],
+        })));
+    final storage = _FakeStorageService()
+      ..presetLastUsedRoot = const DesktopProjectRoot('/fake/project')
+      ..files['proj/parts/Sub.didsa'] = native('sub', occurrences: [
+        {'id': 'o-leaf', 'external_ref': 'parts/Leaf.didsa', 'transform': null, 'suppressed': false, 'hidden': false},
+      ])
+      ..files['proj/parts/Leaf.didsa'] = native('leaf');
+    final backend = _FakeDocumentBackend(seedOccurrences: [
+      {
+        'id': 'o-sub',
+        'external_ref': 'parts/Sub.didsa',
+        'resolved_part_id': null,
+        'name_override': null,
+        'transform': {'translation': [0.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+        'suppressed': false,
+        'hidden': false,
+        'fixed': false,
+      },
+    ]);
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          storageService: storage,
+          assemblyDocumentClient: AssemblyDocumentClient(
+            storageService: storage,
+            documentApiClient: documentApi,
+            composer: AssemblyGraphComposer(storageService: storage, fileCache: _NoopFileCache()),
+          ),
+          initialProjectRoot: const DesktopProjectRoot('/fake/project'),
+          initialReferenceReports: const [
+            ReferenceReport(
+              parentPartId: 'part-1',
+              parentPath: 'proj/root.didsa',
+              occurrenceId: 'o-sub',
+              requestedPath: 'parts/Sub.didsa',
+              storedPartId: null,
+              outcome: ReferenceOutcome.likely,
+              foundPath: 'proj/parts/Sub.didsa',
+              candidates: ['proj/parts/Sub.didsa'],
+            ),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await _pumpUntil(tester, () => find.byKey(const Key('references-banner')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.tap(find.text('Review'));
+    await _pumpUntil(tester, () => find.byKey(const Key('reference-o-sub')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byKey(const Key('reference-o-leaf')), findsNothing, reason: 'level 2 is not in the list before Use');
+
+    await tester.tap(find.byKey(const Key('use-o-sub-proj/parts/Sub.didsa')));
+    await _pumpUntil(tester, () => find.byKey(const Key('reference-o-leaf')).evaluate().isNotEmpty);
+    await _pumpUntil(tester, () => find.byKey(const Key('reference-o-sub')).evaluate().isEmpty);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const Key('reference-o-sub')), findsNothing, reason: 'the level-1 row is dealt with');
+    expect(find.byKey(const Key('reference-o-leaf')), findsOneWidget, reason: 'its own reference joined the list');
+    expect(find.text('in Sub.didsa'), findsOneWidget);
+    expect(find.textContaining('Found 1 more reference inside Sub.didsa'), findsOneWidget);
+    expect(find.byKey(Key('use-o-leaf-proj/parts/Leaf.didsa')), findsOneWidget);
+  });
+
+  group('item 1c: bulk actions in the Review sheet relink in one merge', () {
+    Uint8List native(String id) => Uint8List.fromList(utf8.encode(jsonEncode({
+          'schema_version': 1,
+          'document': {
+            'id': 'doc-$id',
+            'root_part_id': id,
+            'parts': [
+              {'id': id, 'name': id, 'features': [], 'occurrences': [], 'mates': []},
+            ],
+          },
+          'sketches': [],
+        })));
+    Map<String, dynamic> occ(String id, String ref) => {
+          'id': id,
+          'external_ref': ref,
+          'resolved_part_id': null,
+          'name_override': null,
+          'transform': {'translation': [0.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+          'suppressed': false,
+          'hidden': false,
+          'fixed': false,
+        };
+    ReferenceReport report(String letter, ReferenceOutcome outcome) => ReferenceReport(
+          parentPartId: 'part-1',
+          parentPath: 'proj/root.didsa',
+          occurrenceId: 'o-$letter',
+          requestedPath: 'parts/$letter.didsa',
+          storedPartId: null,
+          outcome: outcome,
+          foundPath: 'proj/parts/$letter.didsa',
+          candidates: ['proj/parts/$letter.didsa'],
+        );
+
+    Future<int Function()> pump(WidgetTester tester, List<ReferenceReport> reports) async {
+      tester.view.physicalSize = const Size(1200, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final storage = _FakeStorageService()..presetLastUsedRoot = const DesktopProjectRoot('/fake/project');
+      for (final letter in ['A', 'B', 'C']) {
+        storage.files['proj/parts/$letter.didsa'] = native(letter.toLowerCase());
+      }
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('o-A', 'parts/A.didsa'), occ('o-B', 'parts/B.didsa'), occ('o-C', 'parts/C.didsa')]);
+      var imports = 0;
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async {
+        if (request.url.path == '/document/import/native') imports++;
+        return backend.handle(request);
+      }));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            storageService: storage,
+            assemblyDocumentClient: AssemblyDocumentClient(
+              storageService: storage,
+              documentApiClient: documentApi,
+              composer: AssemblyGraphComposer(storageService: storage, fileCache: _NoopFileCache()),
+            ),
+            initialProjectRoot: const DesktopProjectRoot('/fake/project'),
+            initialReferenceReports: reports,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await _pumpUntil(tester, () => find.byKey(const Key('references-banner')).evaluate().isNotEmpty);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.text('Review'));
+      await _pumpUntil(tester, () => find.byKey(const Key('reference-o-A')).evaluate().isNotEmpty);
+      await tester.pump(const Duration(milliseconds: 500));
+      return () => imports;
+    }
+
+    testWidgets('Use all single suggestions relinks every one-candidate row with one import', (tester) async {
+      final imports = await pump(tester, [
+        report('A', ReferenceOutcome.likely),
+        report('B', ReferenceOutcome.likely),
+        report('C', ReferenceOutcome.likely),
+      ]);
+      final before = imports();
+      expect(find.text('Use all single suggestions (3)'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('use-all-single')));
+      await _pumpUntil(tester, () => find.byKey(const Key('reference-o-A')).evaluate().isEmpty);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(imports() - before, 1, reason: 'three relinks, one merge, one importNative');
+      expect(find.byKey(const Key('reference-o-B')), findsNothing);
+      expect(find.byKey(const Key('reference-o-C')), findsNothing);
+    });
+
+    testWidgets('Use on one row offers the same folder change for the others, applied in one import', (tester) async {
+      final imports = await pump(tester, [
+        report('A', ReferenceOutcome.likely),
+        report('B', ReferenceOutcome.missing),
+        report('C', ReferenceOutcome.missing),
+      ]);
+      await tester.tap(find.byKey(const Key('use-o-A-proj/parts/A.didsa')));
+      await _pumpUntil(tester, () => find.byKey(const Key('apply-folder-change')).evaluate().isNotEmpty);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Apply the same folder change to 2 other references'), findsOneWidget);
+      final before = imports();
+      await tester.tap(find.byKey(const Key('apply-folder-change')));
+      await _pumpUntil(tester, () => find.byKey(const Key('reference-o-B')).evaluate().isEmpty);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(imports() - before, 1);
+      expect(find.byKey(const Key('reference-o-C')), findsNothing);
+    });
+  });
+
   testWidgets('leaving every reference closes the Review sheet, never the screen under it', (tester) async {
     tester.view.physicalSize = const Size(1200, 2400);
     tester.view.devicePixelRatio = 1.0;

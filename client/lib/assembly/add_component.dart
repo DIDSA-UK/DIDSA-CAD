@@ -48,7 +48,11 @@ class _PreparedComponent {
     required this.sketches,
     required this.rootPartId,
     required this.reusesExistingPart,
+    this.idMap = const {},
   });
+
+  /// The old -> new ids a heal re-mint applied (empty when nothing was re-minted).
+  final Map<String, String> idMap;
 
   /// The component's Parts (re-minted if a collision was healed).
   final List<Map<String, dynamic>> parts;
@@ -171,6 +175,7 @@ _PreparedComponent _prepareComponent({
   var sketches = ((componentPayload['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
   var rootId = componentRootPartId;
   String? reuse;
+  var idMap = const <String, String>{};
 
   final sameRefPartIds = _resolvedPartIdsForRef(currentParts, externalRef);
   final knownPath = relativePathByPartId?[componentRootPartId];
@@ -185,7 +190,9 @@ _PreparedComponent _prepareComponent({
     if (sameRefPartIds.isNotEmpty) {
       reuse = sameRefPartIds.first;
     } else {
-      final reminted = remintNativeIdentity(componentPayload);
+      final remintedWithMap = remintNativeIdentityWithMap(componentPayload);
+      idMap = remintedWithMap.idMap;
+      final reminted = remintedWithMap.payload;
       final remintedDocument = reminted['document'] as Map<String, dynamic>;
       parts = (remintedDocument['parts'] as List).cast<Map<String, dynamic>>();
       sketches = ((reminted['sketches'] as List?) ?? const []).cast<Map<String, dynamic>>();
@@ -201,8 +208,14 @@ _PreparedComponent _prepareComponent({
     sketches: sketches,
     rootPartId: reuse ?? rootId,
     reusesExistingPart: reuse != null,
+    idMap: idMap,
   );
 }
+
+/// What [mergeComponentIntoDocument] / [relocateOccurrenceInDocument] did with the incoming component's ids, for a caller that
+/// carries the component's nested [ReferenceReport]s over (item 1a): [idMap] is old -> new when the heal re-minted it, and
+/// [reusedExistingPart] says the file was already in the session (its nested reports were handled when it first came in).
+typedef ComponentPrepared = void Function(Map<String, String> idMap, bool reusedExistingPart);
 
 /// Merges [componentPayload] (a picked file's own `export_native` JSON,
 /// `partId: null` or otherwise - either shape has a `document.parts` list)
@@ -242,6 +255,7 @@ Map<String, dynamic> mergeComponentIntoDocument({
   String? externalRef,
   String? nameOverride,
   Map<String, String>? relativePathByPartId,
+  ComponentPrepared? onPrepared,
 }) {
   final currentSchema = currentPayload['schema_version'];
   final componentSchema = componentPayload['schema_version'];
@@ -285,6 +299,7 @@ Map<String, dynamic> mergeComponentIntoDocument({
     relativePathByPartId: relativePathByPartId,
     selfReferenceMessage: 'Cannot insert a Part into itself',
   );
+  onPrepared?.call(prepared.idMap, prepared.reusesExistingPart);
 
   final mergedParts = [
     ...currentParts,
@@ -383,6 +398,7 @@ Map<String, dynamic> relocateOccurrenceInDocument({
   required String occurrenceId,
   String? newExternalRef,
   Map<String, String>? relativePathByPartId,
+  ComponentPrepared? onPrepared,
 }) {
   final currentSchema = currentPayload['schema_version'];
   final componentSchema = componentPayload['schema_version'];
@@ -429,6 +445,7 @@ Map<String, dynamic> relocateOccurrenceInDocument({
     relativePathByPartId: relativePathByPartId,
     selfReferenceMessage: 'Cannot link a Part to itself',
   );
+  onPrepared?.call(prepared.idMap, prepared.reusesExistingPart);
 
   final mergedParts = [
     ...currentParts,

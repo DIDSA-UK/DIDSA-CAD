@@ -186,4 +186,43 @@ void main() {
     expect(finalOpen.references, isEmpty);
     expect((await api.listOccurrences(finalOpen.rootPartId)).every((o) => o.resolvedPartId != null), isTrue);
   }, skip: skip);
+
+  // Flutter-testing feedback 2026-11-11, item 1: the project folder is changed to the parent, so a 3-level assembly with no recorded ids
+  // has every stored path missing its leading folder. Accepting the folder matches finds all three levels; Save All records the ids and the
+  // corrected paths at every level, and reopening has nothing to report.
+  test('a 3-level assembly moved under a new root is found by folder, saved with ids at every level, and reopens clean', () async {
+    write('root.didsa', _file('root', occurrences: [_occ('o-sub', 'parts/Sub.didsa')]));
+    write('parts/Sub.didsa', _file('sub', occurrences: [_occ('o-leaf', 'parts/Leaf.didsa')]));
+    write('parts/Leaf.didsa', _file('leaf'));
+    // The owner picks the parent folder: everything now lives under proj/.
+    Directory('${dir.path}/proj').createSync();
+    for (final entry in ['root.didsa', 'parts']) {
+      final from = '${dir.path}/$entry';
+      FileSystemEntity.isDirectorySync(from) ? Directory(from).renameSync('${dir.path}/proj/$entry') : File(from).renameSync('${dir.path}/proj/$entry');
+    }
+
+    final asked = await client.composeGraph(root, 'proj/root.didsa');
+    expect(asked.references.single.outcome, ReferenceOutcome.likely, reason: 'asked first; levels below are not visited');
+
+    final composed = await client.composeGraph(root, 'proj/root.didsa', acceptLikely: true);
+    expect(composed.references.map((r) => r.outcome), everyElement(ReferenceOutcome.foundByFolder));
+    expect(composed.references, hasLength(2));
+    final opened = await client.importComposed(composed);
+
+    // The session holds the corrected paths at both levels.
+    final session = await api.exportNative();
+    final parts = (session['document']['parts'] as List).cast<Map<String, dynamic>>();
+    String refOf(String partId) => ((parts.firstWhere((p) => p['id'] == partId)['occurrences'] as List).single as Map)['external_ref'] as String;
+    expect(refOf('root'), 'proj/parts/Sub.didsa');
+    expect(refOf('sub'), 'proj/parts/Leaf.didsa');
+
+    final saved = await saveAll(opened);
+    expect(saved.hasFailures, isFalse);
+    expect(occurrencesOf(read('proj/root.didsa')).single['ref_part_id'], 'sub');
+    expect(occurrencesOf(read('proj/parts/Sub.didsa')).single['external_ref'], 'proj/parts/Leaf.didsa');
+    expect(occurrencesOf(read('proj/parts/Sub.didsa')).single['ref_part_id'], 'leaf');
+
+    final again = await open('proj/root.didsa');
+    expect(again.references, isEmpty);
+  }, skip: skip);
 }

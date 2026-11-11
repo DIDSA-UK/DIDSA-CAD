@@ -3,6 +3,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/assembly/reference_report.dart';
+import 'package:didsa_cad_client/assembly/folder_match_dialog.dart';
+import 'package:didsa_cad_client/assembly/folder_match_session_choice.dart';
 import 'package:didsa_cad_client/assembly/references_sheet.dart';
 
 ReferenceReport _report(
@@ -152,6 +154,158 @@ void main() {
       await tester.pump();
       expect(find.byKey(const Key('reference-b')), findsNothing);
       expect(find.byKey(const Key('reference-a')), findsOneWidget);
+    });
+  });
+
+  test('withParentPartId rewrites only the parent id (nested reports of a re-minted file)', () {
+    final original = _report('o', ReferenceOutcome.suggest, candidates: ['x/Frame_A.didsa']);
+    final moved = original.withParentPartId('minted-1');
+    expect(moved.parentPartId, 'minted-1');
+    expect(moved.parentPath, original.parentPath);
+    expect(moved.occurrenceId, original.occurrenceId);
+    expect(moved.outcome, original.outcome);
+    expect(moved.candidates, original.candidates);
+  });
+
+  group('item 1: the folder-match additions', () {
+    Future<void> pump(
+      WidgetTester tester,
+      List<ReferenceReport> list, {
+      ValueNotifier<String?>? notice,
+      ValueNotifier<int>? offer,
+      Future<void> Function()? apply,
+      Future<void> Function(List<ReferenceReport>)? useAll,
+      FolderMatchSessionChoice? choice,
+    }) async {
+      tester.view.physicalSize = const Size(900, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: ReferencesSheet(
+            reports: ValueNotifier(list),
+            onUse: (r, p) async {},
+            onLocate: (r) async {},
+            onLeaveMissing: (r) {},
+            notice: notice,
+            folderChangeOffer: offer,
+            onApplyFolderChange: apply,
+            onUseAllSingle: useAll,
+            sessionChoice: choice,
+          ),
+        ),
+      ));
+    }
+
+    ReferenceReport nested(String id, ReferenceOutcome outcome, {List<String> candidates = const [], String parent = 'proj/parts/Sub.didsa'}) =>
+        ReferenceReport(
+          parentPartId: 'sub',
+          parentPath: parent,
+          occurrenceId: id,
+          requestedPath: 'parts/$id.didsa',
+          storedPartId: null,
+          outcome: outcome,
+          foundPath: candidates.isEmpty ? null : candidates.first,
+          candidates: candidates,
+        );
+
+    testWidgets('each row says which file it is in, and a likely row offers its one candidate with Use', (tester) async {
+      await pump(tester, [nested('leaf', ReferenceOutcome.likely, candidates: ['proj/parts/leaf.didsa'])]);
+      expect(find.text('in Sub.didsa'), findsOneWidget);
+      expect(find.byKey(const Key('level-leaf')), findsOneWidget);
+      expect(find.byKey(const Key('use-leaf-proj/parts/leaf.didsa')), findsOneWidget);
+      expect(find.textContaining('Probably moved with the project folder'), findsOneWidget);
+    });
+
+    testWidgets('the notice line shows why the list grew', (tester) async {
+      final notice = ValueNotifier<String?>('Found 3 more references inside Sub.didsa');
+      addTearDown(notice.dispose);
+      await pump(tester, [nested('leaf', ReferenceOutcome.missing)], notice: notice);
+      expect(find.text('Found 3 more references inside Sub.didsa'), findsOneWidget);
+    });
+
+    testWidgets('Apply the same folder change shows its count and runs once', (tester) async {
+      final offer = ValueNotifier<int>(0);
+      addTearDown(offer.dispose);
+      var applied = 0;
+      await pump(tester, [nested('a', ReferenceOutcome.suggest, candidates: ['x/a.didsa'])], offer: offer, apply: () async => applied++);
+      expect(find.byKey(const Key('apply-folder-change')), findsNothing);
+      offer.value = 6;
+      await tester.pump();
+      expect(find.text('Apply the same folder change to 6 other references'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('apply-folder-change')));
+      await tester.pump();
+      expect(applied, 1);
+    });
+
+    testWidgets('Use all single suggestions covers only rows with exactly one candidate', (tester) async {
+      List<ReferenceReport>? got;
+      await pump(
+        tester,
+        [
+          nested('one', ReferenceOutcome.suggest, candidates: ['x/one.didsa']),
+          nested('likely', ReferenceOutcome.likely, candidates: ['x/likely.didsa']),
+          nested('two', ReferenceOutcome.suggest, candidates: ['x/two.didsa', 'y/two.didsa']),
+          nested('gone', ReferenceOutcome.missing),
+        ],
+        useAll: (reports) async => got = reports,
+      );
+      expect(find.text('Use all single suggestions (2)'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('use-all-single')));
+      await tester.pump();
+      expect(got!.map((r) => r.occurrenceId), unorderedEquals(['one', 'likely']));
+    });
+
+    testWidgets('the stored folder-match answer is shown with Ask again, which clears it', (tester) async {
+      final choice = FolderMatchSessionChoice.instance..clear();
+      addTearDown(choice.clear);
+      await pump(tester, [nested('a', ReferenceOutcome.missing)], choice: choice);
+      expect(find.byKey(const Key('folder-match-session-line')), findsNothing);
+      choice.remember(true);
+      await tester.pump();
+      expect(find.text('Folder matches: used automatically this session'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('folder-match-ask-again')));
+      await tester.pump();
+      expect(choice.answer, isNull);
+      expect(find.byKey(const Key('folder-match-session-line')), findsNothing);
+    });
+  });
+
+  group('showFolderMatchDialog', () {
+    testWidgets('lists examples and returns Use them with the checkbox state', (tester) async {
+      FolderMatchAnswer? answer;
+      final reports = [
+        for (var i = 0; i < 5; i++)
+          ReferenceReport(
+            parentPartId: 'r',
+            parentPath: 'root.didsa',
+            occurrenceId: 'o$i',
+            requestedPath: 'parts/x$i.didsa',
+            storedPartId: null,
+            outcome: ReferenceOutcome.likely,
+            foundPath: 'proj/parts/x$i.didsa',
+            candidates: ['proj/parts/x$i.didsa'],
+          ),
+      ];
+      await tester.pumpWidget(MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () async => answer = await showFolderMatchDialog(context, reports),
+            child: const Text('go'),
+          ),
+        ),
+      ));
+      await tester.tap(find.text('go'));
+      await tester.pumpAndSettle();
+      expect(find.text('5 files look like they moved with the project folder'), findsOneWidget);
+      expect(find.textContaining('parts/x0.didsa  →  proj/parts/x0.didsa'), findsOneWidget);
+      expect(find.text('…and 2 more'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('folder-match-dont-ask')));
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('folder-match-use')));
+      await tester.pumpAndSettle();
+      expect(answer!.useThem, isTrue);
+      expect(answer!.dontAskAgain, isTrue);
     });
   });
 }

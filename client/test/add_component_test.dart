@@ -561,4 +561,78 @@ void main() {
         expect(resolved[0], isNot(resolved[1]));
       });
     });
+
+  group('item 1a: nested reports follow a file brought in under new ids', () {
+    Map<String, dynamic> occ(String id, String ref) =>
+        {'id': id, 'external_ref': ref, 'resolved_part_id': null, 'fixed': false};
+
+    test('relocate reports the id map of a re-minted component, and none for a reused one', () {
+      final session = _documentPayload(
+        parts: [
+          _part('root', occurrences: [occ('o-1', 'Sub.didsa'), occ('o-2', 'Sub2.didsa')]),
+          // A different file already in the session that carries the id the incoming Sub also has: a collision.
+          {..._part('sub'), 'features': [{'id': 'feat-existing'}]},
+        ],
+        rootPartId: 'root',
+      );
+      final incoming = _documentPayload(parts: [_part('sub')], rootPartId: 'sub');
+      Map<String, String>? map;
+      bool? reused;
+      final merged = relocateOccurrenceInDocument(
+        currentPayload: session,
+        componentPayload: incoming,
+        rootPartId: 'root',
+        occurrenceId: 'o-1',
+        newExternalRef: 'proj/Sub.didsa',
+        onPrepared: (m, r) {
+          map = m;
+          reused = r;
+        },
+      );
+      expect(reused, isFalse);
+      expect(map, isNotEmpty);
+      expect(map!.containsKey('sub'), isTrue, reason: 'the old id the nested reports carry maps to the minted one');
+      final newId = map!['sub']!;
+      final relinked = ((merged['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>().firstWhere((p) => p['id'] == 'root');
+      expect(((relinked['occurrences'] as List).first as Map)['resolved_part_id'], newId);
+
+      // The same file again (already resolved from that path): reused, nothing new.
+      bool? reusedAgain;
+      relocateOccurrenceInDocument(
+        currentPayload: merged,
+        componentPayload: incoming,
+        rootPartId: 'root',
+        occurrenceId: 'o-2',
+        newExternalRef: 'proj/Sub.didsa',
+        onPrepared: (m, r) => reusedAgain = r,
+      );
+      expect(reusedAgain, isTrue);
+    });
+
+    test('an Occurrence on a sub-Part (a level-2 report) relinks with rootPartId = the sub-Part, leaving the root alone', () {
+      final session = _documentPayload(
+        parts: [
+          _part('root', occurrences: [{...occ('o-sub', 'Sub.didsa'), 'resolved_part_id': 'sub'}]),
+          _part('sub', occurrences: [occ('o-leaf', 'parts/Leaf.didsa')]),
+        ],
+        rootPartId: 'root',
+      );
+      final leaf = _documentPayload(parts: [_part('leaf')], rootPartId: 'leaf');
+      final merged = relocateOccurrenceInDocument(
+        currentPayload: session,
+        componentPayload: leaf,
+        rootPartId: 'sub',
+        occurrenceId: 'o-leaf',
+        newExternalRef: 'proj/parts/Leaf.didsa',
+      );
+      final parts = ((merged['document'] as Map)['parts'] as List).cast<Map<String, dynamic>>();
+      final sub = parts.firstWhere((p) => p['id'] == 'sub');
+      final relinkedLeaf = (sub['occurrences'] as List).single as Map;
+      expect(relinkedLeaf['external_ref'], 'proj/parts/Leaf.didsa');
+      expect(relinkedLeaf['resolved_part_id'], 'leaf');
+      final root = parts.firstWhere((p) => p['id'] == 'root');
+      expect(((root['occurrences'] as List).single as Map)['external_ref'], 'Sub.didsa');
+      expect(parts.any((p) => p['id'] == 'leaf'), isTrue);
+    });
+  });
 }

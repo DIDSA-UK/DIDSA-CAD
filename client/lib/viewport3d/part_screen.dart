@@ -31,6 +31,10 @@ import '../api/sketch_api_client.dart'
         SketchApiClient,
         TextContourDto;
 import '../assembly/add_component.dart';
+import '../assembly/compose_for_open.dart';
+import '../assembly/folder_match_dialog.dart';
+import '../assembly/folder_match_session_choice.dart';
+import '../assembly/folder_shift.dart';
 import '../assembly/assembly_document_client.dart';
 import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException, ComposedAssemblyGraph;
 import '../assembly/pattern_copy_pose.dart';
@@ -3969,6 +3973,12 @@ class _PartScreenState extends State<PartScreen> {
   /// Finding moved files: the references still to review (see [PartScreen.initialReferenceReports]); the Review sheet listens
   /// to it, and an entry goes when it is used, located or left missing.
   final ValueNotifier<List<ReferenceReport>> _referenceReports = ValueNotifier(const []);
+
+  /// Item 1a: why the Review sheet's list grew ("Found 3 more references inside Sub.didsa"), and item 1c: how many other open
+  /// references the folder change from the last Use / Locate... would also fix (with the matches themselves).
+  final ValueNotifier<String?> _referencesNotice = ValueNotifier(null);
+  final ValueNotifier<int> _folderChangeOffer = ValueNotifier(0);
+  List<({ReferenceReport report, String path})> _folderChangeMatches = const [];
 
   /// Prompt D: true while the Feature tree is acting as a Sketch picker for
   /// a pending Extrude - entered by [_extrudeSelectedFeature] when no
@@ -12550,7 +12560,14 @@ class _PartScreenState extends State<PartScreen> {
     OpenedAssembly? opened;
     await _runGuarded(() async {
       try {
-        opened = await _assemblyDocumentClient.openAssembly(root, relativePath);
+        final composed = await composeForOpen(
+          _assemblyDocumentClient,
+          root,
+          relativePath,
+          ask: (likely) => mounted ? showFolderMatchDialog(context, likely) : Future.value(null),
+          onSearching: _showSearchingProjectFolder,
+        );
+        opened = await _assemblyDocumentClient.importComposed(composed);
       } on StorageException catch (e) {
         setState(() => _errorMessage = e.message);
       } on AssemblyGraphCycleException catch (e) {
@@ -12683,6 +12700,8 @@ class _PartScreenState extends State<PartScreen> {
   @override
   void dispose() {
     _referenceReports.dispose();
+    _referencesNotice.dispose();
+    _folderChangeOffer.dispose();
     _extrudeDebounce?.cancel();
     _surfaceDebounce?.cancel();
     _sectionPreviewDebounce?.cancel();
@@ -12787,7 +12806,12 @@ class _PartScreenState extends State<PartScreen> {
       setState(() {
         _isDirty = false;
         // A reference found by id already holds its corrected path in the session; it reaches disk with the next Save.
-        if (widget.initialReferenceReports.any((report) => !report.needsYou)) _markPartDirty(part.id);
+        // The corrected `external_ref` sits on the Part that holds the Occurrence, at any level, so every such Part is unsaved
+        // (not just the root): Save All writes those child files too.
+        for (final report in widget.initialReferenceReports.where((report) => !report.needsYou)) {
+          _markPartDirty(report.parentPartId);
+          _markPartDirty(part.id);
+        }
       });
     });
   }
@@ -14772,6 +14796,8 @@ class _PartScreenState extends State<PartScreen> {
     await _runGuarded(() async {
       final currentPayload = await _api.exportNative();
       Map<String, dynamic> merged;
+      var idMap = const <String, String>{};
+      var reused = false;
       try {
         merged = mergeComponentIntoDocument(
           currentPayload: currentPayload,
@@ -14780,6 +14806,10 @@ class _PartScreenState extends State<PartScreen> {
           occurrenceId: const Uuid().v4(),
           externalRef: picked.relativePath,
           relativePathByPartId: _relativePathByPartId,
+          onPrepared: (map, reusedExisting) {
+            idMap = map;
+            reused = reusedExisting;
+          },
         );
       } on AddComponentException catch (e) {
         setState(() => _errorMessage = e.message);
@@ -14787,9 +14817,33 @@ class _PartScreenState extends State<PartScreen> {
       }
       await _api.importNative(merged);
       _learnRelativePaths(merged);
+      _addNestedReports(picked, idMap, reused);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
+  }
+
+  /// Item 1a: the references the composer reported **inside** a file just brought into the session (Add Component, Use, Locate...)
+  /// join the Review sheet's list, with each report's `parentPartId` rewritten when the heal re-minted the file's ids. A file
+  /// already in the session ([reusedExistingPart]) had its nested reports handled when it first came in: none are added.
+  void _addNestedReports(
+    ({ComposedAssemblyGraph graph, String relativePath}) picked,
+    Map<String, String> idMap,
+    bool reusedExistingPart,
+  ) {
+    if (reusedExistingPart || picked.graph.references.isEmpty) return;
+    final nested = [
+      for (final report in picked.graph.references)
+        idMap.isEmpty ? report : report.withParentPartId(idMap[report.parentPartId] ?? report.parentPartId),
+    ];
+    for (final report in nested) {
+      if (!report.needsYou) _markPartDirty(report.parentPartId);
+    }
+    _referenceReports.value = [..._referenceReports.value, ...nested];
+    final name = picked.relativePath.replaceAll(r'\', '/').split('/').last;
+    _referencesNotice.value = 'Found ${nested.length} more ${nested.length == 1 ? 'reference' : 'references'} inside $name'
+        '${nested.any((r) => !r.needsYou) ? '. Save All to record these files\' ids, so future moves are found automatically' : ''}';
+    if (_referencesSheetContext == null && nested.any((r) => r.needsYou)) _showReferencesBanner();
   }
 
   /// Picks a native file inside the project folder (the same listing-backed
@@ -14826,7 +14880,9 @@ class _PartScreenState extends State<PartScreen> {
     ComposedAssemblyGraph? graph;
     await _runGuarded(() async {
       try {
-        graph = await _assemblyDocumentClient.composeGraph(root, relativePath);
+        graph = await _assemblyDocumentClient.composeGraph(root, relativePath,
+            acceptLikely: FolderMatchSessionChoice.instance.answer == true,
+            onSearching: _showSearchingProjectFolder);
       } on StorageException catch (e) {
         setState(() => _errorMessage = e.message);
       } on AssemblyGraphCycleException catch (e) {
@@ -14909,31 +14965,62 @@ class _PartScreenState extends State<PartScreen> {
     String partId,
     String occurrenceId,
     ({ComposedAssemblyGraph graph, String relativePath}) picked,
+  ) =>
+      _relinkMany([(partId: partId, occurrenceId: occurrenceId, picked: picked)]);
+
+  /// [_relinkOccurrence] for several Occurrences in **one** merge and one `importNative` (item 1c: one import per relink is far too
+  /// slow on a phone). Each picked file's nested reports join the Review sheet (item 1a). Returns whether it worked.
+  Future<bool> _relinkMany(
+    List<({String partId, String occurrenceId, ({ComposedAssemblyGraph graph, String relativePath}) picked})> items,
   ) async {
     var relinked = false;
     await _runGuarded(() async {
-      final currentPayload = await _api.exportNative();
-      Map<String, dynamic> merged;
+      var merged = await _api.exportNative();
+      final nestedJobs = <({({ComposedAssemblyGraph graph, String relativePath}) picked, Map<String, String> idMap, bool reused})>[];
       try {
-        merged = relocateOccurrenceInDocument(
-          currentPayload: currentPayload,
-          componentPayload: picked.graph.documentPayload,
-          rootPartId: partId,
-          occurrenceId: occurrenceId,
-          newExternalRef: picked.relativePath,
-          relativePathByPartId: _relativePathByPartId,
-        );
+        for (final item in items) {
+          var idMap = const <String, String>{};
+          var reused = false;
+          merged = relocateOccurrenceInDocument(
+            currentPayload: merged,
+            componentPayload: item.picked.graph.documentPayload,
+            rootPartId: item.partId,
+            occurrenceId: item.occurrenceId,
+            newExternalRef: item.picked.relativePath,
+            relativePathByPartId: _relativePathByPartId,
+            onPrepared: (map, reusedExisting) {
+              idMap = map;
+              reused = reusedExisting;
+            },
+          );
+          nestedJobs.add((picked: item.picked, idMap: idMap, reused: reused));
+        }
       } on AddComponentException catch (e) {
         setState(() => _errorMessage = e.message);
         return;
       }
       await _api.importNative(merged);
       _learnRelativePaths(merged);
+      for (final item in items) {
+        _markPartDirty(item.partId); // the corrected external_ref is on the Part that holds the Occurrence, at any level
+      }
+      for (final job in nestedJobs) {
+        _addNestedReports(job.picked, job.idMap, job.reused);
+      }
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
       relinked = true;
     });
     return relinked;
+  }
+
+  /// "Searching the project folder...": the composer is about to list the project folder because a reference missed (on a phone
+  /// the SAF walk can take seconds on a big folder).
+  void _showSearchingProjectFolder() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('Searching the project folder...'), duration: Duration(seconds: 3)));
   }
 
   /// Finding moved files: the banner shown once when the open found references in new places or could not resolve some.
@@ -14948,7 +15035,14 @@ class _PartScreenState extends State<PartScreen> {
         key: const Key('references-banner'),
         backgroundColor: (needsYou ? Colors.amber : Colors.green).withValues(alpha: 0.15),
         leading: Icon(needsYou ? Icons.link_off : Icons.check_circle_outline, color: needsYou ? Colors.amber : Colors.green),
-        content: Text(summary[0].toUpperCase() + summary.substring(1)),
+        content: Text(
+          summary[0].toUpperCase() +
+              summary.substring(1) +
+              // Item 1d: files found by folder (or relinked by name) have no recorded id yet; Save All writes it.
+              (_referenceReports.value.any((report) => report.outcome == ReferenceOutcome.foundByFolder)
+                  ? '. Save All to record these files\' ids, so future moves are found automatically'
+                  : ''),
+        ),
         actions: [
           TextButton(
             onPressed: () {
@@ -14974,12 +15068,21 @@ class _PartScreenState extends State<PartScreen> {
         _referencesSheetContext = sheetContext;
         return ReferencesSheet(
           reports: _referenceReports,
+          notice: _referencesNotice,
+          folderChangeOffer: _folderChangeOffer,
+          onApplyFolderChange: _applyFolderChange,
+          onUseAllSingle: _useAllSingleSuggestions,
+          sessionChoice: FolderMatchSessionChoice.instance,
           onUse: (report, path) => _useReferenceFile(report, path, sheetContext),
           onLocate: (report) => _locateReferenceFile(report, sheetContext),
           onLeaveMissing: _dropReferenceReport,
         );
       },
-    ).whenComplete(() => _referencesSheetContext = null);
+    ).whenComplete(() {
+      _referencesSheetContext = null;
+      _referencesNotice.value = null;
+      _folderChangeOffer.value = 0;
+    });
   }
 
   /// The Review sheet's own context while it is open (null otherwise), so it - and never this screen's route - is what closes.
@@ -15000,7 +15103,10 @@ class _PartScreenState extends State<PartScreen> {
     if (root == null || !mounted) return;
     final picked = await _composeProjectFile(root, relativePath);
     if (picked == null || !mounted) return;
-    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) _dropReferenceReport(report);
+    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) {
+      _dropReferenceReport(report);
+      await _offerFolderChange(root, report, relativePath);
+    }
   }
 
   /// The Review sheet's Locate...: the usual file prompt, with a confirmation when the file picked is not the part that was
@@ -15013,8 +15119,76 @@ class _PartScreenState extends State<PartScreen> {
       // ignore: use_build_context_synchronously
       if (!await ReferencesSheet.confirmDifferentFile(sheetContext, picked.relativePath)) return;
     }
-    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) _dropReferenceReport(report);
+    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) {
+      _dropReferenceReport(report);
+      final root = _projectRoot;
+      if (root != null) await _offerFolderChange(root, report, picked.relativePath);
+    }
   }
+
+  /// Item 1c: after a Use or Locate... for [report], works out the folder change it made (`stored path -> picked path`) and which
+  /// other open references would resolve with it (a file at the shifted path that is the stored part, or any file for a
+  /// reference with no stored id). The sheet then offers one action for all of them.
+  Future<void> _offerFolderChange(ProjectRoot root, ReferenceReport report, String pickedPath) async {
+    final shift = FolderShift.between(report.requestedPath, pickedPath);
+    if (shift == null || !mounted) {
+      _folderChangeMatches = const [];
+      _folderChangeOffer.value = 0;
+      return;
+    }
+    final index = await _assemblyDocumentClient.fileIndex.build(root);
+    final matches = <({ReferenceReport report, String path})>[];
+    for (final other in _referenceReports.value) {
+      if (!other.needsYou || other.outcome == ReferenceOutcome.ask) continue;
+      final shifted = shift.apply(other.requestedPath);
+      if (shifted == null) continue;
+      for (final file in FolderShift.filesAt(shifted, index)) {
+        if (other.storedPartId == null || file.partId == other.storedPartId) {
+          matches.add((report: other, path: file.path));
+          break;
+        }
+      }
+    }
+    _folderChangeMatches = matches;
+    if (mounted) _folderChangeOffer.value = matches.length;
+  }
+
+  /// "Apply the same folder change to N other references": one compose per file, then one merge and one import for all.
+  Future<void> _applyFolderChange() async {
+    final matches = _folderChangeMatches;
+    if (matches.isEmpty) return;
+    final done = await _relinkReports([for (final m in matches) (report: m.report, path: m.path)]);
+    _folderChangeMatches = const [];
+    _folderChangeOffer.value = 0;
+    if (done > 0 && _referencesNotice.value == null) {
+      _referencesNotice.value = 'Applied the folder change to $done ${done == 1 ? 'reference' : 'references'}';
+    }
+  }
+
+  /// "Use all single suggestions": every open reference with exactly one candidate, relinked in one merge.
+  Future<void> _useAllSingleSuggestions(List<ReferenceReport> reports) => _relinkReports(
+        [for (final r in reports) (report: r, path: r.candidates.single)],
+      );
+
+  /// Composes each [pairs] path, relinks them all in one [_relinkMany], drops the reports that worked. Returns how many.
+  Future<int> _relinkReports(List<({ReferenceReport report, String path})> pairs) async {
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) return 0;
+    final items = <({String partId, String occurrenceId, ({ComposedAssemblyGraph graph, String relativePath}) picked})>[];
+    final used = <ReferenceReport>[];
+    for (final pair in pairs) {
+      final picked = await _composeProjectFile(root, pair.path);
+      if (picked == null || !mounted) continue;
+      items.add((partId: pair.report.parentPartId, occurrenceId: pair.report.occurrenceId, picked: picked));
+      used.add(pair.report);
+    }
+    if (items.isEmpty || !await _relinkMany(items)) return 0;
+    for (final report in used) {
+      _dropReferenceReport(report);
+    }
+    return used.length;
+  }
+
   /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): lazily
   /// acquires [_projectRoot] the first time "Save All"/"Create Component…"
   /// needs one. Phase 16 (§2s) fix: tries [StorageService.lastUsedProjectRoot]

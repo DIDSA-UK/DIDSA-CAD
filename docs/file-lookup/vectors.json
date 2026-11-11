@@ -330,6 +330,229 @@
    "at_path": null,
    "expected": {
     "candidates": [],
+    "path": "proj/parts/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "likely",
+    "via": "suffix"
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "proj/parts/Frame A.didsa"
+    },
+    {
+     "part_id": "f676588a-frame",
+     "path": "proj/parts/Bolt.didsa"
+    }
+   ],
+   "name": "folder_prefix_added",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 2b: the project folder moved up, so every stored path lost its leading folder: one whole-suffix file with the folder and name agreeing, no stored id: likely."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": "parts/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "likely",
+    "via": "suffix"
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "parts/Frame A.didsa"
+    }
+   ],
+   "name": "folder_prefix_removed",
+   "reference": {
+    "external_ref": "proj/parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 2b: the project folder moved down: the stored path has a leading folder the file's path lacks: likely."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": "x/a/parts/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "likely",
+    "via": "suffix"
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "x/a/parts/Frame A.didsa"
+    },
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "old/Frame A.didsa"
+    }
+   ],
+   "name": "folder_shift_longest_wins",
+   "reference": {
+    "external_ref": "a/parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 2b: a name match with more trailing segments in common beats one with fewer."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [
+     "proj1/parts/Frame A.didsa",
+     "proj2/parts/Frame A.didsa"
+    ],
+    "path": null,
+    "path_mismatch": false,
+    "result": "suggest",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "proj2/parts/Frame A.didsa"
+    },
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "proj1/parts/Frame A.didsa"
+    }
+   ],
+   "name": "folder_shift_two_equal_suggest",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 2b: two files tie on the largest k: never guessed, a suggestion (sorted by k, then path)."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [
+     "proj/frames/Frame A.didsa"
+    ],
+    "path": null,
+    "path_mismatch": false,
+    "result": "suggest",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "proj/frames/Frame A.didsa"
+    }
+   ],
+   "name": "folder_shift_name_only_suggest",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 2b: only the file name agrees (k = 1): a suggestion, as step 3."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [
+     "b/parts/Frame A.didsa"
+    ],
+    "path": null,
+    "path_mismatch": false,
+    "result": "suggest",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "b/parts/Frame A.didsa"
+    }
+   ],
+   "name": "folder_shift_not_a_suffix_suggest",
+   "reference": {
+    "external_ref": "a/parts/Frame A.didsa",
+    "ref_part_id": null
+   },
+   "why": "Step 2b: the folder and name agree but the leading folders differ on both sides (not one path with folders dropped): a suggestion."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [
+     "proj/parts/Frame A.didsa"
+    ],
+    "path": null,
+    "path_mismatch": false,
+    "result": "suggest",
+    "via": null
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "proj/parts/Frame A.didsa"
+    }
+   ],
+   "name": "folder_shift_stored_id_never_likely",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 2b: a reference with a stored id never gets likely: the suffix file does not carry it, so a suggestion (never a wrong file)."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": "renamed/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "found",
+    "via": "id"
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "proj/parts/Frame A.didsa"
+    },
+    {
+     "part_id": "f676588a-frame",
+     "path": "renamed/Frame A.didsa"
+    }
+   ],
+   "name": "folder_shift_id_found_beats_suffix",
+   "reference": {
+    "external_ref": "parts/Frame A.didsa",
+    "ref_part_id": "f676588a-frame"
+   },
+   "why": "Step 2 before 2b: the id is found elsewhere, so the suffix file is not offered."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
+    "path": "proj/parts/Frame A.didsa",
+    "path_mismatch": false,
+    "result": "likely",
+    "via": "suffix"
+   },
+   "index": [
+    {
+     "part_id": "0b1d2e3f-other",
+     "path": "proj/parts/Frame A.didsa"
+    }
+   ],
+   "name": "folder_shift_backslash_and_case",
+   "reference": {
+    "external_ref": "PARTS\\frame a.DIDSAprt",
+    "ref_part_id": null
+   },
+   "why": "Step 2b: backslashes, letter case and the native extension are set aside."
+  },
+  {
+   "at_path": null,
+   "expected": {
+    "candidates": [],
     "path": null,
     "path_mismatch": false,
     "result": "missing",

@@ -24,7 +24,7 @@ void main() {
 
   test('every case is answered as the reference answers it', () {
     final cases = (doc['cases'] as List).cast<Map<String, dynamic>>();
-    expect(cases.length, greaterThanOrEqualTo(16));
+    expect(cases.length, greaterThanOrEqualTo(25));
     final failures = <String>[];
     for (final c in cases) {
       final reference = c['reference'] as Map<String, dynamic>;
