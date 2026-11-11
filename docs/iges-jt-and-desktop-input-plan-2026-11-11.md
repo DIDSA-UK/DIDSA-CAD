@@ -13,7 +13,7 @@ the VR client's file list (one line), nothing else crosses over.
 | F-1 | Desktop mode: Ctrl/Shift + middle drag intermittently orbits instead of pan / zoom | Bug (cause unconfirmed) | Small-medium |
 | F-2 | Desktop mode: a left click with a mouse sets a rotation centre; not wanted for a mouse | Bug / behaviour change | Small |
 | F-3 | IGES import and export (Part and assembly), colours and names where IGES allows | Feature | Medium |
-| F-4 | JT import (and what to do about export) | Feature, **needs a spike and a licence decision first** | Large / unknown |
+| F-4 | JT import via an open reader (FerroJT recommended); no export | Feature, spike first | Medium (after the spike) |
 | F-5 | Mesh viewer: open the new B-rep formats (and any other cheap mesh formats) | Feature | Small-medium (after F-3) |
 
 Suggested order: **F-2 → F-1 (diagnose first) → F-3 → F-5 → F-4 spike (can run in parallel) → F-4**.
@@ -166,33 +166,54 @@ document idiom `TDocStd_Document("any-label")` with no `XCAFApp_Application` is 
 
 ## F-4: JT support
 
-**Be straight about this one: OCCT/pythonocc has no JT reader or writer.** JT (ISO 14306, Siemens) is not in the open-source
-OCCT; the options are:
+OCCT / pythonocc has no JT reader or writer, but **open-source JT readers exist** (researched 2026-11-11 from the repos' GitHub pages
+and the GitHub `jt` topic; stars and dates are as shown then, **commit dates and release tags were not visible** to the research
+tool, so check activity yourself with `git log` before committing to one). The licence column matters: the backend is **AGPL-3.0**
+and links OCCT (LGPL); the client is Apache-2.0 and takes **no code from the backend** (`LICENSING.md` rule 1).
 
-| Option | Gives | Licence / cost | Verdict |
-|---|---|---|---|
-| Siemens **JT Open Toolkit** (C++) | Full read and write | Proprietary, royalty-bearing | **Conflicts with the AGPL backend** unless the licence terms allow it; owner decision |
-| Open Cascade **JT Component** / CAD Exchanger SDK / Datakit | Read (and some write), B-rep and PMI | Commercial | Same: needs a licence, not redistributable with an AGPL repo; fine for a private hosted backend only |
-| Own reader of the **public ISO 14306 spec**, tessellated LODs only | Mesh import (positions, normals, per-part colours, assembly tree) | Own code, AGPL | Feasible but large: TOC, zlib/LZMA segments, the Logical Scene Graph, `TriStripSet` LODs, Huffman / arithmetic / bit-length int codecs, Deering-compressed normals. No B-rep (JT holds B-rep only in XT segments; do not try) |
-| Convert outside (FreeCAD/other) then import STEP | Nothing built in | n/a | Not a feature |
+| Project | Lang / licence | Stars | Reads | Verdict |
+|---|---|---|---|---|
+| **[jriegel/FerroJT](https://github.com/jriegel/FerroJT)** (and a fork, filestar/ferrojt) | Rust, **MIT or Apache-2.0**, Python bindings (pyo3, abi3 py3.10+) | 4 (fork 0) | JT 7.x-10.x (tested 8.0, 8.1, 9.5, 10.3 samples); the whole logical scene graph (assembly structure, instances, transforms); LOD **triangle meshes**; materials (diffuse / emissive); also a JT writer / builder, JSON dump, glTF and USD export; Cargo + pytest + visual-regression tests | **Best candidate.** Permissive, current design, assembly tree and colours, Python API, Linux wheels via CI. Young (43-48 commits, no releases, 4 stars), so pin a commit and test on the owner's files. Meshes only: no B-rep, no PMI |
+| [Open-Cascade-SAS/JT-Assistant](https://github.com/Open-Cascade-SAS/JT-Assistant) | C++ (OCCT module `TKJT`), **GPL-2.0** | 2 (3 forks) | JT mesh reader + a viewer | The one the owner found. A single-commit publication snapshot, no releases. **GPL-2.0 is not AGPL-3.0-compatible unless the files say "or later"**: check headers first. Old JT spec level. Not recommended as the base |
+| [jriegel/PyOpenJt](https://github.com/jriegel/PyOpenJt) | C++ + Python, GPL-2.0, derived from the OCC JT reader and the oce-jt / TKJT forks | 19 | Meshes; no assemblies yet | **Deprecated by its own author in favour of FerroJT.** Skip |
+| [cbsghost/oce-jt](https://github.com/cbsghost/oce-jt) | C++, GPL-2.0 | 28 | JT reader + assistant (OCE fork) | Last updated Aug 2019. Skip |
+| [bitbybit3d/dxjt_toolkit](https://github.com/bitbybit3d/dxjt_toolkit) | C++ | 32 | JT 8.0-10.5, assembly structure, writes JT 8.1 | Its README says the code is **"not free, only open source about usage and demonstration cases"**: not usable in the AGPL repo; Windows x64 build. Skip unless the licence is clarified with the author |
+| [TobiasMusin/Voyager](https://github.com/TobiasMusin/Voyager) | Java, Apache-2.0 | 2 | JT 10 scene graph, positions + triangles to glTF | Self-described experimental, no normals / materials / hierarchy. Skip |
+| [corubolo/jt-java](https://github.com/corubolo/jt-java) | Java, licence not stated | 7 | Faceted data + scene graph | "Not actively developed". Skip |
+| [viachpaliy/JTSharp](https://github.com/viachpaliy/JTSharp) | C#, licence not stated | 9 | JT decode | Last updated Aug 2021. Skip |
+| Siemens JT Open Toolkit, Open Cascade JT Component, CAD Exchanger, Datakit | C++ / commercial | n/a | Full read (B-rep, PMI) and write | Proprietary and royalty-bearing: only for a private hosted backend, and an owner decision |
 
-**Recommendation.**
-1. **Spike first (2-3 days), no product code**: (a) ask the owner to supply 3-4 real `.jt` files (a single part, an assembly, one
-   from each CAD system they use) and say which JT versions (9.x vs 10.x); (b) check whether any actively maintained open-source JT
-   reader exists with an AGPL-compatible licence (search before writing; this plan could not verify any); (c) estimate the own-reader
-   size against the sample files. Write the result to `docs/jt-spike.md`.
-2. **Decision for the owner after the spike**: (A) mesh-only own reader, imported as a reference-mesh Body (the same
-   "triangulation-only face" as STL/OBJ/glTF; `_shape_from_mesh_data` in `import_geometry.py`); (B) a licensed SDK as an optional,
-   not-in-repo plug-in the hosted backend loads if present; (C) not supported, with a clear "convert to STEP" message.
-3. **Import only.** JT export needs a writer and a licence; there is no open path. Say so in the UI ("JT export is not available")
-   rather than leaving a dead button. Revisit only if (B) is chosen and the SDK writes JT.
+**What this means.** Every open option reads the **tessellated** content of a JT (the LOD triangle meshes) and the assembly tree.
+None reads the B-rep (JT only holds it in XT segments) or writes a CAD-quality JT. So the open route gives **JT import as a mesh
+reference** (the same triangulation-only Body STL / OBJ / glTF imports make). That is what a viewer / reference use needs. It does
+not give a parametric solid, and **JT export is not realistic** (FerroJT's writer rewrites meshes in JT's own family; useful to
+keep tessellated geometry, but it is not an interchange export of a DIDSA Part: do not promise it, and decide separately whether
+"export a mesh JT" is worth having).
 
-If (A) is chosen, the shape of the work (not to start before the decision):
-- `backend/app/document/jt_import.py` (OCCT-free, like `mesh_import.py`): `decode_jt(data) -> MeshData` (and the assembly tree
-  → one Body per part with its transform and colour, which is better than one fused mesh).
-- `ImportSourceFormat.JT = "jt"`; `resolve_import` dispatches to `decode_jt` inside the existing `MeshImportError` handling.
-- Same client/VR one-liners as IGES (`'jt'`, extensions `['jt']`).
-- Tests against the sample files; a size and time limit on the decode, as the mesh import has.
+**Recommended route: FerroJT behind a small converter, not linked into the backend's Python process.**
+1. **Spike (2-3 days, no product code), result in `docs/jt-spike.md`.** Get 4-5 real `.jt` files from the owner (a part, an assembly,
+   one from each CAD system they use; ask the JT versions). Build FerroJT at a pinned commit; run its JSON dump and glTF export on them;
+   check: meshes match the CAD model's size (JT units), assembly transforms and instancing, colours, LOD choice (use the finest, or
+   pick by triangle budget), speed and memory on a large assembly, a corrupt file (no panic; a clean error), JT versions it
+   refuses. Compare with a second reader if one file fails. Check `git log` for activity and open issues / PRs (9 open PRs seen).
+2. **If it passes, integrate as a subprocess**, the lowest-risk shape: a `ferrojt` command-line binary (MIT/Apache, so it can be
+   shipped next to the AGPL backend; no licence mixing) that writes a **glb** (the project already imports glTF:
+   `decode_gltf` in `mesh_import.py`). `jt_import.py` runs it on a temp file with a timeout and size limit, then reuses the glTF path.
+   The Python package (`pip install ferrojt`, abi3) is the alternative if the binary is awkward in the Docker image: pin the
+   version in `backend/environment.yml` (pip section) and `backend/Dockerfile`.
+   **Assembly structure**: the glTF export may flatten or keep nodes; per-part Bodies (each part its own Body with its transform and
+   colour) are better than one fused mesh. Prefer the JSON dump / Python API for the tree if glTF loses it, and create one
+   `ImportFeature` Body per part (watch the Body-count limit and the `#N` multi-solid naming in `extrude._register_solids`).
+3. `ImportSourceFormat.JT = "jt"`; `resolve_import` dispatches to the converter inside the existing `MeshImportError` handling.
+4. Client and VR: the same one-liners as IGES (`'jt'`, extensions `['jt']`; VR `_BACKEND_IMPORT_FORMATS` and `MODEL_EXTENSIONS`).
+   The import dialog should say "JT is imported as a mesh (no editable faces)", and the Body shows as a reference mesh like STL.
+5. Tests: fixtures from the spike (small JT files; check their licence before committing them: use the owner's own or
+   FerroJT's samples if their licence allows), a part and an assembly case, a corrupt file, a size / time limit test.
+6. **JT export:** not built. The UI says "JT export is not available" (no dead button). Revisit only if the owner needs it and either a
+   licensed SDK or FerroJT's writer is shown to produce files their other CAD tools open.
+
+**If the spike fails** (files from the owner's CAD systems do not decode): fall back to asking for STEP / glTF from the source CAD,
+and ask FerroJT's author (the same person as PyOpenJt, who responds on the repo) with the failing file; a licensed SDK is the last resort.
 
 ---
 
@@ -226,5 +247,5 @@ IGES is a B-rep: it cannot be decoded in Dart, it needs tessellating, and that n
 
 1. F-2: leave "orbit about the point under the middle press" (D2) in? **Default: yes.**
 2. F-3: IGES export entity type: B-rep solids (type 186) by default? **Default: yes; faces-only as a constant.**
-3. F-4: is a proprietary JT SDK acceptable for a hosted backend, and which JT versions and CAD systems? **Default: spike, import only.**
+3. F-4: which JT versions and CAD systems do your files come from (and can you share samples)? **Default: FerroJT spike, then mesh import only.**
 4. F-5: add PLY / 3MF to the viewer now? **Default: PLY yes, 3MF later.**
