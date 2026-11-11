@@ -7,8 +7,8 @@ while planning. Where a cause is a guess from reading, it says so and the first 
 **Reviewed 11 Nov** (second pass against the code): F-3's surface handling corrected (an import is already one Body whatever its
 shape), F-4's per-part Bodies corrected (an ImportFeature is always one Body), F-5 adjusted (the mesh viewer is opened before connecting).
 
-The VR items from the same notes are in `DIDSA-UK/DIDSA-VR`, `docs/vr-feedback-2026-11-11-plan.md`. Item F-3 below touches
-the VR client's file list (one line), nothing else crosses over.
+The VR items from the same notes are in `DIDSA-UK/DIDSA-VR`, `docs/vr-feedback-2026-11-11-plan.md`. F-3 adds the new
+extensions to the VR client's file lists, and F-6 needs the VR plan's V-9 (VR saving one file per Part) before it reaches VR.
 
 | Item | Summary | Kind | Size |
 |---|---|---|---|
@@ -19,7 +19,18 @@ the VR client's file list (one line), nothing else crosses over.
 | F-5 | Mesh viewer: open the new B-rep formats (and any other cheap mesh formats) | Feature | Small-medium (after F-3) |
 | F-6 | Import STEP / IGES / JT **as an assembly** (a Part per product, placed as occurrences), chosen at import | Feature | Large (backend + both clients) |
 
-Suggested order: **F-2 → F-1 (diagnose first) → F-3 → F-6 (STEP first) → F-5 → F-4 spike (can run in parallel) → F-4**.
+**Work packages for the implementation session** (one PR each, in this order):
+
+| # | Package | Needs the owner afterwards |
+|---|---|---|
+| 1 | **F-2** (no pivot on a mouse click) | Quick check in desktop mode |
+| 2 | **F-1 step 0**: the input debug overlay (behind a setting) | Reproduce Ctrl/Shift + middle with it on, report what it shows |
+| 3 | **F-3** IGES import / export (backend, Flutter, the VR file lists) | Try their own IGES files |
+| 4 | **F-6** assembly import, **STEP first** (probe, import-assembly, dialog, Save All of new Parts); IGES "one part per solid" after | Try a real multi-part STEP |
+| 5 | **F-5** mesh viewer via the server (STEP / IGES), PLY in Dart | |
+| 6 | **F-4 spike** (FerroJT on the owner's JT samples, `docs/jt-spike.md`); can run in parallel from the start | **Supply 4-5 JT files and their CAD systems / versions** |
+| 7 | **F-1 fix** (once the overlay has named the cause), **F-4** (if the spike passes) | |
+
 F-6 reuses F-3's IGES reader and F-4's JT reader for those formats; build it for STEP first, it has the real structure.
 
 ---
