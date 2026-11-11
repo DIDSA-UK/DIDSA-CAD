@@ -912,6 +912,9 @@ class ProfileDetectionResponse(BaseModel):
     profile: ProfileResponse | None = None
     branch_point_ids: list[str] = []
     loops: list[ProfileResponse] = []
+    # True when the Sketch has no closed profile but exactly one open chain (`detect_open_chain` -> SINGLE_CHAIN): what a thin
+    # Revolve can use (Flutter-testing feedback 2026-11-11, item 5). Always false while a closed profile exists.
+    open_chain: bool = False
 
 
 class DistanceConstraintCreate(BaseModel):

@@ -873,6 +873,14 @@ class RevolveFeature(Feature):
     # currently detected.
     profile_refs: list[SketchEntityRef] = field(default_factory=list)
 
+    # Thin revolve (Flutter-testing feedback 2026-11-11, item 5): `None` (default) is the ordinary solid revolve, unchanged. Set
+    # (> 0 after `abs`, like Extrude's), the profile's wire is offset in its own plane (`app.document.thin_profile`) and the ring
+    # between the offsets is revolved, so the result is a wall of this thickness. `thickness_direction` reads against the profile's
+    # material for a closed profile, and against the AXIS for an open chain (outward = away from the axis, inward = toward it).
+    # A Sketch with no closed profile but one open chain can only be revolved thin.
+    thickness: float | None = None
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
+
     @property
     def type(self) -> str:
         return "revolve"

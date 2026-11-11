@@ -1944,6 +1944,50 @@ void main() {
     });
   });
 
+  group('Item 5 (2026-11-11 feedback): thin Revolve', () {
+    test('createRevolveFeature sends thickness and direction only when thin; updateRevolveFeature can clear it', () async {
+      final requests = <http.Request>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return http.Response(
+              jsonEncode({
+                'type': 'revolve',
+                'id': 'r1',
+                'sketch_feature_id': 'sf',
+                'axis_ref': {'sketch_id': 's', 'entity_type': 'line', 'entity_id': 'l'},
+                'angle': 360.0,
+                'mode': 'boss',
+                'thickness': 2.0,
+                'thickness_direction': 'symmetric',
+                'locked': false,
+                'produces': 'body',
+              }),
+              request.method == 'POST' ? 201 : 200,
+              headers: {'content-type': 'application/json'});
+        }),
+      );
+      const axis = SketchEntityRefDto(sketchId: 's', entityType: 'line', entityId: 'l');
+      final solid = await client.createRevolveFeature('p', sketchFeatureId: 'sf', axisRef: axis, angle: 360, mode: 'boss');
+      final thin = await client.createRevolveFeature('p', sketchFeatureId: 'sf', axisRef: axis, angle: 360, mode: 'boss',
+          thickness: 2.0, thicknessDirection: 'symmetric');
+      expect(jsonDecode(requests[0].body).containsKey('thickness'), isFalse);
+      expect(jsonDecode(requests[0].body).containsKey('thickness_direction'), isFalse);
+      expect((jsonDecode(requests[1].body) as Map)['thickness'], 2.0);
+      expect((jsonDecode(requests[1].body) as Map)['thickness_direction'], 'symmetric');
+      expect(thin.thickness, 2.0);
+      expect(thin.thicknessDirection, 'symmetric');
+      expect(solid.id, 'r1');
+
+      await client.updateRevolveFeature('p', 'r1', angle: 90);
+      await client.updateRevolveFeature('p', 'r1', clearThickness: true);
+      await client.updateRevolveFeature('p', 'r1', thickness: 3.0, thicknessDirection: 'inward');
+      expect(jsonDecode(requests[2].body), {'angle': 90.0}, reason: 'omitted keeps the stored value');
+      expect(jsonDecode(requests[3].body), {'thickness': null}, reason: 'an explicit null goes back to a solid revolve');
+      expect(jsonDecode(requests[4].body), {'thickness': 3.0, 'thickness_direction': 'inward'});
+    });
+  });
+
   group('Item 3 (2026-11-11 feedback): Intersection curve edit', () {
     test('updateCurveFeature sends both Sketch ids and the profile-ref clears; the DTO reads the Sketches back', () async {
       final bodies = <Map<String, dynamic>>[];

@@ -3,6 +3,9 @@ import 'package:material_ui/material_ui.dart';
 import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
 import 'keyboard_shortcuts.dart';
+import 'thin_wall_controls.dart';
+
+export 'thin_wall_controls.dart' show ThicknessDirection;
 
 /// The "boss" or "cut" choice for an Extrude - mirrors the backend's
 /// `extrude_type` string values exactly, so call sites can pass
@@ -16,21 +19,6 @@ enum ExtrudeType {
 
   static ExtrudeType fromApiValue(String value) => ExtrudeType.values
       .firstWhere((t) => t.apiValue == value, orElse: () => ExtrudeType.boss);
-}
-
-/// On-device feedback ("add option to thicken in, out or from the
-/// middle"): which side of the sketched wire a thin extrude's wall grows
-/// on - mirrors the backend's `thickness_direction` string values exactly,
-/// same `apiValue`/`fromApiValue` convention as [ExtrudeType].
-enum ThicknessDirection {
-  outward,
-  inward,
-  symmetric;
-
-  String get apiValue => name;
-
-  static ThicknessDirection fromApiValue(String value) => ThicknessDirection.values
-      .firstWhere((d) => d.apiValue == value, orElse: () => ThicknessDirection.outward);
 }
 
 /// The bottom-sheet-style panel [PartScreen] opens via the long-press
@@ -355,38 +343,16 @@ class _ExtrudePanelState extends State<ExtrudePanel> {
             ),
           ),
           const SizedBox(height: 4),
-          CheckboxListTile(
-            contentPadding: EdgeInsets.zero,
-            controlAffinity: ListTileControlAffinity.leading,
-            title: const Text('Thin extrude'),
-            subtitle: _hasDraft ? const Text('Not available with draft') : null,
-            value: _isThin,
-            onChanged: _hasDraft ? null : (value) => _onThinToggled(value ?? false),
+          ThinWallControls(
+            title: 'Thin extrude',
+            isThin: _isThin,
+            onThinChanged: _hasDraft ? null : _onThinToggled,
+            thinDisabledSubtitle: 'Not available with draft',
+            controller: _thicknessController,
+            direction: _thicknessDirection,
+            onDirectionChanged: _onDirectionChanged,
+            onChanged: _emitChange,
           ),
-          if (_isThin) ...[
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: TextField(
-                controller: _thicknessController,
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true, signed: true),
-                decoration: const InputDecoration(labelText: 'Wall thickness'),
-                onChanged: (_) => _emitChange(),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: SegmentedButton<ThicknessDirection>(
-                segments: const [
-                  ButtonSegment(value: ThicknessDirection.outward, label: Text('Out')),
-                  ButtonSegment(value: ThicknessDirection.inward, label: Text('In')),
-                  ButtonSegment(value: ThicknessDirection.symmetric, label: Text('Middle')),
-                ],
-                selected: {_thicknessDirection},
-                onSelectionChanged: (selection) => _onDirectionChanged(selection.first),
-              ),
-            ),
-          ],
           CheckboxListTile(
             key: const ValueKey('extrude-draft-toggle'),
             contentPadding: EdgeInsets.zero,

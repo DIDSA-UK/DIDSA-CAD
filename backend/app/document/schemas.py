@@ -1053,6 +1053,9 @@ class RevolveFeatureCreate(BaseModel):
     mode: RevolveMode
     target_body_ids: list[str] = []
     profile_refs: list[SketchEntityRefSchema] = []
+    # Thin revolve: see `app.document.models.RevolveFeature.thickness`.
+    thickness: float | None = None
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
 
 
 class RevolveFeatureUpdate(BaseModel):
@@ -1067,6 +1070,9 @@ class RevolveFeatureUpdate(BaseModel):
     mode: RevolveMode | None = None
     target_body_ids: list[str] | None = None
     profile_refs: list[SketchEntityRefSchema] | None = None
+    # `thickness` distinguishes omitted (keep) from an explicit null (back to a solid revolve), like ExtrudeFeatureUpdate.
+    thickness: float | None = None
+    thickness_direction: ThicknessDirection | None = None
 
 
 class RevolveFeatureResponse(FeatureResponseBase):
@@ -1079,6 +1085,8 @@ class RevolveFeatureResponse(FeatureResponseBase):
     locked: bool
     target_body_ids: list[str] = []
     profile_refs: list[SketchEntityRefSchema] = []
+    thickness: float | None = None
+    thickness_direction: ThicknessDirection = ThicknessDirection.OUTWARD
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # RevolveFeature (Boss and Cut alike, mirroring ExtrudeFeature).
     produces: Produces

@@ -7500,10 +7500,19 @@ class _PartScreenState extends State<PartScreen> {
     SketchEntityRefDto axisRef,
     List<String> targetBodyIds,
     List<SketchEntityRefDto> profileRefs,
+    double? thickness,
+    ThicknessDirection thicknessDirection,
   })? _revolveEditSnapshot;
 
   RevolveMode _revolveMode = RevolveMode.boss;
   double _revolveAngle = 180.0;
+
+  /// Thin revolve (item 5 of the 2026-11-11 feedback): the wall thickness (null: a solid revolve) and its direction, mirrored from
+  /// [RevolvePanel.onChanged]; [_revolveOpenProfile] is true while the Sketch has no closed profile but one open chain (Thin is then
+  /// locked on and the direction reads against the axis).
+  double? _revolveThickness;
+  ThicknessDirection _revolveThicknessDirection = ThicknessDirection.outward;
+  bool _revolveOpenProfile = false;
 
   /// Prompt G: mirrors [_extrudeProfileRefs] exactly - which outer
   /// profile(s) of [_revolveSketchFeature] to use.
@@ -7670,7 +7679,7 @@ class _PartScreenState extends State<PartScreen> {
       for (final loop in profile?.fillableLoops ?? const <ProfileLoopDto>[]) loop.lineIds.toSet(),
     ];
     if (loops.length <= 1) {
-      _openPanelForTarget(sketchFeature, target, const []);
+      _openPanelForTarget(sketchFeature, target, const [], openProfile: profile != null && !profile.isExtrudable && profile.openChain);
       return;
     }
     _startProfilePicker(sketchFeature, target, loops);
@@ -7679,13 +7688,14 @@ class _PartScreenState extends State<PartScreen> {
   void _openPanelForTarget(
     FeatureDto sketchFeature,
     _ProfilePickerTarget target,
-    List<SketchEntityRefDto> profileRefs,
-  ) {
+    List<SketchEntityRefDto> profileRefs, {
+    bool openProfile = false,
+  }) {
     switch (target) {
       case _ProfilePickerTarget.extrude:
         _openExtrudePanel(sketchFeature, profileRefs: profileRefs);
       case _ProfilePickerTarget.revolve:
-        _openRevolvePanel(sketchFeature, profileRefs: profileRefs);
+        _openRevolvePanel(sketchFeature, profileRefs: profileRefs, openProfile: openProfile);
       case _ProfilePickerTarget.sweep:
         // Unlike Extrude/Revolve, a Sweep's path is mandatory and picked
         // once, up front - never live while its own panel is open (see
@@ -16307,7 +16317,7 @@ class _PartScreenState extends State<PartScreen> {
     final featureId = _selectedFeatureId;
     final feature = featureId == null ? null : _featureById(featureId);
     if (feature != null && feature.type == 'sketch') {
-      final reason = await _checkExtrudeEligibility(feature);
+      final reason = await _checkRevolveEligibility(feature);
       if (!mounted) return;
       if (reason == null) {
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
@@ -16334,7 +16344,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshPickableRevolveSketchIds() async {
     final sketchFeatures = _features.where((f) => f.type == 'sketch').toList();
     final results = await Future.wait(sketchFeatures.map((feature) async {
-      final reason = await _checkExtrudeEligibility(feature);
+      final reason = await _checkRevolveEligibility(feature);
       return MapEntry(feature.id, reason == null);
     }));
     if (!mounted || !_revolveSketchPickerActive) return;
@@ -16345,10 +16355,10 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_onSketchPicked] exactly, for the Revolve picker.
   Future<void> _onRevolveSketchPicked(FeatureDto feature) async {
-    final reason = await _checkExtrudeEligibility(feature);
+    final reason = await _checkRevolveEligibility(feature);
     if (!mounted || !_revolveSketchPickerActive) return;
     if (reason != null) {
-      _showSnack('This sketch has no closed profile — add more lines or close the loop first');
+      _showSnack('This sketch has no closed profile or single open line chain — add more lines or close the loop first');
       return;
     }
     setState(() {
@@ -17398,7 +17408,12 @@ class _PartScreenState extends State<PartScreen> {
     // doc comment) - reused directly rather than re-run separately. Sweep's
     // own Profile eligibility mirrors both the same way (its path is
     // checked live during path-picking, not here).
-    final canRevolve = canExtrude;
+    //
+    // Item 5 (thin Revolve): the one exception - a Sketch with no closed profile but one open chain can be revolved as a thin wall.
+    final revolveDisabledReason = !isSketchFeature
+        ? null
+        : (extrudeDisabledReason == null ? null : await _checkRevolveEligibility(feature));
+    final canRevolve = isSketchFeature && revolveDisabledReason == null;
     final canSweep = canExtrude;
     // Pattern/Mirror scoping's Phase 6 (on-device feedback: "user should
     // now be able to start pattern from long press a feature in the
@@ -17428,7 +17443,7 @@ class _PartScreenState extends State<PartScreen> {
       extrudeDisabledReason: extrudeDisabledReason,
       showRevolve: isSketchFeature,
       canRevolve: canRevolve,
-      revolveDisabledReason: extrudeDisabledReason,
+      revolveDisabledReason: revolveDisabledReason,
       showSweep: isSketchFeature,
       canSweep: canSweep,
       sweepDisabledReason: extrudeDisabledReason,
@@ -17491,6 +17506,17 @@ class _PartScreenState extends State<PartScreen> {
     try {
       final profile = await _sketchApi.getProfile(feature.sketchId!);
       return profile.isExtrudable ? null : 'Sketch does not contain a closed profile';
+    } catch (_) {
+      return 'Sketch does not contain a closed profile';
+    }
+  }
+
+  /// [_checkExtrudeEligibility] for Revolve: a Sketch with no closed profile but one open chain is also fine (it can be revolved as a
+  /// thin wall, item 5 of the 2026-11-11 feedback). Returns null when eligible, otherwise the reason.
+  Future<String?> _checkRevolveEligibility(FeatureDto feature) async {
+    try {
+      final profile = await _sketchApi.getProfile(feature.sketchId!);
+      return profile.isExtrudable || profile.openChain ? null : 'Sketch does not contain a closed profile';
     } catch (_) {
       return 'Sketch does not contain a closed profile';
     }
@@ -17969,13 +17995,21 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_openExtrudePanel] exactly, substituting Revolve's own state
   /// fields/filter - pushes [_revolveSelectionFilter] (axis + target-body,
   /// not bodies-only) instead of Extrude's own override.
-  void _openRevolvePanel(FeatureDto sketchFeature, {List<SketchEntityRefDto> profileRefs = const []}) {
+  void _openRevolvePanel(
+    FeatureDto sketchFeature, {
+    List<SketchEntityRefDto> profileRefs = const [],
+    bool openProfile = false,
+  }) {
     setState(() {
       _revolveSketchFeature = sketchFeature;
       _previewRevolveFeatureId = null;
       _meshBeforeRevolve = _bodies;
       _revolveMode = RevolveMode.boss;
       _revolveAngle = 180.0;
+      // An open profile can only be revolved as a thin wall: the panel opens with Thin on (its postFrame emit sets the thickness).
+      _revolveOpenProfile = openProfile;
+      _revolveThickness = null;
+      _revolveThicknessDirection = ThicknessDirection.outward;
       _revolveProfileRefs = profileRefs;
       _entitiesBeforeRevolve = _selectedEntities;
       _selectedEntities = {};
@@ -18015,10 +18049,15 @@ class _PartScreenState extends State<PartScreen> {
         axisRef: axisRef,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: feature.thickness,
+        thicknessDirection: ThicknessDirection.fromApiValue(feature.thicknessDirection),
       );
       _meshBeforeRevolve = _bodies;
       _revolveMode = mode;
       _revolveAngle = angle;
+      _revolveThickness = feature.thickness;
+      _revolveThicknessDirection = ThicknessDirection.fromApiValue(feature.thicknessDirection);
+      _revolveOpenProfile = false;
       _revolveProfileRefs = profileRefs;
       _entitiesBeforeRevolve = _selectedEntities;
       _selectedEntities = {
@@ -18034,7 +18073,23 @@ class _PartScreenState extends State<PartScreen> {
       _selectionMode = true;
       _selectionFilterOverrides.push(_revolveSelectionFilter);
     });
+    if (feature.thickness != null) unawaited(_refreshRevolveOpenProfile(sketchFeature));
     return true;
+  }
+
+  /// Editing a thin Revolve: whether its Sketch has no closed profile but one open chain (the panel then locks Thin on and labels the
+  /// direction against the axis). Fetched after the panel opens; the panel is rebuilt (its key includes the flag) when it turns out true.
+  Future<void> _refreshRevolveOpenProfile(FeatureDto sketchFeature) async {
+    final sketchId = sketchFeature.sketchId;
+    if (sketchId == null) return;
+    try {
+      final profile = await _sketchApi.getProfile(sketchId);
+      if (!mounted || _revolveSketchFeature?.id != sketchFeature.id) return;
+      final open = !profile.isExtrudable && profile.openChain;
+      if (open != _revolveOpenProfile) setState(() => _revolveOpenProfile = open);
+    } catch (_) {
+      // Defensive: the panel simply stays a plain thin revolve.
+    }
   }
 
   /// Mirrors [_ensureExtrudeFeatureExists] exactly (the simple pattern - no
@@ -18051,6 +18106,7 @@ class _PartScreenState extends State<PartScreen> {
     final sketchFeature = _revolveSketchFeature;
     if (part == null || sketchFeature == null) return;
 
+    final thickness = _revolveThickness;
     final existingId = _previewRevolveFeatureId;
     if (existingId == null) {
       final created = await _api.createRevolveFeature(
@@ -18061,6 +18117,8 @@ class _PartScreenState extends State<PartScreen> {
         mode: mode.apiValue,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: thickness,
+        thicknessDirection: _revolveThicknessDirection.apiValue,
       );
       _previewRevolveFeatureId = created.id;
     } else {
@@ -18072,15 +18130,20 @@ class _PartScreenState extends State<PartScreen> {
         mode: mode.apiValue,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: thickness,
+        thicknessDirection: _revolveThicknessDirection.apiValue,
+        clearThickness: thickness == null,
       );
     }
     await _refreshMesh();
   }
 
   /// [RevolvePanel.onChanged] - mirrors [_onExtrudeValuesChanged].
-  void _onRevolveValuesChanged(RevolveMode mode, double angle) {
+  void _onRevolveValuesChanged(RevolveMode mode, double angle, double? thickness, ThicknessDirection thicknessDirection) {
     _revolveMode = mode;
     _revolveAngle = angle;
+    _revolveThickness = thickness;
+    _revolveThicknessDirection = thicknessDirection;
     _scheduleRevolvePreview();
   }
 
@@ -18189,6 +18252,9 @@ class _PartScreenState extends State<PartScreen> {
             mode: editSnapshot.mode.apiValue,
             targetBodyIds: editSnapshot.targetBodyIds,
             profileRefs: editSnapshot.profileRefs,
+            thickness: editSnapshot.thickness,
+            thicknessDirection: editSnapshot.thicknessDirection.apiValue,
+            clearThickness: editSnapshot.thickness == null,
           );
           await _refreshFeatures();
         });
@@ -28020,11 +28086,14 @@ class _PartScreenState extends State<PartScreen> {
                     // key reasoning exactly, above.
                     key: const ValueKey('revolve-panel-slot'),
                     child: RevolvePanel(
-                      key: ValueKey(_editingRevolveFeatureId ?? _revolveSketchFeature!.id),
+                      key: ValueKey('${_editingRevolveFeatureId ?? _revolveSketchFeature!.id}-$_revolveOpenProfile'),
                       title: _editingRevolveFeatureId != null ? 'Edit Revolve' : 'Revolve',
                       tooltip: _revolvePickerBannerText(),
                       initialMode: _revolveMode,
                       initialAngle: _revolveAngle,
+                      initialThickness: _revolveThickness,
+                      initialThicknessDirection: _revolveThicknessDirection,
+                      openProfile: _revolveOpenProfile,
                       hasAxis: _revolveAxisEntity != null,
                       targetBodyCount: _currentRevolveTargetBodyIds().length,
                       onChanged: _onRevolveValuesChanged,

@@ -1620,11 +1620,15 @@ class ProfileDetectionDto {
   /// `ProfileResult.branch_point_ids`).
   final List<String> branchPointIds;
 
+  /// No closed profile, but exactly one open chain of lines / arcs: what a thin Revolve can use (item 5, 2026-11-11 feedback).
+  final bool openChain;
+
   ProfileDetectionDto({
     required this.status,
     required this.detail,
     this.fillableLoops = const [],
     this.branchPointIds = const [],
+    this.openChain = false,
   });
 
   bool get isClosedLoop => status == closedLoop;
@@ -1646,6 +1650,7 @@ class ProfileDetectionDto {
           ? [ProfileLoopDto.fromJson(profile)]
           : (loops ?? []).map((loop) => ProfileLoopDto.fromJson(loop as Map<String, dynamic>)).toList(),
       branchPointIds: (json['branch_point_ids'] as List<dynamic>? ?? []).cast<String>(),
+      openChain: json['open_chain'] as bool? ?? false,
     );
   }
 }

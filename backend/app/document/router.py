@@ -424,7 +424,7 @@ from app.document.store import get_document, get_part_or_404, replace_document
 from app.session_context import bind_session_id
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.reference_signature import ReferenceStatus
-from app.sketch.profile import Profile, ProfileStatus, detect_profile
+from app.sketch.profile import OpenChainStatus, Profile, ProfileStatus, detect_open_chain, detect_profile
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
@@ -1221,6 +1221,8 @@ def _feature_response_unflagged(part: Part, feature: Feature) -> FeatureResponse
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            thickness=feature.thickness,
+            thickness_direction=feature.thickness_direction,
             produces=feature.produces,
         )
     if isinstance(feature, SweepFeature):
@@ -2672,6 +2674,24 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
             detail=f"Sketch does not contain a closed profile (status: {result.status.value})",
         )
     return feature
+
+
+def _require_revolvable_sketch_feature(part: Part, sketch_feature_id: str, *, thin: bool) -> SketchFeature:
+    """`_require_closed_sketch_feature` for a Revolve: a thin one (`thickness` set) may also revolve a Sketch with no closed profile
+    but a single open chain (a cup, bowl or bell wall); a solid one still needs a closed profile. A closed profile always wins."""
+    feature = part.get_feature(sketch_feature_id)
+    if thin and isinstance(feature, SketchFeature):
+        sketch = get_sketch_or_404(feature.sketch_id)
+        if detect_profile(sketch).status not in (ProfileStatus.CLOSED_LOOP, ProfileStatus.MULTIPLE_LOOPS):
+            if detect_open_chain(sketch).status == OpenChainStatus.SINGLE_CHAIN:
+                return feature
+    return _require_closed_sketch_feature(part, sketch_feature_id)
+
+
+def _validate_thin_revolve_thickness(thickness: float | None) -> None:
+    """A thin Revolve's `thickness`, when set, is a magnitude: > 0 (its side is `thickness_direction`, never the sign)."""
+    if thickness is not None and not thickness > 0:
+        raise HTTPException(status_code=400, detail="thickness must be greater than 0")
 
 
 def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[SketchEntityRef]) -> list[Profile]:
@@ -7487,8 +7507,9 @@ def create_revolve_feature(part_id: str, payload: RevolveFeatureCreate) -> Revol
     `revolve_failed`/`missing_reference` rather than ever persisting an
     unresolvable Revolve."""
     part = get_part_or_404(part_id)
-    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    _require_revolvable_sketch_feature(part, payload.sketch_feature_id, thin=payload.thickness is not None)
     _validate_revolve_angle(payload.angle)
+    _validate_thin_revolve_thickness(payload.thickness)
     _validate_target_body_ids(part, payload.mode == RevolveMode.CUT, payload.target_body_ids)
     feature = RevolveFeature(
         id=str(uuid.uuid4()),
@@ -7498,6 +7519,8 @@ def create_revolve_feature(part_id: str, payload: RevolveFeatureCreate) -> Revol
         mode=payload.mode,
         target_body_ids=list(payload.target_body_ids),
         profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs],
+        thickness=payload.thickness,
+        thickness_direction=payload.thickness_direction,
     )
     # Prompt G: profile_refs' own validity (invalid_profile_ref) is checked
     # as part of this same resolve - resolve_revolve_from_bodies calls
@@ -7543,7 +7566,14 @@ def update_revolve_feature(
         if payload.profile_refs is not None
         else feature.profile_refs
     )
+    # `thickness`: omitted keeps the current value, an explicit null goes back to a solid revolve (Extrude's convention).
+    new_thickness = payload.thickness if "thickness" in payload.model_fields_set else feature.thickness
+    new_thickness_direction = (
+        payload.thickness_direction if payload.thickness_direction is not None else feature.thickness_direction
+    )
+    _require_revolvable_sketch_feature(part, feature.sketch_feature_id, thin=new_thickness is not None)
     _validate_revolve_angle(new_angle)
+    _validate_thin_revolve_thickness(new_thickness)
     _validate_target_body_ids(part, new_mode == RevolveMode.CUT, new_target_body_ids)
 
     candidate = RevolveFeature(
@@ -7554,6 +7584,8 @@ def update_revolve_feature(
         mode=new_mode,
         target_body_ids=list(new_target_body_ids),
         profile_refs=new_profile_refs,
+        thickness=new_thickness,
+        thickness_direction=new_thickness_direction,
     )
     resolve_revolve(part, candidate)  # raises on an unresolvable reference
 
@@ -7562,6 +7594,8 @@ def update_revolve_feature(
     feature.mode = candidate.mode
     feature.target_body_ids = candidate.target_body_ids
     feature.profile_refs = candidate.profile_refs
+    feature.thickness = candidate.thickness
+    feature.thickness_direction = candidate.thickness_direction
     return _feature_response(part, feature)
 
 

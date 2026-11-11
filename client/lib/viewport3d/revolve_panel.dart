@@ -3,6 +3,9 @@ import 'package:material_ui/material_ui.dart';
 import 'resizable_tool_panel.dart';
 import 'svg_icon.dart';
 import 'keyboard_shortcuts.dart';
+import 'thin_wall_controls.dart';
+
+export 'thin_wall_controls.dart' show ThicknessDirection;
 
 /// The "boss" or "cut" choice for a Revolve - Boss/Cut parity with Extrude
 /// (Prompt F's own resolved decision) - mirrors `extrude_panel.dart`'s
@@ -45,6 +48,15 @@ class RevolvePanel extends StatefulWidget {
   final RevolveMode initialMode;
   final double initialAngle;
 
+  /// Thin revolve (Flutter-testing feedback 2026-11-11, item 5): the stored wall thickness when editing a thin Revolve (null: a
+  /// solid one), and its direction.
+  final double? initialThickness;
+  final ThicknessDirection initialThicknessDirection;
+
+  /// The Sketch has no closed profile but a single open chain (a cup, bowl or bell wall): it can only be revolved as a thin wall, so
+  /// Thin is on and locked, with a hint, and the direction reads against the axis ("Away from axis / Toward axis / Both sides").
+  final bool openProfile;
+
   /// Whether an axis Line is currently picked in the viewport (see
   /// [PartScreen]'s own axis-picking selection filter) - read live on every
   /// build, same as [ExtrudePanel.targetBodyCount] reads live rather than
@@ -56,7 +68,8 @@ class RevolvePanel extends StatefulWidget {
   /// Drives Cut's "requires 1+" rule below.
   final int targetBodyCount;
 
-  final void Function(RevolveMode mode, double angle) onChanged;
+  /// [thickness] is null for a solid revolve; [thicknessDirection] only matters when it is set.
+  final void Function(RevolveMode mode, double angle, double? thickness, ThicknessDirection thicknessDirection) onChanged;
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -66,6 +79,9 @@ class RevolvePanel extends StatefulWidget {
     this.tooltip,
     this.initialMode = RevolveMode.boss,
     this.initialAngle = 180.0,
+    this.initialThickness,
+    this.initialThicknessDirection = ThicknessDirection.outward,
+    this.openProfile = false,
     required this.hasAxis,
     required this.targetBodyCount,
     required this.onChanged,
@@ -80,6 +96,9 @@ class RevolvePanel extends StatefulWidget {
 class _RevolvePanelState extends State<RevolvePanel> {
   late RevolveMode _mode;
   late final TextEditingController _angleController;
+  late final TextEditingController _thicknessController;
+  late bool _isThin;
+  late ThicknessDirection _thicknessDirection;
 
   /// Null once the angle field no longer parses as a number in `(0, 360]` -
   /// mirrors [ExtrudePanel]'s own `_depth` null-on-invalid-input pattern,
@@ -97,18 +116,22 @@ class _RevolvePanelState extends State<RevolvePanel> {
     _angle = (widget.initialAngle > 0 && widget.initialAngle <= 360)
         ? widget.initialAngle
         : null;
+    _isThin = widget.openProfile || widget.initialThickness != null;
+    _thicknessDirection = widget.initialThicknessDirection;
+    _thicknessController = TextEditingController(text: _formatAngle(widget.initialThickness ?? 2.0));
     // Without this, the live preview underneath this panel doesn't appear
     // until the user actually edits the angle field or mode - onChanged was
     // only ever wired to those callbacks, never fired for the initial value
     // this panel opens with (mirrors ExtrudePanel's identical fix).
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _angle != null) widget.onChanged(_mode, _angle!);
+      if (mounted && _angle != null && (!_isThin || _thickness != null)) widget.onChanged(_mode, _angle!, _thickness, _thicknessDirection);
     });
   }
 
   @override
   void dispose() {
     _angleController.dispose();
+    _thicknessController.dispose();
     super.dispose();
   }
 
@@ -120,8 +143,16 @@ class _RevolvePanelState extends State<RevolvePanel> {
   /// (mirrors [ExtrudePanel]'s own Cut rule) for a Cut with nothing picked
   /// yet - Boss has no target-body requirement, 0 selected is exactly how a
   /// Boss starts a brand-new Body.
+  /// The wall thickness while Thin is on (an open profile is always thin), or null when it is off or does not parse as a number > 0.
+  double? get _thickness {
+    if (!_isThin) return null;
+    final value = double.tryParse(_thicknessController.text);
+    return (value == null || value <= 0) ? null : value;
+  }
+
   bool get _canConfirm =>
       _angle != null &&
+      (!_isThin || _thickness != null) &&
       widget.hasAxis &&
       !(_mode == RevolveMode.cut && widget.targetBodyCount == 0);
 
@@ -129,12 +160,23 @@ class _RevolvePanelState extends State<RevolvePanel> {
     final value = double.tryParse(_angleController.text);
     final angle = (value != null && value > 0 && value <= 360) ? value : null;
     setState(() => _angle = angle);
-    if (angle != null) widget.onChanged(_mode, angle);
+    // While Thin is on with an invalid thickness, no preview update is sent (Confirm is disabled): it would silently turn solid.
+    if (angle != null && (!_isThin || _thickness != null)) widget.onChanged(_mode, angle, _thickness, _thicknessDirection);
   }
 
   void _onModeChanged(RevolveMode mode) {
     setState(() => _mode = mode);
-    if (_angle != null) widget.onChanged(mode, _angle!);
+    _emitChange();
+  }
+
+  void _onThinToggled(bool value) {
+    setState(() => _isThin = value);
+    _emitChange();
+  }
+
+  void _onThicknessDirectionChanged(ThicknessDirection direction) {
+    setState(() => _thicknessDirection = direction);
+    _emitChange();
   }
 
   @override
@@ -170,6 +212,26 @@ class _RevolvePanelState extends State<RevolvePanel> {
             onChanged: (_) => _emitChange(),
           ),
           const SizedBox(height: 8),
+          ThinWallControls(
+            title: 'Thin wall',
+            isThin: _isThin,
+            onThinChanged: _onThinToggled,
+            locked: widget.openProfile,
+            lockedHint: 'An open profile revolves as a thin wall',
+            openProfile: widget.openProfile,
+            controller: _thicknessController,
+            direction: _thicknessDirection,
+            onDirectionChanged: _onThicknessDirectionChanged,
+            onChanged: _emitChange,
+          ),
+          if (_isThin && !widget.openProfile)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Text(
+                'Holes in the profile are not thinned.',
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
+              ),
+            ),
           Text(
             _angle == null
                 ? 'Enter an angle greater than 0 and at most 360'

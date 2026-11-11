@@ -1074,7 +1074,10 @@ class _FakeSketchBackend {
   /// tests), overridden by the one test that exercises the disabled case.
   final String profileStatus;
 
-  _FakeSketchBackend({this.profileStatus = 'closed_loop'});
+  /// The profile response's `open_chain` (no closed profile, one open chain: a thin Revolve can use it).
+  final bool openChain;
+
+  _FakeSketchBackend({this.profileStatus = 'closed_loop', this.openChain = false});
 
   /// Every `PATCH .../orientation`: `(flip, rotation_quarter_turns)`.
   final List<(bool, int)> orientationPatches = [];
@@ -1098,7 +1101,7 @@ class _FakeSketchBackend {
     final profileMatch = RegExp(r'^/sketch/sketches/([^/]+)/profile$').firstMatch(request.url.path);
     if (profileMatch != null && request.method == 'GET') {
       return http.Response(
-        jsonEncode({'status': profileStatus, 'detail': 'fake', 'branch_point_ids': [], 'loops': []}),
+        jsonEncode({'status': profileStatus, 'detail': 'fake', 'branch_point_ids': [], 'loops': [], 'open_chain': openChain}),
         200,
       );
     }
@@ -4954,6 +4957,44 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  // Item 5 (thin Revolve of an open profile): a Sketch with no closed profile but one open chain is not refused by Revolve.
+  testWidgets('item 5: Revolve on an open-chain Sketch is enabled (Extrude stays disabled) and opens the panel with Thin locked on', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend(profileStatus: 'no_loop', openChain: true);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Extrude')).enabled, isFalse);
+    expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Revolve')).enabled, isTrue);
+    await tester.tap(find.widgetWithText(ListTile, 'Revolve'));
+    await _pumpUntil(tester, () => find.text('An open profile revolves as a thin wall').evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('An open profile revolves as a thin wall'), findsOneWidget);
+    expect(find.text('Away from axis'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1)); // the panel's debounced preview timer (no axis picked: it does nothing)
+  });
 
   testWidgets(
     "long-pressing a SketchFeature with a MultiProfile (C2's disjoint-outer-loops "

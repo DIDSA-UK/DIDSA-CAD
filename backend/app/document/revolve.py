@@ -26,7 +26,8 @@ import math
 from fastapi import HTTPException
 from OCC.Core.BRep import BRep_Builder
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeRevol
-from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Vec
+from OCC.Core.BRep import BRep_Tool
+from OCC.Core.gp import gp_Ax1, gp_Dir, gp_Pln, gp_Vec
 from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Shape
 
 from app.document.create_plane import resolve_sketch_basis
@@ -36,15 +37,24 @@ from app.document.extrude import (
     _edge_provenance_from_builder,
     _profile_boundary_shapes,
     _record_feature_edge_provenance,
+    basis_normal,
     basis_point_to_world,
     compute_part_bodies,
     face_for_profile,
     select_profiles,
+    wire_for_profile,
 )
 from app.document.graph import sketch_feature_id_for_sketch
+from app.document.loft import wire_for_open_chain
 from app.document.models import Part, RevolveFeature, SketchFeature
+from app.document.thin_profile import (
+    ThinProfileError,
+    checked_ring,
+    ring_for_closed_wire,
+    ring_for_open_wire,
+)
 from app.sketch.models import Line, SketchEntityRef, SketchEntityType
-from app.sketch.profile import ProfileStatus, detect_profile
+from app.sketch.profile import OpenChainStatus, ProfileStatus, detect_open_chain, detect_profile
 from app.sketch.store import get_sketch_or_404, resolve_sketch_entity
 
 logger = logging.getLogger(__name__)
@@ -80,6 +90,13 @@ def _revolve_failed() -> HTTPException:
     _chamfer_failed`'s identical "structured error, not an uncaught OCCT
     exception surfacing as a 500" convention."""
     return HTTPException(status_code=422, detail={"type": "revolve_failed"})
+
+
+def _thin_revolve_failed(reason: str) -> HTTPException:
+    """Item 5 (thin Revolve): the wall could not be built. `reason`: `inward_collapsed` (the wall is thicker than the profile),
+    `offset_failed`, `invalid_ring`, `crosses_axis` (the wall would reach across the axis, so the revolve would intersect itself),
+    `near_axis` (an open chain's end is almost, but not exactly, on the axis) or `revolve_failed`."""
+    return HTTPException(status_code=422, detail={"type": "thin_revolve_failed", "reason": reason})
 
 
 def _resolve_axis(
@@ -164,6 +181,8 @@ def resolve_revolve_from_bodies(
     # identical call site for why this re-expansion is needed here too (a
     # no-instance Sketch is a no-op, returning the same object).
     sketch = sketch.expand_pattern_and_mirror_instances()
+    if feature.thickness is not None:
+        return _thin_revolve_solid(feature, sketch_feature, sketch, result, part, bodies_so_far, excluded_feature_ids)
     if result.status not in EXTRUDABLE_STATUSES:
         logger.warning(
             "Skipping RevolveFeature %s: sketch %s has no closed profile (status=%s)",
@@ -206,6 +225,72 @@ def resolve_revolve_from_bodies(
             _record_feature_edge_provenance(part, feature.id, provenance, excluded_feature_ids)
         return solids[0]
 
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for solid in solids:
+        builder.Add(compound, solid)
+    return compound
+
+
+def _first_vertex(wire):
+    from OCC.Core.TopExp import topexp
+    from OCC.Core.TopoDS import TopoDS_Vertex
+
+    first, last = TopoDS_Vertex(), TopoDS_Vertex()
+    topexp.Vertices(wire, first, last)
+    return first
+
+
+def _thin_revolve_solid(
+    feature: RevolveFeature,
+    sketch_feature: SketchFeature,
+    sketch,
+    result,
+    part: Part,
+    bodies_so_far: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> TopoDS_Shape | None:
+    """A thin Revolve (`feature.thickness` set): offset the profile's wire in 2D (`app.document.thin_profile`) and revolve the
+    ring between the offsets. A closed profile always wins (its outer wire; holes are not thinned in v1); a Sketch with no closed
+    profile but one open chain is revolved as that chain (same fallback as Revolve Surface). `profile_refs` applies to closed
+    profiles only. No edge provenance is recorded for this branch (as for a thin Extrude)."""
+    basis = resolve_sketch_basis(part, sketch_feature, bodies_so_far, excluded_feature_ids)
+    axis = _resolve_axis(part, feature.axis_ref, bodies_so_far, excluded_feature_ids)
+    angle_radians = math.radians(feature.angle)
+    thickness = abs(feature.thickness)
+
+    rings = []
+    try:
+        if result.status in EXTRUDABLE_STATUSES:
+            candidates = [result.profile] if result.status == ProfileStatus.CLOSED_LOOP else result.loops
+            for profile in select_profiles(candidates, feature.profile_refs):
+                outer_wire = wire_for_profile(sketch, profile, basis)
+                rings.append(checked_ring(ring_for_closed_wire(outer_wire, thickness, feature.thickness_direction), axis))
+        else:
+            open_result = detect_open_chain(sketch)
+            if open_result.status != OpenChainStatus.SINGLE_CHAIN:
+                logger.warning(
+                    "Skipping thin RevolveFeature %s: sketch %s has no closed profile or single open chain",
+                    feature.id,
+                    sketch.id,
+                )
+                return None
+            open_wire = wire_for_open_chain(sketch, open_result.chain, basis)
+            first_point = BRep_Tool.Pnt(_first_vertex(open_wire))
+            plane = gp_Pln(first_point, basis_normal(basis))
+            rings.append(checked_ring(ring_for_open_wire(open_wire, thickness, feature.thickness_direction, axis, plane), axis))
+    except ThinProfileError as error:
+        raise _thin_revolve_failed(error.reason) from None
+
+    solids = []
+    for ring in rings:
+        revol_maker = BRepPrimAPI_MakeRevol(ring, axis, angle_radians)
+        if not revol_maker.IsDone():
+            raise _thin_revolve_failed("revolve_failed")
+        solids.append(revol_maker.Shape())
+    if len(solids) == 1:
+        return solids[0]
     builder = BRep_Builder()
     compound = TopoDS_Compound()
     builder.MakeCompound(compound)

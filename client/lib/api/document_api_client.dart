@@ -4679,6 +4679,8 @@ class DocumentApiClient {
     required String mode,
     List<String> targetBodyIds = const [],
     List<SketchEntityRefDto> profileRefs = const [],
+    double? thickness,
+    String? thicknessDirection,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4691,6 +4693,9 @@ class DocumentApiClient {
                 'mode': mode,
                 'target_body_ids': targetBodyIds,
                 'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+                // Thin revolve: a wall of this thickness; omitted is the ordinary solid revolve.
+                if (thickness != null) 'thickness': thickness,
+                if (thickness != null && thicknessDirection != null) 'thickness_direction': thicknessDirection,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4708,6 +4713,10 @@ class DocumentApiClient {
     String? mode,
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
+    double? thickness,
+    String? thicknessDirection,
+    // Back to a solid revolve: sends an explicit `thickness: null` (omitted keeps the stored value).
+    bool clearThickness = false,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4720,6 +4729,8 @@ class DocumentApiClient {
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)
                   'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+                if (thickness != null || clearThickness) 'thickness': thickness,
+                if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

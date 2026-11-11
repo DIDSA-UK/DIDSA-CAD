@@ -1344,7 +1344,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             },
         }
     if isinstance(feature, RevolveFeature):
-        return {
+        revolve_dict = {
             "type": "revolve",
             "id": feature.id,
             "sketch_feature_id": feature.sketch_feature_id,
@@ -1354,6 +1354,10 @@ def _feature_to_dict(feature: Feature) -> dict:
             "target_body_ids": list(feature.target_body_ids),
             "profile_refs": [_sketch_entity_ref_to_dict(r) for r in feature.profile_refs],
         }
+        if feature.thickness is not None:  # thin revolve: written only when set, so a solid revolve's file is unchanged
+            revolve_dict["thickness"] = feature.thickness
+            revolve_dict["thickness_direction"] = feature.thickness_direction.value
+        return revolve_dict
     if isinstance(feature, SweepFeature):
         return {
             "type": "sweep",
@@ -1766,6 +1770,8 @@ def _feature_from_dict(data: dict) -> Feature:
             mode=RevolveMode(_require(data, "mode")),
             target_body_ids=list(data.get("target_body_ids", [])),
             profile_refs=[_sketch_entity_ref_from_dict(r) for r in data.get("profile_refs", [])],
+            thickness=data.get("thickness"),
+            thickness_direction=ThicknessDirection(data.get("thickness_direction", ThicknessDirection.OUTWARD.value)),
         )
     if feature_type == "sweep":
         return SweepFeature(
