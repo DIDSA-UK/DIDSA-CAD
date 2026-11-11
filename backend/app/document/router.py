@@ -342,6 +342,7 @@ from app.document.schemas import (
     GearFeatureResponse,
     GearGroupSchema,
     ImportFeatureCreate,
+    ConvertMeshRequest,
     ImportAssemblyReport,
     ImportAssemblyRequest,
     ImportAssemblyResponse,
@@ -9744,6 +9745,32 @@ def _assembly_import_response(imported: step_assembly.AssemblyImport, document, 
         part_names=imported.part_names,
         report=ImportAssemblyReport(**imported.report),
     )
+
+
+CONVERT_MAX_BYTES = 150 * 1024 * 1024  # an uploaded file above this is refused (413)
+CONVERT_MAX_TRIANGLES = 3_000_000  # a result above this is refused (422 import_too_large): ask for a coarser deflection
+
+
+@router.post("/convert/mesh")
+def convert_to_mesh(payload: ConvertMeshRequest) -> Response:
+    """F-5: stateless STEP / IGES -> `.glb` for a viewer that has no document (the Flutter mesh viewer, which is offline by design and decodes the mesh formats
+    itself). Nothing is stored and no Part is created. Decodes with the same reader as `resolve_import`, meshes with OCCT and encodes with `encode_glb`;
+    the client feeds the glb to its own glb decoder, so decimation, up-axis and export keep working. Capped in upload size and triangle count."""
+    if payload.source_format not in (ImportSourceFormat.STEP, ImportSourceFormat.IGES):
+        raise HTTPException(status_code=422, detail={"type": "unsupported_format", "detail": "Only STEP and IGES need the server: the mesh formats are decoded on the device"})
+    data = _decode_import_data(payload.data_base64)
+    if len(data) > CONVERT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail={"type": "import_too_large", "detail": "The file is too large to convert"})
+    feature = ImportFeature(id="convert", source_format=payload.source_format, source_data=data)
+    shape = resolve_import(feature)
+    quality = MeshQuality(linear_deflection=payload.linear_deflection) if payload.linear_deflection else DEFAULT_MESH_QUALITY
+    merged = _merged_body_mesh_data({"shape": shape}, quality)
+    if len(merged.triangles) > CONVERT_MAX_TRIANGLES:
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "import_too_large", "detail": f"The model has {len(merged.triangles):,} triangles (the limit is {CONVERT_MAX_TRIANGLES:,}): use a larger linear deflection"},
+        )
+    return Response(content=encode_glb(merged), media_type="model/gltf-binary")
 
 
 @router.post("/import/probe", response_model=ImportProbeResponse)
