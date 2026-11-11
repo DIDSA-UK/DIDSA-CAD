@@ -17,8 +17,10 @@ the VR client's file list (one line), nothing else crosses over.
 | F-3 | IGES import and export (Part and assembly), colours and names where IGES allows | Feature | Medium |
 | F-4 | JT import via an open reader (FerroJT recommended); no export | Feature, spike first | Medium (after the spike) |
 | F-5 | Mesh viewer: open the new B-rep formats (and any other cheap mesh formats) | Feature | Small-medium (after F-3) |
+| F-6 | Import STEP / IGES / JT **as an assembly** (a Part per product, placed as occurrences), chosen at import | Feature | Large (backend + both clients) |
 
-Suggested order: **F-2 → F-1 (diagnose first) → F-3 → F-5 → F-4 spike (can run in parallel) → F-4**.
+Suggested order: **F-2 → F-1 (diagnose first) → F-3 → F-6 (STEP first) → F-5 → F-4 spike (can run in parallel) → F-4**.
+F-6 reuses F-3's IGES reader and F-4's JT reader for those formats; build it for STEP first, it has the real structure.
 
 ---
 
@@ -255,9 +257,81 @@ IGES is a B-rep: it cannot be decoded in Dart, it needs tessellating, and that n
 
 ---
 
+## F-6: import as a real assembly (STEP first, then IGES and JT)
+
+**Today** every import is one `ImportFeature` and one Body (`extrude.py` ~2064), whatever the file holds: a 40-part STEP assembly
+becomes one lump. It can't be mated, hidden part by part, fixed, or seen in the tree, which matters most in VR (mates need separate
+occurrences).
+
+**What the user sees.** The import dialog gets a second step after the format (Flutter `import_format_dialog.dart`; VR: a choice on
+the tablet when a file is opened from the Files page):
+- **As an assembly** (default when the file holds more than one product): one Part per distinct product, one occurrence per
+  placement, the product tree kept, names and colours from the file.
+- **As one part** (default for a single product; today's behaviour): one Body, fast and simple.
+The backend can **count the products cheaply first** (a "probe" call: read the file's structure, no geometry transfer) so the dialog
+shows "This file has 37 parts in 6 sub-assemblies" and picks the default. For IGES the two choices are **one part** or **one part per
+solid** (IGES has no reliable assembly structure: see below).
+
+**Which is heavier, and which fails more?**
+
+| | As one part | As an assembly |
+|---|---|---|
+| Reading | `STEPControl_Reader`, geometry only | `STEPCAFControl_Reader` (XCAF: structure, names, colours): slower and more memory on big files; the XCAF document idiom is fragile in this pythonocc build (see `step_export.py`'s notes) |
+| Meshing | The whole model in one Body, **every instance meshed** | Each distinct product meshed **once**, cached per Part (`body_cache` is per Part, N placements = one recompute); **lighter** for assemblies with repeats (fasteners), about the same otherwise |
+| Storage | The whole source file is embedded once in the ImportFeature | Each Part stores its own geometry: re-encode each product (a per-part STEP written from its shape, so `resolve_import` keeps working), N files on disk in the flat app; more to write at import |
+| Ways to fail | Few: the file reads or it doesn't | More: products with no shape, **mirrored instances** (a negative-determinant placement can't be a rigid occurrence transform: bake those into their own mirrored Part), scaled instances (same), duplicate or illegal names as file names, thousands of tiny parts (a slow, very large tree), a product that fails to transfer (must not sink the whole import) |
+| What you get | A reference shape | A working assembly: mates, fix, hide, tree, appearance per part |
+
+So: **assembly import costs more at import time and has more ways to go wrong; one-part import is cheap and robust but a dead
+end for assembly work.** Hence the choice, with a sensible default, and an assembly import that **reports per part** ("35 of 37
+parts imported; 2 skipped: <names, reasons>") instead of all-or-nothing.
+
+**Backend (DIDSA-CAD `backend/app/document/`).**
+1. `POST /import/probe` `{source_format, data_base64}` → `{products, assemblies, instances, has_structure, mirrored_instances,
+   name}`: XCAF read of the structure only (`XCAFDoc_ShapeTool.GetFreeShapes`, `IsAssembly`, `GetComponents`), capped in time.
+2. `POST /parts/{root_part_id}/import-assembly` (insert into the current assembly as a sub-assembly occurrence) and an "open as new"
+   variant (the imported top product becomes the root, like opening a native file): walk the XCAF tree; for each distinct prototype
+   (`GetReferredShape`) create a Part with one ImportFeature holding that prototype's shape re-encoded as STEP, named from
+   `TDataStd_Name`; for each component create an Occurrence with the component's `TopLoc_Location` as its transform (mm; split off
+   any scale or mirror as described above); nested assemblies become sub-assembly Parts with their own occurrences; colours from
+   `XCAFDoc_ColorTool` become the Part's appearance or appearance overrides. Build the whole result as one native payload and apply it
+   through the same merge path `add_component` uses (`merge_component_into_document`, then `import_native`), so the session is only
+   replaced if everything that was kept is valid.
+3. Response: the new Part ids, a suggested file name per Part (sanitised, unique), and the per-part report.
+4. Limits: product count and total size caps with a clear error ("this file has 4,000 parts; import as one part, or split it");
+   a time cap on the read.
+
+**Formats.**
+- **STEP**: the real case (AP203 / AP214 / AP242 all carry product structure through XCAF).
+- **IGES**: no product structure worth the name (some systems write subfigures, types 308 / 408, which `IGESCAFControl_Reader` maps to
+  XCAF; most files are flat). Offer **one part per solid** instead: each solid of the read shape becomes a Part with one occurrence at
+  identity, no hierarchy, names "Solid 1..n" or the entity labels when present.
+- **JT** (after F-4): FerroJT reads the logical scene graph (parts, instances, transforms); each JT part becomes a Part whose
+  ImportFeature is that part's mesh (as glb, the glTF path), each instance an occurrence. Mesh Parts can be mated on their
+  triangles only as far as the mates tool supports mesh geometry today: check, and say so in the dialog if not.
+
+**Clients.**
+- **Flat app**: the new Parts have no file yet: the save path already knows a Part "that has no file yet" (the tree's hollow dot,
+  `save_all.dart`). Save All must write them into a folder next to the assembly (default: `<file name>/` beside the root file) using
+  the suggested names, and set each occurrence's `external_ref` to the relative path. Check the save-project pipeline docs
+  (`docs/save-project-overhaul-scope.md`) for where that belongs.
+- **VR**: saves the whole session as one native snapshot (`main.gd` `save_native_snapshot`), so new Parts need no files; add the
+  choice to the Files page import (`main.gd` `_import_external_file`), then refresh the tree and mates state (`mark_stale`).
+- Both: the import report shown to the user.
+
+**Tests.** Fixture STEP files (make them with the backend's own `export_step` from a test assembly where possible, so their licence is
+ours): two-level assembly with a repeated part → right Part count (one per prototype), occurrence count and world poses equal to the
+single-body import's solids (to tolerance); a mirrored instance → baked Part; a product with no shape → skipped and reported; probe
+counts; IGES one-part-per-solid; the size cap. Flat app: Save All writes the new Parts and the root reopens with every reference
+resolved.
+
+---
+
 ## Open questions for the owner (the plan assumes the defaults)
 
 1. F-2: leave "orbit about the point under the middle press" (D2) in? **Default: yes.**
 2. F-3: IGES export entity type: B-rep solids (type 186) by default? **Default: yes; faces-only as a constant.**
 3. F-4: which JT versions and CAD systems do your files come from (and can you share samples)? **Default: FerroJT spike, then mesh import only.**
 4. F-5: add PLY / 3MF to the viewer now? **Default: PLY yes, 3MF later.**
+5. F-6: when importing as an assembly into the flat app, where do the new part files go? **Default: a folder named after the file,
+   beside the assembly.**
