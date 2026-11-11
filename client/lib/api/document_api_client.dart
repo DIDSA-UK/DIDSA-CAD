@@ -1203,6 +1203,10 @@ class FeatureDto {
   final bool helixRightHanded;
   final PlaneRefDto? helixAxisRef;
 
+  /// Intersection curve only: the two Sketch features it intersects.
+  final String? curveSketchFeatureIdA;
+  final String? curveSketchFeatureIdB;
+
   /// Variable-pitch Helix: its pitch at axial distances from the start (`{at, pitch}`, the backend's
   /// `pitch_points`), empty when its pitch is [helixSegments] instead.
   final List<({double at, double pitch})> helixPitchPoints;
@@ -1430,6 +1434,8 @@ class FeatureDto {
     this.helixSegments = const [],
     this.helixRightHanded = true,
     this.helixAxisRef,
+    this.curveSketchFeatureIdA,
+    this.curveSketchFeatureIdB,
     this.helixPitchPoints = const [],
     this.spring,
     this.toolBodyIds = const [],
@@ -1589,6 +1595,8 @@ class FeatureDto {
         helixAxisRef: json['curve_type'] == 'helix' && json['axis_ref'] is Map<String, dynamic>
             ? PlaneRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>)
             : null,
+        curveSketchFeatureIdA: json['curve_type'] == 'intersection' ? json['sketch_feature_id_a'] as String? : null,
+        curveSketchFeatureIdB: json['curve_type'] == 'intersection' ? json['sketch_feature_id_b'] as String? : null,
         helixPitchPoints: json['curve_type'] == 'helix'
             ? [
                 for (final p in (json['pitch_points'] as List? ?? const []).cast<Map<String, dynamic>>())
@@ -5470,6 +5478,9 @@ class DocumentApiClient {
     bool clearEndRadius = false,
     String? sketchFeatureIdA,
     String? sketchFeatureIdB,
+    // Intersection: a re-picked Sketch drops that side's old profile refs (they named entities of the old Sketch).
+    bool clearProfileRefsA = false,
+    bool clearProfileRefsB = false,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -5491,6 +5502,8 @@ class DocumentApiClient {
                 if (rightHanded != null) 'right_handed': rightHanded,
                 if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
                 if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,
+                if (clearProfileRefsA) 'profile_refs_a': const [],
+                if (clearProfileRefsB) 'profile_refs_b': const [],
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

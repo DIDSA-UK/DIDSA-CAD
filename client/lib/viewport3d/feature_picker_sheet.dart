@@ -37,7 +37,7 @@ enum FeaturePickerAction {
   pattern,
   // Curve features: a Helix or an Intersection curve, each its own guided
   // flow (`part_screen.dart`'s own `_startHelix`/`_startIntersectionCurve`)
-  // opening [CurvePanel] pre-set to the matching [CurveMode] - grouped with
+  // opening [CurvePanel] in the matching [CurveMode] (no toggle between them) - grouped with
   // "Sketch-based" since a Curve feature is a construction geometry source
   // in the same family, not with "Reference" (Plane) or "Surfacing".
   helix,
@@ -192,8 +192,8 @@ const List<FeatureGroupSpec> kFeatureGroups = [
     FeatureEntrySpec('Revolve', 'assets/icons/feature/feature_revolve.svg', FeaturePickerAction.revolve),
     FeatureEntrySpec('Sweep', 'assets/icons/feature/feature_sweep.svg', FeaturePickerAction.sweep),
     FeatureEntrySpec('Loft', 'assets/icons/feature/feature_loft.svg', FeaturePickerAction.loft),
-    FeatureEntrySpec('Helix', 'assets/icons/feature/feature_sweep.svg', FeaturePickerAction.helix),
-    FeatureEntrySpec('Intersection Curve', 'assets/icons/feature/feature_sweep.svg', FeaturePickerAction.intersectionCurve),
+    FeatureEntrySpec('Helix', 'assets/icons/feature/feature_helix.svg', FeaturePickerAction.helix),
+    FeatureEntrySpec('Intersection Curve', 'assets/icons/feature/feature_intersection_curve.svg', FeaturePickerAction.intersectionCurve),
     FeatureEntrySpec('Spring', 'assets/icons/feature/feature_spring.svg', FeaturePickerAction.spring),
   ]),
   FeatureGroupSpec('Reference', [

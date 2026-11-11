@@ -42,6 +42,7 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
 import 'package:didsa_cad_client/viewport3d/view_appearance_override.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
+import 'package:didsa_cad_client/viewport3d/curve_panel.dart' show CurveMode;
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 import 'package:didsa_cad_client/viewport3d/presentation_mode.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
@@ -140,6 +141,9 @@ class _FakeDocumentBackend {
 
   /// Every Curve feature PATCH body, in order (the Helix edit test).
   final List<Map<String, dynamic>> curvePatchBodies = [];
+
+  /// Every Curve feature POST body, in order (the Helix / Intersection create tests).
+  final List<Map<String, dynamic>> curveCreateBodies = [];
 
   /// Every Spring feature POST / PATCH body, in order (the Spring tests).
   final List<Map<String, dynamic>> springBodies = [];
@@ -752,13 +756,24 @@ class _FakeDocumentBackend {
       return _json(feature, 200);
     }
 
+    if (path == '/document/parts/part-1/curve-features' && method == 'POST') {
+      curveCreateBodies.add(Map<String, dynamic>.from(body));
+      final feature = {
+        'type': 'curve',
+        'id': 'curve-${curveCreateBodies.length}',
+        'locked': false,
+        ...body,
+      };
+      features.add(feature);
+      return _json(feature, 201);
+    }
     final curvePatchMatch = RegExp(r'^/document/parts/part-1/curve-features/([^/]+)$').firstMatch(path);
     if (curvePatchMatch != null && method == 'PATCH') {
       final featureId = curvePatchMatch.group(1);
       final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
       if (feature.isEmpty) return http.Response('not found: feature', 404);
       curvePatchBodies.add(Map<String, dynamic>.from(body));
-      for (final key in ['radius', 'end_radius', 'segments', 'right_handed']) {
+      for (final key in ['radius', 'end_radius', 'segments', 'right_handed', 'sketch_feature_id_a', 'sketch_feature_id_b']) {
         if (body.containsKey(key)) feature[key] = body[key];
       }
       return _json(feature, 200);
@@ -3414,6 +3429,112 @@ void main() {
     expect(patch['segments'], [
       {'pitch': 2.0, 'turns': 10.0},
     ]);
+  });
+
+  // Flutter-testing feedback 2026-11-11, item 3: Helix and Intersection are two forms, not a toggle.
+  Map<String, dynamic> sk(String id) => {'type': 'sketch', 'id': id, 'sketch_id': 's-$id', 'locked': false};
+
+  Future<void> pumpPart(WidgetTester tester, _FakeDocumentBackend backend) async {
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+  }
+
+  testWidgets('item 3: the Intersection Curve entry opens the intersection form (no toggle) and Confirm creates an intersection curve',
+      (tester) async {
+    final backend = _FakeDocumentBackend(seedFeatures: [sk('sk-a'), sk('sk-b')]);
+    await pumpPart(tester, backend);
+    await tapStartCommand(tester, 'Intersection Curve');
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Create Intersection Curve'), findsOneWidget);
+    expect(find.text('Sketch A'), findsOneWidget);
+    expect(find.byKey(const ValueKey('helix-diameter-field')), findsNothing, reason: 'opens on the intersection form, not the Helix one');
+    expect(find.byType(SegmentedButton<CurveMode>), findsNothing, reason: 'no Helix / Intersection toggle');
+
+    Future<void> pick(String label, String option) async {
+      await tester.tap(find.text(label));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text(option).last);
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
+    await pick('Sketch A', 'Sketch 1');
+    await pick('Sketch B', 'Sketch 2');
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.curveCreateBodies.isNotEmpty);
+    expect(backend.curveCreateBodies.single['curve_type'], 'intersection');
+    expect(backend.curveCreateBodies.single['sketch_feature_id_a'], 'sk-a');
+    expect(backend.curveCreateBodies.single['sketch_feature_id_b'], 'sk-b');
+  });
+
+  testWidgets('item 3: the Helix entry opens the Helix form and Confirm creates a helix', (tester) async {
+    final backend = _FakeDocumentBackend();
+    await pumpPart(tester, backend);
+    await tapStartCommand(tester, 'Helix');
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Create Helix'), findsOneWidget);
+    expect(find.byType(SegmentedButton<CurveMode>), findsNothing);
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.curveCreateBodies.isNotEmpty);
+    expect(backend.curveCreateBodies.single['curve_type'], 'helix');
+  });
+
+  testWidgets('item 3: Edit on an Intersection curve opens on its two Sketches and PATCHes the new ids, clearing that side\'s profile refs',
+      (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        sk('sk-a'),
+        sk('sk-b'),
+        sk('sk-c'),
+        {
+          'type': 'curve',
+          'id': 'curve-x',
+          'curve_type': 'intersection',
+          'sketch_feature_id_a': 'sk-a',
+          'sketch_feature_id_b': 'sk-b',
+          'profile_refs_a': <dynamic>[],
+          'profile_refs_b': <dynamic>[],
+          'locked': false,
+        },
+        sk('sk-late'), // after the curve: must not be offered
+      ],
+    );
+    await pumpPart(tester, backend);
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Intersection Curve 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Edit Intersection Curve'), findsOneWidget);
+    expect(find.text('Sketch 1'), findsWidgets, reason: 'Sketch A opens on the stored Sketch');
+    expect(find.text('Sketch 2'), findsWidgets);
+
+    await tester.ensureVisible(find.byType(DropdownButtonFormField<String>).first);
+    await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.descendant(of: find.byType(DropdownMenuItem<String>), matching: find.text('Sketch 4')), findsNothing,
+        reason: 'a Sketch after the curve is not offered');
+    await tester.tap(find.descendant(of: find.byType(DropdownMenuItem<String>), matching: find.text('Sketch 3')).last);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.curvePatchBodies.isNotEmpty);
+    final patch = backend.curvePatchBodies.single;
+    expect(patch['sketch_feature_id_a'], 'sk-c');
+    expect(patch['sketch_feature_id_b'], 'sk-b');
+    expect(patch['profile_refs_a'], isEmpty, reason: 're-picking a Sketch clears its profile refs');
+    expect(patch.containsKey('profile_refs_b'), isFalse);
   });
 
   testWidgets(
@@ -9661,6 +9782,31 @@ void main() {
     }
 
     PartViewport viewport(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport));
+
+    // Flutter-testing feedback 2026-11-11, item 4: the pill's row scrolled past its rounded ends.
+    testWidgets('on a 360 dp phone the orientation pill clips its row, every control is reachable, and Continue taps', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final backend = _FakeDocumentBackend(seedFeatures: [planeFeature]);
+      await pump(tester, backend, _FakeSketchBackend());
+      await newSketchOnPlane(tester);
+
+      final pill = find.ancestor(of: find.byKey(const ValueKey('sketch-orientation-pill-row')), matching: find.byType(Material)).first;
+      final material = tester.widget<Material>(pill);
+      expect(material.clipBehavior, isNot(Clip.none), reason: 'scrolled buttons must not draw past the rounded ends');
+      expect(material.shape, isA<StadiumBorder>());
+      expect(find.byKey(const ValueKey('sketch-orientation-cancel')), findsOneWidget);
+      expect(find.byKey(const ValueKey('sketch-orientation-cancel')).evaluate().single.widget, isA<IconButton>(),
+          reason: 'below 400 dp Cancel is an icon button');
+
+      // Everything is reachable by scrolling; Continue ends up tappable.
+      await tester.ensureVisible(find.text('Continue'));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.text('Continue'));
+      await settle(tester);
+      expect(find.text('Continue'), findsNothing, reason: 'the orientation step ended');
+    });
 
     testWidgets('a new Sketch sends origin auto and the pill has Pick origin; the axes sit at the resolved origin', (tester) async {
       final backend = _FakeDocumentBackend(seedFeatures: [planeFeature])

@@ -23,7 +23,8 @@ The owner answered every decision on 2026-11-11 (**Decisions**, at the end). The
 
 | Item | What landed | Tests |
 |---|---|---|
-| | | |
+| 4 | Orientation pill: `Material` now has `StadiumBorder` + `Clip.antiAlias`, the row is a new `EdgeFadeScrollRow` (fades the end that has more content), icon buttons `VisualDensity.compact`, Cancel is an icon button below 400 dp. `component_selection_toolbar.dart` gets the same clip (it was the only other `Material(borderRadius)` around a horizontal scroll view). | `part_screen_test.dart`: on a 360 dp phone the pill's `Material` clips, Cancel is the icon button, Continue is reachable and taps. Full client suite 3758 passed. **Not checked:** how the fade looks on a device. |
+| 3 | `CurvePanel` takes a required `mode` and has no toggle (it opened on Helix and a switched Confirm did nothing). New `IntersectionInitialValues`; `PartScreen._openIntersectionCurveForEdit` (Edit from the tree, same dispatch as Helix); `_intersectionSketchChoices` offers only Sketches **before** the curve (the backend does not refuse later ones on PATCH, so this is a client rule); re-picking a Sketch sends `profile_refs_a/_b: []`. `FeatureDto.curveSketchFeatureIdA/B`, `updateCurveFeature(clearProfileRefsA/B)`. New `feature_helix.svg` / `feature_intersection_curve.svg` used by the picker and the tree. The backend type stays one `CurveFeature`. | `curve_panel_test.dart` (each mode shows its own fields, no toggle, initial intersection values), `part_screen_test.dart` (Intersection Curve entry opens the intersection form and Confirm creates `intersection`; Helix entry creates `helix`; Edit opens on the two Sketches, a later Sketch is not offered, PATCH body), `document_api_client_test.dart` (update body, DTO). No VR change, as planned. |
 
 ---
 

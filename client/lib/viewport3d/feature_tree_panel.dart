@@ -118,13 +118,11 @@ String featureDisplayName(List<FeatureDto> features, int index) {
 /// for any Feature since B4 - not just the last one) - this stays a plain
 /// negative check rather than an allow-list so it doesn't need updating for
 /// every future Feature type that keeps following that same pattern.
-// Fill Surface and Intersection curve features: no edit panel yet (v1 client
-// scope is create-only - see `part_screen.dart`'s own Curve/Fill Surface
-// starters), same "not every Feature type has one" treatment `'import'`
-// already gets. A Helix has one (bug report: "unable to edit helix").
+// A Fill Surface has no edit panel yet (create-only), the same "not every Feature type has one"
+// treatment `'import'` gets. Both curve kinds do: a Helix (bug report: "unable to edit helix") and,
+// since the 2026-11-11 feedback, an Intersection curve (its two Sketches).
 bool _hasEditPanel(FeatureDto feature) => switch (feature.type) {
       'import' || 'fill_surface' => false,
-      'curve' => feature.curveType == 'helix',
       _ => true,
     };
 
@@ -132,7 +130,7 @@ bool _hasEditPanel(FeatureDto feature) => switch (feature.type) {
 /// `'create_plane'` reuse the same asset their own dedicated section already
 /// shows (Sketches don't get their own section, but Planes do - both still
 /// appear here too since Features lists every Feature unfiltered).
-String _featureTypeAsset(String type) => switch (type) {
+String _featureTypeAsset(String type, {String? curveType}) => switch (type) {
       'sketch' => 'assets/icons/feature/feature_new_sketch.svg',
       'extrude' => 'assets/icons/feature/feature_extrude.svg',
       'surface' => 'assets/icons/feature/feature_surface.svg',
@@ -207,11 +205,10 @@ String _featureTypeAsset(String type) => switch (type) {
       'bevel_gear' ||
       'bevel_pair' =>
         'assets/icons/feature/feature_gear.svg',
-      // Curve features: no dedicated glyph yet - reuses Sweep's own icon
-      // (a path-like curve is the closest existing silhouette), same "one
-      // shared/borrowed glyph until a dedicated one exists" precedent
-      // Revolve/Swept/Loft Surface already establish above.
-      'curve' => 'assets/icons/feature/feature_sweep.svg',
+      // Curve features: a Helix and an Intersection curve each have their own glyph (they used to share Sweep's).
+      'curve' => curveType == 'intersection'
+          ? 'assets/icons/feature/feature_intersection_curve.svg'
+          : 'assets/icons/feature/feature_helix.svg',
       'spring' => 'assets/icons/feature/feature_spring.svg',
       // Fill Surface: reuses the generic Surface glyph (`'surface'`'s own
       // asset) - a filling surface has no more specific existing silhouette
@@ -1137,7 +1134,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
             clipBehavior: Clip.none,
             children: [
               SvgIcon(
-                _featureTypeAsset(feature.type),
+                _featureTypeAsset(feature.type, curveType: feature.curveType),
                 size: 26,
                 color: Theme.of(context).colorScheme.primary,
               ),

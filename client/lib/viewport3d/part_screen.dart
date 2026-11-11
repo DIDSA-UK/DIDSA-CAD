@@ -48,6 +48,7 @@ import 'assembly_component_selection_drawer.dart';
 import 'component_context_menu.dart';
 import 'component_gizmo.dart';
 import 'component_selection_toolbar.dart';
+import 'edge_fade_scroll_row.dart';
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
@@ -15403,6 +15404,7 @@ class _PartScreenState extends State<PartScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => CurvePanel(
+        mode: CurveMode.helix,
         title: 'Create Helix',
         preSelectedAxisLabel: preSelectedAxisLabel,
         onHelixChanged: ({
@@ -15473,6 +15475,7 @@ class _PartScreenState extends State<PartScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => CurvePanel(
+        mode: CurveMode.helix,
         title: 'Edit Helix',
         preSelectedAxisLabel: _describeHelixAxis(feature.helixAxisRef),
         initialHelix: HelixInitialValues(
@@ -15515,6 +15518,59 @@ class _PartScreenState extends State<PartScreen> {
         segments: [for (final s in newSegments) (pitch: s.pitch, turns: s.turns)],
         pitchPoints: [for (final p in newPitchPoints) (at: p.at, pitch: p.pitch)],
         rightHanded: newRightHanded,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The Sketch features an Intersection curve at feature index [curveIndex] may use: only Sketches
+  /// that come **before** it in the history (a curve cannot depend on something downstream of itself).
+  /// A new curve ([curveIndex] null) sits at the end, so every Sketch qualifies.
+  List<SketchFeatureChoice> _intersectionSketchChoices({int? curveIndex}) {
+    final limit = curveIndex ?? _features.length;
+    return [
+      for (var i = 0; i < limit && i < _features.length; i++)
+        if (_features[i].type == 'sketch')
+          SketchFeatureChoice(featureId: _features[i].id, label: featureDisplayName(_features, i)),
+    ];
+  }
+
+  /// [_onFeatureTap]'s Intersection-curve branch (Flutter-testing feedback 2026-11-11, item 3): the
+  /// two-Sketch form opened on [feature]'s stored Sketches, PATCHed on Confirm. Re-picking a Sketch
+  /// clears that side's profile refs (Create never sets them either: whole Sketches).
+  Future<void> _openIntersectionCurveForEdit(FeatureDto feature) async {
+    final storedA = feature.curveSketchFeatureIdA, storedB = feature.curveSketchFeatureIdB;
+    if (storedA == null || storedB == null) return;
+    final choices = _intersectionSketchChoices(curveIndex: _features.indexWhere((f) => f.id == feature.id));
+    var newA = storedA, newB = storedB;
+    final confirmed = await showAdaptiveSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CurvePanel(
+        mode: CurveMode.intersection,
+        title: 'Edit Intersection Curve',
+        sketchFeatureChoices: choices,
+        initialIntersection: IntersectionInitialValues(sketchFeatureIdA: storedA, sketchFeatureIdB: storedB),
+        onIntersectionChanged: ({required String sketchFeatureIdA, required String sketchFeatureIdB}) {
+          newA = sketchFeatureIdA;
+          newB = sketchFeatureIdB;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    if (newA == storedA && newB == storedB) return;
+    await _runGuarded(() async {
+      await _api.updateCurveFeature(
+        _focusPartId,
+        feature.id,
+        sketchFeatureIdA: newA,
+        sketchFeatureIdB: newB,
+        clearProfileRefsA: newA != storedA,
+        clearProfileRefsB: newB != storedB,
       );
       await _refreshFeatures();
       await _refreshMesh();
@@ -15590,13 +15646,7 @@ class _PartScreenState extends State<PartScreen> {
   /// this Part (see [CurvePanel]'s own doc comment for why, not a 3D-
   /// viewport tap).
   Future<void> _startIntersectionCurve() async {
-    final sketchChoices = _features
-        .where((f) => f.type == 'sketch')
-        .map((f) => SketchFeatureChoice(
-              featureId: f.id,
-              label: featureDisplayName(_features, _features.indexOf(f)),
-            ))
-        .toList();
+    final sketchChoices = _intersectionSketchChoices();
     if (sketchChoices.length < 2) {
       _showSnack('Need at least two sketches to intersect');
       return;
@@ -15608,6 +15658,7 @@ class _PartScreenState extends State<PartScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => CurvePanel(
+        mode: CurveMode.intersection,
         title: 'Create Intersection Curve',
         sketchFeatureChoices: sketchChoices,
         onIntersectionChanged: ({required String sketchFeatureIdA, required String sketchFeatureIdB}) {
@@ -16372,6 +16423,12 @@ class _PartScreenState extends State<PartScreen> {
       // values. A modal sheet like the create flow, so (like the Sketch/gear branches) rollback ends
       // once it closes; any Sweep using the Helix rebuilds against the new curve.
       await _openHelixForEdit(feature);
+      if (!mounted) return;
+      await _endRollback();
+    } else if (feature.type == 'curve' && feature.curveType == 'intersection') {
+      // Flutter-testing feedback 2026-11-11 (item 3): the Intersection curve's own Edit, the two-Sketch form
+      // on its stored Sketches. A modal sheet like the Helix one, so rollback ends once it closes.
+      await _openIntersectionCurveForEdit(feature);
       if (!mounted) return;
       await _endRollback();
     } else if (_gearFamilyFeatureTypes.contains(feature.type)) {
@@ -28227,7 +28284,12 @@ class _PartScreenState extends State<PartScreen> {
                       child: Center(
                         child: Material(
                           elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
+                          // Flutter-testing feedback 2026-11-11 (item 4): Material's clipBehavior is Clip.none by
+                          // default, so a row wider than the screen drew its buttons past the pill's rounded ends.
+                          // A stadium shape plus an anti-aliased clip keeps them inside; EdgeFadeScrollRow fades the
+                          // end that has more content, so it reads as scrollable rather than cut off.
+                          shape: const StadiumBorder(),
+                          clipBehavior: Clip.antiAlias,
                           // Bug fix: this row of controls used to overflow
                           // on a narrow screen (no scroll fallback) - it
                           // also used to sit right underneath the
@@ -28237,13 +28299,12 @@ class _PartScreenState extends State<PartScreen> {
                           // above for that half of the fix). Wrapped in a
                           // horizontal scroll view as a hard guarantee
                           // against overflow on any screen width.
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
+                          child: EdgeFadeScrollRow(
+                            key: const ValueKey('sketch-orientation-pill-row'),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            children: [
                                 IconButton(
+                                  visualDensity: VisualDensity.compact,
                                   // Bug fix: swapped - on-device feedback
                                   // reported these two felt reversed
                                   // (rotate_left visually rotated the
@@ -28255,6 +28316,7 @@ class _PartScreenState extends State<PartScreen> {
                                       : () => _adjustPendingOrientation(rotationDelta: 1),
                                 ),
                                 IconButton(
+                                  visualDensity: VisualDensity.compact,
                                   tooltip: 'Rotate 90° clockwise',
                                   icon: const Icon(Icons.rotate_right),
                                   onPressed: _busy
@@ -28262,6 +28324,7 @@ class _PartScreenState extends State<PartScreen> {
                                       : () => _adjustPendingOrientation(rotationDelta: -1),
                                 ),
                                 IconButton(
+                                  visualDensity: VisualDensity.compact,
                                   tooltip: _pendingOrientationFlip ? 'Un-flip' : 'Flip',
                                   icon: const Icon(Icons.flip),
                                   isSelected: _pendingOrientationFlip,
@@ -28270,16 +28333,27 @@ class _PartScreenState extends State<PartScreen> {
                                       : () => _adjustPendingOrientation(flip: !_pendingOrientationFlip),
                                 ),
                                 IconButton(
+                                  visualDensity: VisualDensity.compact,
                                   key: const ValueKey('sketch-orientation-pick-origin'),
                                   tooltip: 'Pick a point for the sketch origin',
                                   icon: const Icon(Icons.my_location),
                                   onPressed: _busy ? null : _startPickSketchOrigin,
                                 ),
                                 const SizedBox(width: 4),
-                                TextButton(
-                                  onPressed: _busy ? null : _cancelPendingOrientation,
-                                  child: const Text('Cancel'),
-                                ),
+                                if (MediaQuery.sizeOf(context).width < 400)
+                                  IconButton(
+                                    key: const ValueKey('sketch-orientation-cancel'),
+                                    visualDensity: VisualDensity.compact,
+                                    tooltip: 'Cancel',
+                                    icon: const Icon(Icons.close),
+                                    onPressed: _busy ? null : _cancelPendingOrientation,
+                                  )
+                                else
+                                  TextButton(
+                                    key: const ValueKey('sketch-orientation-cancel'),
+                                    onPressed: _busy ? null : _cancelPendingOrientation,
+                                    child: const Text('Cancel'),
+                                  ),
                                 const SizedBox(width: 4),
                                 FilledButton(
                                   onPressed: _busy ? null : _confirmPendingOrientation,
@@ -28290,7 +28364,6 @@ class _PartScreenState extends State<PartScreen> {
                                   ),
                                 ),
                               ],
-                            ),
                           ),
                         ),
                       ),

@@ -25,6 +25,7 @@ void main() {
           resizeToAvoidBottomInset: false,
           body: Stack(children: [
             CurvePanel(
+              mode: CurveMode.helix,
               initialHelix: initial,
               onHelixChanged: ({
                 required String axisPlane,
@@ -233,5 +234,52 @@ void main() {
     expect(find.text('Height 10.00'), findsOneWidget);
     await tester.tap(find.text('Confirm'));
     expect(confirmed, 1);
+  });
+
+  testWidgets('item 3: each mode shows only its own fields and there is no toggle', (tester) async {
+    for (final mode in CurveMode.values) {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: CurvePanel(
+            mode: mode,
+            sketchFeatureChoices: const [
+              SketchFeatureChoice(featureId: 'a', label: 'Sketch 1'),
+              SketchFeatureChoice(featureId: 'b', label: 'Sketch 2'),
+            ],
+            onConfirm: () {},
+            onCancel: () {},
+          ),
+        ),
+      ));
+      expect(find.byType(SegmentedButton<CurveMode>), findsNothing);
+      expect(find.byKey(const ValueKey('helix-diameter-field')).evaluate().isNotEmpty, mode == CurveMode.helix);
+      expect(find.text('Sketch A').evaluate().isNotEmpty, mode == CurveMode.intersection);
+    }
+  });
+
+  testWidgets('item 3: the intersection form opens on its initial values and confirms straight away', (tester) async {
+    var confirmed = 0;
+    String? a, b;
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: CurvePanel(
+          mode: CurveMode.intersection,
+          sketchFeatureChoices: const [
+            SketchFeatureChoice(featureId: 'a', label: 'Sketch 1'),
+            SketchFeatureChoice(featureId: 'b', label: 'Sketch 2'),
+          ],
+          initialIntersection: const IntersectionInitialValues(sketchFeatureIdA: 'a', sketchFeatureIdB: 'b'),
+          onIntersectionChanged: ({required String sketchFeatureIdA, required String sketchFeatureIdB}) {
+            a = sketchFeatureIdA;
+            b = sketchFeatureIdB;
+          },
+          onConfirm: () => confirmed++,
+          onCancel: () {},
+        ),
+      ),
+    ));
+    await tester.tap(find.text('Confirm'));
+    expect(confirmed, 1, reason: 'both Sketches are pre-picked, so Confirm is live');
+    expect((a, b), (null, null), reason: 'nothing changed, nothing reported');
   });
 }

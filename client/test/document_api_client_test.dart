@@ -1944,6 +1944,36 @@ void main() {
     });
   });
 
+  group('Item 3 (2026-11-11 feedback): Intersection curve edit', () {
+    test('updateCurveFeature sends both Sketch ids and the profile-ref clears; the DTO reads the Sketches back', () async {
+      final bodies = <Map<String, dynamic>>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          expect(request.method, 'PATCH');
+          expect(request.url.path, '/document/parts/part-1/curve-features/c1');
+          bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+          return http.Response(
+              jsonEncode({
+                'type': 'curve',
+                'id': 'c1',
+                'curve_type': 'intersection',
+                'sketch_feature_id_a': 'sa',
+                'sketch_feature_id_b': 'sb',
+                'locked': false,
+                'produces': 'curve',
+              }),
+              200,
+              headers: {'content-type': 'application/json'});
+        }),
+      );
+      final dto = await client.updateCurveFeature('part-1', 'c1',
+          sketchFeatureIdA: 'sa', sketchFeatureIdB: 'sb', clearProfileRefsA: true);
+      expect(bodies.single, {'sketch_feature_id_a': 'sa', 'sketch_feature_id_b': 'sb', 'profile_refs_a': <dynamic>[]});
+      expect(dto.curveSketchFeatureIdA, 'sa');
+      expect(dto.curveSketchFeatureIdB, 'sb');
+    });
+  });
+
   group('Gear Design Workstream 8: GearPreviewDto.fromJson', () {
     test('parses a gear-kind response with reference circles', () {
       final dto = GearPreviewDto.fromJson({
