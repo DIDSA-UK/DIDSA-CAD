@@ -7,14 +7,17 @@ The causes in item 1 come from reading the code. They were not reproduced with t
 
 | Item | Summary | Kind | Size |
 |---|---|---|---|
-| 1 | After changing the project folder, sub-assemblies aren't found. Level 1 could be relinked by hand, level 2 could not | Bug + feature | Medium (1a small, 1b-1d medium) |
-| 2 | Sketch orientation: pick an edge or line to align a sketch axis, then flip / rotate to refine | Feature | Medium-large (backend + client, VR guard) |
-| 3 | Why are Intersection and Helix one tool? | Question + bug | Small |
+| 1 | After changing the project folder, sub-assemblies aren't found. Level 1 could be relinked by hand, level 2 could not | Bug + feature | Medium (1a small, 1b-1d medium; VR V1) |
+| 2 | Sketch orientation: pick an edge or line to align a sketch axis, then flip / rotate to refine | Feature | Large (backend + client; VR V2 full frame support) |
+| 3 | Why are Intersection and Helix one tool? Split the UI, add Edit Intersection Curve | Question + bug + feature | Small-medium |
 | 4 | Orientation pill: buttons draw past the pill's rounded ends when the row scrolls | Bug | Small |
-| 5 | Revolve: a "thin" option like Extrude's | Feature | Medium (backend + client) |
+| 5 | Revolve: a "thin" option like Extrude's, including open profiles | Feature | Medium-large (backend + client; VR V3) |
 
 Suggested order: **4 → 3 → 1a → 1b-1d → 5 → 2**. 4 and 3 are small, contained fixes. 1a is the bug that stopped the owner.
-2 adds another button to the pill, so 4 should land first.
+2 adds another button to the pill, so 4 should land first. The DIDSA-VR parts (V1-V3, near the end) go with their CAD
+items: V1 lands **in the same change** as 1b's vectors.
+
+The owner answered every decision on 2026-11-11 (**Decisions**, at the end). The plan below already follows those answers.
 
 ## Progress
 
@@ -83,18 +86,36 @@ name-only suggestions.
 - **Outcomes:**
   - The reference has a stored id and the suffix match has that id: step 2 already found it. No change.
   - **The reference has no stored id**, and exactly one file has the largest `k`, with `k ≥ 2` (the file's own folder name
-    agrees as well as its name): **use it** as `found` with a new `via: suffix`. It goes in the banner as "found in new
-    place", which needs nothing from the user, and is an unsaved change, like a by-id find. **This changes D11 for id-less
-    references and needs the owner's OK (Decision 1).** If the owner says no, return it as `suggest` with the candidates
-    sorted by `k`, and rely on 1c.
+    agrees as well as its name): a new result, **`likely`** (`LookupResult.likely`, `via: suffix`, `path` = that file).
+    The rule never uses it by itself. **The client asks the user** (Decision 1, below). Two or more files with the same
+    largest `k ≥ 2` stay a `suggest`, with the candidates sorted by `k`.
   - `k == 1` (only the name agrees) is today's step 3: a suggestion.
   - A stored id that the suffix file does not carry: still a suggestion, never used (the D11 "never a wrong file" rule stays).
+- **Asking the user (Decision 1, Owner).** The composer takes `acceptLikely: bool` (default false). With it false, a
+  `likely` reference is left unresolved and reported as `ReferenceOutcome.likely`. Its children are not visited, as for any
+  unresolved reference. With it true, a `likely` reference is used as if found (bound, `external_ref` corrected, an unsaved
+  change), its children are composed, and it is reported as "found by folder".
+  - **Open flow** (`_openComposedProject`, before `importNative`): compose. If the result has `likely` reports, and the
+    session preference is not set, show a dialog **before importing**:
+    "6 files look like they moved with the project folder" + two or three example rows (`parts/x.didsa` →
+    `proj/parts/x.didsa`) + **Use them** / **Not now** + a checkbox **"Don't ask again this session"**.
+    - **Use them** re-runs the compose with `acceptLikely: true`, then imports. The `ProjectFileIndex` cache makes the
+      second compose cheap: no second folder walk, and the ids are cached. Nested levels below the accepted files can
+      themselves be `likely`. The re-compose accepts those too, so one answer covers the whole tree.
+    - **Not now** imports as composed. The `likely` references go in the banner and the Review sheet as suggestions, each
+      with the one candidate and a **Use** button.
+    - **The checkbox** stores the answer for this run of the app. Keep it in memory only, never in preferences, so a new
+      session asks again. Hold it app-wide (a small `FolderMatchSessionChoice` singleton or a field on the storage service),
+      **not** in `PartScreen` state: Open pushes a fresh `PartScreen`, so screen state would forget it on the next open. While it is set, later opens, and the Use / Locate / Add Component composes (1a), apply the same
+      answer without asking. A small line in the Review sheet header shows the stored answer ("Folder matches: used
+      automatically this session") with **Ask again** to clear it.
+  - The same dialog, and the same session answer, covers 1c's learned shift for id-less files.
 - **Shared rule:** this changes the reference implementation, so do it in all three copies:
   `backend/app/document/file_lookup.py` (reference) → `tools/file_lookup_vectors/generate.py` (new vectors: prefix
   added, prefix removed, two equal-`k` candidates → ask/suggest, `k == 1` → suggest, an id present but not matching → suggest)
   → `docs/file-lookup/vectors.json` + `backend/tests/data/file_lookup_vectors.json` (`--check`) → Dart
-  `file_lookup_rule.dart` (`LookupVia.suffix`, `ReferenceOutcome` gets a "found by folder" label, `reference_report.dart`)
-  → **DIDSA-VR** `scripts/file_lookup.gd` + `tests/fixtures/file_lookup_vectors.json` (copy) + `tests/file_lookup_vectors.gd`.
+  `file_lookup_rule.dart` (`LookupResult.likely`, `LookupVia.suffix`, `ReferenceOutcome.likely` and a "found by folder" label,
+  `reference_report.dart`) → **DIDSA-VR** `scripts/file_lookup.gd` + `tests/fixtures/file_lookup_vectors.json` (copy) + `tests/file_lookup_vectors.gd`.
   If the VR change isn't made in the same rollout, DIDSA-VR's vector test fails on the new cases. Either change both, or land
   the VR change first, behind its vector file update.
 
@@ -104,12 +125,14 @@ Even with 1b, the owner should never have to do the same move twice.
 
 - **In the composer:** when a reference is found by id (step 2) or by suffix (1b), and the found path is
   `newPrefix + tail` where the stored path is `oldPrefix + tail`, record `oldPrefix → newPrefix`. For each later miss in
-  the same compose, try the shifted path first, before the index. A shifted file whose id is the stored id, or which has no
-  stored id to check, is used and reported. One id-bearing reference anywhere in the tree then fixes the id-less ones that
-  moved the same way.
+  the same compose, try the shifted path first, before the index. A shifted file whose id is the stored id is used and
+  reported. A shifted file for a reference **with no stored id** is `likely`, and goes through the same ask-first dialog as
+  1b. One id-bearing reference anywhere in the tree then finds the id-less ones that moved the same way, ready for one
+  confirmation.
 - **In the Review sheet:** when the user picks a file with **Use** or **Locate...**, work out the shift the same way. If any
   other open reports would resolve with it, offer one action: "Apply the same folder change to 6 other references". It runs
-  the relink for each (sequentially; each import is a full `importNative`) and adds each one's nested reports (1a).
+  the relink for each, and adds each one's nested reports (1a). Batch the relinks into **one** merge and one `importNative`.
+  One import per relink is far too slow on a phone.
 - **"Use all single suggestions"** button in the sheet header, for reports with exactly one candidate. It's cheap, and it
   covers what 1b and 1c miss.
 
@@ -128,12 +151,16 @@ Even with 1b, the owner should never have to do the same move twice.
 ### Tests
 
 - `test/moved_files_composer_test.dart`: the 3-level no-id fixture under a new root (prefix added; prefix removed). With
-  1b: all levels found by suffix, reported, `external_ref` corrected at each level. With an id on level 1 only: level 2 and 3
+  `acceptLikely: false`: level 1 reported `likely`, levels 2-3 not visited. With `acceptLikely: true`: all levels found by
+  folder, reported, `external_ref` corrected at each level. With an id on level 1 only: level 2 and 3
   found through the learned shift (1c).
 - `test/file_lookup_rule_test.dart` picks up the new vectors automatically. Check the case count goes up.
 - `test/references_sheet_test.dart` / `test/part_screen_test.dart`: Use on a level-1 suggestion adds its nested reports to the
   sheet (1a). Use on a level-2 report relinks the Occurrence on the sub-Part. A Use that re-mints still targets the right
-  `parentPartId`. "Apply the same folder change". "Use all single suggestions".
+  `parentPartId`. "Apply the same folder change". "Use all single suggestions". The folder-match dialog: Use them
+  re-composes with accept and imports once; Not now leaves suggestions; the checkbox skips the dialog on the next open in
+  the same session, including in a new `PartScreen`, and applies the stored answer; **Ask again** clears it; nothing is
+  written to preferences.
 - Backend: `backend/tests/test_file_lookup.py` (new vectors). DIDSA-VR: `tests/file_lookup_vectors.gd`, and
   `tests/moved_files.gd` if its compose gains the learned shift. The VR composer change (1c in `native_compose.gd`) is
   optional, so keep the rule in step even if VR doesn't learn shifts.
@@ -173,8 +200,10 @@ Even with 1b, the owner should never have to do the same move twice.
    rotate puts Y on the edge, flip reverses X, and so on. The owner asked to refine with flip and rotate, and this gives that.
    Do the alignment inside `oriented_anchor_basis`, so the "auto" origin corner is worked out in the aligned frame.
 3. **Direction sense:** use the edge's own start → end (a Sketch Line's `start` → `end`; an OCCT edge's first → last vertex,
-   orientation-aware). That is deterministic, and rotate×2 reverses it. Optionally the client sends the endpoint nearest
-   the tap as the start: store `x_axis_reversed: bool`. **Recommendation: skip it in v1.**
+   orientation-aware). That is deterministic, and rotate×2 reverses it. The pick **always aligns X** (Decision 3, Owner);
+   the user rotates to put Y on the edge. No X / Y choice in the ribbon, and no `x_axis_reversed` field.
+   **It is a live reference** (Decision 2, Owner): it follows the edge as the model changes, through the usual reference
+   identity following, with the lost-reference fallback in point 5.
 4. **Degenerate:** an edge (nearly) parallel to the normal (`|projection| < 1e-6 · edge length`) returns 422
    `alignment_edge_parallel_to_normal` when it is set. If it becomes degenerate later, the frame falls back to unaligned
    and the reference is reported as lost.
@@ -211,15 +240,7 @@ Even with 1b, the owner should never have to do the same move twice.
 
 ### DIDSA-VR
 
-VR builds sketch frames itself (`SketchMath.fixed_basis` / `basis_from_plane_response` + `with_origin`) and **refuses a
-flipped / turned sketch** (`table_editor.gd`, the `"That sketch is flipped or turned in the flat app..."` check around
-line 1517, and `_plane_for_row` around line 2841). An aligned sketch passes those checks today and **would open with the
-wrong axes**.
-- **Minimum (in this rollout):** add `row.get("x_axis_ref") != null` to both checks, and update the message ("flipped,
-  turned or aligned to an edge in the flat app"). Add a headless test.
-- **Later:** use the response's resolved axes (`SketchMath.with_frame(basis, row)`) and drop the refusal for all three. Note it
-  as open work in VR's `docs/status.md`.
-- `native_compose.gd` must pass the unknown key through. Add a test, as done for `origin`.
+Full support, in the same rollout (Decision 4, Owner). See **DIDSA-VR rollout** at the end, section V2.
 
 ### Tests
 
@@ -257,12 +278,25 @@ silently**: the sheet closes and no feature is made.
    Add a helix icon and an intersection icon to `assets/icons/feature/`.
 3. Check every other place they appear together and keep them separate: the desktop ribbon, the tree's labels
    (`feature_tree_panel.dart` already names them separately from `curveType`), and the AI tool groups.
-4. **Optional:** Intersection curves have no Edit (only `_editHelix`). Add Edit Intersection Curve (re-pick the two Sketches),
-   only if it stays small.
+4. **Edit Intersection Curve, now** (Decision 5, Owner). Today only Helix has Edit (`_editHelix`); an Intersection curve
+   in the tree has no Edit. The backend already supports it: `PATCH /parts/{part_id}/curve-features/{feature_id}` takes
+   `sketch_feature_id_a/_b` and `profile_refs_a/_b` (`CurveFeatureUpdate`). Client:
+   - `IntersectionInitialValues` on the panel (the two Sketch feature ids), the form opened on them, title "Edit
+     Intersection Curve".
+   - `_editIntersectionCurve(feature)` beside `_editHelix`, reached from the tree's Edit, the context menu and the
+     selection actions, wherever Helix Edit is offered. Grep `_editHelix` call sites.
+   - `DocumentApiClient.updateCurveFeature` sends the two ids. Add them if the method only sends Helix fields today.
+   - The choice list leaves out Sketches **after** the curve in the feature order, and the curve's own downstream
+     Sketches, as Create does for the order. Check what the backend refuses and match it.
+   - `profile_refs_a/_b`: Create doesn't set them today (whole Sketches). Keep Edit the same: re-picking a Sketch clears
+     its profile refs.
 
-Tests: `test/curve_panel_test.dart` (or the existing panel tests): no toggle, and each mode shows its own fields.
-`part_screen_test.dart`: the Intersection Curve entry opens the intersection form, and Confirm creates an `intersection`
-curve.
+Tests: `test/curve_panel_test.dart` (or the existing panel tests): no toggle, each mode shows its own fields, the
+intersection form opens on initial values. `part_screen_test.dart`: the Intersection Curve entry opens the intersection
+form, and Confirm creates an `intersection` curve; Edit on an Intersection curve opens the form on its two Sketches and
+Confirm PATCHes the new ids. `document_api_client_test.dart`: the update body.
+DIDSA-VR: its helix tool already skips intersection curves (`helix_tool.gd`: "an intersection curve has no settings
+here"). No VR change.
 
 ---
 
@@ -324,21 +358,42 @@ looks on the device.
    otherwise. Inner holes in the profile (islands): thin Extrude walls them too, because its cap-removal thickens every side
    face. Match that if it stays simple: offset each wire of the profile face, outer and holes, each away from the material
    for `outward`, and build the ring as the face's offset region minus the face, or the reverse. If it doesn't, v1 thins
-   the outer wire only. Then say so in the panel's help and in Decision 6.
-4. Revolve **Cut** with thin is valid (cut a groove of wall thickness). Keep `target_body_ids` handling unchanged.
-5. Provenance / face selectors: as with thin Extrude, no edge-index provenance for the thin branch. Copy that note.
-6. AI plan (`backend/app/ai_plan.py` `RevolveStep`, client `ai_plan.dart`): **out of scope**, unless adding the two optional
+   the outer wire only, and says so in the panel's help.
+4. **Open profiles, thin only** (Decision 6, Owner): a Sketch with no closed profile but a single open chain (a line,
+   or lines and arcs, revolved into a cup, bowl or bell wall) can be thin-revolved. A solid Revolve still needs a closed
+   profile.
+   - **Detecting:** reuse Revolve Surface's fallback exactly (`app/document/revolve_surface.py`: `detect_profile` first,
+     then `detect_open_chain` → `SINGLE_CHAIN` → `wire_for_open_chain`). A closed profile always wins, as there. With
+     `thickness` unset and only an open chain, keep today's error (no profile).
+   - **Ring face from an open wire:** offset the open wire (`BRepOffsetAPI_MakeOffset` with `IsOpenResult=True`), then
+     close it into one face: wire, end cap (straight segment), reversed offset wire, end cap.
+   - **Direction for an open chain** (an open chain has no inside or outside, so the enum is read against the **axis**):
+     `outward` = the wall grows on the side away from the axis, `inward` = toward the axis, `symmetric` = both by t/2.
+     Pick the side per chain from the offset that moves the chain's midpoint further from the axis. Document it in
+     `ThicknessDirection`'s doc comment, and label it in the panel for open profiles ("Away from axis / Toward axis / Both
+     sides").
+   - **End on the axis:** a chain that ends on the axis (the centre of a cup's bottom) is allowed. The end cap then lies
+     along the axis and the revolve closes it. The ring must still not **cross** the axis (point 3's check). An end that
+     sits within the tolerance of the axis but not on it: snap it to the axis, or refuse with `reason: near_axis`. Pick
+     one and test it.
+   - `profile_refs` is ignored for an open chain, as in Revolve Surface.
+   - A 360° open-chain thin revolve whose ends are both off the axis is a tube with open ends. That is fine.
+5. Revolve **Cut** with thin is valid (cut a groove of wall thickness). Keep `target_body_ids` handling unchanged.
+6. Provenance / face selectors: as with thin Extrude, no edge-index provenance for the thin branch. Copy that note.
+7. AI plan (`backend/app/ai_plan.py` `RevolveStep`, client `ai_plan.dart`): **out of scope**, unless adding the two optional
    fields is trivial. Note it as open work.
 
 ### Client
 
 - `RevolvePanel` (`client/lib/viewport3d/revolve_panel.dart`): a **Thin** toggle, a thickness field and an Outward / Inward
   / Symmetric choice. Lift the widgets out of `ExtrudePanel` into a shared `ThinWallControls` rather than copying them.
-  `onChanged` gains `thickness`, `thicknessDirection`. Edit shows the stored values.
+  `onChanged` gains `thickness`, `thicknessDirection`. Edit shows the stored values. When the chosen Sketch has no closed
+  profile but an open chain, open the panel with Thin **on and locked**, a hint ("An open profile revolves as a thin wall"),
+  and the axis-relative direction labels. Today the Revolve entry refuses a Sketch with no closed profile. Relax that check
+  in `part_screen.dart` (the Revolve guided flow's profile check) to "closed profile or a single open chain".
 - `document_api_client.dart`: `createRevolveFeature` / `updateRevolveFeature` send `thickness` / `thickness_direction`, and the
   Revolve feature DTO reads them. Live preview uses the same path as the other Revolve fields.
-- DIDSA-VR: no Revolve thin UI needed. Check `native_compose.gd` passes the keys through, and that VR's feature table shows
-  a thin Revolve without errors. No change is expected.
+- DIDSA-VR: see **DIDSA-VR rollout**, V3.
 
 ### Tests
 
@@ -346,26 +401,99 @@ Backend (`tests/test_stage_f_revolve.py` or a new `test_revolve_thin.py`; needs 
 rectangle 30 mm off the axis, 360°, t = 2 outward / inward / symmetric gives exact volumes (2π·r̄·A_ring). A 90° case gives
 flat end faces. An inward wall thicker than half the width → 422. An outward ring crossing the axis → 422. Cut thin.
 Native round trip and old file (no keys → solid revolve). Update with `thickness: null` → back to solid.
-Client: `revolve_panel_test.dart` (toggle shows fields, sends values, edit pre-fills), `document_api_client_test.dart`.
+Open chain: an L-shaped chain (base on the axis, side wall up) revolved 360° at t = 2 gives a closed-bottom cup with the
+expected volume. Away-from-axis and toward-axis put the wall on the right side. A chain with both ends off the axis gives
+an open tube. A chain crossing the axis → 422. A Sketch with both a closed profile and an open chain uses the closed
+profile. An open chain with `thickness` unset → the existing no-profile error.
+Client: `revolve_panel_test.dart` (toggle shows fields, sends values, edit pre-fills, open profile: Thin locked on with
+the axis labels), `document_api_client_test.dart`, `part_screen_test.dart` (Revolve on an open-chain Sketch opens the
+panel instead of refusing).
 
 ---
 
-## Decisions (for the owner)
+## DIDSA-VR rollout (same pass)
 
-1. **Item 1b, the folder-shift match for references with no stored id:** use it automatically when exactly one file matches
-   on at least its folder and name (`k ≥ 2`), and report it in the banner as "found in a new place" (**Recommendation**:
-   it's the change that actually fixes a moved project folder, and a path that agrees on folder + name is much stronger
-   evidence than a name alone). Or keep it as a suggestion that needs a click (strict D11), and rely on 1c's
-   "Apply to all" to make the clicks cheap?
-2. **Item 2, alignment as a live reference vs a snapshot:** store the edge and follow it when the model changes
-   (**Recommendation**, the same as the sketch origin, with the lost-reference fallback). Or store just the resulting angle
-   (simpler, but it doesn't update if the edge moves)?
-3. **Item 2, which axis the pick aligns:** X, with rotate to put Y on the edge (**Recommendation**). Or ask X / Y in the
-   ribbon?
-4. **Item 2, DIDSA-VR:** refuse aligned sketches in VR for now, as flipped / turned ones are (**Recommendation**), with full
-   support (using the resolved frame for all three) as a separate VR task?
-5. **Item 3:** keep one backend `CurveFeature` and split only the UI (**Recommendation**). Add Edit for Intersection curves
-   now or later?
-6. **Item 5:** closed profiles only, matching Extrude's thin (**Recommendation**). Island walls are as in point 3. Open-profile thin revolve
-   (a line revolved into a cup or bowl wall) is a natural next step, and the 2D-offset approach supports it (offset an
-   open wire into a closed ring). Want it in this item?
+Work in DIDSA-VR on branch `ccr-462e27b1-yawq7e`. Read its `CLAUDE.md`, `docs/backend-api-notes.md` and `tests/README.md`
+first. New test files go in `tests/run_all.sh` and get a row in `tests/README.md`; live-backend tests also go in
+`tests/e2e_ci_list.txt`. Update VR's `docs/status.md` and `CHANGELOG.md`. Do the CAD backend part of each item before its
+VR part, because VR's live tests need it.
+
+### V1. File lookup rule (item 1b / 1c)
+
+- `scripts/file_lookup.gd`: the `likely` result and the path-suffix step, exactly as the Python reference. Copy the new
+  vectors to `tests/fixtures/file_lookup_vectors.json`, and `tests/file_lookup_vectors.gd` must pass all of them. **This
+  must land together with the CAD vector change**, or VR's vector test fails.
+- `scripts/native_compose.gd`: an `accept_likely` flag, used the way the flat app uses it; the learned shift (1c) too.
+- **Asking:** VR has no modal dialogs. When an open has `likely` references, show it on the load status line, and in
+  **Files > References** as a header row: "6 files look like they moved with the project folder" with **Use them**,
+  **Not now**, and a **Don't ask again this session** toggle. Use them re-opens with `accept_likely`, the way
+  `main.choose_reference` already re-opens with a pick, keeping the "only unsaved change is a corrected path → no discard
+  prompt" rule. The toggle is held in memory on `main.gd` (not in `secrets.cfg` or any saved settings) and applies to later
+  opens and room adds while the app runs.
+- Tests: `tests/file_lookup_vectors.gd` (new vectors), `tests/moved_files.gd` (3-level id-less fixture under a new root:
+  not accepted → level 1 `likely`, deeper levels not visited; accepted → all levels resolved; session toggle skips the
+  question on a second open).
+
+### V2. Sketch frame: flip, turn, origin and edge alignment (item 2)
+
+Today VR builds a sketch's frame itself and **refuses** a sketch that is flipped or turned in the flat app
+(`table_editor.gd` around line 1517, `_plane_for_row` around line 2846, and so `sketch_picks.gd`'s finished-sketch picks).
+An aligned sketch would get past those checks and open with the wrong axes. Replace all of it with the backend's resolved
+frame:
+
+- **Backend first (CAD, item 2 point 6):** `SketchFeatureResponse` returns the whole resolved frame, `resolved_origin` +
+  `resolved_x_axis`, `resolved_y_axis`, `resolved_normal`, after anchor → alignment → flip / turns → origin. These are the
+  exact vectors `basis_for_sketch` uses, so the sketch's points map with `origin + u·x + v·y`.
+- `SketchMath.with_frame(basis, row)` (replaces `with_origin`, which stays as a wrapper for older backends): when the row
+  has all four resolved vectors, use them; otherwise fall back to today's plane basis + `with_origin`.
+- **Flipped (mirrored) frames:** `apply_orientation`'s flip negates X only, so a flipped frame is **left-handed**
+  (`x × y = −n`; the backend has `is_mirrored_basis`). `SketchMath.orient_to_table` assumes right-handed and would build a
+  reflection. For a mirrored frame, lay the table out with `n' = x × y`, so the part is shown from the other side of the
+  sheet, with X right and Y away exactly as the flat app's 2D view shows them. Check the flat app's own sketch view does
+  the same before settling on it. Test that a point drawn at (u, v) on the table lands at `origin + u·x + v·y` in both cases.
+- **Remove the refusals** in `table_editor.gd` (both sites) and the "flipped or turned" message, once `with_frame` is in.
+  Keep a refusal only for a row with a lost reference *and* no resolved frame (an older backend), with the message
+  "That sketch's frame can't be worked out here".
+- `SketchSession.open_sketch` / `reopen`: take the frame from the create / feature response, as `with_origin` is used now.
+  New face sketches still send `"origin": "auto"`. VR still has no orientation step, so it doesn't send `x_axis_ref`,
+  flip or turns. Note "set orientation / align in VR" as open work in `docs/status.md`.
+- `tests/helpers/fake_cad.gd`: the sketch-feature rows carry the resolved frame, with cases for turned, flipped and
+  aligned.
+- `native_compose.gd` passes `x_axis_ref` through unchanged. Add a test like the `origin` one.
+- Tests: headless `SketchMath.with_frame` (right-handed, mirrored, missing keys → fallback); reopening a turned / flipped /
+  aligned sketch from the fake backend puts its curves where the frame says; `sketch_picks` loads them instead of skipping.
+  Live backend (`tests/ci_e2e.sh`): make a sketch on XY aligned to a 30° line of an earlier sketch, then flip it; open it
+  in VR, draw a point at (10, 0), and check the backend reports it at the expected part-frame position.
+- **Cannot be tested here:** how a flipped sketch shown from the other side feels on the headset.
+
+### V3. Revolve thin (item 5)
+
+VR's revolve tool (`scripts/design_table/features/revolve_tool.gd`, request built in `part_features.gd`
+`revolve_request`) gets the same options its extrude tool has (`ext_thin`, `ext_wall`, `ext_dir` in
+`extrude_tool.gd`):
+- options `rev_thin`, `rev_wall` (default 2.0), `rev_dir` (`outward` / `inward` / `symmetric`), added to
+  `table_editor.gd`'s `options` dictionary; buttons "Thin wall", "Wall N mm", and the three direction toggles. For an
+  open-profile sketch the labels read "Away from axis / Toward axis / Both sides", and Thin is locked on.
+- `revolve_request` sends `thickness` / `thickness_direction` when thin, and refuses a wall ≤ 0 with the usual `_bad`.
+- **Open profiles:** `revolve_tool.on_activated` says "The sketch needs a closed shape to revolve" when
+  `session.profile_ok()` is false. Allow a single open chain when Thin is on (the sketch session needs an open-chain
+  check, as the loft / ruled tools may already have; reuse it if so). Change the text to "a closed shape, or one open line
+  chain for a thin wall".
+- The Build row's description shows "thin N mm" for a thin revolve, as for a thin extrude. Grep how extrude's row
+  reads `thickness`.
+- `tests/helpers/fake_cad.gd` accepts the new keys. Tests: headless option handling and request body (closed and open
+  chain), the open-chain gate; live backend: an L chain revolved 360° thin makes one body.
+
+---
+
+## Decisions (answered by the owner, 2026-11-11)
+
+1. **Folder-shift match for references with no stored id (item 1b / 1c):** **advise and let the user accept or not**, with a
+   **"Don't ask again this session"** checkbox. Built as `LookupResult.likely` + the ask-first dialog in 1b, and the
+   Files > References header row in VR (V1).
+2. **Edge alignment:** **follow the edge** (a live reference with the lost-reference fallback).
+3. **Which axis:** **always X**; rotate to put Y on the edge.
+4. **DIDSA-VR:** **plan the VR rollout in the same pass.** Full support using the resolved frame, which also ends VR's
+   refusal of flipped and turned sketches (V2), plus V1 and V3.
+5. **Edit Intersection Curve:** **now** (item 3 point 4). The backend type stays one `CurveFeature`; only the UI is split.
+6. **Thin revolve of open profiles:** **yes** (item 5 point 4).
