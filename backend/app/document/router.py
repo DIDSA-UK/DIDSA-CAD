@@ -129,9 +129,12 @@ from app.document.mesh_data import BodyTopology, MeshQuality, Triangle
 from app.document.mesh_export import AssemblyGlbInstance, encode_assembly_glb, encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
 from app.document.add_component import AddComponentError, merge_component_into_document
+from app.document.native_format import SCHEMA_VERSION as NATIVE_SCHEMA_VERSION
 from app.document.native_format import NativeFormatError, export_native, import_native
+
 from app.document.pattern import resolve_pattern, resolve_pattern_coarse
 from app.document.iges_export import export_iges
+from app.document import step_assembly
 from app.document.step_export import export_step
 from app.document.models import (
     BevelGearFeature,
@@ -339,7 +342,12 @@ from app.document.schemas import (
     GearFeatureResponse,
     GearGroupSchema,
     ImportFeatureCreate,
+    ImportAssemblyReport,
+    ImportAssemblyRequest,
+    ImportAssemblyResponse,
     ImportFeatureResponse,
+    ImportProbeRequest,
+    ImportProbeResponse,
     KnitSurfaceFeatureCreate,
     KnitSurfaceFeatureResponse,
     KnitSurfaceFeatureUpdate,
@@ -9691,6 +9699,106 @@ def add_component(root_part_id: str, payload: AddComponentRequest) -> AddCompone
     replace_document(document)
     replace_all_sketches(sketches)
     return AddComponentResponse(document_id=document.id, part_ids=list(document.parts.keys()), occurrence_id=occurrence_id)
+
+
+def _decode_import_data(data_base64: str) -> bytes:
+    try:
+        return base64.b64decode(data_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="data_base64 is not valid base64")
+
+
+def _assembly_import_error(exc: step_assembly.AssemblyImportError) -> HTTPException:
+    return HTTPException(status_code=422, detail={"type": exc.code, "detail": str(exc)})
+
+
+def _structure_for(source_format: ImportSourceFormat, data: bytes) -> step_assembly.StepStructure:
+    try:
+        if source_format == ImportSourceFormat.STEP:
+            return step_assembly.read_step_structure(data)
+        if source_format == ImportSourceFormat.IGES:
+            return step_assembly._with_timeout(step_assembly.read_iges_solids, data)
+    except step_assembly.AssemblyImportError as exc:
+        raise _assembly_import_error(exc)
+    raise HTTPException(status_code=422, detail={"type": "unsupported_format", "detail": "Only STEP (an assembly) and IGES (one part per solid) can be imported as an assembly"})
+
+
+def _build_assembly_import(payload: ImportAssemblyRequest) -> step_assembly.AssemblyImport:
+    data = _decode_import_data(payload.data_base64)
+    structure = _structure_for(payload.source_format, data)
+    try:
+        return step_assembly.build_native_payload(structure, payload.name or "", NATIVE_SCHEMA_VERSION)
+    except step_assembly.AssemblyImportError as exc:
+        raise _assembly_import_error(exc)
+
+
+def _assembly_import_response(imported: step_assembly.AssemblyImport, document, occurrence_id: str | None, new_part_ids: list[str]) -> ImportAssemblyResponse:
+    return ImportAssemblyResponse(
+        document_id=document.id,
+        part_ids=list(document.parts.keys()),
+        new_part_ids=new_part_ids,
+        root_part_id=imported.root_part_id,
+        occurrence_id=occurrence_id,
+        folder=imported.folder,
+        suggested_files={pid: f"{imported.folder}/{name}" for pid, name in imported.part_files.items()},
+        part_names=imported.part_names,
+        report=ImportAssemblyReport(**imported.report),
+    )
+
+
+@router.post("/import/probe", response_model=ImportProbeResponse)
+def probe_import(payload: ImportProbeRequest) -> ImportProbeResponse:
+    """F-6: reads a STEP / IGES file's structure only (no Part is created, nothing is stored) so a client can offer "As an assembly" / "As one part" with the
+    real counts. IGES has no product structure: it reports its solids (one part per solid). Capped in time and product count."""
+    data = _decode_import_data(payload.data_base64)
+    try:
+        if payload.source_format == ImportSourceFormat.STEP:
+            return ImportProbeResponse(**step_assembly.probe_step(data))
+        if payload.source_format == ImportSourceFormat.IGES:
+            return ImportProbeResponse(**step_assembly._with_timeout(step_assembly.probe_iges, data))
+    except step_assembly.AssemblyImportError as exc:
+        raise _assembly_import_error(exc)
+    raise HTTPException(status_code=422, detail={"type": "unsupported_format", "detail": "Only STEP and IGES files can be probed"})
+
+
+@router.post("/import/assembly", response_model=ImportAssemblyResponse, status_code=201)
+def import_assembly_as_new(payload: ImportAssemblyRequest) -> ImportAssemblyResponse:
+    """F-6, "open as new": the imported top product becomes the session's root, like opening a native file (a full replace, built and validated before the
+    session is touched)."""
+    imported = _build_assembly_import(payload)
+    try:
+        document, sketches = import_native(imported.payload)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid native file: {exc}")
+    replace_document(document)
+    replace_all_sketches(sketches)
+    return _assembly_import_response(imported, document, None, list(imported.part_files.keys()))
+
+
+@router.post("/parts/{root_part_id}/import-assembly", response_model=ImportAssemblyResponse, status_code=201)
+def import_assembly_into_part(root_part_id: str, payload: ImportAssemblyRequest) -> ImportAssemblyResponse:
+    """F-6, insert: the imported top product is added to `root_part_id` as a sub-assembly Occurrence, through the same merge `add-component` uses
+    (`merge_component_into_document`, then `import_native`), so the session is only replaced if everything that was kept is valid."""
+    get_part_or_404(root_part_id)
+    imported = _build_assembly_import(payload)
+    current_payload = export_native(get_document(), all_sketches())
+    occurrence_id = payload.occurrence_id or str(uuid.uuid4())
+    root_file = imported.part_files[imported.root_part_id]
+    try:
+        merged = merge_component_into_document(
+            current_payload=current_payload,
+            component_payload=imported.payload,
+            root_part_id=root_part_id,
+            occurrence_id=occurrence_id,
+            external_ref=f"{imported.folder}/{root_file}",
+            name_override=payload.name or None,
+        )
+        document, sketches = import_native(merged)
+    except (AddComponentError, NativeFormatError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    replace_document(document)
+    replace_all_sketches(sketches)
+    return _assembly_import_response(imported, document, occurrence_id, list(imported.part_files.keys()))
 
 
 def _export_bodies_or_400(part: Part) -> dict[str, object]:
