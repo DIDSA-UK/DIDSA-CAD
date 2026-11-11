@@ -32,6 +32,7 @@ class ControlsPreferences {
   static const String quickColumnOpensPrefKey = 'controls_quick_column_opens';
   static const String hideEdgesWhileMovingPrefKey = 'controls_hide_edges_while_moving';
   static const String edgeLimitPrefKey = 'controls_edge_limit';
+  static const String showInputDebugPrefKey = 'controls_show_input_debug';
 
   static const NavigationPreset defaultPreset = NavigationPreset.solidworks;
   static const bool defaultInvertWheel = false;
@@ -49,6 +50,7 @@ class ControlsPreferences {
   static int _quickColumnOpens = 0;
   static bool _hideEdgesWhileMoving = kHideEdgesWhileMovingDefault;
   static int _edgeLimit = kEdgeLimitDefault;
+  static bool _showInputDebug = false;
 
   /// How many edge segments the part viewport is drawing now (set by the viewport; 0 = none or not known). The
   /// Controls screen shows it under the edge limit.
@@ -66,6 +68,9 @@ class ControlsPreferences {
   static bool get hideEdgesWhileMoving => _hideEdgesWhileMoving;
   static int get edgeLimit => _edgeLimit;
 
+  /// F-1 step 0: draw the input debug overlay in the 3D viewport (see `input_debug.dart`). Off by default.
+  static bool get showInputDebug => _showInputDebug;
+
   /// Whether the Start button still draws its swipe-up hint (a once-per-install hint: never reset by [reset]).
   static bool get showQuickColumnHint => _quickColumnOpens < quickColumnHintLimit;
 
@@ -81,6 +86,7 @@ class ControlsPreferences {
     _quickColumnOpens = prefs.getInt(quickColumnOpensPrefKey) ?? 0;
     _hideEdgesWhileMoving = prefs.getBool(hideEdgesWhileMovingPrefKey) ?? kHideEdgesWhileMovingDefault;
     _edgeLimit = snapEdgeLimit(prefs.getInt(edgeLimitPrefKey) ?? kEdgeLimitDefault);
+    _showInputDebug = prefs.getBool(showInputDebugPrefKey) ?? false;
   }
 
   /// Counts one more user-opened quick column, towards dropping the swipe hint.
@@ -127,6 +133,12 @@ class ControlsPreferences {
     await prefs.setInt(edgeLimitPrefKey, _edgeLimit);
   }
 
+  static Future<void> setShowInputDebug(bool value) async {
+    _showInputDebug = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(showInputDebugPrefKey, value);
+  }
+
   /// Puts every control back to its default.
   static Future<void> reset() async {
     await setPreset(defaultPreset);
@@ -135,5 +147,6 @@ class ControlsPreferences {
     await setLayoutPreference(LayoutPreference.automatic);
     await setHideEdgesWhileMoving(kHideEdgesWhileMovingDefault);
     await setEdgeLimit(kEdgeLimitDefault);
+    await setShowInputDebug(false);
   }
 }

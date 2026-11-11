@@ -27,6 +27,7 @@ import 'orbit_camera.dart';
 import 'orthographic_camera.dart';
 import 'reference_planes.dart';
 import 'presentation_mode.dart' show Turntable;
+import 'input_debug.dart';
 import 'touch_pivot.dart';
 import 'assembly_instance_render.dart';
 import 'render_mode.dart';
@@ -5096,6 +5097,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (_turntable.running) setTurntable(false);
     _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
+    InputDebug.note('down', event, navPointer: _mouseNavPointer);
     // Desktop input D1: a middle or right press drags the view in every
     // mode, ahead of gizmos, marquee and select - see [_mouseNavPointer].
     final middleDoubleClick = _middleDoubleClick.registerPress(event);
@@ -5209,6 +5211,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    InputDebug.note('move', event, navPointer: _mouseNavPointer);
     if (event.pointer == _mouseNavPointer) {
       _applyMouseNavigation(event);
       return;
@@ -5325,6 +5328,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerEnd(PointerEvent event) {
+    InputDebug.note(event is PointerCancelEvent ? 'cancel' : 'up', event, navPointer: _mouseNavPointer);
     if (event.pointer == _mouseNavPointer) {
       _endMouseNavigation(event);
       return;
@@ -5467,6 +5471,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerHover(PointerHoverEvent event) {
+    InputDebug.note('hover', event, navPointer: _mouseNavPointer);
     _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
     if (widget.selectionMode) {
@@ -7737,6 +7742,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             if (ViewPreferences.debugShowCameraOrientation)
               DebugCameraOrientationOverlay(camera: _camera.cameraFor(size)),
+            if (ControlsPreferences.showInputDebug)
+              const Positioned(left: 8, bottom: 8, child: InputDebugOverlay()),
           ],
         );
       },
