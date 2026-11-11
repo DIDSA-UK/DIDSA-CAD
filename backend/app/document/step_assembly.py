@@ -66,6 +66,7 @@ class ProductNode:
     name: str
     shape: TopoDS_Shape | None = None
     children: list[tuple["ProductNode", gp_Trsf]] = field(default_factory=list)
+    child_colours: list[str | None] = field(default_factory=list)  # parallel to children: a colour set on the placement itself (an Occurrence's own colour)
     colour: str | None = None
 
 
@@ -184,6 +185,7 @@ def _read_step_structure(data: bytes) -> StepStructure:
                 if not _is_rigid(trsf):
                     counts["mirrored"] += 1
                 node.children.append((child, trsf))
+                node.child_colours.append(_label_colour(colour_tool, component))
         else:
             shape = shape_tool.GetShape(label)
             if shape is not None and not shape.IsNull():
@@ -314,11 +316,44 @@ def build_native_payload(structure: StepStructure, root_name: str, schema_versio
         feature = {"type": "import", "id": str(uuid.uuid4()), "source_format": "step", "source_data_base64": base64.b64encode(data).decode("ascii")}
         return new_part(name, [feature], [], {"colour": colour} if colour else None)
 
-    def occurrence(part_id: str, trsf: gp_Trsf, fixed: bool) -> dict:
+    def occurrence(part_id: str, trsf: gp_Trsf, fixed: bool, colour: str | None = None) -> dict:
         return {
             "id": str(uuid.uuid4()), "external_ref": part_files[part_id], "resolved_part_id": part_id, "name_override": None,
-            "transform": _rigid_to_dict(trsf), "suppressed": False, "hidden": False, "fixed": fixed, "color": None,
+            "transform": _rigid_to_dict(trsf), "suppressed": False, "hidden": False, "fixed": fixed, "color": colour,
         }
+
+    def bake_assembly(child: ProductNode, trsf: gp_Trsf, name: str, kind: str, stack: tuple[str, ...]) -> str | None:
+        """A mirrored or scaled SUB-ASSEMBLY: flattened into a new assembly Part ("<name> (mirrored)") whose occurrences are the subtree's leaves, each placed by the
+        composed transform (still rigid -> an Occurrence of the shared leaf Part; mirrored / scaled -> a baked leaf Part). Nested placements inside it are composed."""
+        occurrences: list[dict] = []
+
+        def walk(node: ProductNode, accumulated: gp_Trsf, depth: int) -> None:
+            if depth > 64 or node.key in stack:
+                return
+            for index, (grandchild, t) in enumerate(node.children):
+                full = accumulated.Multiplied(t)
+                colour = node.child_colours[index] if index < len(node.child_colours) else None
+                if grandchild.shape is not None:
+                    if _is_rigid(full):
+                        leaf_id = convert(grandchild, f"{name} {len(occurrences) + 1}", stack + (node.key,))
+                        if leaf_id is not None:
+                            occurrences.append(occurrence(leaf_id, full, False, colour))
+                    else:
+                        nonlocal leaf_total
+                        leaf_total += 1
+                        baked_shape = BRepBuilderAPI_Transform(grandchild.shape, full, True).Shape()
+                        baked_id = leaf_part(baked_shape, f"{grandchild.name or name} ({kind})", grandchild.colour)
+                        if baked_id is not None:
+                            baked["count"] += 1
+                            occurrences.append(occurrence(baked_id, gp_Trsf(), False, colour))
+                elif grandchild.children:
+                    walk(grandchild, full, depth + 1)
+
+        walk(child, trsf, 0)
+        if not occurrences:
+            skipped.append({"name": name, "reason": f"a {kind} sub-assembly with nothing importable inside"})
+            return None
+        return new_part(f"{name} ({kind})", [], occurrences, None)
 
     def convert(node: ProductNode, fallback: str, stack: tuple[str, ...]) -> str | None:
         nonlocal leaf_total
@@ -343,11 +378,13 @@ def build_native_payload(structure: StepStructure, root_name: str, schema_versio
             if _is_rigid(trsf):
                 child_id = convert(child, child_fallback, stack + (node.key,))
                 if child_id is not None:
-                    occurrences.append(occurrence(child_id, trsf, fixed=not occurrences and not stack))
+                    occurrences.append(occurrence(child_id, trsf, fixed=not occurrences and not stack, colour=node.child_colours[index] if index < len(node.child_colours) else None))
                 continue
             kind = "mirrored" if trsf.IsNegative() else "scaled"
             if child.shape is None:
-                skipped.append({"name": child.name or child_fallback, "reason": f"a {kind} sub-assembly cannot be placed as a rigid occurrence"})
+                flat_id = bake_assembly(child, trsf, child.name or child_fallback, kind, stack + (node.key,))
+                if flat_id is not None:
+                    occurrences.append(occurrence(flat_id, gp_Trsf(), fixed=not occurrences and not stack, colour=node.child_colours[index] if index < len(node.child_colours) else None))
                 continue
             baked_shape = BRepBuilderAPI_Transform(child.shape, trsf, True).Shape()
             baked_id = leaf_part(baked_shape, f"{child.name or child_fallback} ({kind})", child.colour)

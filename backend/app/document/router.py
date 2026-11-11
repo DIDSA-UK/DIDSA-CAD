@@ -9915,8 +9915,9 @@ def export_part_iges(part_id: str) -> Response:
     `app.document.iges_export`'s docstring)."""
     part = get_part_or_404(part_id)
     bodies = _export_bodies_or_400(part)
+    looks = _step_body_looks(get_document(), part, {body_id: ([], body_id) for body_id in bodies}, bodies)
     return Response(
-        content=export_iges(bodies),
+        content=export_iges(bodies, appearances=looks),
         media_type="model/iges",
         headers={"Content-Disposition": f'attachment; filename="{part.name}.igs"'},
     )
@@ -10133,9 +10134,11 @@ def export_part_assembly_iges(part_id: str) -> Response:
     geometry at its composed world transform, flattened to world-placed Bodies
     exactly like `export/assembly-step` (an IGES file has no assembly
     structure)."""
-    root_part, bodies = _assembly_export_bodies_or_400(part_id)
+    sources: dict[str, tuple[list[str], str]] = {}
+    root_part, bodies = _assembly_export_bodies_or_400(part_id, sources)
+    looks = _step_body_looks(get_document(), root_part, sources, bodies)
     return Response(
-        content=export_iges(bodies),
+        content=export_iges(bodies, appearances=looks),
         media_type="model/iges",
         headers={"Content-Disposition": f'attachment; filename="{root_part.name}.igs"'},
     )
